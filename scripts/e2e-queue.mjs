@@ -32,57 +32,27 @@
 // copied. NOTHING REACHES A PUBLIC RELAY.
 
 import { createRelay } from './local-relay.mjs';
-import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04 } from 'nostr-tools';
 
-const PORT = 7457, CDP = 9253, APP = process.env.APP_URL ?? 'http://localhost:3000';
-const HEADED = process.argv.includes('--headed');
-const KEEP = process.argv.includes('--keep');
+const APP = process.env.APP_URL ?? 'http://localhost:3000';
 
 // Measured feeds, both real and both still published.
 const HGH = 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f';   // Homegrown Hits (music)
 const PC20 = '917393e3-1b1e-5cef-ace4-edaa54e1f810';  // Podcasting 2.0 (talk)
 
-const appUp = await fetch(APP).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.`);
-  console.error('(and `rm -rf .next` first if you have just run a production build)');
-  process.exit(1);
-}
+await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
+(and \`rm -rf .next\` first if you have just run a production build)`);
 
-const busy = await fetch(`http://127.0.0.1:${CDP}/json/version`).then(() => true).catch(() => false);
-if (busy) {
-  console.error(`Something already owns CDP port ${CDP}. A leftover run would hand this script`);
-  console.error(`the OLD browser and every assertion below would grade that one instead.`);
-  console.error(`  pkill -f 'remote-debugging-port=${CDP}'`);
-  process.exit(1);
-}
-
-const CHROME = process.env.CHROME_PATH
-  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const profile = `${tmpdir()}/bmb-e2e-queue`;
-rmSync(profile, { recursive: true, force: true });
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  ...(HEADED ? [] : ['--headless=new']),
-  ...(asRoot ? ['--no-sandbox'] : []),
-  `--remote-debugging-port=${CDP}`,
-  `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--mute-audio',
-  '--window-size=1200,900',
-  'about:blank',
-], { stdio: 'ignore' });
-const stopChrome = () => { if (!KEEP) chrome.kill(); };
-process.on('exit', stopChrome);
-
-let ready = false;
-for (let i = 0; i < 60 && !ready; i += 1) {
-  ready = await fetch(`http://127.0.0.1:${CDP}/json/version`).then((r) => r.ok).catch(() => false);
-  if (!ready) await new Promise((r) => setTimeout(r, 250));
-}
-if (!ready) { console.error(`Chrome never opened its debug port on ${CDP}.`); process.exit(1); }
+// The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
+// paths; muted, on a free debug port, closed on any exit. That retired this
+// file's own busy-port guard — a leftover run on a FIXED port used to hand the
+// script the OLD browser, and every assertion graded that one instead.
+// `--headed` and `--keep` are read by the harness.
+const { page } = await launchChrome({ name: 'queue', args: ['--disable-gpu', '--window-size=1200,900'] });
+const { send } = page;
+// Throws on a page exception, which is what this file's assertions expect.
+const js = page.jsOrThrow;
 
 const skA = generateSecretKey();
 const pkA = getPublicKey(skA);
@@ -90,31 +60,13 @@ const npubA = nip19.npubEncode(pkA);
 const convoA = nip44.v2.utils.getConversationKey(skA, pkA);
 const npubB = nip19.npubEncode(getPublicKey(generateSecretKey()));
 
-createRelay({ port: PORT, log: null, onEvent: () => {} });
-
-// ---- CDP -----------------------------------------------------------------
-const list = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-const page = list.find((t) => t.type === 'page');
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0; const pending = new Map();
-const handlers = [];
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method) handlers.forEach((h) => h(m));
-});
-await new Promise((r) => ws.addEventListener('open', r));
-const send = (method, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params })); });
-const js = async (expr) => {
-  const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? 'eval failed');
-  return r.result?.result?.value;
-};
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+// Port 0 and read back, never a fixed port: another run can already hold one.
+const relay = createRelay({ port: 0, log: null, onEvent: () => {} });
+const PORT = await relay.ready;
 
 await send('Page.enable'); await send('Runtime.enable');
 await send('Runtime.addBinding', { name: 'bmbSigner' });
-handlers.push(async (m) => {
+page.on(async (m) => {
   if (m.method !== 'Runtime.bindingCalled' || m.params.name !== 'bmbSigner') return;
   const { rid, fn, args } = JSON.parse(m.params.payload);
   let out, err = null;
@@ -155,14 +107,9 @@ await send('Page.addScriptToEvaluateOnNewDocument', {
   `,
 });
 
-let failures = 0;
+const t = checker();
 function section(n) { console.log(`\n${n}`); }
-function check(label, actual, expected) {
-  const a = JSON.stringify(actual), e = JSON.stringify(expected);
-  if (a === e) { console.log(`  ok   ${label}`); return; }
-  failures += 1;
-  console.error(`  FAIL ${label}\n        expected ${e}\n        actual   ${a}`);
-}
+function check(label, actual, expected) { t.equal(label, actual, expected); }
 
 const queueOnDisk = (who) => js(`
   (() => {
@@ -362,19 +309,57 @@ const dock = await js(`
 check('five tabs, Queue second, Wallet gone, and /queue is current',
   dock, { labels: ['Home', 'Queue', 'Live', 'Favorites', 'Downloads'], current: 'Queue' });
 
-if (failures) {
-  console.error(`\nQUEUE E2E FAILED (${failures})`);
-  process.exit(1);
+// ---------------------------------------------------------------------------
+section('7. A queued episode resumes where it was left, and finishing it forgets the place');
+// ---------------------------------------------------------------------------
+{
+  // #414 (resume position) and the queue were written on different branches.
+  // `play()` starts an episode at its saved place; the queue's own paths wrote
+  // `positionSec: 0`, so a half-heard episode queued as Up Next started at 0:00
+  // and then overwrote its saved place. This drives the reveal path (a reload
+  // with a queue on disk) and the drain path (the last item plays to its end).
+  //
+  // Its own browser with autoplay: the drain needs a REAL `ended` — the writer
+  // forgets on `el.ended`, which a synthetic event does not set. Signed out, so
+  // no signer is needed.
+  const { page: q2 } = await launchChrome({ name: 'queue-resume', autoplay: true, args: ['--disable-gpu', '--window-size=1200,900'] });
+  const js2 = q2.jsOrThrow;
+  await q2.send('Page.enable'); await q2.send('Runtime.enable');
+  await q2.send('Page.navigate', { url: `${APP}/?podcast=${PC20}` }); await wait(14000);
+  const pressed = await js2(`(() => { const b = document.querySelector('button[aria-label^="Add "]'); b && b.click(); return !!b; })()`);
+  await wait(1500);
+  const item = await js2(`(() => { const q = JSON.parse(localStorage.getItem('bmb:listen_queue:guest') || '[]'); return q[0] ?? null; })()`);
+  check('one talk episode queued', { pressed, queued: !!item?.episode?.enclosureUrl }, { pressed: true, queued: true });
+  // `resumeKey`: the episode's own podcastGuid, then its guid.
+  const key = item ? `${item.episode.podcastGuid || item.podcast.podcastGuid}::${item.episode.guid || `id:${item.episode.id}`}` : '';
+  await js2(`(() => { localStorage.setItem('bmb:resume', JSON.stringify({ [${JSON.stringify(key)}]: { t: 600, d: 7200, at: Date.now() } })); return true; })()`);
+
+  // Reload: `revealQueue` puts the head in the player without playing it, and
+  // the source effect seeks to `positionSec` on `loadedmetadata`.
+  await q2.send('Page.navigate', { url: `${APP}/queue` });
+  const seeked = await q2.until(`(() => { const a = document.querySelector('audio'); return !!a && a.readyState >= 1 && a.currentTime >= 599; })()`, 30000);
+  const at = await js2(`(() => { const a = document.querySelector('audio'); return a ? Math.round(a.currentTime) : null; })()`);
+  check('the revealed queue head sits at its saved 10:00, not 0:00', { seeked, at: at >= 599 && at < 620 }, { seeked: true, at: true });
+
+  // Finish it: the last item drains, and a finished episode keeps no place.
+  await js2(`(() => { const a = document.querySelector('audio'); a.currentTime = Math.max(0, a.duration - 4); return true; })()`);
+  await js2(`(() => { const b = document.querySelector('button[aria-label="Play"]'); b && b.click(); return !!b; })()`);
+  const drained = await q2.until(`(() => JSON.parse(localStorage.getItem('bmb:listen_queue:guest') || '[]').length === 0)()`, 30000);
+  await wait(1500);
+  const left = await js2(`(() => { const m = JSON.parse(localStorage.getItem('bmb:resume') || '{}'); return m[${JSON.stringify(key)}] ?? null; })()`);
+  check('it played to the end and left the queue', drained, true);
+  check('...and its saved place is gone', left, null);
+  await q2.close();
+}
+
+if (t.fails) {
+  console.error(`\nQUEUE E2E FAILED (${t.fails})`);
+  await exit(1);
 }
 console.log('\nQUEUE E2E OK');
 // EXIT EXPLICITLY, and this is not tidiness. `createRelay` opens a
 // WebSocketServer that is never closed, so it holds the event loop open for ever:
 // without this the suite PASSES and then hangs, which is indistinguishable from a
-// hang that failed. It cost 47 minutes of one session — the run was piped through
-// `tail`, so the completed output sat unflushed in the pipe and the process looked
-// stuck mid-suite, on a build that was fine. Worse, it stalls anything CHAINED
-// behind it: a sweep of `e2e:queue && e2e:favorites && e2e:downloads` never
-// reaches the second suite. The failure path above already exits; the success path
-// did not, which is the shape that hides it. `e2e-favorites.mjs` and
-// `e2e-downloads.mjs` both end with `process.exit`.
-process.exit(0);
+// hang that failed — and it stalls anything CHAINED behind it. `exit` also
+// closes the browser the harness started.
+await exit(0);
