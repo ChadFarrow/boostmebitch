@@ -1,6 +1,6 @@
 // Shared guard for the modules that must stay loadable by a `check:*` script.
 //
-// Nineteen modules are deliberately import-free and three may import bare npm
+// Twenty modules are deliberately import-free and three may import bare npm
 // specifiers only. The list is not repeated here, because a count in a comment
 // is the first thing to go stale: each check script names the modules it
 // guards where it calls `importFreeProblems`, and CLAUDE.md lists them all.

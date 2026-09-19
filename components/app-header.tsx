@@ -7,7 +7,7 @@ import { clearShowSelection } from '@/lib/store';
 import { BRAND } from '@/lib/brand';
 
 /**
- * The app header, shared by `/`, `/live`, `/favorites` and `/playlists`.
+ * The app header, shared by `/`, `/live`, `/favorites`, `/playlists` and `/downloads`.
  *
  * It was inline JSX in `<HomePage>` while `/npub`, `/live` and `/stream` went
  * without a header at all, which was fine for those three: two are player

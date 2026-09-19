@@ -1956,6 +1956,37 @@ export function fnvHash(s: string): number {
   return h & 0x7fffffff;
 }
 
+/**
+ * The episode id a DOWNLOAD plays back under — which is a money fact, not a
+ * React key.
+ *
+ * A download is rebuilt into an `Episode` with no network, and that object is
+ * handed to everything a streamed one is: `/api/value-splits` and the streaming
+ * split cache key off `episode.id`, and so does every boostagram's `itemID`.
+ * The rebuild used to synthesise `id` from the FEED id, so `/api/value-splits`
+ * asked for an episode whose id was its show's, answered 404, and every
+ * `<podcast:valueTimeSplit>` window on a downloaded episode streamed to the
+ * host instead of the song — while the boostagram named the feed as the item.
+ *
+ * So the record keeps the id the episode was LISTED under (`episodeId`), and a
+ * download plays back under exactly the identity it had before it was saved.
+ * A record written before that field existed falls back to the id the RSS path
+ * already gives an episode Podcast Index has not indexed, `-fnvHash(guid)`,
+ * which is the right answer for those and a distinct, non-colliding one for
+ * the rest. `||`, not `??`, on the guid: a feed can publish `<guid></guid>`,
+ * and `''` would give every such episode of every feed the same id.
+ */
+export function downloadEpisodeId(r: {
+  episodeId?: number | null;
+  itemGuid?: string | null;
+  enclosureUrl: string;
+}): number {
+  if (typeof r.episodeId === 'number' && Number.isInteger(r.episodeId) && r.episodeId !== 0) {
+    return r.episodeId;
+  }
+  return -fnvHash(r.itemGuid || r.enclosureUrl);
+}
+
 // True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js
 // (or native Safari support) and a <video> surface — not the native <audio>
 // element the rest of the app uses. Nostr live streams (kind:30311) carry HLS

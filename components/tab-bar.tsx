@@ -51,10 +51,10 @@ import { KbDebug } from './kb-debug';
  * can leave beats one you cannot. Do not add a hide list without a new
  * reason.
  *
- * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a quarter (today)
- * of the width wide, so it clears the 44px floor without a min-h — the
+ * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a fifth (today) of
+ * the width wide, so it clears the 44px floor without a min-h — the
  * icon-and-label stack is centred inside the tap area, not the tap area itself.
- * At 390px four columns are 97.5px each, and height is the binding dimension at
+ * At 390px five columns are 78px each, and height is the binding dimension at
  * 56 > 44. The floor is not threatened until SEVEN tabs (390/7 = 55.7px), which
  * is the number to check against rather than re-deriving it.
  *
@@ -86,7 +86,7 @@ import { KbDebug } from './kb-debug';
 
 type LinkTab = {
   kind: 'link';
-  href: '/' | '/live' | '/favorites';
+  href: '/' | '/live' | '/favorites' | '/downloads';
   label: string;
   icon: React.ReactNode;
   /** Whether `pathname` belongs to this tab. `/` is exact; the rest are prefixes. */
@@ -144,6 +144,21 @@ const TABS: Tab[] = [
     ),
   },
   {
+    kind: 'link',
+    href: '/downloads',
+    label: 'Downloads',
+    match: (p) => p.startsWith('/downloads'),
+    icon: (
+      // An arrow into a tray. Deliberately not a cloud: the whole point of this
+      // destination is that the bytes are HERE, not somewhere else.
+      <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
+        <path d="M12 3v10" />
+        <path d="M8 10.5 12 14.5l4-4" />
+        <path d="M4 16v3.5h16V16" />
+      </svg>
+    ),
+  },
+  {
     kind: 'modal',
     label: 'Wallet',
     icon: (
@@ -155,8 +170,32 @@ const TABS: Tab[] = [
   },
 ];
 
+/**
+ * THE LABEL IS `font-display`, NOT THE MONO THE REST OF THE APP INHERITS, and
+ * the reason is arithmetic rather than taste.
+ *
+ * `html, body` set JetBrains Mono, so every label costs a FIXED advance per
+ * character: `Downloads` and `Favorites` are nine characters and measured 56px
+ * against `Home`'s 25px, inside cells that are all the same width. The gaps a
+ * reader actually sees are between label EDGES, so the dock read as evenly
+ * spaced on the left and crowded on the right — 49px between the first two
+ * labels and 22px between the last two at 390px, and only 8px at 320px.
+ *
+ * Measured against the real font files at 320 / 390 / 430px:
+ *
+ *   mono 10px + tracking-wide (was)   widest 56px   min gap  8px @320   22px @390
+ *   font-display 10px, no tracking    widest 52px   min gap 16px @320   30px @390
+ *
+ * `tracking-wide` goes with it: letter-spacing on a nine-character label is
+ * width spent where there is least of it.
+ *
+ * The gaps are still not EQUAL, and they cannot be while the cells are. That is
+ * deliberate — the tap area is the grid cell, and equal cells are what keeps
+ * every tab over the 44px floor. Proportional columns would even the gaps and
+ * put the narrowest tab under that floor at 320px.
+ */
 const itemClass = (current: boolean) =>
-  `flex flex-col items-center justify-center gap-1 text-[10px] tracking-wide transition ${
+  `flex flex-col items-center justify-center gap-1 font-display text-[10px] transition ${
     current ? 'text-bolt' : 'text-muted hover:text-bone'
   }`;
 
