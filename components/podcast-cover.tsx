@@ -194,7 +194,7 @@ function PodcastCoverImpl({
  * MEMOIZED, and every prop is a primitive, which is what makes it work.
  *
  * This is mounted once per row on twelve surfaces — every episode row, every
- * favorites row, every podroll card — and it carries internal state: the
+ * favorites row, every queue row — and it carries internal state: the
  * `onError` ladder's position. `<EpisodeList>` reads seven store slices
  * including `current` and `isPlaying`, and its rows are one long inline closure
  * rather than components, so every `play()` and every pause re-renders every
