@@ -494,6 +494,29 @@ export interface NewEpisodeMarks {
   checkedAt: number;
   /** podcastGuid -> newest `datePublished` already shown, unix SECONDS. */
   marks: Record<string, number>;
+  /**
+   * THE LIST ITSELF, and it is here because the marks alone cannot stand in
+   * for it.
+   *
+   * A mark says "this feed was checked up to here". It does not say what the
+   * reader still has waiting. While the rows lived only in React state, one
+   * pass advanced every mark and the rows died with the component — so a
+   * second visit inside the fifteen-minute throttle painted nothing, and a
+   * visit after it re-checked against the advanced marks and also painted
+   * nothing. The section was empty on every visit but the one render that
+   * followed a check, which reads as the feature being broken.
+   *
+   * So the list is the persisted thing and the marks describe it: a feed's
+   * mark advances to the newest of ITS rows that survived into this array,
+   * never to a row that was merely fetched (`mergeNewEpisodeRows` first, then
+   * `advanceMarks` over the merged list). A row therefore leaves this list
+   * only by aging past `FAV_NEW_WINDOW_MS` or by an explicit clear — never
+   * because a pass happened while nobody was looking.
+   *
+   * Absent on a record written before this field existed, which reads as an
+   * empty list: the first pass after an upgrade refills it.
+   */
+  rows?: Episode[];
 }
 
 /**

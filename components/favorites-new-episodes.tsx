@@ -5,7 +5,8 @@ import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import {
-  advanceMarks, epKey, pruneMarks, selectNewEpisodes, sinceForBatch,
+  advanceMarks, epKey, mergeNewEpisodeRows, pruneMarks, pruneNewRows,
+  selectNewEpisodes, sinceForBatch,
 } from '@/lib/util';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { PodcastCover } from './podcast-cover';
@@ -34,6 +35,24 @@ import type { Episode, NewEpisodeMarks } from '@/lib/types';
  * asked about is named, never counted as quiet — the same rule
  * `<FavoritesSyncNotice>` follows one surface up, and the same one
  * `<FavoritesPage>`'s own header doc states about "Nothing saved yet."
+ *
+ * **THE LIST IS PERSISTED, AND THE MARKS DESCRIBE IT — not the other way
+ * round.** The rows used to live only in React state while the marks went to
+ * disk, which made the check consume the list instead of the reader. Three
+ * shapes of the same bug, all reported as "I never see a new episode":
+ *
+ * 1. A visit inside the fifteen-minute throttle returned before `setRows`, so
+ *    it painted an empty section over a full `bmb:newmarks` record.
+ * 2. `advanceMarks` took the FETCHED rows, so a pass over a hundred shows
+ *    marked several hundred episodes as seen and showed `FAV_NEW_CAP` of them.
+ * 3. The "Nothing new" line required `deferred === 0`, which a library larger
+ *    than `MAX_FEEDS` can never reach — so the page said nothing at all about
+ *    the shows it HAD checked.
+ *
+ * The rows now round-trip through `storage.newEpisodeMarks`, a pass MERGES into
+ * that list rather than replacing it, and a mark may only describe a row the
+ * merge kept. A row leaves by aging past the seven-day horizon, by its show
+ * being unfavorited, or by the reader pressing CLEAR. Nothing else retires one.
  */
 
 /** The freshness check runs at most this often. `checkedAt` lives on disk, so
@@ -76,6 +95,10 @@ export function FavoritesNewEpisodes() {
    *  failed, we just have not got to them. Counted before the throttle can
    *  return, so a throttled pass cannot say "nothing new" over them either. */
   const [deferred, setDeferred] = useState(0);
+  /** How many shows the last pass DID ask about. The counterpart to `deferred`,
+   *  and what lets the "nothing new" line name its own scope instead of
+   *  withholding the result entirely. */
+  const [checked, setChecked] = useState(0);
   const [record, setRecord] = useState<NewEpisodeMarks>({ checkedAt: 0, marks: {} });
   const [marksSaved, setMarksSaved] = useState(true);
   const [shown, setShown] = useState(PAGE);
@@ -88,6 +111,21 @@ export function FavoritesNewEpisodes() {
   useEffect(() => setMounted(true), []);
 
   const npub = identity?.npub ?? null;
+
+  /**
+   * PAINT WHAT THIS DEVICE ALREADY FOUND, before any request.
+   *
+   * Not folded into `check`: that one runs behind `SETTLE_MS` and can return
+   * early at the throttle, and both delays are reasons the reader sees an empty
+   * section over a full record. Keyed on `npub` alone, so an account switch
+   * repaints and nothing else re-runs it — a check that has already landed
+   * holds rows at least as fresh as the disk it just wrote.
+   */
+  useEffect(() => {
+    const stored = storage.newEpisodeMarks.get(npub);
+    setRecord(stored);
+    setRows(stored.rows ?? []);
+  }, [npub]);
 
   /**
    * A STABLE key over the ASK SET, never the `favorites` object.
@@ -139,13 +177,17 @@ export function FavoritesNewEpisodes() {
     );
     const feeds = ordered.slice(0, MAX_FEEDS);
     // BEFORE the throttle can return, so a throttled pass cannot claim "nothing
-    // new" over a tail it never asked about. This number needs no request.
+    // new" over a tail it never asked about. These two need no request.
     setDeferred(askable.length - feeds.length);
+    setChecked(feeds.length);
 
     if (!force && Date.now() - stored.checkedAt < CHECK_MIN_MS) {
-      // Inside the throttle: say nothing new rather than re-asking. The marks
-      // are what the last pass left, so this is not a claim about now — which
-      // is why the heading carries the time of that pass.
+      // Inside the throttle: repaint the stored list rather than re-asking.
+      // REPAINT, not `setPhase` alone — leaving `rows` at its mount value was
+      // the whole first bug. A visit two minutes after a check found a full
+      // record on disk, returned here, and rendered an empty section, so the
+      // list was only ever visible in the single render that followed a check.
+      setRows(stored.rows ?? []);
       setPhase('done');
       return;
     }
@@ -167,7 +209,19 @@ export function FavoritesNewEpisodes() {
       const covered: number[] = Array.isArray(data.covered) ? data.covered : [];
       const truncated = !!data.truncated;
 
-      setRows(selectNewEpisodes(episodes, stored.marks, guidByFeedId, Date.now()));
+      const now = Date.now();
+      const found = selectNewEpisodes(episodes, stored.marks, guidByFeedId, now);
+      /**
+       * MERGE INTO THE CARRIED LIST, never replace it.
+       *
+       * One pass covers `MAX_FEEDS` shows and a library can be larger, so a
+       * replace made the second pass delete what the first one found — and the
+       * marks had already moved past it, so it was gone for good. The merge is
+       * also what `advanceMarks` is handed below, which is the rule that keeps
+       * a mark from describing a row the reader never got.
+       */
+      const merged = mergeNewEpisodeRows(stored.rows ?? [], found, now);
+      setRows(merged);
       // Against the feeds ASKED ABOUT. The library's tail beyond `MAX_FEEDS` is
       // `deferred`, counted above — folding the two together was how a
       // 227-favorite library got told "Nothing new" about 127 shows no request
@@ -177,8 +231,13 @@ export function FavoritesNewEpisodes() {
       // The marks advance on EVIDENCE only — a feed that was not covered, a
       // covered feed with no rows, and a truncated pass all leave theirs
       // alone. That rule is `advanceMarks`, pinned by `check:favnew`.
+      //
+      // `merged`, NOT `episodes`. A pass over a hundred shows returns several
+      // hundred records and the list holds `FAV_NEW_CAP`; advancing over the
+      // fetched set marked every one of those as seen, so the overflow could
+      // never be offered again. A mark may only describe a row on the list.
       const coveredGuids = covered.map((id) => guidByFeedId[id]).filter(Boolean);
-      let nextMarks = advanceMarks(stored.marks, episodes, coveredGuids, guidByFeedId, truncated);
+      let nextMarks = advanceMarks(stored.marks, merged, coveredGuids, guidByFeedId, truncated);
       /**
        * PRUNING IS A DELETION, so it needs a favorites list worth deleting
        * against. Before this gate it ran against whatever snapshot the pass
@@ -194,10 +253,17 @@ export function FavoritesNewEpisodes() {
        * which `pruneMarks`' own cap already bounds.
        */
       const sync = useApp.getState().favoritesSync;
+      let nextRows = merged;
       if (!npub || sync === 'ok' || sync === 'off') {
         nextMarks = pruneMarks(nextMarks, Object.keys(favs));
+        // The rows get the same gate for the same reason, and they need it
+        // MORE than the marks do: a stale mark is dead weight the cap bounds,
+        // while a row for an unfavorited show is a row on screen that the
+        // reader cannot get rid of.
+        nextRows = pruneNewRows(nextRows, Object.values(favs).map((f) => f.id));
+        setRows(nextRows);
       }
-      const next = { checkedAt: Date.now(), marks: nextMarks };
+      const next = { checkedAt: Date.now(), marks: nextMarks, rows: nextRows };
       // Do NOT drop `safeSet`'s answer. Marks held only in the memory mirror
       // work all session and are gone on the next load, so the same episodes
       // come back announced as new — which reads as the feature being broken,
@@ -224,6 +290,28 @@ export function FavoritesNewEpisodes() {
     } finally {
       running.current = false;
     }
+  }, [npub]);
+
+  /**
+   * "I have seen these" — the one control that retires a row early.
+   *
+   * It clears the ROWS and leaves the MARKS exactly where they are, which is
+   * what makes it stick: the marks are already past these episodes, so the next
+   * pass does not fetch them again. Clearing the marks as well would re-offer
+   * the whole seven-day window on the next check, which is the opposite of what
+   * the press asked for.
+   *
+   * The section needs it because nothing else retires a row now except age. A
+   * list that only drains after seven days is the mirror of the bug this fixes,
+   * and the reader would have no way to say "done".
+   */
+  const clearRows = useCallback(() => {
+    const stored = storage.newEpisodeMarks.get(npub);
+    const next = { ...stored, rows: [] };
+    setMarksSaved(storage.newEpisodeMarks.set(npub, next));
+    setRecord(next);
+    setRows([]);
+    setShown(PAGE);
   }, [npub]);
 
   useEffect(() => {
@@ -304,31 +392,46 @@ export function FavoritesNewEpisodes() {
               </p>
             )}
 
-            {/* A THIRD claim, and it is not a failure: the library is larger than
-                one request's worth, so these shows were not asked about at all.
-                Saying "could not check" would blame Podcast Index for a cap of
-                ours. The check-the-rest press makes real progress, because the
-                ask list is ordered stalest-mark-first — the hundred just covered
-                now sort last. */}
+            {/* THE RESULT COMES FIRST, then the caveat about its scope.
+                `deferred` used to suppress this line outright, on the reading
+                that a negative claim over an unasked show is unearned. The
+                claim was right and the remedy was wrong: a library larger than
+                `MAX_FEEDS` can never reach `deferred === 0`, so a 219-show
+                library got the caveat alone, with nothing said about the
+                hundred shows that WERE checked. That is not a withheld claim,
+                it is a blank section — which is what the reader reports as the
+                feature not working.
+
+                So the line names its own scope instead. "Nothing new from the
+                100 shows checked" is earned; bare "Nothing new" is kept for
+                the case where the scope is the whole library. */}
+            {phase === 'done' && rows.length === 0 && uncovered === 0 && (
+              <p className="text-muted text-sm py-3">
+                {deferred > 0
+                  ? `Nothing new from the ${checked} ${checked === 1 ? 'show' : 'shows'} checked.`
+                  : `Nothing new${when ? ` since ${when}` : ''}.`}{' '}
+                {deferred === 0 && stale && (
+                  <button type="button" onClick={() => void check(true)} className="underline">
+                    check again
+                  </button>
+                )}
+              </p>
+            )}
+
+            {/* A THIRD claim, and it is not a failure: the library is larger
+                than one request's worth, so these shows were not asked about at
+                all. Saying "could not check" would blame Podcast Index for a cap
+                of ours. The check-the-rest press makes real progress, because
+                the ask list is ordered stalest-mark-first — the hundred just
+                covered now sort last. It carries the only press worth offering
+                while `deferred` stands, which is why the line above withholds
+                its own. */}
             {phase === 'done' && deferred > 0 && (
               <p className="text-muted text-sm py-3">
                 {deferred} more {deferred === 1 ? 'show has' : 'shows have'} not been checked yet.{' '}
                 <button type="button" onClick={() => void check(true)} className="underline">
                   check the rest
                 </button>
-              </p>
-            )}
-
-            {/* Earned only when every askable show was asked about AND answered.
-                `deferred` belongs in this test as much as `uncovered` does. */}
-            {phase === 'done' && rows.length === 0 && uncovered === 0 && deferred === 0 && (
-              <p className="text-muted text-sm py-3">
-                Nothing new{when ? ` since ${when}` : ''}.{' '}
-                {stale && (
-                  <button type="button" onClick={() => void check(true)} className="underline">
-                    check again
-                  </button>
-                )}
               </p>
             )}
 
@@ -402,14 +505,30 @@ export function FavoritesNewEpisodes() {
                 ))}
               </ul>
             )}
-            {rows.length > shown && (
-              <button
-                type="button"
-                onClick={() => setShown((n) => n + PAGE)}
-                className="btn-ghost w-full mt-2 text-xs"
-              >
-                SHOW MORE ({rows.length - shown})
-              </button>
+            {/* CLEAR sits beside SHOW MORE and only while there is a list. It
+                is the reader's half of the bargain the persisted list makes:
+                rows now stay until somebody says otherwise, so somebody needs a
+                way to say it. Both are plain `.btn-ghost`s at one size, which
+                is the cluster rule the favorites controls already follow. */}
+            {rows.length > 0 && (
+              <div className="flex gap-2 mt-2">
+                {rows.length > shown && (
+                  <button
+                    type="button"
+                    onClick={() => setShown((n) => n + PAGE)}
+                    className="btn-ghost flex-1 text-xs"
+                  >
+                    SHOW MORE ({rows.length - shown})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={clearRows}
+                  className={`btn-ghost text-xs ${rows.length > shown ? '' : 'w-full'}`}
+                >
+                  CLEAR
+                </button>
+              </div>
             )}
           </>
         )}
