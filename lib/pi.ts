@@ -23,7 +23,7 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 
@@ -567,20 +567,6 @@ function buildEpisode(e: any): Episode {
 export const PI_EPISODE_MAX = 1000;
 
 /**
- * PI's own ceiling on a comma-separated feed-id list, and the reason it is a
- * named constant rather than an inline slice.
- *
- * **PI truncates at exactly 200 and says nothing.** Measured 2026-09-12 three
- * ways: a known-good feed at position 200 is answered, the same feed at
- * position 201 is not, and moving it to position 1 of that same 201-id list
- * brings it back. The response is a 200 OK either way. That is the failure
- * class `probeThenBatch`'s comment already records — "shipping only the first
- * is what made a 231-track list resolve four" — except here nothing errors, so
- * the only defence is never to send more than this.
- */
-export const PI_FEED_IDS_MAX = 200;
-
-/**
  * What came out on these feeds since `since` — one call, many feeds.
  *
  * `/episodes/byfeedid` takes a comma-separated id list, which is the primitive
@@ -601,6 +587,14 @@ export const PI_FEED_IDS_MAX = 200;
  * **No `fulltext`.** This list is a set of headlines, not reading material, and
  * `fulltext` scales the body with the ask — the trap `getEpisodes` documents
  * one function down.
+ *
+ * **A miss is NOT turned into an empty answer here**, unlike every other wrapper
+ * in this file, and on purpose. An empty answer would put the ids in the
+ * route's `covered`, and the section would then say "nothing new" about shows
+ * Podcast Index did not answer for — the one claim that feature must earn. So
+ * this throws, and `/api/new-episodes` tells a miss from an outage itself
+ * (`isPiMiss` on its probe): a missed chunk stays out of `covered`, an outage
+ * becomes a 5xx.
  */
 export async function getEpisodesSinceForFeeds(
   feedIds: readonly number[],

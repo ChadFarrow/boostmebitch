@@ -5,9 +5,10 @@ import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import {
-  advanceMarks, epKey, mergeNewEpisodeRows, pruneMarks, pruneNewRows,
+  advanceMarks, epKey, mergeNewEpisodeRows, NEW_EPISODES_MAX_FEEDS, pruneMarks, pruneNewRows,
   selectNewEpisodes, sinceForBatch,
 } from '@/lib/util';
+import { readCappedJson } from '@/lib/capped-body';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { PodcastCover } from './podcast-cover';
 import { NoteQueueButton } from './note-queue-button';
@@ -83,7 +84,7 @@ const CHECK_MIN_MS = 15 * 60 * 1000;
  * covered. A library larger than this is covered by successive REQUESTS inside
  * one pass; see `MAX_BATCHES`.
  */
-const MAX_FEEDS = 100;
+const MAX_FEEDS = NEW_EPISODES_MAX_FEEDS;
 /**
  * Requests one pass may issue, and they go out SEQUENTIALLY.
  *
@@ -292,7 +293,11 @@ export function FavoritesNewEpisodes() {
             `/api/new-episodes?feeds=${batch.map((f) => f.id).join(',')}&since=${since}`,
           );
           if (!res.ok) throw new Error(String(res.status));
-          const data = await res.json();
+          // Capped like every other read in this app (CLAUDE.md): it is our own
+          // route, but the bound should be asserted here, not inherited.
+          const data = (await readCappedJson(res)) as {
+            episodes?: unknown; covered?: unknown; truncated?: unknown;
+          };
           const episodes: Episode[] = Array.isArray(data.episodes) ? data.episodes : [];
           const covered: number[] = Array.isArray(data.covered) ? data.covered : [];
           const truncated = !!data.truncated;
