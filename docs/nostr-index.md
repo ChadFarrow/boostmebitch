@@ -35,8 +35,8 @@ current directory, so it cannot be run from a worktree. → [`ops.md`](ops.md)
 `verify/check-ingest.mjs` follows the same total-replay-against-`naive()` shape as
 the repo's `check:*` scripts; `check-api.mjs`, `check-search.mjs` and
 `check-indexer.mjs` need a Postgres, and the indexer one drives a scripted local
-relay (`verify/mock-relay.mjs`). `verify:ingest` and `verify:yield` run with no
-database.
+relay (`verify/mock-relay.mjs`). `verify:ingest`, `verify:yield` and
+`verify:rejections` run with no database.
 
 ## A `void` on a background loop ends the process
 
@@ -53,6 +53,19 @@ Both loops now back off and continue across a database fault, and both `void`
 calls carry a `.catch(logErr(...))` as the backstop. **Any new background loop
 here needs both halves** — the local guard so a blip is survivable, and the
 `.catch` so an escape is loud rather than fatal.
+
+**There is now exactly one `process.on('unhandledRejection')`, and it is for
+rejections nobody in this service can hold** (`src/relay-rejections.ts`).
+nostr-tools 2.19.4 makes two inside a relay: `send()` is async and throws
+`SendingOnClosedConnection`, which the try/catch in `Subscription.close()` never
+sees, and while a connect is pending it hangs `connectionPromise.then(...)` off
+it with no catch, so a timeout rejects a promise with no owner. Seven crashes
+from 2026-09-03 to 2026-09-18 were all one of those, each a restart that
+re-downloaded every subscription and spent one of `restartPolicyMaxRetries`.
+The handler survives a bare-string reason (every `connect()` rejection is one)
+or that error by name, and **exits 1 on anything else** — it is not a licence
+to skip the two halves above, and `check-rejections.mjs` proves a pg timeout
+still ends the process.
 
 ## An empty page is not evidence
 
