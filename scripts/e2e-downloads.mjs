@@ -27,63 +27,30 @@
 // host — which would be a rude default for a feature whose whole purpose is
 // that bandwidth is scarce. Run it before shipping anything under lib/downloads.
 //
-// CHROME_PATH overrides the browser; without it this looks for Chrome where
-// macOS puts it, the same convention as e2e-keyboard.mjs.
-import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
-import { rmSync } from 'node:fs';
+// The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
+// paths. It gets a free debug port and a fresh profile per run, is muted, and is
+// closed on any exit — which is what retired this file's own busy-port guard:
+// a Chrome left over from an earlier run used to hold the fixed port and the
+// profile, so the new one exited and the assertions quietly attached to the OLD
+// browser's storage. Nothing can attach to a port this run did not choose.
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
-const CDP = 9251;
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
-const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
-  process.exit(1);
-}
+await requireApp(`${APP}/privacy`,
+  `Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
 
-// REFUSE TO RUN IF SOMETHING ALREADY HOLDS THE DEBUG PORT, and this guard is
-// here because its absence cost a long debugging session. A Chrome left over
-// from an earlier run keeps both the port and the profile, so the new one exits
-// on the locked profile and `fetch(/json/list)` quietly attaches to the OLD
-// browser instead. Everything then runs against storage that the assertions
-// were never told about, and the failure reads as "the app stored a record but
-// no bytes" — a shipping bug that is not there. Fail loudly instead.
-const portBusy = await fetch(`http://127.0.0.1:${CDP}/json/version`).then(() => true).catch(() => false);
-if (portBusy) {
-  console.error(`Something is already listening on ${CDP} — almost certainly a Chrome left over from an earlier run.`);
-  console.error(`Close it first:  pkill -f 'remote-debugging-port=${CDP}'`);
-  process.exit(1);
-}
+const { page } = await launchChrome({ name: 'downloads', args: ['--window-size=1200,900'] });
+const { send, js } = page;
+const exceptions = [];
+page.on((m) => {
+  if (m.method === 'Runtime.exceptionThrown') {
+    exceptions.push(m.params.exceptionDetails?.exception?.description ?? JSON.stringify(m.params.exceptionDetails));
+  }
+});
 
-const profile = `${tmpdir()}/bmb-e2e-downloads`;
-rmSync(profile, { recursive: true, force: true });
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [`--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`, '--headless=new', '--no-first-run', ...(asRoot ? ['--no-sandbox'] : []), '--window-size=1200,900', 'about:blank'], { stdio: 'ignore' });
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-let target;
-for (let i = 0; i < 40 && !target; i++) {
-  await wait(250);
-  try { const l = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json(); target = l.find((t) => t.type === 'page'); } catch { /* not up yet */ }
-}
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((r) => (ws.onopen = r));
-let id = 0; const pending = new Map(); const exceptions = [];
-ws.onmessage = (m) => {
-  const d = JSON.parse(m.data);
-  if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); }
-  if (d.method === 'Runtime.exceptionThrown') exceptions.push(d.params.exceptionDetails?.exception?.description ?? JSON.stringify(d.params.exceptionDetails));
-};
-const send = (m, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method: m, params })); });
-const js = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value;
-
-let fails = 0;
-const check = (l, a, b) => {
-  const ok = JSON.stringify(a) === JSON.stringify(b);
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${l}${ok ? '' : `\n        expected ${JSON.stringify(b)}\n        actual   ${JSON.stringify(a)}`}`);
-  if (!ok) fails++;
-};
+const t = checker();
+const check = (label, actual, expected) => t.equal(label, actual, expected);
 const section = (n) => console.log(`\n${n}`);
 
 await send('Page.enable'); await send('Runtime.enable');
@@ -249,6 +216,8 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
           type: blob?.type ?? null,
           hasValue: !!r?.value,
           hasFeedGuid: !!r?.feedGuid,
+          // The id it was LISTED under, never the feed id: see downloadEpisodeId.
+          episodeIdKept: typeof r?.episodeId === 'number' && r.episodeId !== 0 && r.episodeId !== r.feedId,
         };
       })()
     `);
@@ -258,6 +227,7 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     check('stored under its enclosure URL, bytes match, value block kept', record, {
       cacheKeys: 1, records: 1,
       keyIsEnclosureUrl: true, bytesMatchRecord: true, type: 'audio/mpeg', hasValue: true, hasFeedGuid: true,
+      episodeIdKept: true,
     });
   }
 
@@ -804,7 +774,104 @@ section('11. The service worker: offline launch, and cleanup that spares downloa
     swept, { staleGone: true, currentKept: true, downloadsUntouched: true });
 }
 
+// ---------------------------------------------------------------------------
+section('12. Two downloads of one show, back to back: the first one\'s time stays its own');
+// ---------------------------------------------------------------------------
+{
+  // `#389` and `#414` (resume position) were never on one branch until the
+  // re-land, and they meet here. A download's local source attaches
+  // ASYNCHRONOUSLY, so for a moment after the tap `el.src` is still the
+  // previous episode — and the source effect has just reset `lastTick`, so that
+  // file's next `timeupdate` becomes the NEW episode's `positionSec`. The resume
+  // writer then saves the old time under the new episode (a jump of 10 s or
+  // more is a periodic write). `pendingLocalSrc` in `<Player>` is the guard.
+  //
+  // Real audio is needed for `timeupdate`s, and none from the network: two
+  // 60-second silent WAVs generated in the page, seeded exactly where
+  // `download-manager` would put them. The second one's local read is delayed
+  // 1.5 s, because the real one is 10–300 ms and would make this a coin toss.
+  // Its own browser, with autoplay, so no earlier section's state is in play.
+  const { page: p2 } = await launchChrome({ name: 'downloads-pair', autoplay: true, args: ['--window-size=1200,900'] });
+  const ex2 = [];
+  p2.on((m) => { if (m.method === 'Runtime.exceptionThrown') ex2.push(m.params.exceptionDetails?.exception?.description ?? ''); });
+  await p2.send('Page.enable'); await p2.send('Runtime.enable');
+  await p2.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(4000);
+  const FEED = 'e2e-pair-feed-guid';
+  const A = { url: 'https://example.invalid/pair-a.wav', guid: 'e2e-pair-a', title: 'Pair A', id: 910000001 };
+  const B = { url: 'https://example.invalid/pair-b.wav', guid: 'e2e-pair-b', title: 'Pair B', id: 910000002 };
+  const seeded = await p2.js(`
+    (async () => {
+      const wav = (sec, rate = 8000) => {
+        const n = sec * rate, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+        v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+        v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true);
+        v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+        return new Blob([buf], { type: 'audio/wav' });
+      };
+      const cache = await caches.open('bmb-downloads-v1');
+      const db = await new Promise((res, rej) => { const r = indexedDB.open('BmbDownloadsDB'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      let t = 1;
+      for (const e of [${JSON.stringify(A)}, ${JSON.stringify(B)}]) {
+        const blob = wav(60);
+        await cache.put(e.url, new Response(blob, { headers: { 'content-type': 'audio/wav' } }));
+        await new Promise((res, rej) => {
+          const tx = db.transaction('downloads', 'readwrite');
+          tx.objectStore('downloads').put({
+            key: e.url, enclosureUrl: e.url, enclosureType: 'audio/wav', sizeBytes: blob.size,
+            createdAt: t++, itemGuid: e.guid, feedGuid: ${JSON.stringify(FEED)}, feedId: 424242,
+            episodeId: e.id, title: e.title, feedTitle: 'E2E Pair Show', duration: 60,
+          });
+          tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+        });
+      }
+      return (await cache.keys()).length;
+    })()
+  `);
+  check('two WAV downloads seeded', seeded >= 2, true);
+  await p2.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(4000);
+
+  const playRow = (title) => p2.js(`(() => { const b = document.querySelector('button[aria-label="Play ${title}"]'); b && b.click(); return !!b; })()`);
+  const audio = () => p2.js(`(() => { const a = document.querySelector('audio'); return a ? { t: a.currentTime, paused: a.paused, blob: a.src.startsWith('blob:'), ready: a.readyState } : null; })()`);
+
+  check('Pair A has a Play control', await playRow('Pair A'), true);
+  await p2.until(`(() => { const a = document.querySelector('audio'); return a && a.readyState >= 1 && !a.paused && a.src.startsWith('blob:'); })()`, 10000);
+  // Past the 15 s write floor, so A has a place worth saving.
+  await p2.js(`(() => { document.querySelector('audio').currentTime = 20; return true; })()`);
+  await wait(1500);
+  const a1 = await audio();
+  check('A plays from local bytes, at ~20 s', !!a1 && a1.blob && !a1.paused && a1.t >= 20 && a1.t < 25, true);
+
+  // Record EVERY write, not the endpoint: the fault is a transient.
+  await p2.js(`(() => {
+    window.__resumeWrites = [];
+    const orig = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) { if (k === 'bmb:resume') window.__resumeWrites.push(v); return orig.call(this, k, v); };
+    const match = Cache.prototype.match;
+    Cache.prototype.match = function (req, opts) {
+      const u = typeof req === 'string' ? req : req.url;
+      const hit = match.call(this, req, opts);
+      return u && u.includes('pair-b') ? new Promise((r) => setTimeout(() => r(hit), 1500)) : hit;
+    };
+    return true;
+  })()`);
+  check('Pair B has a Play control', await playRow('Pair B'), true);
+  await wait(5000);
+  const b1 = await audio();
+  const writes = await p2.js(`(window.__resumeWrites || []).map((v) => { try { return JSON.parse(v); } catch { return null; } })`);
+  const at = (m, guid) => { if (!m) return null; const k = Object.keys(m).find((k) => k.endsWith('::' + guid)); return k ? m[k].t : null; };
+  const bTimes = (writes || []).map((m) => at(m, B.guid)).filter((t) => t !== null);
+  const aTimes = (writes || []).map((m) => at(m, A.guid)).filter((t) => t !== null);
+  check('B plays from its own start once its source attaches', !!b1 && b1.blob && b1.t < 10, true);
+  check('A was saved at ~20 s when B replaced it', aTimes.some((t) => t >= 20 && t < 25), true);
+  check("B never had A's time written under it", bTimes.filter((t) => t >= 15), []);
+  check('no uncaught exceptions in the pair browser', ex2, []);
+  await p2.close();
+}
+
 check('no uncaught exceptions overall', exceptions, []);
-console.log(fails ? `\nDOWNLOADS E2E FAILED (${fails})` : '\nDOWNLOADS E2E OK');
-chrome.kill();
-process.exit(fails ? 1 : 0);
+console.log(t.fails ? `\nDOWNLOADS E2E FAILED (${t.fails})` : '\nDOWNLOADS E2E OK');
+await exit(t.fails ? 1 : 0);
