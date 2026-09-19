@@ -917,6 +917,7 @@ On the note card the control is a **sibling of the heart**, on the heart's own `
 
 **Refusals are shared rather than repeated**, and they are what would drift if these were inline buttons: an unresolved row, a live broadcast, a missing podcast, and a full queue each withhold or disable the control, and the store refuses the same four again. A `liveStatus: 'pending'` item has no audio at all, and a live enclosure's relevance expires while it sits in a queue.
 
+
 #### Two consequences worth knowing
 
 **Playlist paging.** `<EpisodeList>` prefetches the next page when the *playing* track nears the end of the current one, and bails when the playing item is not in that list. While a queued item plays it usually is not, so no page is fetched — correct, since a page is a real PI quota spend and nobody is listening down that list. And if a playlist row is *also* queued, ⏭ leaves the playlist for the queue, so the "must not run out of PAGE" rule is bypassed for that item. Both are the intended precedence and both are invisible.
