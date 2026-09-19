@@ -748,9 +748,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               connecting a wallet updates the picker underneath without losing
               the amount or the message the user has typed. */}
           {/* RENDERED IN BOTH STATES, and the `!rail` gate it used to carry was
-              the bug. Once the Wallet tab left the dock this became the only
-              route to the wallet from <FullscreenPlayer> — which is `fixed
-              h-[100dvh] z-50` and covers <AppHeader> on every route — and from
+              the bug. Once the Wallet tab left the dock this became a route
+              to the wallet from <FullscreenPlayer> — which is `fixed
+              h-[100dvh] z-50` and covers <AppHeader> on every route; its
+              `overlay` <AuthControl> (#413) is the other — and from
               /stream/<naddr>, /npub/<npub> and /live/<npub>, which render no
               header at all. Gated on `!rail`, somebody who HAS a wallet and
               wants to change or top up the one about to pay had nowhere to go
