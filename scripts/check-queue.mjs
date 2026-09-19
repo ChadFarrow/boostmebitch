@@ -56,6 +56,7 @@ import {
   epKey,
   LISTEN_QUEUE_CAP,
   nextPlayableIndexBy,
+  playsAsTracks,
   queueShowFor,
   trimForQueue,
 } from '../lib/util.ts';
@@ -91,6 +92,12 @@ function checkShow(label, args, expected, { alsoNaive = false } = {}) {
   const p = queueShowFor(...args);
   compare(label, { guid: p.podcastGuid, title: p.title, value: !!p.value }, expected);
   vectors.push({ label, kind: 'show', args, alsoNaive });
+}
+
+/** Does the RECORDED show make the item behave as a track? */
+function checkPlays(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, playsAsTracks(queueShowFor(...args)), expected);
+  vectors.push({ label, kind: 'plays', args, alsoNaive });
 }
 
 /** A nextPlayableIndexBy vector. */
@@ -158,6 +165,27 @@ checkShow('with no feedTitle it falls back to the track title, never the playlis
   [{ guid: 'e4', id: 4, feedId: 778, podcastGuid: 'other-guid', title: 'Just The Track' }, PLAYLIST],
   { guid: 'other-guid', title: 'Just The Track', value: false });
 
+// A track keeps being a TRACK when its container is swapped out. Measured
+// 2026-09-19 through /api/search: "Homegrown Hits Music Playlist" is feed
+// 7443404, guid 8aad8bd9-…, `musicL`, and every row names another feed. With
+// `medium: undefined` on the recorded show, `playsAsTracks` answered false:
+// the song became RESUMABLE (#414 writes `bmb:resume` for it and brings it back
+// mid-song), did not auto-advance as a track, and streamed labelled as the
+// show (`streamAction` → 'stream'). A `podcastL` row must stay an episode.
+const MUSIC_PLAYLIST = { id: 7443404, podcastGuid: '8aad8bd9-0eac-4bfe-b290-6c73f7148155', title: 'Homegrown Hits Music Playlist', medium: 'musicL' };
+const PODCAST_PLAYLIST = { id: 201, podcastGuid: 'podcast-playlist-guid', title: 'A Podcast Playlist', medium: 'podcastL' };
+const MUSIC_ALBUM = { id: 101, podcastGuid: 'album-guid', title: 'The Album', medium: 'music' };
+checkPlays('a musicL track from another feed is still a track',
+  [{ guid: 't1', id: 11, feedId: 555, podcastGuid: 'track-album-guid', feedTitle: 'Real Album' }, MUSIC_PLAYLIST], true);
+checkPlays('an album track is a track', [{ guid: 't2', id: 12, feedId: 101, podcastGuid: 'album-guid' }, MUSIC_ALBUM], true,
+  { alsoNaive: true });
+checkPlays('a musicL row with no guid of its own keeps the container, and is a track',
+  [{ guid: 't3', id: 13, feedId: 7443404 }, MUSIC_PLAYLIST], true, { alsoNaive: true });
+// Must-still-work: a podcast playlist is a list of EPISODES (docs/feeds.md).
+checkPlays('a podcastL episode from another feed stays an episode',
+  [{ guid: 'p1', id: 21, feedId: 556, podcastGuid: 'some-show-guid', feedTitle: 'Some Show' }, PODCAST_PLAYLIST], false,
+  { alsoNaive: true });
+
 // ---------------------------------------------------------------------------
 section('nextPlayableIndexBy: the walk that skips rows which would play silence');
 // ---------------------------------------------------------------------------
@@ -205,6 +233,12 @@ section('Every vector above is replayed against the obvious wrong version');
   // Also not an invention: the pass-through that shipped. Right whenever the
   // container really is the parent, wrong for every playlist track.
   const naiveShow = (_episode, podcast) => podcast;
+  // What shipped with the container rule: the refusal cleared `medium`, so a
+  // recorded show from another feed was never a track.
+  const naivePlays = (episode, podcast) => {
+    const guid = episode.podcastGuid || podcast.podcastGuid;
+    return !!podcast.podcastGuid && podcast.podcastGuid === guid ? playsAsTracks(podcast) : false;
+  };
 
   // What someone writes when the step looks like arithmetic. It hands back a
   // dead row, which reports as playing and is silent.
@@ -225,6 +259,8 @@ section('Every vector above is replayed against the obvious wrong version');
           const p = real ? queueShowFor(...v.args) : naiveShow(...v.args);
           return JSON.stringify({ guid: p.podcastGuid, title: p.title, value: !!p.value });
         }
+        case 'plays':
+          return JSON.stringify(real ? playsAsTracks(queueShowFor(...v.args)) : naivePlays(...v.args));
         case 'walk':
           return JSON.stringify(real ? nextPlayableIndexBy(...v.args) : naiveWalk(...v.args));
         default: throw new Error(`unknown vector kind ${v.kind}`);

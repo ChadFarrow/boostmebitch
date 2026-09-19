@@ -201,7 +201,12 @@ export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
     url: undefined,
     image: episode.feedImage,
     artwork: episode.feedImage,
-    medium: undefined,
+    // The container's medium says what KIND of item it lists, which is the one
+    // fact about it that is true of the track too: a `musicL` playlist lists
+    // songs. Clearing it made every queued playlist track answer
+    // `playsAsTracks` false — resumable mid-song (#414), no track behaviour, and
+    // streamed labelled as the show. A `podcastL` row stays an episode.
+    medium: playsAsTracks(podcast) ? 'music' : undefined,
     value: undefined,
   };
 }
