@@ -15,11 +15,34 @@ import type { Episode, Podcast } from '@/lib/types';
 type Size = 'sm' | 'tile';
 
 // The `'sm'` branch keeps `min-h-[44px] min-w-[44px]` even though its only
-// consumer today — the episode row — wraps it in `hidden sm:inline-flex`, so
-// the mobile minimum never applies there. It is `<FavHeart>`'s `'sm'` shape
-// byte for byte, and the next surface to use this size may well be one that
-// shows below `sm:`. Removing it would leave that surface under the 44px floor
-// with nothing saying it ever had one.
+// consumer today — the episode row — shows it from `lg:` only (below that it
+// is a `'tile'` in the row's `⋯` menu), so the mobile minimum never applies
+// there. It is `<FavHeart>`'s `'sm'` shape byte for byte, and the next surface
+// to use this size may well be one that shows below `sm:`. Removing it would
+// leave that surface under the 44px floor with nothing saying it ever had one.
+
+/**
+ * Whether this episode is in the listen queue.
+ *
+ * **A BOOLEAN, never the array.** `useApp((s) => s.listenQueue)` returns a
+ * fresh reference on every queue mutation, so every mounted row and every
+ * memoized <NoteCard> re-renders on each press — two hundred of them in a
+ * feed. A boolean compares with Object.is, so only the card whose answer
+ * actually flipped re-renders. Exported so the episode row's "in queue" mark
+ * on a phone reads the same expression as this button.
+ */
+/**
+ * Whether `<QueueButton>` renders at all — see the refusal inside it. Exported
+ * so the episode row's `⋯` menu can tell it would open empty.
+ */
+export function canQueueEpisode(episode: Episode, podcast?: Podcast | null): podcast is Podcast {
+  return !!podcast && isPlayableRow(episode) && !episode.liveStatus;
+}
+
+export function useEpisodeQueued(episode: Episode): boolean {
+  const key = epKey(episode);
+  return useApp((s) => s.listenQueue.some((i) => epKey(i.episode) === key));
+}
 
 export function QueueButton({
   episode,
@@ -34,13 +57,8 @@ export function QueueButton({
   label?: string;
 }) {
   const key = epKey(episode);
-
-  // **A BOOLEAN, never the array.** `useApp((s) => s.listenQueue)` returns a
-  // fresh reference on every queue mutation, so every mounted row and every
-  // memoized <NoteCard> re-renders on each press — two hundred of them in a
-  // feed. A boolean compares with Object.is, so only the card whose answer
-  // actually flipped re-renders. The same applies to `full`.
-  const queued = useApp((s) => s.listenQueue.some((i) => epKey(i.episode) === key));
+  const queued = useEpisodeQueued(episode);
+  // A boolean for the same reason as `queued` — see `useEpisodeQueued`.
   const full = useApp((s) => s.listenQueue.length >= LISTEN_QUEUE_CAP);
   const enqueueEpisode = useApp((s) => s.enqueueEpisode);
   const removeFromQueue = useApp((s) => s.removeFromQueue);
@@ -50,7 +68,7 @@ export function QueueButton({
   // control" refusal <FavEpisodeHeart> makes. A row that cannot play, or a live
   // broadcast, is refused by the store too; withholding the control as well is
   // what stops a button that looks live from doing nothing.
-  if (!podcast || !isPlayableRow(episode) || episode.liveStatus) return null;
+  if (!canQueueEpisode(episode, podcast)) return null;
 
   const atCap = full && !queued;
   const name = label ?? episode.title;
@@ -90,8 +108,9 @@ export function QueueButton({
           characters on press moves everything to its left.
 
           It is not hidden below sm: any more. The one surface where that width
-          is tight is the episode row, and that row now hides this control
-          outright below sm: rather than shrinking it — see the note there. */}
+          was tight is the episode row, and below lg: that row now moves this
+          control into its `⋯` menu rather than shrinking it — see
+          <EpisodeRowMenu>. */}
       <span>QUEUE</span>
     </button>
   );

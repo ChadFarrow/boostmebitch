@@ -5,21 +5,23 @@ import { downloadManager } from '@/lib/downloads/download-manager';
 import { useAnchoredMenu } from '../use-anchored-menu';
 import { FavEpisodeHeart, canFavoriteEpisode, useEpisodeFavorited } from '../fav-heart';
 import { DownloadButton, DownloadMark } from '../download-button';
+import { QueueButton, canQueueEpisode, useEpisodeQueued } from '../queue-button';
 
 /**
- * The episode row's `⋯` below lg: — FAV and DOWNLOAD, as the same `.tile`s
- * the episode page's action row draws, in a menu.
+ * The episode row's `⋯` below lg: — QUEUE, FAV and DOWNLOAD, as the same
+ * `.tile`s the episode page's action row draws, in a menu.
  *
  * WHY A MENU. On one line the title column paid for every button: ⚡,
  * DOWNLOAD and ♡ at 44px each left it 108px at 390px ("Episode 459 ..."), and
- * from sm: the words took it to 91px at 640. Only BOOST stays on the row.
+ * from sm: the words took it to 2px at 640. Only BOOST stays on the row.
  *
  * THE TILES ARE THE SHARED CONTROLS, not menu items that re-implement them.
  * `<FavEpisodeHeart>` carries the container-is-not-the-parent rule and the
- * favorites sync; `<DownloadButton>` the five states and the error sentence.
- * A second copy of either in menu-item form is exactly where those would
- * drift. The menu stays open after a press, so the tile's own state change —
- * heart filled, the progress fill — is the confirmation.
+ * favorites sync; `<DownloadButton>` the five states and the error sentence;
+ * `<QueueButton>` the cap. A second copy of any of them in menu-item form is
+ * exactly where those would drift. The menu stays open after a press, so the
+ * tile's own state change — heart filled, ✓ QUEUE, the progress fill — is the
+ * confirmation.
  *
  * ITS CLICKS STOP AT THE MENU. React propagates a synthetic event through a
  * PORTAL to the component that rendered it, so a press on the menu's padding
@@ -39,9 +41,10 @@ export function EpisodeRowMenu({
   const { open, setOpen, triggerRef, menuRef, at } = useAnchoredMenu();
   // NO TRIGGER WHEN THE MENU WOULD BE EMPTY — a `⋯` that opens onto nothing is
   // a dead control. Asked through each control's own refusal, never a copy of
-  // it: an unresolved playlist row has no enclosure, so DOWNLOAD refuses it,
-  // while its heart may still render off the remote item's guids.
+  // it: an unresolved playlist row has no enclosure, so QUEUE and DOWNLOAD
+  // refuse it, while its heart may still render off the remote item's guids.
   if (
+    !canQueueEpisode(episode, podcast) &&
     !canFavoriteEpisode(episode, podcast) &&
     !downloadManager.canDownload(episode)
   ) return null;
@@ -75,7 +78,8 @@ export function EpisodeRowMenu({
           className="fixed w-60 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-40 shadow-xl grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2"
           style={{ top: at.top, bottom: at.bottom, right: at.right }}
         >
-          {/* The episode page's order. */}
+          {/* The episode page's order: QUEUE first, beside what plays. */}
+          <QueueButton episode={episode} podcast={podcast} size="tile" />
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
         </div>,
@@ -86,15 +90,16 @@ export function EpisodeRowMenu({
 }
 
 /**
- * What the `⋯` menu hides, said on the row's date line: favorited,
- * downloaded or downloading. Without it a phone showed the state of neither
- * until the menu was opened, and a download running for minutes showed its
- * progress nowhere. Each reads the SAME expression as its control.
+ * What the `⋯` menu hides, said on the row's date line: favorited, queued,
+ * downloaded or downloading. Without it a phone showed the state of none of
+ * the three until the menu was opened, and a download running for minutes
+ * showed its progress nowhere. Each reads the SAME expression as its control.
  * Nothing for an episode in none of those states — a mark on every row would
  * be noise.
  */
 export function EpisodeRowMarks({ episode }: { episode: Episode }) {
   const fav = useEpisodeFavorited(episode);
+  const queued = useEpisodeQueued(episode);
   return (
     <>
       {fav && (
@@ -103,6 +108,7 @@ export function EpisodeRowMarks({ episode }: { episode: Episode }) {
           <span className="sr-only">favorited</span>
         </span>
       )}
+      {queued && <span className="text-bone/80 whitespace-nowrap">· in queue</span>}
       <DownloadMark episode={episode} />
     </>
   );
