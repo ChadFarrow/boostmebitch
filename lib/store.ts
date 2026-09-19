@@ -627,7 +627,9 @@ function queueStepTo(s: AppState, qIdx: number, step: 1 | -1): Partial<AppState>
     ...(step === 1 ? { listenQueue: s.listenQueue.filter((_, i) => i !== qIdx) } : null),
     current: { episode: item.episode, podcast: item.podcast },
     isPlaying: true,
-    positionSec: 0,
+    // Same resume rule as `play()` and the episode-list `stepTo`. Each item
+    // carries its own show, so the saved place is looked up against THAT.
+    positionSec: savedStartSec(item.episode, item.podcast),
     videoMode: false,
   };
 }
@@ -780,7 +782,7 @@ export const useApp = create<AppState>((set, get) => ({
       return {
         current: { episode: item.episode, podcast: item.podcast },
         isPlaying: true,
-        positionSec: 0,
+        positionSec: savedStartSec(item.episode, item.podcast),
         videoMode: false,
       };
     }),
@@ -791,7 +793,9 @@ export const useApp = create<AppState>((set, get) => ({
       if (!isPlayableRow(head.episode)) return {};
       return {
         current: { episode: head.episode, podcast: head.podcast },
-        positionSec: 0,
+        // Revealed, not playing — but the press that starts it should land
+        // where the listener left it, like any other `play()`.
+        positionSec: savedStartSec(head.episode, head.podcast),
         videoMode: false,
       };
     }),
@@ -830,7 +834,7 @@ export const useApp = create<AppState>((set, get) => ({
       listenQueueSaved: persistQueue(s.identity, rest),
       current: { episode: item.episode, podcast: item.podcast },
       isPlaying: true,
-      positionSec: 0,
+      positionSec: savedStartSec(item.episode, item.podcast),
       videoMode: false,
     });
     return true;
