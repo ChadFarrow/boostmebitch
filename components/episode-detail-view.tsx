@@ -20,6 +20,7 @@ import { CopyLinkButton } from './copy-link-button';
 import { BoltIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart } from './fav-heart';
+import { DownloadButton } from './download-button';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
 // download match that condition. `.then((m) => m.BoostModal)` because it is a
@@ -360,6 +361,7 @@ export function EpisodeDetailView() {
             share of whatever that is. */}
         <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
+          <DownloadButton episode={episode} podcast={podcast} size="tile" />
           <EpisodeShareButton episode={episode} podcast={podcast} />
           {/* Streaming is a SHOW-scoped setting, so this edits the same keys as
               the show header's STREAM — it's here because this is the page a

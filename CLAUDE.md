@@ -43,6 +43,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent screen, Vercel env vars |
 | [`docs/testing.md`](docs/testing.md) | Running `build` and `dev` against one `.next`, any session that tests favorites, mutes, follows or the profile, and any `scripts/e2e-*` or `scripts/cdp.mjs` |
 | [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, **both** `android/twa-manifest*.json` and `zapstore*.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest*.json` |
+| [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, and `<Player>`'s local-source branch — the worker is network-first, which is NOT precaching |
 
 ## Names
 
@@ -67,7 +68,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias `@/*` → repo root.
 
-**Forty-one `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Forty-two `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -110,12 +111,13 @@ npm run dev / build / start / lint
 | `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser walks a document with | 1 MB of `<!--` pins a lambda for a minute |
 | `check:cappedbody` | `lib/capped-body.ts` — the capped readers, server AND browser | an uncapped `arrayBuffer` fills the heap from one feed |
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, `clientTag`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |
+| `check:downloads` | `downloadKey` (idempotence), `isDownloadable`, `roomVerdict` | a download nothing can find; a full origin that fails every settings write |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
 **`services/nostr-index` has its own checks and this repo's `check:*` do not run them** — `cd services/nostr-index && npm run typecheck && DATABASE_URL=... npm run verify`. → [`docs/nostr-index.md`](docs/nostr-index.md)
 
-**The import-free arrangement is enforced, not just documented.** `favorites-list.ts`, `read-trust.ts`, `lease.ts`, `assetlinks.ts`, `amber-callback-url.ts`, `amber-safe-text.ts`, `gif-first-frame.ts`, `chapters-json.ts`, `value-playback-summary.ts`, `mute-state.ts`, `mention-tags.ts`, `brand.ts`, `bounded-cache.ts`, `capped-body.ts`, `zap-receipt-match.ts`, `zap-request.ts`, `nip46-errors.ts`, `clave.ts` and `primal.ts` must have no imports at all, and `nwc-errors.ts`, `favorites-export.ts` and `relay-socket.ts` only bare npm ones, because that is what lets a check script load the shipping module under plain Node. `scripts/import-free.mjs` scans for it and the nineteen check scripts that pin those modules call it. **`mute-state.ts` is why the rule shapes the code, not just the check**: `MuteCipher` and `classifyMuteContent` live beside `MuteListState` rather than in a leaf of their own, because a second leaf would need an `import type` the scan rejects. **The scan rejects type-only relative imports too** — `import type` is erased by type-stripping, so it passes every other check while leaving the module one `type` deletion from breaking.
+**The import-free arrangement is enforced, not just documented.** `favorites-list.ts`, `read-trust.ts`, `lease.ts`, `assetlinks.ts`, `amber-callback-url.ts`, `amber-safe-text.ts`, `gif-first-frame.ts`, `chapters-json.ts`, `value-playback-summary.ts`, `mute-state.ts`, `mention-tags.ts`, `brand.ts`, `bounded-cache.ts`, `capped-body.ts`, `zap-receipt-match.ts`, `zap-request.ts`, `nip46-errors.ts`, `clave.ts`, `primal.ts` and `downloads/download-rules.ts` must have no imports at all, and `nwc-errors.ts`, `favorites-export.ts` and `relay-socket.ts` only bare npm ones, because that is what lets a check script load the shipping module under plain Node. `scripts/import-free.mjs` scans for it and the twenty check scripts that pin those modules call it. **`mute-state.ts` is why the rule shapes the code, not just the check**: `MuteCipher` and `classifyMuteContent` live beside `MuteListState` rather than in a leaf of their own, because a second leaf would need an `import type` the scan rejects. **The scan rejects type-only relative imports too** — `import type` is erased by type-stripping, so it passes every other check while leaving the module one `type` deletion from breaking.
 
 Each **imports the real module** via `node --experimental-strip-types`: a copy passes green while shipping code drifts. Each carries a *must-still-work* half: over-blocking is a regression too. **Vectors were generated by the shipping code; if one fails, fix the code — never edit the vector to match.**
 
