@@ -447,14 +447,41 @@ export const MAX_UNBOUNDED_LIVE_SECS = 24 * 60 * 60;
  *  and this is the line between them. */
 export const LIVE_OVERRUN_GRACE_SECS = 6 * 60 * 60;
 
+/**
+ * A `<podcast:liveItem>` timestamp in unix seconds, or `undefined` when the
+ * source did not supply one.
+ *
+ * **NON-POSITIVE IS ABSENT, and that is a Podcast Index fact rather than
+ * defensive taste.** PI omits no field. It answers an absent string with `""`
+ * — which is why `buildEpisode` reads `image` with `||` — and an absent number
+ * with `0`, which is why `season` is already read as
+ * `typeof … === 'number' && > 0`. `startTime` and `endTime` had no such guard,
+ * so a live row for a broadcast that declares no `end` arrived as
+ * `endTime: 0`: a finite number, and by the clock a broadcast that finished in
+ * 1970. `liveBroadcastIsOver` then dropped it as a forgotten flag, and it
+ * dropped EVERY such row in the same pass — so `getGlobalLiveItemsDetailed`
+ * returned nothing, the global roster named no feed, and `/live` said nothing
+ * was broadcasting over shows that were on air. That is the `rosterRows > 0`
+ * with `rosterKept === 0` case the three counters were added to separate, and
+ * it is this.
+ *
+ * The same answer serves the RSS parser, where `end="1970-01-01T00:00:00Z"`
+ * parses to the identical 0: no real broadcast carries a stamp at or before the
+ * epoch, so reading one as a time is never right in either source.
+ */
+export function liveStampSecs(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
 export function liveBroadcastIsOver(
   item: { status?: string; startTime?: number; endTime?: number },
   nowSec: number,
 ): boolean {
-  const finite = (v: number | undefined) =>
-    typeof v === 'number' && Number.isFinite(v) ? v : undefined;
-  const startTime = finite(item.startTime);
-  const endTime = finite(item.endTime);
+  // Coerced here as well as at both parse boundaries, deliberately. This is the
+  // function that turns a stamp into "off the page", so it must not depend on
+  // every present and future caller having cleaned Podcast Index's zeros first.
+  const startTime = liveStampSecs(item.startTime);
+  const endTime = liveStampSecs(item.endTime);
   const onAir = item.status?.toLowerCase() === 'live';
 
   if (endTime !== undefined) {

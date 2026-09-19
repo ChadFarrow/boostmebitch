@@ -189,7 +189,11 @@ export async function GET(req: Request) {
     // limiting, `withErrorHandling` turns that into 429/408/500 — never an
     // empty 200, which would tell the page nobody is broadcasting. An empty
     // list is a CLAIM, and this is the layer that must not make it falsely.
-    const { items: roster, rawRows: rosterRows } = await getGlobalLiveItemsDetailed();
+    const {
+      items: roster,
+      rawRows: rosterRows,
+      statusRows: rosterStatus,
+    } = await getGlobalLiveItemsDetailed();
 
     /**
      * WHY THREE ROSTER COUNTS ARE IN THE RESPONSE.
@@ -209,11 +213,16 @@ export async function GET(req: Request) {
      *                   every one — its `status` test, or the payload shape.
      *                   That fix is small and restores the tab for everyone.
      *
-     * So three numbers, narrowing: `rosterRows` is what PI sent, counted inside
-     * `getGlobalLiveItemsDetailed` before either of its filters; `rosterKept`
-     * is what survived them; `rosterFeeds` is how many distinct feeds those
-     * rows named. `rosterRows > 0` with `rosterKept === 0` names our filter as
-     * the culprit, and nothing else can.
+     * So four numbers, narrowing: `rosterRows` is what PI sent, counted inside
+     * `getGlobalLiveItemsDetailed` before either of its filters; `rosterStatus`
+     * is what survived the `status` test alone; `rosterKept` is what survived
+     * both; `rosterFeeds` is how many distinct feeds those rows named.
+     * `rosterRows > 0` with `rosterKept === 0` names our filter as the culprit,
+     * and nothing else can — and `rosterStatus` then says WHICH of the two
+     * filters it was, because they need unrelated fixes. That last split is not
+     * hypothetical: `rosterStatus > 0, rosterKept === 0` is the shape a Podcast
+     * Index `endTime: 0` produced, a live broadcast judged as one that finished
+     * in 1970 (`liveStampSecs`, lib/util.ts).
      *
      * No amount of looking at the page distinguishes these, which is why this
      * took a bug report, a merged PR against the wrong cause, and a hand-pasted
@@ -303,7 +312,7 @@ export async function GET(req: Request) {
       // feeds of their own. That IS an answer, so it is cacheable — unlike
       // every branch where we could not ask.
       return NextResponse.json(
-        { items: [], unverifiedFeeds: 0, truncated: false, rosterRows, rosterKept: roster.length, rosterFeeds: 0 },
+        { items: [], unverifiedFeeds: 0, truncated: false, rosterRows, rosterStatus, rosterKept: roster.length, rosterFeeds: 0 },
         { headers: LIVE_SHOWS_CACHE },
       );
     }
@@ -411,7 +420,7 @@ export async function GET(req: Request) {
     rememberLiveFeeds(wentLive, now);
 
     return NextResponse.json(
-      { items, unverifiedFeeds, truncated, rosterRows, rosterKept: roster.length, rosterFeeds: rosterIds.length },
+      { items, unverifiedFeeds, truncated, rosterRows, rosterStatus, rosterKept: roster.length, rosterFeeds: rosterIds.length },
       { headers: couldNotAskPi ? NO_STORE : personal ? PERSONAL_CACHE : LIVE_SHOWS_CACHE },
     );
   }, 'live-shows fetch failed');

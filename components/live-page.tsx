@@ -109,6 +109,12 @@ interface LiveShowsResponse {
   truncated: boolean;
   /** Rows Podcast Index sent for `/episodes/live`, before any filter of ours. */
   rosterRows?: number;
+  /** Those rows after the `status` test alone — the first of the two filters.
+   *  It is here so the two can be told apart from the response body: with
+   *  `rosterKept: 0`, a non-zero `rosterStatus` means the clock rule dropped
+   *  them and a zero means the `status` test did. Diagnostic only; nothing on
+   *  this page renders it. */
+  rosterStatus?: number;
   /** Those rows after `getGlobalLiveItemsDetailed`'s two filters. */
   rosterKept?: number;
   /** Distinct feeds those kept rows named — the global roster's real size. */
