@@ -131,6 +131,8 @@ Each **imports the real module** via `node --experimental-strip-types`: a copy p
 
 **"Testing locally" and "testing against local data" are DIFFERENT THINGS.** A dev server on localhost still publishes to the public relays under whatever npub is signed in — including the shared kind:10333 event another app reads, which keeps no history, so a bug found that way is found in production on someone else's device. A session touching favorites, mutes, follows or the profile uses `npm run relay` (in-memory NIP-01, WITH replaceable-event semantics), `npm run seed:relay -- <npub>` (a real list with history in it), `npm run e2e:favorites` or `npm run e2e:mutes` (a throwaway key over CDP, real NIP-44) — never a real account. **And a branch "N commits ahead of `main`" is NOT unfinished work**: a squash merge changes the patch id, so ask `gh pr list --state merged`. → [`docs/testing.md`](docs/testing.md)
 
+**Re-landing a REVERTED feature: compute what the revert touched — the conflict list will not.** A merge conflicts only where BOTH sides changed a file, so a revert's deletions land unopposed, on a green build. → [`docs/ops.md`](docs/ops.md)
+
 `.env.local`: `PODCAST_INDEX_KEY`/`SECRET` (server-only), `APP_NAME` (optional). The Spark rail needs **no** API key.
 
 ## Server vs client boundary (don't cross it)
