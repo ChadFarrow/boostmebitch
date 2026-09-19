@@ -1,5 +1,6 @@
 import { loadPlaylistPage, tripPiBreaker } from '@/lib/podcast-meta';
 import type { Podcast } from '@/lib/types';
+import { mapLimit, PI_FANOUT } from '@/lib/util';
 
 /**
  * The curated playlist collection: which feed it comes from, and how to read it.
@@ -215,7 +216,14 @@ export async function loadCollection(feedUrl: string): Promise<Collection | null
  */
 async function loadUrlList(urls: readonly string[]): Promise<Collection | null> {
   const wanted = [...new Set(urls)];
-  const resolved = await Promise.all(wanted.map(resolveFeedUrl));
+  // BOUNDED. `urls` comes from a playlist's remote items — third-party data — and
+  // each `resolveFeedUrl` reaches `/api/search`, so an unbounded start turns one
+  // caller into N parallel Podcast Index calls against our own quota and the
+  // per-IP limiter. `PI_FANOUT` because Podcast Index is what is being
+  // protected; a count cap on the list would not have helped, since the cap
+  // decides how many are resolved and `Promise.all` still starts every one of
+  // them at once.
+  const resolved = await mapLimit(wanted, PI_FANOUT, resolveFeedUrl);
   const feeds = resolved.filter((f): f is Podcast => f !== null);
   // EVERY entry failing is a failed READ, not an empty collection — an empty
   // state is a claim, and `[]` here may only ever mean the list itself is empty.
