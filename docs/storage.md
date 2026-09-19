@@ -70,6 +70,8 @@ localStorage fixes that and puts the record on disk, so the tab lifetime — the
 
 **Not in `localStorage`:** the local-signer nsec, which lives in **IndexedDB** (`bmb-keys` / `keys`) as `{ iv, ct }` plus a non-extractable AES-GCM `CryptoKey`. Don't add a `bmb:*` accessor for it.
 
+**Also not in `localStorage`: downloads** (docs/downloads.md). The records live in **IndexedDB** `BmbDownloadsDB` / `downloads`, the bytes in the Cache API buckets `bmb-downloads-v1` (audio), `bmb-downloads-art-v1` and `bmb-downloads-doc-v1`, and the service worker's own caches are `bmb-sw-static-<build>` and `bmb-sw-pages-<build>`. None of them is a `bmb:*` key, so `EVICTABLE_PREFIXES` never touches them — and a rename strands every listener's library, which is why `e2e:downloads` opens them by NAME.
+
 **External:** the Spark mnemonic lives encrypted on Nostr as kind:30078. The `SparkWallet` keeps its own state (leaves, transfer history) keyed off the seed + `accountNumber`; we don't manage a storage dir for it.
 
 ## `safeSet` must never silently swallow a failed write

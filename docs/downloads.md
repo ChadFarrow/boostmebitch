@@ -396,15 +396,22 @@ following load and needs no intervention — but it is why the offline launch is
 "reliable once you have opened the app since the last deploy" rather than
 unconditional.
 
-## Running the e2e: kill the last browser first
+## Running the e2e
 
-`npm run e2e:downloads` refuses to start if anything already holds its debug
-port, and that guard exists because its absence cost a long session. A Chrome
-left over from an earlier run keeps both the port and the profile, so the new one
-exits on the locked profile and the harness quietly attaches to the **old**
-browser. Every assertion then runs against storage it was never told about, and
-the failure reads as *"the app wrote a record but no bytes"* — a shipping bug
-that is not there.
+`npm run e2e:downloads` runs against `npm run build && npm start` — the worker is
+registered only in a production build — and it goes through `scripts/cdp.mjs`
+like every other suite (docs/testing.md): a free debug port and a fresh profile
+per run, closed on any exit. That retired this file's old busy-port guard. A
+Chrome left over from an earlier run used to keep the fixed port and the
+profile, so the new one exited and the harness quietly attached to the **old**
+browser, and every assertion ran against storage it was never told about — the
+failure read as *"the app wrote a record but no bytes"*, a shipping bug that was
+not there. Nothing can attach to a port this run did not choose.
+
+Section 12 plays two downloads of one show back to back, from two WAVs it
+generates in the page, with the second one's local read delayed: the resume
+writer must never save the first episode's time under the second (docs/ui.md,
+Resume position).
 
 ## Failure is a sentence, not a ✗
 
@@ -467,10 +474,11 @@ something still waiting is honoured and never issues a fetch.
   boost works once the network is back; nothing is queued while it is not.
 - **Bulk download and auto-download.** Both spend the listener's data without a
   screen in front of them.
-- **Range requests and resume.** Resuming needs partial bytes kept somewhere, and a
+- **Range requests and resuming a partial download.** (Not the playback position,
+  which docs/ui.md calls "resume".) It needs partial bytes kept somewhere, and a
   half-written entry is the class of bug the Cache API's atomic `put` avoids
   entirely.
 - **A precaching service worker.** The section above is the argument: a
-  network-first worker is not precaching. The one exception is the shell at `/`,
-  which is precached because a first visit otherwise leaves nothing to open
-  offline with — and which is still only ever served when a fetch rejects.
+  network-first worker is not precaching. The two exceptions are the documents at
+  `/` and `/downloads`, precached because a first visit otherwise leaves nothing
+  to open offline with — and still only ever served when a fetch rejects.
