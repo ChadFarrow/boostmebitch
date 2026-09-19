@@ -40,6 +40,20 @@ export async function GET(req: Request) {
     const podcasts = await batchPodcasts(guids);
     return NextResponse.json(
       { podcasts },
+      // NO `max-age`, DELIBERATELY, and the reason is the same one CLAUDE.md
+      // records for `/api/episode-by-guid`: the client already holds these for
+      // seven days in `bmb:pmeta` / `bmb:epmeta`, so a private window buys
+      // nothing. The batch siblings were on the list of routes to "fix" in the
+      // audit that added `max-age` to `/api/search`, `/api/publisher`,
+      // `/api/remote-item` and `/api/keysend`; they were decided against that
+      // rule rather than by matching the header's shape.
+      //
+      // The real cost on this surface was never the header. `warmPodcastCache` /
+      // `warmEpisodeCache` filtered against their module-level memory maps only,
+      // and those are empty on every page load — so a returning reader issued
+      // six batch requests for records already on their own disk. They consult
+      // `storage.podcastMeta` / `storage.episodeMeta` now. That is the fix; a
+      // `max-age` here would have hidden it.
       { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },
     );
   }, 'batch lookup failed');
