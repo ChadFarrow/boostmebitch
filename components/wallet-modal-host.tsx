@@ -8,9 +8,13 @@ import { WalletModal } from './wallet-modal';
  * It used to be rendered inside `<AuthControl>`, and `walletOpen` is a store
  * flag any surface may flip. Those two facts only agreed while every surface
  * that flipped it lived in `<AppHeader>` — which renders on `/`, `/favorites`
- * and `/playlists` and nowhere else. The tab bar's Wallet tab renders on EVERY
+ * and `/playlists` and nowhere else. The dock's Wallet tab rendered on EVERY
  * route, so a tap on `/live/<npub>` or `/stream/<naddr>` would have set the
  * flag with nothing mounted to read it: no modal, no error, a dead control.
+ * The listen queue has since taken that tab's slot, and the reason to stay
+ * here did not leave with it: the boost modal's ⚡ WALLET button and the
+ * `overlay` `<AuthControl>` inside `<FullscreenPlayer>` flip the same flag from
+ * surfaces that have no header, on any route.
  * That is the same failure `<FavoritesPrivacyPrompt>` moved into the layout to
  * fix, and this is the same repair.
  *
