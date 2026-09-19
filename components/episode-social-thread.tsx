@@ -4,6 +4,7 @@ import {
   fetchSocialInteractThread,
   noteFromEvent,
   resolvePublishRelays,
+  useViewerReposts,
   type DiscoveredNote,
 } from '@/lib/nostr';
 import { publishReply } from '@/lib/nostr/interactions';
@@ -132,6 +133,18 @@ export function EpisodeSocialThread({
     [notes, mutedPubkeys],
   );
 
+  // WITHOUT THIS THE VIEWER CAN PUBLISH A SECOND kind:6, and kind:6 is not
+  // deletable in practice. `repostedIds` is an OPTIONAL prop on `<NoteCard>`, so
+  // omitting it type-checks and lints while `alreadyReposted` is false on every
+  // card and the repost control renders enabled over a note this account has
+  // already reposted. `<BoostExplorer>` is the surface CLAUDE.md records as
+  // having shipped that; this one had it too, and it is worse here on two
+  // counts: `<NoteCard>` forwards the prop down the reply tree, so the whole
+  // thread was unmarked rather than one card, and `<FullscreenPlayer>` mounts
+  // this from the ROOT LAYOUT — so it was reachable on every route while
+  // anything was playing, not only on `/`.
+  const repostedIds = useViewerReposts(visibleNotes, identity);
+
   // The root anchor always renders, so "comments" = total minus the top-level
   // note(s), not total minus 1.
   const total = visibleNotes ? countNotes(visibleNotes) : 0;
@@ -224,7 +237,7 @@ export function EpisodeSocialThread({
           {visibleNotes && visibleNotes.length > 0 && (
             <div className="space-y-3">
               {visibleNotes.map((n) => (
-                <NoteCard key={n.id} note={n} />
+                <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
               ))}
             </div>
           )}

@@ -36,15 +36,54 @@
  */
 export type UnderlineTab<T extends string> = { id: T; label: string };
 
+/**
+ * The props the CALLER's panel must carry, so the `role="tablist"` below is not
+ * a promise the markup breaks.
+ *
+ * `docs/ui.md` carried this as an open item: the strip declared
+ * `role="tablist"`/`role="tab"` "without the keyboard contract: no
+ * `aria-controls`, no `role="tabpanel"` on the panels, no roving `tabIndex`, no
+ * arrow keys." Three of those four were since done — the roving `tabIndex`, the
+ * arrows and Home/End are all below — and what was left is the part the strip
+ * CANNOT do alone: the panel is the caller's markup, so the association has to
+ * be handed out rather than rendered here.
+ *
+ * ONE panel id, not one per tab. Both call sites render a single pane at a time
+ * from a chain of `{active === 'x' && …}` siblings, so there is one logical panel
+ * whose contents swap; `aria-labelledby` follows the active tab and names which.
+ * Giving each tab its own panel id would describe a structure the DOM does not
+ * have.
+ *
+ * NO `tabIndex` on the panel. WAI-ARIA wants a tabpanel focusable only when it
+ * holds nothing focusable of its own, and these hold links, buttons, seek rows
+ * and a transcript — so adding one would insert a tab stop in front of all of
+ * them and make the keyboard worse in exchange for a conformance box.
+ */
+export function tabPanelProps<T extends string>(idBase: string, active: T) {
+  return {
+    id: `${idBase}-panel`,
+    role: 'tabpanel' as const,
+    'aria-labelledby': `${idBase}-tab-${active}`,
+  };
+}
+
 export function UnderlineTabs<T extends string>({
   tabs,
   active,
   onChange,
+  idBase,
   className = '',
 }: {
   tabs: UnderlineTab<T>[];
   active: T;
   onChange: (id: T) => void;
+  /**
+   * REQUIRED, and required on purpose: it is what links each tab to the panel.
+   * Pass a `useId()` from the caller, and spread `tabPanelProps(idBase, active)`
+   * on the element holding the panes. Making it optional would let a new call
+   * site type-check while re-opening the gap this closed.
+   */
+  idBase: string;
   className?: string;
 }) {
   return (
@@ -74,6 +113,8 @@ export function UnderlineTabs<T extends string>({
             key={t.id}
             type="button"
             role="tab"
+            id={`${idBase}-tab-${t.id}`}
+            aria-controls={`${idBase}-panel`}
             aria-selected={on}
             tabIndex={on ? 0 : -1}
             onClick={() => onChange(t.id)}

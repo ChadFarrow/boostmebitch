@@ -1,6 +1,6 @@
 'use client';
 import { CopyLinkButton } from './copy-link-button';
-import { cloneElement, useEffect, useRef, useState, type RefObject } from 'react';
+import { cloneElement, useEffect, useId, useRef, useState, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
@@ -33,7 +33,7 @@ import {
 } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { LinkedText } from './linked-text';
-import { UnderlineTabs } from './underline-tabs';
+import { UnderlineTabs, tabPanelProps } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
@@ -94,6 +94,10 @@ function EpisodeInfoPanel({
   chapterFallbackImg?: string;
 }) {
   const [tab, setTab] = useState<InfoTab>('about');
+  // `useId()`, per `<CollapsibleHeading>`'s stated contract for the same kind of
+  // wiring: the id must be unique per instance, and this component and
+  // `<EpisodeDetailView>` can both be mounted at once.
+  const tabsId = useId();
 
   const hasDescription = !!description;
   const hasTracks = !!splits?.length;
@@ -142,12 +146,19 @@ function EpisodeInfoPanel({
           className="mb-4"
           tabs={tabs.map((t) => ({ id: t, label: t === 'about' ? 'About' : label(t) }))}
           active={active}
+          idBase={tabsId}
           onChange={setTab}
         />
       ) : (
         <p className="text-[11px] uppercase tracking-widest text-muted mb-2">{label(active)}</p>
       )}
 
+      {/* THE PANEL the strip above points at. One element for all of it: only
+          one pane renders at a time, so this is one logical tabpanel whose
+          contents swap, and `tabPanelProps`' `aria-labelledby` names which tab is
+          showing. Without this the `role="tablist"` was a promise the markup
+          broke — see `tabPanelProps`. */}
+      <div {...tabPanelProps(tabsId, active)}>
       {active === 'about' && hasDescription && (
         <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words">
           {/* Bare URLs a feed wrote as plain text become real links — this pane
@@ -183,6 +194,7 @@ function EpisodeInfoPanel({
           loading={transcriptLoading}
         />
       )}
+      </div>
     </div>
   );
 }
