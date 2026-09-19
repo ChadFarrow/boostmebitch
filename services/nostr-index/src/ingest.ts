@@ -177,8 +177,34 @@ export function podcastRefs(event: Event): PodcastRefs {
 }
 
 /**
+ * The kinds whose author and p-tags may join the tracked set: the corpus
+ * itself — podcast notes, boostagrams and replies to them (kind:1), and live
+ * activities (kind:30311, whose authors `/feed/live` sends profiles for).
+ *
+ * NOT the kinds the tracked subscription delivers. That subscription asks for
+ * EVERY repost by a tracked author and every zap to one, whatever the topic, so
+ * letting what it returns widen the set it was built from is a feedback loop:
+ * a repost of anybody's note p-tags a stranger, the stranger joins the window,
+ * someone else falls out, the fingerprint changes and the whole tracked group
+ * is rebuilt on every relay — with no `since`, so each rebuild
+ * re-downloads history for 5,000 authors, some of which is new, some of which
+ * p-tags more strangers. Measured on production: 74 to 405 tracked rebuilds a
+ * day from the deploy on 2026-09-03, then from 2026-09-18 19:00 UTC about 35 an
+ * hour (666 in 19 hours), with index CPU 0.08 → 0.38 vCPU and egress
+ * 0.06 → 0.29 GB/h. It did not settle by itself.
+ *
+ * Nothing the app shows was lost by the narrowing. A repost's author is already
+ * tracked (it was asked for BY author), and its p-tag only matters when the
+ * reposted note is in the corpus, which tracks that author on its own. A zap
+ * receipt's p-tag is a pubkey the `#p` filter matched, so already tracked; its
+ * author is the LNURL server's key, and the zapper it wraps (`P`) was never
+ * tracked at all.
+ */
+export const TRACKED_SOURCE_KINDS: ReadonlySet<number> = new Set([1, LIVE_STREAM_KIND]);
+
+/**
  * Pubkeys worth subscribing to after seeing this event: its author, and
- * anyone it p-tags.
+ * anyone it p-tags — for a corpus event only (`TRACKED_SOURCE_KINDS`).
  *
  * This is what scopes the kind:9735 subscription. Zap receipts are only ever
  * needed for a pubkey some surface is already showing, so growing the set from
@@ -186,6 +212,7 @@ export function podcastRefs(event: Event): PodcastRefs {
  * for every zap on the network.
  */
 export function trackedFrom(event: Event): { pubkey: string; reason: string }[] {
+  if (!TRACKED_SOURCE_KINDS.has(event.kind)) return [];
   const out: { pubkey: string; reason: string }[] = [];
   const seen = new Set<string>();
   const add = (pk: unknown, reason: string) => {

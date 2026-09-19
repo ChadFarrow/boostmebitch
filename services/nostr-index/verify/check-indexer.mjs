@@ -94,6 +94,27 @@ ok(
   'the p-tagged pubkey is tracked, so its zaps can be indexed later',
 );
 
+// --- what the tracked subscription delivers must not widen it ---------------
+//
+// PK is tracked now (it wrote `live`), so the tracked subscription asks for its
+// reposts — ALL of them, whatever they repost. A repost p-tags the reposted
+// note's author. Letting that join the set is the loop production ran from its
+// first deploy: a stranger in, someone out, a full rebuild, more strangers.
+// The repost itself is stored; only its p-tag must not be tracked.
+const strangerPk = 'cd'.repeat(32);
+const repostOfStranger = sign({
+  kind: 6, created_at: NOW + 1, content: '',
+  tags: [['e', 'ef'.repeat(32)], ['p', strangerPk]],
+});
+await waitFor(async () => {
+  relay.push(repostOfStranger);
+  return (await count('select count(*)::int as n from events where id = $1', [repostOfStranger.id])) === 1;
+}, 'a repost by a tracked author arrived through the tracked subscription and was stored', 12_000);
+ok(
+  (await count('select count(*)::int as n from tracked_pubkeys where pubkey = $1', [strangerPk])) === 0,
+  'and the stranger it p-tags is NOT tracked',
+);
+
 // --- replies -----------------------------------------------------------------
 //
 // A reply is a kind:1 with an `e` tag to its parent and NOTHING else naming it
@@ -213,6 +234,74 @@ ok(h.subscriptions > 0, 'health reports live subscriptions');
 
 indexer.stop();
 await relay.close();
+
+// --- 004_tracked_from_corpus.sql ---------------------------------------------
+//
+// The migration that clears what the loop left behind. It already ran on the
+// empty database at the top of this file, which proves nothing, so it is run
+// again here over a table seeded the way production looked: every pubkey the
+// loop touched stamped `now()`, corpus and stranger alike.
+{
+  await db.query('truncate events, event_tags, profiles, tracked_pubkeys cascade');
+  const T = NOW - 30 * 86_400;
+  const skA = generateSecretKey(), A = getPublicKey(skA);    // corpus author
+  const skZ = generateSecretKey(), Z = getPublicKey(skZ);    // LNURL server
+  const skL = generateSecretKey(), L = getPublicKey(skL);    // live host
+  const skF = generateSecretKey(), F = getPublicKey(skF);    // future-dated note
+  const skD = generateSecretKey(), D = getPublicKey(skD);    // deleted note
+  const B = '1b'.repeat(32), C = '1c'.repeat(32), H = '1d'.repeat(32), X = '1e'.repeat(32);
+  const at = (sk, tpl) => finalizeEvent({ content: '', tags: [], ...tpl }, sk);
+  const deletedNote = at(skD, { kind: 1, created_at: T + 50, tags: [['k', 'podcast:guid']] });
+  const seed = [
+    at(skA, { kind: 1, created_at: T, tags: [['k', 'podcast:guid'], ['p', B]] }),
+    // LATER than A's note, and must not count: a repost is not corpus.
+    at(skA, { kind: 6, created_at: T + 100, tags: [['e', 'ef'.repeat(32)], ['p', C]] }),
+    at(skZ, { kind: 9735, created_at: T + 200, tags: [['p', A]] }),
+    at(skL, { kind: 30311, created_at: T + 300, tags: [['d', 's'], ['p', H, '', 'host']] }),
+    at(skF, { kind: 1, created_at: NOW + 10 * 86_400, tags: [['k', 'podcast:guid']] }),
+    deletedNote,
+    at(skD, { kind: 5, created_at: T + 60, tags: [['e', deletedNote.id]] }),
+  ];
+  const { ingestEvent, emptyStats } = await import('../src/store.ts');
+  for (const e of seed) await ingestEvent(db, e, emptyStats());
+  ok((await count(`select count(*)::int as n from events where id = $1 and deleted_at is not null`, [deletedNote.id])) === 1,
+     'seed: the kind:5 tombstoned its own note');
+
+  // The state the loop left: everyone the old rule would have written, all "now".
+  await db.query(
+    `insert into tracked_pubkeys (pubkey, reason) select unnest($1::text[]), 'author'
+     on conflict (pubkey) do update set seen_at = now()`,
+    [[A, B, C, Z, L, H, F, D, X]],
+  );
+
+  const { readFile } = await import('node:fs/promises');
+  const sql = await readFile(new URL('../migrations/004_tracked_from_corpus.sql', import.meta.url), 'utf8');
+  const client = await db.connect();
+  try {
+    await client.query('begin');
+    await client.query(sql);
+    await client.query('commit');
+  } finally {
+    client.release();
+  }
+
+  const rows = new Map((await db.query(
+    'select pubkey, extract(epoch from seen_at)::bigint as s from tracked_pubkeys',
+  )).rows.map((r) => [r.pubkey, Number(r.s)]));
+  const kept = (pk) => rows.has(pk);
+  ok(kept(A) && kept(B), '004 keeps a corpus note\'s author and the pubkey it p-tags');
+  ok(kept(L) && kept(H), '004 keeps a live activity\'s author and its p-tagged host');
+  ok(kept(D), '004 keeps the author of a DELETED note - a tombstone does not un-see them');
+  ok(!kept(C), '004 drops the stranger a repost p-tagged - the loop\'s own rows');
+  ok(!kept(Z), '004 drops a zap receipt\'s LNURL-server author');
+  ok(!kept(X), '004 drops a pubkey no stored event names at all');
+  ok(rows.get(A) === T,
+     `004 dates A by its NOTE (${T}), not by the later repost or the "now" the loop stamped (got ${rows.get(A)})`);
+  ok(rows.get(H) === T + 300, '004 dates a p-tagged host by the event that tagged it');
+  ok(kept(F) && rows.get(F) <= Math.floor(Date.now() / 1000) + 1,
+     '004 clamps a future-dated event to now(), so it cannot pin a pubkey to the top of the window');
+}
+
 await closePool();
 
 // ---------------------------------------------------------------------------

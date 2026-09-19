@@ -119,6 +119,29 @@ database is what let this service sit stalled for hours reporting `{ok:true}`.
   cached as a resolved feed for `piTtlHours` (default a week). The app's own
   reader guards this with `feed.id == null`, which is why it never surfaced there.
 
+## The tracked set grows from the corpus, never from itself
+
+`tracked_pubkeys` scopes the kind:0 / 6 / 5 / 9735 subscriptions, and its
+window is the 5,000 rows with the newest `seen_at`. `trackedFrom` used to add
+the author and every `p` tag of ANY stored event — including the reposts and zap
+receipts the tracked subscription itself delivers. A repost p-tags whoever wrote
+the reposted note, so the subscription widened its own scope: a stranger in,
+someone out, a new fingerprint, all 30 tracked subscriptions rebuilt on every
+relay with no `since`, and the re-downloaded history p-tagging more strangers.
+Production rebuilt the tracked group 74 to 405 times a day from its deploy on
+2026-09-03; from 2026-09-18 19:00 UTC it was about 35 times an hour (666 in 19
+hours), index CPU went 0.08 → 0.38 vCPU and egress 0.06 → 0.29 GB/h, and it
+did not settle on its own.
+
+`TRACKED_SOURCE_KINDS` (kind:1 and kind:30311) is the rule now, pinned by
+`check-ingest.mjs`, and `check-indexer.mjs` drives a repost through the real
+subscription. `004_tracked_from_corpus.sql` rebuilt the table to match, because
+the loop's rows would otherwise have held the window for months. This is the
+SECOND road to the #301 rebuild storm — the first was an order-sensitive
+fingerprint (`fingerprintOf`) — so **anything that changes what enters
+`tracked_pubkeys` is a relay-load decision**: after it ships, count the
+`tracked subscriptions rebuilt` lines in the log.
+
 ## The forbidden kinds are enforced in code, not in a filter
 
 `ingest.ts` rejects on `FORBIDDEN_KINDS` before any store decision, and
