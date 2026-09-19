@@ -268,6 +268,17 @@ There is deliberately **no `--max-old-space-size`**. It changes when the process
 dies, never whether it leaks, and the #301 leak is fixed in `src/node-yield.ts`.
 Adding one would only move the crash.
 
+**Both services carry a 1 GB memory limit, set on the instance on 2026-09-19 —
+and it is not in `railway.json` yet.** RAM is billed by use, and the plan default
+of 32 GB is also how far a leak can grow before anything kills it: about $10 a
+day at the top. The Postgres figure is mostly page cache for a 1.7 GB database,
+which a limit makes the kernel give back — 1.35 → 0.90 GB the moment it applied.
+Set in the dashboard or with `serviceInstanceLimitsUpdate` (GraphQL), a limit
+applies to the running container with no redeploy and no restart. The index's
+could be pinned — the schema accepts `deploy.limitOverride.containers.memoryBytes`
+— and until it is, a re-created service reverts to 32 GB. 1 GB for Postgres is a
+choice, not a measured floor: lower trades cache for disk reads.
+
 **3. Set the service variables.** `DATABASE_URL` (the private string),
 `INDEX_API_KEY` (a long random secret), and `PODCAST_INDEX_KEY` /
 `PODCAST_INDEX_SECRET` — the same pair Vercel already holds, so the warm-fill
@@ -306,6 +317,23 @@ a freshness number.
 not repo-connected, so a merged PR touching `services/nostr-index/` changes
 nothing until `railway up` runs from that directory. See the note in CLAUDE.md
 under the server/client boundary.
+
+**Shipping a merged commit without touching anyone's checkout** (how #423 went
+out). `railway up` uploads the nearest git ROOT: from a worktree that is the main
+checkout, and from a plain folder inside a home directory that is itself a git
+repository it is the WHOLE HOME DIRECTORY. So export the commit to a folder
+outside every repository and deploy from there:
+
+```bash
+git archive <merged-sha> | tar -x -C /tmp/<unique>  # at the REPO ROOT: from a subdirectory it exports only that subtree
+git -C /tmp/<unique> rev-parse                       # must FAIL: no repository above the folder
+cd /tmp/<unique> && railway link -w <workspace> -p <project> -e <environment> -s <service>
+railway up --ci      # "Failed to stream build logs" is not a failure: poll the deployment's status instead
+railway unlink && rm -rf /tmp/<unique>
+```
+
+Then read the **deploy** log for `> boostmebitch-nostr-index@0.1.0 start` — the
+build log never prints the package name.
 
 **3b. Trim the relay set to what actually answers.** `INDEX_RELAYS` and
 `INDEX_PROFILE_RELAYS` default to eight relays, and on 2026-08-25 three of them
