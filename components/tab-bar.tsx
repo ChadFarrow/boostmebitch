@@ -118,7 +118,10 @@ const TABS: Tab[] = [
     // exactly the routes a shared link lands on and where BOOST is the point —
     // and from <FullscreenPlayer>, which covers the header on every route. So
     // the boost modal grew its own wallet control FIRST; that message used to
-    // point at "top right", which on those surfaces is empty space.
+    // point at "top right", which on those surfaces is empty space. Since #413
+    // <FullscreenPlayer> also carries an `overlay` <AuthControl>. What is left
+    // without a trigger is /npub/<npub> and /privacy with nothing playing and no
+    // boost open — accepted, and recorded in docs/ui.md.
     href: '/queue',
     label: 'Queue',
     match: (p) => p.startsWith('/queue'),
