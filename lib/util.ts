@@ -101,6 +101,122 @@ export function isPlayableRow(e: Pick<Episode, 'enclosureUrl' | 'unresolved'>): 
 }
 
 /**
+ * The identity of an episode ACROSS shows — the key the listen queue is
+ * deduped, located and drained by.
+ *
+ * **`id` cannot be that key.** `stepTo` locates the playing row in
+ * `episodeQueue` with `e.id === current.episode.id`, which is sound because
+ * that array holds one feed's rows and a Podcast Index episode id is unique
+ * within the feed that issued it. It is NOT unique between feeds, and a
+ * cross-show queue puts two feeds' rows in one array.
+ *
+ * So the RSS `<guid>` — globally unique by the spec — is the key, with
+ * `feedId:id` as the floor for a row that arrived without one. The fallback is
+ * not interchangeable with the guid: the same episode queued from a feed read
+ * and from a Podcast Index record must key the same way, or the queue holds it
+ * twice and the dedupe never fires.
+ *
+ * **Deliberately not named `episodeKey`.** `lib/pi-batch.ts` exports one of
+ * those already, keyed on `{feedGuid, itemGuid}` for the batch resolvers, and
+ * that module is server-only. Two functions with one name and two different
+ * keys is the drift this repo keeps paying for.
+ */
+export function epKey(e: Pick<Episode, 'guid' | 'feedId' | 'id'>): string {
+  // `||`, NOT `??`. A feed can publish `<guid></guid>`, and `extractText`
+  // returns `''` for it rather than undefined — only a MISSING or self-closing
+  // tag is undefined. `??` keeps that empty string, so every such episode shares
+  // the key `''`: the queue then removes, dedupes and jumps to the wrong one,
+  // silently, on feeds this app already parses.
+  return e.guid || `${e.feedId}:${e.id}`;
+}
+
+/**
+ * How many items the listen queue holds.
+ *
+ * **At the cap the queue REFUSES the add; it never drops the oldest.**
+ * `bmb:boosts:*` (200) and `bmb:streamed:*` (100) are logs, where the newest
+ * entry is the valuable one and shedding the tail loses nothing anybody chose.
+ * A queue is an ordered decision whose HEAD is the valuable end — evicting
+ * item 1 to fit item 51 deletes the thing that was about to play.
+ *
+ * 50 rather than 200 because a queue is a session's intent, not a history:
+ * fifty episodes is well over a day of listening.
+ */
+export const LISTEN_QUEUE_CAP = 50;
+
+/**
+ * What an episode carries INTO the listen queue.
+ *
+ * The queue is the first `bmb:*` value that persists whole `Episode` objects,
+ * and `contentEncoded` is full sanitized show-note HTML — routinely tens of KB
+ * per item. On a store where the first `QuotaExceededError` makes every LATER
+ * write fail, silently, down to a one-byte setting, the queue must not be the
+ * value that fills it out from under every real preference the user has.
+ *
+ * **A denylist, and that direction is deliberate.** An allowlist would be
+ * tighter and is the wrong shape here: a field added to `Episode` later would
+ * be dropped by default, and the fields most likely to be added to an episode
+ * in THIS app are money — `value` and `valueTimeSplits` are already the reason
+ * a queue item is worth anything. Dropping a money field does not fail, it
+ * pays the wrong person: a music show whose `valueTimeSplits` were trimmed
+ * streams the whole listen to the SHOW instead of to each artist, invisibly.
+ * Prose is cheap to lose and the episode page fetches its own; money is not.
+ *
+ * **Applied at ENQUEUE, not on the way to disk.** One shape in memory and one
+ * on disk. Trimming only at the persist boundary gives the bug where an item
+ * behaves correctly until the page is reloaded — unreproducible in the session
+ * that finds it.
+ */
+/**
+ * The show to RECORD for a queued item, which is not always the feed you were
+ * looking at when you queued it.
+ *
+ * A `musicL` playlist lists tracks that live in hundreds of other feeds, so the
+ * container's title, art, url and medium are facts about the PLAYLIST and not
+ * about the track. `<FavEpisodeHeart>` has withheld them on this exact test
+ * since it was written, and `<QueueButton>` sits directly beside it on the same
+ * row — but the queue persisted the container whole, and that pair then drives
+ * the Up Next row's name and art, `current.podcast` for `showShareUrl`, and
+ * `showStorageKey(podcast)` for the per-show streaming rate and mode. A queued
+ * track's streaming override would key off the curator's feed.
+ *
+ * It refuses NARROWLY, the same way `payableValue` does: the item must declare
+ * its OWN `podcastGuid` and it must disagree. An item with no guid of its own
+ * keeps the container, because there is nothing better to say and nothing has
+ * been contradicted.
+ *
+ * `value` goes with the rest. `payableValue` already refuses a container's
+ * block for a track that names another feed, so dropping it changes no payment
+ * — it stops the record CLAIMING a block that would never be paid from it.
+ */
+export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
+  const feedGuid = episode.podcastGuid || podcast.podcastGuid;
+  const containerIsParent = !!podcast.podcastGuid && podcast.podcastGuid === feedGuid;
+  if (containerIsParent) return podcast;
+  return {
+    ...podcast,
+    id: episode.feedId ?? podcast.id,
+    podcastGuid: feedGuid,
+    title: episode.feedTitle ?? episode.title,
+    url: undefined,
+    image: episode.feedImage,
+    artwork: episode.feedImage,
+    medium: undefined,
+    value: undefined,
+  };
+}
+
+export function trimForQueue(e: Episode): Episode {
+  // `description` and `contentEncoded` are the two large fields and the two
+  // the queue never renders. Everything else — enclosure, art, duration,
+  // chapters, transcript, and both value fields — is kept.
+  const rest = { ...e };
+  delete rest.description;
+  delete rest.contentEncoded;
+  return rest;
+}
+
+/**
  * The index of the next row that can actually be played, walking `step` from
  * `from`, or `-1` when there is none.
  *
@@ -125,9 +241,27 @@ export function nextPlayableIndex(
   from: number,
   step: 1 | -1,
 ): number {
+  return nextPlayableIndexBy(queue, from, step, (e) => e);
+}
+
+/**
+ * The same walk, over a list whose rows are not episodes themselves.
+ *
+ * The listen queue holds `{episode, podcast}` pairs, and it has the same two
+ * callers for the same reason — `stepTo` decides where playback goes and
+ * `<TransportControls>` decides whether the buttons are enabled. Giving the
+ * queue its own copy of the loop is how those two come to disagree, which is
+ * the dead-control bug the comment above is about. One walk, four callers.
+ */
+export function nextPlayableIndexBy<T>(
+  queue: readonly T[],
+  from: number,
+  step: 1 | -1,
+  row: (item: T) => Pick<Episode, 'enclosureUrl' | 'unresolved'>,
+): number {
   if (from < 0) return -1;
   for (let i = from + step; i >= 0 && i < queue.length; i += step) {
-    if (isPlayableRow(queue[i])) return i;
+    if (isPlayableRow(row(queue[i]))) return i;
   }
   return -1;
 }

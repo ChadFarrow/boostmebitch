@@ -3,6 +3,7 @@ import { fmtDate, fmtDuration } from '@/lib/format';
 import type { Episode, Podcast } from '@/lib/types';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart } from './fav-heart';
+import { NoteQueueButton } from './note-queue-button';
 
 /**
  * The episode a note is *about*, unfurled under the note's own words.
@@ -91,6 +92,7 @@ export function NoteEpisodeCard({
   href,
   onOpenShow,
   onOpenEpisode,
+  onQueue,
 }: {
   podcast: Podcast;
   /** PI's indexed item record, or null when PI could not name one. */
@@ -118,6 +120,19 @@ export function NoteEpisodeCard({
    */
   onOpenShow: () => void;
   onOpenEpisode?: () => void;
+  /**
+   * Resolve this note's episode through `/api/feed` and queue it, answering
+   * whether it landed.
+   *
+   * **The resolve is not optional and not a latency dodge.** `episode` here is
+   * Podcast Index's indexed record, which `<NoteCard>` already documents as
+   * "not good enough to hand to the player or the boost modal" — it carries no
+   * value block. Queueing it as it stands would put an item in Up Next that
+   * plays and then pays nobody, silently. So the handler is built by
+   * `<NoteCard>`, which owns that sequence for OPEN already, and this card
+   * never imports the feed loader.
+   */
+  onQueue?: () => Promise<boolean>;
 }) {
   const host = href ? hostOf(href) : null;
   // ONE test, resolved once into the record and the handler together, so the
@@ -276,8 +291,15 @@ export function NoteEpisodeCard({
           stops propagation itself, and it also sits OUTSIDE the tap area above
           rather than relying on that. */}
       {favoritable && item ? (
-        <div className="px-2.5 pb-2.5">
+        <div className="px-2.5 pb-2.5 flex items-center gap-2 flex-wrap">
           <FavEpisodeHeart episode={item} podcast={podcast} size="md" />
+          {/* A SIBLING of the heart, on the same `favoritable` gate: both need
+              an item guid, and both are about this episode rather than about
+              the note. The note's own action row further up is social actions
+              gated on `identity` — a listen queue needs no identity, so it
+              would be hidden from exactly the signed-out reader who can use
+              it. */}
+          {onQueue ? <NoteQueueButton episode={item} onQueue={onQueue} /> : null}
         </div>
       ) : null}
     </div>
