@@ -48,7 +48,7 @@
 // signature.
 
 import { chaptersRequestUrl, downloadKey, isDownloadable, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
-import { isHlsUrl } from '../lib/util.ts';
+import { downloadEpisodeId, isHlsUrl } from '../lib/util.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -346,6 +346,43 @@ section("The HLS refusal AGREES with lib/util.ts, which is the app's one answer"
 }
 
 // ---------------------------------------------------------------------------
+section('A download plays back under the id it was LISTED under — a money fact');
+// ---------------------------------------------------------------------------
+{
+  // Measured 2026-09-19 against Podcast Index through /api/feed?id=6611624:
+  // Homegrown Hits episode 149, which carries TWELVE <podcast:valueTimeSplit>s.
+  // `/api/value-splits?feedId=6611624&episodeId=59919993147` answers all twelve
+  // (the first is "Wim Wenders Wins"); with `episodeId=6611624` — what the old
+  // rebuild sent, the FEED id — it answers 404, and every song window streamed
+  // to the host while the boostagram named the feed as the item.
+  const ep149 = {
+    key: HGH,
+    enclosureUrl: HGH,
+    sizeBytes: 1,
+    createdAt: 0,
+    itemGuid: 'f28fe4ce-f2fe-4abb-ac7d-af4e0a902828',
+    feedGuid: 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f',
+    feedId: 6611624,
+    title: 'Homegrown Hits - Episode 149',
+  };
+  const check = (label, record, expected) => {
+    compare(label, downloadEpisodeId(record), expected);
+    vectors.push({ label, kind: 'episodeId', args: [record] });
+  };
+  check('a record that kept its Podcast Index id plays under it', { ...ep149, episodeId: 59919993147 }, 59919993147);
+  // An RSS-only episode is listed under `-fnvHash(guid)` (lib/pi.ts), and a
+  // record keeps whatever it was listed under — negative included.
+  check('a record that kept an RSS-derived id plays under it', { ...ep149, episodeId: -397494413 }, -397494413);
+  // Written in the days #389 was live, before `episodeId` existed. It falls back
+  // to the RSS path's id for the same item, never to the feed id.
+  check('a legacy record falls back to -fnvHash(guid), not the feed id', ep149, -397494413);
+  // `<guid></guid>` parses to '' — `??` would hash '' and give every such
+  // episode of every feed ONE id, sharing a split cache entry.
+  check('an empty guid falls through to the enclosure URL', { ...ep149, itemGuid: '' }, -65730405);
+  check('an id of 0 is not an id', { ...ep149, episodeId: 0 }, -397494413);
+}
+
+// ---------------------------------------------------------------------------
 section('Every vector above is replayed against the obvious wrong version');
 // ---------------------------------------------------------------------------
 {
@@ -370,6 +407,10 @@ section('Every vector above is replayed against the obvious wrong version');
   const naiveDoc = (url, type) =>
     type ? `/api/transcript?url=${url}&type=${type}` : `/api/chapters?url=${url}`;
 
+  // What `dbRowToEpisode` shipped with in #389: "nothing keys off `id` except
+  // React", so the feed id will do.
+  const naiveEpisodeId = (r) => r.feedId ?? 0;
+
   const call = (impl, v) => {
     try {
       const real = impl === 'real';
@@ -379,6 +420,7 @@ section('Every vector above is replayed against the obvious wrong version');
         case 'room': return JSON.stringify(real ? roomVerdict(...v.args) : naiveRoom(...v.args));
         case 'chapters': return JSON.stringify(real ? chaptersRequestUrl(...v.args) : naiveDoc(...v.args));
         case 'transcript': return JSON.stringify(real ? transcriptRequestUrl(...v.args) : naiveDoc(...v.args));
+        case 'episodeId': return JSON.stringify(real ? downloadEpisodeId(...v.args) : naiveEpisodeId(...v.args));
         case 'idem': {
           // The property, not the value: does re-deriving change the answer?
           const f = real ? downloadKey : naiveKey;

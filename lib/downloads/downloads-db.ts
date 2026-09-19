@@ -1,4 +1,5 @@
 import type { Episode, Podcast, ValueBlock, ValueTimeSplit } from '../types';
+import { downloadEpisodeId } from '../util';
 
 /**
  * The metadata half of a download. The bytes live in the Cache API
@@ -51,6 +52,13 @@ export interface DownloadRecord {
    */
   feedGuid?: string;
   feedId?: number;
+  /**
+   * The id the episode was LISTED under when it was saved — Podcast Index's, or
+   * the RSS path's `-fnvHash(guid)`. Absent on records written before it
+   * existed; `downloadEpisodeId` (lib/util.ts) decides what those play as, and
+   * says why this is a money field rather than a React key.
+   */
+  episodeId?: number;
   title: string;
   feedTitle?: string;
   image?: string;
@@ -170,12 +178,13 @@ export async function clearAllRecords(): Promise<void> {
  * local bytes is the player's job, and it has a fallback path for an evicted
  * download that only works if the network URL is still here.
  *
- * `id` and `feedId` are synthesised from what the record has. Nothing keys off
- * `id` except React, and `feedId` is only a Podcast Index hint.
+ * `id` is NOT a React key here. `/api/value-splits`, the streaming split cache
+ * and every boostagram's `itemID` read it, so it is the id the episode was
+ * listed under — see `downloadEpisodeId`. `feedId` is only a Podcast Index hint.
  */
 export function dbRowToEpisode(r: DownloadRecord): Episode {
   return {
-    id: r.feedId ?? 0,
+    id: downloadEpisodeId(r),
     guid: r.itemGuid,
     title: r.title,
     enclosureUrl: r.enclosureUrl,

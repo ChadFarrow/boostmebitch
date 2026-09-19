@@ -4,6 +4,7 @@ import { chaptersRequestUrl, downloadKey, isDownloadable, transcriptRequestUrl }
 import * as cache from './downloads-cache';
 import * as db from './downloads-db';
 import type { DownloadRecord } from './downloads-db';
+import { resolveEpisodeByGuid, warmEpisodeCache } from '../podcast-meta';
 
 /**
  * The downloads engine: one module singleton, read through
@@ -142,8 +143,62 @@ export class DownloadManager {
       this.hydrated = true;
       this.hydrating = null;
       this.bump();
+      void this.upgradeLegacyIds();
     })();
     return this.hydrating;
+  }
+
+  /**
+   * Give a record written before `episodeId` existed its real Podcast Index id.
+   *
+   * Those records rebuild under `-fnvHash(guid)` (`downloadEpisodeId`), which is
+   * the id the RSS path gives an episode PI has not indexed — right for those,
+   * and wrong for a PI episode, whose time splits and boostagram `itemID` key off
+   * PI's id. Only the few days #389 was live (from 2026-09-12) wrote such
+   * records, so this asks PI by guid, once per load, for those only.
+   *
+   * Best effort, and every way it fails leaves the record exactly as it was:
+   * offline, a PI miss, a "could not ask", or an answer from a DIFFERENT feed
+   * than the record names — a guid is not unique across feeds, so a PI record
+   * whose `feedId` disagrees is not this episode. Warm first, then resolve, the
+   * same order CLAUDE.md asks of any list resolution.
+   */
+  private async upgradeLegacyIds(): Promise<void> {
+    const legacy = [...this.records.values()].filter(
+      (r) => r.episodeId === undefined && !!r.feedGuid && !!r.itemGuid,
+    );
+    if (!legacy.length) return;
+    await warmEpisodeCache(legacy.map((r) => ({ feedGuid: r.feedGuid!, itemGuid: r.itemGuid! })))
+      .catch(() => {});
+    let changed = false;
+    for (const r of legacy) {
+      const ep = await resolveEpisodeByGuid(r.feedGuid!, r.itemGuid!).catch(() => null);
+      if (!ep || !Number.isInteger(ep.id) || ep.id <= 0) continue;
+      if (r.feedId && ep.feedId && ep.feedId !== r.feedId) continue;
+      // Deleted while we were asking: writing it back would resurrect a record
+      // whose bytes are already gone.
+      if (this.records.get(r.key) !== r) continue;
+      const next: DownloadRecord = { ...r, episodeId: ep.id };
+      try {
+        await this.backend.putRecord(next);
+      } catch {
+        continue;
+      }
+      const now = this.records.get(r.key);
+      if (now === r) {
+        this.remember(next);
+        changed = true;
+      } else if (!now) {
+        // Removed during the write. The put above re-created it on disk, so
+        // take it back out rather than leave an orphan record.
+        await this.backend.deleteRecord(r.key).catch(() => {});
+      } else {
+        // Removed AND downloaded again during the write: the put above
+        // overwrote the fresh record with the stale one, so restore it.
+        await this.backend.putRecord(now).catch(() => {});
+      }
+    }
+    if (changed) this.bump();
   }
 
   // --- reading ---------------------------------------------------------------
@@ -298,6 +353,9 @@ export class DownloadManager {
       itemGuid: episode.guid,
       feedGuid,
       feedId: episode.feedId,
+      // The id it is listed under, so playback from disk keys the same splits and
+      // the same boostagram `itemID` as playback from the feed.
+      episodeId: episode.id,
       title: episode.title,
       // The container's title and art are withheld unless it really is the
       // parent — see `parentFeed`. `episode.*` first either way.
