@@ -84,11 +84,20 @@ const bufferState = () => js(`(() => { const a = document.querySelector('audio')
   for (let i = 0; i < b.length; i++) r.push([Math.round(b.start(i)), Math.round(b.end(i))]);
   return JSON.stringify({ pos: Math.round(a.currentTime), ready: a.readyState, ranges: r }); })()`);
 /** Start recording distinct hero srcs. The gate reopens within a second, so
- *  the transition is the only place the fault is visible. */
+ *  the transition is the only place the fault is visible.
+ *
+ *  EVERY 10 ms, NOT 100. Once the downloads service worker controls the page,
+ *  the closed state in scenario 2 routinely lasts under 100 ms: the element
+ *  refills 20 s of headroom that fast and the gate correctly reopens. Measured
+ *  2026-09-19 on the same build, 100 ms sampling: 2 of 4 runs saw only the new
+ *  chapter's art and failed, while the same runs with the worker bypassed
+ *  passed 4 of 4 — and at 10 ms, 5 of 5 passed WITH the worker, each showing
+ *  the cover between the two chapter images. The sampler was too coarse; the
+ *  gate was right. */
 const watch = () => js(`(() => { window.__seq = []; clearInterval(window.__w);
   window.__w = setInterval(() => { const im = ${HERO}; if (!im) return;
     const u = decodeURIComponent(im.currentSrc).replace(/^.*url=/, '').replace(/&w=\\d+$/, '').split('/').pop();
-    if (window.__seq[window.__seq.length - 1] !== u) window.__seq.push(u); }, 100);
+    if (window.__seq[window.__seq.length - 1] !== u) window.__seq.push(u); }, 10);
   return true; })()`);
 const seen = () => js(`(() => { clearInterval(window.__w); return window.__seq.join(' -> '); })()`);
 const fire = (event) => js(`document.querySelector('audio').dispatchEvent(new Event(${JSON.stringify(event)})); true`);
