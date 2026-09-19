@@ -155,6 +155,37 @@ fingerprint (`fingerprintOf`) — so **anything that changes what enters
 `tracked_pubkeys` is a relay-load decision**: after it ships, count the
 `tracked subscriptions rebuilt` lines in the log.
 
+## A relay keeps 20 subscriptions live, and a refused one still answers
+
+nos.lol and relay.primal.net keep **20** subscriptions live per connection
+(measured 2026-09-19, 60 REQs on one socket: 40 NOTICEs). A REQ past that gets
+`NOTICE: ERROR: too many concurrent REQs` **and** its stored matches **and** an
+EOSE, then never a live event. nostr-tools only sees the EOSE, so it holds the
+refused REQ as open, `/health` counts it, and nothing reports it. The indexer
+held 37 per relay, one per filter, and a rebuild opened the new set BESIDE the
+old one — so on those two relays the whole tracked set was dead from its first
+rebuild, behind 943 to over 1,000 refusals in each of five three-hour windows
+sampled from the log between 2026-09-05 and 2026-09-18.
+
+Two rules now, both in `src/indexer.ts`:
+
+- **Every filter of a group rides ONE REQ** (`subscribeFilters`, over
+  `subscribeMap`): 14 per relay, `PLANNED_SUBS_PER_RELAY`, which
+  `check-indexer.mjs` holds at least two under `RELAY_SUB_CAP` for the ping
+  and a backfill page. Each relay gets its own copy of each filter, because
+  nostr-tools writes a reconnect's `since` INTO the filter object.
+- **A group closes before it reopens** (`replaceSubs`), waiting for the CLOSEs
+  to be sent. None of these filters carries a `since` the gap could fall
+  behind.
+
+**A REQ also has a size ceiling, and missing it costs the socket**: nos.lol drops
+the connection on 134,064 bytes, taking every other subscription with it. A
+tracked REQ is 100,590 bytes, under `MAX_REQ_BYTES`. So raising `PUBKEY_CHUNK`,
+`MAX_TRACKED_IN_FILTERS` or the filters per REQ is a budget change on BOTH
+axes. `check-indexer.mjs` drives a full-size index against a mock relay that
+enforces both limits (`startMockRelay(…, { maxSubsPerConnection,
+maxMessageBytes })`); the previous code fails it with 35 refusals.
+
 ## The forbidden kinds are enforced in code, not in a filter
 
 `ingest.ts` rejects on `FORBIDDEN_KINDS` before any store decision, and

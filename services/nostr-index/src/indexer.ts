@@ -8,6 +8,7 @@
 import { SimplePool, type Event, type Filter } from 'nostr-tools';
 import { normalizeURL } from 'nostr-tools/utils';
 import type { AbstractRelay } from 'nostr-tools/abstract-relay';
+import type { SubCloser, SubscribeManyParams } from 'nostr-tools/abstract-pool';
 import type { Db } from './db.ts';
 import type { Config } from './config.ts';
 import { emptyStats, indexedThrough, ingestEvent, recentNoteIds, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
@@ -40,6 +41,75 @@ const MAX_TRACKED_IN_FILTERS = 5_000;
 // covers far more history than any feed page shows.
 const REPLY_WATCH_IDS = 2_000;
 const ID_CHUNK = 500;
+// Reply filters carried by one REQ: 2 x 500 ids is about 67 KB.
+const ID_FILTERS_PER_REQ = 2;
+
+/**
+ * How many subscriptions a relay keeps LIVE on one connection. nos.lol and
+ * relay.primal.net stop at 20 — measured 2026-09-19 with 60 REQs on one
+ * socket: 40 NOTICEs "ERROR: too many concurrent REQs". The dangerous part is
+ * what a refused REQ still gets: its stored matches and an EOSE, then never a
+ * live event (25 REQs for kind:1: numbers 1–20 got 31–34 events in 40 s, 21–25
+ * got none). nostr-tools only sees the EOSE, so it holds the refused REQ as
+ * open and nothing anywhere reports it.
+ *
+ * The indexer used to hold 37 per relay — one per filter — and a rebuild opened
+ * the new set BEFORE closing the old one, so on those two relays the whole
+ * tracked set went dead at its first rebuild and stayed dead: 943 to over 1,000
+ * refusals in each of five three-hour windows sampled from the production log
+ * between 2026-09-05 and 2026-09-18. Now every filter of a
+ * group rides one REQ (`subscribeFilters`), and a group closes before it
+ * reopens (`replaceSubs`).
+ */
+export const RELAY_SUB_CAP = 20;
+
+/**
+ * The largest REQ a relay has to accept. nos.lol CLOSES THE SOCKET on a REQ of
+ * 134,064 bytes, taking every other subscription on it down with it; 100,590
+ * bytes passed on all five configured relays (2026-09-19). A tracked REQ — three
+ * filters over 500 pubkeys — is that 100,590.
+ */
+export const MAX_REQ_BYTES = 110_000;
+
+/** Core, live, tracked and replies, one REQ per group per chunk. The ping takes
+ *  one more while it runs and a backfill page one more, so this has to stay at
+ *  least two under RELAY_SUB_CAP — which verify/check-indexer.mjs asserts. */
+export const PLANNED_SUBS_PER_RELAY =
+  1 + 1 + Math.ceil(MAX_TRACKED_IN_FILTERS / PUBKEY_CHUNK) +
+  Math.ceil(REPLY_WATCH_IDS / (ID_CHUNK * ID_FILTERS_PER_REQ));
+
+/** `items` in runs of `size`. */
+export function chunks<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/**
+ * The REQs the tracked set is asked for: one per PUBKEY_CHUNK authors, each
+ * carrying three filters.
+ *
+ * kind:0 is its OWN filter, not folded in beside 6 and 5. A relay caps a
+ * filter's result at its own default (strfry's is 500) and serves the NEWEST
+ * matches first; a profile is written once and rarely touched, so kind:0 sorts
+ * behind every recent repost and deletion from the same 500 authors and gets
+ * truncated away. Measured on production 2026-08-25, the live bundle carried 6
+ * profiles for 24 distinct note authors while relays held 20 of the 24. The cap
+ * is per FILTER, so three filters in one REQ keep that separation.
+ */
+export function trackedReqs(pubkeys: string[]): Filter[][] {
+  return chunks(pubkeys, PUBKEY_CHUNK).map((chunk) => [
+    { kinds: [0], authors: chunk },
+    { kinds: [6, 5], authors: chunk },
+    { kinds: [9735], '#p': chunk },
+  ]);
+}
+
+/** The REQs the reply watcher sends: `#e` filters of ID_CHUNK ids, ID_FILTERS_PER_REQ to a REQ. */
+export function replyReqs(ids: string[]): Filter[][] {
+  const filters: Filter[] = chunks(ids, ID_CHUNK).map((c) => ({ kinds: [1], '#e': c }));
+  return chunks(filters, ID_FILTERS_PER_REQ);
+}
 
 // The live-activity window, matching `LIVE_STREAM_RELAYS`' own 7-day `since`
 // in lib/nostr/live-streams.ts: wide enough to carry a stream scheduled ahead
@@ -127,7 +197,7 @@ export class Indexer {
   // per-generation with `closers.splice(CORE_FILTERS.length)` — arithmetic that
   // silently means the wrong thing the moment a third group exists, which is
   // exactly what the reply watcher below adds. A keyed map cannot drift.
-  private subs = new Map<string, { close(): void }[]>();
+  private subs = new Map<string, SubCloser[]>();
   private timers: NodeJS.Timeout[] = [];
   private stats: IngestStats = emptyStats();
   private stopped = false;
@@ -153,10 +223,16 @@ export class Indexer {
   }
 
   async start(): Promise<void> {
-    this.subscribeCore();
+    if (PLANNED_SUBS_PER_RELAY + 2 > RELAY_SUB_CAP) {
+      console.error(
+        `[indexer] ${PLANNED_SUBS_PER_RELAY} subscriptions per relay plus ping and backfill ` +
+        `exceeds the ${RELAY_SUB_CAP} that nos.lol and relay.primal.net keep live`,
+      );
+    }
+    await this.subscribeCore();
     await this.subscribeTracked();
     await this.subscribeReplies();
-    this.subscribeLive();
+    await this.subscribeLive();
     // **`.catch` on both, because a bare `void` on a rejecting promise ENDS
     // THE PROCESS.** Neither loop wraps all of its `db.query` calls — the page
     // read and the `pi_queue` bump sit outside their try blocks — so a
@@ -177,7 +253,7 @@ export class Indexer {
     this.timers.push(setInterval(() => void this.subscribeTracked().catch(logErr('resubscribe')), interval));
     this.timers.push(setInterval(() => void this.subscribeReplies().catch(logErr('reply resubscribe')), interval));
     this.timers.push(setInterval(
-      () => this.subscribeLive(),
+      () => void this.subscribeLive().catch(logErr('live resubscribe')),
       this.cfg.liveResubscribeMs ?? LIVE_RESUBSCRIBE_MS,
     ));
     this.timers.push(setInterval(() => this.reportStats(), 60_000));
@@ -192,19 +268,57 @@ export class Indexer {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
-    this.closeAllSubs();
+    void this.closeAllSubs();
     try { this.pool.close(this.relays); } catch { /* already gone */ }
   }
 
-  /** Replace one named group of subscriptions, closing whatever it held. */
-  private setSubs(group: string, closers: { close(): void }[]): void {
-    for (const c of this.subs.get(group) ?? []) { try { c.close(); } catch { /* already gone */ } }
-    this.subs.set(group, closers);
+  /**
+   * One subscription per relay carrying EVERY filter in `filters` — one REQ,
+   * where `subscribeMany` would send one per filter. That is what keeps a relay
+   * under RELAY_SUB_CAP.
+   *
+   * Each relay gets its own copy of each filter. nostr-tools writes
+   * `since = lastEmitted + 1` INTO the filter object when a relay reconnects,
+   * and `subscribeMany` hands every relay the same object — so one relay's
+   * reconnect moved the `since` of every other relay's next re-fire, and, for
+   * the core group, of the module-level CORE_FILTERS that `backfillLoop`
+   * spreads into its paging query.
+   */
+  private subscribeFilters(filters: Filter[], params: SubscribeManyParams): SubCloser {
+    const urls = Array.from(new Set(this.relays.map((u) => normalizeURL(u))));
+    return this.pool.subscribeMap(
+      urls.flatMap((url) => filters.map((filter) => ({ url, filter: { ...filter } }))),
+      params,
+    );
   }
 
-  private closeAllSubs(): void {
-    for (const group of this.subs.keys()) this.setSubs(group, []);
+  /**
+   * Replace one named group of subscriptions: close what it held, WAIT for the
+   * CLOSEs to be sent, then open the new set.
+   *
+   * The order is the point. Opening first put old and new on the relay at once
+   * — 37 + 30 during a tracked rebuild — and on a relay that keeps 20 the new
+   * set was refused whole, while looking open. Nothing is lost in the gap: none
+   * of these filters carries a `since` the gap could fall behind, so the new REQ
+   * is answered with the stored matches first.
+   *
+   * `SubCloser.close` is typed `void`, but the pool's is `async` — it waits for
+   * the relay connections before sending — so its promise is what is awaited.
+   * One CLOSE and the next REQ then leave through the same resolved connection
+   * promise, in order.
+   */
+  private async replaceSubs(group: string, open: () => SubCloser[]): Promise<void> {
+    const old = this.subs.get(group) ?? [];
+    this.subs.set(group, []);
+    await Promise.all(old.map((c) => Promise.resolve(c.close()).catch(() => { /* already gone */ })));
+    if (this.stopped) return;
+    this.subs.set(group, open());
+  }
+
+  private async closeAllSubs(): Promise<void> {
+    const all = Array.from(this.subs.values()).flat();
     this.subs.clear();
+    await Promise.all(all.map((c) => Promise.resolve(c.close()).catch(() => { /* already gone */ })));
   }
 
   private subCount(): number {
@@ -213,14 +327,37 @@ export class Indexer {
     return n;
   }
 
-  /** Live subscriptions for the two core filters. */
-  private subscribeCore(): void {
-    this.setSubs('core', CORE_FILTERS.map(({ name, filter }) =>
-      this.pool.subscribeMany(this.relays, filter, {
-        onevent: (e) => void this.take(e, name),
-        onclose: () => console.warn(`[indexer] ${name} subscription closed`),
+  /** Live subscriptions for the two core filters, in one REQ per relay. */
+  private async subscribeCore(): Promise<void> {
+    await this.replaceSubs('core', () => [
+      this.subscribeFilters(CORE_FILTERS.map(({ filter }) => filter), {
+        onevent: (e) => void this.take(e, 'core'),
+        onclose: () => console.warn('[indexer] core subscription closed'),
       }),
-    ));
+    ]);
+  }
+
+  /**
+   * NIP-53 live activities (kind:30311), for the homepage's "Live on Nostr" row.
+   *
+   * No backfill and no separate seed query: a relay answers a REQ with the
+   * stored events matching the filter and THEN streams new ones, so a
+   * subscription carrying `since` seeds itself. That is also why it is not in
+   * CORE_FILTERS — `backfillLoop` walks those back to the 180-day floor, which
+   * for this kind would page in thousands of broadcasts that ended in spring.
+   *
+   * Re-subscribed on a timer because the `since` is baked in at REQ time. A
+   * process up for a week would otherwise be asking about a window that
+   * started a week before it booted.
+   */
+  private async subscribeLive(): Promise<void> {
+    const since = Math.floor(Date.now() / 1000) - LIVE_WINDOW_SECS;
+    await this.replaceSubs('live', () => [
+      this.subscribeFilters([{ kinds: [LIVE_STREAM_KIND], since, limit: LIVE_SEED_LIMIT }], {
+        onevent: (e) => void this.take(e, 'live'),
+        onclose: () => console.warn('[indexer] live subscription closed'),
+      }),
+    ]);
   }
 
   /**
@@ -237,44 +374,15 @@ export class Indexer {
    * returning `[]` from a correct query over an empty set for the life of the
    * feature.
    */
-  /**
-   * NIP-53 live activities (kind:30311), for the homepage's "Live on Nostr" row.
-   *
-   * No backfill and no separate seed query: a relay answers a REQ with the
-   * stored events matching the filter and THEN streams new ones, so a
-   * subscription carrying `since` seeds itself. That is also why it is not in
-   * CORE_FILTERS — `backfillLoop` walks those back to the 180-day floor, which
-   * for this kind would page in thousands of broadcasts that ended in spring.
-   *
-   * Re-subscribed on a timer because the `since` is baked in at REQ time. A
-   * process up for a week would otherwise be asking about a window that
-   * started a week before it booted.
-   */
-  private subscribeLive(): void {
-    const since = Math.floor(Date.now() / 1000) - LIVE_WINDOW_SECS;
-    this.setSubs('live', [
-      this.pool.subscribeMany(this.relays, {
-        kinds: [LIVE_STREAM_KIND], since, limit: LIVE_SEED_LIMIT,
-      }, {
-        onevent: (e) => void this.take(e, 'live'),
-        onclose: () => console.warn('[indexer] live subscription closed'),
-      }),
-    ]);
-  }
-
   private async subscribeReplies(): Promise<void> {
     const ids = await recentNoteIds(this.db, REPLY_WATCH_IDS);
     const fingerprint = fingerprintOf(ids);
     if (!ids.length || fingerprint === this.replyFingerprint) return;
     this.replyFingerprint = fingerprint;
 
-    const closers: { close(): void }[] = [];
-    for (let i = 0; i < ids.length; i += ID_CHUNK) {
-      closers.push(this.pool.subscribeMany(this.relays, {
-        kinds: [1], '#e': ids.slice(i, i + ID_CHUNK),
-      }, { onevent: (e) => void this.take(e, 'replies') }));
-    }
-    this.setSubs('replies', closers);
+    await this.replaceSubs('replies', () => replyReqs(ids).map((filters) =>
+      this.subscribeFilters(filters, { onevent: (e) => void this.take(e, 'replies') }),
+    ));
     console.log(`[indexer] reply subscriptions rebuilt for ${ids.length} notes`);
   }
 
@@ -296,32 +404,9 @@ export class Indexer {
     if (!pubkeys.length || fingerprint === this.trackedFingerprint) return;
     this.trackedFingerprint = fingerprint;
 
-    // nostr-tools 2.19.4 takes ONE filter per subscription, so each half is a
-    // separate subscription rather than one call with several filters.
-    //
-    // kind:0 is asked for ON ITS OWN, not folded in beside 6 and 5. A relay
-    // caps a filter's result at its own default (strfry's is 500) and serves
-    // the NEWEST matches first; a profile is written once and rarely touched,
-    // so kind:0 sorts behind every recent repost and deletion from the same 500
-    // authors and gets truncated away. Measured on production 2026-08-25, the
-    // live bundle carried 6 profiles for 24 distinct note authors while relays
-    // held 20 of the 24. Separating the filter is what stops high-churn kinds
-    // spending the profile budget.
-    const closers: { close(): void }[] = [];
-    for (let i = 0; i < pubkeys.length; i += PUBKEY_CHUNK) {
-      const chunk = pubkeys.slice(i, i + PUBKEY_CHUNK);
-      const filters: Filter[] = [
-        { kinds: [0], authors: chunk },
-        { kinds: [6, 5], authors: chunk },
-        { kinds: [9735], '#p': chunk },
-      ];
-      for (const filter of filters) {
-        closers.push(this.pool.subscribeMany(this.relays, filter, {
-          onevent: (e) => void this.take(e, 'tracked'),
-        }));
-      }
-    }
-    this.setSubs('tracked', closers);
+    await this.replaceSubs('tracked', () => trackedReqs(pubkeys).map((filters) =>
+      this.subscribeFilters(filters, { onevent: (e) => void this.take(e, 'tracked') }),
+    ));
     console.log(`[indexer] tracked subscriptions rebuilt for ${pubkeys.length} pubkeys`);
   }
 
@@ -397,8 +482,10 @@ export class Indexer {
     if (this.deadChecks < DEAD_CHECKS_BEFORE_REBUILD) return;
     this.deadChecks = 0;
     console.warn(`[indexer] rebuilding every subscription from scratch (${connected.length} relays connected)`);
-    this.closeAllSubs();
-    this.subscribeCore();
+    // Every CLOSE out before any REQ goes back in, for the reason in
+    // `replaceSubs`: reopening beside the old set is what a relay refuses.
+    await this.closeAllSubs();
+    await this.subscribeCore();
     // Neither dynamic set has changed while nothing was being ingested, so
     // clear both fingerprints or their rebuilds return early and only the core
     // half comes back — which would look like a recovery and index no replies
@@ -407,7 +494,7 @@ export class Indexer {
     this.replyFingerprint = '';
     await this.subscribeTracked().catch(logErr('rebuild tracked'));
     await this.subscribeReplies().catch(logErr('rebuild replies'));
-    this.subscribeLive();
+    await this.subscribeLive();
   }
 
   /** What /health reports. Cheap enough to serve unauthenticated on every
@@ -696,16 +783,20 @@ export class Indexer {
    * A relay that is not in the pool contributes nothing rather than throwing:
    * this runs on a timer and must never be the reason a report is missed.
    */
-  private librarySubs(): { total: number; pings: number } {
+  private librarySubs(): { total: number; pings: number; max: number } {
     let total = 0;
     let pings = 0;
+    // The most on any ONE relay — the number RELAY_SUB_CAP bounds, and the one
+    // that says from the log alone whether nos.lol and primal are refusing.
+    let max = 0;
     for (const url of this.relays) {
       const open = this.pool.relayFor(url)?.openSubs;
       if (!open) continue;
       total += open.size;
+      max = Math.max(max, open.size);
       for (const id of open.keys()) if (id.startsWith('forced-ping:')) pings += 1;
     }
-    return { total, pings };
+    return { total, pings, max };
   }
 
   private memoryLine(): string {
@@ -714,7 +805,7 @@ export class Indexer {
     const lib = this.librarySubs();
     return `heap=${mb(m.heapUsed)}/${mb(m.heapTotal)}MB rss=${mb(process.memoryUsage.rss())}MB `
       + `ext=${mb(m.external)}MB subs=${this.subCount()} libsubs=${lib.total} `
-      + `pings=${lib.pings} seen=${this.seen.size}`;
+      + `relaymax=${lib.max} pings=${lib.pings} seen=${this.seen.size}`;
   }
 }
 

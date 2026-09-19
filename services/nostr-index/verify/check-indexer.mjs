@@ -302,6 +302,72 @@ await relay.close();
      '004 clamps a future-dated event to now(), so it cannot pin a pubkey to the top of the window');
 }
 
+// --- the relay budget ---------------------------------------------------------
+//
+// nos.lol and relay.primal.net keep 20 subscriptions live per connection and
+// answer the 21st with a NOTICE and an EOSE — so it looks open and never
+// delivers. The indexer held 37, and opened a rebuilt group BESIDE the old one,
+// so the whole tracked set went dead on those two relays at its first rebuild.
+// This drives a FULL-size index — 5,000 tracked pubkeys, 2,000 watched notes —
+// against a relay that enforces both limits the way they do, through a start
+// and a rebuild of both dynamic groups.
+{
+  const { RELAY_SUB_CAP, MAX_REQ_BYTES, PLANNED_SUBS_PER_RELAY, trackedReqs, replyReqs } =
+    await import('../src/indexer.ts');
+  const hexN = (n, pad = '0') => n.toString(16).padStart(64, pad);
+  // The bytes nostr-tools puts on the wire for one subscription.
+  const reqBytes = (filters) => JSON.stringify(['REQ', 'sub:99999', ...filters]).length;
+
+  ok(PLANNED_SUBS_PER_RELAY + 2 <= RELAY_SUB_CAP,
+     `plan: ${PLANNED_SUBS_PER_RELAY} REQs per relay, plus a ping and a backfill page, fit under ${RELAY_SUB_CAP}`);
+  const biggestTracked = Math.max(...trackedReqs(Array.from({ length: 5000 }, (_, i) => hexN(i))).map(reqBytes));
+  const biggestReply = Math.max(...replyReqs(Array.from({ length: 2000 }, (_, i) => hexN(i))).map(reqBytes));
+  ok(biggestTracked <= MAX_REQ_BYTES && biggestReply <= MAX_REQ_BYTES,
+     `the largest REQs (tracked ${biggestTracked} B, replies ${biggestReply} B) fit MAX_REQ_BYTES`);
+  ok(MAX_REQ_BYTES < 134_064, 'MAX_REQ_BYTES is under the 134,064-byte REQ that made nos.lol drop the socket');
+
+  await db.query('truncate events, event_tags, profiles, tracked_pubkeys, indexer_state cascade');
+  await db.query(
+    `insert into tracked_pubkeys (pubkey, reason, seen_at)
+     select lpad(to_hex(g), 64, '0'), 'author', now() - make_interval(secs => g) from generate_series(1, 5000) g`,
+  );
+  await db.query(
+    `insert into events (id, pubkey, kind, created_at, content, tags, sig)
+     select lpad(to_hex(g), 64, '0'), repeat('a', 64), 1, $1::bigint - g, '', '[]'::jsonb, repeat('0', 128)
+       from generate_series(1, 2000) g`,
+    [NOW],
+  );
+
+  const capped = await startMockRelay([], { maxSubsPerConnection: RELAY_SUB_CAP, maxMessageBytes: 131_072 });
+  const full = new Indexer(db, { ...cfg, relays: [capped.url()], profileRelays: [] });
+  await full.start();
+  await sleep(1000);
+
+  // One pubkey in at the top (the oldest falls out) and one newer note: both
+  // dynamic groups must rebuild on the next 300 ms tick — and the proof that
+  // the rebuilt REQs are LIVE, not refused-but-answered, is the relay holding a
+  // filter that names each newcomer.
+  const newPubkey = hexN(1, 'c');
+  const newNote = hexN(1, 'd');
+  await db.query(`insert into tracked_pubkeys (pubkey, reason, seen_at) values ($1, 'author', now() + interval '1 second')`, [newPubkey]);
+  await db.query(
+    `insert into events (id, pubkey, kind, created_at, content, tags, sig) values ($1, $2, 1, $3, '', '[]'::jsonb, $4)`,
+    [newNote, 'a'.repeat(64), NOW + 100, '0'.repeat(128)],
+  );
+  const liveNames = (key, value) => capped.liveFilters().some((f) => f[key]?.includes(value));
+  await waitFor(async () => liveNames('authors', newPubkey) && liveNames('#p', newPubkey) && liveNames('#e', newNote),
+    'both dynamic groups rebuilt, and the relay holds the newcomers LIVE (authors, #p and #e)');
+
+  ok(capped.oversize() === 0, 'no REQ was big enough for the relay to drop the socket');
+  ok(capped.refusals() === 0,
+     `the relay refused NO REQ through start and rebuild (refused ${capped.refusals()}, peak ${capped.peakSubs()} live on one connection)`);
+  ok(capped.peakSubs() <= PLANNED_SUBS_PER_RELAY + 2,
+     `peak ${capped.peakSubs()} live subscriptions on the connection, never old and new together`);
+
+  full.stop();
+  await capped.close();
+}
+
 await closePool();
 
 // ---------------------------------------------------------------------------

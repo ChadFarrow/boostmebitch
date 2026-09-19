@@ -16,12 +16,24 @@
 
 import { WebSocketServer } from 'ws';
 
-export async function startMockRelay(events = []) {
+/**
+ * `opts.maxSubsPerConnection` reproduces what nos.lol and relay.primal.net do
+ * past their limit, as measured on 2026-09-19: the REQ gets a NOTICE "ERROR:
+ * too many concurrent REQs" AND its stored matches AND an EOSE — and is never
+ * registered, so no live event ever reaches it. A client sees an open
+ * subscription. `opts.maxMessageBytes` reproduces nos.lol closing the whole
+ * socket on an oversized REQ.
+ */
+export async function startMockRelay(events = [], opts = {}) {
   const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   const store = [...events];
   // ws -> Map<subId, filters[]>
   const subs = new Map();
   let delivered = 0;
+  let reqs = 0;
+  let refusals = 0;
+  let oversize = 0;
+  let peakSubs = 0;
 
   // `port: 0` means the OS picks one, and it is only knowable once the server
   // is listening. Await that here rather than making every caller remember to.
@@ -31,13 +43,26 @@ export async function startMockRelay(events = []) {
     subs.set(ws, new Map());
     ws.on('close', () => subs.delete(ws));
     ws.on('message', (raw) => {
+      if (opts.maxMessageBytes && raw.length > opts.maxMessageBytes) {
+        oversize++;
+        ws.terminate();
+        return;
+      }
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
       const [type, subId, ...filters] = msg;
       if (type === 'CLOSE') { subs.get(ws)?.delete(subId); return; }
       if (type !== 'REQ') return;
+      reqs++;
 
-      subs.get(ws)?.set(subId, filters);
+      const bySub = subs.get(ws);
+      if (bySub && opts.maxSubsPerConnection && !bySub.has(subId) && bySub.size >= opts.maxSubsPerConnection) {
+        refusals++;
+        ws.send(JSON.stringify(['NOTICE', 'ERROR: too many concurrent REQs']));
+      } else {
+        bySub?.set(subId, filters);
+        peakSubs = Math.max(peakSubs, bySub?.size ?? 0);
+      }
       for (const filter of filters) {
         const matched = store
           .filter((e) => matches(e, filter))
@@ -81,6 +106,14 @@ export async function startMockRelay(events = []) {
       }
     },
     delivered: () => delivered,
+    /** REQs received, refused for the per-connection limit, and closed for size. */
+    reqs: () => reqs,
+    refusals: () => refusals,
+    oversize: () => oversize,
+    /** The most subscriptions one connection has held LIVE at once. */
+    peakSubs: () => peakSubs,
+    /** Every filter currently registered live, across connections. */
+    liveFilters: () => [...subs.values()].flatMap((bySub) => [...bySub.values()].flat()),
     /** How many clients are connected right now. */
     connections: () => subs.size,
     /**
