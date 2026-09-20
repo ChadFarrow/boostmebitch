@@ -139,10 +139,10 @@ function ReceivePanel() {
 
   return (
     <div className="space-y-2 text-[11px]">
-      <div className="flex gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={() => setOpen((v) => !v)}
-          className="text-[11px] text-muted hover:text-bolt min-h-6"
+          className="btn-mini"
         >
           {open ? 'Hide top up' : '↓ Top up'}
         </button>
@@ -206,11 +206,11 @@ function ReceivePanel() {
               <code className="block card p-2 text-[10px] leading-snug break-all select-all">
                 {inv.invoice}
               </code>
-              <div className="flex gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <button onClick={copy} className="btn-ghost">{copied ? 'Copied' : 'Copy'}</button>
                 <button
                   onClick={() => { setInv(null); setAmount(''); clearCopied(); }}
-                  className="text-[11px] text-muted hover:text-nostr min-h-6"
+                  className="btn-mini"
                 >
                   New amount
                 </button>
@@ -607,11 +607,11 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         {note && <div className="text-[11px] text-bolt break-words">{note}</div>}
         {err && <div className="text-[11px] text-nostr/80 break-words">{err}</div>}
         {canMakeInvoice && <ReceivePanel />}
-        <div className="flex gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={disconnect}
             disabled={busy}
-            className="text-[11px] text-muted hover:text-nostr disabled:opacity-40"
+            className="btn-mini disabled:opacity-40"
           >
             {busy ? 'Working…' : 'Disconnect'}
           </button>
@@ -619,7 +619,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
             <button
               onClick={republishBackup}
               disabled={busy}
-              className="text-[11px] text-muted hover:text-bone disabled:opacity-40"
+              className="btn-mini disabled:opacity-40"
             >
               ↻ Back up again
             </button>
@@ -676,7 +676,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
             <button
               onClick={restoreFromNostr}
               disabled={busy}
-              className="text-[11px] text-muted hover:text-bone disabled:opacity-40"
+              className="btn-mini disabled:opacity-40"
             >
               {busy ? 'Restoring…' : '↩ Restore from Nostr backup'}
             </button>

@@ -348,7 +348,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
           <button
             type="button"
             onClick={() => setSignInOpen(true)}
-            className="text-xs text-muted hover:text-bone text-left"
+            className="btn-inline text-xs text-muted hover:text-bone text-left"
           >
             <span className="text-nostr">◆</span> Sign in with Nostr to join the chat.
           </button>

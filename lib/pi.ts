@@ -23,7 +23,7 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 
@@ -638,19 +638,38 @@ export async function getGlobalLiveItems(): Promise<Episode[]> {
  * measure the payload as it arrived, not what survived. `/api/live-shows`
  * passes both numbers through to its response.
  *
+ * **`statusRows` splits the second cause in two, and that is the whole reason
+ * it is a separate number.** There are TWO filters here, not one, and each has
+ * already emptied the roster on its own: the `status` test reads a field only
+ * Podcast Index's payload shape decides the name and spelling of, and
+ * `liveBroadcastIsOver` reads two timestamps PI writes as `0` when it holds
+ * none — which is what the `liveStampSecs` call below exists for. Both produce
+ * the identical `rawRows > 0, items: []`, and their fixes have nothing in
+ * common. `statusRows > 0` with an empty `items` names the clock rule;
+ * `statusRows === 0` with `rawRows > 0` names the `status` test.
+ *
  * Same split, and same reason, as `getLiveItemsFromRssDetailed` beside
  * `getLiveItemsFromRss`: the detailed one answers a question the bare array
  * cannot express, and every existing caller keeps the simple shape.
  */
-export async function getGlobalLiveItemsDetailed(): Promise<{ items: Episode[]; rawRows: number }> {
+export async function getGlobalLiveItemsDetailed(): Promise<{
+  items: Episode[];
+  rawRows: number;
+  statusRows: number;
+}> {
   const data = await pi<any>(`/episodes/live?max=1000`);
   const rows: any[] = Array.isArray(data.items) ? data.items : [];
   const out: Episode[] = [];
+  let statusRows = 0;
   for (const e of rows) {
     const status = typeof e.status === 'string' ? e.status.toLowerCase() : undefined;
     if (status !== 'live' && status !== 'pending') continue;
-    const startTime = typeof e.startTime === 'number' ? e.startTime : undefined;
-    const endTime = typeof e.endTime === 'number' ? e.endTime : undefined;
+    statusRows += 1;
+    // `liveStampSecs`, never a bare `typeof === 'number'`: Podcast Index sends
+    // `0` for a number it does not hold, and a `0` end read as a time is a
+    // broadcast that finished in 1970. That dropped every live row PI sent.
+    const startTime = liveStampSecs(e.startTime);
+    const endTime = liveStampSecs(e.endTime);
     // The same rule the RSS parser applies, for the case RSS never gets read.
     // A `pi-only` row survives an unreadable feed on purpose, so without this a
     // broadcast whose flag was never flipped would sit on the page unchallenged
@@ -671,7 +690,7 @@ export async function getGlobalLiveItemsDetailed(): Promise<{ items: Episode[]; 
       liveEndTime: endTime,
     });
   }
-  return { items: out, rawRows: rows.length };
+  return { items: out, rawRows: rows.length, statusRows };
 }
 
 /**
@@ -893,12 +912,15 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
     const inner = hit.inner;
     const rawStatus = readAttr(attrs, 'status')?.toLowerCase();
     if (rawStatus !== 'pending' && rawStatus !== 'live') continue;
+    // Both stamps go through `liveStampSecs`, the same rule PI's roster gets:
+    // an unparseable attribute is `NaN` and a literal epoch date is `0`, and
+    // neither is a time a broadcast can be judged against.
     const startStr = readAttr(attrs, 'start');
     const startMs = startStr ? Date.parse(startStr) : NaN;
-    const startTime = Number.isFinite(startMs) ? Math.floor(startMs / 1000) : undefined;
+    const startTime = liveStampSecs(Math.floor(startMs / 1000));
     const endStr = readAttr(attrs, 'end');
     const endMs = endStr ? Date.parse(endStr) : NaN;
-    const endTime = Number.isFinite(endMs) ? Math.floor(endMs / 1000) : undefined;
+    const endTime = liveStampSecs(Math.floor(endMs / 1000));
     // `status="live"` is a flag a human flips, and humans forget — so a stale
     // flag must not render a pulsing badge and a working PLAY button over
     // silence. But `end` is a SCHEDULE and hosts run long, so an on-air show

@@ -352,6 +352,46 @@ Seven properties are load-bearing, and most of them are only visible from a driv
 
 **z-30, level with the mini-bar.** Below `<FullscreenPlayer>`'s `z-50`, `<ModalShell>`'s `z-[60]` and the `z-[70]` status strip, so the expanded player and every dialog cover it with no hide-on-route rule. **What that costs**: `{children}` is inside `<div className="relative z-0">`, a stacking context, so *nothing rendered by a page* can paint above the dock however high its z-index. A page-level dropdown or full-screen cover has to portal to `document.body` — see the episode-detail-view section.
 
+## What makes a control look like a control (`.btn-mini`, `.btn-inline`)
+
+Reported from an iPhone, over two screenshots of the wallet modal and the account menu: *"There are some buttons in the menus that are hard to see like switch wallet, top up etc. can we come up with a way to differentiate between what's text and what's a button?"*
+
+**The app's rule was already there and 25 controls were outside it.** Everything else that acts is uppercase mono inside a border — `EDIT PROFILE`, `MY BOOSTS`, `BROWSE PLAYLISTS`, `REFRESH`, `+ FOLLOW`. These 25 were lowercase `text-muted` with no border, and their only signal was a colour that changes on `hover:`.
+
+**A phone has no hover.** That is the whole fault: on the device the report came from, those controls carried *no* affordance — not a weak one, none. Nothing in review shows it, because a desktop pointer supplies the missing signal the moment you look for it.
+
+Two rows make it concrete, and both had already drifted inside a single flex container:
+
+```tsx
+// components/spark-wallet.tsx — two buttons, one row
+<button className="btn-ghost">Receive</button>
+<button className="text-muted hover:text-nostr">Disconnect</button>
+// components/nwc-wallet.tsx — same shape again
+<button className="btn-ghost">Copy</button>
+<button className="text-[11px] text-muted hover:text-nostr min-h-6">New amount</button>
+```
+
+**There was also a third, partial answer in the tree**: four controls carried `underline`, in three spellings (`underline`, `underline underline-offset-2`, and `hover:underline`, which shows nothing on a touch screen). One job, four styles.
+
+### The two shapes, and which question picks between them
+
+- **Standing alone → `.btn-mini`.** Already in `globals.css`, already 27px, already documented as *"a SMALL action or selector, for a cluster that is not the point of the page… rarely-pressed, they carry confirmations behind them"* — which is exactly what Disconnect, Top up, Back up again, Switch wallet, sign out, unmute, cancel and done are. Nothing new was invented for them.
+- **Inside a sentence → `.btn-inline`.** The one place a bordered chip may not go, because the surrounding prose owns the line box. It sets `underline underline-offset-2` and **no colour**, so one class serves the magenta, bolt and bone call sites without a modifier each. WCAG 2.5.8 exempts a link inside a sentence from the 24×24 floor, which is the other half of why these may stay small where `.btn-mini` may not.
+
+**`.btn-mini`'s `uppercase` is not decoration — it is the second signal**, and the one that survives a monochrome screenshot: prose in this app is sentence case, every control is uppercase mono. `DISCONNECT` and `SWITCH WALLET →` read as controls before the border is even noticed.
+
+**What was deliberately NOT done: the accent hovers were dropped.** Disconnect used to go magenta on hover, Top up amber, sign out magenta. `.btn-mini`'s single `hover:text-bone` replaces all of them. Keeping them would have meant a modifier class per accent for a signal that, again, no phone receives. Same argument as `.tile`'s: one shape at one size is what makes a cluster scan.
+
+**Mixed-height rows wrap and centre.** A `.btn-mini` (27px) beside a `.btn-ghost` (38px) in a `flex` container with the default `align-items: stretch` silently becomes 38px, which is not what the class documents. Five rows in `spark-wallet.tsx` and `nwc-wallet.tsx` carry `flex-wrap items-center` for that reason — the wrap because `↻ BACK UP AGAIN` is wider than `↻ Back up again`.
+
+**Measured under CDP with iPhone safe-area insets (59/34), at 390×844 and 320×568**, driving the real wallet modal to its connected view through a WebLN stand-in: `DISCONNECT` and `SWITCH WALLET →` both render bordered, `text-transform: uppercase`, **26.5px tall** (over the 24px floor), with the document no wider than the viewport and no control past the right edge at either width.
+
+### The deferral, written down so it is not mistaken for the rule
+
+**Three `hover:underline` links survive, in `<NoteCard>` and `<NoteEpisodeCard>`.** The author scoped the feed cards out of this pass, and the reason is real: five of these ride *every* card in a scrolling list, so a permanent underline there is a different trade from a permanent underline in a modal that holds one. The feed's action row — 💬 reply · 🔁 repost · ↗ quote · 🚫 hide · ⚡ zap — was left alone for the same reason, and each of those at least carries an emoji glyph. **New code does not inherit that exemption**; `globals.css` says so at the class.
+
+`components/boost-card.tsx`'s BoostBox link was converted, because MY BOOSTS is not the feed.
+
 ## `.tile` — a secondary action in a row of peers
 
 **Glyph over a one-word label, 52px, full width of its grid cell** (`app/globals.css`). Four surfaces are built from it: the show header, the episode page, and the two `⋯` menus — the fullscreen player's and the episode row's below `lg:` — each an auto-fit `grid-cols-[repeat(auto-fit,minmax(56px,1fr))]` so a conditional member changes the row's width and not its shape.

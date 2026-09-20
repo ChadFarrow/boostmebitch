@@ -40,6 +40,7 @@ import {
   isPlaylistMedium,
   liveBroadcastIsOver,
   liveRosterFeedOrder,
+  liveStampSecs,
 } from '../lib/util.ts';
 
 /** Kept in step with `MAX_LIVE_FEEDS` in app/api/live-shows/route.ts. */
@@ -137,8 +138,8 @@ const kept = statusOk.filter(
     !liveBroadcastIsOver(
       {
         status: String(e.status).toLowerCase(),
-        startTime: typeof e.startTime === 'number' ? e.startTime : undefined,
-        endTime: typeof e.endTime === 'number' ? e.endTime : undefined,
+        startTime: liveStampSecs(e.startTime),
+        endTime: liveStampSecs(e.endTime),
       },
       nowSec,
     ),
@@ -160,8 +161,8 @@ const rosterKept = liveOrPending.filter(
     !liveBroadcastIsOver(
       {
         status: String(e.status).toLowerCase(),
-        startTime: typeof e.startTime === 'number' ? e.startTime : undefined,
-        endTime: typeof e.endTime === 'number' ? e.endTime : undefined,
+        startTime: liveStampSecs(e.startTime),
+        endTime: liveStampSecs(e.endTime),
       },
       nowSec,
     ),
@@ -175,7 +176,14 @@ if (roster.length === 0) {
   console.log('    tab cannot work at all, for any visitor, until a durable roster exists.');
 } else if (rosterKept.length === 0) {
   console.log('  → PI SENT ROWS AND WE DROPPED EVERY ONE. This is our bug, in');
-  console.log('    getGlobalLiveItemsDetailed. A sample row, verbatim:');
+  console.log('    getGlobalLiveItemsDetailed — and the two filters need different fixes:');
+  console.log(
+    liveOrPending.length === 0
+      ? '    the STATUS TEST dropped them, so `status` is absent or spelled otherwise.'
+      : '    liveBroadcastIsOver dropped them, so read the start/end stamps below —'
+        + '\n    a 1970 date is Podcast Index sending 0 for a field it does not hold.',
+  );
+  console.log('    A sample row, verbatim:');
   console.log('    ' + JSON.stringify(roster[0]).slice(0, 600));
 }
 console.log(`  rows for this feed: ${mine.length}`);
@@ -205,8 +213,8 @@ if (!kept.length) {
       return !liveBroadcastIsOver(
         {
           status: s,
-          startTime: typeof e.startTime === 'number' ? e.startTime : undefined,
-          endTime: typeof e.endTime === 'number' ? e.endTime : undefined,
+          startTime: liveStampSecs(e.startTime),
+          endTime: liveStampSecs(e.endTime),
         },
         nowSec,
       );
@@ -214,7 +222,7 @@ if (!kept.length) {
     .map((e) => ({
       feedId: e.feedId,
       liveStatus: String(e.status).toLowerCase(),
-      liveStartTime: typeof e.startTime === 'number' ? e.startTime : undefined,
+      liveStartTime: liveStampSecs(e.startTime),
     }));
   const order = liveRosterFeedOrder(forOrder);
   const rank = order.indexOf(Number(feed.id));
@@ -250,10 +258,7 @@ const attr = (attrs, name) => {
   const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*["']([^"']*)["']`, 'i').exec(attrs);
   return m ? m[1] : undefined;
 };
-const secs = (v) => {
-  const ms = v ? Date.parse(v) : Number.NaN;
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
-};
+const secs = (v) => liveStampSecs(Math.floor((v ? Date.parse(v) : Number.NaN) / 1000));
 
 let found = 0;
 let survived = 0;

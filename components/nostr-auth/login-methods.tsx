@@ -10,7 +10,7 @@ function AmberManualPaste({ onSubmit }: { onSubmit: (value: string) => boolean }
     return (
       <button
         onClick={() => setOpen(true)}
-        className="text-[10px] text-muted hover:text-nostr underline mt-1"
+        className="btn-inline text-[10px] text-muted hover:text-nostr mt-1"
       >
         Amber didn&apos;t come back? Paste manually
       </button>
@@ -32,7 +32,7 @@ function AmberManualPaste({ onSubmit }: { onSubmit: (value: string) => boolean }
       <div className="flex items-center gap-2">
         <button
           onClick={() => setOpen(false)}
-          className="text-[10px] text-muted hover:text-bone"
+          className="btn-mini"
         >
           cancel
         </button>

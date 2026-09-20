@@ -189,6 +189,30 @@ body::before {
            border border-bone/30 text-muted transition
            hover:border-bone/60 hover:text-bone active:translate-y-px;
   }
+  /* An action INSIDE A SENTENCE — the one place a bordered control may not go,
+     because the surrounding prose owns the line box.
+
+     THE UNDERLINE IS PERMANENT, NEVER `hover:underline`. A phone has no hover,
+     and this app is read on one: a control whose only affordance fires on
+     pointer-over has no affordance at all on the device it was reported from.
+     Three `hover:underline` links survive in <NoteCard> and <NoteEpisodeCard>
+     and are a DEFERRAL, not a counter-example — the author scoped the feed
+     cards out of this pass, because five of these ride every card in a
+     scrolling list. New code does not get that exemption.
+     Everything that acts and is NOT in a sentence is a bordered control
+     (.btn / .btn-ghost / .btn-mini / .tile) — this is the exception, and the
+     exception is what makes that rule readable.
+
+     Colour is deliberately NOT set here. The call site keeps its own
+     `text-muted` / `hover:text-nostr`, and the underline inherits it, so one
+     class serves the magenta, bolt and bone variants without a modifier each.
+
+     WCAG 2.5.8 exempts a link inside a sentence from the 24x24 floor, which is
+     the other half of why these are allowed to stay small where .btn-mini is
+     not. */
+  .btn-inline {
+    @apply underline underline-offset-2;
+  }
   /* A secondary action in a ROW OF PEERS: glyph over a one-word label, 52px
      tall, full width of its grid cell. The episode page's Fav / Share / Stream /
      Support / Discuss / More row is six of these. It exists because that row

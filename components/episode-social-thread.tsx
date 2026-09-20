@@ -201,7 +201,7 @@ export function EpisodeSocialThread({
             href={njumpUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[11px] text-muted hover:text-nostr"
+            className="btn-inline text-[11px] text-muted hover:text-nostr"
           >
             view on nostr →
           </a>
@@ -263,7 +263,7 @@ export function EpisodeSocialThread({
                     setSendState('idle');
                     setSendErr(null);
                   }}
-                  className="text-muted hover:text-nostr text-xs"
+                  className="btn-mini"
                   aria-label="Comment"
                   title="Comment on this episode"
                 >

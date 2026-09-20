@@ -97,7 +97,7 @@ export function MutedAccountsSection() {
               <span className="truncate flex-1" title={npub}>{name}</span>
               <button
                 onClick={() => unmutePubkey(pk)}
-                className="text-[10px] text-muted hover:text-nostr"
+                className="btn-mini"
                 title="Unmute this account"
               >
                 unmute

@@ -147,11 +147,12 @@ export function ThemeMenuLink() {
     <button
       type="button"
       onClick={toggle}
-      // `py-1.5` is a TOUCH TARGET, not spacing — the same repair
-      // <CollapsibleHeading> documents. `text-[11px]` gives a 16.5px line box,
-      // and with no vertical padding this sat under WCAG 2.5.8's 24x24 floor.
-      // 16.5 + 12 = 28.5px. The icon is w-3.5 (14px) and never sets the height.
-      className="text-[11px] text-muted hover:text-bolt transition flex items-center gap-1.5 py-1.5"
+      // `.btn-mini` carries the 27px touch target this used to spell out as a
+      // bare `py-1.5` — and, more to the point, the BORDER. Bare muted text
+      // was indistinguishable from the muted prose it sits among, and the
+      // colour it changed to on hover is a signal a phone never receives.
+      // The icon is w-3.5 (14px) and never sets the height.
+      className="btn-mini"
     >
       {goingLight ? <SunIcon className="w-3.5 h-3.5" /> : <MoonIcon className="w-3.5 h-3.5" />}
       {goingLight ? 'light mode' : 'dark mode'}
