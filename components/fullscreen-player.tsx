@@ -766,16 +766,15 @@ export function FullscreenPlayer({
               bare "◆ Sign in" button, and it offered exactly one of the app's
               two logins: the Nostr one, opened with no intent, so its modal
               could not reach Google — the row lives in <AuthControl>'s
-              dropdown and nowhere else. The wallet had no trigger here at all,
-              because the only other one is <TabBar> and this overlay (`z-50`)
-              covers it (`z-30`). On `/live/<npub>` that left a listener with a
-              BOOST button, a boost modal telling them to "connect one with ⚡
-              Connect wallet (top right)", and no such control on the route.
+              dropdown and nowhere else. On `/live/<npub>`, which renders no
+              header at all, that left a listener with no login in reach.
 
-              `overlay` drops the theme row and the balance number; see
-              <AuthControl>. With BOTH logins set this renders nothing, exactly
-              as the old button did (it was gated on `!identity`) — the account
-              menu belongs to <NostrAuth>, which these routes mount hidden. */}
+              `overlay` drops the theme row, the balance number AND both wallet
+              chips; see <AuthControl>. The wallet is a tap away in the boost
+              modal this screen opens, which says "⚡ NO WALLET — CONNECT ONE"
+              when there is none. So with both logins set this renders nothing
+              and the bar is ← BACK, ⋯ and ✕ — the account menu belongs to
+              <NostrAuth>, which these routes mount hidden. */}
           {/* THE SEVEN SECONDARY ACTIONS, one tap away instead of on the screen.
               The now-playing screen is for the show, the transport and BOOST;
               both favorites, DOWNLOAD, the two SHAREs, STREAM and SPEED are

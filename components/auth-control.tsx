@@ -91,7 +91,16 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
 
   return (
     <div ref={wrapperRef} className="relative flex items-center gap-2">
-      {walletConnected && (
+      {/* NOT IN THE OVERLAY. <FullscreenPlayer>'s bar had this chip because the
+          wallet had no other route from a screen that covers <AppHeader> and
+          the dock — and the boost modal, opened from that same screen, now
+          carries its own ⚡ WALLET button in BOTH states (see its note). Two
+          controls for one modal on one screen, and the player's bar is the one
+          with no room: it holds ← BACK, the ⋯ menu and ✕, and the six tiles
+          moved into that menu to give the cover its space back. The SIGN IN
+          entries below stay — those are a different question, and #413's gap
+          was about them too. */}
+      {walletConnected && !overlay && (
         <button
           onClick={() => setWalletOpen(true)}
           className="btn-ghost flex items-center gap-2"
@@ -263,7 +272,9 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
           without this the header spends those seconds inviting the user to
           connect a wallet they already have. Still opens the modal on tap —
           it's a status label, not a lock. */}
-      {!walletConnected && !needNostr && (
+      {/* Also not in the overlay, and for the same reason: the boost modal's
+          button reads "⚡ NO WALLET — CONNECT ONE" in exactly this state. */}
+      {!walletConnected && !needNostr && !overlay && (
         <button
           onClick={() => setWalletOpen(true)}
           className="btn-ghost flex items-center gap-2"
