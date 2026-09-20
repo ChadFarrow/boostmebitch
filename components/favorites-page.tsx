@@ -522,7 +522,7 @@ export function FavoritesPage() {
           {query && !feeds.length && !items.length ? (
             <p className="text-muted text-sm py-8">
               Nothing matches “{q.trim()}”.{' '}
-              <button type="button" onClick={() => setQ('')} className="underline underline-offset-2 hover:text-bone">
+              <button type="button" onClick={() => setQ('')} className="btn-inline hover:text-bone">
                 clear the filter
               </button>{' '}
               to see all {total}.

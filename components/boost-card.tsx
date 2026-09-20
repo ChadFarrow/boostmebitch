@@ -94,7 +94,7 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
                   href={leg.boostboxUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-bolt hover:underline underline-offset-2"
+                  className="btn-inline text-bolt"
                   title="View metadata on BoostBox"
                 >
                   📦 boostbox
