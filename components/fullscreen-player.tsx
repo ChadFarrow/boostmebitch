@@ -203,6 +203,7 @@ import { SpeedButton, FastSpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
+import { WalletBalanceBox } from './wallet-balance';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 import { LiveBadge } from './live-badge';
@@ -786,20 +787,31 @@ export function FullscreenPlayer({
             ref={tiles.triggerRef}
             type="button"
             onClick={() => tiles.setOpen((v) => !v)}
-            // `.btn-ghost`'s 38px at every width, like the ↓ chip and the ⚡
-            // control beside it: the bar's height is what the cover measures
-            // against, so a 44px control here would take 6px off the cover on
-            // every phone. 36 x 38 still clears WCAG 2.5.8's 24px floor.
-            className={`inline-flex items-center justify-center w-9 min-h-[38px] flex-shrink-0 border transition ${
-              tiles.open ? 'border-bone bg-bone/5 text-bone' : 'border-bone/40 text-bone/70 hover:border-bone hover:text-bone'
+            // ← BACK's and ✕'s own shape, because those are what it sits
+            // between now: the wallet chip it was sized against has left the
+            // bar. It was 36 x 38 beside them at 30, which read as one control
+            // shouting. 30 x 26 still clears WCAG 2.5.8's 24px floor, and the
+            // bar's height — what the cover measures against — is unchanged.
+            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 ${
+              tiles.open ? 'border-bone bg-bone/5 text-bone' : ''
             }`}
             aria-haspopup="menu"
             aria-expanded={tiles.open}
             aria-label="More actions for this episode"
             title="More actions"
           >
-            <span aria-hidden className="text-lg leading-none">⋯</span>
+            {/* text-base, the ✕'s own size: at text-lg the glyph's line box
+                made this button 28px beside a 26px ✕. */}
+            <span aria-hidden className="text-base leading-none">⋯</span>
           </button>
+          {/* THE BALANCE, WITHOUT A WALLET BUTTON UNDER IT. The bar dropped both
+              wallet chips when the boost modal became the route to that modal,
+              and what the listener actually reads before pressing BOOST is the
+              number, not the control. `open` is the gate, not `everOpened`:
+              this overlay stays mounted for the session once it has been
+              opened, and a mounted `useWalletBalance` is a NIP-47 read on
+              every `payment_sent` — see <WalletBalanceBox>. */}
+          {open && <WalletBalanceBox />}
           <AuthControl overlay />
           <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
             ✕

@@ -83,6 +83,13 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useMenuKeys({ open: menuOpen, menuRef: authMenuRef, triggerRef: authTriggerRef, close: closeMenu });
 
+  // THE OVERLAY'S CONTROLS ARE 26px, not `.btn-ghost`'s 38. That bar is
+  // <FullscreenPlayer>'s — ← BACK, the ⋯ menu, the balance box and ✕ are all
+  // `px-2 py-1` with a 16px line box — and a 38px SIGN IN among them read as a
+  // different control rather than a peer. `text-xs`'s line-height is 1rem, so
+  // 16 + 8 + 2 = 26, the same arithmetic ← BACK does.
+  const trigger = `btn-ghost flex items-center ${overlay ? 'px-2 py-1 text-xs' : ''}`;
+
   const walletConnected = mounted && hasAnyWallet();
   const needNostr = !identity;
   // Reads an inlined NEXT_PUBLIC_* var, so it's identical on server and client —
@@ -138,7 +145,7 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
               if (googleConfigured) preloadGis();
               setMenuOpen((o) => !o);
             }}
-            className="btn-ghost flex items-center gap-1"
+            className={`${trigger} gap-1`}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
           >
@@ -299,7 +306,7 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
         <>
           <button
             onClick={() => setSignInOpen(true)}
-            className="btn-ghost flex items-center gap-2"
+            className={`${trigger} gap-2`}
           >
             <span className="text-nostr">◆</span>
             <span className="hidden sm:inline">Sign in</span>
