@@ -1,4 +1,55 @@
-import { MAX_DOWNLOAD_BYTES, roomVerdict } from './download-rules';
+import { MAX_DOWNLOAD_BYTES, roomVerdict, downloadFailureMessage } from './download-rules';
+
+/**
+ * Did the host answer AT ALL — any status, including one it refuses to let us
+ * read?
+ *
+ * `mode: 'no-cors'` asks the browser for an opaque response, which it hands
+ * back for ANY reply the server made: 200, 405, 500. It rejects only when the
+ * request never completed — no DNS, no route, no server. That is exactly the
+ * line between "this host will not let other apps save its audio" and "this
+ * device is offline", and it is the one signal `navigator.onLine` cannot give:
+ * that reports whether an interface exists, so it is `true` on a captive
+ * portal and on wifi with no route out.
+ *
+ * HEAD, not GET: `no-cors` permits it, and a GET here would start pulling the
+ * whole enclosure again to answer a yes/no question.
+ *
+ * FAILS TOWARDS "OFFLINE" on its own timeout. Saying "no connection" when the
+ * host was merely slow sends the user somewhere harmless; saying "this host
+ * blocks downloads" about a working host is a claim about somebody else's
+ * server that they cannot check.
+ *
+ * **Both signal helpers are feature-detected, and that is not defensive
+ * programming for its own sake.** `AbortSignal.timeout` landed in Safari 16 and
+ * `AbortSignal.any` only in 17.4, while this app is used on older iPhones — and
+ * a `TypeError` thrown HERE would replace a wrong-but-readable message with a
+ * blank failure, which is strictly worse than the bug being fixed.
+ */
+const REACHABILITY_PROBE_MS = 6000;
+
+function probeSignalFor(signal?: AbortSignal): AbortSignal | undefined {
+  const timeout = typeof AbortSignal?.timeout === 'function'
+    ? AbortSignal.timeout(REACHABILITY_PROBE_MS)
+    : undefined;
+  if (!signal) return timeout;
+  if (!timeout) return signal;
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : signal;
+}
+
+async function hostAnswers(url: string, signal?: AbortSignal): Promise<boolean> {
+  try {
+    await fetch(url, {
+      method: 'HEAD',
+      mode: 'no-cors',
+      credentials: 'omit',
+      signal: probeSignalFor(signal),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The bytes half of a download.
@@ -87,14 +138,26 @@ export async function hasRoomFor(bytes: number | null | undefined): Promise<'yes
 /**
  * Fetch an enclosure and store it under `key`.
  *
- * NO PROXY, AND THAT IS A MEASUREMENT. `<audio src>` needs no CORS header but
- * `fetch()` does, so the obvious worry is that most hosts would refuse. Five
- * real enclosures were tested on 2026-09-09 — a self-hosted mp3, Megaphone and
- * Simplecast each behind a Podtrac redirect, archive.org, and a Fountain music
- * track — and every one sent `Access-Control-Allow-Origin`. So this app keeps
- * its "no proxy" property: no SSRF surface, no audio bytes billed through
- * Vercel, and no domain allowlist to drift out of date. A host that does not
- * send the header fails here, and the caller renders that in words.
+ * NO PROXY, AND THAT IS A MEASUREMENT — but the first measurement was a
+ * SAMPLE, and it was not representative. `<audio src>` needs no CORS header
+ * and `fetch()` does. Five real enclosures were tested on 2026-09-09 — a
+ * self-hosted mp3, Megaphone and Simplecast each behind a Podtrac redirect,
+ * archive.org, and a Fountain music track — and every one sent
+ * `Access-Control-Allow-Origin`, which was read as "hosts send it".
+ *
+ * **That was wrong, and an iPhone found it on 2026-09-20**: `mmmusic.show`
+ * serves a 90 MB `audio/mpeg` off Apache with no such header, so Mutton, Mead
+ * & Music streams perfectly and cannot be saved. Re-measured that day —
+ * op3.dev, libsyn, megaphone, transistor and buzzsprout send it; `anchor.fm`,
+ * `mp3s.nashownotes.com` and `mmmusic.show` do not. The five that passed were
+ * all commercial hosts or a CORS-enabled prefix; **self-hosted shows are the
+ * gap, and V4V podcasts are disproportionately self-hosted.**
+ *
+ * The "no proxy" property is kept anyway, because the alternative is worse:
+ * proxying would put 90 MB of audio per download through Vercel, add an SSRF
+ * surface, and need a domain allowlist that drifts. What changed is the
+ * HONESTY of the failure — see `downloadFailureMessage`, which names the host's
+ * policy rather than blaming a network that is working.
  *
  * One shot, whole file, no Range requests and no resume. Resuming would need
  * the partial bytes kept somewhere, which is the half-written entry the Cache
@@ -130,9 +193,10 @@ export async function downloadBytes(
   } catch (e) {
     // An abort is the user cancelling and must stay distinguishable.
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
-    // A CORS refusal and an offline device are the same TypeError here. The
-    // caller decides which to say; naming the host is what makes it actionable.
-    throw new Error(`Could not reach ${hostOf(sourceUrl)} to download this episode.`);
+    // A CORS refusal and an offline device are the same TypeError here, so ASK
+    // rather than guess: a `no-cors` HEAD resolves whenever the server answered
+    // at all and rejects only when the device could not get there.
+    throw new Error(downloadFailureMessage(hostOf(sourceUrl), await hostAnswers(sourceUrl, signal)));
   }
   if (!res.ok) throw new Error(`${hostOf(sourceUrl)} answered ${res.status}.`);
   if (!res.body) throw new Error('This host sent no audio.');

@@ -197,3 +197,38 @@ export function roomVerdict(
   const headroom = Math.max(HEADROOM_BYTES, quota * HEADROOM_FRACTION);
   return used + bytes + headroom <= quota ? 'yes' : 'no';
 }
+
+/**
+ * What to say when the enclosure fetch threw.
+ *
+ * **A blocked host and a dead network are the SAME `TypeError`**, and saying
+ * "Could not reach mmmusic.show" for both was wrong in the case that actually
+ * happens. Reported from an iPhone on 2026-09-20: the show streamed perfectly
+ * while its DOWNLOAD chip read "Could not reach", which names the one cause
+ * that was not true — the host was up and serving the same 90 MB file to the
+ * `<audio>` element two inches below the message.
+ *
+ * `<audio src>` needs no CORS header and `fetch()` does, so a host that omits
+ * `Access-Control-Allow-Origin` plays and cannot be saved. Measured that day:
+ * op3.dev, libsyn, megaphone, transistor and buzzsprout all send it;
+ * `mmmusic.show`, `anchor.fm` and `mp3s.nashownotes.com` do not. **The note in
+ * `downloads-cache.ts` claiming five-of-five hosts send it was a sample that
+ * happened to miss self-hosted shows**, which V4V podcasts often are.
+ *
+ * `reachable` comes from a `no-cors` HEAD to the same URL, which is the exact
+ * discriminator and costs one round trip: an opaque response RESOLVES whenever
+ * the server answered at all — any status, 405 included — and rejects only when
+ * the device could not get there. `navigator.onLine` cannot do this job: it
+ * reports whether an interface exists, so it is `true` on a captive portal and
+ * on wifi with no route out.
+ *
+ * Neither message says "try again". A CORS policy will not change on a retry,
+ * and telling someone to repeat a thing that cannot work is how a one-off
+ * refusal becomes a habit of distrusting the button.
+ */
+export function downloadFailureMessage(host: string, reachable: boolean): string {
+  const where = host || 'this host';
+  return reachable
+    ? `${where} does not let other apps save its audio. You can still play and boost this episode.`
+    : `No connection — this device could not reach ${where}.`;
+}

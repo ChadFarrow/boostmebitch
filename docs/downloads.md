@@ -10,7 +10,11 @@ trying to become one.
 
 ---
 
-## The measurement that shaped the whole design: hosts send CORS
+## The measurement that shaped the whole design: most hosts send CORS, and some do not
+
+> **Corrected 2026-09-20.** This section used to end "five of five, so hosts send it".
+> The sample was five **commercial** hosts and a CORS-enabled redirect chain, and it
+> generalised to a population it did not cover. An iPhone found the gap.
 
 `<audio src="https://host/ep.mp3">` needs no CORS header. `fetch()` of the same URL
 does. The obvious fear is therefore that most podcast hosts would refuse a download,
@@ -29,13 +33,45 @@ Five real enclosures were tested on **2026-09-09**, with
 | archive.org | `*` | bytes |
 | Fountain (a `musicL` album track, 53 MB `.wav`) | `*` | bytes |
 
-Five of five. **So this app has no audio proxy and must not grow one casually.** What
+### What the iPhone found
+
+Reported 2026-09-20: *"Can[']t download the latest Mutton, Mead & Music episode"*,
+with a screenshot of the `⋯` menu showing **"Could not reach mmmusic.show to download
+this episode."** — beside a transport happily playing that very episode. The same
+report added *"Chad and reeds podcast and OBDM just fine"*, which is the shape of the
+answer: it is per-host, not per-app.
+
+Re-measured that day, same `Origin` header:
+
+| Host | `Access-Control-Allow-Origin` | Download |
+| --- | --- | --- |
+| `op3.dev` (the OP3 prefix) | `*` | works |
+| libsyn, megaphone, transistor, buzzsprout | sent | works |
+| **`mmmusic.show`** (Apache, 90 MB `audio/mpeg`) | **absent** | **fails** |
+| `anchor.fm` | absent | fails |
+| `mp3s.nashownotes.com` (the origin *behind* op3.dev) | absent | fails |
+
+That last row is the whole lesson in one line: **the same audio downloads through the
+OP3 prefix and not from its own origin.** The 2026-09-09 sample happened to reach
+every file through a commercial host or a CORS-enabled redirect, so it measured the
+prefixes rather than the publishers. Self-hosted shows are the gap, and V4V podcasts
+are disproportionately self-hosted.
+
+**The feed offers no way out for this case.** `mmmusic.show`'s feed carries no
+`<podcast:alternateEnclosure>` — zero occurrences — so there is no second source to
+fall back to, and using the OP3 prefix ourselves would forge somebody else's
+analytics.
+
+### The proxy is still refused, and the reasons did not change
+
+**So this app has no audio proxy and must not grow one casually.** What
 that buys is not tidiness:
 
 - No SSRF surface. An audio proxy takes a feed-supplied URL and fetches it
   server-side, which is the exact shape `lib/safe-fetch.ts` exists to contain.
 - No audio bytes billed through Vercel. A proxy doubles them — host to us, us to
   the listener — for a feature whose entire purpose is that bandwidth is scarce.
+  One Mutton, Mead & Music episode is 90 MB, each way, per listener.
 - No domain allowlist to drift. StableKraft's two lists were hand-mirrored and went
   out of sync at 16 entries versus 14, and the symptom was "streams fine, won't
   download."
@@ -443,10 +479,56 @@ indistinguishable from a broken one — the rule `<FavoritesSyncNotice>` exists 
 
 | Cause | What the listener reads |
 | --- | --- |
-| The host sent no CORS header, or the device is offline | "Could not reach `<host>` to download this episode." |
+| The host answered but sends no CORS header | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
+| The device could not reach the host at all | "No connection — this device could not reach `<host>`." |
 | `roomVerdict` said `'no'` | "Not enough space — remove a download to make room." |
 | HLS, a live item, or no URL | The button does not render at all. |
 | Anything else | The thrown message, or "Download failed — tap to retry." |
+
+**The first two rows used to be ONE row**, reading "Could not reach `<host>` to
+download this episode" for both — and the case that actually happens is the one it
+described wrongly. `mmmusic.show` was up, serving the same 90 MB file to the `<audio>`
+element two inches below the message.
+
+`downloadFailureMessage` (`download-rules.ts`, pinned by `check:downloads`) picks
+between them, and `hostAnswers` supplies the discriminator: a **`no-cors` HEAD** to
+the same URL, which the browser resolves for *any* reply the server made — 200, 405,
+500 — and rejects only when the request never completed. Driven in a real browser on
+2026-09-20, 5/5:
+
+| Case | `cors` GET | `no-cors` HEAD | Message |
+| --- | --- | --- | --- |
+| `mmmusic.show` | threw | **resolved** | the host's policy |
+| `op3.dev` | succeeded | — (never runs) | download proceeds |
+| Chrome `Network.emulateNetworkConditions offline` | threw | **threw** | "No connection" |
+
+Three things about that probe are deliberate:
+
+- **`navigator.onLine` cannot do this job.** It reports whether an interface exists,
+  so it is `true` on a captive portal and on wifi with no route out — the two
+  situations where the answer matters most.
+- **HEAD, not GET.** `no-cors` permits it, and a GET would pull the whole enclosure
+  again to answer a yes/no question.
+- **It fails towards "offline".** `op3.dev` itself rejects a HEAD, so a host that
+  blocks CORS *and* refuses HEAD is reported as a connection problem. That is the
+  safer wrong answer: sending someone to check their signal is harmless, while
+  asserting that a working server blocks downloads is a claim about a third party
+  that the listener cannot check.
+- **Neither message says "try again".** A CORS policy does not change on a retry, and
+  a button that invites a repeat of something that cannot work is how a one-off
+  refusal becomes a habit of distrusting it.
+
+Both `AbortSignal.timeout` and `AbortSignal.any` are feature-detected. The first
+landed in Safari 16 and the second only in 17.4, and a `TypeError` thrown inside the
+error path would replace a wrong-but-readable message with a blank failure — strictly
+worse than the bug being fixed.
+
+**Still open: making these hosts downloadable at all.** It needs `mode: 'no-cors'`
+plus service-worker playback, because `URL.createObjectURL(await res.blob())` cannot
+consume an opaque response. That costs the progress bar, the pre-flight room check,
+the `MAX_DOWNLOAD_BYTES` guard and any way to notice a cached error page, and Safari
+pads opaque cache entries against the quota. It is its own PR, with its own iPhone
+pass.
 
 `DownloadRefused` is a distinct class from a failure on purpose: nothing was
 attempted and nothing was spent.

@@ -47,7 +47,7 @@
 // invent: the double redirect, the `.wav`, the query string that is part of the
 // signature.
 
-import { chaptersRequestUrl, downloadKey, isDownloadable, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
+import { chaptersRequestUrl, downloadFailureMessage, downloadKey, isDownloadable, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
 import { downloadEpisodeId, isHlsUrl } from '../lib/util.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -87,6 +87,12 @@ function checkDoc(label, kind, args, expected, { alsoNaive = false } = {}) {
 function checkRoom(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, roomVerdict(...args), expected);
   vectors.push({ label, kind: 'room', args, alsoNaive });
+}
+
+/** A downloadFailureMessage vector. */
+function checkMsg(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, downloadFailureMessage(...args), expected);
+  vectors.push({ label, kind: 'msg', args, alsoNaive });
 }
 
 function section(name) { console.log(`\n${name}`); }
@@ -383,6 +389,41 @@ section('A download plays back under the id it was LISTED under — a money fact
 }
 
 // ---------------------------------------------------------------------------
+section('A blocked host and a dead network are told apart, and named');
+// ---------------------------------------------------------------------------
+{
+  // Reported from an iPhone on 2026-09-20. `mmmusic.show` serves a 90 MB
+  // audio/mpeg off Apache with NO `Access-Control-Allow-Origin`, so the show
+  // streamed while its DOWNLOAD chip read "Could not reach mmmusic.show" — the
+  // one cause that was not true. `reachable` comes from a `no-cors` HEAD, which
+  // resolves for any answer the server made and rejects only when the device
+  // could not get there.
+  //
+  // The naive version is the wording that shipped: one sentence for both, so
+  // EVERY vector here fails against it except by accident. None is exempt —
+  // there is no input where blaming the network is still the right answer.
+  checkMsg('a host that answers but sends no CORS header names its own policy',
+    ['mmmusic.show', true],
+    'mmmusic.show does not let other apps save its audio. You can still play and boost this episode.');
+  checkMsg('a host that never answered is a connection problem',
+    ['mmmusic.show', false],
+    'No connection — this device could not reach mmmusic.show.');
+  // The two branches must not collapse into one string: that is the whole bug.
+  compare('the two causes never produce the same sentence',
+    downloadFailureMessage('x.example', true) !== downloadFailureMessage('x.example', false), true);
+  // Neither says "try again". A CORS policy does not change on a retry, and a
+  // button that invites a repeat of something that cannot work teaches the
+  // listener to distrust it.
+  compare('neither message invites a retry',
+    [true, false].some((r) => /try again|retry/i.test(downloadFailureMessage('h', r))), false);
+  // An empty host must still read as a sentence rather than a double space.
+  checkMsg('an unparseable host still reads as English',
+    ['', true],
+    'this host does not let other apps save its audio. You can still play and boost this episode.');
+  checkMsg('...and offline too', ['', false], 'No connection — this device could not reach this host.');
+}
+
+// ---------------------------------------------------------------------------
 section('Every vector above is replayed against the obvious wrong version');
 // ---------------------------------------------------------------------------
 {
@@ -410,6 +451,9 @@ section('Every vector above is replayed against the obvious wrong version');
   // What `dbRowToEpisode` shipped with in #389: "nothing keys off `id` except
   // React", so the feed id will do.
   const naiveEpisodeId = (r) => r.feedId ?? 0;
+  // The wording that shipped: ONE sentence for both causes, blaming the network
+  // for a host that was up and serving the same file to <audio>.
+  const naiveMsg = (host) => `Could not reach ${host} to download this episode.`;
 
   const call = (impl, v) => {
     try {
@@ -421,6 +465,7 @@ section('Every vector above is replayed against the obvious wrong version');
         case 'chapters': return JSON.stringify(real ? chaptersRequestUrl(...v.args) : naiveDoc(...v.args));
         case 'transcript': return JSON.stringify(real ? transcriptRequestUrl(...v.args) : naiveDoc(...v.args));
         case 'episodeId': return JSON.stringify(real ? downloadEpisodeId(...v.args) : naiveEpisodeId(...v.args));
+        case 'msg': return JSON.stringify(real ? downloadFailureMessage(...v.args) : naiveMsg(...v.args));
         case 'idem': {
           // The property, not the value: does re-deriving change the answer?
           const f = real ? downloadKey : naiveKey;
