@@ -430,6 +430,12 @@ export function FullscreenPlayer({
     };
   }, []);
 
+  // The boxes the cover's size is measured against, plus the cover itself.
+  // See the effect below the `everOpened` latch.
+  const coverBoxRef = useRef<HTMLDivElement | null>(null);
+  const controlsRef = useRef<HTMLDivElement | null>(null);
+  const scrollRowRef = useRef<HTMLDivElement | null>(null);
+
   // Latches on first open and never resets — see the mount gate in the render
   // below for why the subtree is gated on this rather than on `open`.
   const [everOpened, setEverOpened] = useState(false);
@@ -441,6 +447,66 @@ export function FullscreenPlayer({
   useEffect(() => {
     if (!open) void exitFullscreen();
   }, [open]);
+
+  // THE COVER TAKES THE ROOM THAT IS LEFT, and below sm: only JS can know how
+  // much that is. The `max-w` on the box carries a measured CONSTANT (30rem) for
+  // the first paint, and a constant is wrong for a title the reserve never saw:
+  // "OBDM1424 - Recycled UFO Disclosure | China Nuclear War Scare | Greenland
+  // Deal | Missing 411 Cruise" is FOUR lines at 390px, 120px where the reserve
+  // budgeted two, and it put the tile row on the edge of the screen. CSS cannot
+  // measure a sibling, so this measures the slack and hands it to the cover.
+  //
+  // THE SLACK, NOT A RESERVE. `controlsRef` is the TILE ROW, the last thing that
+  // must stay on the screen: the title, the seek bar, the transport and BOOST
+  // are above it, and everything under it — the value split, Up Next, the album
+  // list, the notes — is allowed to be scrolled to. That is the same line the
+  // 30rem constant drew. `slack = row.clientHeight - where the tiles end`, measured
+  // in the row's own content coordinates so a scrolled row reads the same, and
+  // the cover's cap moves by exactly that. One pass settles it: the cover gives
+  // up or takes the slack and the slack becomes ~0.
+  //
+  // IT CANNOT LOOP. The observer watches the row and the controls block; the
+  // cover is neither, and shrinking it changes neither's height (the block's
+  // width does not move). The floor and ceiling are the CSS cap's own: 11rem
+  // and 28rem.
+  //
+  // From sm: up it clears the inline value and the class takes over, because
+  // there the panes sit side by side and the cover competes with nothing.
+  useEffect(() => {
+    const box = coverBoxRef.current;
+    const controls = controlsRef.current;
+    const row = scrollRowRef.current;
+    if (!box || !controls || !row) return;
+    const apply = () => {
+      if (window.matchMedia('(min-width: 640px)').matches) {
+        box.style.maxWidth = '';
+        return;
+      }
+      const rowTop = row.getBoundingClientRect().top;
+      const endsAt = controls.getBoundingClientRect().bottom - rowTop + row.scrollTop;
+      // 12px of it stays unspent: at slack 0 the tiles sit ON the bottom edge,
+      // which reads as a cut row rather than as the end of the page.
+      const slack = row.clientHeight - endsAt - 12;
+      const next = Math.max(176, Math.min(448, box.offsetWidth + slack));
+      box.style.maxWidth = `${Math.round(next)}px`;
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(controls);
+    ro.observe(row);
+    window.addEventListener('resize', apply);
+    window.addEventListener('orientationchange', apply);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', apply);
+      window.removeEventListener('orientationchange', apply);
+      box.style.maxWidth = '';
+    };
+    // `everOpened` and `open` mount the subtree these refs point at, and the
+    // episode decides which branch renders (a Nostr live stream has no cover at
+    // all). Everything else that moves — a longer title, a chapter label
+    // appearing — is the ResizeObserver's job.
+  }, [everOpened, open, current?.episode?.id, current?.episode?.guid]);
 
   if (!current) return null;
 
@@ -577,7 +643,7 @@ export function FullscreenPlayer({
           this overlay and the mini-player bar both. Containing it here covers
           the nested lists too (the album list, the transcript box), because
           chaining walks outward to the nearest scrollable ancestor. */}
-      <div className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
+      <div ref={scrollRowRef} className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
         {/* Artwork (or live video) — centered in the left half; sticky so it
             stays put as the page scrolls. For HLS streams the shared <video>
             is displayed here via its OutPortal while the player is open; when
@@ -717,7 +783,7 @@ export function FullscreenPlayer({
             // fit and a vanishing cover helps no one. From sm: up
             // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
             // info column, so its height is not the constraint.
-            <div className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
+            <div ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Whatever is playing at this second, via `nowPlayingArt`: the
                   LIVE BLOCK's art first — on a Split Kit show that's the cover
                   of the record actually playing, and it's the one thing on
@@ -926,7 +992,7 @@ export function FullscreenPlayer({
                   ≋ STREAM onto a second line, and the cover's reserve counts
                   one line of tiles, so that one sat under the bottom of an
                   iPhone's screen with its word cut off. */}
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
+              <div ref={controlsRef} className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
                 <FavHeart podcast={podcast} size="tile" nameTarget />
                 <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
                 <ShareTargets podcast={podcast} episode={episode} />
