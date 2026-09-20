@@ -213,8 +213,16 @@ export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
 
 export function trimForQueue(e: Episode): Episode {
   // `description` and `contentEncoded` are the two large fields and the two
-  // the queue never renders. Everything else — enclosure, art, duration,
+  // the queue LIST never renders. Everything else — enclosure, art, duration,
   // chapters, transcript, and both value fields — is kept.
+  //
+  // THE PLAYER DOES RENDER THEM, so dropping them here is only safe because
+  // <FullscreenPlayer> fetches them back: an episode reached through
+  // `playFromQueue`, `queueStepTo`, `revealQueue` or `handlePlaybackEnded`
+  // arrived with an empty About tab, reported from a phone as "now I don't have
+  // any shownotes" against a sibling episode opened from a feed row that had
+  // them. That fetch is one `loadFeed` per episode, coalesced and cached; it is
+  // what makes this trim a storage decision rather than a data loss.
   const rest = { ...e };
   delete rest.description;
   delete rest.contentEncoded;

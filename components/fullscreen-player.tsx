@@ -6,6 +6,7 @@ import { useAnchoredMenu } from './use-anchored-menu';
 import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
+import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { nowPlayingArt } from '@/lib/track-art';
@@ -588,6 +589,37 @@ export function FullscreenPlayer({
     if (!open) void exitFullscreen();
   }, [open]);
 
+  // SHOW NOTES FOR AN EPISODE PLAYED FROM THE QUEUE. `trimForQueue` deletes
+  // `description` and `contentEncoded` before the queue reaches localStorage —
+  // they are the two large fields and the queue list renders neither — so an
+  // episode reached through `playFromQueue`, `queueStepTo`, `revealQueue` or
+  // `handlePlaybackEnded` arrives here with no notes at all, and the About tab
+  // had nothing to show. Reported from the phone, on an episode whose sibling
+  // opened from a feed row showed its notes in the same build.
+  //
+  // THE FETCH IS HERE rather than in the four store paths: this is the one
+  // surface that renders notes for whatever is playing, and `loadFeed`
+  // (`lib/podcast-meta.ts`) coalesces a request already in flight and caches
+  // the answer, so a step through a queue of one show costs one request. It
+  // runs ONLY when the episode carries neither field — an episode opened from a
+  // list already has them — and the result is keyed by episode id, so a step to
+  // the next item cannot paint the previous one's notes.
+  const [queuedNotes, setQueuedNotes] = useState<{ id: number; description: string } | null>(null);
+  const notesEpisode = current?.episode;
+  const notesFeedId = current?.podcast?.id ?? current?.episode?.feedId;
+  useEffect(() => {
+    if (!notesEpisode || notesEpisode.description || notesEpisode.contentEncoded) return;
+    const guid = notesEpisode.guid;
+    if (!guid || !notesFeedId) return;
+    const id = notesEpisode.id;
+    let cancelled = false;
+    void loadEpisodeFromFeed(notesFeedId, guid).then((r) => {
+      const text = r?.episode?.description;
+      if (!cancelled && text) setQueuedNotes({ id, description: text });
+    });
+    return () => { cancelled = true; };
+  }, [notesEpisode, notesFeedId]);
+
   // THE COVER TAKES THE ROOM THAT IS LEFT, and below sm: only JS can know how
   // much that is. The `max-w` on the box carries a measured CONSTANT (30rem) for
   // the first paint, and a constant is wrong for a title the reserve never saw:
@@ -687,7 +719,9 @@ export function FullscreenPlayer({
   const boost = boostGate(episode, podcast);
   const value = boost.value;
   const hasValue = boost.hasValue;
-  const description = episode.description ? stripHtml(episode.description) : '';
+  const notes = episode.description
+    || (queuedNotes && queuedNotes.id === episode.id ? queuedNotes.description : '');
+  const description = notes ? stripHtml(notes) : '';
   const { index: activeIdx, chapter: activeChapter, end: activeChapterEnd } = chapterState(
     chapters,
     positionSec,
