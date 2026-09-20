@@ -115,7 +115,7 @@ const PAGE = 12;
 
 type Phase = 'idle' | 'checking' | 'done' | 'failed';
 
-export function FavoritesNewEpisodes() {
+export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void }) {
   const favorites = useApp((s) => s.favorites);
   const identity = useApp((s) => s.identity);
   const [mounted, setMounted] = useState(false);
@@ -570,21 +570,62 @@ export function FavoritesNewEpisodes() {
                         exactly when the feed's would have worked.
                         `<EpisodeList>` pairs the same two fields on the same
                         data shape. */}
-                    <PodcastCover
-                      image={e.image}
-                      artwork={e.feedImage}
-                      title={e.feedTitle}
-                      seed={String(e.feedId)}
-                      className="w-12 h-12 flex-shrink-0"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-display leading-tight truncate">{e.title}</div>
-                      <div className="text-[11px] text-muted truncate">
-                        {e.feedTitle}
-                        {e.datePublished ? ` · ${fmtDate(e.datePublished)}` : ''}
-                        {e.duration ? ` · ${fmtDuration(e.duration)}` : ''}
-                      </div>
-                    </div>
+                    {/* THE ROW OPENS THE EPISODE, and the cover and the text are
+                        one control rather than two: they name one destination,
+                        and a screen reader should hear one link to it, not two.
+                        Its text content IS the accessible name — the title, the
+                        show and the date — which is why it carries no
+                        `aria-label`. The queue control stays a SIBLING: a button
+                        may not contain a button, the rule every episode row in
+                        this app already follows.
+
+                        `onOpen` is the page's, not this component's: the handoff
+                        is `selectPodcast` → `setShowOrigin` → `router.push('/')`
+                        and it has to stay in one place. Without it — a surface
+                        that renders this section and passes nothing — the row is
+                        a plain `<div>` and reads as text, rather than a control
+                        that looks live and does nothing. */}
+                    {onOpen ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpen(e)}
+                        className="min-w-0 flex-1 flex items-center gap-3 text-left"
+                      >
+                        <PodcastCover
+                          image={e.image}
+                          artwork={e.feedImage}
+                          title={e.feedTitle}
+                          seed={String(e.feedId)}
+                          className="w-12 h-12 flex-shrink-0"
+                        />
+                        <span className="min-w-0 flex-1 block">
+                          <span className="block text-sm font-display leading-tight truncate">{e.title}</span>
+                          <span className="block text-[11px] text-muted truncate">
+                            {e.feedTitle}
+                            {e.datePublished ? ` · ${fmtDate(e.datePublished)}` : ''}
+                            {e.duration ? ` · ${fmtDuration(e.duration)}` : ''}
+                          </span>
+                        </span>
+                      </button>
+                    ) : (
+                      <>
+                        <PodcastCover
+                          image={e.image}
+                          artwork={e.feedImage}
+                          title={e.feedTitle}
+                          seed={String(e.feedId)}
+                          className="w-12 h-12 flex-shrink-0"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-display leading-tight truncate">{e.title}</div>
+                          <div className="text-[11px] text-muted truncate">
+                            {e.feedTitle}
+                            {e.datePublished ? ` · ${fmtDate(e.datePublished)}` : ''}
+                            {e.duration ? ` · ${fmtDuration(e.duration)}` : ''}
+                          </div>
+                        </div>
+                      </>
+                    )}
                     {/* `<NoteQueueButton>`, NOT `<QueueButton>`, and the reason
                         is money. These rows are Podcast Index's indexed record,
                         which carries no per-item value block, no

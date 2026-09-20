@@ -35,7 +35,7 @@ import {
   groupByMedium, feedNoun, itemNoun, splitLabels, crossSplitLabel,
   useCollapsedGroups, CollapsibleHeading,
 } from '@/components/lists/grouping';
-import type { FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
+import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
 
 /**
  * The favorites library at `/favorites`.
@@ -269,6 +269,40 @@ export function FavoritesPage() {
     if (loaded.episode) openEpisode(loaded.episode);
   }
 
+  /**
+   * Open a NEW EPISODES row — the same handoff as `openItem`, from a different
+   * shape. Those rows are Podcast Index's indexed record, so they carry a
+   * `feedId` and a guid and nothing else this page can trust: no value block,
+   * no `valueTimeSplits` (see `<NoteQueueButton>`'s note in that section). The
+   * show goes up first and unconditionally, for the three reasons `openItem`
+   * gives, and the episode follows once the feed has answered.
+   *
+   * IT LIVES HERE rather than in `<FavoritesNewEpisodes>` because this is where
+   * the three halves of the handoff already are — `selectPodcast`, then
+   * `setShowOrigin`, then `router.push('/')` — and a second copy is how one of
+   * them goes missing. A row with no guid still opens its SHOW: that is the
+   * page the reader asked for minus one step, not a dead control.
+   */
+  async function openNewEpisode(e: Episode) {
+    if (!e.feedId) return;
+    selectPodcast({
+      id: e.feedId,
+      podcastGuid: e.podcastGuid,
+      title: e.feedTitle ?? e.title ?? '',
+      image: e.feedImage ?? e.image,
+    });
+    setShowOrigin(FAVORITES_ORIGIN); // see openFeed
+    router.push('/');
+    if (!e.guid) return;
+    const loaded = await loadEpisodeFromFeed(e.feedId, e.guid);
+    if (!loaded) return;
+    // A second tap (or BACK) during the fetch wins — `openItem` says why.
+    const selected = useApp.getState().selectedPodcast;
+    if (!selected || selected.id !== e.feedId) return;
+    syncSelectedPodcast(loaded.podcast);
+    if (loaded.episode) openEpisode(loaded.episode);
+  }
+
   // The "show N more …" nouns follow the SECTION's medium, not the tab. Under
   // `all` the tab knows no medium and had to say "favorites"; a section does
   // know one, so the control under ALBUMS now offers more albums. `~unknown`
@@ -458,7 +492,7 @@ export function FavoritesPage() {
           library never gets a "new episodes" heading over "Nothing saved yet."
           It is NOT part of the tab / sort / split state: those describe the
           library, this describes the wire. */}
-      <FavoritesNewEpisodes />
+      <FavoritesNewEpisodes onOpen={openNewEpisode} />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
