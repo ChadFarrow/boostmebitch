@@ -90,11 +90,18 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
   // 16 + 8 + 2 = 26, the same arithmetic ← BACK does.
   const trigger = `btn-ghost flex items-center ${overlay ? 'px-2 py-1 text-xs' : ''}`;
 
+
   const walletConnected = mounted && hasAnyWallet();
   const needNostr = !identity;
   // Reads an inlined NEXT_PUBLIC_* var, so it's identical on server and client —
   // no `mounted` gate needed, unlike walletConnected (which reads localStorage).
   const googleConfigured = isGoogleAuthConfigured();
+
+  // NOTHING TO RENDER IS A NULL, not an empty wrapper. In the overlay the two
+  // wallet chips are gone, so a signed-in user leaves this component with no
+  // children — and an empty `flex` div still takes one of the bar's `gap-2`s,
+  // which puts 8px between ✕ and the control before it for no reason.
+  if (overlay && !needNostr) return null;
 
   return (
     <div ref={wrapperRef} className="relative flex items-center gap-2">
