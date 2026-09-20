@@ -435,23 +435,6 @@ export function FavoritesPage() {
           {mounted && total > 0 && (
             <span className="text-[11px] uppercase tracking-widest text-muted">{total} saved</span>
           )}
-          {/* THE SECOND WAY INTO /playlists, and the app is down to two.
-              <PlaylistsLink> in the header is gone with the rest of the
-              header's navigation, and playlists are not a tab in <TabBar> —
-              they are content, not a destination. That left exactly one route
-              in: the hero's BROWSE PLAYLISTS button on /, which is gated on an
-              empty home page and hides the moment the visitor searches or
-              opens a show. From here, from a search, or from a drilled-in show
-              there was no way to the collection at all.
-              The two that remain are different controls, which is why this is
-              a link and not a copy of the hero button: that one is DISCOVERY
-              and hides as soon as you use the page, this one is NAVIGATION and
-              is here whatever state the library is in. It sits above the
-              loading / empty / rows split so it is reachable in all three.
-              A bare <Link>, no logic, nothing to drift. */}
-          <Link href="/playlists" className="btn-ghost btn-compact text-xs">
-            PLAYLISTS
-          </Link>
         </div>
       </div>
 
