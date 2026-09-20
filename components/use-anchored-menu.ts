@@ -22,9 +22,10 @@ export type MenuAt = { top?: number; bottom?: number; right: number };
  * `roomBelow` px under it, above it otherwise, and the right edge is clamped
  * BOTH WAYS. `menuWidth` is what the second clamp needs: the menu hangs to the
  * LEFT of its trigger, so a trigger that is not near the right edge — the
- * player's `⋯` sits left of ↓, the account control and ✕ — puts the panel's
- * left edge off the screen. The caller states the width because the panel does
- * not exist to be measured until `at` says where to put it.
+ * player's `⋯` sits left of the account control and ✕ — puts the panel's left
+ * edge off the screen. Measured at 390px: the panel's left came out at -74.
+ * The caller states the width because the panel does not exist to be measured
+ * until `at` says where to put it.
  *
  * OUTSIDE-CLICK TESTS BOTH ELEMENTS, and both tests are `?.` rather than a
  * `ref.current &&` guard. A trigger may be CONDITIONALLY rendered — an episode
