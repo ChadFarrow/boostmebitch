@@ -1,6 +1,8 @@
 'use client';
 import dynamic from 'next/dynamic';
 import { CopyLinkButton } from './copy-link-button';
+import { createPortal } from 'react-dom';
+import { useAnchoredMenu } from './use-anchored-menu';
 import { cloneElement, useEffect, useId, useRef, useState, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
@@ -430,6 +432,11 @@ export function FullscreenPlayer({
     };
   }, []);
 
+  // The ⋯ in the top bar: the five secondary tiles — both hearts, both SHAREs
+  // and STREAM — in a menu, so the screen keeps what the listener came for.
+  // See the block that renders it for why they left the screen.
+  const tiles = useAnchoredMenu({ roomBelow: 200, menuWidth: 224 });
+
   // The boxes the cover's size is measured against, plus the cover itself.
   // See the effect below the `everOpened` latch.
   const coverBoxRef = useRef<HTMLDivElement | null>(null);
@@ -456,11 +463,11 @@ export function FullscreenPlayer({
   // budgeted two, and it put the tile row on the edge of the screen. CSS cannot
   // measure a sibling, so this measures the slack and hands it to the cover.
   //
-  // THE SLACK, NOT A RESERVE. `controlsRef` is the TILE ROW, the last thing that
-  // must stay on the screen: the title, the seek bar, the transport and BOOST
-  // are above it, and everything under it — the value split, Up Next, the album
-  // list, the notes — is allowed to be scrolled to. That is the same line the
-  // 30rem constant drew. `slack = row.clientHeight - where the tiles end`, measured
+  // THE SLACK, NOT A RESERVE. `controlsRef` is the BOOST line, the last thing
+  // that must stay on the screen: the title, the seek bar and the transport are
+  // above it, and everything under it — the value split, Up Next, the album
+  // list, the notes — is allowed to be scrolled to. It was the tile row until
+  // those five moved into the ⋯ menu. `slack = row.clientHeight - where BOOST ends`, measured
   // in the row's own content coordinates so a scrolled row reads the same, and
   // the cover's cap moves by exactly that. One pass settles it: the cover gives
   // up or takes the slack and the slack becomes ~0.
@@ -487,7 +494,11 @@ export function FullscreenPlayer({
       // 12px of it stays unspent: at slack 0 the tiles sit ON the bottom edge,
       // which reads as a cut row rather than as the end of the page.
       const slack = row.clientHeight - endsAt - 12;
-      const next = Math.max(176, Math.min(448, box.offsetWidth + slack));
+      // 144px, where the CSS cap's floor is 11rem: on a 375x667 phone a
+      // four-line title left BOOST 11px under the edge at 176, and BOOST is
+      // the one control on this screen that may not need a scroll. A 144px
+      // cover is small; a boost button below the fold is worse.
+      const next = Math.max(144, Math.min(448, box.offsetWidth + slack));
       box.style.maxWidth = `${Math.round(next)}px`;
     };
     apply();
@@ -594,7 +605,13 @@ export function FullscreenPlayer({
           <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs flex-shrink-0" aria-label="Back">
             ← back
           </button>
-          <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
+          {/* HIDDEN BELOW sm:, because the bar's right-hand cluster is now four
+              controls wide — ⋯, ↓, the account chip and ✕ — and at 390px that
+              leaves this label 39px of the ~54px its shortest word needs. It
+              overlapped the ⋯ rather than folding. The screen it labels is a
+              full-screen cover with the show's title under it, so the label is
+              the one thing on this bar that says what is already obvious. */}
+          <span className="hidden sm:inline text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
         </div>
         {/* `flex-shrink-0`, here and on ← BACK, because neither may grow
             taller. Signed out below ~400px this cluster holds ↓, SIGN IN ▾ and
@@ -618,14 +635,31 @@ export function FullscreenPlayer({
               <AuthControl>. With BOTH logins set this renders nothing, exactly
               as the old button did (it was gated on `!identity`) — the account
               menu belongs to <NostrAuth>, which these routes mount hidden. */}
-          {/* DOWNLOAD IS UP HERE, NOT IN THE TILE ROW, because the tile row
-              is out of room and this bar is not out of height: the chip is
-              `.btn-ghost`'s height, the same as the ⚡ chip beside it, so the
-              bar does not grow and the cover's reserve below stays true. Glyph
-              only on a phone; the size is in its accessible name. It renders
-              nothing for a live item or an HLS stream, so a Nostr stream's bar
-              is unchanged. */}
-          <DownloadButton episode={episode} podcast={podcast} size="header" />
+          {/* THE SIX SECONDARY ACTIONS, one tap away instead of on the screen.
+              The now-playing screen is for the show, the transport and BOOST;
+              both favorites, DOWNLOAD, the two SHAREs and STREAM are none of
+              those, and as a row of tiles they were the thing a long title
+              pushed off the bottom of the phone. The menu is the same shape the
+              episode rows use, and every tile is the shared control, not a copy
+              of it. */}
+          <button
+            ref={tiles.triggerRef}
+            type="button"
+            onClick={() => tiles.setOpen((v) => !v)}
+            // `.btn-ghost`'s 38px at every width, like the ↓ chip and the ⚡
+            // control beside it: the bar's height is what the cover measures
+            // against, so a 44px control here would take 6px off the cover on
+            // every phone. 36 x 38 still clears WCAG 2.5.8's 24px floor.
+            className={`inline-flex items-center justify-center w-9 min-h-[38px] flex-shrink-0 border transition ${
+              tiles.open ? 'border-bone bg-bone/5 text-bone' : 'border-bone/40 text-bone/70 hover:border-bone hover:text-bone'
+            }`}
+            aria-haspopup="menu"
+            aria-expanded={tiles.open}
+            aria-label="More actions for this episode"
+            title="More actions"
+          >
+            <span aria-hidden className="text-lg leading-none">⋯</span>
+          </button>
           <AuthControl overlay />
           <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
             ✕
@@ -643,6 +677,51 @@ export function FullscreenPlayer({
           this overlay and the mini-player bar both. Containing it here covers
           the nested lists too (the album list, the transcript box), because
           chaining walks outward to the nearest scrollable ancestor. */}
+      {/* THE ⋯ MENU'S PANEL. Portalled and `fixed`, for the reason
+          `useAnchoredMenu` states: the layout's `relative z-0` wrapper is a
+          stacking context, so an in-place z-index cannot leave it. `z-[55]` and
+          not the rows' `z-40`: this one has to clear THIS overlay's own `z-50`,
+          and it still sits under <ModalShell> (`z-[60]`) and the iOS status
+          strip (`z-[70]`), so a boost modal opened from a tile covers it.
+
+          The tiles are the SHARED controls, never menu items that re-implement
+          them: both hearts name their target (SHOW/EPISODE, or ALBUM/TRACK on a
+          music feed), the two SHAREs name theirs (see <ShareTargets>), and
+          STREAM is `useStreamPanel`'s own button restyled with `cloneElement`
+          — a class name, not a new prop on a money-path file. The menu stays
+          open after a press, so the tile's own state change is the answer. */}
+      {tiles.open && tiles.at && createPortal(
+        <div
+          ref={tiles.menuRef}
+          role="menu"
+          aria-label="Actions for this episode"
+          // THREE COLUMNS, not `auto-fit`: five tiles in a four-wide grid put
+          // STREAM alone on a second row beside three empty cells. 3 + 2 reads
+          // as a block. 224px is the width `useAnchoredMenu` is told about, so
+          // the panel cannot hang off the left of the screen.
+          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2"
+          style={{ top: tiles.at.top, bottom: tiles.at.bottom, right: tiles.at.right }}
+        >
+          <FavHeart podcast={podcast} size="tile" nameTarget />
+          <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+          {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
+              longer shows: ↓, a progress fill, ✓ when the episode is on the
+              device. It was a chip in the bar for one afternoon; six tiles fill
+              the menu's two rows exactly, and the bar keeps ⋯, the account
+              control and ✕. It renders nothing for a live item or an HLS
+              stream, and then the menu is five. */}
+          <DownloadButton episode={episode} podcast={podcast} size="tile" />
+          <ShareTargets podcast={podcast} episode={episode} />
+          {streamButton && cloneElement(
+            streamButton,
+            { className: 'tile' },
+            <span aria-hidden className="text-lg leading-none">≋</span>,
+            'STREAM',
+          )}
+        </div>,
+        document.body,
+      )}
+
       <div ref={scrollRowRef} className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
         {/* Artwork (or live video) — centered in the left half; sticky so it
             stays put as the page scrolls. For HLS streams the shared <video>
@@ -959,7 +1038,7 @@ export function FullscreenPlayer({
                   full-width tile grid that are both symmetric. It costs nothing
                   from sm: up: BOOST is `sm:flex-1` there, so the line has no
                   free space for justify-content to distribute. */}
-              <div className="flex flex-wrap items-center justify-center gap-3">
+              <div ref={controlsRef} className="flex flex-wrap items-center justify-center gap-3">
                 <TransportControls
                   size="lg"
                   prev={chapterNav?.prev}
@@ -977,39 +1056,6 @@ export function FullscreenPlayer({
                 >
                   <BoltIcon /> BOOST
                 </button>
-              </div>
-              {/* The one cluster holding BOTH hearts, so both name their target
-                  (SHOW/EPISODE, or ALBUM/TRACK on a music feed). They otherwise
-                  render the identical word side by side and nothing on screen
-                  says which favorites what. The two SHARE buttons name theirs
-                  for the same reason — see <ShareTargets>.
-                  One row of equal `.tile`s, the same shape as the episode
-                  page's action row: five peers, glyph over word. They were
-                  five .btn-ghost chips of five different widths wrapping onto
-                  two lines at 390px.
-                  FIVE IS THE MOST ONE LINE HOLDS ON A PHONE, and DOWNLOAD is
-                  in the header for that reason. As a sixth tile it wrapped
-                  ≋ STREAM onto a second line, and the cover's reserve counts
-                  one line of tiles, so that one sat under the bottom of an
-                  iPhone's screen with its word cut off. */}
-              <div ref={controlsRef} className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
-                <FavHeart podcast={podcast} size="tile" nameTarget />
-                <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
-                <ShareTargets podcast={podcast} episode={episode} />
-                {/* The meter below says what streaming is DOING; this is the
-                    only place in the player you can change it. Without it the
-                    reaction to "≋ streaming 10 sats/min" is to go hunting for
-                    the switch, and the player is full-screen — there is nothing
-                    else on screen to hunt through. Show-scoped, same keys as
-                    the show header and episode page.
-                    `cloneElement` to restyle, not a prop on `useStreamPanel`
-                    — same call as the episode page, same reason. */}
-                {streamButton && cloneElement(
-                  streamButton,
-                  { className: 'tile' },
-                  <span aria-hidden className="text-lg leading-none">≋</span>,
-                  'STREAM',
-                )}
               </div>
             </div>
 

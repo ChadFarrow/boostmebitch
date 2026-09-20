@@ -19,8 +19,12 @@ export type MenuAt = { top?: number; bottom?: number; right: number };
  *
  * `at` IS MEASURED FROM THE TRIGGER each time, and again on scroll and resize:
  * a `fixed` element does not follow the page. Below the trigger when there is
- * `roomBelow` px under it, above it otherwise, and the right edge is clamped to
- * the viewport so a trigger at the edge cannot push the menu off-screen.
+ * `roomBelow` px under it, above it otherwise, and the right edge is clamped
+ * BOTH WAYS. `menuWidth` is what the second clamp needs: the menu hangs to the
+ * LEFT of its trigger, so a trigger that is not near the right edge — the
+ * player's `⋯` sits left of ↓, the account control and ✕ — puts the panel's
+ * left edge off the screen. The caller states the width because the panel does
+ * not exist to be measured until `at` says where to put it.
  *
  * OUTSIDE-CLICK TESTS BOTH ELEMENTS, and both tests are `?.` rather than a
  * `ref.current &&` guard. A trigger may be CONDITIONALLY rendered — an episode
@@ -33,7 +37,10 @@ export type MenuAt = { top?: number; bottom?: number; right: number };
  * Keyboard (arrows, Home/End, Escape and Tab back to the trigger) is
  * `useMenuKeys`, called here so no caller can forget it.
  */
-export function useAnchoredMenu({ roomBelow = 140 }: { roomBelow?: number } = {}) {
+export function useAnchoredMenu({
+  roomBelow = 140,
+  menuWidth = 240,
+}: { roomBelow?: number; menuWidth?: number } = {}) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -45,13 +52,13 @@ export function useAnchoredMenu({ roomBelow = 140 }: { roomBelow?: number } = {}
     const el = triggerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const right = Math.max(8, window.innerWidth - r.right);
+    const right = Math.max(8, Math.min(window.innerWidth - r.right, window.innerWidth - menuWidth - 8));
     setAt(
       window.innerHeight - r.bottom >= roomBelow
         ? { top: r.bottom + 8, right }
         : { bottom: window.innerHeight - r.top + 8, right },
     );
-  }, [roomBelow]);
+  }, [roomBelow, menuWidth]);
 
   useEffect(() => {
     if (!open) return;
