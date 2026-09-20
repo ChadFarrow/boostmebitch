@@ -383,9 +383,9 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
       </div>
 
       {!showReceive && !invoice && (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setShowReceive(true)} className="btn-ghost">Receive</button>
-          <button onClick={onDisconnect} className="text-muted hover:text-nostr">Disconnect</button>
+          <button onClick={onDisconnect} className="btn-mini">Disconnect</button>
         </div>
       )}
 
@@ -414,7 +414,7 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
               {generating ? 'Generating…' : 'Generate'}
             </button>
           </div>
-          <button onClick={() => setShowReceive(false)} className="text-muted hover:text-nostr">cancel</button>
+          <button onClick={() => setShowReceive(false)} className="btn-mini">cancel</button>
         </div>
       )}
 
@@ -437,9 +437,9 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
           <code className="block card p-2 text-[10px] leading-snug break-all select-all">
             {invoice}
           </code>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button onClick={copy} className="btn-ghost">{copied ? 'Copied' : 'Copy'}</button>
-            <button onClick={clearInvoice} className="text-muted hover:text-nostr">done</button>
+            <button onClick={clearInvoice} className="btn-mini">done</button>
           </div>
         </div>
       )}

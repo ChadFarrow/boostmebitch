@@ -147,7 +147,7 @@ export function WalletModal({ onClose }: Props) {
           <div className="border-t border-bone/15 pt-3 text-center">
             <button
               onClick={() => setView({ kind: 'picker', switching: true })}
-              className="text-[11px] text-muted hover:text-bone"
+              className="btn-mini"
             >
               Switch wallet →
             </button>
@@ -165,7 +165,7 @@ export function WalletModal({ onClose }: Props) {
         <div className="p-5 space-y-4">
           <button
             onClick={() => setView(back)}
-            className="text-[11px] text-muted hover:text-bone"
+            className="btn-mini"
           >
             ← Back
           </button>
@@ -219,7 +219,7 @@ export function WalletModal({ onClose }: Props) {
           <>
             <button
               onClick={() => setView({ kind: 'connected' })}
-              className="text-[11px] text-muted hover:text-bone"
+              className="btn-mini"
             >
               ← Back
             </button>

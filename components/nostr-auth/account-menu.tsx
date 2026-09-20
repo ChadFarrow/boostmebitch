@@ -166,7 +166,7 @@ function ListUnlockSection({ npub }: { npub: string }) {
       <button
         type="button"
         onClick={() => { storage.listUnlock.set(npub, false); setOn(false); }}
-        className="text-[11px] underline underline-offset-2 text-muted hover:text-nostr mt-1"
+        className="btn-inline text-[11px] text-muted hover:text-nostr mt-1"
       >
         ask me again instead
       </button>
@@ -371,7 +371,7 @@ export function AccountMenu({
           <div className="border-t border-bone/15 mt-4 pt-3 flex items-center justify-between gap-3">
             <button
               onClick={() => { onSignOut(); setOpen(false); }}
-              className="text-[11px] text-muted hover:text-nostr"
+              className="btn-mini"
             >
               sign out
             </button>

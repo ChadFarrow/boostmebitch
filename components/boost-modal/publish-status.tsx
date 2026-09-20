@@ -45,7 +45,7 @@ export function PublishStatus({ state }: { state: PublishState }) {
         href={`https://njump.me/${encodeURIComponent(state.note.nevent)}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-muted hover:text-nostr underline underline-offset-2"
+        className="btn-inline text-muted hover:text-nostr"
       >
         view note ↗
       </a>

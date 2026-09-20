@@ -43,7 +43,7 @@ export function WeblnWallet({ mode, onConnected, onDisconnected }: Props) {
           // `py-1.5` is a TOUCH TARGET, not spacing — see <CollapsibleHeading>
           // in lists/grouping.tsx. text-[11px] is a 16.5px line box, which is
           // under WCAG 2.5.8's 24x24 floor with no vertical padding. 16.5 + 12 = 28.5.
-          className="text-[11px] text-muted hover:text-nostr py-1.5"
+          className="btn-mini"
         >
           Disconnect
         </button>
