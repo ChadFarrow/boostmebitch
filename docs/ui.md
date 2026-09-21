@@ -1160,7 +1160,7 @@ The three surfaces that paint the now-playing art, and what each takes:
 |---|---|---|---|
 | The now-playing bar's tile (`<Player>`) | 48px | proxied, `w=160` | 48 CSS px at a phone's 3× is 144 |
 | `<FullscreenPlayer>`'s big cover | ~350px | the ORIGINAL, while `open && artOk` | this is where a picture is worth looking at |
-| The OS lock screen (`MediaMetadata`) | the phone's | proxied, `w=1024` | no element, no `onError`, and it cannot animate anyway |
+| The OS lock screen (`MediaMetadata`) | the phone's | proxied, `w=1024` — offline, the downloaded cover | no element, no `onError`, and it cannot animate anyway |
 
 Measured on Mutton, Mead & Music (podcast `290e12c3…`, episode `21f6be5b…`),
 whose chapter *"THANK YOU CAKE WALLET"* publishes a **4,472,805-byte animated
@@ -1204,6 +1204,18 @@ cost a retry, it costs the whole file every time — the exact harm the raw tail
 exists to prevent. What it gives up is cosmetic and off-app: if `/api/art`
 cannot serve the picture, the lock screen shows none. `sizes` is stamped on the
 proxied entry only, because that is the one whose dimensions we asked for.
+
+**Offline, the one entry is the DOWNLOADED cover instead** (`nowPlayingCover`,
+a `blob:` URL), when the current item has one. Found on a Pixel 6 in airplane
+mode on 2026-09-21: a download played from local bytes, both in-app covers fell
+back to the stored cover, and the lock screen was blank, because nothing can
+answer `/api/art` then. Chromium accepts a `blob:` there — read through
+`adb shell dumpsys media_session`, offline, the proxied entry left 4 metadata
+keys and the blob 5, the fifth being the bitmap; a revoked blob left 4. **Only
+offline, and it outranks chapter art only offline**: online the proxied copy is
+`w=1024` against the stored `w=640`, and chapter art is never downloaded. The
+switch is `navigator.onLine` plus its two events, so a network that claims to be
+up and answers nothing still leaves the lock screen blank, as before.
 
 All three surfaces are pinned by `npm run e2e:artbytes`, which drives that
 episode in a real browser and asserts on **wire bytes per surface** — the lock

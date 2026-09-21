@@ -537,6 +537,21 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     check('the downloaded cover reaches the player, not just /downloads',
       { anyLocal: covers.local > 0 }, { anyLocal: true });
 
+    // THE LOCK SCREEN TOO, and it cannot inherit the fix above: it has no
+    // element, so no onError ladder falls through to the stored cover. Its ONE
+    // artwork entry was an /api/art URL nothing answers offline, and a Pixel 6
+    // in airplane mode showed a blank media notification over a download
+    // playing from local bytes. `onLine` is asserted beside it because the hook
+    // switches on `navigator.onLine`: if the emulation stopped setting it, this
+    // would fail on the cause rather than on the symptom.
+    const lock = await js(`
+      (() => {
+        const art = navigator.mediaSession?.metadata?.artwork ?? [];
+        return { onLine: navigator.onLine, oneBlob: art.length === 1 && art[0].src.startsWith('blob:') };
+      })()
+    `);
+    check('offline, the lock screen takes the downloaded cover', lock, { onLine: false, oneBlob: true });
+
 
     await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   }

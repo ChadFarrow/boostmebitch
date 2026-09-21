@@ -136,6 +136,22 @@ export function useMediaSession({
   }, [nowArt, episodeId]);
   const settledArt = lockArt.epId === episodeId ? lockArt.url : undefined;
 
+  // The current item's DOWNLOADED cover (a blob: URL, or null), and whether the
+  // browser believes it has a network. Together they decide the one case the
+  // proxied entry below cannot serve — see the OFFLINE note in the effect.
+  const localCover = useApp((s) => s.nowPlayingCover);
+  const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => {
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+    };
+  }, []);
+
   // Metadata for the lock-screen / notification (title, podcast, artwork).
   // Re-runs on the settled art as well as the episode, and rebuilds the whole
   // MediaMetadata rather than mutating `.artwork` in place — mutation is not
@@ -167,7 +183,23 @@ export function useMediaSession({
     // prevent. The failure it gives up is cosmetic and off-app: if /api/art
     // cannot serve the picture, the lock screen shows none.
     const proxied = art ? artCandidates(art, null, 1024).find((u) => u !== art) : undefined;
-    const lockSrc = proxied ?? art;
+    // OFFLINE, THE DOWNLOADED COVER — and only offline. Found on a Pixel 6 in
+    // airplane mode, 2026-09-21: a download played from local bytes, both
+    // in-app covers fell back to the stored cover, and the lock screen showed
+    // none, because its one entry is an /api/art URL nothing can answer. The
+    // stored cover is the only picture there is then, and a blob: URL is
+    // accepted: measured through `dumpsys media_session`, offline, the proxied
+    // entry left 4 metadata keys and the blob left 5 (the bitmap).
+    //
+    // Online nothing changes, on purpose: the proxied copy is w=1024 where the
+    // stored one is w=640, and chapter art must still win. It outranks the
+    // chapter offline because chapter art is never downloaded. The previous
+    // episode's URL cannot paint the wrong cover at a change of episode:
+    // <Player> revokes it in an effect cleanup, React runs every cleanup of a
+    // commit before any new effect, and a revoked blob: loads nothing (the same
+    // measurement: 4 keys).
+    const offlineCover = !online && localCover ? localCover : undefined;
+    const lockSrc = offlineCover ?? proxied ?? art;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: episode.title,
       artist: podcast.title,
@@ -175,7 +207,7 @@ export function useMediaSession({
       // `sizes` only when it IS the proxied copy: that is the one whose
       // dimensions we asked for. Stamping a third-party URL with a size nobody
       // measured turns a guess into a claim the OS picks by.
-      artwork: lockSrc ? [proxied ? { src: lockSrc, sizes: '1024x1024' } : { src: lockSrc }] : undefined,
+      artwork: lockSrc ? [!offlineCover && proxied ? { src: lockSrc, sizes: '1024x1024' } : { src: lockSrc }] : undefined,
     });
-  }, [episodeId, settledArt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [episodeId, settledArt, localCover, online]); // eslint-disable-line react-hooks/exhaustive-deps
 }

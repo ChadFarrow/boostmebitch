@@ -393,11 +393,16 @@ leaves the download, its record and its documents intact.** That is the rule the
 artwork proxy is under everywhere in this app — a failing route costs appearance
 and nothing else.
 
-`/downloads` is the one surface that renders those stored bytes, because it is
-the one that has to paint with no connection. It passes the blob **alone**, with
-no `artwork` beside it: `artCandidates` puts every proxied URL ahead of every raw
-one and a `blob:` is not proxyable, so passing both would order the network copy
-first and leave the local bytes as its fallback.
+`/downloads` renders those stored bytes as its only source, because it is the
+one page that has to paint with no connection. The now-playing surfaces take
+them too, through the store's `nowPlayingCover`: both in-app covers as the LAST
+rung of their ladder, and the OS lock screen as its one entry while the browser
+is offline (`docs/ui.md`, "The lock screen is the third surface").
+
+`/downloads` passes the blob **alone**, with no `artwork` beside it:
+`artCandidates` puts every proxied URL ahead of every raw one and a `blob:` is not
+proxyable, so passing both would order the network copy first and leave the local
+bytes as its fallback.
 
 ## The service worker is network-first, which is not precaching
 
