@@ -9,6 +9,7 @@ import {
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
+import { markDeliberateSeek } from '@/lib/resume-position';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
@@ -802,6 +803,7 @@ export function Player() {
     if (!seekReq) return;
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
+    markDeliberateSeek(); // `requestSeek` only ever comes from a control.
     el.currentTime = seekReq.t;
     lastTick.current = Math.floor(seekReq.t);
     setPosition(seekReq.t);
@@ -892,6 +894,7 @@ export function Player() {
    * `useCallback` and the Media Session effect below can close over it.
    */
   const skipBy = useCallback((deltaSec: number) => {
+    markDeliberateSeek(); // as in `seekMedia` — a press is intent.
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
     const dur = el.duration;
@@ -1043,6 +1046,9 @@ export function Player() {
   const isLive = episode.liveStatus === 'live';
 
   function seekMedia(v: number) {
+    // The listener moved the playhead on purpose: licenses a large rewind that
+    // ordinary playback may not make. See `markDeliberateSeek`.
+    markDeliberateSeek();
     const el = isVideoRef.current ? video.current : audio.current;
     if (el) el.currentTime = v;
     lastTick.current = Math.floor(v);

@@ -215,30 +215,52 @@ let deep = await entry();
 check('a place 17 minutes in is saved', deep && deep.t >= 1020 && deep.t < 1040, JSON.stringify(deep));
 
 // The element comes back at the start and plays on through the 15 s floor.
+// `setTime` writes `audio.currentTime` DIRECTLY, with no control pressed, so it
+// stands in for the element moving on its own — which is the whole distinction
+// the guard rests on. A real scrub goes through `seekMedia` and marks intent.
 for (const at of [16, 40, 90]) { await setTime(at); await wait(1600); }
 const kept = await entry();
 check('playing from the start does NOT erase it', kept && kept.t >= 1020, JSON.stringify(kept));
+
+// THE HOLE THE FIRST GUARD HAD. It also required the new position to be inside
+// the first two minutes, and a screenshot at 4:56 showed why that is not
+// enough: an element left running sails past any head and the hour is gone
+// again. Intent, not distance, is what separates the two cases.
+for (const at of [150, 240, 296]) { await setTime(at); await wait(1600); }
+const past = await entry();
+check('...and still does not, five minutes in', past && past.t >= 1020, JSON.stringify(past));
 // ...and it is still what a fresh play would resume to.
 await pause();
 await wait(800);
 const afterPause = await entry();
 check('...not even the pause flush erases it', afterPause && afterPause.t >= 1020, JSON.stringify(afterPause));
 
-// Past the two-minute head the listener plainly means it, and the point moves.
+// A DELIBERATE rewind is the same numbers with a gesture in front of them, and
+// it must still be honoured. Driven through the seek bar — the real control,
+// which is what calls `markDeliberateSeek` — rather than by writing
+// `currentTime`, because writing it is precisely what must NOT count.
 await js(`${playButton}.click()`);
 await until(playing);
-await setTime(150);
+const scrub = (t) => js(`(() => {
+  const r = document.querySelector('input[type=range].seek') || document.querySelector('input[type=range]');
+  if (!r) return false;
+  const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  set.call(r, String(${t}));
+  r.dispatchEvent(new Event('change', { bubbles: true }));
+  r.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+})()`);
+check('the seek bar is reachable', await scrub(150), true);
 await wait(2500);
 const moved = await entry();
-check('past the head, a deliberate restart moves the point', moved && moved.t >= 148 && moved.t < 200, JSON.stringify(moved));
-// A mid-episode rewind is never refused: the guard needs BOTH a large jump and
-// a position near the beginning.
-await setTime(3000);
+check('a deliberate rewind to 2:30 IS honoured', moved && moved.t >= 145 && moved.t < 200, JSON.stringify(moved));
+// And an ordinary mid-episode scrub, which is not near the start at all.
+await scrub(3000);
 await wait(2000);
-await setTime(2400);
+await scrub(2400);
 await wait(2500);
 const scrubbed = await entry();
-check('a mid-episode rewind still saves', scrubbed && scrubbed.t >= 2395 && scrubbed.t < 2450, JSON.stringify(scrubbed));
+check('a mid-episode scrub still saves', scrubbed && scrubbed.t >= 2380 && scrubbed.t < 2460, JSON.stringify(scrubbed));
 await pause();
 await wait(600);
 

@@ -539,31 +539,45 @@ minutes later it started over."*
 element's buffer, and it returns sitting at 0 while storage still holds 17:04. Nothing
 re-seeks it, so a press of play runs from the beginning — and fifteen seconds later
 the writer has replaced 17:04 with 16, then 26. `RESUME_MIN_SEC` is the only reason
-the FIRST attempt still worked: under 15 s nothing is written at all. So it is a
-fifteen-second window in which an hour of listening is destroyed **by doing nothing**,
-and the second attempt resumes at 16 s, which is indistinguishable from starting over.
+the FIRST attempt still worked: under 15 s nothing is written at all.
 
-`recordPosition` now refuses to move a saved point backwards by more than
-`RESUME_REWIND_MAX_SEC` (120 s) while the new position is inside
-`RESUME_REWIND_HEAD_SEC` (120 s) of the start. **Both bounds are needed**: the jump has
-to be large AND the new position near the beginning, or an ordinary mid-episode scrub
-backwards would be refused too.
+**The first guard was positional, and it had a hole the reporter walked into.** It
+also required the new position to be inside the first two minutes — and the next
+screenshot showed the mini-bar at **4:56**, past any head. An element left running
+sails through a distance threshold in a few minutes and the hour is gone again.
+Running the section against that build reports `t: 296`, which is 4:56 to the second.
 
-**The cost is stated and small.** A listener who deliberately restarts gets no resume
-tracking for the first two minutes, because those writes are refused as if they were
-this fault. Play past two minutes and the point moves normally. Losing two minutes of
-tracking is recoverable; losing the hour is what was reported.
+**A distance rule cannot express this**, because what separates the two cases is not
+WHERE the playhead is — it is whether anybody asked it to go there.
 
-**It is deliberately NOT a "did the user seek?" test.** That needs a signal threaded
-from three call sites through a module none of them import, and the one case it would
-protect — a deliberate restart — is exactly what the two-minute head already forgives.
+So the guard asks about intent. `markDeliberateSeek()` (`lib/resume-position.ts`) is
+called by the three paths that move the playhead on purpose, and a rewind of more than
+`RESUME_REWIND_MAX_SEC` (120 s) is accepted only inside
+`DELIBERATE_SEEK_WINDOW_MS` (15 s) of one:
+
+| Path | What presses it |
+| --- | --- |
+| `seekMedia` | the seek bar, chapter taps, transcript taps, the player's `onSeek` |
+| `skipBy` | the ±15 / ±30 buttons and the keyboard shortcuts |
+| the `seekReq` effect | anything calling the store's `requestSeek` |
+
+**Ordinary playback marks nothing**, which is exactly the case being refused. The
+window is generous because the writer fires on a store tick, a pause or a page hide,
+so the write after a scrub can arrive seconds later — too short costs the bug, too
+long costs one accepted rewind in the seconds after a real gesture.
+
+**The cost is narrow and stated:** a rewind of more than two minutes achieved without
+any of those three would be ignored until a control is touched. There is no such
+gesture today; everything a person can press marks intent.
 
 **Pinned by `npm run e2e:resume` section 7, in the real wiring**, because
 `lib/resume-position.ts` imports `lib/storage` and will not load under
-`--experimental-strip-types` — the same reason this whole feature is an e2e rather
-than a `check:*`. **Run it against the unfixed build**: it reports the entry moving
-from 1024 s to 90 s, the report verbatim. The section also pins what must NOT change —
-a restart past the head still moves the point, and a mid-episode rewind still saves.
+`--experimental-strip-types` — the same reason this feature is an e2e and not a
+`check:*`. The section is careful about HOW it moves the playhead, and that is the
+test's whole point: it writes `audio.currentTime` directly to stand in for an element
+moving on its own, and drives the **real seek bar** for the deliberate half, because
+writing `currentTime` is precisely what must not count. Run it against either earlier
+build and it fails at the step that build could not do.
 
 ### The player offers a way back when the element has lost the place
 

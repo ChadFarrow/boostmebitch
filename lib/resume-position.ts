@@ -65,35 +65,58 @@ export const RESUME_TAIL_SEC = 30;
 export const RESUME_GAP_SEC = 30;
 
 /**
- * A saved point is not moved BACKWARDS by more than this while the element is
- * still inside {@link RESUME_REWIND_HEAD_SEC} of the start.
+ * A saved point is not moved BACKWARDS by more than this unless the listener
+ * asked for it.
  *
- * **This is a data-loss guard, and it was earned.** Reported 2026-09-21 on an
- * iPhone, with the download still present so nothing was evicted: *"I did
- * resume the episode earlier without an issue but the second time I tried
- * minutes later it started over."*
+ * **This is a data-loss guard, and the first version of it had a hole the
+ * reporter walked straight into.** iOS drops a backgrounded media element's
+ * buffer; it returns sitting at 0 while storage still holds 17:04. Nothing
+ * re-seeks it, so play runs from the beginning and the writer replaces 17:04
+ * with 16, then 26. `RESUME_MIN_SEC` is the only reason the FIRST attempt
+ * survives — under 15 s nothing is written at all.
  *
- * iOS drops a backgrounded media element's buffer, and it comes back sitting at
- * 0 while the store and storage still hold 17:04. Nothing re-seeks it, so a
- * press of play runs from the beginning — and fifteen seconds later the writer
- * has replaced 17:04 with 16, then 26. The `RESUME_MIN_SEC` floor is the only
- * reason the FIRST attempt still worked: under 15 s nothing is written at all.
- * That is a fifteen-second window in which an hour of listening is destroyed by
- * doing nothing.
+ * The first guard also required the new position to be inside the first two
+ * minutes, and **a screenshot at 4:56 showed why that is not enough**: an
+ * element left running sails past any head in a few minutes, and the hour is
+ * gone again. A distance-from-the-start rule cannot express this, because the
+ * thing that separates the two cases is not WHERE the playhead is — it is
+ * whether anybody asked it to go there.
  *
- * THE COST IS STATED AND SMALL: a listener who deliberately restarts an episode
- * gets no resume tracking for the first two minutes, because those writes are
- * refused as if they were this fault. Play past two minutes and the point moves
- * normally. Losing two minutes of tracking is recoverable; losing the hour is
- * what was reported.
+ * So the question is intent. {@link markDeliberateSeek} is called by the three
+ * paths that move the playhead on purpose — the seek bar and chapter/transcript
+ * taps (`seekMedia`), the skip buttons (`skipBy`), and `requestSeek` — and a
+ * large rewind is accepted only in the window after one. Ordinary playback
+ * marks nothing, which is exactly the case being refused.
  *
- * It is deliberately NOT a "did the user seek?" test. That needs a signal
- * threaded from three call sites through a module none of them import, and the
- * one it would protect — a deliberate restart — is exactly the case the
- * two-minute head already forgives.
+ * THE COST IS NARROW AND STATED: a rewind of more than two minutes achieved
+ * WITHOUT any of those three — there is no such gesture today — would be
+ * ignored until the listener touches a control. Everything a person can
+ * actually press marks intent.
  */
 const RESUME_REWIND_MAX_SEC = 120;
-const RESUME_REWIND_HEAD_SEC = 120;
+/**
+ * How long a deliberate seek keeps licensing a large rewind.
+ *
+ * Generous on purpose. The writer fires on a store tick, a pause or a page
+ * hide, so the write that follows a scrub can arrive several seconds later —
+ * and the cost of being too short is the bug, while the cost of being too long
+ * is one accepted rewind in the seconds after a real gesture.
+ */
+const DELIBERATE_SEEK_WINDOW_MS = 15000;
+
+let lastDeliberateSeekAt = 0;
+
+/**
+ * "The listener moved the playhead on purpose."
+ *
+ * Called from `<Player>`'s three seek paths. Deliberately a module-level
+ * timestamp rather than state: the writer is a store subscription that runs
+ * outside React, and threading a flag through it would mean re-rendering the
+ * player on every scrub to tell the writer something it can simply read.
+ */
+export function markDeliberateSeek(): void {
+  lastDeliberateSeekAt = Date.now();
+}
 
 type ResumeEpisode = Pick<
   Episode,
@@ -178,14 +201,14 @@ export function recordPosition(
     return;
   }
   const key = resumeKey(episode, podcast);
-  // REFUSE A LARGE REWIND FROM THE HEAD OF THE FILE. See
-  // RESUME_REWIND_MAX_SEC: an element that lost its buffer comes back at 0 and
-  // would otherwise erase a point minutes in, a second at a time, while the
-  // listener watches it play from the start. Both bounds are needed — the jump
-  // has to be large AND the new position has to be near the beginning, or a
-  // normal scrub backwards mid-episode would be refused too.
+  // REFUSE A LARGE REWIND NOBODY ASKED FOR. See RESUME_REWIND_MAX_SEC: an
+  // element that lost its buffer comes back at 0 and would otherwise erase a
+  // point minutes in, a second at a time, while it plays from the start. A
+  // deliberate scrub is the same numbers with a gesture in front of it, which
+  // is the only thing that tells them apart.
   const prev = entries()[key];
-  if (prev && t < RESUME_REWIND_HEAD_SEC && prev.t - t > RESUME_REWIND_MAX_SEC) return;
+  const asked = Date.now() - lastDeliberateSeekAt < DELIBERATE_SEEK_WINDOW_MS;
+  if (prev && !asked && prev.t - t > RESUME_REWIND_MAX_SEC) return;
   write(key, { t, d, at: Date.now() });
 }
 
