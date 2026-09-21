@@ -8,6 +8,7 @@ import {
   normalizeAmberPubkey,
   restoreAmberSigner,
   restoreBunkerSigner,
+  startBunkerRevive,
   restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,
@@ -495,6 +496,31 @@ export function NostrAuth() {
     // loadProfile is re-created each render; the effect self-guards on
     // `identity` so listing it would only add no-op re-runs.
   }, [identity, setIdentity, setFavorites, setFavoriteEpisodes, setMutedPubkeys]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // BRING THE NIP-46 TRANSPORT BACK WITH THE APP. Both mobile OSes suspend the
+  // page's WebSocket while the browser is backgrounded, and for a remote signer
+  // that socket IS the signer: the session comes back unable to sign, says so at
+  // the next thing that signs, and the user presses RECONNECT — the same call
+  // this makes, at the moment they had to make it themselves. Reported as "I
+  // have to reconnect Amber every time I use the app". `startBunkerRevive` owns
+  // the guards (busy session, refusal, throttle) and probes before it rebuilds.
+  //
+  // IT MUST BE MOUNTED EVEN THOUGH THE RESTORE ABOVE ALREADY RAN, because on
+  // Android every launch is a cold one: the Zapstore build is a TWA and
+  // docs/android.md row 7 records that each launch is a full network page load.
+  // So the restore above fires at t=0 against a radio that may not be up, fails
+  // in milliseconds, and — before this — was never tried again, because a
+  // document that has been visible since it existed never fires a
+  // `visibilitychange`. This arms the retry ladder off that failure.
+  //
+  // Mounted on `identity` rather than on the signer kind, because `bmb:signer`
+  // is not reactive: it is written by completeSignIn one render before the
+  // identity lands, and the revive re-reads it on every wake anyway. Signed out
+  // there is nothing to revive.
+  useEffect(() => {
+    if (!identity) return;
+    return startBunkerRevive();
+  }, [identity]);
 
   // Account-change detector for multi-identity NIP-07 extensions
   // (Alby and nos2x both let the user switch active accounts in their

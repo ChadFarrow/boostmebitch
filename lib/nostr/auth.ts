@@ -23,8 +23,11 @@ import {
 } from './signer';
 import { clearKey, getKey, putKey } from './local-key-store';
 import {
+  bunkerBusy,
+  bunkerRefusal,
   bunkerUriForRestore,
   clearBunkerStale,
+  subscribeBunkerHealth,
   connectBunkerFromUri,
   isRemoteSignerError,
   markBunkerStale,
@@ -355,6 +358,261 @@ async function runBunkerRestore(storedUri: string | null): Promise<BunkerRestore
   activateBunkerSigner(adapter);
   clearBunkerStale();
   return { kind: 'ok' };
+}
+
+/**
+ * The shortest gap between two automatic revives. It bounds what a user flipping
+ * between apps can cost the relays, and nothing else — a revive that finds a
+ * healthy link is one `ping` round trip, and one that finds a dead one is doing
+ * the work the user would otherwise do by hand.
+ *
+ * Short enough that the return that matters is never the one skipped: every
+ * report of this begins with the app having been away long enough for the OS to
+ * suspend its socket, which is far more than half a minute.
+ */
+const BUNKER_REVIVE_MIN_GAP_MS = 30_000;
+
+/**
+ * THE LADDER THAT COVERS A COLD START, which is the only kind of start the
+ * Android app has. `docs/android.md` row 7: *"Every launch is a full network
+ * page load."* So the page-load restore fires at t=0 of a process the OS has
+ * just created, against a radio that may not be up — and `s.connect()`
+ * publishes over `Promise.any(pool.publish(...))`, so with no network every
+ * socket fails at once and `unreachable` comes back in MILLISECONDS. The banner
+ * is then on screen before the first frame, about a signer nobody managed to
+ * ask, and nothing in this app ever tried again.
+ *
+ * Dense first, then wide, for the same reason as `BUNKER_APPROVAL_GAPS_MS`: the
+ * case this is for resolves in the first few seconds, and anything past that is
+ * a different fault being given one last chance rather than a race being waited
+ * out.
+ */
+const BUNKER_RETRY_GAPS_MS = [2_000, 8_000, 20_000];
+
+/**
+ * A FAILURE SLOWER THAN THIS IS NOT THE ONE THE LADDER CAN FIX, and the
+ * distinction is what stops this becoming a reconnect storm.
+ *
+ * The two ways a restore fails are nothing like each other in length, and
+ * `docs/signers.md` measures both. No network rejects in milliseconds — nothing
+ * was reached, which is exactly what a cold launch looks like for its first
+ * second or two, and exactly what comes back on its own. A relay that CONNECTS
+ * and then answers nothing costs the whole 90 s `BUNKER_CONNECT_TIMEOUT_MS`;
+ * repeating that spends another 90 s on the same silence and opens another
+ * socket to a host that already has one (WebKit 302561, and Alby's relay
+ * rate-limits connections OPENED — 28 dials in 83 s earned a 10-minute 429).
+ *
+ * So a slow failure ends the ladder and leaves the banner, which is the honest
+ * answer for it.
+ */
+const BUNKER_SLOW_ATTEMPT_MS = 20_000;
+
+let reviveLastAt = 0;
+// The pointer a `refused` answer was about. A refusal is the signer saying this
+// client is not paired any more, so no amount of probing fixes it and every
+// retry is a request at a signer that has already answered — see the guard in
+// `maybeReviveBunker`. Keyed on the URI rather than a bare flag so that pairing
+// again clears it by construction.
+let reviveRefusedFor: string | null = null;
+let reviveStop: (() => void) | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+// How far up `BUNKER_RETRY_GAPS_MS` this stale episode has climbed. Reset when
+// the transport comes back, and when the user returns to the app — a fresh
+// visit gets a fresh budget, because the thing that changed is the one the
+// ladder cannot see.
+let retryStep = 0;
+
+function cancelBunkerRetry(): void {
+  if (retryTimer === null) return;
+  clearTimeout(retryTimer);
+  retryTimer = null;
+}
+
+/**
+ * Schedule the next rung, if there is one. One pending timer at a time — the
+ * health subscription and a failed attempt can both ask, and two ladders on one
+ * episode would double every gap's worth of relay dials.
+ */
+function armBunkerRetry(): void {
+  if (retryTimer !== null) return;
+  if (retryStep >= BUNKER_RETRY_GAPS_MS.length) return;
+  if (storage.signer.get() !== 'bunker') return;
+  const gap = BUNKER_RETRY_GAPS_MS[retryStep];
+  retryStep += 1;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    // NOT throttled: the ladder's own schedule is the throttle, and the wake
+    // gap exists to bound app-flipping rather than to pace this.
+    void maybeReviveBunker({ throttled: false });
+  }, gap);
+}
+
+/**
+ * BRING THE SIGNER'S TRANSPORT BACK WHEN THE APP COMES BACK, because nothing
+ * else in this app does and the user was doing it by hand.
+ *
+ * Reported as *"I have to reconnect Amber every time I use the app"*. A NIP-46
+ * signer — Amber in bunker mode, Clave, Primal, nsec.app — talks over a
+ * WebSocket this page holds, and both mobile OSes suspend that socket whenever
+ * the browser is backgrounded. Backgrounding is not an edge case here: approving
+ * anything in the signer app IS leaving the browser, and so is every launch of a
+ * PWA that was left open. So the session comes back with a dead subscription,
+ * `trackBunkerCall` marks it stale at the next thing that signs, and the user
+ * meets <BunkerHealthBanner> and presses RECONNECT — which calls
+ * `restoreBunkerSigner`, the same function this one calls, at the same moment
+ * this one could have.
+ *
+ * Every other socket-backed surface in this app already re-polls on
+ * `visibilitychange`/`focus` — the player, live chat, live value, the wallet
+ * balance, live status. The signer transport, whose death is the one that stops
+ * the whole app being able to act, was the one that did not.
+ *
+ * IT PROBES BEFORE IT REBUILDS, and that is inherited rather than re-derived:
+ * `runBunkerRestore` pings the live adapter first and only rebuilds on silence.
+ * A pong costs no approval prompt and no tap (Clave auto-allows `ping`), so the
+ * common case — the socket survived — is one relay round trip and no UI at all.
+ * `<BunkerRestoreNotice>` stays silent for the first five seconds, so a healthy
+ * revive is invisible.
+ *
+ * FOUR GUARDS, and the first is the one that could cost money.
+ *
+ *  - **Never while the session is busy.** A failed probe closes the transport,
+ *    taking a pending `sign_event` with it — and `publishBoostNote` signs after
+ *    the sats have moved. `bunkerBusy()` covers both the request on the wire and
+ *    the gap between `withApprovalWait`'s re-issues, which is exactly when the
+ *    user is standing at the signer having just come back from approving.
+ *  - **Never after a refusal**, for this pointer. `refused` means the signer
+ *    answered that the pairing is gone; only pairing again helps, and retrying
+ *    on every foreground return is a request at a signer that has already said
+ *    no. The banner carries its words, so the state is on screen either way.
+ *  - **Never while one is already running.** `restoreBunkerSigner` coalesces on
+ *    the stored pointer, so this is belt to that braces — but it also keeps the
+ *    throttle honest, since a restore that outlives the gap must not be followed
+ *    by a second one the moment it ends.
+ *  - **Never while hidden.** `focus` and `online` can both fire for a document
+ *    the user is not looking at.
+ *
+ * `online` is listened for beside the two foreground signals because the case it
+ * covers is the same one with the tab never having left: the radio came back,
+ * and the socket that died with it will not return on its own.
+ *
+ * A WAKE SIGNAL IS NOT ENOUGH ON ANDROID, which is the half this function
+ * learned second. `docs/android.md` row 7: the Zapstore app is a TWA, and
+ * **every launch of it is a full network page load**. So the case that produced
+ * the report is not a tab coming back at all — it is a cold start, where the
+ * page-load restore is the FIRST thing to touch the network in a process the OS
+ * created moments ago, and `visibilitychange` never fires because the document
+ * has been visible since it existed. A failure there used to be final. The
+ * health subscription below arms `BUNKER_RETRY_GAPS_MS` on the transition to
+ * stale, so a restore that lost the race to the radio is retried two seconds
+ * later instead of waiting for a finger.
+ *
+ * Returns its own teardown. Idempotent — a second call replaces the first rather
+ * than stacking listeners, which matters because React remounts this in dev on
+ * every save.
+ */
+export function startBunkerRevive(): () => void {
+  if (typeof window === 'undefined') return () => {};
+  reviveStop?.();
+
+  const onWake = () => {
+    // A FRESH VISIT GETS A FRESH BUDGET. The ladder gives up after three rungs
+    // because a fault that survives them is not the cold-start race — but the
+    // user coming back is new information it could not have had, and it is also
+    // the exact moment they would otherwise press RECONNECT.
+    retryStep = 0;
+    void maybeReviveBunker({ throttled: true });
+  };
+  document.addEventListener('visibilitychange', onWake);
+  window.addEventListener('focus', onWake);
+  window.addEventListener('online', onWake);
+
+  // THE COLD-START ARM, and it is a subscription rather than a call because the
+  // restore it is about has already been started by <NostrAuth> and this module
+  // has no handle on it. `subscribeBunkerHealth` fires on subscribe with the
+  // current value, so a session that mounts this while already stale is armed
+  // too. `setBunkerStale` only notifies on a CHANGE, so a failed rung cannot
+  // arm a second ladder through here; the rung re-arms itself deliberately.
+  //
+  // It deliberately covers `markBunkerStale` from a mid-session call failure as
+  // well as from a restore. `trackBunkerCall` already pings before it accuses,
+  // so reaching that flag means the probe went unanswered too — a transport
+  // worth rebuilding, by the same test the reconnect button applies.
+  const unsubscribeHealth = subscribeBunkerHealth((stale) => {
+    if (!stale) { cancelBunkerRetry(); retryStep = 0; return; }
+    // A refusal sets this flag too, and it is the one fault no retry can touch.
+    if (bunkerRefusal() !== null) { cancelBunkerRetry(); return; }
+    armBunkerRetry();
+  });
+
+  const stop = () => {
+    document.removeEventListener('visibilitychange', onWake);
+    window.removeEventListener('focus', onWake);
+    window.removeEventListener('online', onWake);
+    unsubscribeHealth();
+    cancelBunkerRetry();
+    if (reviveStop === stop) reviveStop = null;
+  };
+  reviveStop = stop;
+  return stop;
+}
+
+async function maybeReviveBunker({ throttled }: { throttled: boolean }): Promise<void> {
+  if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+  if (storage.signer.get() !== 'bunker') return;
+  // Nothing to revive, and nothing to build from. `runBunkerRestore` would
+  // answer `no-session` here, which is a fact about storage that a foreground
+  // return has no business reporting.
+  const uri = storage.bunker.get()?.uri ?? null;
+  if (!uri) return;
+  if (reviveRefusedFor === uri) return;
+  // Offline is known, not guessed: skip rather than spend a 90 s connect on a
+  // radio that is down. `navigator.onLine === true` says nothing, so only the
+  // explicit false is acted on.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (bunkerBusy()) return;
+  // JOIN A RESTORE ALREADY RUNNING, never skip past it — and the case that made
+  // this an `await` rather than a `return` is the one the whole feature is
+  // about. The user presses RECONNECT, walks to their signer, opens it, and
+  // comes back: the press is still on the wire (a silent relay holds it for
+  // BUNKER_CONNECT_TIMEOUT_MS), so the foreground return finds one in flight.
+  // Returning there leaves the failure it is about to report with nothing
+  // behind it, which is the state they would then have to press through again.
+  // Arming the ladder off its ANSWER means the retry lands seconds after it
+  // settles, with the signer now awake.
+  const running = restoreInFlight;
+  if (running) {
+    const joined = await running.catch(() => null);
+    if (joined?.kind === 'ok' || joined?.kind === 'no-session') return;
+    if (joined?.kind === 'refused') { reviveRefusedFor = uri; cancelBunkerRetry(); return; }
+    armBunkerRetry();
+    return;
+  }
+  if (throttled && Date.now() - reviveLastAt < BUNKER_REVIVE_MIN_GAP_MS) return;
+  const startedAt = Date.now();
+  reviveLastAt = startedAt;
+  let kind: BunkerRestoreResult['kind'] | null = null;
+  try {
+    kind = (await restoreBunkerSigner()).kind;
+  } catch {
+    // `restoreBunkerSigner` reports through `bunkerStale`; a revive nobody asked
+    // for has nothing else to say. It stays `null`, which the ladder reads as a
+    // failure of unknown shape and treats exactly like `unreachable`.
+  }
+  // Stamped again on the way out so the wake gap runs from the END of a restore
+  // that outlived it, not from its start.
+  reviveLastAt = Date.now();
+
+  if (kind === 'refused') { reviveRefusedFor = uri; cancelBunkerRetry(); return; }
+  reviveRefusedFor = null;
+  // `ok` and `no-session` both end the ladder, for opposite reasons: one has
+  // nothing left to fix, the other has nothing left to fix it with. The health
+  // subscription resets the step count on `ok`.
+  if (kind === 'ok' || kind === 'no-session') return;
+  // Unreachable. Climb only while the failure is the FAST kind — see
+  // BUNKER_SLOW_ATTEMPT_MS for why a slow one ends the ladder instead.
+  if (Date.now() - startedAt <= BUNKER_SLOW_ATTEMPT_MS) armBunkerRetry();
+  else cancelBunkerRetry();
 }
 
 /**
