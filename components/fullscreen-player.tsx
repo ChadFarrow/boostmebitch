@@ -86,6 +86,67 @@ const EpisodeSocialThread = dynamic(
   { ssr: false },
 );
 /**
+ * Pull the five pane chunks into the HTTP/service-worker cache WHILE THERE IS A
+ * CONNECTION, so opening the player offline needs no network at all.
+ *
+ * `<Pane>` below stops a missing chunk from killing playback. It does not make
+ * the tab WORK — and "Tracks" showing an apology on the one screen a listener
+ * opened specifically because they are offline is a poor second prize. The
+ * service worker caches `/_next/static/*` cache-first, but only what it has
+ * already SEEN, and these are fetched on FIRST OPEN: download episodes, go
+ * offline, open the player for the first time, and nothing ever cached them.
+ *
+ * ON IDLE, NOT ON MOUNT, and that ordering is the whole reason `dynamic()` is
+ * here. A static import would put this code in the first load of every route,
+ * because `<Player>` is in the ROOT LAYOUT — the deferral exists to keep it out.
+ * Warming after the page is interactive keeps that win and pays the download
+ * from spare time instead.
+ *
+ * `requestIdleCallback` with a `setTimeout` fallback: iOS Safari only shipped it
+ * in 17.4, and this app is used on older iPhones — the exact devices this whole
+ * offline path is for.
+ *
+ * Failures are swallowed on purpose. This is an optimisation; if it cannot run,
+ * the boundary below is still there and nothing is worse than before.
+ */
+let panesWarmed = false;
+export function warmPlayerPanes(): void {
+  if (panesWarmed || typeof window === 'undefined') return;
+  // `navigator.onLine` is a weak signal — true on a captive portal — but it is
+  // the right one HERE, where a false positive costs a failed prefetch nobody
+  // sees. It is only unusable where the answer must be trusted.
+  if (navigator.onLine === false) return;
+  panesWarmed = true;
+  const run = () => {
+    void import('./transcript-ui').catch(() => {});
+    void import('./episode-contents').catch(() => {});
+    void import('./live-played-tracks').catch(() => {});
+    void import('./episode-social-thread').catch(() => {});
+    void import('./live-chat').catch(() => {});
+  };
+  const idle = (window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+    .requestIdleCallback;
+  const schedule = () => {
+    if (typeof idle === 'function') idle(run, { timeout: 8000 });
+    else setTimeout(run, 4000);
+  };
+  // Wait for the worker before warming, so a chunk this DOES fetch is
+  // intercepted and cached by it rather than only by the browser.
+  //
+  // MEASURED, and not what I first assumed: after a cold offline start the
+  // panes load and `bmb-sw-static-*` does not exist at all. Next preloads these
+  // chunks during the first page load — before the worker controls that load —
+  // so they are already in the HTTP cache and this `import()` is usually a
+  // no-op. It stays because it costs nothing on idle and covers the case where
+  // that preload does not happen; it is NOT what makes the offline open work.
+  // What makes it work is the HTTP cache, which survives an app close but is
+  // the browser's to evict — and `<Pane>` below is what covers the eviction.
+  const swReady = navigator.serviceWorker?.ready;
+  if (swReady) swReady.then(schedule).catch(schedule);
+  else schedule();
+}
+
+/**
  * The blast radius of a lazy pane, cut down to the pane.
  *
  * `<Player>` sits behind one `<ErrorBoundary label="Player">` whose fallback is

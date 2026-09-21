@@ -909,6 +909,17 @@ console.log(`\n13. A PANE THAT CANNOT LOAD COSTS THE PANE, NOT PLAYBACK`);
     }
   });
   await p3.send('Page.enable'); await p3.send('Runtime.enable'); await p3.send('Network.enable');
+  // HOLD OFF `warmPlayerPanes`, or this section cannot test what it is for.
+  // The warm-up imports the five pane modules on idle, and once imported they
+  // are in the JS module registry — no later blocking can make them fail. It
+  // waits on `navigator.serviceWorker.ready`, so a promise that never settles
+  // is an exact, code-free off switch: nothing in the app changes, the warm-up
+  // simply never schedules. (Without this the section passes for the wrong
+  // reason, reporting that no pane failed — which is true, and proves nothing
+  // about the boundary.)
+  await p3.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `try { Object.defineProperty(navigator.serviceWorker, 'ready', { configurable: true, get: () => new Promise(() => {}) }); } catch {}`,
+  });
   await p3.send('Page.navigate', { url: `${APP}/downloads` });
   await wait(4000);
 

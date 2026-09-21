@@ -33,7 +33,7 @@ const BoostModal = dynamic(
 );
 import { StreamPulse } from './streaming-settings';
 import { BoltIcon, PipIcon } from './icons';
-import { FullscreenPlayer } from './fullscreen-player';
+import { FullscreenPlayer, warmPlayerPanes } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveBadge } from './live-badge';
@@ -387,6 +387,14 @@ export function Player() {
    * an episode, rather than in front of the one they chose.
    */
   useEffect(() => { void downloadManager.hydrate(); }, []);
+
+  // Pull the fullscreen player's lazy pane chunks down while there IS a
+  // connection. They are fetched on FIRST OPEN otherwise, so a listener who
+  // downloads episodes, goes offline and then opens the player asks for files
+  // nothing ever cached — reported from an iPhone, twice. `<Pane>` keeps that
+  // from killing playback; this is what makes the tabs actually work. Runs on
+  // idle, so the deferral that keeps them out of the first load still holds.
+  useEffect(() => { warmPlayerPanes(); }, []);
 
   // Source the active media element when the current item changes. Audio and
   // video are mutually exclusive (one `current`), so the inactive element is

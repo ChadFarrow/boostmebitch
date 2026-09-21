@@ -540,6 +540,29 @@ section would pass against the bug. **Run it against the unfixed build before tr
 it**: with the per-pane boundaries reverted it reports `audio:null, bar:false,
 expanded:false` — the report verbatim.
 
+**A second report followed the fix, and it was the DEPLOY, not the code.** *"I closed
+the app, turned on airplane mode and then opened the app"* — an installed PWA that
+goes offline before it ever loads the new build serves the old one from cache, fix
+included or not. **To get any fix into the installed app you must open it once WITH a
+connection.** Say that when asking someone to re-test, or the next round measures the
+previous build.
+
+**Driven as the reported sequence, 10/10** (`/tmp` harness, not a suite): install the
+worker online, seed a download, then a **cold start that is already offline** —
+`Network.emulateNetworkConditions offline` set BEFORE the first navigation. The app
+starts, lists the download, plays it from local bytes, and the tap opens the player
+with the bar intact, playback advancing and no pane apologising.
+
+**What actually makes that work is the HTTP cache, and it is worth knowing which.**
+`warmPlayerPanes` pulls the five pane modules on idle, after
+`navigator.serviceWorker.ready`, so anything it does fetch is cached by the worker.
+Measured: after the cold offline start the panes load and **`bmb-sw-static-*` does not
+exist at all** — Next preloads these chunks during the first page load, before the
+worker controls it, so they are already in the HTTP cache and the warm-up is usually a
+no-op. It stays because it is free on idle and covers the case where that preload does
+not happen. The HTTP cache survives an app close but is the browser's to evict, and
+`<Pane>` is what covers the eviction.
+
 **Two traps met while diagnosing this, both worth knowing.** Chunk filenames are
 HASHED, so a regex on the module name matches nothing — block the path, not the name.
 And headless Chrome does not reproduce it from `Network.emulateNetworkConditions
