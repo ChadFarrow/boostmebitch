@@ -849,6 +849,8 @@ export function Player() {
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
     markDeliberateSeek(); // `requestSeek` only ever comes from a control.
+    lastGoodPos.current = seekReq.t; // and the baseline moves with it — see `seekMedia`.
+    restoreTries.current = 0;
     el.currentTime = seekReq.t;
     lastTick.current = Math.floor(seekReq.t);
     setPosition(seekReq.t);
@@ -946,6 +948,10 @@ export function Player() {
     const target = el.currentTime + deltaSec;
     const clamped = Math.max(0, Number.isFinite(dur) ? Math.min(target, dur) : target);
     el.currentTime = clamped;
+    // As in `seekMedia`, and on the same terms: hardening, not a demonstrated
+    // fix. The press knows where it is going; nothing should have to observe it.
+    lastGoodPos.current = clamped;
+    restoreTries.current = 0;
     lastTick.current = Math.floor(clamped);
     setPosition(clamped);
   }, [setPosition]);
@@ -1094,6 +1100,16 @@ export function Player() {
     // The listener moved the playhead on purpose: licenses a large rewind that
     // ordinary playback may not make. See `markDeliberateSeek`.
     markDeliberateSeek();
+    // AND MOVE THE BASELINE WITH IT — hardening, NOT a fix for anything
+    // observed. Chromium fires `timeupdate` when `currentTime` is assigned even
+    // on a paused element, so the baseline stays fresh there on its own, and
+    // `e2e:resume` section 7b passes with and without these two lines. It was
+    // written for a reported "the skip buttons don't work" that it turned out
+    // NOT to explain, and it is kept because the invariant should not depend on
+    // an event firing: every deliberate move knows its destination, and WebKit
+    // is not verified to fire that event on a paused seek.
+    lastGoodPos.current = v;
+    restoreTries.current = 0;
     const el = isVideoRef.current ? video.current : audio.current;
     if (el) el.currentTime = v;
     lastTick.current = Math.floor(v);

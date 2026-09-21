@@ -261,6 +261,69 @@ check('a mid-episode scrub still saves', scrubbed && scrubbed.t >= 2380 && scrub
 await pause();
 await wait(600);
 
+console.log('\n7b. Skipping on a PAUSED episode is not undone when play resumes');
+// Written against a reported "the skip buttons don't work" that it did NOT
+// reproduce, and kept anyway as a behaviour pin.
+//
+// THIS SECTION PASSES WITH AND WITHOUT the baseline lines in `seekMedia` and
+// `skipBy` — say so rather than let a future reader assume it guards them.
+// Chromium fires `timeupdate` when `currentTime` is assigned even on a paused
+// element, so the restore's baseline stays fresh there on its own; WebKit is
+// not verified to. What this does pin is the behaviour itself: skipping a
+// PAUSED episode back past RESTORE_JUMP_SEC and then playing must leave the
+// listener where they put themselves, not where the restore thinks they were.
+//
+// The presses go through the REAL button, and the gap between the last press
+// and play is deliberately longer than DELIBERATE_SEEK_WINDOW_MS (15 s), so
+// `seekedRecently()` has expired and only the baseline can save it.
+await go(`${APP}/?podcast=${POD}&episode=${encodeURIComponent(EPISODE_GUID)}`);
+await until(`!!${playButton}`);
+await js(`${playButton}.click()`);
+await until(playing);
+// Positioned through the SEEK BAR, not `setTime`: a raw `currentTime` write is
+// exactly what the restore undoes, so using one here would be the test fighting
+// the feature rather than exercising it.
+const scrub7b = (t) => js(`(() => {
+  const r = document.querySelector('input[type=range].seek') || document.querySelector('input[type=range]');
+  if (!r) return false;
+  const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  set.call(r, String(${t}));
+  r.dispatchEvent(new Event('change', { bubbles: true }));
+  r.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+})()`);
+check('the seek bar is reachable', await scrub7b(900), true);
+await wait(2500);
+await pause();
+await wait(1000);
+const pausedAt = await audioState();
+check('paused, with a position to skip back from', pausedAt && pausedAt.paused && pausedAt.t > 300, JSON.stringify(pausedAt));
+const startedAt = pausedAt.t;
+
+const tapSkipBack = () => js(`(() => {
+  const b = [...document.querySelectorAll('button')].filter(x => (x.getAttribute('aria-label') || '') === 'Skip back 15 seconds');
+  if (!b.length) return false; b[b.length - 1].click(); return true;
+})()`);
+let taps = 0;
+for (let i = 0; i < 12; i++) { if (await tapSkipBack()) taps++; await wait(120); }
+check('the skip-back control was pressed twelve times', taps === 12, `presses: ${taps}`);
+const afterTaps = await audioState();
+// Twelve presses of −15 s is three minutes: well past RESTORE_JUMP_SEC, which is
+// the whole point — a smaller total would not reach the condition being tested.
+check('...and the presses moved it back ~3 minutes',
+  afterTaps && startedAt - afterTaps.t > 150, `${startedAt} -> ${afterTaps && afterTaps.t}`);
+const target = afterTaps.t;
+
+// Let the deliberate-seek window lapse, so only the baseline can hold the line.
+await wait(16000);
+await js(`(() => { const b = document.querySelector('button[aria-label="Play"]'); b && b.click(); return !!b; })()`);
+await until(playing);
+await wait(3000);
+const afterPlay = await audioState();
+check('pressing play does NOT yank it back', afterPlay && afterPlay.t < target + 30, `skipped to ${target}, play left it at ${afterPlay && afterPlay.t}`);
+await pause();
+await wait(600);
+
 console.log('\n8. A music track saves nothing');
 await go(`${APP}/?podcast=${MUSIC}`);
 await until(`!!document.querySelector('li button[aria-label="Play"]')`);
