@@ -51,6 +51,19 @@ export const RESUME_MIN_SEC = 15;
 /** Within this many seconds of the end an episode counts as finished. */
 export const RESUME_TAIL_SEC = 30;
 
+/**
+ * How far BEHIND the saved point the element must be before the player offers
+ * to jump back.
+ *
+ * Not a cosmetic threshold. The writer updates the entry every ten seconds of
+ * movement, so while playback runs normally the saved point and the element
+ * track each other within that — anything at or under it would make the offer
+ * flicker on during ordinary listening. 30 s clears it with room, and is far
+ * below the case the offer exists for: an element reset to 0 while storage
+ * still holds minutes.
+ */
+export const RESUME_GAP_SEC = 30;
+
 type ResumeEpisode = Pick<
   Episode,
   'id' | 'guid' | 'feedId' | 'podcastGuid' | 'enclosureUrl' | 'liveStatus' | 'duration'

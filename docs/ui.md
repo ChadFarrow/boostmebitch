@@ -499,6 +499,56 @@ Two surfaces share one `<audio>` and the store's playback state: the always-moun
 
 - **Transport controls are shared.** `<TransportControls size="sm"|"lg">` renders ⏮ / play-pause / ⏭ as a **fragment** (drops into each parent's flex row) and owns the queue math: `idx = episodeQueue.findIndex(...)`, then `nextPlayableIndex` in each direction. Backed by `playPrev`/`playNext` (mirror images — walk `episodeQueue`, reset `positionSec`) and `togglePlay`. Don't re-inline these buttons.
 
+### The player offers a way back when the element has lost the place
+
+Reported 2026-09-21: *"I was listening to this downloaded episode but when I went
+back to it and hit play it just started over… The episode was at 17 minutes."* Asked
+where the press was, the answer was the now-playing bar.
+
+**That press is `togglePlay()`, and it never consults the saved position.** It flips
+the element's play state, nothing more. The saved point is read only where playback is
+*started* — `play()` in `lib/store.ts` defaults `startSec` to `savedStartSec`, which
+covers a list row and an episode page and nothing else. So once the element had been
+reset to the start, the saved 17:04 sat in storage **unreachable from the one screen
+the listener was on**, and there was no control anywhere that would go and get it.
+(Grep confirmed the other half at the time: nothing in the tree passed an explicit
+`0`, so there was no way to deliberately start over either.)
+
+`<FullscreenPlayer>` now renders **`↺ Resume <time>`** above the transport when
+`savedPos.t - positionSec > RESUME_GAP_SEC` (30 s, `lib/resume-position.ts`).
+
+Three properties, each a way to get it wrong:
+
+- **The rule is a COMPARISON, not a flag.** The writer updates the entry every ten
+  seconds of movement, so during ordinary listening the saved point and the element
+  track each other and the control stays hidden; pausing writes the current second,
+  so a deliberate scrub backwards hides it too. It appears in exactly the state it is
+  for — the element at 0:05 while storage says 4:14 — which is why 30 s has to clear
+  the ten-second write interval with room.
+- **It does not hijack PLAY.** The listener asked for play and play is what they get.
+  Jumping them 17 minutes on a press they meant as "start over" is the same complaint
+  one step further on.
+- **The hook is called ABOVE the early return.** `useSavedPosition` takes null
+  precisely so a surface can call it over its own "nothing selected" guard; calling it
+  after `if (!current) return null` is a conditional hook, which `react-hooks` catches
+  and which would break the render order the moment an episode ends.
+
+**Pinned by `npm run e2e:downloads` section 14**, which writes the saved entry
+directly rather than playing to it: the state under test is storage-ahead-of-element,
+and reaching it by playing would take four minutes and still not prove the comparison.
+
+**CAUTION — the recovery window is about 15 seconds, and that is not this control's
+doing.** `recordPosition` refuses anything under `RESUME_MIN_SEC`, so the old entry
+survives only while the element stays inside the first 15 seconds; play on from zero
+and the writer overwrites 17:04 with 16, then 26, and the point is gone. Whether that
+overwrite should be refused when it moves the saved point back by many minutes is a
+separate question this does not answer.
+
+**Still unexplained: what reset the element.** The likeliest candidate is iOS evicting
+the download while the app was backgrounded, forcing a re-attach to the network — the
+report came with "I was on a weak cell connection", and `<Player>`'s source effect
+falls back to `episode.enclosureUrl` when `objectUrlFor` returns null. Not proved.
+
 ### A pane that cannot load costs the pane, not playback
 
 Reported from an iPhone on 2026-09-20, in airplane mode, playing a **downloaded**

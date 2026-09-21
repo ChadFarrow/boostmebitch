@@ -990,6 +990,97 @@ console.log(`\n13. A PANE THAT CANNOT LOAD COSTS THE PANE, NOT PLAYBACK`);
   // the browser closes with the process; cdp.mjs tracks it
 }
 
+// ---------------------------------------------------------------------------
+console.log(`\n14. THE PLAYER OFFERS A WAY BACK WHEN THE ELEMENT HAS LOST THE PLACE`);
+// ---------------------------------------------------------------------------
+// Reported 2026-09-21: "I was listening to this downloaded episode but when I
+// went back to it and hit play it just started over… The episode was at 17
+// minutes." The press was on the now-playing bar.
+//
+// THAT PRESS IS `togglePlay()`. It flips the element's play state and NEVER
+// consults the saved point, which is read only when playback is STARTED from a
+// list row or an episode page. So once the element had been reset to the start
+// the saved position sat in storage unreachable, and nothing on that screen
+// could get back to it. `<FullscreenPlayer>`'s ↺ Resume control is the way back.
+//
+// The saved entry is WRITTEN DIRECTLY rather than played to: the state under
+// test is storage-ahead-of-element, and reaching it by playing would take four
+// minutes and still not prove the comparison this control is built on.
+{
+  const { page: p4 } = await launchChrome({ name: 'downloads-resume', autoplay: true, args: ['--window-size=1200,900'] });
+  const ex4 = [];
+  p4.on((m) => { if (m.method === 'Runtime.exceptionThrown') ex4.push(m.params.exceptionDetails?.exception?.description ?? ''); });
+  await p4.send('Page.enable'); await p4.send('Runtime.enable');
+  await p4.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(4000);
+
+  const RC = { url: 'https://example.invalid/rc-a.wav', guid: 'e2e-rc-a', title: 'RC A', id: 970000001 };
+  await p4.js(`
+    (async () => {
+      const wav = (sec, rate = 8000) => {
+        const n = sec * rate, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+        w(0,'RIFF'); v.setUint32(4,36+n*2,true); w(8,'WAVE'); w(12,'fmt ');
+        v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+        v.setUint32(24,rate,true); v.setUint32(28,rate*2,true); v.setUint16(32,2,true);
+        v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,n*2,true);
+        return new Blob([buf], { type: 'audio/wav' });
+      };
+      const cache = await caches.open('bmb-downloads-v1');
+      const db = await new Promise((res, rej) => { const r = indexedDB.open('BmbDownloadsDB'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      const e = ${JSON.stringify(RC)}; const blob = wav(600);
+      await cache.put(e.url, new Response(blob, { headers: { 'content-type': 'audio/wav' } }));
+      await new Promise((res, rej) => {
+        const tx = db.transaction('downloads', 'readwrite');
+        tx.objectStore('downloads').put({
+          key: e.url, enclosureUrl: e.url, enclosureType: 'audio/wav', sizeBytes: blob.size,
+          createdAt: 1, itemGuid: e.guid, feedGuid: 'rc-feed-guid', feedId: 555002,
+          episodeId: e.id, title: e.title, feedTitle: 'RC Show', duration: 600,
+        });
+        tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      });
+      localStorage.setItem('bmb:resume', JSON.stringify({
+        'rc-feed-guid::e2e-rc-a': { t: 254, d: 600, at: Date.now() },
+      }));
+    })()
+  `);
+  await p4.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(4000);
+  check('the seeded row offers Play', await p4.js(`(() => { const b = document.querySelector('button[aria-label="Play RC A"]'); b && b.click(); return !!b; })()`), true);
+  await wait(3500);
+  // Put the element back at the start: the bar reading 0:05 while storage says 4:14.
+  await p4.js(`(() => { const a = document.querySelector('audio'); if (a) a.currentTime = 5; return true; })()`);
+  await wait(2500);
+
+  const box4 = await p4.js(`(() => { const d = document.querySelector('[aria-label="Open fullscreen player"]');
+    if (!d) return null; const r = d.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width * 0.45), y: Math.round(r.y + 22) }; })()`);
+  if (box4) {
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await p4.send('Input.dispatchMouseEvent', { type, x: box4.x, y: box4.y, button: 'left', clickCount: 1 });
+    }
+  }
+  await wait(2500);
+  const offered = await p4.js(`(() => {
+    const r = [...document.querySelectorAll('button')].find((x) => /resume/i.test((x.textContent || '').trim()));
+    return { label: r ? r.textContent.trim() : null,
+             h: r ? +r.getBoundingClientRect().height.toFixed(1) : null }; })()`);
+  check('the ↺ Resume control is offered', !!offered.label, true);
+  check('...and names the saved time', !!offered.label && offered.label.includes('4:14'), true);
+  // WCAG 2.5.8, the rule every control in this repo answers to.
+  check('...and clears the 24px floor', !!offered.h && offered.h >= 24, true);
+
+  await p4.js(`(() => { const r = [...document.querySelectorAll('button')].find((x) => /resume/i.test((x.textContent || '').trim())); r && r.click(); return !!r; })()`);
+  await wait(2500);
+  const taken = await p4.js(`(() => { const a = document.querySelector('audio');
+    const r = [...document.querySelectorAll('button')].find((x) => /resume/i.test((x.textContent || '').trim()));
+    return { at: a ? a.currentTime : null, paused: a ? a.paused : null, stillOffered: !!r }; })()`);
+  check('pressing it jumps to the saved point', !!taken.at && Math.abs(taken.at - 254) < 8, true);
+  check('the offer clears once taken', taken.stillOffered, false);
+  check('and playback is not interrupted', taken.paused, false);
+  check('no uncaught exceptions in the resume browser', ex4, []);
+}
+
 check('no uncaught exceptions overall', exceptions, []);
 console.log(t.fails ? `\nDOWNLOADS E2E FAILED (${t.fails})` : '\nDOWNLOADS E2E OK');
 await exit(t.fails ? 1 : 0);

@@ -10,6 +10,7 @@ import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { nowPlayingArt } from '@/lib/track-art';
 import { lockScroll } from '@/lib/scroll-lock';
+import { useSavedPosition, RESUME_GAP_SEC } from '@/lib/resume-position';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
 import { ErrorBoundary } from './error-boundary';
 import type { TranscriptCue } from '@/lib/transcript';
@@ -646,11 +647,20 @@ export function FullscreenPlayer({
     // appearing — is the ResizeObserver's job.
   }, [everOpened, open, current?.episode?.id, current?.episode?.guid]);
 
+  // ABOVE the early return: a hook may not be called conditionally, and
+  // `useSavedPosition` takes null precisely so a surface can call it over its
+  // own "nothing selected" guard. Reactive, so the control appears and clears
+  // as the entry moves; null for anything that never resumes (a track, a live
+  // item, an HLS URL), so the control is absent there by construction.
+  const savedPos = useSavedPosition(current?.episode ?? null, current?.podcast ?? null);
+
   if (!current) return null;
 
   const { episode, podcast } = current;
   const isMusic = isMusicMedium(podcast);
   const isLive = episode.liveStatus === 'live';
+  const resumeTo =
+    savedPos && !isLive && savedPos.t - positionSec > RESUME_GAP_SEC ? savedPos.t : null;
   // A Nostr live stream's NIP-33 id is `<64-hex pubkey>:<dTag>`, carried as the
   // episode guid. When present (and it's an HLS video stream) the right pane
   // becomes the kind:1311 live chat instead of the usual episode info.
@@ -1165,6 +1175,45 @@ export function FullscreenPlayer({
                   full-width tile grid that are both symmetric. It costs nothing
                   from sm: up: BOOST is `sm:flex-1` there, so the line has no
                   free space for justify-content to distribute. */}
+              {/* THE WAY BACK TO WHERE YOU WERE, and it exists because there was
+                  none. Reported 2026-09-21: "I was listening to this downloaded
+                  episode but when I went back to it and hit play it just started
+                  over… The episode was at 17 minutes." The play control on the
+                  bar and in here is `togglePlay()` — it flips the element's
+                  play state and NEVER consults the saved position, which is read
+                  only when playback is STARTED from a list row or an episode
+                  page. So once the element had been reset to the start, nothing
+                  on this screen could take the listener back, and the saved
+                  17:04 was sitting in storage unreachable.
+
+                  IT APPEARS ONLY WHEN IT IS USEFUL, and the rule is a comparison
+                  rather than a flag: `saved.t` is more than RESUME_GAP_SEC ahead
+                  of where the element is. While playing normally the writer
+                  updates `saved.t` every ten seconds, so the two track each
+                  other and this stays hidden; pausing writes the current second,
+                  so a deliberate scrub backwards hides it too. It shows exactly
+                  in the case it is for — the element sitting at 0:05 while
+                  storage still says 17:04.
+
+                  IT DOES NOT HIJACK PLAY. The listener asked for play, and play
+                  is what they get; this is a separate, named control beside it.
+                  Jumping them 17 minutes on a press they meant as "start over"
+                  is the complaint one step further on.
+
+                  CAUTION — THE WINDOW IS SHORT, and that is not this control's
+                  doing: `recordPosition` refuses anything under RESUME_MIN_SEC
+                  (15 s), so the old entry survives only while the element stays
+                  inside the first 15 seconds. Play on from zero and the writer
+                  overwrites 17:04 with 16, then 26. Whether that overwrite
+                  should be refused when it moves the point back by many minutes
+                  is a separate question this does not answer. */}
+              {resumeTo !== null && (
+                <div className="flex justify-center">
+                  <button type="button" onClick={() => onSeek(resumeTo)} className="btn-mini">
+                    ↺ Resume {fmt(resumeTo)}
+                  </button>
+                </div>
+              )}
               <div ref={controlsRef} className="flex flex-wrap items-center justify-center gap-3">
                 <TransportControls
                   size="lg"
