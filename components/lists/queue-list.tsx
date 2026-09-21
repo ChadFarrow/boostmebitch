@@ -95,18 +95,27 @@ export function QueueList() {
               <button
                 type="button"
                 onClick={() => {
-                  // The active row draws ❚❚, so it has to pause. Re-selecting
-                  // the current item writes `isPlaying: true` over `true` and
-                  // re-runs neither of the player's effects, so the press would
-                  // be a silent no-op — the same trap the album tracklist below
-                  // documents.
+                  // The active row TOGGLES: it pauses while playing and resumes
+                  // while paused. Re-selecting the current item writes
+                  // `isPlaying: true` over `true` and re-runs neither of the
+                  // player's effects, so the press would be a silent no-op —
+                  // the same trap the album tracklist below documents.
                   if (active) togglePlay();
                   else playFromQueue(i);
                 }}
                 className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
                   active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
                 }`}
-                aria-label={active ? `Pause ${item.episode.title}` : `Play ${item.episode.title}`}
+                // The name says what the press DOES, so it reads the same two
+                // facts as the glyph below. It read `active` alone, and a
+                // reload leaves the queue head active and PAUSED: a screen
+                // reader heard "Pause" on a row whose press starts playback.
+                // Found on a Pixel 6, 2026-09-21.
+                aria-label={
+                  active && isPlaying ? `Pause ${item.episode.title}`
+                    : active ? `Resume ${item.episode.title}`
+                      : `Play ${item.episode.title}`
+                }
               >
                 <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
                   {active && isPlaying ? '❚❚' : i + 1}

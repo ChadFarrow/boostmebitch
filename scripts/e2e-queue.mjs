@@ -341,6 +341,16 @@ section('7. A queued episode resumes where it was left, and finishing it forgets
   const at = await js2(`(() => { const a = document.querySelector('audio'); return a ? Math.round(a.currentTime) : null; })()`);
   check('the revealed queue head sits at its saved 10:00, not 0:00', { seeked, at: at >= 599 && at < 620 }, { seeked: true, at: true });
 
+  // The revealed head is ACTIVE and PAUSED, the one state where the row's name
+  // and its press disagreed: the label read `active` alone, so a screen reader
+  // heard "Pause" on a row whose press starts playback. Found on a Pixel 6.
+  const headRow = await js2(`(() => {
+    const a = document.querySelector('audio');
+    const b = document.querySelector('li button[aria-label^="Pause "], li button[aria-label^="Resume "], li button[aria-label^="Play "]');
+    return { paused: !!a && a.paused, verb: b ? b.getAttribute('aria-label').split(' ')[0] : null };
+  })()`);
+  check('the paused head row is named Resume, never Pause', headRow, { paused: true, verb: 'Resume' });
+
   // Finish it: the last item drains, and a finished episode keeps no place.
   await js2(`(() => { const a = document.querySelector('audio'); a.currentTime = Math.max(0, a.duration - 4); return true; })()`);
   await js2(`(() => { const b = document.querySelector('button[aria-label="Play"]'); b && b.click(); return !!b; })()`);
