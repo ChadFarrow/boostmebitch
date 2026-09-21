@@ -740,6 +740,84 @@ The probe's own budget is `BUNKER_PING_TIMEOUT_MS` (10 s), shorter than
 behaviour the reconnect had before the probe existed — while waiting it out
 delays the rebuild by the whole window on a transport that is genuinely gone.
 
+### The reconnect was a button, and the user was pressing it for us
+
+Reported as *"I have to reconnect Amber every time I use the app."*
+
+**The transport is the signer.** Amber in bunker mode, Clave, Primal and
+nsec.app's mobile mode all answer over a WebSocket this page holds, and **both**
+mobile OSes suspend that socket the moment the browser is backgrounded. For this
+app backgrounding is not an edge case, it is the flow: approving anything in the
+signer app *is* leaving the browser, and so is every relaunch of a PWA that was
+left open. So the session returns with a dead kind:24133 subscription, nothing
+notices until the next thing that signs, `trackBunkerCall` marks it stale, and
+the user meets `<BunkerHealthBanner>` and presses RECONNECT.
+
+**That button calls `restoreBunkerSigner`, which is the same function a wake
+signal could have called, at the same moment.** So the press was never carrying
+information — it was carrying the timing, and the page already had the timing.
+`startBunkerRevive` (`lib/nostr/auth.ts`) listens for `visibilitychange`,
+`focus` and `online`, and `<NostrAuth>` mounts it for the length of a signed-in
+session. **Every other socket-backed surface in this app was already doing
+this** — the player's foreground nudge, live chat, `live-value.ts`,
+`wallet-balance.tsx`, `use-live-status-poll.ts`. The signer's transport, whose
+death is the one that stops the whole app being able to act, was the only one
+that was not, which is why the symptom reads as the app forgetting the pairing
+rather than as a socket.
+
+**Nothing new is built to do it, and that is the point.** `runBunkerRestore`
+already pings the live adapter first and rebuilds only on silence, so the common
+case — the socket survived the app switch — is one relay round trip, no approval
+prompt (Clave auto-allows `ping`), and no UI: `<BunkerRestoreNotice>` holds
+itself back for five seconds, and a healthy revive is nowhere near that.
+
+**Four guards, and the first is the one that could cost money.**
+
+| Guard | The case it is for |
+| --- | --- |
+| `bunkerBusy()` | A failed probe runs `closeStaleBunkerTransport`, which takes a pending `sign_event` down with it — and `publishBoostNote` signs AFTER the sats have moved, with no retry control behind it |
+| `reviveRefusedFor` | `refused` is the signer saying this client is not paired; only pairing again helps, so retrying on every foreground return asks a signer that has already answered |
+| `restoreInFlight` | Belt to `restoreBunkerSigner`'s own coalescing, and what keeps the throttle honest when a restore outlives the gap |
+| `visibilityState` / `navigator.onLine === false` | `focus` and `online` both fire for a document nobody is looking at; a known-down radio buys a 90 s connect for nothing |
+
+**`bunkerBusy()` needs BOTH of its halves, and reading either alone leaves a
+hole at exactly the wrong moment.** `callsInFlight` — counted in
+`trackBunkerCall`, which every method of the adapter goes through — is **zero**
+during `withApprovalWait`'s gap between re-issues: the request has settled, the
+loop is sleeping, and the signer is still holding a prompt in front of the user.
+That gap is precisely the foreground return this whole feature fires on, because
+coming back from approving is what ends it (`waitBeforeReissue`). And
+`activeApprovalWaits` is **empty** for the first attempt of every call, before
+any signer has answered "not yet".
+
+`BUNKER_REVIVE_MIN_GAP_MS` is 30 s, and it bounds what a user flipping between
+apps costs the relays rather than protecting anything. Every report of this
+begins with the app having been away long enough for the OS to suspend a socket,
+which is far more than half a minute, so the return that matters is never the
+one skipped. The gap is re-stamped when the restore SETTLES, not when it starts,
+so a 90 s connect is not followed by a second attempt the instant it ends.
+
+**The banner stopped naming a device in the same change.** It read *"Signer
+disconnected — your iPhone may have suspended the relay link"* for every signer
+on every platform, so the largest group that sees it — Amber in bunker mode,
+which is Android and nothing else — was told about hardware they do not own, on
+the one screen whose job is to explain what went wrong. Android suspends a
+backgrounded socket exactly as iOS does; the sentence is true for both the
+moment it stops picking one.
+
+**What this does NOT fix.** A signer app the OS has killed outright answers
+nothing, and no amount of probing from this side wakes it — Clave has the APNs
+wake through `wss://relay.powr.build`, and Android has no equivalent for Amber.
+For that user the revive turns a manual RECONNECT into an automatic one that
+also fails, and the banner is still the answer. What it removes is the far more
+common case: a signer that is running fine and a socket that is not.
+
+**No `check:*` pins it**, for the reason the rest of this file's bunker work is
+unpinned: `auth.ts` and `bunker.ts` both import `nostr-tools` and touch browser
+globals, so neither loads under `node --experimental-strip-types`. The guards are
+readable at their call site instead, which is why they are four early returns in
+one function rather than conditions spread across the listeners.
+
 ### The 90 s before the guard decides, and the second press that made it worse
 
 The section above gives the restore four honest outcomes. This one is about the

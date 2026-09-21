@@ -23,6 +23,7 @@ import {
 } from './signer';
 import { clearKey, getKey, putKey } from './local-key-store';
 import {
+  bunkerBusy,
   bunkerUriForRestore,
   clearBunkerStale,
   connectBunkerFromUri,
@@ -355,6 +356,129 @@ async function runBunkerRestore(storedUri: string | null): Promise<BunkerRestore
   activateBunkerSigner(adapter);
   clearBunkerStale();
   return { kind: 'ok' };
+}
+
+/**
+ * The shortest gap between two automatic revives. It bounds what a user flipping
+ * between apps can cost the relays, and nothing else — a revive that finds a
+ * healthy link is one `ping` round trip, and one that finds a dead one is doing
+ * the work the user would otherwise do by hand.
+ *
+ * Short enough that the return that matters is never the one skipped: every
+ * report of this begins with the app having been away long enough for the OS to
+ * suspend its socket, which is far more than half a minute.
+ */
+const BUNKER_REVIVE_MIN_GAP_MS = 30_000;
+
+let reviveLastAt = 0;
+// The pointer a `refused` answer was about. A refusal is the signer saying this
+// client is not paired any more, so no amount of probing fixes it and every
+// retry is a request at a signer that has already answered — see the guard in
+// `maybeReviveBunker`. Keyed on the URI rather than a bare flag so that pairing
+// again clears it by construction.
+let reviveRefusedFor: string | null = null;
+let reviveStop: (() => void) | null = null;
+
+/**
+ * BRING THE SIGNER'S TRANSPORT BACK WHEN THE APP COMES BACK, because nothing
+ * else in this app does and the user was doing it by hand.
+ *
+ * Reported as *"I have to reconnect Amber every time I use the app"*. A NIP-46
+ * signer — Amber in bunker mode, Clave, Primal, nsec.app — talks over a
+ * WebSocket this page holds, and both mobile OSes suspend that socket whenever
+ * the browser is backgrounded. Backgrounding is not an edge case here: approving
+ * anything in the signer app IS leaving the browser, and so is every launch of a
+ * PWA that was left open. So the session comes back with a dead subscription,
+ * `trackBunkerCall` marks it stale at the next thing that signs, and the user
+ * meets <BunkerHealthBanner> and presses RECONNECT — which calls
+ * `restoreBunkerSigner`, the same function this one calls, at the same moment
+ * this one could have.
+ *
+ * Every other socket-backed surface in this app already re-polls on
+ * `visibilitychange`/`focus` — the player, live chat, live value, the wallet
+ * balance, live status. The signer transport, whose death is the one that stops
+ * the whole app being able to act, was the one that did not.
+ *
+ * IT PROBES BEFORE IT REBUILDS, and that is inherited rather than re-derived:
+ * `runBunkerRestore` pings the live adapter first and only rebuilds on silence.
+ * A pong costs no approval prompt and no tap (Clave auto-allows `ping`), so the
+ * common case — the socket survived — is one relay round trip and no UI at all.
+ * `<BunkerRestoreNotice>` stays silent for the first five seconds, so a healthy
+ * revive is invisible.
+ *
+ * FOUR GUARDS, and the first is the one that could cost money.
+ *
+ *  - **Never while the session is busy.** A failed probe closes the transport,
+ *    taking a pending `sign_event` with it — and `publishBoostNote` signs after
+ *    the sats have moved. `bunkerBusy()` covers both the request on the wire and
+ *    the gap between `withApprovalWait`'s re-issues, which is exactly when the
+ *    user is standing at the signer having just come back from approving.
+ *  - **Never after a refusal**, for this pointer. `refused` means the signer
+ *    answered that the pairing is gone; only pairing again helps, and retrying
+ *    on every foreground return is a request at a signer that has already said
+ *    no. The banner carries its words, so the state is on screen either way.
+ *  - **Never while one is already running.** `restoreBunkerSigner` coalesces on
+ *    the stored pointer, so this is belt to that braces — but it also keeps the
+ *    throttle honest, since a restore that outlives the gap must not be followed
+ *    by a second one the moment it ends.
+ *  - **Never while hidden.** `focus` and `online` can both fire for a document
+ *    the user is not looking at.
+ *
+ * `online` is listened for beside the two foreground signals because the case it
+ * covers is the same one with the tab never having left: the radio came back,
+ * and the socket that died with it will not return on its own.
+ *
+ * Returns its own teardown. Idempotent — a second call replaces the first rather
+ * than stacking listeners, which matters because React remounts this in dev on
+ * every save.
+ */
+export function startBunkerRevive(): () => void {
+  if (typeof window === 'undefined') return () => {};
+  reviveStop?.();
+
+  const onWake = () => { void maybeReviveBunker(); };
+  document.addEventListener('visibilitychange', onWake);
+  window.addEventListener('focus', onWake);
+  window.addEventListener('online', onWake);
+
+  const stop = () => {
+    document.removeEventListener('visibilitychange', onWake);
+    window.removeEventListener('focus', onWake);
+    window.removeEventListener('online', onWake);
+    if (reviveStop === stop) reviveStop = null;
+  };
+  reviveStop = stop;
+  return stop;
+}
+
+async function maybeReviveBunker(): Promise<void> {
+  if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+  if (storage.signer.get() !== 'bunker') return;
+  // Nothing to revive, and nothing to build from. `runBunkerRestore` would
+  // answer `no-session` here, which is a fact about storage that a foreground
+  // return has no business reporting.
+  const uri = storage.bunker.get()?.uri ?? null;
+  if (!uri) return;
+  if (reviveRefusedFor === uri) return;
+  // Offline is known, not guessed: skip rather than spend a 90 s connect on a
+  // radio that is down. `navigator.onLine === true` says nothing, so only the
+  // explicit false is acted on.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (bunkerBusy()) return;
+  if (restoreInFlight) return;
+  if (Date.now() - reviveLastAt < BUNKER_REVIVE_MIN_GAP_MS) return;
+  reviveLastAt = Date.now();
+  try {
+    const r = await restoreBunkerSigner();
+    // Stamped again on the way out so the gap runs from the END of a restore
+    // that took longer than the gap itself, not from its start.
+    reviveLastAt = Date.now();
+    reviveRefusedFor = r.kind === 'refused' ? uri : null;
+  } catch {
+    // `restoreBunkerSigner` reports through `bunkerStale`; a revive nobody asked
+    // for has nothing else to say.
+    reviveLastAt = Date.now();
+  }
 }
 
 /**

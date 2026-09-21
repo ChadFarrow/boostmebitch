@@ -10,6 +10,7 @@ export {
   loginWithLocalKey,
   restoreAmberSigner,
   restoreBunkerSigner,
+  startBunkerRevive,
   restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,

@@ -94,11 +94,19 @@ function BunkerHealthBanner({ stale, restoring }: { stale: boolean; restoring: b
     <div className="border border-nostr/40 bg-nostr/10 p-2 mb-3 flex flex-col gap-1">
       {/* The headline states the FAULT, and a refusal is a different fault from
           a suspended socket. Naming the iPhone at someone whose signer just
-          answered sends them to fix the one thing that is working. */}
+          answered sends them to fix the one thing that is working.
+
+          IT NAMES NO DEVICE, and that is a fix rather than a softening. This
+          said "your iPhone" for every signer on every platform, so the largest
+          group that reads it — Amber in bunker mode, which is Android and
+          nothing else — was told about hardware they do not own, on the one
+          screen that is supposed to explain what went wrong. Android suspends a
+          backgrounded socket exactly as iOS does; the sentence is true for both
+          the moment it stops picking one. */}
       <span className="text-[11px] text-bone leading-snug">
         {refusal
           ? <>Your signer refused this connection: “{refusal}”</>
-          : <>Signer disconnected — your iPhone may have suspended the relay link.</>}
+          : <>Signer disconnected — your phone may have suspended the link to it.</>}
       </span>
       {refusal && (
         <span className="text-[10px] text-muted leading-snug">
