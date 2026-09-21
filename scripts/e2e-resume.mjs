@@ -190,7 +190,59 @@ await wait(800);
 e = await entry();
 check('bmb:resume no longer holds the episode', e === null, JSON.stringify(e));
 
-console.log('\n7. A music track saves nothing');
+console.log('\n7. An element that came back at 0 does not erase a place minutes in');
+// Reported 2026-09-21 on an iPhone, with the download still present so nothing
+// was evicted: "I did resume the episode earlier without an issue but the
+// second time I tried minutes later it started over."
+//
+// iOS drops a backgrounded media element's buffer and it returns sitting at 0
+// while storage still holds 17:04. Nothing re-seeks it, so play runs from the
+// beginning — and fifteen seconds later the writer has replaced 17:04 with 16,
+// then 26. The RESUME_MIN_SEC floor is the only reason the FIRST attempt still
+// worked: under 15 s nothing is written at all. That is a fifteen-second window
+// in which an hour of listening is destroyed by doing nothing.
+//
+// THIS RUNS IN THE REAL WIRING AND NOT UNDER strip-types, because
+// lib/resume-position.ts imports lib/storage and will not load under plain
+// Node — the same reason this whole feature is an e2e rather than a check:*.
+await go(`${APP}/?podcast=${POD}&episode=${encodeURIComponent(EPISODE_GUID)}`);
+await until(`!!${playButton}`);
+await js(`${playButton}.click()`);
+await until(playing);
+await setTime(1024);
+await wait(2500);
+let deep = await entry();
+check('a place 17 minutes in is saved', deep && deep.t >= 1020 && deep.t < 1040, JSON.stringify(deep));
+
+// The element comes back at the start and plays on through the 15 s floor.
+for (const at of [16, 40, 90]) { await setTime(at); await wait(1600); }
+const kept = await entry();
+check('playing from the start does NOT erase it', kept && kept.t >= 1020, JSON.stringify(kept));
+// ...and it is still what a fresh play would resume to.
+await pause();
+await wait(800);
+const afterPause = await entry();
+check('...not even the pause flush erases it', afterPause && afterPause.t >= 1020, JSON.stringify(afterPause));
+
+// Past the two-minute head the listener plainly means it, and the point moves.
+await js(`${playButton}.click()`);
+await until(playing);
+await setTime(150);
+await wait(2500);
+const moved = await entry();
+check('past the head, a deliberate restart moves the point', moved && moved.t >= 148 && moved.t < 200, JSON.stringify(moved));
+// A mid-episode rewind is never refused: the guard needs BOTH a large jump and
+// a position near the beginning.
+await setTime(3000);
+await wait(2000);
+await setTime(2400);
+await wait(2500);
+const scrubbed = await entry();
+check('a mid-episode rewind still saves', scrubbed && scrubbed.t >= 2395 && scrubbed.t < 2450, JSON.stringify(scrubbed));
+await pause();
+await wait(600);
+
+console.log('\n8. A music track saves nothing');
 await go(`${APP}/?podcast=${MUSIC}`);
 await until(`!!document.querySelector('li button[aria-label="Play"]')`);
 await js(`document.querySelector('li button[aria-label="Play"]').click()`);

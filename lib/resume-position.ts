@@ -64,6 +64,37 @@ export const RESUME_TAIL_SEC = 30;
  */
 export const RESUME_GAP_SEC = 30;
 
+/**
+ * A saved point is not moved BACKWARDS by more than this while the element is
+ * still inside {@link RESUME_REWIND_HEAD_SEC} of the start.
+ *
+ * **This is a data-loss guard, and it was earned.** Reported 2026-09-21 on an
+ * iPhone, with the download still present so nothing was evicted: *"I did
+ * resume the episode earlier without an issue but the second time I tried
+ * minutes later it started over."*
+ *
+ * iOS drops a backgrounded media element's buffer, and it comes back sitting at
+ * 0 while the store and storage still hold 17:04. Nothing re-seeks it, so a
+ * press of play runs from the beginning — and fifteen seconds later the writer
+ * has replaced 17:04 with 16, then 26. The `RESUME_MIN_SEC` floor is the only
+ * reason the FIRST attempt still worked: under 15 s nothing is written at all.
+ * That is a fifteen-second window in which an hour of listening is destroyed by
+ * doing nothing.
+ *
+ * THE COST IS STATED AND SMALL: a listener who deliberately restarts an episode
+ * gets no resume tracking for the first two minutes, because those writes are
+ * refused as if they were this fault. Play past two minutes and the point moves
+ * normally. Losing two minutes of tracking is recoverable; losing the hour is
+ * what was reported.
+ *
+ * It is deliberately NOT a "did the user seek?" test. That needs a signal
+ * threaded from three call sites through a module none of them import, and the
+ * one it would protect — a deliberate restart — is exactly the case the
+ * two-minute head already forgives.
+ */
+const RESUME_REWIND_MAX_SEC = 120;
+const RESUME_REWIND_HEAD_SEC = 120;
+
 type ResumeEpisode = Pick<
   Episode,
   'id' | 'guid' | 'feedId' | 'podcastGuid' | 'enclosureUrl' | 'liveStatus' | 'duration'
@@ -146,7 +177,16 @@ export function recordPosition(
     forgetPosition(episode, podcast);
     return;
   }
-  write(resumeKey(episode, podcast), { t, d, at: Date.now() });
+  const key = resumeKey(episode, podcast);
+  // REFUSE A LARGE REWIND FROM THE HEAD OF THE FILE. See
+  // RESUME_REWIND_MAX_SEC: an element that lost its buffer comes back at 0 and
+  // would otherwise erase a point minutes in, a second at a time, while the
+  // listener watches it play from the start. Both bounds are needed — the jump
+  // has to be large AND the new position has to be near the beginning, or a
+  // normal scrub backwards mid-episode would be refused too.
+  const prev = entries()[key];
+  if (prev && t < RESUME_REWIND_HEAD_SEC && prev.t - t > RESUME_REWIND_MAX_SEC) return;
+  write(key, { t, d, at: Date.now() });
 }
 
 /** The episode was finished: drop its entry, whatever the position says. */

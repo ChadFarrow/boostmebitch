@@ -529,6 +529,42 @@ proved instead against the shipping module under `node --experimental-strip-type
 (8 cases, including the reported one and the two normalisation forms), and on the real
 show page: the `<h2>` reads "Our Big Dumb Mouth" and no paragraph under it repeats it.
 
+### A saved place is not erased by an element that came back at zero
+
+Reported 2026-09-21, **with the download still present** so nothing was evicted:
+*"I did resume the episode earlier without an issue but the second time I tried
+minutes later it started over."*
+
+**Both halves of that sentence are the evidence.** iOS drops a backgrounded media
+element's buffer, and it returns sitting at 0 while storage still holds 17:04. Nothing
+re-seeks it, so a press of play runs from the beginning — and fifteen seconds later
+the writer has replaced 17:04 with 16, then 26. `RESUME_MIN_SEC` is the only reason
+the FIRST attempt still worked: under 15 s nothing is written at all. So it is a
+fifteen-second window in which an hour of listening is destroyed **by doing nothing**,
+and the second attempt resumes at 16 s, which is indistinguishable from starting over.
+
+`recordPosition` now refuses to move a saved point backwards by more than
+`RESUME_REWIND_MAX_SEC` (120 s) while the new position is inside
+`RESUME_REWIND_HEAD_SEC` (120 s) of the start. **Both bounds are needed**: the jump has
+to be large AND the new position near the beginning, or an ordinary mid-episode scrub
+backwards would be refused too.
+
+**The cost is stated and small.** A listener who deliberately restarts gets no resume
+tracking for the first two minutes, because those writes are refused as if they were
+this fault. Play past two minutes and the point moves normally. Losing two minutes of
+tracking is recoverable; losing the hour is what was reported.
+
+**It is deliberately NOT a "did the user seek?" test.** That needs a signal threaded
+from three call sites through a module none of them import, and the one case it would
+protect — a deliberate restart — is exactly what the two-minute head already forgives.
+
+**Pinned by `npm run e2e:resume` section 7, in the real wiring**, because
+`lib/resume-position.ts` imports `lib/storage` and will not load under
+`--experimental-strip-types` — the same reason this whole feature is an e2e rather
+than a `check:*`. **Run it against the unfixed build**: it reports the entry moving
+from 1024 s to 90 s, the report verbatim. The section also pins what must NOT change —
+a restart past the head still moves the point, and a mid-episode rewind still saves.
+
 ### The player offers a way back when the element has lost the place
 
 Reported 2026-09-21: *"I was listening to this downloaded episode but when I went
