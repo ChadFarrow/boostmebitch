@@ -16,6 +16,7 @@
 // make a PI outage look like the user had removed them.
 
 import type { FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
+import { authorLine } from '@/lib/util';
 import { PodcastCover } from '../podcast-cover';
 import { FavEpisodeRowHeart, FavFeedRowHeart } from '../fav-heart';
 import { PodcastRow } from './podcast-results';
@@ -311,7 +312,7 @@ export function FavoriteFeedRows({
         };
         if (p.carried) {
           return (
-            <CarriedRow key={p.podcastGuid} title={title} subtitle={p.author} image={p.image ?? p.artwork} seed={p.podcastGuid} />
+            <CarriedRow key={p.podcastGuid} title={title} subtitle={authorLine(title, p.author) ?? undefined} image={p.image ?? p.artwork} seed={p.podcastGuid} />
           );
         }
         return (

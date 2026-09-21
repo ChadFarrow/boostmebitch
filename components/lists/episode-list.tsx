@@ -12,7 +12,7 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { authorLine, hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
@@ -620,7 +620,9 @@ export function EpisodeList({
           <h2 className="font-display text-lg sm:text-3xl leading-tight font-semibold break-words line-clamp-3 sm:line-clamp-none">
             {data.podcast.title}
           </h2>
-          <p className="text-sm text-muted mt-1">{data.podcast.author}</p>
+          {authorLine(data.podcast.title, data.podcast.author) && (
+            <p className="text-sm text-muted mt-1">{authorLine(data.podcast.title, data.podcast.author)}</p>
+          )}
           {/* Both stamps share one wrapper. They are `inline-flex` and each used
               to carry its own `mt-2`, so a preview feed that ALSO has a value
               block rendered them separated by nothing but a JSX whitespace node

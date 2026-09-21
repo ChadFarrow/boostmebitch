@@ -4,7 +4,7 @@ import { useApp } from '@/lib/store';
 import { resolvePodcastByGuid, resolvePodcastByFeedUrl, piMaybeUp, warmPodcastCache } from '@/lib/podcast-meta';
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel';
 import type { Podcast, PodrollItem } from '@/lib/types';
-import { mapLimit, PI_FANOUT } from '@/lib/util';
+import { authorLine, mapLimit, PI_FANOUT } from '@/lib/util';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './fav-heart';
 
@@ -146,7 +146,7 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
                 <p className="text-sm font-display leading-tight line-clamp-2" title={p.title}>
                   {p.title}
                 </p>
-                {p.author && <p className="text-xs text-muted truncate mt-0.5">{p.author}</p>}
+                {authorLine(p.title, p.author) && <p className="text-xs text-muted truncate mt-0.5">{authorLine(p.title, p.author)}</p>}
               </div>
             </button>
             <div className="flex items-center justify-between gap-2 mt-auto pt-1">

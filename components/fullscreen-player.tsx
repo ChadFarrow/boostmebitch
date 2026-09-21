@@ -72,6 +72,7 @@ import {
   isMusicMedium,
   showShareUrl,
   targetWord,
+  authorLine,
   stripHtml,
   fullscreenElement,
   fullscreenSupported,
@@ -1072,8 +1073,8 @@ export function FullscreenPlayer({
                 {podcast.title && podcast.title !== episode.title && (
                   <p className="text-sm text-muted mt-1">{podcast.title}</p>
                 )}
-                {podcast.author && (
-                  <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
+                {authorLine(podcast.title, podcast.author) && (
+                  <p className="text-xs text-muted/70 mt-0.5">{authorLine(podcast.title, podcast.author)}</p>
                 )}
               </div>
               {/* Play/pause now lives on the video; prev/next aren't meaningful
@@ -1118,8 +1119,8 @@ export function FullscreenPlayer({
             <div>
               <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
               <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
-              {podcast.author && (
-                <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
+              {authorLine(podcast.title, podcast.author) && (
+                <p className="text-xs text-muted/70 mt-0.5">{authorLine(podcast.title, podcast.author)}</p>
               )}
               {audioErr && (
                 <p className="text-xs text-nostr mt-2 break-words">⚠ {audioErr}</p>

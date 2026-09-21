@@ -1837,6 +1837,37 @@ export function redirectLegs(args: {
  * the `showShareUrl` situation again — the alternative was one component
  * importing another for a string.
  */
+/**
+ * The author line, or `null` when it would only repeat the title.
+ *
+ * **Most feeds set `<itunes:author>` to the show's own name**, so a surface that
+ * renders the title and then the author prints the same words twice. Reported
+ * from an iPhone on 2026-09-21 with a screenshot of the fullscreen player:
+ * "Our Big Dumb Mouth" under "Our Big Dumb Mouth", the second line adding
+ * nothing but height on the screen where height is scarcest — the cover is
+ * capped by the room left under it, so every wasted line shrinks the artwork.
+ *
+ * FOUR SURFACES pair these, and all four showed it: `<FullscreenPlayer>` twice
+ * (the audio and video layouts), the episode list's show header, `<Podroll>`
+ * and the carried-favorite row. One helper rather than four guards, for the
+ * reason the conventions table gives: the fourth copy is the one that drifts.
+ *
+ * **The comparison is normalised, not `===`.** A feed that writes "Our Big Dumb
+ * Mouth " or "our big dumb mouth" means the same thing and would defeat a bare
+ * equality test — and getting it wrong here costs the duplicate line this
+ * exists to remove, so the loose test is the safe direction. It only ever
+ * HIDES a line; nothing is lost that the title did not already say.
+ */
+export function authorLine(
+  title: string | null | undefined,
+  author: string | null | undefined,
+): string | null {
+  const a = (author ?? '').trim();
+  if (!a) return null;
+  const norm = (v: string) => v.toLowerCase().replace(/\s+/g, ' ').trim();
+  return norm(a) === norm(title ?? '') ? null : a;
+}
+
 export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): string {
   // The two halves key off DIFFERENT gates on purpose. The container word
   // follows `isPlaylistMedium`: a curated list is not an ALBUM, which would

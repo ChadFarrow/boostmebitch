@@ -499,6 +499,36 @@ Two surfaces share one `<audio>` and the store's playback state: the always-moun
 
 - **Transport controls are shared.** `<TransportControls size="sm"|"lg">` renders ⏮ / play-pause / ⏭ as a **fragment** (drops into each parent's flex row) and owns the queue math: `idx = episodeQueue.findIndex(...)`, then `nextPlayableIndex` in each direction. Backed by `playPrev`/`playNext` (mirror images — walk `episodeQueue`, reset `positionSec`) and `togglePlay`. Don't re-inline these buttons.
 
+### The author line only shows when it adds something (`authorLine`)
+
+Reported 2026-09-21 with a screenshot of the fullscreen player: **"Our Big Dumb Mouth"
+printed under "Our Big Dumb Mouth"**. Podcast Index returns that feed as
+`title: "Our Big Dumb Mouth"`, `author: "Our Big Dumb Mouth"` — byte-identical, which
+is how most feeds fill `<itunes:author>`.
+
+The cost is not only that it reads oddly. **The player's cover is capped by the room
+left under it** (see below), so a line that says nothing still takes height from the
+artwork on the screen with the least of it.
+
+`authorLine(title, author)` (`lib/util.ts`) returns the author, or `null` when it
+would only repeat the title. **Four surfaces paired these and all four showed it** —
+`<FullscreenPlayer>` twice (the audio and video layouts), the episode list's show
+header, `<Podroll>`, and the carried-favorite row. One helper rather than four guards,
+for the reason the conventions table gives: the fourth copy is the one that drifts.
+
+**The comparison is normalised, not `===`.** A feed writing `"Our Big Dumb Mouth "` or
+lower-case means the same thing and would defeat a bare equality test. Getting it
+wrong here costs the duplicate line this exists to remove, so the loose test is the
+safe direction — it only ever HIDES a line, and never one the title did not already
+say.
+
+**No `check:*` pins it, deliberately.** The check scripts guard functions whose silent
+breakage costs something irreversible; a repeated line is cosmetic, and nothing in
+`lib/util.ts`'s display group (`targetWord`, `showShareUrl`) is pinned either. It was
+proved instead against the shipping module under `node --experimental-strip-types`
+(8 cases, including the reported one and the two normalisation forms), and on the real
+show page: the `<h2>` reads "Our Big Dumb Mouth" and no paragraph under it repeats it.
+
 ### The player offers a way back when the element has lost the place
 
 Reported 2026-09-21: *"I was listening to this downloaded episode but when I went
