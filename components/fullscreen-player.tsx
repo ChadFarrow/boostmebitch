@@ -616,6 +616,12 @@ export function FullscreenPlayer({
     void loadEpisodeFromFeed(notesFeedId, guid).then((r) => {
       const text = r?.episode?.description;
       if (!cancelled && text) setQueuedNotes({ id, description: text });
+    }).catch(() => {
+      // OFFLINE IS THE ORDINARY CASE HERE, not an exception: this is the surface
+      // a listener opens to play a DOWNLOADED episode with no connection.
+      // Without this the rejection was unhandled. The About tab simply stays as
+      // it was, which is the honest result — the notes live on a server we
+      // cannot reach.
     });
     return () => { cancelled = true; };
   }, [notesEpisode, notesFeedId]);
