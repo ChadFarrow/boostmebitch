@@ -505,6 +505,14 @@ export function NostrAuth() {
   // have to reconnect Amber every time I use the app". `startBunkerRevive` owns
   // the guards (busy session, refusal, throttle) and probes before it rebuilds.
   //
+  // IT MUST BE MOUNTED EVEN THOUGH THE RESTORE ABOVE ALREADY RAN, because on
+  // Android every launch is a cold one: the Zapstore build is a TWA and
+  // docs/android.md row 7 records that each launch is a full network page load.
+  // So the restore above fires at t=0 against a radio that may not be up, fails
+  // in milliseconds, and — before this — was never tried again, because a
+  // document that has been visible since it existed never fires a
+  // `visibilitychange`. This arms the retry ladder off that failure.
+  //
   // Mounted on `identity` rather than on the signer kind, because `bmb:signer`
   // is not reactive: it is written by completeSignIn one render before the
   // identity lands, and the revive re-reads it on every wake anyway. Signed out

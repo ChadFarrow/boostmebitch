@@ -797,6 +797,63 @@ which is far more than half a minute, so the return that matters is never the
 one skipped. The gap is re-stamped when the restore SETTLES, not when it starts,
 so a 90 s connect is not followed by a second attempt the instant it ends.
 
+**A wake signal is not enough on Android, and this is the half the first cut of
+this section missed.** The report came from the **Zapstore build**, which is a
+TWA, and [`android.md`](android.md) row 7 records what that means: *"Every launch
+is a full network page load."* So the case is not a tab coming back at all — it
+is a **cold start**, where `<NostrAuth>`'s page-load restore is the first thing
+to touch the network in a process the OS created moments ago. `s.connect()`
+publishes over `Promise.any(pool.publish(...))`, so with the radio not yet up
+every socket fails at once and `unreachable` comes back in **milliseconds**: the
+banner is on screen before the first frame, about a signer nobody managed to
+ask. And `visibilitychange` never fires, because the document has been visible
+since it existed — so the revive above, on its own, would never run.
+
+`BUNKER_RETRY_GAPS_MS` = `[2 s, 8 s, 20 s]` is the answer, armed off the
+`subscribeBunkerHealth` transition into stale rather than wired through
+`<NostrAuth>` — the restore it is about was started by a component this module
+has no handle on, and the flag is the one thing both can see. `setBunkerStale`
+notifies only on a CHANGE, so a failed rung cannot arm a second ladder through
+the subscription; each rung re-arms itself.
+
+**Only a FAST failure climbs, and that rule is what stops this being a reconnect
+storm.** The two failures are nothing like each other in length, and both are
+measured above: no network rejects in milliseconds, which is the cold-start race
+and is exactly what fixes itself two seconds later; a relay that CONNECTS and
+then answers nothing costs the whole 90 s. Repeating the second spends another
+90 s on the same silence and opens a second socket to a host that already has
+one — WebKit 302561 from the other side, and [`android.md`](android.md) row 2
+records Alby's relay answering **28 dials in 83 s with a `429` and
+`Retry-After: 600`**. Past `BUNKER_SLOW_ATTEMPT_MS` the ladder stops and the
+banner stands, which is the honest answer for that fault.
+
+**A wake JOINS a restore already running instead of skipping past it**, and the
+case is the sequence the whole feature is about: press RECONNECT, walk to the
+signer, open it, come back — the press is still on the wire, because a silent
+relay holds it for the full 90 s. Returning early there leaves the failure it is
+about to report with nothing behind it, which is the state the user would have
+to press through a second time. Arming the ladder off its *answer* lands the
+retry seconds after it settles, with the signer now awake. The wake also resets
+the ladder's step count: three rungs is the budget for one cold start, and a
+user coming back is new information it could not have had.
+
+**So the banner stopped asking for the second half of its own instruction.** It
+read *"No answer from your signer. Open it, then try again."* — two app switches
+and a press, where the press carried only timing the page already has. It now
+says the reconnect happens on the way back. Telling someone to do what the app
+is about to do teaches them that it does not.
+
+**What is still not covered, and it is the case the report may actually be.** A
+signer the OS has killed outright answers nothing, and nothing on this side wakes
+it: Clave has the APNs wake through `wss://relay.powr.build`, and **Android has
+no equivalent for Amber**. For that user every rung times out and the banner is
+still the answer. The obvious next move is a control that LAUNCHES Amber — the
+app is on the same device and this repo already builds `intent:` URLs for it —
+but `buildSignerIntentUrl`'s shapes are measured against Amber's parser and a
+data of exactly `nostrsigner:` is one Amber swallows, so that is a device
+measurement rather than a patch. Do not ship it from reasoning; this file records
+two earlier attempts at that class of thing that were wrong.
+
 **The banner stopped naming a device in the same change.** It read *"Signer
 disconnected — your iPhone may have suspended the relay link"* for every signer
 on every platform, so the largest group that sees it — Amber in bunker mode,

@@ -79,7 +79,13 @@ function BunkerHealthBanner({ stale, restoring }: { stale: boolean; restoring: b
       const r = await restoreBunkerSigner();
       setRefusal(r.kind === 'refused' ? r.message : null);
       if (r.kind === 'unreachable') {
-        setErr('No answer from your signer. Open it, then try again.');
+        // THE SECOND HALF OF THE INSTRUCTION IS NOW THE APP'S JOB. This used to
+        // read "Open it, then try again", which is two app switches and a press
+        // — and the press was carrying only the timing, which the page already
+        // has: `startBunkerRevive` retries on the foreground return that ending
+        // the first half produces. Telling someone to do what the app is about
+        // to do teaches them the app does not.
+        setErr('No answer from your signer. Open it — this reconnects on its own when you come back.');
       } else if (r.kind === 'no-session') {
         setErr('Reconnect failed. Try signing out and back in.');
       }
