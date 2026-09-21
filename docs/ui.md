@@ -529,6 +529,44 @@ proved instead against the shipping module under `node --experimental-strip-type
 (8 cases, including the reported one and the two normalisation forms), and on the real
 show page: the `<h2>` reads "Our Big Dumb Mouth" and no paragraph under it repeats it.
 
+### An element that lost its buffer is put back
+
+*"This should be saving to playback position anyways."* — and it should. The two
+guards below protect the saved VALUE and give a way back by hand; neither puts the
+audio back, which is what a listener actually wants.
+
+**iOS releases a backgrounded media element's buffer.** It returns playable but
+sitting at 0, and nothing in the source effect re-runs — its deps are the episode and
+the url, and neither changed. So it plays from the beginning while the store and
+storage still hold the real place.
+
+`<Player>`'s `onTimeUpdate` now reads a large backwards jump that **no control asked
+for** as exactly that, and puts the playhead back. Same discriminator as the writer's:
+`seekedRecently()`, one timestamp, so the player and the writer cannot disagree about
+whether the listener just moved.
+
+Three things it has to get right, and the first two were found by the suite:
+
+- **`lastGoodPos` may only hold a position the element was OBSERVED to reach.** The
+  first version seeded it from `startAt`, and a fresh source reports ~0 for a moment
+  before `loadedmetadata` seeks — so the baseline read that transient as a lost
+  position and "restored" it, consuming the very transient step 4 exists to measure
+  and suppressing the store update that step needs. Two checks in section 4 caught it.
+- **It is CAPPED at `RESTORE_MAX_TRIES` (3).** If the element cannot seek — a stream
+  whose server refuses ranges, a source still loading — retrying on every `timeupdate`
+  would fight it four times a second forever. After three it stands down and leaves
+  `↺ Resume` as the way back. **That is the state `e2e:downloads` section 14 now has
+  to manufacture deliberately**, by knocking the playhead down four times: with the
+  restore working, the control is no longer reachable by accident, which is the point.
+- **A restore must not write the bogus position to the store.** The handler returns
+  before `setPosition`, so the only value the writer ever sees is the restored one.
+
+**Pinned by `e2e:resume` section 7**, and how it moves the playhead IS the test:
+writing `audio.currentTime` directly stands in for an element moving on its own, while
+the **real seek bar** is driven for the deliberate half, because writing `currentTime`
+is precisely what must not count as intent. Against the build without the restore it
+reports the element left at 7 s and at 298 s; with it, above 1000 s both times.
+
 ### A saved place is not erased by an element that came back at zero
 
 Reported 2026-09-21, **with the download still present** so nothing was evicted:

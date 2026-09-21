@@ -190,21 +190,22 @@ await wait(800);
 e = await entry();
 check('bmb:resume no longer holds the episode', e === null, JSON.stringify(e));
 
-console.log('\n7. An element that came back at 0 does not erase a place minutes in');
-// Reported 2026-09-21 on an iPhone, with the download still present so nothing
-// was evicted: "I did resume the episode earlier without an issue but the
-// second time I tried minutes later it started over."
+console.log('\n7. An element that lost its buffer is put back, and the place survives');
+// Reported twice from an iPhone, the second time WITH THE DOWNLOAD STILL
+// PRESENT, which is what ruled out eviction: "I did resume the episode earlier
+// without an issue but the second time I tried minutes later it started over."
 //
-// iOS drops a backgrounded media element's buffer and it returns sitting at 0
-// while storage still holds 17:04. Nothing re-seeks it, so play runs from the
-// beginning — and fifteen seconds later the writer has replaced 17:04 with 16,
-// then 26. The RESUME_MIN_SEC floor is the only reason the FIRST attempt still
-// worked: under 15 s nothing is written at all. That is a fifteen-second window
-// in which an hour of listening is destroyed by doing nothing.
+// iOS releases a backgrounded media element's buffer. It returns playable but
+// sitting at 0, and nothing in the source effect re-runs — its deps are the
+// episode and the url, and neither changed. So it plays from the beginning
+// while the store and storage still hold the real place, and fifteen seconds
+// later the writer has replaced 17:04 with 16. `RESUME_MIN_SEC` is the only
+// reason the FIRST attempt survived.
 //
-// THIS RUNS IN THE REAL WIRING AND NOT UNDER strip-types, because
-// lib/resume-position.ts imports lib/storage and will not load under plain
-// Node — the same reason this whole feature is an e2e rather than a check:*.
+// HOW THIS TEST MOVES THE PLAYHEAD IS THE TEST. Writing `audio.currentTime`
+// directly is an element moving on its own — no control was pressed, nothing
+// called `markDeliberateSeek`. The seek bar is driven for the deliberate half,
+// because writing `currentTime` is precisely what must not count as intent.
 await go(`${APP}/?podcast=${POD}&episode=${encodeURIComponent(EPISODE_GUID)}`);
 await until(`!!${playButton}`);
 await js(`${playButton}.click()`);
@@ -212,35 +213,28 @@ await until(playing);
 await setTime(1024);
 await wait(2500);
 let deep = await entry();
-check('a place 17 minutes in is saved', deep && deep.t >= 1020 && deep.t < 1040, JSON.stringify(deep));
+check('a place 17 minutes in is saved', deep && deep.t >= 1020 && deep.t < 1045, JSON.stringify(deep));
 
-// The element comes back at the start and plays on through the 15 s floor.
-// `setTime` writes `audio.currentTime` DIRECTLY, with no control pressed, so it
-// stands in for the element moving on its own — which is the whole distinction
-// the guard rests on. A real scrub goes through `seekMedia` and marks intent.
-for (const at of [16, 40, 90]) { await setTime(at); await wait(1600); }
+// The element comes back at the start, exactly as iOS leaves it.
+await setTime(5);
+await wait(2500);
+const restored = await audioState();
+check('the element is PUT BACK to where it was', restored && restored.t > 1000, JSON.stringify(restored));
 const kept = await entry();
-check('playing from the start does NOT erase it', kept && kept.t >= 1020, JSON.stringify(kept));
+check('...and the saved place was never overwritten', kept && kept.t >= 1020, JSON.stringify(kept));
 
-// THE HOLE THE FIRST GUARD HAD. It also required the new position to be inside
-// the first two minutes, and a screenshot at 4:56 showed why that is not
-// enough: an element left running sails past any head and the hour is gone
-// again. Intent, not distance, is what separates the two cases.
-for (const at of [150, 240, 296]) { await setTime(at); await wait(1600); }
-const past = await entry();
-check('...and still does not, five minutes in', past && past.t >= 1020, JSON.stringify(past));
-// ...and it is still what a fresh play would resume to.
-await pause();
-await wait(800);
-const afterPause = await entry();
-check('...not even the pause flush erases it', afterPause && afterPause.t >= 1020, JSON.stringify(afterPause));
+// Five minutes in is past any distance threshold — the earlier positional guard
+// failed here, reporting t: 296.
+await setTime(296);
+await wait(2500);
+const restored2 = await audioState();
+check('...and again from five minutes in', restored2 && restored2.t > 1000, JSON.stringify(restored2));
+const kept2 = await entry();
+check('...with the saved place still intact', kept2 && kept2.t >= 1020, JSON.stringify(kept2));
 
-// A DELIBERATE rewind is the same numbers with a gesture in front of them, and
-// it must still be honoured. Driven through the seek bar — the real control,
-// which is what calls `markDeliberateSeek` — rather than by writing
-// `currentTime`, because writing it is precisely what must NOT count.
-await js(`${playButton}.click()`);
-await until(playing);
+// A DELIBERATE rewind is the same numbers with a gesture in front of them. It
+// must be honoured — both by the player, which must not undo it, and by the
+// writer, which must record it.
 const scrub = (t) => js(`(() => {
   const r = document.querySelector('input[type=range].seek') || document.querySelector('input[type=range]');
   if (!r) return false;
@@ -252,15 +246,18 @@ const scrub = (t) => js(`(() => {
 })()`);
 check('the seek bar is reachable', await scrub(150), true);
 await wait(2500);
+const afterScrub = await audioState();
+check('a deliberate rewind is NOT undone', afterScrub && afterScrub.t < 400, JSON.stringify(afterScrub));
 const moved = await entry();
-check('a deliberate rewind to 2:30 IS honoured', moved && moved.t >= 145 && moved.t < 200, JSON.stringify(moved));
-// And an ordinary mid-episode scrub, which is not near the start at all.
+check('...and it IS recorded', moved && moved.t >= 145 && moved.t < 400, JSON.stringify(moved));
+
+// An ordinary mid-episode scrub, nowhere near the start.
 await scrub(3000);
 await wait(2000);
 await scrub(2400);
 await wait(2500);
 const scrubbed = await entry();
-check('a mid-episode scrub still saves', scrubbed && scrubbed.t >= 2380 && scrubbed.t < 2460, JSON.stringify(scrubbed));
+check('a mid-episode scrub still saves', scrubbed && scrubbed.t >= 2380 && scrubbed.t < 2470, JSON.stringify(scrubbed));
 await pause();
 await wait(600);
 

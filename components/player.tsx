@@ -9,7 +9,7 @@ import {
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
-import { markDeliberateSeek } from '@/lib/resume-position';
+import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
@@ -112,6 +112,18 @@ function playOrPark(el: HTMLMediaElement, park: () => void): void {
   });
 }
 
+/**
+ * How far backwards the playhead must jump, with no control pressed, before it
+ * is read as the element having lost its buffer rather than as playback.
+ *
+ * Well above any rebuffer or clock wobble, and well below the "did I lose my
+ * place?" a listener would notice. The writer refuses a rewind over the same
+ * distance for the same reason — see RESUME_REWIND_MAX_SEC.
+ */
+const RESTORE_JUMP_SEC = 120;
+/** See `lastGoodPos`: three attempts, then stand down rather than fight. */
+const RESTORE_MAX_TRIES = 3;
+
 export function Player() {
   // Per-field selectors, not a bare `useApp()`. In zustand v5 a selector-less
   // call re-renders on EVERY store write; <Player> is mounted in the root
@@ -155,6 +167,30 @@ export function Player() {
   // saved place. So the audio element's position is ignored until the source it
   // is reporting on is the one `current` names.
   const pendingLocalSrc = useRef(false);
+
+/**
+ * The last position the element actually reported, and how many times we have
+ * tried to put it back.
+ *
+ * **iOS RELEASES A BACKGROUNDED MEDIA ELEMENT'S BUFFER.** It returns playable
+ * but sitting at 0, and nothing in the source effect re-runs — its deps are the
+ * episode and the url, and neither changed. So the element plays from the
+ * beginning while the store and storage still hold the real place. Reported
+ * twice from an iPhone, the second time with the download still present, which
+ * is what ruled out eviction: *"I did resume the episode earlier without an
+ * issue but the second time I tried minutes later it started over."*
+ *
+ * The guards in `lib/resume-position.ts` stop that from destroying the SAVED
+ * value, and `↺ Resume` gives a way back by hand. Neither puts the audio back,
+ * which is what a listener actually wants — hence this.
+ *
+ * CAPPED, and the cap is the point. If the element cannot seek — a stream whose
+ * server refuses ranges, a source still loading — retrying on every `timeupdate`
+ * would fight it four times a second forever. Three attempts, then it stands
+ * down and leaves `↺ Resume` as the way back.
+ */
+  const lastGoodPos = useRef(0);
+  const restoreTries = useRef(0);
 
   // Video plays through a <video> + (for HLS) hls.js instead of the native
   // <audio>. Two sources feed the <video>: (1) an HLS (.m3u8) enclosure — a
@@ -648,6 +684,15 @@ export function Player() {
 
     const attach = (src: string) => {
       pendingLocalSrc.current = false;
+      // A new source starts with NO baseline, and seeding it from `startAt`
+      // was a real bug: a fresh source reports ~0 for a moment before
+      // `loadedmetadata` seeks to `startAt`, so a seeded baseline read that
+      // transient as a lost position and "restored" it — consuming the very
+      // transient `e2e:resume` step 4 exists to measure, and suppressing the
+      // store update that step needs. `lastGoodPos` may only ever hold a
+      // position this element was OBSERVED to reach.
+      lastGoodPos.current = 0;
+      restoreTries.current = 0;
       revokeLocalSrc();
       if (src.startsWith('blob:')) localSrcRef.current = src;
       el.src = src;
@@ -1198,6 +1243,21 @@ export function Player() {
             // The previous episode, still playing while a download resolves.
             if (pendingLocalSrc.current) return;
             const t = e.currentTarget.currentTime;
+            // PUT IT BACK. A large jump BACKWARDS that no control asked for is
+            // the element having lost its buffer — see `lastGoodPos`. The same
+            // numbers just after a seek are the listener's instruction, which
+            // `seekedRecently` is what tells them apart; one timestamp answers
+            // that for the writer and for here, so the two cannot disagree.
+            if (
+              lastGoodPos.current - t > RESTORE_JUMP_SEC
+              && restoreTries.current < RESTORE_MAX_TRIES
+              && !seekedRecently()
+            ) {
+              restoreTries.current += 1;
+              e.currentTarget.currentTime = lastGoodPos.current;
+              return;
+            }
+            if (t > 0) lastGoodPos.current = t;
             const tick = Math.floor(t);
             if (tick !== lastTick.current) {
               lastTick.current = tick;

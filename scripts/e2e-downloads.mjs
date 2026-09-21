@@ -1048,9 +1048,16 @@ console.log(`\n14. THE PLAYER OFFERS A WAY BACK WHEN THE ELEMENT HAS LOST THE PL
   await wait(4000);
   check('the seeded row offers Play', await p4.js(`(() => { const b = document.querySelector('button[aria-label="Play RC A"]'); b && b.click(); return !!b; })()`), true);
   await wait(3500);
-  // Put the element back at the start: the bar reading 0:05 while storage says 4:14.
-  await p4.js(`(() => { const a = document.querySelector('audio'); if (a) a.currentTime = 5; return true; })()`);
-  await wait(2500);
+  // Put the element at the start and KEEP it there, which now takes effort:
+  // <Player> restores a playhead that jumps backwards with no control pressed,
+  // and stands down only after RESTORE_MAX_TRIES. Four knocks exhaust it, which
+  // is the state this control exists for — the restore could not fix it, so the
+  // listener needs a way back by hand.
+  for (let i = 0; i < 4; i++) {
+    await p4.js(`(() => { const a = document.querySelector('audio'); if (a) a.currentTime = 5; return true; })()`);
+    await wait(700);
+  }
+  await wait(2000);
 
   const box4 = await p4.js(`(() => { const d = document.querySelector('[aria-label="Open fullscreen player"]');
     if (!d) return null; const r = d.getBoundingClientRect();

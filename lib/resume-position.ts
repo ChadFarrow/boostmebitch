@@ -118,6 +118,19 @@ export function markDeliberateSeek(): void {
   lastDeliberateSeekAt = Date.now();
 }
 
+/**
+ * Did the listener move the playhead in the last {@link DELIBERATE_SEEK_WINDOW_MS}?
+ *
+ * Read by `<Player>` as well as by the writer below, and for the same reason in
+ * both places: a playhead that moved backwards on its own is a fault to undo,
+ * while the same movement just after a control is the listener's instruction.
+ * One timestamp answers both questions, so the player and the writer cannot
+ * disagree about which just happened.
+ */
+export function seekedRecently(): boolean {
+  return Date.now() - lastDeliberateSeekAt < DELIBERATE_SEEK_WINDOW_MS;
+}
+
 type ResumeEpisode = Pick<
   Episode,
   'id' | 'guid' | 'feedId' | 'podcastGuid' | 'enclosureUrl' | 'liveStatus' | 'duration'
