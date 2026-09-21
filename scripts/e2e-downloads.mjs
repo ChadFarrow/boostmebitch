@@ -872,6 +872,113 @@ section('12. Two downloads of one show, back to back: the first one\'s time stay
   await p2.close();
 }
 
+// ---------------------------------------------------------------------------
+console.log(`\n13. A PANE THAT CANNOT LOAD COSTS THE PANE, NOT PLAYBACK`);
+// ---------------------------------------------------------------------------
+// Reported from an iPhone on 2026-09-20, in airplane mode, playing a DOWNLOADED
+// episode: "when I click the now playing bar at the bottom it stops playing and
+// the now playing bar goes away" — and, asked to describe it, "it flashes open,
+// then vanishes". Fine on wifi.
+//
+// <FullscreenPlayer> loads five panes with next/dynamic. Measured: opening the
+// player issues EXACTLY ONE network request, a lazy pane chunk. Offline that
+// request fails, `import()` rejects, React raises it as a throw — and <Player>
+// sits behind <ErrorBoundary label="Player"> with a `null` fallback, so the
+// throw unmounted the whole player INCLUDING the <audio> element that was
+// playing. Losing a tab took playback with it.
+//
+// The chunk is blocked with Network.setBlockedURLs rather than by going offline:
+// the app's own chunks are already loaded by this point, so the only chunk
+// requested from here IS the pane. Blocking it is the offline condition,
+// isolated, and it does not also break the blob the episode plays from.
+//
+// RUN THIS AGAINST THE UNFIXED BUILD BEFORE TRUSTING IT. With the per-pane
+// boundaries reverted it reports audio:null, bar:false, expanded:false — the
+// report verbatim.
+{
+  // Its own browser, with autoplay allowed — section 12's pattern. A blocked
+  // chunk list is per-browser, so it cannot leak into the sections above.
+  const { page: p3 } = await launchChrome({ name: 'downloads-pane', autoplay: true, args: ['--window-size=1200,900'] });
+  const ex3 = [];
+  const caught = [];
+  p3.on((m) => {
+    if (m.method === 'Runtime.exceptionThrown') ex3.push(m.params.exceptionDetails?.exception?.description ?? '');
+    if (m.method === 'Runtime.consoleAPICalled') {
+      const t = (m.params.args || []).map((a) => String(a.value ?? '')).join(' ');
+      if (t.includes('[boundary]')) caught.push(t.slice(0, 80));
+    }
+  });
+  await p3.send('Page.enable'); await p3.send('Runtime.enable'); await p3.send('Network.enable');
+  await p3.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(4000);
+
+  const PANE = { url: 'https://example.invalid/pane-a.wav', guid: 'e2e-pane-a', title: 'Pane A', id: 930000001 };
+  await p3.js(`
+    (async () => {
+      const wav = (sec, rate = 8000) => {
+        const n = sec * rate, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+        v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+        v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true);
+        v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+        return new Blob([buf], { type: 'audio/wav' });
+      };
+      const cache = await caches.open('bmb-downloads-v1');
+      const db = await new Promise((res, rej) => { const r = indexedDB.open('BmbDownloadsDB'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      const e = ${JSON.stringify(PANE)}; const blob = wav(60);
+      await cache.put(e.url, new Response(blob, { headers: { 'content-type': 'audio/wav' } }));
+      await new Promise((res, rej) => {
+        const tx = db.transaction('downloads', 'readwrite');
+        tx.objectStore('downloads').put({
+          key: e.url, enclosureUrl: e.url, enclosureType: 'audio/wav', sizeBytes: blob.size,
+          createdAt: 1, itemGuid: e.guid, feedGuid: 'e2e-pane-feed', feedId: 424244,
+          episodeId: e.id, title: e.title, feedTitle: 'Pane Show', duration: 60,
+        });
+        tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      });
+    })()
+  `);
+  await p3.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(4000);
+  check('the seeded row offers Play', await p3.js(`(() => { const b = document.querySelector('button[aria-label="Play Pane A"]'); b && b.click(); return !!b; })()`), true);
+  await wait(3000);
+  const pre = await p3.js(`(() => { const a = document.querySelector('audio'); return a ? { t: a.currentTime, paused: a.paused } : null; })()`);
+  check('it is playing before the tap', !!pre && pre.paused === false, true);
+
+  await p3.send('Network.setBlockedURLs', { urls: ['*/_next/static/chunks/*'] });
+  const box = await p3.js(`(() => { const d = document.querySelector('[aria-label="Open fullscreen player"]');
+    if (!d) return null; const r = d.getBoundingClientRect();
+    return { x: Math.round(r.x + r.width * 0.45), y: Math.round(r.y + 22) }; })()`);
+  // A REAL gesture: the bar's inner controls stopPropagation, so element.click()
+  // on the wrong child expands nothing and the section would pass against the bug.
+  if (box) {
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await p3.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    }
+  }
+  await wait(2500);
+  for (const label of ['Tracks', 'Chapters', 'Transcript', 'Boosts', 'About']) {
+    await p3.js('(() => { const t = [...document.querySelectorAll(\'button\')].find((x) => new RegExp(' + JSON.stringify(label) + ', \'i\').test((x.textContent || \'\').trim())); t && t.click(); return !!t; })()');
+    await wait(900);
+  }
+  const post = await p3.js(`(() => { const a = document.querySelector('audio');
+    return { audio: a ? { t: a.currentTime, paused: a.paused } : null,
+             bar: !!document.querySelector('[aria-label="Open fullscreen player"]'),
+             expanded: !!document.querySelector('button[aria-label="Back"]'),
+             says: /could not load/i.test(document.body.innerText) }; })()`);
+
+  check('a lazy pane chunk really did fail to load', caught.length > 0, true);
+  check('the mini-bar SURVIVES it', post.bar, true);
+  check('the <audio> element survives and is still playing', !!post.audio && post.audio.paused === false, true);
+  check('...and its position advanced past where it was', !!post.audio && post.audio.t > pre.t, true);
+  check('the fullscreen player is still open', post.expanded, true);
+  check('the dead pane says so rather than going blank', post.says, true);
+  check('no uncaught exceptions in the pane browser', ex3, []);
+  await p3.send('Network.setBlockedURLs', { urls: [] });
+  // the browser closes with the process; cdp.mjs tracks it
+}
+
 check('no uncaught exceptions overall', exceptions, []);
 console.log(t.fails ? `\nDOWNLOADS E2E FAILED (${t.fails})` : '\nDOWNLOADS E2E OK');
 await exit(t.fails ? 1 : 0);

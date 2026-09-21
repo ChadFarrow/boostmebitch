@@ -499,6 +499,53 @@ Two surfaces share one `<audio>` and the store's playback state: the always-moun
 
 - **Transport controls are shared.** `<TransportControls size="sm"|"lg">` renders ⏮ / play-pause / ⏭ as a **fragment** (drops into each parent's flex row) and owns the queue math: `idx = episodeQueue.findIndex(...)`, then `nextPlayableIndex` in each direction. Backed by `playPrev`/`playNext` (mirror images — walk `episodeQueue`, reset `positionSec`) and `togglePlay`. Don't re-inline these buttons.
 
+### A pane that cannot load costs the pane, not playback
+
+Reported from an iPhone on 2026-09-20, in airplane mode, playing a **downloaded**
+episode: *"I can play the episode in airplane mode but when I click the now playing
+bar at the bottom it stops playing and the now playing bar goes away."* Asked to
+describe it more precisely: *"it flashes open, then vanishes"*, and the same tap was
+fine on wifi.
+
+**Three symptoms, one cause, and the boundary that was supposed to help is half of
+it.** `<FullscreenPlayer>` loads five panes with `next/dynamic` — `TranscriptPanel`,
+`EpisodeContents`, `LivePlayedTracks`, `EpisodeSocialThread`, `LiveChat`. Measured:
+opening the player issues **exactly one network request**, and it is a lazy pane
+chunk (`/_next/static/chunks/<n>.<hash>.js`). Offline that request fails, `import()`
+rejects, and React raises it as a throw. `<Player>` sits behind
+`<ErrorBoundary label="Player">` whose fallback is **`null`** (`app/layout.tsx`) — so
+the throw unmounted the entire player, **including the `<audio>` element that was
+mid-episode**. Losing a tab took playback with it.
+
+The outer boundary is not wrong; its granularity was. Its own comment says *"losing
+playback should cost you playback, not the page"* — and **a tab nobody is looking at
+is not playback**. Each pane now renders inside `<Pane>`, a nested boundary whose
+fallback is a sentence rather than `null`, because a blank tab beside a working
+transport reads as a bug in the tab. The two panes inside `<EpisodeInfoPanel>` pass
+no `resetKey` and need none: they render only while their tab is `active`, so leaving
+the tab unmounts the boundary and returning is already a fresh mount.
+
+**Why offline is the whole condition.** The chunks are fetched on FIRST OPEN, and the
+service worker caches `/_next/static/*` cache-first — but only what it has already
+seen. A listener who downloads episodes, goes offline, and *then* opens the player
+for the first time asks for a file nothing ever cached. On wifi it simply loads.
+
+**`npm run e2e:downloads` section 13 pins it**, and the way it blocks matters. It uses
+`Network.setBlockedURLs(['*/_next/static/chunks/*'])` rather than going offline: by
+that point the app's own chunks are loaded, so the only chunk requested is the pane,
+and blocking it isolates the condition without also breaking the blob the episode
+plays from. It taps with a real `Input.dispatchMouseEvent` — the bar's inner controls
+`stopPropagation`, so an `element.click()` on the wrong child expands nothing and the
+section would pass against the bug. **Run it against the unfixed build before trusting
+it**: with the per-pane boundaries reverted it reports `audio:null, bar:false,
+expanded:false` — the report verbatim.
+
+**Two traps met while diagnosing this, both worth knowing.** Chunk filenames are
+HASHED, so a regex on the module name matches nothing — block the path, not the name.
+And headless Chrome does not reproduce it from `Network.emulateNetworkConditions
+offline` alone if the episode has no chapters or splits, because then no pane mounts
+at all; the first repro passed 10/10 against a live bug for exactly that reason.
+
 ### The cover is capped by the height left under it, not by the pane's width
 
 The fullscreen player's mobile column is one scrolling flex column: a `flex-shrink-0` media pane, then the title, transport, BOOST and the five-tile action row. The cover is `w-full … aspect-square`, so its height is its width, and its width is the phone's — **it has no relationship whatever to the space left underneath it.** The tile row is the last thing in that block, so it is what falls off the bottom.

@@ -3,7 +3,7 @@ import dynamic from 'next/dynamic';
 import { CopyLinkButton } from './copy-link-button';
 import { createPortal } from 'react-dom';
 import { useAnchoredMenu } from './use-anchored-menu';
-import { cloneElement, useEffect, useId, useRef, useState, type RefObject } from 'react';
+import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
@@ -11,6 +11,7 @@ import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters
 import { nowPlayingArt } from '@/lib/track-art';
 import { lockScroll } from '@/lib/scroll-lock';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
+import { ErrorBoundary } from './error-boundary';
 import type { TranscriptCue } from '@/lib/transcript';
 // DEFERRED, all five, and the mount gate below is what makes it safe.
 //
@@ -26,6 +27,25 @@ import type { TranscriptCue } from '@/lib/transcript';
 //
 // `ssr: false` because `everOpened` is false on the server and on the first
 // client render, so there is nothing to server-render here in any case.
+//
+// **EVERY ONE OF THESE IS RENDERED INSIDE `<Pane>` BELOW, AND THAT IS NOT
+// TIDINESS — IT IS THE DIFFERENCE BETWEEN LOSING A TAB AND LOSING PLAYBACK.**
+// `dynamic()` downloads a chunk on first render, and a chunk that will not
+// download makes `import()` REJECT, which React raises as a throw. `<Player>`
+// is wrapped in `<ErrorBoundary label="Player">` with a `null` fallback
+// (`app/layout.tsx`), and `<FullscreenPlayer>` renders inside `<Player>` — so
+// that throw unmounted the ENTIRE player: the mini-bar, and with it the
+// `<audio>` element that was playing.
+//
+// Reported from an iPhone on 2026-09-20, in airplane mode, playing a DOWNLOADED
+// episode: *"I can play the episode in airplane mode but when I click the now
+// playing bar at the bottom it stops playing and the now playing bar goes
+// away."* — and, asked to describe it, *"it flashes open, then vanishes"*, with
+// the same tap fine on wifi. Offline is the whole condition: these chunks are
+// fetched on FIRST OPEN, so a listener who downloads episodes, goes offline and
+// then opens the player for the first time asks for a file that was never
+// cached. The service worker caches `/_next/static/*` cache-first, but only
+// what it has already SEEN.
 const TranscriptPanel = dynamic(
   () => import('./transcript-ui').then((m) => m.TranscriptPanel),
   { ssr: false },
@@ -65,6 +85,48 @@ const EpisodeSocialThread = dynamic(
   () => import('./episode-social-thread').then((m) => m.EpisodeSocialThread),
   { ssr: false },
 );
+/**
+ * The blast radius of a lazy pane, cut down to the pane.
+ *
+ * `<Player>` sits behind one `<ErrorBoundary label="Player">` whose fallback is
+ * `null` — deliberately, because losing playback should cost the player and not
+ * the page. **But a tab nobody is looking at is not playback**, and that
+ * boundary could not tell the difference: an `import()` that rejected for a
+ * chunk this device never cached took the mini-bar and the `<audio>` element
+ * with it, mid-episode, offline, which is when a downloaded episode is the only
+ * thing that still works.
+ *
+ * So each pane gets its own boundary, nested inside that one. The fallback is a
+ * SENTENCE rather than `null`: this repo's rule is that a guard which silently
+ * withholds is indistinguishable from a broken one, and an empty tab beside a
+ * working transport reads as a bug in the tab.
+ *
+ * `id` is the episode, where the caller has one: the same contract the outer
+ * boundary documents, so a chunk that failed for one episode does not leave the
+ * tab dead for the next. The two panes inside `<EpisodeInfoPanel>` pass none and
+ * need none — they are rendered only while their tab is `active`, so leaving the
+ * tab unmounts the boundary with them and returning is already a fresh mount.
+ * (`<EpisodeInfoPanel>` has never taken `episode`, and this is not the reason to
+ * start.) Either way the chunk is not re-downloaded — React caches a rejected
+ * `lazy()` — but the remount is what lets a later online open succeed.
+ */
+function Pane({ id, label, children }: { id?: string | number; label: string; children: ReactNode }) {
+  return (
+    <ErrorBoundary
+      label={label}
+      resetKey={id}
+      fallback={
+        <p className="text-xs text-muted">
+          This part could not load. It needs a connection the first time you open it — the
+          episode keeps playing.
+        </p>
+      }
+    >
+      {children}
+    </ErrorBoundary>
+  );
+}
+
 import { LinkedText } from './linked-text';
 import { UnderlineTabs, tabPanelProps } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
@@ -208,25 +270,29 @@ function EpisodeInfoPanel({
           See <EpisodeContents>. */}
       {active === 'contents' &&
         (hasContents ? (
-          <EpisodeContents
-            splits={splits}
-            chapters={chapters}
-            currentSec={currentSec}
-            onSeek={onSeek}
-            shareUrlFor={shareUrlFor}
-            fallbackImg={chapterFallbackImg}
-          />
+          <Pane label="EpisodeContents">
+            <EpisodeContents
+              splits={splits}
+              chapters={chapters}
+              currentSec={currentSec}
+              onSeek={onSeek}
+              shareUrlFor={shareUrlFor}
+              fallbackImg={chapterFallbackImg}
+            />
+          </Pane>
         ) : (
           <p className="text-xs text-muted">Loading chapters…</p>
         ))}
 
       {active === 'transcript' && (
-        <TranscriptPanel
-          cues={transcriptCues}
-          activeIdx={transcriptActiveIdx}
-          onSeek={onSeek}
-          loading={transcriptLoading}
-        />
+        <Pane label="TranscriptPanel">
+          <TranscriptPanel
+            cues={transcriptCues}
+            activeIdx={transcriptActiveIdx}
+            onSeek={onSeek}
+            loading={transcriptLoading}
+          />
+        </Pane>
       )}
       </div>
     </div>
@@ -960,7 +1026,7 @@ export function FullscreenPlayer({
               </div>
             </div>
             <div className="flex-1 min-h-0">
-              <LiveChat streamId={liveStreamId} />
+              <Pane id={liveStreamId} label="LiveChat"><LiveChat streamId={liveStreamId} /></Pane>
             </div>
           </div>
         ) : (
@@ -1146,11 +1212,13 @@ export function FullscreenPlayer({
                 no valueTimeSplit windows to enumerate, only the blocks that have
                 already gone by — so this is its live twin and sits above it.
                 Renders nothing on an ordinary episode. */}
-            <LivePlayedTracks
-              episode={episode}
-              fallbackImg={episode.image || podcast.image || podcast.artwork}
-              className="border-t border-bone/10 pt-5"
-            />
+            <Pane id={episode.id} label="LivePlayedTracks">
+              <LivePlayedTracks
+                episode={episode}
+                fallbackImg={episode.image || podcast.image || podcast.artwork}
+                className="border-t border-bone/10 pt-5"
+              />
+            </Pane>
             <EpisodeInfoPanel
               description={description}
               splits={splits}
@@ -1180,7 +1248,7 @@ export function FullscreenPlayer({
 
             {episode.socialInteract?.length ? (
               <div className="border-t border-bone/10 pt-5">
-                <EpisodeSocialThread entries={episode.socialInteract} />
+                <Pane id={episode.id} label="EpisodeSocialThread"><EpisodeSocialThread entries={episode.socialInteract} /></Pane>
               </div>
             ) : null}
           </div>
