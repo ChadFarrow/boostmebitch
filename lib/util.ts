@@ -2602,16 +2602,30 @@ function artProxyUrl(url: string, width: ArtWidth): string {
  * twelve surfaces that render this component, several seconds after they
  * appeared, looking like a CDN fault. Put the raw URLs first and the feature is
  * installed but inert.
+ *
+ * **`preferOriginal` swaps the two halves and is not an optimisation switch.**
+ * `/api/art` takes frame one — it is a still tile — so a chapter whose art is
+ * an animated GIF does not move under the proxy. One surface wants the file as
+ * the artist published it: the fullscreen player's big cover, and only while it
+ * is open and the art gate allows it. Everywhere else the proxy stays first,
+ * because that cover measured 4,472,805 bytes against 5,502 at w=160.
+ *
+ * **The other half is still BEHIND it, not dropped**, for the same reason the
+ * raw tail exists in the normal order: a host that refuses the request the
+ * browser makes (hotlink rules, a mixed-content block) leaves the proxied copy
+ * as a real second chance, and a still cover beats no cover.
  */
 export function artCandidates(
   image: string | null | undefined,
   artwork: string | null | undefined,
   width: ArtWidth,
+  { preferOriginal = false }: { preferOriginal?: boolean } = {},
 ): string[] {
   const raw: string[] = [];
   if (image) raw.push(image);
   if (artwork && artwork !== image) raw.push(artwork);
-  return [...raw.filter(isProxyable).map((u) => artProxyUrl(u, width)), ...raw];
+  const proxied = raw.filter(isProxyable).map((u) => artProxyUrl(u, width));
+  return preferOriginal ? [...raw, ...proxied] : [...proxied, ...raw];
 }
 
 /**

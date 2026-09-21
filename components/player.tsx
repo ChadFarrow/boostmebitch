@@ -35,6 +35,7 @@ const BoostModal = dynamic(
 import { StreamPulse } from './streaming-settings';
 import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer, warmPlayerPanes } from './fullscreen-player';
+import { PodcastCover } from './podcast-cover';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveBadge } from './live-badge';
@@ -1336,59 +1337,34 @@ export function Player() {
             // `nowPlayingArt` picks the record a live Split Kit show is playing,
             // then the track a <podcast:valueTimeSplit> redirects to, then the
             // active chapter's artwork (Podcasting 2.0 chapters `img`), falling
-            // back to the episode cover on a missing/broken image.
+            // back to the episode cover on a missing/broken image. The
+            // downloaded cover is LAST — see `nowPlayingCover` above.
             //
-            // `key` is the URL, so a chapter or track change REPLACES this
-            // element rather than mutating it. Two things depend on that. It
-            // cancels the outgoing image's download — chapter art is routinely
-            // tens of MB on these feeds, and a rapid ⏭ run otherwise leaves
-            // every one of them in flight against the audio's own origin. And it
-            // resets the onError bookkeeping below, which would otherwise
-            // persist on a reused element and blank a later chapter that was
-            // perfectly fine.
+            // THIS USED TO BE A HAND-ROLLED <img> ON THE RAW URL, and the two
+            // faults it had are both the reason <PodcastCover> exists. It paid
+            // the feed's full-size file for a 48px tile: measured on Mutton,
+            // Mead & Music, one chapter's animated cover is 4,472,805 bytes
+            // against 5,502 proxied at w=160, on the connection the audio is
+            // streaming over. And its ladder ended on a broken-image glyph
+            // where this one ends on the initial tile.
             //
-            // fetchPriority low + decoding async keep it behind the media on the
-            // shared HTTP/2 connection: this is a 48px thumbnail, and nothing
-            // about it is worth a frame of audio.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              // The cover is in the KEY, not just in the ladder. It resolves
-              // asynchronously, so the image routinely errors through every
-              // network rung BEFORE it arrives — and a raw <img> has no way to
-              // re-attempt after that. Naming it here replaces the element once
-              // the cover lands, which resets `data-rung` and re-walks the
-              // ladder. <PodcastCover> gets the same effect from the
-              // `setIdx(0)` effect on its own candidate list.
-              key={`${nowArt || episode.image || ''}|${nowPlayingCover ?? ''}`}
-              src={nowArt || episode.image || nowPlayingCover || undefined}
-              alt=""
-              fetchPriority="low"
-              decoding="async"
-              onError={(e) => {
-                // A TWO-rung ladder, and the rungs are counted on the element
-                // rather than by comparing `src` against a fallback string: the
-                // `src` GETTER returns a RESOLVED absolute URL, so an untrimmed
-                // or relative feed URL never compares equal and the handler
-                // re-assigns the same failing URL forever.
-                //
-                // The second rung is the downloaded cover, and it is last for
-                // the reason given on `nowPlayingCover` above. Without it this
-                // element simply STOPS on a broken-image glyph — which is what
-                // an offline launch showed, beside a row on /downloads that was
-                // rendering the very same bytes.
-                const el = e.currentTarget;
-                // The same list `src` picked its first truthy entry from, so
-                // index 0 is what is on screen and the next rung is index+1.
-                const rungs = [...new Set(
-                  [nowArt, episode.image, nowPlayingCover].filter((u): u is string => !!u),
-                )];
-                const i = Number(el.dataset.rung || '0') + 1;
-                const next = rungs[i];
-                if (!next) return;
-                el.dataset.rung = String(i);
-                el.src = next;
-              }}
-              className="w-12 h-12 object-cover border border-bone/20 flex-shrink-0"
+            // `w={160}` is the smallest allowlisted width and the right one:
+            // 48 CSS px at a phone's 3x device pixel ratio is 144.
+            //
+            // It is also why the big cover in <FullscreenPlayer> now asks for
+            // `preferOriginal` — the proxy takes frame one, so the animation
+            // the artist published belongs on the surface that paints it 400px
+            // across, not behind a thumbnail.
+            <PodcastCover
+              image={nowArt || episode.image}
+              artwork={episode.image}
+              localSrc={nowPlayingCover}
+              title={podcast.title}
+              seed={podcast.id?.toString()}
+              // Nothing about a 48px thumbnail is worth a frame of audio.
+              lowPriority
+              w={160}
+              className="w-12 h-12 border border-bone/20 flex-shrink-0"
             />
           ) : null}
           <div className="min-w-0 flex-1">

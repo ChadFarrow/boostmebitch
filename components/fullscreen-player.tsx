@@ -1039,6 +1039,27 @@ export function FullscreenPlayer({
                 // The one surface that paints a cover large. Every other
                 // caller takes the 320 default, which is a list tile at 2x.
                 w={640}
+                // ANIMATION, and the two conditions are both load-bearing.
+                //
+                // `/api/art` takes frame one — a chapter whose `img` is an
+                // animated GIF is still under it — so the picture moved in the
+                // 48px now-playing tile, which used to render the raw URL, and
+                // stood still here where it is 400px across. Reported from an
+                // iPhone: *"This is a GIF but it only plays in the now playing
+                // bar at the bottom."*
+                //
+                // `open`: this pane is always mounted, merely translated
+                // off-screen, so without it a collapsed player downloads the
+                // original of every chapter it passes. Measured on Mutton, Mead
+                // & Music: 4,472,805 bytes against 5,502 proxied at w=160, on
+                // the connection the audio is streaming over, 9 chapters deep.
+                //
+                // `artOk`: the same verdict every other art decision here
+                // takes. It is not belt-and-braces — `nowPlayingArt` only
+                // suppresses CHAPTER and TRACK art when the gate shuts, so
+                // without this an episode cover that is itself a huge GIF would
+                // still be fetched whole while the buffer is in trouble.
+                preferOriginal={open && artOk}
                 // The whole picture, letterboxed — never a crop. Episode art
                 // is not reliably square: a show that reuses its video
                 // thumbnail publishes 16:9, and `object-cover` in a square box

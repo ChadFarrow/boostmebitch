@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type RefObject } from 'react';
 import { useApp } from '@/lib/store';
+import { artCandidates } from '@/lib/util';
 import type { Episode, Podcast } from '@/lib/types';
 
 /**
@@ -144,11 +145,37 @@ export function useMediaSession({
     if (!current) { navigator.mediaSession.metadata = null; return; }
     const { episode, podcast } = current;
     const art = settledArt || episode.image || podcast.image || podcast.artwork;
+    // THE PROXIED COPY, and this is the half the settle timer could not fix.
+    // Holding still stopped a run of skips issuing one fetch per chapter; it
+    // did nothing about the SIZE of the one fetch that is issued. Measured on
+    // Mutton, Mead & Music, where two chapter covers are animated GIFs:
+    // 11,555,231 bytes went out on the enclosure's own connection for a
+    // lock-screen thumbnail, and no screen in this app was showing them.
+    // Proxied at 1024 the same two are 151,731.
+    //
+    // 1024 because this is not a tile — it is what the OS paints on a lock
+    // screen, which on a phone is bigger than any surface in the app.
+    //
+    // **ONE ENTRY, and this is the one place the "raw URL always behind the
+    // proxied one" rule is inverted — on purpose.** A MediaMetadata `artwork`
+    // list is not an `onError` ladder: there is no error to catch, and Chromium
+    // fetches EVERY entry rather than stopping at the one it uses. Measured
+    // 2026-09-21 on this episode with both entries listed: the proxied copies
+    // came down (267,098 + 114,002 + 37,729) AND both originals did
+    // (6,400,448 + 4,478,255). So a fallback here does not cost a retry, it
+    // costs the whole file every time, which is the harm the tail exists to
+    // prevent. The failure it gives up is cosmetic and off-app: if /api/art
+    // cannot serve the picture, the lock screen shows none.
+    const proxied = art ? artCandidates(art, null, 1024).find((u) => u !== art) : undefined;
+    const lockSrc = proxied ?? art;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: episode.title,
       artist: podcast.title,
       album: podcast.title,
-      artwork: art ? [{ src: art }] : undefined,
+      // `sizes` only when it IS the proxied copy: that is the one whose
+      // dimensions we asked for. Stamping a third-party URL with a size nobody
+      // measured turns a guess into a claim the OS picks by.
+      artwork: lockSrc ? [proxied ? { src: lockSrc, sizes: '1024x1024' } : { src: lockSrc }] : undefined,
     });
   }, [episodeId, settledArt]); // eslint-disable-line react-hooks/exhaustive-deps
 }

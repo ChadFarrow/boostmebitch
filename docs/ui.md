@@ -1147,6 +1147,69 @@ they appeared, looking exactly like a CDN fault. Order it the other way round
 and the feature is installed and inert. Both shapes are pinned by
 `npm run check:art`.
 
+### The proxy takes frame one, so who gets the published file is a decision
+
+`/api/art` calls sharp with `animated: false`: every response is a still tile.
+That is right for a tile and wrong for exactly one surface, and until
+2026-09-21 the app had it backwards on both. Reported from an iPhone: *"This is
+a GIF but it only plays in the now playing bar at the bottom."*
+
+The three surfaces that paint the now-playing art, and what each takes:
+
+| Surface | Size | Takes | Why |
+|---|---|---|---|
+| The now-playing bar's tile (`<Player>`) | 48px | proxied, `w=160` | 48 CSS px at a phone's 3× is 144 |
+| `<FullscreenPlayer>`'s big cover | ~350px | the ORIGINAL, while `open && artOk` | this is where a picture is worth looking at |
+| The OS lock screen (`MediaMetadata`) | the phone's | proxied, `w=1024` | no element, no `onError`, and it cannot animate anyway |
+
+Measured on Mutton, Mead & Music (podcast `290e12c3…`, episode `21f6be5b…`),
+whose chapter *"THANK YOU CAKE WALLET"* publishes a **4,472,805-byte animated
+GIF** and which carries a second animated chapter earlier. Before: **11,555,231
+bytes of originals with the player COLLAPSED**, on the connection the enclosure
+is streaming over. After: **0** collapsed, and the 4.4 MB original only once
+somebody opens the player to look at it. The same tile proxied at `w=160` is
+**5,502 bytes** — 813× less for a picture 48 pixels across.
+
+**`preferOriginal` (`artCandidates`, `<PodcastCover>`) swaps the two halves and
+drops neither.** The proxied copies stay behind the originals, because the one
+failure left is a host that refuses the request the browser makes — hotlink
+rules, a mixed-content block — and a still cover beats no cover. Both orders are
+pinned by `check:art`; the vectors are proved against a `naive()` that ignores
+the flag entirely, which is the way to ship this inert: the still picture it
+leaves behind is a real cover, so nothing on screen says the flag is dead.
+
+**Both conditions on the big cover are load-bearing.** `open`, because that pane
+is always mounted and merely translated off-screen — without it a collapsed
+player downloads the original of every chapter the listener passes. `artOk`,
+because `nowPlayingArt` only withholds *chapter and track* art when the gate
+shuts: an episode cover that is itself a huge GIF would still be fetched whole
+while the buffer is in trouble.
+
+### The lock screen is the third surface, and it has no element
+
+`MediaMetadata`'s `artwork` fetch is issued by the browser on our behalf. It
+takes no `fetchPriority`, `loading="lazy"` means nothing to it, and it is not
+cancelled when the next chapter supersedes it. The 3-second settle timer in
+`components/player/use-media-session.ts` fixed how OFTEN that happens; it did
+nothing about how BIG each one is, and on the episode above the lock screen was
+10.8 MB of the 11.5 MB total — for a picture no screen in this app was showing.
+
+**It lists ONE entry, the proxied copy, and this is the one place the "raw URL
+always behind the proxied one" rule is deliberately inverted.** An `artwork`
+list is a size-negotiation list, not an `onError` ladder: there is no error
+event to catch, and Chromium **fetches every entry**. Measured 2026-09-21 with
+both listed: the proxied copies came down (267,098 + 114,002 + 37,729 bytes)
+*and* both originals did (6,400,448 + 4,478,255). So a fallback there does not
+cost a retry, it costs the whole file every time — the exact harm the raw tail
+exists to prevent. What it gives up is cosmetic and off-app: if `/api/art`
+cannot serve the picture, the lock screen shows none. `sizes` is stamped on the
+proxied entry only, because that is the one whose dimensions we asked for.
+
+All three surfaces are pinned by `npm run e2e:artbytes`, which drives that
+episode in a real browser and asserts on **wire bytes per surface** — the lock
+screen's fetch is invisible to any DOM assertion, so a byte count is the only
+place it can be seen at all. Run against the pre-fix tile it fails four checks.
+
 **The width is an allowlist (`160|320|640|1024`), never a free integer.** Each
 `(url, width)` pair is a CDN cache key whose miss costs a full decode and
 resize of up to 12 MB, so an open parameter turns one cover into an unbounded

@@ -24,6 +24,7 @@ function PodcastCoverImpl({
   fit = 'cover',
   lowPriority,
   localSrc,
+  preferOriginal,
 }: {
   image?: string | null;
   artwork?: string | null;
@@ -100,6 +101,20 @@ function PodcastCoverImpl({
    * art that nobody is looking at.
    */
   lowPriority?: boolean;
+  /**
+   * Ask for the file the artist published, with the proxied copy behind it.
+   *
+   * `/api/art` takes frame one on purpose, so an animated cover is STILL under
+   * the proxy. This is how the one surface that paints the picture large gets
+   * the animation back — and it is narrow deliberately, because the same file
+   * measured 4,472,805 bytes against 5,502 at `w=160`.
+   *
+   * Pass it only while that surface is on screen AND the art gate is open. It
+   * is not a quality switch: every other caller wants the proxy first, and a
+   * 48px tile paying 4.47 MB on the audio's own connection is the failure
+   * `artOk` exists for.
+   */
+  preferOriginal?: boolean;
 }) {
   // Proxied copies first, then the ORIGINAL third-party URLs behind them.
   //
@@ -110,16 +125,20 @@ function PodcastCoverImpl({
   // every cover on all twelve surfaces that render this component. Ordering it
   // the other way round would leave the feature installed and inert. Both
   // shapes are pinned by `npm run check:art`.
+  //
+  // `preferOriginal` swaps the two halves for the one surface that wants the
+  // published file rather than a still tile of it. The other half stays behind
+  // it either way, which is what makes both orders safe.
   const candidates = useMemo(() => {
-    const net = artCandidates(image, artwork, w);
+    const net = artCandidates(image, artwork, w, { preferOriginal });
     return localSrc ? [...net, localSrc] : net;
-  }, [image, artwork, w, localSrc]);
+  }, [image, artwork, w, localSrc, preferOriginal]);
   const [idx, setIdx] = useState(0);
   // Re-attempt from the first candidate whenever the source URLs change. Without
   // this, a caller that swaps `image` over time (e.g. per-chapter artwork in the
   // player) would keep a stale failing-index: once a bad img advanced idx to the
   // artwork fallback, the next (valid) image would be skipped for artwork.
-  useEffect(() => { setIdx(0); }, [image, artwork, w, localSrc]);
+  useEffect(() => { setIdx(0); }, [image, artwork, w, localSrc, preferOriginal]);
   const current = candidates[idx];
   if (current) {
     return (
@@ -182,8 +201,8 @@ function PodcastCoverImpl({
  * visible row. Without this, each of those re-renders reconciled a cover whose
  * inputs had not changed.
  *
- * `image`, `artwork`, `localSrc`, `title`, `seed`, `className`, `w`, `fit` and
- * `lowPriority` are all strings, numbers or booleans, so the default shallow
+ * `image`, `artwork`, `localSrc`, `title`, `seed`, `className`, `w`, `fit`,
+ * `lowPriority` and `preferOriginal` are all strings, numbers or booleans, so the default shallow
  * comparison is exactly right here — there is no object or callback prop for a
  * caller to hand over a fresh reference of by accident, which is the usual way a
  * `memo` becomes decoration. A new prop has to keep that true.

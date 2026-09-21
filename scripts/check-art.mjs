@@ -77,10 +77,18 @@ function checkWidth(label, input, expected, { alsoNaive = false } = {}) {
   vectors.push({ label, kind: 'width', args: [input], alsoNaive });
 }
 
-/** An artCandidates vector. `alsoNaive` marks a must-still-work input. */
-function checkCandidates(label, image, artwork, width, expected, { alsoNaive = false } = {}) {
-  compare(label, artCandidates(image, artwork, width), expected);
-  vectors.push({ label, kind: 'cand', args: [image, artwork, width], alsoNaive });
+/** An artCandidates vector. `alsoNaive` marks a must-still-work input.
+ *
+ *  `opts` is passed through to the real function AND recorded, so a
+ *  `preferOriginal` vector is replayed with its option rather than silently
+ *  losing it — a vector that drops the argument it exists to test is the
+ *  round-trip assertion this suite's header warns about. It is only included
+ *  in `args` when given, so the default-order vectors keep calling with three
+ *  arguments, which is what every caller but one does. */
+function checkCandidates(label, image, artwork, width, expected, { alsoNaive = false, opts } = {}) {
+  const args = opts ? [image, artwork, width, opts] : [image, artwork, width];
+  compare(label, artCandidates(...args), expected);
+  vectors.push({ label, kind: 'cand', args, alsoNaive });
 }
 
 /** An artTypeVerdict vector. `alsoNaive` marks a must-still-work input. */
@@ -228,6 +236,58 @@ checkCandidates(
 );
 
 // ---------------------------------------------------------------------------
+section('artCandidates — preferOriginal swaps the halves, drops neither');
+// ---------------------------------------------------------------------------
+// `/api/art` takes frame one, so an animated cover stands still under the
+// proxy. The fullscreen player's big cover asks for the published file instead
+// — and ONLY it, while it is open and the art gate allows: the same file
+// measured 4,472,805 bytes against 5,502 at w=160, which is what the 48px
+// now-playing tile used to pay on the audio's own connection.
+
+checkCandidates(
+  'both URLs: the originals first, the proxied pair still behind them',
+  COVER, ALT, 640,
+  [COVER, ALT, enc(COVER, 640), enc(ALT, 640)],
+  { opts: { preferOriginal: true } },
+);
+
+checkCandidates(
+  'image only, original first',
+  COVER, null, 640,
+  [COVER, enc(COVER, 640)],
+  { opts: { preferOriginal: true } },
+);
+
+// The proxied half is a REAL second chance, not decoration: a host that
+// refuses the request the browser makes — hotlink rules, a mixed-content
+// block — is exactly the case it catches, and a still cover beats no cover.
+// Dropping it here would make this the one order with no fallback at all.
+checkCandidates(
+  'a dead original still falls through to the proxy, not to the initial tile',
+  'https://example.test/gone.gif', null, 1024,
+  ['https://example.test/gone.gif', enc('https://example.test/gone.gif', 1024)],
+  { opts: { preferOriginal: true } },
+);
+
+// Nothing to prefer: an unproxyable URL appears once either way.
+checkCandidates(
+  'a data: URL is offered once, and is not duplicated by the swap',
+  'data:image/png;base64,iVBORw0KGgo=', null, 320,
+  ['data:image/png;base64,iVBORw0KGgo='],
+  { opts: { preferOriginal: true } },
+);
+
+// The flag is a SWITCH, and this is the half that proves it: every other
+// caller — twelve surfaces — must keep getting the proxied copy first, or the
+// whole optimisation is off and nothing on screen says so.
+checkCandidates(
+  'an explicit false is the ordinary order, proxied first',
+  COVER, ALT, 320,
+  [enc(COVER, 320), enc(ALT, 320), COVER, ALT],
+  { opts: { preferOriginal: false } },
+);
+
+// ---------------------------------------------------------------------------
 section('artTypeVerdict — refuse documents, let the decoder judge the rest');
 // ---------------------------------------------------------------------------
 
@@ -368,7 +428,10 @@ section('every vector replayed against the wrong implementations');
    *  play head is not in any range", and no answer for the tail of a file. */
   const naiveGate = (open, ahead, _timeLeft) => (ahead ?? 0) >= 20;
 
-  /** Proxies everything and forgets the raw fallbacks — the total-failure shape. */
+  /** Proxies everything and forgets the raw fallbacks — the total-failure
+   *  shape. It ignores `preferOriginal` as well, which is the second way to
+   *  ship this inert: a flag that is read nowhere looks exactly like one that
+   *  works, because the still picture it leaves behind is a real cover. */
   const naiveCandidates = (image, artwork, width) => {
     const out = [];
     if (image) out.push(enc(image, width));
