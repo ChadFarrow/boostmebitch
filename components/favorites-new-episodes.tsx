@@ -194,6 +194,31 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     [favorites],
   );
 
+  /**
+   * The SHOW's title by PI feed id, from the reader's own favorites.
+   *
+   * A row cannot name its show on its own: Podcast Index's episode records on
+   * this path carry no `feedTitle` (measured 2026-09-21 on a Pixel 6 — none of
+   * four rows had one), so every row lost the show from its second line AND
+   * from the open control's accessible name, and the line opened on a bare
+   * "·". Every row's feed was asked about because it is a favorite, so the
+   * title is already in memory; no second request can do better.
+   */
+  const feedTitles = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const f of Object.values(favorites)) if (f.id > 0 && f.title) m.set(f.id, f.title);
+    return m;
+  }, [favorites]);
+  const showTitle = (e: Episode) => e.feedTitle || feedTitles.get(e.feedId ?? 0);
+  // Joined from the parts that EXIST, so a missing one never leaves a dangling
+  // separator at either end.
+  const metaLine = (e: Episode) =>
+    [
+      showTitle(e),
+      e.datePublished ? fmtDate(e.datePublished) : null,
+      e.duration ? fmtDuration(e.duration) : null,
+    ].filter(Boolean).join(' · ');
+
   // Reads the live store rather than closing over `favorites`, so it is stable
   // for a given account. `askKey` is what re-arms the effect below.
   const check = useCallback(async (force: boolean) => {
@@ -594,17 +619,13 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                         <PodcastCover
                           image={e.image}
                           artwork={e.feedImage}
-                          title={e.feedTitle}
+                          title={showTitle(e)}
                           seed={String(e.feedId)}
                           className="w-12 h-12 flex-shrink-0"
                         />
                         <span className="min-w-0 flex-1 block">
                           <span className="block text-sm font-display leading-tight truncate">{e.title}</span>
-                          <span className="block text-[11px] text-muted truncate">
-                            {e.feedTitle}
-                            {e.datePublished ? ` · ${fmtDate(e.datePublished)}` : ''}
-                            {e.duration ? ` · ${fmtDuration(e.duration)}` : ''}
-                          </span>
+                          <span className="block text-[11px] text-muted truncate">{metaLine(e)}</span>
                         </span>
                       </button>
                     ) : (
@@ -612,17 +633,13 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                         <PodcastCover
                           image={e.image}
                           artwork={e.feedImage}
-                          title={e.feedTitle}
+                          title={showTitle(e)}
                           seed={String(e.feedId)}
                           className="w-12 h-12 flex-shrink-0"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-display leading-tight truncate">{e.title}</div>
-                          <div className="text-[11px] text-muted truncate">
-                            {e.feedTitle}
-                            {e.datePublished ? ` · ${fmtDate(e.datePublished)}` : ''}
-                            {e.duration ? ` · ${fmtDuration(e.duration)}` : ''}
-                          </div>
+                          <div className="text-[11px] text-muted truncate">{metaLine(e)}</div>
                         </div>
                       </>
                     )}
