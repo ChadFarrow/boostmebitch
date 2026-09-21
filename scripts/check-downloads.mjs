@@ -47,7 +47,7 @@
 // invent: the double redirect, the `.wav`, the query string that is part of the
 // signature.
 
-import { chaptersRequestUrl, downloadFailureMessage, downloadKey, isDownloadable, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
+import { chaptersRequestUrl, downloadFailureMessage, downloadKey, isDownloadable, proxiedAudioUrl, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
 import { downloadEpisodeId, isHlsUrl } from '../lib/util.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -87,6 +87,12 @@ function checkDoc(label, kind, args, expected, { alsoNaive = false } = {}) {
 function checkRoom(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, roomVerdict(...args), expected);
   vectors.push({ label, kind: 'room', args, alsoNaive });
+}
+
+/** A proxiedAudioUrl vector. */
+function checkProxy(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, proxiedAudioUrl(...args), expected);
+  vectors.push({ label, kind: 'proxy', args, alsoNaive });
 }
 
 /** A downloadFailureMessage vector. */
@@ -389,6 +395,32 @@ section('A download plays back under the id it was LISTED under — a money fact
 }
 
 // ---------------------------------------------------------------------------
+section('The proxy URL survives an enclosure that has its own query string');
+// ---------------------------------------------------------------------------
+{
+  // The whole point. An enclosure routinely carries parameters — the Simplecast
+  // vector above has three — so appending it raw would hand the FEED AUTHOR
+  // control of our route's query string, and `searchParams.get('url')` would
+  // then read only as far as their first `&`. Every vector here fails against
+  // that naive version except the one with nothing to encode.
+  checkProxy('a plain enclosure', [HGH], `/api/audio?url=${encodeURIComponent(HGH)}`);
+  checkProxy('the URL from the iPhone report', ['https://mmmusic.show/podcast/155th_edition/MMMusic_155_final.mp3'],
+    '/api/audio?url=https%3A%2F%2Fmmmusic.show%2Fpodcast%2F155th_edition%2FMMMusic_155_final.mp3');
+  checkProxy('an enclosure with its own query string keeps every parameter',
+    [SIMPLECAST], `/api/audio?url=${encodeURIComponent(SIMPLECAST)}`);
+  // Read it back the way the route does, which is the assertion that matters:
+  // the round trip must return the URL byte for byte.
+  for (const [name, u] of [['simplecast', SIMPLECAST], ['podtrac', PODTRAC], ['a wav', WAV]]) {
+    const parsed = new URL(proxiedAudioUrl(u), 'https://boostmebitch.com').searchParams.get('url');
+    compare(`the route reads ${name} back byte for byte`, parsed, u);
+  }
+  // An `&` in the feed's URL is the exact byte that splits our own parameters.
+  const HOSTILE = 'https://h.example/a.mp3?x=1&url=https://evil.example/b.mp3';
+  compare('a feed cannot smuggle a second url parameter',
+    new URL(proxiedAudioUrl(HOSTILE), 'https://boostmebitch.com').searchParams.get('url'), HOSTILE);
+}
+
+// ---------------------------------------------------------------------------
 section('A blocked host and a dead network are told apart, and named');
 // ---------------------------------------------------------------------------
 {
@@ -454,6 +486,9 @@ section('Every vector above is replayed against the obvious wrong version');
   // The wording that shipped: ONE sentence for both causes, blaming the network
   // for a host that was up and serving the same file to <audio>.
   const naiveMsg = (host) => `Could not reach ${host} to download this episode.`;
+  // The obvious wrong one: append the URL raw, so the feed author's own query
+  // string becomes parameters on OUR route.
+  const naiveProxy = (u) => `/api/audio?url=${u}`;
 
   const call = (impl, v) => {
     try {
@@ -466,6 +501,7 @@ section('Every vector above is replayed against the obvious wrong version');
         case 'transcript': return JSON.stringify(real ? transcriptRequestUrl(...v.args) : naiveDoc(...v.args));
         case 'episodeId': return JSON.stringify(real ? downloadEpisodeId(...v.args) : naiveEpisodeId(...v.args));
         case 'msg': return JSON.stringify(real ? downloadFailureMessage(...v.args) : naiveMsg(...v.args));
+        case 'proxy': return JSON.stringify(real ? proxiedAudioUrl(...v.args) : naiveProxy(...v.args));
         case 'idem': {
           // The property, not the value: does re-deriving change the answer?
           const f = real ? downloadKey : naiveKey;

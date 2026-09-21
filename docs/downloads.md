@@ -62,27 +62,73 @@ are disproportionately self-hosted.
 fall back to, and using the OP3 prefix ourselves would forge somebody else's
 analytics.
 
-### The proxy is still refused, and the reasons did not change
+### The proxy was refused on three grounds, and then the minority showed up
 
-**So this app has no audio proxy and must not grow one casually.** What
-that buys is not tidiness:
+The original argument said: *"If that minority ever turns out to matter, adding a
+proxy is a real option; adding one before it matters is paying all three costs for
+nothing."* **It turned out to matter on 2026-09-20**, so the option was taken. The
+three costs, and what each one actually came to:
 
-- No SSRF surface. An audio proxy takes a feed-supplied URL and fetches it
-  server-side, which is the exact shape `lib/safe-fetch.ts` exists to contain.
-- No audio bytes billed through Vercel. A proxy doubles them — host to us, us to
-  the listener — for a feature whose entire purpose is that bandwidth is scarce.
-  One Mutton, Mead & Music episode is 90 MB, each way, per listener.
-- No domain allowlist to drift. StableKraft's two lists were hand-mirrored and went
-  out of sync at 16 entries versus 14, and the symptom was "streams fine, won't
-  download."
+| Objection | Answer |
+| --- | --- |
+| **SSRF surface** — a feed-supplied URL fetched server-side | `safeFetch` is what this repo already points at that shape, for `/api/transcript`, `/api/chapters` and `/api/art`. It re-validates every redirect hop and re-resolves each hostname. |
+| **Audio bytes through our host** — 90 MB an episode | Real, and the only genuine cost. Bounded three ways: **the direct path still takes every host that allows it**, so op3.dev, libsyn, megaphone, transistor and buzzsprout never touch the route; `MAX_DOWNLOAD_BYTES` caps one file; `rateLimit` caps a client at 6/min. It is paid **once per download** — playback is from the blob and never returns to the network. |
+| **An allowlist that drifts** — StableKraft's two lists went out of sync at 16 entries versus 14 | **There is no allowlist.** The trigger is the browser's own refusal, so there is nothing to maintain and nothing to drift. |
 
-A host that does **not** send the header fails the download. That is a minority, and
-the button says which host and why — see "Failure is a sentence" below. If that
-minority ever turns out to matter, adding a proxy is a real option; adding one
-*before* it matters is paying all three costs for nothing.
+**The shape is `lnurlFetch`'s, not a new one.** `lib/v4v/lnurl-fetch.ts` tries the
+provider directly and falls back to `/api/lnurl` only when the browser *throws* —
+on the money path, with CLAUDE.md's blessing. `downloadBytes` now does exactly that
+with `/api/audio`, and the direct `mode: 'cors'` fetch is untouched.
+
+**Only a host that ANSWERED may be retried through us.** An offline device would
+otherwise send every failed download at our server for a second failure, and the
+message it has already earned — "No connection" — is the correct one.
+
+### Why not the service worker
+
+The alternative was `mode: 'no-cors'` plus a worker serving the opaque response. It
+costs no server bandwidth, and it is very likely broken on the one platform this
+fix is for: **iOS Safari plays media with byte-range requests and expects `206
+Partial Content`, and an opaque response can never produce one** — its body is
+unreadable by definition, which is the same reason
+`URL.createObjectURL(await res.blob())` cannot consume it (see `storeArt`'s note).
+
+Taking the readable route keeps everything downstream unchanged:
+
+| | `no-cors` + worker | `/api/audio` |
+| --- | --- | --- |
+| Progress bar | gone — size unreadable | works |
+| Room pre-check | gone | works |
+| `MAX_DOWNLOAD_BYTES` | unenforceable | works |
+| A cached 404 page | indistinguishable from audio | caught — the route answers 404 |
+| iOS playback | range requests, unproven | the blob URL it already uses |
+| Safari quota | pads opaque entries | true size |
+
+**Measured in a real browser on 2026-09-20, 8/8**, against the episode from the
+report: the direct `cors` fetch throws, the `no-cors` HEAD resolves, `/api/audio`
+answers `200` declaring `90,022,193` bytes, the body reads, the first three bytes
+are `ID3` rather than an error page, and it becomes a `blob:` URL.
 
 **Re-measure before you conclude a host is broken.** `curl -sIL -H 'Origin: …'` on
 the enclosure answers this in one command.
+
+### Three rules for `/api/audio`
+
+- **The catch LOGS the message and returns a constant.** `assertSafeFetchUrl` names
+  the host it rejected, so reflecting it would turn the route into an oracle
+  answering "is this address internal?" for any URL a caller cares to test. This is
+  CLAUDE.md's rule about a route's 500, and the first draft of this route broke it —
+  caught by driving `169.254.169.254` and `127.0.0.1` through it and reading the
+  body.
+- **`Content-Type` is `application/octet-stream`, never the upstream's.** The client
+  only ever makes a Blob of it, and reflecting a hostile host's `text/html` would
+  let it execute in *our* origin, which holds the NWC credential and the nsec. Same
+  reasoning `/api/transcript` states for its `text/plain`.
+- **`maxDuration = 300`.** A download is one long streamed response, and the default
+  would cut a large episode off mid-stream on a slow connection — which arrives as a
+  corrupt file rather than as a timeout. 90 MB at 300 KB/s is 300 s. If that ceiling
+  is ever hit in practice, the fix is range-chunked requests from the client, not a
+  bigger number.
 
 ---
 
@@ -479,8 +525,11 @@ indistinguishable from a broken one — the rule `<FavoritesSyncNotice>` exists 
 
 | Cause | What the listener reads |
 | --- | --- |
-| The host answered but sends no CORS header | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
+| The host sends no CORS header, and `/api/audio` got it | *nothing — the download succeeds* |
+| The host sends no CORS header, and `/api/audio` could not read it either | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
 | The device could not reach the host at all | "No connection — this device could not reach `<host>`." |
+| Our own route is unreachable while the host is up | "Could not reach this app's server to fetch the episode." |
+| The host no longer has the file (route answered 404) | "`<host>` no longer has this episode." |
 | `roomVerdict` said `'no'` | "Not enough space — remove a download to make room." |
 | HLS, a live item, or no URL | The button does not render at all. |
 | Anything else | The thrown message, or "Download failed — tap to retry." |

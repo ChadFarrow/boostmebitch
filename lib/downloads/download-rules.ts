@@ -199,6 +199,23 @@ export function roomVerdict(
 }
 
 /**
+ * The app's own URL for an enclosure a host would not hand to the browser.
+ *
+ * `encodeURIComponent`, never a bare append. An enclosure routinely carries its
+ * own query string — the Simplecast vector in `check:downloads` has
+ * `?aid=rss_feed&awEpisodeId=…&feed=…` — so appending it raw would let the
+ * FEED author add parameters to OUR route, and `searchParams.get('url')` would
+ * then read a truncated address. `chaptersRequestUrl` and
+ * `transcriptRequestUrl` above encode for the same reason.
+ *
+ * Relative, not absolute: the route is same-origin by construction, so there is
+ * no origin to get wrong and no CORS question to answer on the way back.
+ */
+export function proxiedAudioUrl(sourceUrl: string): string {
+  return `/api/audio?url=${encodeURIComponent(sourceUrl)}`;
+}
+
+/**
  * What to say when the enclosure fetch threw.
  *
  * **A blocked host and a dead network are the SAME `TypeError`**, and saying

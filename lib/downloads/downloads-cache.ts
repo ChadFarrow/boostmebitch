@@ -1,4 +1,4 @@
-import { MAX_DOWNLOAD_BYTES, roomVerdict, downloadFailureMessage } from './download-rules';
+import { MAX_DOWNLOAD_BYTES, roomVerdict, downloadFailureMessage, proxiedAudioUrl } from './download-rules';
 
 /**
  * Did the host answer AT ALL — any status, including one it refuses to let us
@@ -153,11 +153,12 @@ export async function hasRoomFor(bytes: number | null | undefined): Promise<'yes
  * all commercial hosts or a CORS-enabled prefix; **self-hosted shows are the
  * gap, and V4V podcasts are disproportionately self-hosted.**
  *
- * The "no proxy" property is kept anyway, because the alternative is worse:
- * proxying would put 90 MB of audio per download through Vercel, add an SSRF
- * surface, and need a domain allowlist that drifts. What changed is the
- * HONESTY of the failure — see `downloadFailureMessage`, which names the host's
- * policy rather than blaming a network that is working.
+ * The "no proxy" property did NOT survive that, and the replacement is
+ * `lnurlFetch`'s shape rather than a new one: direct first, `/api/audio` only
+ * when the browser THROWS. So every host that allows a direct read still takes
+ * it and costs us nothing, and there is **no allowlist to drift** — the
+ * browser's own refusal is the trigger. The route's own header carries the
+ * three objections and what answers each.
  *
  * One shot, whole file, no Range requests and no resume. Resuming would need
  * the partial bytes kept somewhere, which is the half-written entry the Cache
@@ -196,7 +197,33 @@ export async function downloadBytes(
     // A CORS refusal and an offline device are the same TypeError here, so ASK
     // rather than guess: a `no-cors` HEAD resolves whenever the server answered
     // at all and rejects only when the device could not get there.
-    throw new Error(downloadFailureMessage(hostOf(sourceUrl), await hostAnswers(sourceUrl, signal)));
+    //
+    // ONLY A HOST THAT ANSWERED MAY BE RETRIED THROUGH US. An offline device
+    // would otherwise send every failed download at our server for a second
+    // failure, and the message it earns ("No connection") is already correct.
+    if (!(await hostAnswers(sourceUrl, signal))) {
+      throw new Error(downloadFailureMessage(hostOf(sourceUrl), false));
+    }
+    try {
+      res = await fetch(proxiedAudioUrl(sourceUrl), { signal, credentials: 'omit' });
+    } catch (e2) {
+      if (e2 instanceof DOMException && e2.name === 'AbortError') throw e2;
+      // Our own route is unreachable while the host is not. Say what is true
+      // rather than blaming the host, whose only sin is a missing header.
+      throw new Error('Could not reach this app’s server to fetch the episode.');
+    }
+    if (!res.ok) {
+      // The route answers the host's 404 verbatim and 502 for anything else, so
+      // a miss stays a fact about the feed rather than an outage of ours.
+      if (res.status === 404) throw new Error(`${hostOf(sourceUrl)} no longer has this episode.`);
+      if (res.status === 413) {
+        throw new DownloadRefused('This episode is too large to download.');
+      }
+      // We reached our own server and IT could not read the host — so the host
+      // is still the subject, and this is where `reachable: true` earns its
+      // keep: some hosts refuse a datacentre IP as readily as a browser.
+      throw new Error(downloadFailureMessage(hostOf(sourceUrl), true));
+    }
   }
   if (!res.ok) throw new Error(`${hostOf(sourceUrl)} answered ${res.status}.`);
   if (!res.body) throw new Error('This host sent no audio.');
