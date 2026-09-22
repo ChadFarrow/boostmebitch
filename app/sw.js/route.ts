@@ -112,8 +112,20 @@ async function putIfOk(cacheName, request, response) {
   // cross-origin response cannot be read back usefully either.
   if (!response || !response.ok || response.type !== 'basic') return;
   if ((response.headers.get('cache-control') || '').includes('no-store')) return;
-  const cache = await caches.open(cacheName);
-  await cache.put(request, response.clone());
+  // A 206 is ok and Cache.put REJECTS it — and every same-origin media element
+  // asks with a Range header, the boost sound included. A partial body is not
+  // the resource anyway.
+  if (response.status === 206 || request.headers.has('range')) return;
+  // THE CACHE WRITE MUST NEVER FAIL THE RESPONSE. The caller awaits this before
+  // returning a response the network already delivered, so a throw here (a full
+  // quota once downloads have used it, a private-mode refusal) turned a good
+  // answer into a rejection: a chunk failed to load while online.
+  try {
+    const cache = await caches.open(cacheName);
+    await cache.put(request, response.clone());
+  } catch (e) {
+    // Not caching is always a safe answer; failing the fetch is not.
+  }
 }
 
 self.addEventListener('fetch', (event) => {
