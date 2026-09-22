@@ -804,11 +804,17 @@ export const useApp = create<AppState>((set, get) => ({
   // the one on screen.
   setListenQueue: (items) => set({ listenQueue: items }),
 
-  adoptListenQueue: (npub) => set((s) => (
-    s.listenQueue.length
-      ? { listenQueueSaved: storage.listenQueue.set(npub, s.listenQueue) }
-      : {}
-  )),
+  // Adoption MOVES the guest queue, it does not copy it. Left under `:guest`,
+  // the same bytes were restored on the next signed-out load and adopted again
+  // by whichever account signed in next — A's queue on B's first sign-in, on a
+  // shared device. Cleared only once the account's copy LANDED, so a failed
+  // write never loses the queue from both places.
+  adoptListenQueue: (npub) => set((s) => {
+    if (!s.listenQueue.length) return {};
+    const landed = storage.listenQueue.set(npub, s.listenQueue);
+    if (landed) storage.listenQueue.clear(null);
+    return { listenQueueSaved: landed };
+  }),
 
   handlePlaybackEnded: () => {
     const s = get();
