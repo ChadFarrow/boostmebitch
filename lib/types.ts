@@ -540,6 +540,14 @@ export interface NewEpisodeMarks {
    * empty list: the first pass after an upgrade refills it.
    */
   rows?: Episode[];
+  /**
+   * The OUTCOME of the pass that stamped `checkedAt`: how many shows it asked
+   * about did not come back, and whether none did. The throttle repaints from
+   * this record without asking again, so without these a reload inside the
+   * window turned a failed pass into "Nothing new". Absent reads as 0 / false.
+   */
+  uncovered?: number;
+  failed?: boolean;
 }
 
 /**

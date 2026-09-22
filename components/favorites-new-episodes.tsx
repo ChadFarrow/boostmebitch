@@ -118,6 +118,7 @@ type Phase = 'idle' | 'checking' | 'done' | 'failed';
 export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void }) {
   const favorites = useApp((s) => s.favorites);
   const identity = useApp((s) => s.identity);
+  const favoritesSync = useApp((s) => s.favoritesSync);
   const [mounted, setMounted] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
   const [rows, setRows] = useState<Episode[]>([]);
@@ -150,11 +151,18 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
   // React 19 double-invokes effects in development. Without this the check
   // fires twice on every mount and the second one is refused by the throttle,
   // which looks like the throttle working when it is really hiding a bug.
-  const running = useRef(false);
+  //
+  // KEYED BY ACCOUNT, not a boolean: a pass is a minute of sequential requests,
+  // and a boolean left true by account A's pass refused account B's first check
+  // after a switch.
+  const running = useRef<string | null>(null);
 
   useEffect(() => setMounted(true), []);
 
   const npub = identity?.npub ?? null;
+  // What the RENDER is showing, read by a pass after each await. See `check`.
+  const npubNow = useRef(npub);
+  npubNow.current = npub;
 
   /**
    * PAINT WHAT THIS DEVICE ALREADY FOUND, before any request.
@@ -222,7 +230,15 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
   // Reads the live store rather than closing over `favorites`, so it is stable
   // for a given account. `askKey` is what re-arms the effect below.
   const check = useCallback(async (force: boolean) => {
-    if (running.current) return;
+    const runKey = npub ?? ':guest';
+    if (running.current === runKey) return;
+    /**
+     * THE PASS WRITES ITS OWN ACCOUNT'S DISK, AND PAINTS ONLY ITS OWN ACCOUNT.
+     * The storage writes below use the captured `npub` and were always right;
+     * the state setters were not — an account switch mid-pass painted A's new
+     * episodes into B's section, and they sat there until B's next pass.
+     */
+    const onScreen = () => npubNow.current === npub;
     const stored = storage.newEpisodeMarks.get(npub);
     setRecord(stored);
 
@@ -251,17 +267,22 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     setChecked(asked.length);
 
     if (!force && Date.now() - stored.checkedAt < CHECK_MIN_MS) {
-      // Inside the throttle: repaint the stored list rather than re-asking.
+      // Inside the throttle: repaint the stored list AND the stored outcome.
+      // The outcome half is what a failed pass needs: `checkedAt` is stamped on
+      // a total failure too (the backoff below), so a reload inside the window
+      // arrived here with `uncovered` at its initial 0 and said "Nothing new
+      // since …" about shows no request had come back for.
       // REPAINT, not `setPhase` alone — leaving `rows` at its mount value was
       // the whole first bug. A visit two minutes after a check found a full
       // record on disk, returned here, and rendered an empty section, so the
       // list was only ever visible in the single render that followed a check.
       setRows(stored.rows ?? []);
-      setPhase('done');
+      setUncovered(stored.uncovered ?? 0);
+      setPhase(stored.failed ? 'failed' : 'done');
       return;
     }
 
-    running.current = true;
+    running.current = runKey;
     setPhase('checking');
     setProgress({ done: 0, total: asked.length });
 
@@ -344,20 +365,21 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
             now,
           );
           // Paint what the pass holds so far, before the next request goes out.
-          setRows(merged);
+          if (onScreen()) setRows(merged);
         } catch {
           // This request's feeds stay OUT of `covered`, exactly as a chunk the
           // route could not ask about does. A request that failed is not a set
           // of shows with nothing new, and the next request still goes out.
         }
-        setProgress((p) => ({ done: p.done + batch.length, total: p.total }));
+        if (onScreen()) setProgress((p) => ({ done: p.done + batch.length, total: p.total }));
       }
 
       // Against the feeds ASKED ABOUT. The library's tail beyond the pass
       // ceiling is `deferred`, counted above — folding the two together was how
       // a 227-favorite library got told "Nothing new" about 127 shows no
       // request was ever made for.
-      setUncovered(asked.length - coveredIds.length);
+      const uncoveredCount = asked.length - coveredIds.length;
+      if (onScreen()) setUncovered(uncoveredCount);
 
       /**
        * MARKS ONCE, OVER THE FINAL LIST — not once per request.
@@ -395,7 +417,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
           // while a row for an unfavorited show is a row on screen that the
           // reader cannot get rid of.
           nextRows = pruneNewRows(nextRows, Object.values(favs).map((f) => f.id));
-          setRows(nextRows);
+          if (onScreen()) setRows(nextRows);
         }
       }
 
@@ -410,14 +432,22 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
       // work all session and are gone on the next load, so the same episodes
       // come back announced as new — which reads as the feature being broken,
       // never as a storage fault.
-      const next = { checkedAt: Date.now(), marks, rows: nextRows };
-      setMarksSaved(storage.newEpisodeMarks.set(npub, next));
-      setRecord(next);
-      // Keep whatever is painted on a total failure. A failed check is not an
-      // empty library.
-      setPhase(answered ? 'done' : 'failed');
+      //
+      // The OUTCOME rides with the stamp, for the throttle's repaint above.
+      const next = {
+        checkedAt: Date.now(), marks, rows: nextRows,
+        uncovered: uncoveredCount, failed: !answered,
+      };
+      const saved = storage.newEpisodeMarks.set(npub, next);
+      if (onScreen()) {
+        setMarksSaved(saved);
+        setRecord(next);
+        // Keep whatever is painted on a total failure. A failed check is not an
+        // empty library.
+        setPhase(answered ? 'done' : 'failed');
+      }
     } finally {
-      running.current = false;
+      if (running.current === runKey) running.current = null;
     }
   }, [npub]);
 
@@ -443,14 +473,22 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     setShown(PAGE);
   }, [npub]);
 
+  // A SIGNED-IN library is not settled until the relay read lands. A pass
+  // against the cached subset stamps `checkedAt`, and the throttle then refused
+  // the check that the widened `askKey` asked for — so shows arriving with the
+  // read went unasked for fifteen minutes under "Nothing new since …". 'idle'
+  // counts: hydration waits for the NIP-65 write set, and every signed-in load
+  // leaves it ('off' included). Signed out, the local cache IS the library.
+  const hydrating = !!npub && (favoritesSync === 'idle' || favoritesSync === 'loading');
+
   useEffect(() => {
-    if (!mounted || !askKey) return;
+    if (!mounted || !askKey || hydrating) return;
     // A SETTLE WINDOW, not a plain call. Each change to the ask set restarts it,
     // so a cold hydration's run of `favorites` replacements produces ONE check,
     // against the settled library. See `SETTLE_MS`.
     const t = setTimeout(() => void check(false), SETTLE_MS);
     return () => clearTimeout(t);
-  }, [mounted, askKey, check]);
+  }, [mounted, askKey, check, hydrating]);
 
   // NOT gated on being signed in. `identityKey` gives `:guest` for a null npub,
   // exactly as `bmb:favorites` and `bmb:listen_queue` do — so a signed-out
