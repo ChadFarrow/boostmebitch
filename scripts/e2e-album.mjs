@@ -187,12 +187,21 @@ section('1. An album that cannot fit is refused WHOLE, before one request');
   t.ok('the fake quota is gone before the album is downloaded for real', quota > 1024 * 1024 * 1024, `${quota} bytes`);
 }
 
+/** The track titles in the order the album page lists them — what a group on
+ *  /downloads must reproduce once the whole album was downloaded. */
+let albumOrder = [];
+
 // ---------------------------------------------------------------------------
 section('2. The first press spends nothing: it states the count and the size, and asks');
 // ---------------------------------------------------------------------------
 {
   const shown = await open();
   const c = await control();
+  // The row title is the `font-display font-medium` line inside the episode
+  // list's `divide-y` <ul>; nothing else on the page carries both.
+  albumOrder = await js(`[...document.querySelectorAll('ul.divide-y > li div.font-display.font-medium')]
+    .map((el) => el.textContent.trim())`);
+  console.log(`  album page order: ${JSON.stringify(albumOrder)}`);
   console.log(`  control: ${JSON.stringify(c)}`);
   t.ok('an album offers DOWNLOAD ALBUM with its size before any press',
     !!shown && /DOWNLOAD ALBUM/.test(c.button) && c.button.includes(ALBUM_SIZE), c.button);
@@ -261,6 +270,104 @@ section('4. The rest downloads one track at a time, and the album ends complete'
   const c = await control();
   t.ok(`the control says the album is complete`, !!c.done && c.done.includes(`All ${TRACKS} tracks downloaded`), JSON.stringify(c));
   t.ok('...and offers nothing more to download', !c.button, String(c.button));
+}
+
+// ---------------------------------------------------------------------------
+section('5. On /downloads the album is ONE entry, closed, that opens in album order');
+// ---------------------------------------------------------------------------
+{
+  // One unrelated download beside the album, written the way the app writes
+  // one, so the page has a show of ONE download to keep as a plain row.
+  await js(`(async () => {
+    const url = 'https://example.invalid/other-show/ep-1.mp3';
+    const cache = await caches.open('bmb-downloads-v1');
+    await cache.put(url, new Response(new Blob([new Uint8Array(2048)], { type: 'audio/mpeg' })));
+    const db = await new Promise((res, rej) => { const r = indexedDB.open('BmbDownloadsDB'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    await new Promise((res, rej) => {
+      const tx = db.transaction('downloads', 'readwrite');
+      tx.objectStore('downloads').put({ key: url, enclosureUrl: url, enclosureType: 'audio/mpeg', sizeBytes: 2048,
+        createdAt: Date.now(), itemGuid: 'other-ep-1', feedGuid: 'other-show-guid', feedId: 999001,
+        episodeId: 999002, title: 'A Lone Episode', feedTitle: 'Some Other Show', duration: 60 });
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+    return true;
+  })()`);
+  await send('Page.navigate', { url: `${APP}/downloads` });
+  await until(() => js(`!!document.querySelector('[aria-expanded]')`), 15000);
+  await wait(1000);
+
+  const page0 = await js(`(() => {
+    const groups = [...document.querySelectorAll('li button[aria-expanded]')];
+    const g = groups[0];
+    const li = g ? g.closest('li') : null;
+    const r = g ? g.getBoundingClientRect() : null;
+    return {
+      groups: groups.length,
+      head: g ? g.textContent.replace(/\\s+/g, ' ').trim() : null,
+      expanded: g ? g.getAttribute('aria-expanded') : null,
+      h: r ? Math.round(r.height) : null,
+      showButtons: li ? [...li.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'SHOW').length : null,
+      lone: [...document.querySelectorAll('button[aria-label="Play A Lone Episode"]')].length,
+      tracksVisible: [...document.querySelectorAll('button[aria-label^="Play "]')].map((b) => b.getAttribute('aria-label')).filter((l) => l !== 'Play A Lone Episode').length,
+      count: (document.body.innerText.match(/\\d+ downloads · [^\\n]+/) || [null])[0],
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  })()`);
+  console.log(`  page: ${JSON.stringify(page0)}`);
+  t.equal('the album is ONE entry', page0.groups, 1);
+  t.ok(`...named for the album, with how many and how much`,
+    !!page0.head && /Tinderbox/.test(page0.head) && page0.head.includes(`${TRACKS} downloaded`), page0.head);
+  t.equal('...and it starts CLOSED — no track row is on the page', [page0.expanded, page0.tracksVisible], ['false', 0]);
+  t.equal('...with ONE SHOW for the album, not fourteen', page0.showButtons, 1);
+  t.equal('a show with one download stays a plain row', page0.lone, 1);
+  t.ok('the page count says downloads, not episodes', !!page0.count && page0.count.startsWith(`${TRACKS + 1} downloads`), page0.count);
+  t.ok('...and nothing widens a 390px page', page0.overflow <= 0, `${page0.overflow}px over`);
+
+  await press('/Tinderbox/');
+  await wait(800);
+  const opened = await js(`(() => {
+    const g = document.querySelector('li button[aria-expanded]');
+    const list = g ? document.getElementById(g.getAttribute('aria-controls')) : null;
+    return {
+      expanded: g ? g.getAttribute('aria-expanded') : null,
+      titles: list ? [...list.querySelectorAll('button[aria-label^="Play "]')].map((b) => b.getAttribute('aria-label').slice(5)) : [],
+      showInside: list ? [...list.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'SHOW').length : null,
+    };
+  })()`);
+  t.equal('a press opens it, and says so to a screen reader', opened.expanded, 'true');
+  t.equal(`...showing all ${TRACKS} tracks`, opened.titles.length, TRACKS);
+  // The album page's own order, captured in section 2 — the group must not
+  // shuffle what DOWNLOAD ALBUM took in order.
+  t.ok('...in the album page\'s order, which is the order they were taken',
+    albumOrder.length >= TRACKS && JSON.stringify(opened.titles) === JSON.stringify(albumOrder.slice(0, TRACKS)),
+    `group ${JSON.stringify(opened.titles)}\n         album ${JSON.stringify(albumOrder)}`);
+  t.equal('...and no row inside repeats SHOW', opened.showInside, 0);
+
+  // The group's DELETE removes a whole album with one press, so it asks.
+  const del = await js(`(() => {
+    const b = document.querySelector('button[aria-label="Delete all ${TRACKS} downloads of Tinderbox"]');
+    if (!b) return false; b.click(); return true; })()`);
+  await wait(600);
+  const ask = await js(`(document.body.innerText.match(/Delete ${TRACKS} downloads[^\\n]*/) || [null])[0]`);
+  t.ok('the album\'s DELETE asks first, with the count and the size', del && !!ask && /\(\d+(\.\d)? KB\)\?/.test(ask), String(ask));
+  await press('/^CANCEL$/');
+  await wait(800);
+  t.equal('...and CANCEL deletes nothing', await stored(), TRACKS);
+
+  await js(`document.querySelector('button[aria-label="Delete all ${TRACKS} downloads of Tinderbox"]').click()`);
+  await wait(500);
+  // The answer names the count, so it is told apart from the group's own
+  // DELETE and from the lone row's — all three are on screen at once.
+  t.ok('the answer that deletes the album names its count',
+    await press(`/^DELETE ${TRACKS}$/`), `no button reads DELETE ${TRACKS}`);
+  const gone = await until(async () => ((await stored()) === 0 ? 'gone' : null), 10000);
+  t.equal('DELETE removes every track of the album from the database', gone, 'gone');
+  const cacheLeft = await js(`caches.open('bmb-downloads-v1').then((c) => c.keys()).then((ks) => ks.filter((r) => /cloudfront|op3\\.dev/.test(r.url)).length)`);
+  t.equal('...and every track\'s bytes from the cache', cacheLeft, 0);
+  await wait(800);
+  const after = await js(`({ groups: document.querySelectorAll('li button[aria-expanded]').length,
+    lone: document.querySelectorAll('button[aria-label="Play A Lone Episode"]').length })`);
+  t.equal('...while the other show\'s download stays', after, { groups: 0, lone: 1 });
 }
 
 t.equal('no uncaught exceptions', exceptions, []);

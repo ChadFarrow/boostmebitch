@@ -29,6 +29,11 @@
 // `navigator.storage.estimate()` is simply unavailable, which is a DEAD BUTTON
 // on the device this app is mostly listened on rather than a refusal.
 //
+// `albumPlan` and `groupDownloads` came later, and fail the same quiet way:
+// the first states a spend the press will not make, the second lumps every
+// download that names no show into one nameless entry. Each has its own
+// section below.
+//
 // So the decisions live in an import-free module and this script imports the
 // REAL one under `--experimental-strip-types`. A reimplemented copy here would
 // stay green while the shipping code drifted.
@@ -47,7 +52,7 @@
 // invent: the double redirect, the `.wav`, the query string that is part of the
 // signature.
 
-import { albumPlan, chaptersRequestUrl, downloadFailureMessage, downloadKey, isDownloadable, proxiedAudioUrl, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
+import { albumPlan, groupDownloads, chaptersRequestUrl, downloadFailureMessage, downloadKey, isDownloadable, proxiedAudioUrl, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
 import { downloadEpisodeId, isHlsUrl } from '../lib/util.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -105,6 +110,13 @@ function checkMsg(label, args, expected, { alsoNaive = false } = {}) {
 function checkAlbum(label, tracks, expected, { alsoNaive = false } = {}) {
   compare(label, albumPlan(tracks), expected);
   vectors.push({ label, kind: 'album', args: [tracks], alsoNaive });
+}
+
+/** A groupDownloads vector. Compared as KEYS, which is what the page renders by. */
+const shape = (items) => items.map((it) => (it.kind === 'one' ? it.record.key : { [it.id]: it.records.map((r) => r.key) }));
+function checkGroups(label, records, expected, { alsoNaive = false } = {}) {
+  compare(label, shape(groupDownloads(records)), expected);
+  vectors.push({ label, kind: 'groups', args: [records], alsoNaive });
 }
 
 function section(name) { console.log(`\n${name}`); }
@@ -531,6 +543,57 @@ section('DOWNLOAD ALBUM states the spend the press will make, and nothing else')
 }
 
 // ---------------------------------------------------------------------------
+section('/downloads groups a show\'s downloads into ONE entry, and nothing else');
+// ---------------------------------------------------------------------------
+{
+  // From the device: the first DOWNLOAD ALBUM on Tinderbox left fourteen rows,
+  // newest first, each reading "Tinderbox". The keys here are shortened; what
+  // matters is the feed each names and the order each was taken in.
+  const TB = '537df90e-0cc4-535b-84d0-dcb3ca87f1f8';
+  const tb = (key, createdAt) => ({ key, feedGuid: TB, feedId: 6422170, createdAt });
+  const other = (key, createdAt, feedGuid) => ({ key, feedGuid, createdAt });
+
+  checkGroups('an album is ONE entry, its tracks in the order they were taken',
+    // As `listDownloads` hands them over: newest first.
+    [tb('creatives', 1400), tb('density', 1300), tb('time', 1100), tb('analysis', 1000)],
+    [{ [`guid:${TB}`]: ['analysis', 'time', 'density', 'creatives'] }]);
+
+  checkGroups('a show with ONE download stays a plain row',
+    [tb('time', 1100), other('ep-9', 1050, 'podcast-a')],
+    ['time', 'ep-9']);
+
+  // The obvious version groups by `r.feedGuid`, and every record without one
+  // lands in a single bucket keyed `undefined`.
+  checkGroups('downloads that name no show are never lumped together',
+    [{ key: 'orphan-a', createdAt: 30 }, { key: 'orphan-b', createdAt: 20 }, { key: 'orphan-c', createdAt: 10, feedId: 0 }],
+    ['orphan-a', 'orphan-b', 'orphan-c']);
+
+  checkGroups('a record with no guid still groups by its feed id',
+    [{ key: 'old-2', feedId: 77, createdAt: 20 }, { key: 'old-1', feedId: 77, createdAt: 10 }],
+    [{ 'id:77': ['old-1', 'old-2'] }]);
+
+  // The page stays newest first: a show sits where its NEWEST download would.
+  checkGroups('a show is placed by its newest download, among the rows',
+    [other('fresh', 500, 'podcast-b'), tb('time', 400), other('mid', 300, 'podcast-c'), tb('analysis', 100)],
+    ['fresh', { [`guid:${TB}`]: ['analysis', 'time'] }, 'mid']);
+
+  checkGroups('two shows stay two entries',
+    [other('b2', 40, 'show-b'), other('a2', 30, 'show-a'), other('b1', 20, 'show-b'), other('a1', 10, 'show-a')],
+    [{ 'guid:show-b': ['b1', 'b2'] }, { 'guid:show-a': ['a1', 'a2'] }]);
+
+  // Same millisecond — which DOWNLOAD ALBUM on a fast connection can produce.
+  // Without a tiebreak the order would depend on the order IndexedDB answered.
+  checkGroups('a tie is broken by the key, so the page never reorders itself',
+    [tb('zeta', 100), tb('alpha', 100)],
+    [{ [`guid:${TB}`]: ['alpha', 'zeta'] }]);
+
+  checkGroups('an empty library is an empty list',
+    [], [],
+    // Exempt: the one input every version of this gets right.
+    { alsoNaive: true });
+}
+
+// ---------------------------------------------------------------------------
 section('Every vector above is replayed against the obvious wrong version');
 // ---------------------------------------------------------------------------
 {
@@ -566,6 +629,13 @@ section('Every vector above is replayed against the obvious wrong version');
   const naiveProxy = (u) => `/api/audio?url=${u}`;
   // What someone writes when "download the album" looks like a loop: every row,
   // and the sum of every `<enclosure length>` the feed printed.
+  // What someone writes when grouping looks like a one-liner: bucket by
+  // `feedGuid`, emit every bucket as a group, in the order met.
+  const naiveGroups = (records) => {
+    const m = new Map();
+    for (const r of records) m.set(r.feedGuid, [...(m.get(r.feedGuid) ?? []), r]);
+    return [...m.entries()].map(([g, rs]) => ({ kind: 'show', id: `guid:${g}`, records: rs }));
+  };
   const naiveAlbum = (tracks) => ({
     fetch: tracks.map((_, i) => i),
     knownBytes: tracks.reduce((n, t) => n + (t.bytes || 0), 0),
@@ -588,6 +658,7 @@ section('Every vector above is replayed against the obvious wrong version');
         case 'msg': return JSON.stringify(real ? downloadFailureMessage(...v.args) : naiveMsg(...v.args));
         case 'proxy': return JSON.stringify(real ? proxiedAudioUrl(...v.args) : naiveProxy(...v.args));
         case 'album': return JSON.stringify(real ? albumPlan(...v.args) : naiveAlbum(...v.args));
+        case 'groups': return JSON.stringify(shape(real ? groupDownloads(...v.args) : naiveGroups(...v.args)));
         case 'idem': {
           // The property, not the value: does re-deriving change the answer?
           const f = real ? downloadKey : naiveKey;

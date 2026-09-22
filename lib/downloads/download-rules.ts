@@ -332,3 +332,79 @@ export function albumPlan(tracks: AlbumTrack[]): AlbumPlan {
   });
   return plan;
 }
+
+/** As much of a `DownloadRecord` as grouping reads. Structural, because this
+ *  module may import nothing — not even that type. */
+export interface GroupableDownload {
+  key: string;
+  feedGuid?: string;
+  feedId?: number;
+  createdAt: number;
+}
+
+/** One entry on `/downloads`: a download on its own, or a show's downloads. */
+export type DownloadListItem<T extends GroupableDownload> =
+  | { kind: 'one'; record: T }
+  | { kind: 'show'; id: string; records: T[] };
+
+/**
+ * `/downloads` as the listener reads it: a show with two or more downloads is
+ * ONE entry that opens, and everything else is a row.
+ *
+ * Asked for from an iPhone after the first DOWNLOAD ALBUM: fourteen Tinderbox
+ * rows, each saying "Tinderbox", pushed every other download off the screen.
+ *
+ * **The show is the item's OWN parent feed** — `feedGuid`, else `feedId` — for
+ * the reason `DownloadRecord.feedGuid` documents: a `musicL` playlist lists
+ * tracks from other feeds, so its tracks group under their real albums rather
+ * than under the playlist that happened to list them.
+ *
+ * **A record that names no show is never grouped.** The obvious version —
+ * group by `r.feedGuid` — puts every record without one into a single bucket
+ * keyed `undefined`, so unrelated downloads from different shows arrive as one
+ * nameless entry. `feedId` must be a positive integer to count, because `0` is
+ * what a missing number becomes on the way through a form.
+ *
+ * **Orders.** Entries are newest first by their NEWEST download, so the page
+ * still opens on what was just saved. Inside a show, downloads are in the order
+ * they were TAKEN — DOWNLOAD ALBUM queues in the album page's order, so an album
+ * downloaded whole reads in album order, and it needs no field the records
+ * already on a phone do not have. An album taken one track at a time out of
+ * order reads in that order; the record holds no track number to do better.
+ * Every tie falls to the key, so the page never reorders between two renders.
+ */
+export function groupDownloads<T extends GroupableDownload>(records: T[]): DownloadListItem<T>[] {
+  const showOf = (r: T): string | null => {
+    if (r.feedGuid) return `guid:${r.feedGuid}`;
+    if (typeof r.feedId === 'number' && Number.isInteger(r.feedId) && r.feedId > 0) return `id:${r.feedId}`;
+    return null;
+  };
+  const byKey = (a: T, b: T) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
+  const shows = new Map<string, T[]>();
+  for (const r of records) {
+    const id = showOf(r);
+    if (id) shows.set(id, [...(shows.get(id) ?? []), r]);
+  }
+
+  const items: Array<{ item: DownloadListItem<T>; newest: number; tie: string }> = [];
+  for (const r of records) {
+    const id = showOf(r);
+    const members = id ? shows.get(id)! : null;
+    if (!id || !members || members.length < 2) {
+      items.push({ item: { kind: 'one', record: r }, newest: r.createdAt, tie: r.key });
+      continue;
+    }
+    // Once per show: the first member met emits it.
+    if (members[0] !== r) continue;
+    const inOrder = [...members].sort((a, b) => a.createdAt - b.createdAt || byKey(a, b));
+    items.push({
+      item: { kind: 'show', id, records: inOrder },
+      newest: Math.max(...members.map((m) => m.createdAt)),
+      tie: id,
+    });
+  }
+  return items
+    .sort((a, b) => b.newest - a.newest || (a.tie < b.tie ? -1 : a.tie > b.tie ? 1 : 0))
+    .map((x) => x.item);
+}

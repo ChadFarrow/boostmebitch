@@ -345,6 +345,54 @@ a moment later, which is what made it worse.
 **DELETE ALL is a two-press confirm, not `window.confirm`.** In the installed PWA a
 native dialog is a system sheet over the app.
 
+### A show with two or more downloads is ONE entry that opens
+
+Asked for from an iPhone right after the first DOWNLOAD ALBUM: *"In downloads can
+the album be a single item that expands?"* — fourteen rows, each reading
+"Tinderbox", had pushed every other download off the screen. `groupDownloads`
+(`download-rules.ts`, pinned by `check:downloads`) decides the entries and both
+orders; `<ShowGroup>` in `components/downloads-page.tsx` only renders them.
+
+- **Any show, not only an album.** The rule needs nothing a record on a phone does
+  not already carry, so the fourteen tracks that prompted it grouped the moment
+  it shipped. A podcast with two downloads groups the same way; a show with one
+  stays a plain row.
+- **The show is the item's OWN parent feed** — `feedGuid`, else a positive
+  `feedId` — so a `musicL` playlist's tracks group under their real albums, for
+  the reason `DownloadRecord.feedGuid` documents. **A record that names no show
+  is never grouped.** The obvious version, bucketing on `r.feedGuid`, lumps every
+  such record into one nameless entry keyed `undefined`; that is a vector.
+- **Two orders.** Entries are newest first by their NEWEST download, so the page
+  still opens on what was just saved. Inside, downloads are in the order they
+  were TAKEN — DOWNLOAD ALBUM queues in the album page's order, so a whole album
+  reads as the album. An album taken one track at a time, out of order, reads in
+  that order: the record holds no track number to do better, and the ones already
+  on phones never will. Every tie falls to the key, so nothing reorders between
+  renders.
+- **It starts closed, and the state is not kept.** Closing is the request; every
+  visit opens on one line per show.
+- **SHOW once, on the group.** The rows inside drop SHOW and the show's name,
+  which the group carries once, and the titles get that width back.
+- **The group's DELETE asks**, in a sentence with the count and the size, because
+  one press removes an album; a row's DELETE removes one file and does not. The
+  answer reads **`DELETE 14`**, not `DELETE`: with the question open, three
+  buttons on screen would otherwise say DELETE — the answer, the group's own, and
+  the next row's — and the e2e found that out by pressing the lone row's instead,
+  deleting a download it had not been asked about. Each row inside keeps its own
+  DELETE, which stays the only way an orphaned download is ever removed.
+- **The border marks the group holding what is playing**, so a closed group still
+  says where the current track is.
+- **The count line wraps rather than truncates**, the episode row's rule: at 390px
+  a truncate ate the size, which is the number someone reads before deleting a
+  whole album. The disclosure arrow leads the name, the way a `<details>` summary
+  draws it, rather than taking a column of its own.
+
+`npm run e2e:album` section 5 opens `/downloads` on the fourteen tracks the album
+sections actually downloaded, plus one lone episode written the way the app writes
+one, and checks all of the above — including that the open group lists the tracks
+in the order the album page listed them, captured from that page earlier in the
+run.
+
 The dock is now five tabs. Measured at 390 px under CDP device emulation: 78 × 56
 each, so height is still the binding dimension at 56 > 44. `<TabBar>`'s own comment
 gives the number to check against — the floor is not threatened until **seven**.

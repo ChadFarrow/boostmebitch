@@ -848,6 +848,17 @@ section('12. Two downloads of one show, back to back: the first one\'s time stay
   check('two WAV downloads seeded', seeded >= 2, true);
   await p2.send('Page.navigate', { url: `${APP}/downloads` });
   await wait(4000);
+  // Two downloads of ONE show are one CLOSED entry on /downloads now
+  // (docs/downloads.md, "A show with two or more downloads is ONE entry that
+  // opens"), so the rows are pressed the way a person reaches them: open the
+  // show first. Before grouping, this section found both rows on the page.
+  check('the two downloads of one show are one closed entry, and it opens', await p2.js(`(() => {
+    const g = [...document.querySelectorAll('li button[aria-expanded]')].find((b) => b.textContent.includes('E2E Pair Show'));
+    if (!g || g.getAttribute('aria-expanded') !== 'false') return false;
+    g.click();
+    return true;
+  })()`), true);
+  await wait(600);
 
   const playRow = (title) => p2.js(`(() => { const b = document.querySelector('button[aria-label="Play ${title}"]'); b && b.click(); return !!b; })()`);
   const audio = () => p2.js(`(() => { const a = document.querySelector('audio'); return a ? { t: a.currentTime, paused: a.paused, blob: a.src.startsWith('blob:'), ready: a.readyState } : null; })()`);
