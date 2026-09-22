@@ -147,9 +147,26 @@ const until = async (fn, ms) => {
   const end = Date.now() + ms;
   for (;;) { const v = await fn(); if (v || Date.now() > end) return v; await wait(250); }
 };
+/**
+ * Open the album page and wait for the control.
+ *
+ * STOPS THE RUN if the control never appears. Every later check needs this
+ * page, so carrying on turns one slow or failed load into twenty-odd FAILs that
+ * all look like feature faults. That happened once on 2026-09-22 — 26 of 39
+ * failed on a first run, the next five passed, and the log kept was too short
+ * to say why. This line is what the next one will say instead.
+ */
 const open = async () => {
   await send('Page.navigate', { url: `${APP}/?podcast=${ALBUM_GUID}` });
-  return until(async () => (await control()).button, 20000);
+  const shown = await until(async () => (await control()).button, 45000);
+  if (!shown) {
+    const why = await js(`({ url: location.href, rows: document.querySelectorAll('ul.divide-y > li').length,
+      text: document.body.innerText.slice(0, 300) })`);
+    t.fail('the album page rendered DOWNLOAD ALBUM within 45 s', JSON.stringify(why));
+    console.log(`\nStopped: every later section needs that page. ${t.fails} of ${t.count} checks FAILED.`);
+    await exit(1);
+  }
+  return shown;
 };
 
 // ---------------------------------------------------------------------------
