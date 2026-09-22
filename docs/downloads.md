@@ -523,6 +523,9 @@ generates in the page, with the second one's local read delayed: the resume
 writer must never save the first episode's time under the second (docs/ui.md,
 Resume position).
 
+`npm run e2e:album` drives DOWNLOAD ALBUM on a real album with the audio
+answered by CDP — see "Downloading an album" below.
+
 ## Failure is a sentence, not a ✗
 
 Every refusal is rendered in words. A guard that silently withholds is
@@ -615,6 +618,92 @@ bytes are recoverable.
 
 ---
 
+## Downloading an album
+
+**A `music` album offers DOWNLOAD ALBUM, and nothing else does.** Asked for from
+an iPhone on Tinderbox by Nate Johnivan — 14 tracks, 43,051,087 bytes: *"There
+should be an option to download an entire album."* Bulk download was on the
+"deliberately not here" list below, and the reason it gave — it "spends the
+listener's data without a screen in front of them" — is what the design answers
+rather than overrides:
+
+- **The total is on the control before the first press**: `↓ DOWNLOAD ALBUM
+  43 MB`, with the track count in its accessible name.
+- **The first press spends nothing.** It asks — *"Download 14 tracks (43 MB)?"*
+  — and only DOWNLOAD queues. A mis-tap on a phone costs a sentence.
+- **CANCEL and STOP are different words for different things.** CANCEL answers
+  the question, and nothing has been spent. STOP halts a running album and
+  **keeps what finished**: deleting a downloaded track is its own decision, with
+  its own control on every row.
+
+### One plan feeds the number and the press
+
+`albumPlan` (`download-rules.ts`, pinned by `check:downloads`) decides which
+tracks a press fetches and what that costs, and `DownloadManager.planAlbum` is
+its only caller — the control renders it, and `downloadAlbum` asks it AGAIN at
+the moment of the press, so a track that finished while the question was on
+screen is not queued twice. It is the boost modal's rule pointed at bytes: a
+total the surface computed and a list the engine computed can disagree, and then
+the listener agreed to one spend and got another.
+
+The obvious version — every row, and the sum of every `<enclosure length>` — is
+wrong four ways, each a vector proved against that `naive()`:
+
+| The naive version… | …and why that is wrong |
+|---|---|
+| charges a track already on the device | the second press on a half-downloaded album states a spend it will not make |
+| counts one URL listed twice as two files | `download()` refuses a second copy by key, so it is charged twice and fetched once |
+| includes a live item or an HLS manifest | `isDownloadable` is the one answer, so a row and its album cannot disagree |
+| treats an absent or `0` size as zero | understates the spend by exactly the tracks nobody measured; the control shows `+` instead |
+
+After STOP, or after a partial failure, the control reads `DOWNLOAD 11 MORE
+34 MB` — the count, because a half-downloaded album is exactly when the listener
+needs it — and its question names *"the 11 tracks not on this device"*.
+
+### It is not a new download path
+
+Each track goes through `download()` exactly as a press on its own row would, so
+the queue still runs **one at a time**, every per-track refusal still applies,
+and a failure lands on the record the row's own control reads. The album adds
+two things and no more:
+
+- **One room check for the whole album, before anything is queued.** Each
+  `download()` checks its own file, and that alone lets an album that cannot fit
+  download seven tracks of twelve and then refuse — spending the data and
+  leaving no album. `'unknown'` still allows, for the reason on `roomVerdict`.
+  The refusal is a sentence: *"Not enough space for this album (43 MB) — remove
+  a download to make room."*
+- **Failures are counted and said**: *"2 tracks could not download: <the first
+  track's own message>"*, and the same control retries them.
+
+### Why albums only
+
+- **A `musicL` playlist is paged**, so "the whole thing" is not known to the
+  screen that would offer it, and its tracks live in other feeds.
+- **A podcast feed can be hundreds of episodes** at ~160 MB each, where
+  "download everything" is a way to fill a phone.
+- **An album of one track gets no control** — its row already has one.
+
+The control waits for `downloadManager.ready()`: before the IndexedDB read lands,
+every track reads as not downloaded, so it would offer the whole album's size
+over an album already on the device and then correct itself. It sits in the
+list's own row beside the order toggle, not among the header's tiles — that row
+is the show's actions and is measured tight at 390px (docs/ui.md).
+
+### Proof
+
+`npm run e2e:album` drives Tinderbox in a real browser at 390px. Podcast Index,
+the feed and the engine are real; the enclosure requests are paused by CDP
+`Fetch` and answered with 4 KB after 400 ms, so a run costs 56 KB instead of
+43 MB and a parallel queue would show as more than one request in flight. It
+checks: a 90 MB quota refuses the album before one request (every track fits
+alone, the album does not — so only the album-wide check can refuse there); the
+first press spends nothing; STOP keeps the finished tracks and requests nothing
+more; the rest fetches only what was missing, never more than one at a time,
+and ends with 14 records in `BmbDownloadsDB`. Against one build with no
+album-wide room check, no question, and a pool in place of the queue, it fails
+14 of its 22 checks, those three directly.
+
 ## One at a time
 
 The queue runs a single download. StableKraft runs three, and three is right for a
@@ -631,8 +720,10 @@ something still waiting is honoured and never issues a fetch.
 
 - **Offline boosting and an offline payment queue.** The value block is stored so a
   boost works once the network is back; nothing is queued while it is not.
-- **Bulk download and auto-download.** Both spend the listener's data without a
-  screen in front of them.
+- **Auto-download, and bulk download of anything but an album.** Both spend the
+  listener's data without a screen in front of them. DOWNLOAD ALBUM is the one
+  exception, and it is one because it puts that screen back: the total before
+  the press, and a question before the spend (above).
 - **Range requests and resuming a partial download.** (Not the playback position,
   which docs/ui.md calls "resume".) It needs partial bytes kept somewhere, and a
   half-written entry is the class of bug the Cache API's atomic `put` avoids

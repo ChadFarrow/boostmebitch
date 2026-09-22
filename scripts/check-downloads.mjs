@@ -47,7 +47,7 @@
 // invent: the double redirect, the `.wav`, the query string that is part of the
 // signature.
 
-import { chaptersRequestUrl, downloadFailureMessage, downloadKey, isDownloadable, proxiedAudioUrl, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
+import { albumPlan, chaptersRequestUrl, downloadFailureMessage, downloadKey, isDownloadable, proxiedAudioUrl, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
 import { downloadEpisodeId, isHlsUrl } from '../lib/util.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -99,6 +99,12 @@ function checkProxy(label, args, expected, { alsoNaive = false } = {}) {
 function checkMsg(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, downloadFailureMessage(...args), expected);
   vectors.push({ label, kind: 'msg', args, alsoNaive });
+}
+
+/** An albumPlan vector. The tracks are the whole argument, recorded as-is. */
+function checkAlbum(label, tracks, expected, { alsoNaive = false } = {}) {
+  compare(label, albumPlan(tracks), expected);
+  vectors.push({ label, kind: 'album', args: [tracks], alsoNaive });
 }
 
 function section(name) { console.log(`\n${name}`); }
@@ -456,6 +462,75 @@ section('A blocked host and a dead network are told apart, and named');
 }
 
 // ---------------------------------------------------------------------------
+section('DOWNLOAD ALBUM states the spend the press will make, and nothing else');
+// ---------------------------------------------------------------------------
+{
+  // From the WIRE: Tinderbox by Nate Johnivan (podcast:guid
+  // 537df90e-0cc4-535b-84d0-dcb3ca87f1f8), the album the feature was asked for
+  // on, read through /api/feed on 2026-09-22 — 14 tracks, 43,051,087 bytes, the
+  // first on CloudFront directly and the rest behind op3.dev. Three of them are
+  // enough to make every rule below visible.
+  const T1 = { url: 'https://d12wklypp119aj.cloudfront.net/track/eeb873c6-3c82-4c2e-ac8c-9cd3368f446e', bytes: 5549180 };
+  const T2 = { url: 'https://op3.dev/e,pg=537df90e-0cc4-535b-84d0-dcb3ca87f1f8/https://d12wklypp119aj.cloudfront.net/track/time', bytes: 1858990 };
+  const T3 = { url: 'https://op3.dev/e,pg=537df90e-0cc4-535b-84d0-dcb3ca87f1f8/https://d12wklypp119aj.cloudfront.net/track/bad-people', bytes: 2113539 };
+  const fresh = (t) => ({ ...t, state: 'none' });
+
+  // Exempt: nothing on the device, every size stated, no duplicates — the one
+  // album where "fetch everything, add up every length" is right. It is the
+  // must-still-work half: a plan that refused the ordinary case would be worse
+  // than no plan.
+  checkAlbum('a fresh album: every track, and the sum of their sizes',
+    [fresh(T1), fresh(T2), fresh(T3)],
+    { fetch: [0, 1, 2], knownBytes: 9521709, unknownSize: 0, done: 0, active: 0, total: 3 },
+    { alsoNaive: true });
+
+  // The second press on a half-downloaded album. Counting the finished track
+  // would state 5.5 MB the press will never spend.
+  checkAlbum('a track already on the device is neither fetched nor charged',
+    [{ ...T1, state: 'done' }, fresh(T2), fresh(T3)],
+    { fetch: [1, 2], knownBytes: 3972529, unknownSize: 0, done: 1, active: 0, total: 3 });
+
+  // Pressed while its own row's download is still running.
+  checkAlbum('a track downloading right now is not queued a second time',
+    [fresh(T1), { ...T2, state: 'active' }, fresh(T3)],
+    { fetch: [0, 2], knownBytes: 7662719, unknownSize: 0, done: 0, active: 1, total: 3 });
+
+  // `download()` refuses a second copy by key, so a feed that lists one file
+  // twice would be charged twice and fetched once.
+  checkAlbum('the same URL listed twice is ONE file',
+    [fresh(T1), fresh(T2), fresh(T1)],
+    { fetch: [0, 1], knownBytes: 7408170, unknownSize: 0, done: 0, active: 0, total: 2 });
+
+  // Same file under `downloadKey`, which upgrades http. The album and the
+  // single-track button must agree about what counts as one file.
+  checkAlbum('an http URL and its https twin are one file, by downloadKey',
+    [fresh(T1), fresh({ ...T1, url: T1.url.replace('https:', 'http:') })],
+    { fetch: [0], knownBytes: 5549180, unknownSize: 0, done: 0, active: 0, total: 1 });
+
+  // The single-track rule: "0 MB" beside a real file is worse than silence, and
+  // a sum that treats a missing size as nothing understates the spend by
+  // exactly the tracks nobody measured.
+  checkAlbum('an absent, 0, NaN or negative size is UNKNOWN, never zero',
+    [fresh(T1), fresh({ url: `${T2.url}?a` }), fresh({ url: `${T2.url}?b`, bytes: 0 }),
+      fresh({ url: `${T2.url}?c`, bytes: Number.NaN }), fresh({ url: `${T2.url}?d`, bytes: -1 })],
+    { fetch: [0, 1, 2, 3, 4], knownBytes: 5549180, unknownSize: 4, done: 0, active: 0, total: 5 });
+
+  // `isDownloadable` is the one answer, so a row and its album cannot disagree.
+  checkAlbum('a live item and an HLS manifest are not part of the album',
+    [fresh(T1), { url: LIVE_STREAM, liveStatus: 'pending', state: 'none' },
+      { url: 'https://cdn.example.com/show/stream.m3u8', state: 'none' }, fresh(T3)],
+    { fetch: [0, 3], knownBytes: 7662719, unknownSize: 0, done: 0, active: 0, total: 2 });
+
+  checkAlbum('an album with nothing downloadable plans nothing',
+    [{ url: '', state: 'none' }, { url: null, state: 'none' }, { url: 'data:audio/mpeg;base64,AAAA', state: 'none' }],
+    { fetch: [], knownBytes: 0, unknownSize: 0, done: 0, active: 0, total: 0 });
+
+  checkAlbum('a whole album already on the device plans nothing to fetch',
+    [{ ...T1, state: 'done' }, { ...T2, state: 'done' }],
+    { fetch: [], knownBytes: 0, unknownSize: 0, done: 2, active: 0, total: 2 });
+}
+
+// ---------------------------------------------------------------------------
 section('Every vector above is replayed against the obvious wrong version');
 // ---------------------------------------------------------------------------
 {
@@ -489,6 +564,16 @@ section('Every vector above is replayed against the obvious wrong version');
   // The obvious wrong one: append the URL raw, so the feed author's own query
   // string becomes parameters on OUR route.
   const naiveProxy = (u) => `/api/audio?url=${u}`;
+  // What someone writes when "download the album" looks like a loop: every row,
+  // and the sum of every `<enclosure length>` the feed printed.
+  const naiveAlbum = (tracks) => ({
+    fetch: tracks.map((_, i) => i),
+    knownBytes: tracks.reduce((n, t) => n + (t.bytes || 0), 0),
+    unknownSize: 0,
+    done: 0,
+    active: 0,
+    total: tracks.length,
+  });
 
   const call = (impl, v) => {
     try {
@@ -502,6 +587,7 @@ section('Every vector above is replayed against the obvious wrong version');
         case 'episodeId': return JSON.stringify(real ? downloadEpisodeId(...v.args) : naiveEpisodeId(...v.args));
         case 'msg': return JSON.stringify(real ? downloadFailureMessage(...v.args) : naiveMsg(...v.args));
         case 'proxy': return JSON.stringify(real ? proxiedAudioUrl(...v.args) : naiveProxy(...v.args));
+        case 'album': return JSON.stringify(real ? albumPlan(...v.args) : naiveAlbum(...v.args));
         case 'idem': {
           // The property, not the value: does re-deriving change the answer?
           const f = real ? downloadKey : naiveKey;

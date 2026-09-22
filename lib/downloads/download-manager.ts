@@ -1,6 +1,7 @@
 import { artCandidates } from '../util';
 import type { Episode, Podcast } from '../types';
-import { chaptersRequestUrl, downloadKey, isDownloadable, transcriptRequestUrl } from './download-rules';
+import { albumPlan, chaptersRequestUrl, downloadKey, isDownloadable, transcriptRequestUrl } from './download-rules';
+import type { AlbumPlan, AlbumTrackState } from './download-rules';
 import * as cache from './downloads-cache';
 import * as db from './downloads-db';
 import type { DownloadRecord } from './downloads-db';
@@ -56,6 +57,7 @@ export interface DownloadsBackend {
   cacheDoc: typeof cache.cacheDoc;
   deleteDocs: typeof cache.deleteDocs;
   requestPersistence: typeof cache.requestPersistence;
+  hasRoomFor: typeof cache.hasRoomFor;
   putRecord: typeof db.putRecord;
   getAllRecords: typeof db.getAllRecords;
   deleteRecord: typeof db.deleteRecord;
@@ -73,6 +75,7 @@ const realBackend: DownloadsBackend = {
   cacheDoc: cache.cacheDoc,
   deleteDocs: cache.deleteDocs,
   requestPersistence: cache.requestPersistence,
+  hasRoomFor: cache.hasRoomFor,
   putRecord: db.putRecord,
   getAllRecords: db.getAllRecords,
   deleteRecord: db.deleteRecord,
@@ -418,6 +421,80 @@ export class DownloadManager {
 
   async cancel(key: string): Promise<void> {
     this.controllers.get(key)?.abort();
+  }
+
+  // --- albums ----------------------------------------------------------------
+
+  /**
+   * What DOWNLOAD ALBUM would fetch right now, and what it would cost.
+   *
+   * The control renders this and `downloadAlbum` asks it again at the moment of
+   * the press, so the number the listener agreed to and the list that is
+   * queued come from ONE function — see `albumPlan` in download-rules.ts.
+   *
+   * Each track is judged by `getEpisodeState`, which goes through
+   * `storedKeyFor`: a track whose URL moved since it was downloaded is still
+   * `'done'`, and is not charged or fetched again.
+   */
+  planAlbum(episodes: Episode[]): AlbumPlan {
+    return albumPlan(episodes.map((e) => ({
+      url: e.enclosureUrl,
+      liveStatus: e.liveStatus,
+      bytes: e.enclosureLength,
+      state: this.albumTrackState(e),
+    })));
+  }
+
+  private albumTrackState(episode: Episode): AlbumTrackState {
+    const status = this.getEpisodeState(episode).status;
+    if (status === 'downloaded') return 'done';
+    if (status === 'queued' || status === 'downloading') return 'active';
+    return 'none';
+  }
+
+  /**
+   * Queue every track of an album that is not already on the device.
+   *
+   * **NOT A NEW PATH.** Each track goes through `download()` exactly as a press
+   * on its own button would, so the queue still runs ONE at a time, every
+   * per-track refusal still applies, and a failure lands on the same record the
+   * row's own button reads. This method adds two things and no more:
+   *
+   * - **One room check for the WHOLE album, before anything is queued.** Each
+   *   `download()` checks its own file, which alone would let an album that
+   *   cannot fit download seven tracks of twelve and then refuse — spending the
+   *   data and leaving no album. `'unknown'` still allows, for the reason on
+   *   `roomVerdict`.
+   * - **The plan is asked again here**, not taken from the caller, so a track
+   *   that finished while the confirmation was on screen is not queued twice.
+   *
+   * Hydrates first for the same reason `download()` does: a press that lands
+   * before the IndexedDB read would see every track as not downloaded.
+   */
+  async downloadAlbum(episodes: Episode[], podcast?: Podcast | null): Promise<'queued' | 'no-room' | 'nothing'> {
+    await this.hydrate();
+    const plan = this.planAlbum(episodes);
+    if (!plan.fetch.length) return 'nothing';
+    if (plan.knownBytes > 0 && (await this.backend.hasRoomFor(plan.knownBytes)) === 'no') return 'no-room';
+    // Not awaited: each resolves only when its own download does, and the
+    // queue — not this loop — is what keeps them one at a time.
+    for (const i of plan.fetch) void this.download(episodes[i], podcast);
+    return 'queued';
+  }
+
+  /**
+   * Stop every track of this album that is still waiting or downloading.
+   *
+   * What is already stored STAYS. Cancelling is "stop spending", not "undo":
+   * a track that finished is something the listener now has, and deleting it
+   * is a separate decision with its own control on every row.
+   */
+  cancelAlbum(episodes: Episode[]): void {
+    for (const e of episodes) {
+      if (this.albumTrackState(e) !== 'active') continue;
+      const key = this.storedKeyFor(e);
+      if (key) void this.cancel(key);
+    }
   }
 
   async remove(key: string): Promise<void> {

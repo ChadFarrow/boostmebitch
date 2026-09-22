@@ -460,6 +460,8 @@ A `<Chip>` above the list: `↓ NEWEST FIRST` / `↑ OLDEST FIRST`. Per show, re
 
 **No control where there is no choice** (`<RailPicker>`'s rule): hidden on a `musicL` playlist, whose pages are *fetched* so the array is a prefix of the real list, and hidden when there are fewer than two non-live rows. The memo re-checks the playlist medium rather than trusting the hidden control, so a flag left from the previous show cannot reverse the first playlist opened after it. Flipping resets the reveal to 10, for the reason `<FavoritesPage>`'s reset key includes its sort: after a flip, "revealed 200" names a different 200.
 
+**On a `music` album this row also holds DOWNLOAD ALBUM** (`components/album-download.tsx`), beside the chip rather than among the header's tiles: that row is the show's actions, measured tight at 390px, and this is an action on the LIST. `canReverse` is true for every album of two tracks or more, which is exactly when that control renders, so the row never exists for it alone. Measured at 390px: 26.5px tall, and the row wraps without widening the page. Its rules are in `docs/downloads.md`, "Downloading an album".
+
 **The state is seeded in an EFFECT, not a `useState` initializer.** This list reaches server-rendered routes, and reading storage during the first render is the mismatch `<FavoritesPage>`'s `mounted` gate exists for. `<EpisodeList>` read no storage at all before this, so the hazard is new to it.
 
 **A related latent bug went with it**: the fullscreen album tracklist numbered rows `i + 1`, which only ever agreed with the track number by coincidence of the sort — it now reads the feed's `<podcast:episode>` with position as the fallback. Reversing would have made it label track 1 as "12".

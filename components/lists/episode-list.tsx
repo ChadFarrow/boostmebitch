@@ -34,6 +34,7 @@ import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
 import { DownloadButton } from '../download-button';
+import { AlbumDownload } from '../album-download';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
@@ -728,6 +729,15 @@ export function EpisodeList({
           >
             {oldestFirst ? '↑ oldest first' : '↓ newest first'}
           </Chip>
+          {/* DOWNLOAD ALBUM lives in THIS row, beside the order toggle, and not
+              in the header's tile row above. That row is the show's actions and
+              docs/ui.md measures it tight at 390px — a sixth tile means
+              re-measuring the whole cluster. This is an action on the LIST, so
+              it sits over the list. `canReverse` is true for any album of two
+              tracks or more, which is exactly when this control renders. */}
+          {isMusic && !isPlaylist && data.podcast && (
+            <AlbumDownload episodes={orderedEpisodes} podcast={data.podcast} />
+          )}
           {/* THE NOTICE MOVES, and that is the point rather than a nicety.
               Newest-first, a truncated feed simply ends early and the sentence
               belongs at the bottom, where the reader arrives at it. Reversed,

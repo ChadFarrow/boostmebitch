@@ -249,3 +249,86 @@ export function downloadFailureMessage(host: string, reachable: boolean): string
     ? `${where} does not let other apps save its audio. You can still play and boost this episode.`
     : `No connection — this device could not reach ${where}.`;
 }
+
+/**
+ * Where one track of an album stands, as far as downloading it is concerned.
+ *
+ * `'active'` is queued or downloading. `'none'` includes a FAILED track, because
+ * pressing the album control again is how a failure is retried.
+ */
+export type AlbumTrackState = 'none' | 'active' | 'done';
+
+export interface AlbumTrack {
+  /** The enclosure URL as the feed wrote it. */
+  url: string | null | undefined;
+  liveStatus?: string | null;
+  /** The feed's `<enclosure length>` — a HINT, routinely absent or `0`. */
+  bytes?: number | null;
+  state: AlbumTrackState;
+}
+
+export interface AlbumPlan {
+  /** Indexes into the input, in the order given, of the tracks a press fetches. */
+  fetch: number[];
+  /** The summed size of `fetch`, counting only the tracks that state one. */
+  knownBytes: number;
+  /** How many of `fetch` state no usable size. */
+  unknownSize: number;
+  /** Tracks already on the device. */
+  done: number;
+  /** Tracks queued or downloading right now. */
+  active: number;
+  /** Distinct downloadable tracks: `fetch.length + done + active`. */
+  total: number;
+}
+
+/**
+ * What pressing DOWNLOAD ALBUM would fetch, and what it would cost.
+ *
+ * **One plan feeds both the number on the control and the press**, which is the
+ * boost modal's rule pointed at data instead of sats: a total computed by the
+ * surface and a list computed by the engine can disagree, and then the listener
+ * agreed to one spend and got another. `DownloadManager.planAlbum` is the one
+ * caller; the control renders its answer and `downloadAlbum` re-asks it at the
+ * moment of the press.
+ *
+ * The obvious version — "sum every `<enclosure length>` and fetch every track" —
+ * is wrong four ways, and each is a vector in `check:downloads`:
+ *
+ * - **A track already on the device costs nothing.** Counting it states a spend
+ *   the press will not make, which on the second press of a half-downloaded
+ *   album is most of the number.
+ * - **A duplicate URL is ONE file.** `download()` already refuses a second copy
+ *   by key, so a feed that lists the same enclosure twice would be charged twice
+ *   and fetched once.
+ * - **A track that can never be downloaded is not part of the album here** —
+ *   a live item or an HLS manifest. `isDownloadable` is the one answer, so the
+ *   album and the single-track button can never disagree about a row.
+ * - **An absent or `0` size is UNKNOWN, never zero.** The same rule as the
+ *   single-track button: "0 MB" beside a real file is worse than silence, and a
+ *   sum that quietly treats a missing size as nothing understates the spend by
+ *   exactly the tracks nobody measured. `unknownSize` lets the surface say so.
+ *
+ * No album is too large to offer. What makes this safe is not a cap but the
+ * number shown before the press — the reason bulk download was left out at
+ * first was that it spends "without a screen in front of" the listener, and a
+ * stated total plus a confirmation is that screen.
+ */
+export function albumPlan(tracks: AlbumTrack[]): AlbumPlan {
+  const plan: AlbumPlan = { fetch: [], knownBytes: 0, unknownSize: 0, done: 0, active: 0, total: 0 };
+  const seen = new Set<string>();
+  tracks.forEach((t, i) => {
+    if (!isDownloadable(t.url, t.liveStatus)) return;
+    // Non-null: `isDownloadable` already required a key.
+    const key = downloadKey(t.url) as string;
+    if (seen.has(key)) return;
+    seen.add(key);
+    plan.total += 1;
+    if (t.state === 'done') { plan.done += 1; return; }
+    if (t.state === 'active') { plan.active += 1; return; }
+    plan.fetch.push(i);
+    if (typeof t.bytes === 'number' && Number.isFinite(t.bytes) && t.bytes > 0) plan.knownBytes += t.bytes;
+    else plan.unknownSize += 1;
+  });
+  return plan;
+}

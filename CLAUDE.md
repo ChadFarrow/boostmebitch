@@ -111,7 +111,7 @@ npm run dev / build / start / lint
 | `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser walks a document with | 1 MB of `<!--` pins a lambda for a minute |
 | `check:cappedbody` | `lib/capped-body.ts` — the capped readers, server AND browser | an uncapped `arrayBuffer` fills the heap from one feed |
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, `clientTag`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |
-| `check:downloads` | `downloadKey`, `isDownloadable`, `roomVerdict`, `downloadFailureMessage`, `proxiedAudioUrl` | a download nothing can find; a working host blamed for a refusal it did not make |
+| `check:downloads` | `downloadKey`, `isDownloadable`, `roomVerdict`, `downloadFailureMessage`, `proxiedAudioUrl`, `albumPlan` | a download nothing can find; a working host blamed for a refusal it did not make |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
