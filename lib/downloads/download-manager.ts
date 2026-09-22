@@ -337,6 +337,7 @@ export class DownloadManager {
   ): Promise<void> {
     const sizeBytes = await this.backend.downloadBytes(key, {
       sourceUrl: episode.enclosureUrl,
+      enclosureType: episode.enclosureType,
       // The feed's own `<enclosure length>`, which is a HINT: absent or plainly
       // wrong on plenty of feeds. It buys a room check BEFORE the request goes
       // out; `downloadBytes` re-runs it against the real `Content-Length` when

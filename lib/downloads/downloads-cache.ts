@@ -170,6 +170,9 @@ export async function downloadBytes(
   key: string,
   opts: {
     sourceUrl: string;
+    /** The feed's `<enclosure type>`, used only for a download that came
+     *  through `/api/audio` — see `type` below. */
+    enclosureType?: string;
     expectedBytes?: number | null;
     onProgress?: (p: DownloadProgress) => void;
     signal?: AbortSignal;
@@ -177,7 +180,8 @@ export async function downloadBytes(
 ): Promise<number> {
   if (!cachesAvailable()) throw new DownloadRefused('This browser cannot store downloads.');
 
-  const { sourceUrl, expectedBytes, onProgress, signal } = opts;
+  const { sourceUrl, enclosureType, expectedBytes, onProgress, signal } = opts;
+  let proxied = false;
 
   // Ask BEFORE fetching. Refusing after the bytes are on the wire has already
   // spent the bandwidth this feature exists to save.
@@ -206,6 +210,7 @@ export async function downloadBytes(
     }
     try {
       res = await fetch(proxiedAudioUrl(sourceUrl), { signal, credentials: 'omit' });
+      proxied = true;
     } catch (e2) {
       if (e2 instanceof DOMException && e2.name === 'AbortError') throw e2;
       // Our own route is unreachable while the host is not. Say what is true
@@ -276,7 +281,14 @@ export async function downloadBytes(
     throw e;
   }
 
-  const type = res.headers.get('content-type') ?? 'audio/mpeg';
+  // `/api/audio` answers `application/octet-stream` ON PURPOSE, so a hostile
+  // host cannot pick a type in our origin. Stored as that, the blob is a type
+  // no media element is promised to play (WebKit is the one to doubt), so a
+  // proxied download takes the FEED's declared type — and only a media type,
+  // for the same reason the route refuses the host's.
+  const type = proxied
+    ? (/^(audio|video)\/[\w.+-]+$/i.test(enclosureType ?? '') ? enclosureType! : 'audio/mpeg')
+    : res.headers.get('content-type') ?? 'audio/mpeg';
   const blob = new Blob(chunks as BlobPart[], { type });
   const cache = await caches.open(AUDIO_CACHE);
   try {
