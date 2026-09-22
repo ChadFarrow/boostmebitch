@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { artCandidates } from '@/lib/util';
 import type { Episode, Podcast } from '@/lib/types';
@@ -20,17 +20,11 @@ interface Args {
   duration: number;
   /** Current artwork per `nowPlayingArt` — live, i.e. changes on every chapter. */
   nowArt: string | undefined;
-  audio: RefObject<HTMLAudioElement | null>;
-  video: RefObject<HTMLVideoElement | null>;
-  /** Whether the video element is the active one, read as a ref so an episode
-   *  switch doesn't re-register handlers. */
-  isVideoRef: RefObject<boolean>;
-  /** Player's own "last whole second emitted" tracker, kept in sync on seeks. */
-  lastTick: RefObject<number>;
-  setPosition: (t: number) => void;
   setPlaying: (v: boolean) => void;
   /** RELATIVE jump, clamped — shared with the in-app skip buttons. */
   skipBy: (deltaSec: number) => void;
+  /** ABSOLUTE jump that counts as intent — see `seekTo` in <Player>. */
+  seekTo: (t: number) => void;
 }
 
 /**
@@ -39,15 +33,14 @@ interface Args {
  *
  * Extracted from <Player> as a unit because these four effects and the one piece
  * of state between them are entirely about Media Session and touch nothing else
- * in the player except its element refs. The rest of <Player> — the source
+ * in the player except the two seek callbacks it is handed. The rest of <Player> — the source
  * effect, the artwork gate, the HLS path, the iOS foreground resume — is
  * deliberately NOT here: those are entangled with each other and with playback
  * correctness in ways a mechanical extraction would obscure.
  */
 export function useMediaSession({
   current, isPlaying, positionSec, duration, nowArt,
-  audio, video, isVideoRef, lastTick,
-  setPosition, setPlaying, skipBy,
+  setPlaying, skipBy, seekTo,
 }: Args): void {
   const episodeId = current?.episode.id;
 
@@ -57,25 +50,20 @@ export function useMediaSession({
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
-    const seekActive = (t: number) => {
-      const el = isVideoRef.current ? video.current : audio.current;
-      if (el) el.currentTime = t;
-      lastTick.current = Math.floor(t);
-      setPosition(t);
-    };
     const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
       ['play', () => setPlaying(true)],
       ['pause', () => setPlaying(false)],
       ['previoustrack', () => useApp.getState().playPrev()],
       ['nexttrack', () => useApp.getState().playNext()],
-      // Through `skipBy`, not `seekActive` + `getState().positionSec`: these are
+      // Through `skipBy`, not `seekTo(getState().positionSec + d)`: these are
       // RELATIVE jumps and had the same stale-base bug the in-app buttons would
       // have had — hold down the lock-screen skip and every repeat recomputed
       // from the same ~4Hz-old position, so a run of them moved one interval.
-      // `seekto` below stays on `seekActive`, because it is absolute.
+      // `seekto` below goes through `seekTo`, because it is absolute — and it
+      // must mark intent, or the restore undoes a lock-screen rewind.
       ['seekbackward', (d) => skipBy(-(d.seekOffset || 10))],
       ['seekforward', (d) => skipBy(d.seekOffset || 10)],
-      ['seekto', (d) => { if (d.seekTime != null) seekActive(d.seekTime); }],
+      ['seekto', (d) => { if (d.seekTime != null) seekTo(d.seekTime); }],
     ];
     for (const [action, handler] of handlers) {
       try { ms.setActionHandler(action, handler); } catch { /* unsupported action — skip */ }
