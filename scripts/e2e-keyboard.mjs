@@ -355,12 +355,23 @@ console.log(`    the layout footer's calc(var(--dock-b) + 7rem), which sits unde
 console.log(`    them — so a page with three rows was 22px taller than the screen and an`);
 console.log(`    empty one 98px. The footer is the ONE clearance; this is what says so.`);
 {
+  // 390x844 — this repo's reference phone, and the one the report came from.
+  // The scenarios above run at 800 tall, which is NOT a free choice here: an
+  // empty /queue is 815px of real content (its empty-state card alone is
+  // 284px), so at 800 it scrolls for an honest reason and this section would
+  // be asserting the size of that card rather than the duplicate clearance.
+  await send('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: 844, deviceScaleFactor: 3, mobile: true });
   // Real insets: the footer's padding reads env(safe-area-inset-bottom), so at
   // 0 this measures a phone nobody has.
   await send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, left: 0, bottom: 34, right: 0 } });
   for (const path of ['/downloads', '/favorites', '/queue', '/no-such-route-here']) {
     await send('Page.navigate', { url: `${APP}${path}` });
     await wait(4000);
+    // The faked visual viewport is re-installed by every navigation at the
+    // scenarios' height; tell it the real one, or the dock reads a keyboard
+    // that is not there.
+    await js(`window.__vv(844)`);
+    await wait(300);
     const m = await js(`(() => {
       const de = document.documentElement;
       const nav = document.querySelector('nav');
