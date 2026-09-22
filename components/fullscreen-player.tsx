@@ -528,7 +528,7 @@ export function FullscreenPlayer({
 
   // Above the `!current` return — hook order has to stay stable, and the hook
   // no-ops while there's nothing playing.
-  const { button: streamButton, panel: streamPanel } = useStreamPanel(
+  const { button: streamButton, dialog: streamDialog } = useStreamPanel(
     current?.podcast,
     hasValueRecipients(payableValue(current?.episode, current?.podcast)),
   );
@@ -827,7 +827,10 @@ export function FullscreenPlayer({
           music feed), the two SHAREs name theirs (see <ShareTargets>), and
           STREAM is `useStreamPanel`'s own button restyled with `cloneElement`
           — a class name, not a new prop on a money-path file. The menu stays
-          open after a press, so the tile's own state change is the answer. */}
+          open after a press, so the tile's own state change is the answer —
+          except STREAM, whose answer is a DIALOG over the menu. It used to
+          open a panel under BOOST, below the bottom of a phone, which read as
+          a press that did nothing. */}
       {tiles.open && tiles.at && createPortal(
         <div
           ref={tiles.menuRef}
@@ -1257,9 +1260,11 @@ export function FullscreenPlayer({
               </div>
             </div>
 
-            {streamPanel && (
-              <div className="-mt-1 border-t border-bone/10 pt-4">{streamPanel}</div>
-            )}
+            {/* STREAM's dialog. Portalled by <ModalShell>, so this spot is not
+                where it appears — and it is rendered BARE: the old inline panel
+                sat here under BOOST, off the bottom of a phone, while its
+                button was in the ⋯ menu at the top. */}
+            {streamDialog}
 
             {/* Sits with the value split, which is what streaming pays into.
                 Renders nothing unless streaming is actually running (or has

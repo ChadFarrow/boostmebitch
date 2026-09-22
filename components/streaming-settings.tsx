@@ -12,6 +12,7 @@ import {
 import { STREAM_AMOUNT_MAX_SATS, STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
 import { canSignUnattended } from '@/lib/nostr/signer';
 import { useApp } from '@/lib/store';
+import { ModalShell } from './modal-shell';
 
 /**
  * On/off switch.
@@ -526,37 +527,60 @@ export function StreamRate({
 }
 
 /**
- * The `≋ STREAM` button and its panel, wired together.
+ * The `≋ STREAM` button and the dialog it opens, wired together.
  *
  * Three surfaces open this same show-scoped control — the show header, the
  * episode page and the fullscreen player — and each grew its own copy of the
  * state, the button and the panel. That's three places for the label, the aria
- * wiring and the panel's placement to drift apart, on a control whose whole job
- * is to start spending money unattended.
+ * wiring and the placement to drift apart, on a control whose whole job is to
+ * start spending money unattended.
  *
- * Button and panel come back SEPARATELY because only the wiring is shared:
- * every surface puts the button in a different flex row and the panel at a
- * different point in the document (below the header, after the value split,
- * above the meter). Returning one element containing both would force a layout
- * on all three that fits none of them.
+ * **IT OPENS A DIALOG, NOT A PANEL IN THE PAGE.** It used to toggle an inline
+ * `<StreamRate>` that each surface placed at a different point in the document
+ * — below the header, after the value split, under BOOST. In the fullscreen
+ * player the button lives in the top bar's `⋯` menu and the panel opened
+ * below BOOST, off the bottom of a phone, so a press appeared to do nothing.
+ * Reported from an iPhone: *"it opens the streaming settings just fine but it's
+ * confusing since I have to scroll down to know that it opened it."* A dialog
+ * is on screen wherever the button was, which is the one property the panel
+ * could not have on all three surfaces at once.
+ *
+ * **One dialog for all three**, rather than a dialog in the player and a panel
+ * elsewhere: one control drawn two ways is the drift this hook exists to stop.
+ * `dialog` is portalled by <ModalShell>, so where a surface renders it does not
+ * matter — and a surface must render it BARE, because a wrapper `<div>` with a
+ * border and padding stays in the page while the dialog is open.
+ *
+ * The dialog names the SHOW. It can be opened from the player while a
+ * different show is on screen, and the switch inside changes spending for
+ * whatever this names.
  */
 export function useStreamPanel(podcast: Podcast | null | undefined, enabled: boolean) {
   const [open, setOpen] = useState(false);
+  const close = () => setOpen(false);
   const button = enabled && podcast ? (
     <button
       type="button"
-      onClick={() => setOpen((v) => !v)}
+      onClick={() => setOpen(true)}
       className="btn-ghost btn-compact"
-      aria-expanded={open}
+      aria-haspopup="dialog"
       title="Stream sats per minute while this show plays"
     >
       ≋ STREAM
     </button>
   ) : null;
-  const panel = open && podcast ? (
-    <StreamRate podcast={podcast} onDone={() => setOpen(false)} />
+  const dialog = open && podcast ? (
+    <ModalShell onClose={close} label={`Stream sats to ${podcast.title}`} className="w-full max-w-md" closeButton>
+      {/* `pr-12` keeps a long title clear of the × in the corner. */}
+      <div className="p-5 pr-12 border-b border-bone/15">
+        <h3 className="font-display text-xl leading-tight break-words">{podcast.title}</h3>
+      </div>
+      <div className="p-5">
+        <StreamRate podcast={podcast} onDone={close} />
+      </div>
+    </ModalShell>
   ) : null;
-  return { button, panel };
+  return { button, dialog };
 }
 
 /**

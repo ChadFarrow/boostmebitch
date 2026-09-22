@@ -326,7 +326,7 @@ export function EpisodeList({
 
   // Above the early returns — hook order has to stay stable, and the hook
   // itself no-ops (returns nulls) while the podcast is still null.
-  const { button: streamButton, panel: streamPanel } = useStreamPanel(
+  const { button: streamButton, dialog: streamDialog } = useStreamPanel(
     data.podcast,
     hasValueRecipients(data.podcast?.value),
   );
@@ -703,9 +703,8 @@ export function EpisodeList({
           </div>
         </div>
       </header>
-      {streamPanel && (
-        <div className="px-4 sm:px-6 pb-4 border-b border-bone/10">{streamPanel}</div>
-      )}
+      {/* Portalled by <ModalShell>; rendered bare, see `useStreamPanel`. */}
+      {streamDialog}
       {valueOpen && data.podcast.value && (
         <ValueBlockDetails value={data.podcast.value} />
       )}

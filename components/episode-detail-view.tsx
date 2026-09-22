@@ -118,7 +118,7 @@ export function EpisodeDetailView() {
     at: moreAt,
   } = useAnchoredMenu();
   // Above the early return below, so hook order stays stable.
-  const { button: streamButton, panel: streamPanel } = useStreamPanel(
+  const { button: streamButton, dialog: streamDialog } = useStreamPanel(
     podcast,
     hasValueRecipients(payableValue(episode, podcast)),
   );
@@ -428,7 +428,8 @@ export function EpisodeDetailView() {
           </div>
         )}
 
-        {streamPanel && <div className="border-t border-bone/10 pt-4">{streamPanel}</div>}
+        {/* Portalled by <ModalShell>; rendered bare, see `useStreamPanel`. */}
+        {streamDialog}
 
         {/* The songs a live broadcast has played so far, each favoritable — the
             live twin of the contents tab below, which has no timeline to list on

@@ -61,6 +61,7 @@
     "e2e:artgate": "node scripts/e2e-artgate.mjs",
     "e2e:artbytes": "node scripts/e2e-artbytes.mjs",
     "e2e:album": "node scripts/e2e-album.mjs",
+    "e2e:streamdialog": "node scripts/e2e-stream-dialog.mjs",
     "e2e:seekhover": "node scripts/e2e-seekhover.mjs",
     "e2e:resume": "node scripts/e2e-resume.mjs",
     "e2e:mutes": "node scripts/e2e-mutes.mjs",
