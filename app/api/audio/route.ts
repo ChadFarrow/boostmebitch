@@ -83,6 +83,8 @@ export async function GET(req: Request) {
     });
 
     if (!upstream.ok) {
+      // Release the socket: an unread body holds the connection open.
+      await upstream.body?.cancel().catch(() => {});
       // The host's own answer, not a 500: a 404 enclosure is a fact about the
       // feed and the client renders it. 502 keeps our own failures distinct.
       return NextResponse.json(
@@ -97,7 +99,11 @@ export async function GET(req: Request) {
     // this is the cheap half, not the guard.
     const declared = Number(upstream.headers.get('content-length'));
     if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) {
+      await upstream.body?.cancel().catch(() => {});
       return NextResponse.json({ error: 'episode too large' }, { status: 413 });
+    }
+    if (!upstream.body) {
+      return NextResponse.json({ error: 'audio fetch failed' }, { status: 502 });
     }
 
     const headers = new Headers();
@@ -106,14 +112,21 @@ export async function GET(req: Request) {
     // enough and nosniff stops the browser inferring anything else.
     headers.set('Content-Type', 'application/octet-stream');
     headers.set('X-Content-Type-Options', 'nosniff');
-    if (Number.isFinite(declared) && declared > 0) {
+    // Only when the body arrives as the host sent it: fetch DECODES a
+    // `Content-Encoding`, so the declared length is the compressed size and the
+    // client would stop short and keep a truncated file as complete.
+    const encoded = !!upstream.headers.get('content-encoding');
+    if (!encoded && Number.isFinite(declared) && declared > 0) {
       // Carried so the progress bar has a denominator — the one upstream header
       // worth reflecting.
       headers.set('Content-Length', String(declared));
     }
     headers.set('Cache-Control', 'no-store');
 
-    return new NextResponse(upstream.body, { status: 200, headers });
+    return new NextResponse(upstream.body.pipeThrough(capBytes(MAX_DOWNLOAD_BYTES)), {
+      status: 200,
+      headers,
+    });
   } catch (e) {
     // THE MESSAGE IS LOGGED, NEVER RETURNED — the same split `withErrorHandling`
     // makes, and for the reason CLAUDE.md states: `assertSafeFetchUrl` names the
@@ -123,4 +136,25 @@ export async function GET(req: Request) {
     console.error('[api] audio fetch failed:', getErrorMessage(e, 'unknown error'));
     return NextResponse.json({ error: 'audio fetch failed' }, { status: 502 });
   }
+}
+
+/**
+ * THE CAP ON WHAT ACTUALLY ARRIVES. `Content-Length` is a claim, and a source
+ * that sends none would otherwise stream for the whole of `maxDuration` — the
+ * client stops at `MAX_DOWNLOAD_BYTES`, but a caller that is not our client
+ * need not. Past the cap the stream ERRORS rather than ending, so no reader can
+ * mistake a cut-off body for a whole file.
+ */
+function capBytes(max: number): TransformStream<Uint8Array, Uint8Array> {
+  let seen = 0;
+  return new TransformStream({
+    transform(chunk, controller) {
+      seen += chunk.byteLength;
+      if (seen > max) {
+        controller.error(new Error('episode too large'));
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
 }

@@ -192,6 +192,17 @@ export function Player() {
  */
   const lastGoodPos = useRef(0);
   const restoreTries = useRef(0);
+  /**
+   * An element that reached its end starts again at 0 on the next play() — the
+   * spec requires it. Left at the duration, the baseline read that restart as a
+   * lost buffer and put the playhead back at the end, which ended it again:
+   * replaying a finished episode took four presses. The end is not a place to
+   * restore to.
+   */
+  const forgetRestoreBaseline = () => {
+    lastGoodPos.current = 0;
+    restoreTries.current = 0;
+  };
 
   // Video plays through a <video> + (for HLS) hls.js instead of the native
   // <audio>. Two sources feed the <video>: (1) an HLS (.m3u8) enclosure — a
@@ -957,6 +968,23 @@ export function Player() {
     setPosition(clamped);
   }, [setPosition]);
 
+  /**
+   * The lock screen's ABSOLUTE scrub (`seekto`). It is a deliberate move exactly
+   * as the in-app seek bar is, so it marks intent and moves the restore baseline
+   * too — without that, a lock-screen or CarPlay rewind of more than
+   * `RESTORE_JUMP_SEC` read as a lost buffer: `onTimeUpdate` put the playhead
+   * back and `recordPosition` refused to save the rewind.
+   */
+  const seekTo = useCallback((t: number) => {
+    markDeliberateSeek();
+    lastGoodPos.current = t;
+    restoreTries.current = 0;
+    const el = isVideoRef.current ? video.current : audio.current;
+    if (el) el.currentTime = t;
+    lastTick.current = Math.floor(t);
+    setPosition(t);
+  }, [setPosition]);
+
   // Space / k, ← / j, → / l — document-wide, guarded so a key pressed while
   // typing or on a focused control is left alone. See the hook.
   const togglePlay = useCallback(() => setPlaying(!isPlayingRef.current), [setPlaying]);
@@ -1079,8 +1107,7 @@ export function Player() {
   // HERE, after `nowArt`, because the metadata effect consumes it.
   useMediaSession({
     current, isPlaying, positionSec, duration, nowArt,
-    audio, video, isVideoRef, lastTick,
-    setPosition, setPlaying, skipBy,
+    setPlaying, skipBy, seekTo,
   });
 
   // Saves where each episode was left, so the next play() of it resumes there.
@@ -1201,7 +1228,7 @@ export function Player() {
             }}
             // Progressive video (a podcast video rendition) just stops at the end;
             // live HLS never fires this. Music auto-advance stays on the <audio>.
-            onEnded={() => setPlaying(false)}
+            onEnded={() => { forgetRestoreBaseline(); setPlaying(false); }}
             // THIS IS WHERE A LIVE-STREAM RECONNECT BECOMES VISIBLE, and the
             // ordinary rebuffer must stay distinguishable from it. `stalled`
             // alone is the mini-bar's "⋯ buffering — press play to retry"; only
@@ -1297,6 +1324,7 @@ export function Player() {
           // stopped and the transport drew ❚❚ over silence — true of albums
           // since before playlists existed. Ask whether it moved.
           onEnded={() => {
+            forgetRestoreBaseline();
             if (current && playsAsTracks(current.podcast) && playNext()) return;
             setPlaying(false);
           }}
