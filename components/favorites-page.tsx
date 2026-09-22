@@ -285,11 +285,15 @@ export function FavoritesPage() {
    */
   async function openNewEpisode(e: Episode) {
     if (!e.feedId) return;
+    // The SHOW's name from the reader's own favorite, as the row itself does:
+    // these records carry no `feedTitle`, so `e.title` put the EPISODE's title
+    // in the show header, where it stayed if the feed never answered.
+    const fav = Object.values(useApp.getState().favorites).find((f) => f.id === e.feedId);
     selectPodcast({
       id: e.feedId,
-      podcastGuid: e.podcastGuid,
-      title: e.feedTitle ?? e.title ?? '',
-      image: e.feedImage ?? e.image,
+      podcastGuid: e.podcastGuid ?? fav?.podcastGuid,
+      title: e.feedTitle || fav?.title || e.title || '',
+      image: e.feedImage ?? fav?.image ?? e.image,
     });
     setShowOrigin(FAVORITES_ORIGIN); // see openFeed
     router.push('/');

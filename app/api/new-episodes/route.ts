@@ -72,13 +72,13 @@ export async function GET(req: Request) {
   const feeds = Array.from(new Set(
     (searchParams.get('feeds') ?? '')
       .split(',')
-      .map((n) => Number.parseInt(n.trim(), 10))
+      .map((n) => strictInt(n.trim()))
       .filter((n) => Number.isInteger(n) && n > 0),
   )).slice(0, MAX_FEEDS);
   if (!feeds.length) return NextResponse.json({ error: 'missing feeds' }, { status: 400 });
 
   const nowSec = Math.floor(Date.now() / 1000);
-  const asked = Number.parseInt(searchParams.get('since') ?? '', 10);
+  const asked = strictInt(searchParams.get('since') ?? '');
   if (!Number.isInteger(asked)) return NextResponse.json({ error: 'missing since' }, { status: 400 });
   // Clamped rather than rejected: a client whose clock is wrong, or whose mark
   // predates the window, should get the window rather than an error it cannot
@@ -136,4 +136,9 @@ export async function GET(req: Request) {
       },
     );
   }, 'new-episode lookup failed');
+}
+
+/** Digits only. `parseInt` reads `"12abc"` as 12, which is a request nobody made. */
+function strictInt(s: string): number {
+  return /^\d{1,15}$/.test(s) ? Number(s) : Number.NaN;
 }
