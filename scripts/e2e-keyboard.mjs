@@ -348,5 +348,39 @@ check('the tab bar has not moved', s.navBottom, restBottom);
 await js(`(() => { const t = document.getElementById('c'); t.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); t.blur(); })()`);
 await js(`window.__vv(${LAYOUT_H})`);
 
+console.log(`\n14. A ROUTE WHOSE CONTENT FITS MUST NOT SCROLL. Reported from an iPhone`);
+console.log(`    about /queue: "This page scrolls when it doesn't need to." Every route`);
+console.log(`    carried its own bottom clearance (a pb-32, or a min-h-screen) on top of`);
+console.log(`    the layout footer's calc(var(--dock-b) + 7rem), which sits under all of`);
+console.log(`    them — so a page with three rows was 22px taller than the screen and an`);
+console.log(`    empty one 98px. The footer is the ONE clearance; this is what says so.`);
+{
+  // Real insets: the footer's padding reads env(safe-area-inset-bottom), so at
+  // 0 this measures a phone nobody has.
+  await send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, left: 0, bottom: 34, right: 0 } });
+  for (const path of ['/downloads', '/favorites', '/queue', '/no-such-route-here']) {
+    await send('Page.navigate', { url: `${APP}${path}` });
+    await wait(4000);
+    const m = await js(`(() => {
+      const de = document.documentElement;
+      const nav = document.querySelector('nav');
+      const link = document.querySelector('footer a');
+      return {
+        over: de.scrollHeight - innerHeight,
+        // 404 included on purpose: it is short on every branch, and it carried
+        // a min-h-screen of its own.
+        missing: !!document.body.innerText.match(/Page not found|not found/i),
+        linkBottom: link ? Math.round(link.getBoundingClientRect().bottom) : null,
+        navTop: nav ? Math.round(nav.getBoundingClientRect().top) : null,
+      };
+    })()`);
+    check(`${path} fits the screen — nothing to scroll`, m.over <= 0, true);
+    // The other half: the clearance that was removed must not have been doing
+    // a job. The footer's own link is the lowest content on these routes.
+    check(`${path} keeps its last content clear of the dock`,
+      m.linkBottom !== null && m.navTop !== null && m.linkBottom <= m.navTop, true);
+  }
+}
+
 console.log(t.fails ? `\n${t.fails} FAILED` : '\nall keyboard-inset checks passed');
 await exit(t.fails ? 1 : 0);

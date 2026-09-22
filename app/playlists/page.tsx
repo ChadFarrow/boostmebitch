@@ -14,7 +14,11 @@ import { BRAND } from '@/lib/brand';
 // This route is the curated collection only.
 //
 // The app-global <Player> is mounted in app/layout.tsx, so navigating here from
-// a playing episode does not interrupt it. `pb-32` clears the mini-player bar.
+// a playing episode does not interrupt it.
+//
+// NO BOTTOM PADDING HERE. The layout footer carries the ONLY bottom clearance — its
+// `calc(var(--dock-b) + 7rem)` sits under every route. A `pb-32` here on top
+// of it was 128px of dead space that made a short page scroll (docs/ui.md).
 export const metadata: Metadata = {
   title: `Playlists — ${BRAND.displayName}`,
   description: 'Podcasting 2.0 playlists — tracks from hundreds of independent feeds.',
@@ -28,7 +32,7 @@ export default function Page() {
           section uses. The three routes share a header pinned to that measure,
           so anything narrower starts the content at a different left edge than
           the header above it. */}
-      <main className="max-w-7xl mx-auto px-4 pt-8 pb-32">
+      <main className="max-w-7xl mx-auto px-4 pt-8">
         <PlaylistsPage />
       </main>
     </>

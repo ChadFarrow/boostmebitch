@@ -238,7 +238,7 @@ export default function AmberCallbackPage() {
   }, []);
 
   return (
-    <main className="min-h-screen px-4 pt-[env(safe-area-inset-top)]">
+    <main className="px-4 pt-[env(safe-area-inset-top)]">
       <div className="max-w-xl mx-auto pt-24">
         <div className="card p-5">
           <div className="stamp text-muted border-muted/40 mb-2">AMBER</div>

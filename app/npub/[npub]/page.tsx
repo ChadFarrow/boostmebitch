@@ -18,7 +18,9 @@ import { BRAND } from '@/lib/brand';
  *
  * A real scrollable page, not a fixed overlay like /live/<npub> — that route
  * covers the screen because it opens the player, and this one is something you
- * read. `pb-32` clears the mini-player bar at the foot of the viewport.
+ * read. It adds NO bottom padding: the layout footer's
+ * `calc(var(--dock-b) + 7rem)` is the one clearance under every route, and a
+ * second one here is dead space that makes a short page scroll (docs/ui.md).
  *
  * The segment is normalized rather than required to be an npub: an nprofile, a
  * hex pubkey or a pasted profile link all resolve through the same
@@ -78,7 +80,7 @@ export default function NpubPage() {
       <div className="hidden">
         <NostrAuth />
       </div>
-      <main className="max-w-3xl mx-auto px-4 py-10 pb-32 flex flex-col gap-8 pt-[calc(2.5rem+env(safe-area-inset-top))]">
+      <main className="max-w-3xl mx-auto px-4 py-10 flex flex-col gap-8 pt-[calc(2.5rem+env(safe-area-inset-top))]">
         {/* Same clear as the invalid-npub branch above — a <NoteCard> on this
             page opens a show through the store, so by the time anyone reaches
             this link there is very likely a selection standing. */}
