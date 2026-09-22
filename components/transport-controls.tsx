@@ -120,17 +120,25 @@ export function TransportControls({
   // the button would draw disabled while `playNext()` would in fact advance the
   // queue. So the disabled test consults the queue too, through the same walk
   // `stepTo` uses.
+  //
+  // **And once the listen queue holds what is playing, it is the ONLY answer.**
+  // `stepTo` hands every such press to `queueStepTo` and never falls back to
+  // `episodeQueue`, so at the queue's head or tail the step is refused. Reading
+  // `episodeQueue` there lit ⏭ over a press that did nothing — reached by
+  // queueing episode 5 of an open show with nothing playing, where
+  // `revealQueue` leaves that show's list in `episodeQueue`.
+  const inQueue = qIdx >= 0;
   const queueTakesPrev = qPrev >= 0 && !(prev && !prev.disabled);
   const queueTakesNext = qNext >= 0 && !(next && !next.disabled);
   const onPrev = queueTakesPrev ? (() => playPrev()) : (prev?.onClick ?? (() => playPrev()));
   const prevDisabled = queueTakesPrev
     ? false
-    : prev ? prev.disabled : nextPlayableIndex(episodeQueue, idx, -1) < 0;
+    : prev ? prev.disabled : inQueue || nextPlayableIndex(episodeQueue, idx, -1) < 0;
   const prevLabel = queueTakesPrev ? 'Previous in queue' : (prev?.label ?? 'Previous track');
   const onNext = queueTakesNext ? (() => playNext()) : (next?.onClick ?? (() => playNext()));
   const nextDisabled = queueTakesNext
     ? false
-    : next ? next.disabled : nextPlayableIndex(episodeQueue, idx, 1) < 0;
+    : next ? next.disabled : inQueue || nextPlayableIndex(episodeQueue, idx, 1) < 0;
   const nextLabel = queueTakesNext ? 'Next in queue' : (next?.label ?? 'Next track');
 
   // `hidden sm:flex` rather than `flex` when the sides are desktop-only. Both
