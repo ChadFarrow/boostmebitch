@@ -376,13 +376,10 @@ export function LivePage() {
   return (
     <>
       <AppHeader />
-      {/* `--dock-b`, never a `pb-32` literal — see docs/ui.md's dock section.
-          Five pages predate the dock and hard-code that padding; this is not
-          going to be the sixth. */}
-      <main
-        className="max-w-7xl mx-auto px-4 pt-8"
-        style={{ paddingBottom: 'calc(var(--dock-b) + 8rem)' }}
-      >
+      {/* No bottom padding: the layout footer is the one clearance for the
+          mini-player and the dock — see docs/ui.md's dock section. A second
+          one here made /live scroll with nothing on air. */}
+      <main className="max-w-7xl mx-auto px-4 pt-8">
         <h1 className="headline text-2xl sm:text-3xl mb-1">live now</h1>
         <p className="text-muted text-sm mb-8">
           Podcast shows broadcasting right now, and live streams on Nostr.

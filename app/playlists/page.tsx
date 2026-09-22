@@ -14,11 +14,8 @@ import { BRAND } from '@/lib/brand';
 // This route is the curated collection only.
 //
 // The app-global <Player> is mounted in app/layout.tsx, so navigating here from
-// a playing episode does not interrupt it.
-//
-// NO BOTTOM PADDING HERE. The layout footer carries the ONLY bottom clearance — its
-// `calc(var(--dock-b) + 7rem)` sits under every route. A `pb-32` here on top
-// of it was 128px of dead space that made a short page scroll (docs/ui.md).
+// a playing episode does not interrupt it. No bottom padding: the layout
+// footer is the one clearance for the mini-player and the dock (docs/ui.md).
 export const metadata: Metadata = {
   title: `Playlists — ${BRAND.displayName}`,
   description: 'Podcasting 2.0 playlists — tracks from hundreds of independent feeds.',

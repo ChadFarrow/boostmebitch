@@ -9,13 +9,10 @@ import { BRAND } from '@/lib/brand';
 // them in space.
 //
 // The app-global <Player> is mounted in app/layout.tsx, so playing a row here
-// does not navigate and does not interrupt anything. `max-w-7xl px-4` is the
-// measure <AppHeader> is pinned to, so this route's content starts at the same
-// left edge as every other one.
-//
-// NO BOTTOM PADDING HERE. The layout footer carries the ONLY bottom clearance — its
-// `calc(var(--dock-b) + 7rem)` sits under every route. A `pb-32` here on top
-// of it was 128px of dead space that made a short page scroll (docs/ui.md).
+// does not navigate and does not interrupt anything. No bottom padding: the
+// layout footer is the one clearance for the mini-player and the dock
+// (docs/ui.md). `max-w-7xl px-4` is the measure <AppHeader> is pinned to, so
+// this route's content starts at the same left edge as every other one.
 export const metadata: Metadata = {
   title: `Downloads — ${BRAND.displayName}`,
   description: 'Episodes saved to this device for listening without a connection.',

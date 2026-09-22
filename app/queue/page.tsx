@@ -11,7 +11,8 @@ import { BRAND } from '@/lib/brand';
 // reach a wallet.
 //
 // The app-global <Player> is mounted in app/layout.tsx, so navigating here from
-// a playing episode does not interrupt it. `pb-32` clears the mini-player bar.
+// a playing episode does not interrupt it. No bottom padding: the layout
+// footer is the one clearance for the mini-player and the dock (docs/ui.md).
 export const metadata: Metadata = {
   title: `Up Next — ${BRAND.displayName}`,
   description: 'The episodes you lined up to listen to next.',
@@ -23,7 +24,7 @@ export default function Page() {
       <AppHeader />
       {/* The same `max-w-7xl px-4` measure every other route under this header
           uses, so the content's left edge does not move between them. */}
-      <main className="max-w-7xl mx-auto px-4 pt-8 pb-32">
+      <main className="max-w-7xl mx-auto px-4 pt-8">
         <div className="max-w-3xl">
           <QueuePage />
         </div>
