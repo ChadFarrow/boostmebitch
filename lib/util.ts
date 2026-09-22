@@ -180,25 +180,31 @@ export const LISTEN_QUEUE_CAP = 50;
  * `showStorageKey(podcast)` for the per-show streaming rate and mode. A queued
  * track's streaming override would key off the curator's feed.
  *
- * It refuses NARROWLY, the same way `payableValue` does: the item must declare
- * its OWN `podcastGuid` and it must disagree. An item with no guid of its own
- * keeps the container, because there is nothing better to say and nothing has
- * been contradicted.
+ * It refuses NARROWLY, the same way `payableValue` does: BOTH the item and the
+ * container must declare a `podcastGuid`, and they must disagree. An item with
+ * no guid of its own keeps the container, and so does a container with none —
+ * a feed publishing no `<podcast:guid>` is still the parent of its own
+ * episodes, and `payableValue` pays them from its block.
  *
  * `value` goes with the rest. `payableValue` already refuses a container's
  * block for a track that names another feed, so dropping it changes no payment
  * — it stops the record CLAIMING a block that would never be paid from it.
+ *
+ * THE REWRITE IS AN ALLOWLIST, not the container spread and patched. Every
+ * other field of a `Podcast` is a fact about the PLAYLIST: `nostrNpubs` is
+ * p-tagged on the boost note by `noteNpubs` (a permanent kind:1 naming the
+ * curator for a boost on someone else's song), `funding` is the curator's
+ * SUPPORT link, and the next field added to `Podcast` will be too.
  */
 export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
-  const feedGuid = episode.podcastGuid || podcast.podcastGuid;
-  const containerIsParent = !!podcast.podcastGuid && podcast.podcastGuid === feedGuid;
+  const containerIsParent = !podcast.podcastGuid
+    || !episode.podcastGuid
+    || podcast.podcastGuid === episode.podcastGuid;
   if (containerIsParent) return podcast;
   return {
-    ...podcast,
     id: episode.feedId ?? podcast.id,
-    podcastGuid: feedGuid,
+    podcastGuid: episode.podcastGuid,
     title: episode.feedTitle ?? episode.title,
-    url: undefined,
     image: episode.feedImage,
     artwork: episode.feedImage,
     // The container's medium says what KIND of item it lists, which is the one
@@ -207,7 +213,6 @@ export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
     // `playsAsTracks` false — resumable mid-song (#414), no track behaviour, and
     // streamed labelled as the show. A `podcastL` row stays an episode.
     medium: playsAsTracks(podcast) ? 'music' : undefined,
-    value: undefined,
   };
 }
 

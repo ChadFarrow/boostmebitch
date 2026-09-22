@@ -28,8 +28,9 @@
 // `queueShowFor` is the container rule. A `musicL` playlist lists tracks living
 // in hundreds of other feeds, and `<EpisodeList>` renders those containers — so
 // the feed you were looking at is not always the show you queued. It refuses
-// NARROWLY, the same shape as `payableValue`: the item must declare its own
-// `podcastGuid` and it must disagree.
+// NARROWLY, the same shape as `payableValue`: the item AND the container must
+// each declare a `podcastGuid`, and they must disagree. And when it does
+// refuse, the curator's own facts (`nostrNpubs`, `funding`, …) go with it.
 //
 // `nextPlayableIndexBy` is the walk `stepTo` and both halves of
 // `<TransportControls>` share. If they disagree, ⏭ draws enabled over a step
@@ -92,6 +93,14 @@ function checkShow(label, args, expected, { alsoNaive = false } = {}) {
   const p = queueShowFor(...args);
   compare(label, { guid: p.podcastGuid, title: p.title, value: !!p.value }, expected);
   vectors.push({ label, kind: 'show', args, alsoNaive });
+}
+
+/** Which of the container's OWN facts survive onto the recorded show. */
+const CURATOR_FACTS = ['author', 'description', 'funding', 'itunesId', 'nostrNpubs', 'podroll'];
+const carriedFacts = (p) => CURATOR_FACTS.filter((k) => p[k] !== undefined);
+function checkCarried(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, carriedFacts(queueShowFor(...args)), expected);
+  vectors.push({ label, kind: 'carried', args, alsoNaive });
 }
 
 /** Does the RECORDED show make the item behave as a track? */
@@ -157,6 +166,20 @@ checkShow('an item with no guid of its own keeps the container',
   [{ guid: 'e2', id: 2, feedId: 100 }, ALBUM],
   { guid: 'album-guid', title: 'The Album', value: true }, { alsoNaive: true });
 
+// The SHOW without a guid is the other half of "narrowly". `payableValue`
+// refuses only when BOTH guids are present and disagree, so a feed publishing
+// no `<podcast:guid>` pays its own episodes — and the queue rewrote them anyway:
+// `url`, `value`, title and art cleared on the show's OWN episode, because
+// `!!podcast.podcastGuid` made "is the parent" false. Written against that code
+// first; both fail there.
+const GUIDLESS = { id: 300, title: 'A Show With No Guid', value: { model: {}, recipients: [] } };
+checkShow('a show with no guid keeps its own episode whole',
+  [{ guid: 'g1', id: 31, feedId: 300 }, GUIDLESS],
+  { guid: undefined, title: 'A Show With No Guid', value: true }, { alsoNaive: true });
+checkShow('...even when the episode names a guid the show does not',
+  [{ guid: 'g2', id: 32, feedId: 300, podcastGuid: 'episode-says-this', title: 'Ep 32' }, GUIDLESS],
+  { guid: undefined, title: 'A Show With No Guid', value: true }, { alsoNaive: true });
+
 // The refusal: both guids present and disagreeing.
 checkShow('a playlist track records ITS OWN feed, not the curator\'s',
   [{ guid: 'e3', id: 3, feedId: 777, podcastGuid: 'track-album-guid', feedTitle: 'Real Album' }, PLAYLIST],
@@ -164,6 +187,18 @@ checkShow('a playlist track records ITS OWN feed, not the curator\'s',
 checkShow('with no feedTitle it falls back to the track title, never the playlist\'s',
   [{ guid: 'e4', id: 4, feedId: 778, podcastGuid: 'other-guid', title: 'Just The Track' }, PLAYLIST],
   { guid: 'other-guid', title: 'Just The Track', value: false });
+
+// The rewrite must drop EVERY fact about the curator, not just the ones the
+// Up Next row draws. `noteNpubs` p-tags `podcast.nostrNpubs` on the boost note
+// — a permanent kind:1 naming the curator for a boost on somebody else's song —
+// and `funding` put the curator's SUPPORT link under the track.
+const CURATED = { ...PLAYLIST, nostrNpubs: ['npub1curator'], funding: [{ url: 'https://curator.example/support', text: 'Support' }],
+  podroll: [{ feedGuid: 'x' }], author: 'The Curator', description: 'A playlist', itunesId: 99 };
+checkCarried('a playlist track carries none of the curator\'s facts',
+  [{ guid: 'e5', id: 5, feedId: 779, podcastGuid: 'track-album-guid', feedTitle: 'Real Album' }, CURATED], []);
+checkCarried('the parent feed keeps its own',
+  [{ guid: 'e6', id: 6, feedId: 200, podcastGuid: 'playlist-guid' }, CURATED],
+  ['author', 'description', 'funding', 'itunesId', 'nostrNpubs', 'podroll'], { alsoNaive: true });
 
 // A track keeps being a TRACK when its container is swapped out. Measured
 // 2026-09-19 through /api/search: "Homegrown Hits Music Playlist" is feed
@@ -259,6 +294,8 @@ section('Every vector above is replayed against the obvious wrong version');
           const p = real ? queueShowFor(...v.args) : naiveShow(...v.args);
           return JSON.stringify({ guid: p.podcastGuid, title: p.title, value: !!p.value });
         }
+        case 'carried':
+          return JSON.stringify(carriedFacts(real ? queueShowFor(...v.args) : naiveShow(...v.args)));
         case 'plays':
           return JSON.stringify(real ? playsAsTracks(queueShowFor(...v.args)) : naivePlays(...v.args));
         case 'walk':
