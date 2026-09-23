@@ -88,6 +88,7 @@ import {
   statedVisibility,
   withVisibility,
   VISIBILITY_TAG,
+  favoritesReadRetryable,
 } from '../lib/nostr/favorites-list.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -2996,6 +2997,43 @@ section('Spec vector 31 — a carried claim retires with its entry, and not befo
   });
   check('an unreadable half keeps a claim the ACTIVE half also names',
     opaque.baseline.privateFeeds, [showId(F_MUSIC)]);
+}
+
+// ---------------------------------------------------------------------------
+section('Which degraded read this device may retry on its own');
+// ---------------------------------------------------------------------------
+{
+  // The ladder that reads this runs on a TIMER with nobody watching, so the
+  // answer decides two different harms: a 'yes' where a retry cannot change its
+  // own answer is a loop, and a 'yes' on the private half is an Amber approval
+  // sheet — showing somebody's plaintext — raised by a clock.
+  check('nothing answered: the one failure a second read can clear',
+    favoritesReadRetryable(null), true);
+  check('...and the same when no reason was recorded at all',
+    favoritesReadRetryable(undefined), true);
+  check("...and for the status's own word", favoritesReadRetryable('degraded'), true);
+
+  check('a withheld private half is a CHOICE, not a failure to retry',
+    favoritesReadRetryable('private-withheld'), false);
+  check('a decrypt that RAN and failed needs a press, not a timer',
+    favoritesReadRetryable('private-unreadable'), false);
+  check('a half too large to store cannot be retried into fitting',
+    favoritesReadRetryable('private-too-large'), false);
+  check('an ambiguous mode is waiting on the user, not on the relays',
+    favoritesReadRetryable('mode-ambiguous'), false);
+  // The relays ANSWERED here. This is the refusal standing between a wobble and
+  // a wiped library, and re-reading changes nothing about it.
+  check('a wholesale-delete refusal is never retried automatically',
+    favoritesReadRetryable('wholesale-delete'), false);
+
+  // (naive) the obvious version: the status is 'degraded', so retry. It is
+  // right about the case that matters and wrong about all five others — and the
+  // two it is most wrong about are the two that reach a signer.
+  const naiveRetryable = () => true;
+  check('(naive) "degraded means retry" spends prompts nobody asked for',
+    ['private-withheld', 'private-unreadable', 'private-too-large', 'mode-ambiguous', 'wholesale-delete']
+      .filter((r) => naiveRetryable(r) !== favoritesReadRetryable(r)).length,
+    5);
 }
 
 // ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ import {
   baselineFrom,
   baselineHalf,
   claimedByBaseline,
+  favoritesReadRetryable,
   type ListHalf,
   fetchFavoritesList,
   groupLocalFavorites,
@@ -846,4 +847,137 @@ function installCleanupHook(identity: NostrIdentity, malformed: string[]) {
     '\nThey are preserved on relays. To remove them permanently, run:',
     '  bmbCleanFavorites()',
   );
+}
+
+// ---------------------------------------------------------------------------
+// Retrying a degraded read
+// ---------------------------------------------------------------------------
+
+/**
+ * The same ladder the NIP-46 transport got in #428, for the same fault.
+ *
+ * `lib/nostr/auth.ts` measures it: on Android every launch is a cold page load,
+ * so anything issued at t=0 races a radio that is not up. That branch gave the
+ * SIGNER a retry ladder and the signer now comes back in 5–10 seconds. The
+ * favorites read goes out in the same instant, fails the same way — nothing
+ * answered, so `trustworthy` is false and the notice is raised, correctly — and
+ * had no ladder at all. Its only retries were the user's: the RETRY link, the
+ * favorites page, a heart toggle, or another launch.
+ *
+ * So the report that produced this is a description of exactly that gap:
+ * *"I still get this retry message but the Amber login seems to reconnect ok …
+ * the retry message gets displayed before the red light disappears."* Two
+ * readers, one dead radio, one ladder.
+ */
+const READ_RETRY_GAPS_MS = [2_000, 8_000, 20_000];
+
+let readRetryStep = 0;
+let readRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let readRetryStop: (() => void) | null = null;
+
+/** Degraded, for a reason a second read can actually clear. */
+function readWorthRetrying(): boolean {
+  const { favoritesSync, favoritesSyncReason, identity } = useApp.getState();
+  return !!identity && favoritesSync === 'degraded' && favoritesReadRetryable(favoritesSyncReason);
+}
+
+function cancelReadRetry(): void {
+  if (readRetryTimer !== null) { clearTimeout(readRetryTimer); readRetryTimer = null; }
+}
+
+function armReadRetry(): void {
+  if (readRetryTimer !== null) return;
+  if (readRetryStep >= READ_RETRY_GAPS_MS.length) return;
+  const gap = READ_RETRY_GAPS_MS[readRetryStep];
+  readRetryStep += 1;
+  readRetryTimer = setTimeout(() => {
+    readRetryTimer = null;
+    void runReadRetry();
+  }, gap);
+}
+
+async function runReadRetry(): Promise<void> {
+  // Re-ASKED rather than remembered: the rung was scheduled up to 20 seconds
+  // ago, and anything that clears a degraded read in the meantime — the user's
+  // own RETRY, a heart toggle, a sign-out — must end the ladder rather than be
+  // overwritten by it.
+  if (!readWorthRetrying()) return;
+  const identity = useApp.getState().identity;
+  if (!identity) return;
+  // UNATTENDED, always. This runs on a timer with nobody watching, which is the
+  // one condition `decryptWithTimeout`'s purpose argument exists to protect:
+  // an Amber sheet showing the plaintext of somebody's private list, raised by
+  // a clock. The retry that may spend a prompt is the one on
+  // <FavoritesSyncNotice>, under a press.
+  //
+  // The cycle is single-flight per npub and serialized (`hydrateFavorites`), so
+  // a rung landing on top of a user's toggle queues behind it rather than
+  // merging against the same read — which is the failure `serializeFavoritesCycle`
+  // exists for.
+  await hydrateFavorites(identity).catch(() => {});
+  // Still degraded? Take the next rung — `armReadRetry` is what stops after the
+  // third. The budget is NOT reset here: see the subscription below for why
+  // resetting it on anything but a success is an unbounded loop.
+  if (readWorthRetrying()) armReadRetry();
+}
+
+/**
+ * Arm the ladder for as long as a session lasts, and re-arm it when the app
+ * comes back. Returns its own teardown, like `startBunkerRevive`.
+ *
+ * THE WAKE EVENTS ARE NOT THE MAIN ARM, and that is the difference from the
+ * signer's copy. A phone that launches into this fault never fires
+ * `visibilitychange` — the document has been visible since it existed — and
+ * `navigator.onLine` is usually already true, because a radio that has not
+ * finished associating is not "offline" to the page. So the timed rungs are
+ * what actually clear the notice; the wake events are there for the case the
+ * ladder has already spent itself, where a fresh visit is new information and
+ * gets a fresh budget.
+ */
+export function startFavoritesReadRetry(): () => void {
+  if (typeof window === 'undefined') return () => {};
+  readRetryStop?.();
+
+  const onWake = () => {
+    readRetryStep = 0;
+    if (readWorthRetrying()) { cancelReadRetry(); void runReadRetry(); }
+  };
+  document.addEventListener('visibilitychange', onWake);
+  window.addEventListener('focus', onWake);
+  window.addEventListener('online', onWake);
+
+  // The store is the signal, exactly as `subscribeBunkerHealth` is for the
+  // transport: whichever pass raised the notice — the load's, a toggle's, the
+  // privacy dialog's — arms this one ladder.
+  //
+  // **ONLY A SUCCESS RESETS THE BUDGET, and getting that wrong is a retry
+  // storm rather than a wasted rung.** The first version reset it on anything
+  // that was not degraded, and a retry's own pass passes through 'loading' on
+  // its way back to 'degraded' — so every rung handed the ladder a fresh budget
+  // and re-armed rung 1. Measured against a relay port nothing listens on: two
+  // reads every four seconds, for as long as the page was open, instead of
+  // three reads and silence. `'loading'` is the retry working, not news.
+  const unsubscribe = useApp.subscribe(() => {
+    if (useApp.getState().favoritesSync === 'ok') {
+      cancelReadRetry();
+      readRetryStep = 0;
+      return;
+    }
+    if (readWorthRetrying()) armReadRetry();
+  });
+  // Mounted after the first pass already failed is the ordinary case on a cold
+  // launch, and a subscription alone would never hear about it.
+  if (readWorthRetrying()) armReadRetry();
+
+  const stop = () => {
+    document.removeEventListener('visibilitychange', onWake);
+    window.removeEventListener('focus', onWake);
+    window.removeEventListener('online', onWake);
+    unsubscribe();
+    cancelReadRetry();
+    readRetryStep = 0;
+    if (readRetryStop === stop) readRetryStop = null;
+  };
+  readRetryStop = stop;
+  return stop;
 }

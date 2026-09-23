@@ -1877,6 +1877,49 @@ export type PublishReason =
   | 'mode-ambiguous'
   | 'publish';
 
+/**
+ * May this device re-run a degraded read on its own, without being asked?
+ *
+ * **Only the reasonless one, and that is the whole rule.** A read that could
+ * not be trusted — nothing answered — is the one failure a second attempt can
+ * actually clear, and on a phone it is the ORDINARY one: an Android launch is a
+ * cold page load, so the read goes out against a radio that is not up yet.
+ * Reported from that phone on 2026-09-23, on `boostmebuddy.com`: *"I still get
+ * this retry message but the Amber login seems to reconnect ok… the retry
+ * message gets displayed before the red light disappears."* The signer's own
+ * transport got a retry ladder in #428 and came back in 5–10 seconds; the
+ * favorites read, issued at the same instant against the same dead radio, had
+ * none — so the notice it raised stayed up over a device that was by then
+ * perfectly able to read.
+ *
+ * Every other reason is refused, and each for its own reason rather than out of
+ * caution:
+ *
+ * - `'private-withheld'` — the cold start CHOSE not to decrypt, because the
+ *   signer lives outside the browser and Amber's sheet shows the plaintext. An
+ *   unattended retry takes the identical path and withholds again; a retry that
+ *   cannot change its own answer is a loop with a spinner on it.
+ * - `'private-unreadable'` — the decrypt ran and failed. Only a user-initiated
+ *   pass may spend another prompt, which is the unlock on
+ *   `<FavoritesSyncNotice>`, pressed on purpose.
+ * - `'private-too-large'` and `'mode-ambiguous'` — neither is a transport
+ *   fault. One needs entries made public, the other needs the user to say which
+ *   half is theirs. Retrying either is how a notice that asks for a decision
+ *   becomes a notice that flickers.
+ * - `'wholesale-delete'` — the relays ANSWERED; this is the merge refusing to
+ *   adopt what they said. Re-reading changes nothing, and this is the refusal
+ *   standing between a wobble and a wiped library, so it stays exactly as loud
+ *   as it is.
+ *
+ * `'degraded'`, `'unchanged'`, `'nothing-to-create'` and `'publish'` never reach
+ * `favoritesSyncReason` — the first is the status itself, the rest are
+ * successes — so they are covered by the same `null` answer as the generic
+ * case, deliberately rather than by omission.
+ */
+export function favoritesReadRetryable(reason: PublishReason | 'private-withheld' | null | undefined): boolean {
+  return reason === null || reason === undefined || reason === 'degraded';
+}
+
 export interface FavoritesPlanInput {
   /** The merged PUBLIC half. */
   merged: ParsedList;

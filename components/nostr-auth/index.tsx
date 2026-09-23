@@ -23,6 +23,7 @@ import {
   applySyncedSettings,
   favoritesMode,
   hydrateFavorites,
+  startFavoritesReadRetry,
   hydrateMutes,
   unionMutedPubkeys,
   type NostrIdentity,
@@ -520,6 +521,23 @@ export function NostrAuth() {
   useEffect(() => {
     if (!identity) return;
     return startBunkerRevive();
+  }, [identity]);
+
+  // AND THE SAME LADDER FOR THE FAVORITES READ, which races the same radio.
+  // The restore above fails at t=0 on a cold Android launch and is retried; the
+  // hydrate fired beside it fails in the same instant, raises the degraded
+  // notice — correctly, nothing answered — and had nothing to retry it. The
+  // user read the two as one Amber fault, because the notice appears while the
+  // signer's red light is still on and outlives it: *"the retry message gets
+  // displayed before the red light disappears."*
+  //
+  // Mounted HERE rather than in <FavoritesSyncNotice>, which renders on two
+  // routes and would arm two ladders against one list. Signed out there is no
+  // read to retry, and `hydrateFavorites` is the same call this component's own
+  // restore makes.
+  useEffect(() => {
+    if (!identity) return;
+    return startFavoritesReadRetry();
   }, [identity]);
 
   // Account-change detector for multi-identity NIP-07 extensions
