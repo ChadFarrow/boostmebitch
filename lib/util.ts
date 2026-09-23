@@ -855,6 +855,40 @@ export function payableValue(
 }
 
 /**
+ * Which value block `/api/feed` ships on an episode row: the feed's own
+ * declaration, when the feed was read and lists the item, over Podcast
+ * Index's copy.
+ *
+ * PI's copy of an ITEM block can be stale while its channel block is current.
+ * Measured 2026-09-23 on Jimmy V – Jimmy V Collection (PI feed 6734639): the
+ * RSS carries one channel block and no item blocks, while PI held item blocks
+ * on 11 of 13 tracks from a 2025-10-09 crawl — paying 5% to a node the feed
+ * no longer names and 1% to a leg it dropped. `e.value ?? podcast.value` let
+ * that stale block win on every track BOOST.
+ *
+ * Three cases, and the middle one is why `rssItem` is separate from `rssRead`:
+ * - the feed was read AND lists the item: the feed is the authority, including
+ *   ABSENCE — its item block, else its channel block, else none. PI's item
+ *   block is ignored even when the feed gives none.
+ * - the feed was read but the scan did not reach the item (past the item cap,
+ *   or a guid PI normalized differently): nothing says PI's item block is
+ *   wrong, so it keeps it; the channel fallback is the feed's, which the
+ *   route also ships as `podcast.value`.
+ * - the feed was not read: PI's answer, exactly as before.
+ */
+export function feedItemValue(
+  rssRead: boolean,
+  rssItem: { value: ValueBlock | null } | undefined,
+  rssChannel: ValueBlock | null | undefined,
+  piItem: ValueBlock | null | undefined,
+  piChannel: ValueBlock | null | undefined,
+): ValueBlock | null | undefined {
+  if (!rssRead) return piItem ?? piChannel;
+  if (rssItem) return rssItem.value ?? rssChannel ?? null;
+  return piItem ?? rssChannel ?? null;
+}
+
+/**
  * Whether BOOST is open for this item, and what to say when it is not.
  *
  * ONE answer for every surface that shows a BOOST button or opens

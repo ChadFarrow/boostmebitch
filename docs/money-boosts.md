@@ -25,6 +25,8 @@ A Podcasting 2.0 PLAYLIST is that case. Its rows are `<podcast:remoteItem>` refe
 
 **Over-refusing costs as much as over-falling-through, so the refusal is narrow in three deliberate places.** A SHOW-level boost (no episode) always pays the feed's own block, playlist or not — the listener chose the container. An episode carrying its own block is returned untouched, which is also what keeps a *hybrid* list feed working: `/api/feed` folds the channel block into `e.value` server-side before this is ever asked. And the guid test needs BOTH guids present, because a feed PI has not indexed carries neither — refusing there would hide BOOST on exactly the independent releases this app exists to pay. A disabled BOOST button reads as a feature that does not exist, not as a bug.
 
+**What arrives as `episode.value` is decided server-side too, and Podcast Index's copy of it can be STALE.** `/api/feed` ships the feed's own block over PI's whenever it read the feed (`feedItemValue`) — see *The feed's value block outranks Podcast Index's copy* in [`feeds.md`](feeds.md) for the measured case and the three branches.
+
 Where a playlist row's real block comes from is the other half, and it is server-side: see *Whose value block pays a playlist row* in [`feeds.md`](feeds.md).
 
 ## A `fee` is inside the split, not on top of it — and why 45 renders as 44.6%
