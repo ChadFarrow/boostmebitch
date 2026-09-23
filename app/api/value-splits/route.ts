@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PI_EPISODE_MAX, getEpisodes, resolveValueTimeSplits } from '@/lib/pi';
+import { PI_EPISODE_MAX, getEpisodes, getPodcast, getRssItemValueTimeSplits, resolveValueTimeSplits } from '@/lib/pi';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -20,8 +20,18 @@ export async function GET(req: Request) {
     // URL shares that route's fetch cache entry instead of opening a second.
     const episodes = await getEpisodes(feedId, PI_EPISODE_MAX);
     const episode = episodes.find((e) => e.id === episodeId);
-    if (!episode) return NextResponse.json({ error: 'episode not found' }, { status: 404 });
-    const raw = episode.valueTimeSplits ?? [];
+    // A NEGATIVE id PI does not hold is an item /api/feed read from the RSS
+    // because PI had not crawled it yet (`getRssEpisodesNewerThan`). Its
+    // windows are in the feed, not in PI — and a 404 here does not fail the
+    // boost: the modal falls back to the SHOW's block for a boost pressed
+    // during a song, and streaming pays the show for the whole track.
+    let raw = episode?.valueTimeSplits;
+    if (!episode && episodeId < 0) {
+      const podcast = await getPodcast(feedId);
+      raw = podcast?.url ? (await getRssItemValueTimeSplits(podcast.url, episodeId)) ?? undefined : undefined;
+    }
+    if (!episode && !raw) return NextResponse.json({ error: 'episode not found' }, { status: 404 });
+    raw = raw ?? [];
     if (!raw.length) return NextResponse.json({ splits: [] });
     const splits = await resolveValueTimeSplits(raw);
     return NextResponse.json(

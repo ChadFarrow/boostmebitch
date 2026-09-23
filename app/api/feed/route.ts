@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
+import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment, getRssEpisodesNewerThan } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
@@ -142,6 +142,22 @@ export async function GET(req: Request) {
         ? await getRssEpisodeEnrichment(podcast.url).catch(() => EMPTY_ENRICHMENT)
         : EMPTY_ENRICHMENT;
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    // Episodes the feed published since PI last crawled it. PI crawls on its
+    // own schedule, so a new episode could stay off this page for a day while
+    // every app that reads the RSS itself already listed it. Only items newer
+    // than PI's newest — see `getRssEpisodesNewerThan` for why the bound. They
+    // go through the same dedupe and value merge below as PI's rows, and they
+    // are in `enrichMap`, so their payee is the feed's item block, else its
+    // channel block, else none. Best-effort, like the enrichment itself.
+    const newestPi = episodes.reduce((max, e) => Math.max(max, e.datePublished ?? 0), 0);
+    const fresh = rssRead && podcast.url
+      ? await getRssEpisodesNewerThan(
+          podcast.url,
+          id,
+          newestPi,
+          new Set(episodes.map((e) => e.guid).filter((g): g is string => !!g)),
+        ).catch(() => [] as Episode[])
+      : [];
     // PI's /episodes/live only returns currently-broadcasting items; pending
     // liveItems live in the RSS itself, so we additionally parse the feed XML.
     const rssLive = podcast.url
@@ -164,7 +180,7 @@ export async function GET(req: Request) {
     const seenRegularGuid = new Set<string>();
     const seenRegularId = new Set<number>();
     const seenTitleDate = new Set<string>();
-    const regular = episodes.filter((e) => {
+    const regular = [...episodes, ...fresh].filter((e) => {
       if (e.guid && seenGuid.has(e.guid)) return false;   // collides with a live item
       if (liveIds.has(e.id)) return false;
       if (e.guid && seenRegularGuid.has(e.guid)) return false;
