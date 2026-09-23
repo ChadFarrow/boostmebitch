@@ -1,7 +1,7 @@
 import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
-import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
-import { httpUrl } from '../util';
+import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult, ValueTimeSplit } from '../types';
+import { boostNoteTrack, httpUrl, type BoostNoteTrack } from '../util';
 import type { QuotedZapReceipt } from './zap-receipt-wait';
 import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
@@ -33,7 +33,42 @@ interface PublishArgs {
    * noteMentionTags.
    */
   mentions?: MentionNpub[];
+  /**
+   * The TRACK this boost paid, when it paid one — a `<podcast:valueTimeSplit>`
+   * window or a live show's Split Kit block — with the legs that paid that
+   * track's block (not the show's remainder). The note then names the song in a
+   * `🎵` line and tags its NIP-73 identifiers; `boostNoteTrack` (lib/util.ts)
+   * decides whether it may, and says nothing unless a track leg settled.
+   * Ignored by `contentOverride`'s body, never by its tags.
+   */
+  track?: {
+    split: Pick<ValueTimeSplit, 'title' | 'artist' | 'remoteItem'>;
+    results: BoostResult[];
+  };
 }
+
+/** The note's track, decided against the guids this note tags as its own. */
+function noteTrack(args: PublishArgs): BoostNoteTrack | null {
+  if (!args.track) return null;
+  return boostNoteTrack({
+    split: args.track.split,
+    trackResults: args.track.results,
+    showGuid: args.podcast.podcastGuid,
+    episodeGuid: args.episode?.guid,
+  });
+}
+
+/**
+ * The site-sign route's MAX_TAGS_TOTAL_LEN — the sum of every tag item's
+ * length. It rejects the WHOLE template past it, so the track's optional tags
+ * give way before the note does. Keep the two numbers together.
+ */
+const SITE_SIGN_TAGS_TOTAL_LEN = 4096;
+/** The site-sign route's MAX_CONTENT, for the same reason: the `🎵` line gives
+ *  way before the note does. */
+const SITE_SIGN_MAX_CONTENT = 2000;
+const tagsLen = (tags: string[][]) =>
+  tags.reduce((n, t) => n + t.reduce((m, x) => m + x.length, 0), 0);
 
 /**
  * Best public listen-link for what was boosted, in preference order:
@@ -278,7 +313,7 @@ export function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
 }
 
 
-function formatContent(args: PublishArgs): string {
+function formatContent(args: PublishArgs, withTrack = true): string {
   const { podcast, episode, boostagram } = args;
   const totalSats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
 
@@ -293,6 +328,10 @@ function formatContent(args: PublishArgs): string {
   const sender = boostagram.sender_name?.trim();
   lines.push(`${sender ? `${sender} boosted` : 'Boosted'} ${totalSats} sats → ${podcast.title}`);
   if (episode?.title) lines.push(`📻 ${episode.title}`);
+  // The song the boost paid, right under the episode it played in. Only when a
+  // track leg settled — see boostNoteTrack.
+  const track = withTrack ? noteTrack(args) : null;
+  if (track?.line) lines.push(track.line);
   const link = podcastLandingUrl(podcast, episode);
   if (link) lines.push('', link);
   const bmbLink = bmbLandingUrl(podcast, episode);
@@ -337,6 +376,31 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
       : ['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
+  // The TRACK the boost paid, as NIP-73 identifiers after the show's and the
+  // episode's own, which stay first. No `k` tag: `k` names the KIND of
+  // identifier, and both kinds are already declared above — a second pair would
+  // say nothing new. A track whose guid IS the note's own adds no tag (a musicL
+  // playlist row); see boostNoteTrack. Placed here, sized below.
+  const track = noteTrack(args);
+  const trackAt = tags.length;
+  const trackTags = (withHints: boolean): string[][] => {
+    if (!track) return [];
+    const out: string[][] = [];
+    const feed = track.feedGuid ?? podcast.podcastGuid;
+    if (track.feedGuid) {
+      const hint = withHints ? `${SITE_ORIGIN}/?podcast=${encodeURIComponent(track.feedGuid)}` : null;
+      out.push(hint ? ['i', `podcast:guid:${track.feedGuid}`, hint] : ['i', `podcast:guid:${track.feedGuid}`]);
+    }
+    if (track.itemGuid) {
+      const hint = withHints && feed
+        ? `${SITE_ORIGIN}/?podcast=${encodeURIComponent(feed)}&episode=${encodeURIComponent(track.itemGuid)}`
+        : null;
+      out.push(hint && hint.length <= 512
+        ? ['i', `podcast:item:guid:${track.itemGuid}`, hint]
+        : ['i', `podcast:item:guid:${track.itemGuid}`]);
+    }
+    return out;
+  };
   const linkUrl = podcastLandingUrl(podcast, episode);
   if (linkUrl) tags.push(['r', linkUrl]);
   const bmbUrl = bmbLandingUrl(podcast, episode);
@@ -390,6 +454,16 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   tags.push(clientTag(boostagram.app_name));
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
+  // Sized last, against everything else the note carries: the hints go first,
+  // then the track's tags, and the note itself never. A track the tags cannot
+  // hold is still named in the body.
+  for (const candidate of [trackTags(true), trackTags(false)]) {
+    if (candidate.length === 0) break;
+    if (tagsLen(tags) + tagsLen(candidate) <= SITE_SIGN_TAGS_TOTAL_LEN) {
+      tags.splice(trackAt, 0, ...candidate);
+      break;
+    }
+  }
 
   return {
     kind: 1,
@@ -399,9 +473,17 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     // are one decision: a mention put where the sender typed it must NOT also
     // appear in the trailing run, or the note names the same person twice.
     content: (() => {
-      const body = withArt(args.contentOverride ?? formatContent(args), banner);
-      const { content: inlined, remaining } = inlineMentions(body, inBody);
-      return withMentionRun(withZapReceipts(inlined, receipts), remaining);
+      const build = (withTrack: boolean) => {
+        const body = withArt(args.contentOverride ?? formatContent(args, withTrack), banner);
+        const { content: inlined, remaining } = inlineMentions(body, inBody);
+        return withMentionRun(withZapReceipts(inlined, receipts), remaining);
+      };
+      // The track line is the one optional line, so it is the one that goes
+      // when a long message, many mentions and long links fill the body: the
+      // route refuses the WHOLE note past its cap. Measured on both paths so a
+      // note never differs by which key signs it.
+      const full = build(true);
+      return full.length > SITE_SIGN_MAX_CONTENT ? build(false) : full;
     })(),
   };
 }

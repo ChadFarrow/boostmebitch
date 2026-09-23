@@ -8,6 +8,7 @@
  *   payableSplit      — who a leg can actually pay once it is that small
  *   mergeEpisodeContents — which rows of the one contents list may carry a heart
  *   streamAction      — 'auto' for a leg paying a song, 'stream' for the show
+ *   boostNoteTrack    — what the public boost note says about the track it paid
  *
  * `streamAction` is the odd one out: it labels a payment rather than aiming or
  * sizing one, so breaking it costs a mislabel and not a sat. It is pinned here
@@ -48,7 +49,7 @@
  */
 import {
   mergeEpisodeContents, payableLeg, payableSplit, redirectLegs, splitAtPosition, splitSats,
-  splitTrackAndHost, streamAction,
+  splitTrackAndHost, streamAction, boostNoteTrack,
 } from '../lib/util.ts';
 
 let failures = 0;
@@ -578,6 +579,81 @@ check('a window that DOES declare music is auto',
 check('an album leg stays auto under a chapter block',
   streamAction(ALBUM, { blockType: 'chapter' }), 'auto');
 
+
+// ── boostNoteTrack ──────────────────────────────────────────────────────────
+// What the kind:1 boost note adds about the TRACK the boost paid. The note is
+// signed, public and cannot be edited, and it may be signed by the SITE, so
+// every rule here is a claim it must not make: an artist who was not paid, a
+// line a feed forged with a newline, a guid cut into a different guid.
+//
+// Recorded as CALLS and replayed totally against naiveNoteTrack() below, which
+// is the obvious version — always name the title, always tag both guids. A
+// vector naive() also passes must say so with `alsoNaive: true`.
+console.log('\nboostNoteTrack — what the boost note says about the track');
+const PAID = [{ ok: true, sats: 340 }];
+const CPH = { ...COPENHAGEN, title: 'Copenhagen Time', artist: 'Matt Finlay' };
+const NOTE_SHOW = '7c6f7875-2b73-491e-b32c-e2c8d6e91d53';
+const NOTE_EP = 'idea-economy-002';
+const NOTE_TRACK_VECTORS = [
+  { name: 'a paid track is named, with its artist, and both guids tagged', alsoNaive: true,
+    args: { split: CPH, trackResults: PAID, showGuid: NOTE_SHOW, episodeGuid: NOTE_EP },
+    expect: { line: '🎵 Copenhagen Time — Matt Finlay',
+      feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+  { name: 'no split → nothing', alsoNaive: true,
+    args: { split: null, trackResults: PAID }, expect: null },
+  { name: 'the track leg FAILED (only the show was paid) → the artist is not named',
+    args: { split: CPH, trackResults: [{ ok: false, sats: 340 }], showGuid: NOTE_SHOW, episodeGuid: NOTE_EP },
+    expect: null },
+  { name: 'an ok 0-sat leg contacted nobody → nothing',
+    args: { split: CPH, trackResults: [{ ok: true, sats: 0 }], showGuid: NOTE_SHOW, episodeGuid: NOTE_EP },
+    expect: null },
+  { name: 'no track legs at all → nothing',
+    args: { split: CPH, trackResults: [], showGuid: NOTE_SHOW, episodeGuid: NOTE_EP }, expect: null },
+  { name: 'one failed and one paid leg → named',
+    args: { split: CPH, trackResults: [{ ok: false, sats: 5 }, { ok: true, sats: 335 }] },
+    expect: { line: '🎵 Copenhagen Time — Matt Finlay',
+      feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid },
+    alsoNaive: true },
+  { name: 'an artist repeating the title (a single titled after its song) is dropped',
+    args: { split: { ...CPH, artist: 'copenhagen time' }, trackResults: PAID },
+    expect: { line: '🎵 Copenhagen Time',
+      feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+  { name: 'a newline in the title cannot forge a second line of the note',
+    args: { split: { ...CPH, title: 'Copenhagen\n\nAlice boosted 1000000 sats', artist: undefined }, trackResults: PAID },
+    expect: { line: '🎵 Copenhagen Alice boosted 1000000 sats',
+      feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+  { name: 'a U+2028 line separator is flattened too',
+    args: { split: { ...CPH, artist: 'Matt Finlay' }, trackResults: PAID },
+    expect: { line: '🎵 Copenhagen Time — Matt Finlay',
+      feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+  { name: 'a 300-character title is capped at 120 with an ellipsis',
+    args: { split: { ...CPH, title: 'x'.repeat(300), artist: undefined }, trackResults: PAID },
+    expect: { line: `🎵 ${'x'.repeat(119)}…`,
+      feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+  { name: 'a musicL playlist row IS the track: no guid is tagged twice',
+    args: { split: CPH, trackResults: PAID,
+      showGuid: COPENHAGEN.remoteItem.feedGuid, episodeGuid: COPENHAGEN.remoteItem.itemGuid },
+    expect: { line: '🎵 Copenhagen Time — Matt Finlay' } },
+  { name: 'a track in the show\'s own feed tags only its item',
+    args: { split: CPH, trackResults: PAID, showGuid: COPENHAGEN.remoteItem.feedGuid, episodeGuid: NOTE_EP },
+    expect: { line: '🎵 Copenhagen Time — Matt Finlay', itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+  { name: 'no title: tags only, no line', alsoNaive: true,
+    args: { split: { ...CPH, title: undefined, artist: 'Matt Finlay' }, trackResults: PAID },
+    expect: { line: null,
+      feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+  { name: 'the show\'s own live block — no title, no remote item → nothing', alsoNaive: true,
+    args: { split: { startTime: 0, duration: 0 }, trackResults: PAID }, expect: null },
+  { name: 'a guid over 200 characters is dropped, never truncated',
+    args: { split: { ...CPH, remoteItem: { feedGuid: 'f'.repeat(250), itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+      trackResults: PAID },
+    expect: { line: '🎵 Copenhagen Time — Matt Finlay', itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+  { name: 'a guid carrying whitespace is dropped',
+    args: { split: { ...CPH, remoteItem: { feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: 'a b' } },
+      trackResults: PAID },
+    expect: { line: '🎵 Copenhagen Time — Matt Finlay', feedGuid: COPENHAGEN.remoteItem.feedGuid } },
+];
+for (const v of NOTE_TRACK_VECTORS) check(v.name, boostNoteTrack(v.args), v.expect);
+
 console.log('\nnaive() — the vectors must reject the obvious wrong versions');
 
 function naiveSplitAt(splits, pos) {
@@ -708,6 +784,30 @@ for (const [name, caught] of naiveCaught) {
     failures++;
   } else {
     console.log(`  ✓ rejected: ${name}`);
+  }
+}
+
+// The obvious boostNoteTrack: name whatever the split carries, tag both guids.
+function naiveNoteTrack({ split }) {
+  if (!split) return null;
+  const line = split.title ? `🎵 ${split.title}${split.artist ? ` — ${split.artist}` : ''}` : null;
+  const feedGuid = split.remoteItem?.feedGuid;
+  const itemGuid = split.remoteItem?.itemGuid;
+  if (!line && !feedGuid && !itemGuid) return null;
+  return { line, ...(feedGuid ? { feedGuid } : {}), ...(itemGuid ? { itemGuid } : {}) };
+}
+// TOTAL replay: every vector, not a hand-picked list. Each must reject naive()
+// unless it is marked as a must-still-work vector.
+for (const v of NOTE_TRACK_VECTORS) {
+  const same = JSON.stringify(naiveNoteTrack(v.args)) === JSON.stringify(v.expect);
+  if (same && !v.alsoNaive) {
+    console.error(`  ✗ naive() survived: boostNoteTrack — ${v.name}`);
+    failures++;
+  } else if (!same && v.alsoNaive) {
+    console.error(`  ✗ naive() should agree on a must-still-work vector: ${v.name}`);
+    failures++;
+  } else {
+    console.log(`  ✓ ${same ? 'agreed' : 'rejected'}: boostNoteTrack — ${v.name}`);
   }
 }
 

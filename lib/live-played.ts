@@ -247,8 +247,12 @@ export function livePlayedKey(t: LiveTargetShape): string {
  *   made those unfavoritable, which is the bug this feature exists to fix,
  *   pointed at a podcast instead of a song. So the show's OWN feed is skipped
  *   and everyone else's is kept.
+ *
+ * Exported for the boost note too (`components/boost-modal/`): a block this
+ * list would not keep is not a track the note may name, and a second copy of
+ * the test is how the two would come to disagree about what played.
  */
-function isNotPlayed(t: LiveTargetShape, split: ValueTimeSplit): boolean {
+export function isNotPlayed(t: LiveTargetShape, split: ValueTimeSplit): boolean {
   if (t.blockType === 'chapter' && !split.remoteItem?.itemGuid) return true;
   if (t.blockType === 'podcast') {
     // No `showFeedGuid` means we can't tell whose episode it is. Keep the old
@@ -312,6 +316,36 @@ export function recordLivePlay(t: LiveTargetShape | null): void {
   if (!row.parentResolved || !split.artist) void enrichRow(logGuid, key, split);
 }
 
+export interface RemoteItemParent {
+  parentFeedGuid?: string | null;
+  feedTitle?: string;
+  artist?: string;
+}
+
+/**
+ * `/api/remote-item`'s answer for one track: its parent feed, the album's
+ * title, and the artist. `null` for a miss (a 404 — PI not having crawled the
+ * album is the ordinary, self-healing state, not evidence the guid is wrong), a
+ * failure, or a throw; the callers treat all three alike.
+ *
+ * One copy, shared by the played list below and the boost note, which names
+ * the artist of the track a boost paid.
+ */
+export async function fetchRemoteItemParent(
+  feedGuid: string,
+  itemGuid: string,
+): Promise<RemoteItemParent | null> {
+  try {
+    const res = await fetch(
+      `/api/remote-item?feedGuid=${encodeURIComponent(feedGuid)}`
+      + `&itemGuid=${encodeURIComponent(itemGuid)}`,
+    );
+    return res.ok ? ((await res.json()) as RemoteItemParent) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ask `/api/remote-item` what the row's parent feed is, and who made the track.
  *
@@ -334,19 +368,8 @@ export function recordLivePlay(t: LiveTargetShape | null): void {
 async function enrichRow(guid: string | null, key: string, split: ValueTimeSplit) {
   const feedGuid = split.remoteItem?.feedGuid;
   const itemGuid = split.remoteItem?.itemGuid;
-  let parent: { parentFeedGuid?: string | null; feedTitle?: string; artist?: string } = {};
-  if (feedGuid && itemGuid) {
-    try {
-      const res = await fetch(
-        `/api/remote-item?feedGuid=${encodeURIComponent(feedGuid)}`
-        + `&itemGuid=${encodeURIComponent(itemGuid)}`,
-      );
-      // A miss is a 404 and answers `undefined`, the same as a throw: PI not
-      // having crawled the album is the ordinary, self-healing state, and it is
-      // not evidence the guid is wrong.
-      if (res.ok) parent = await res.json();
-    } catch { /* leave the verdict undefined — see PlayedTrack.parentResolved */ }
-  }
+  // A failed lookup leaves the verdict undefined — see PlayedTrack.parentResolved.
+  const parent = (feedGuid && itemGuid ? await fetchRemoteItemParent(feedGuid, itemGuid) : null) ?? {};
   if (guid !== logGuid) return;
   const i = log.findIndex((p) => p.key === key);
   if (i < 0) return;
