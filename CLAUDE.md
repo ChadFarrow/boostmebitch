@@ -92,7 +92,7 @@ npm run dev / build / start / lint
 | `check:nip46error` | `isApprovalPending` — refusal vs approval pending — **and `nip46RequestFits`, the 65535-byte NIP-44 ceiling one NIP-46 request may carry** | Clave signs nothing; another signer's "no" hangs; **a follow list over 849 is reported as a dead signer** |
 | `check:vpsummary` | `lib/nostr/value-playback-summary.ts` — the kind:33369 arithmetic and its publish predicate | two writers at ONE address rewrite each other forever |
 | `check:nwcbudget` | `parseNwcBudget`, `spendableSats` — a NIP-47 `get_budget` answer, and which number is spendable | advertises sats the budget will refuse, or blanks a wallet that can pay |
-| `check:musicl` | `parsePlaylistRemoteItems`, `isPlaylistMedium`, `playsAsTracks`, **`payableValue`** | a playlist publishes no `<item>`, so a mis-parse pays the CURATOR |
+| `check:musicl` | `parsePlaylistRemoteItems`, `isPlaylistMedium`, `playsAsTracks`, **`payableValue`**, **`feedItemValue`** | a playlist publishes no `<item>`, so a mis-parse pays the CURATOR; PI's stale item block pays a node the feed dropped |
 | `check:mutes` | `classifyMuteContent`, `parseMuteTags`, `privateHalfAlreadyOpened` — which cipher a kind:10000 private half is written in | another client's mute list re-encoded, unreadable, from a successful publish |
 | `check:chapters` | `lib/chapters-json.ts` — the one corruption a feed chapters document may carry | a chapter TITLE loses characters, or chapters vanish entirely |
 | `check:art` | `artWidth`, `artCandidates`, `artTypeVerdict`, `playableAhead`, `artGateOpen` | a failing proxy blanks every cover on twelve surfaces |

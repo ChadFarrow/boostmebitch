@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
@@ -783,6 +783,99 @@ console.log('\nWhose value block a boost for one row may be paid against');
       fail(`"${v.label}" passes against naive() too — the vector proves nothing.\n`
         + '          Either it is a must-still-work input (mark it { alsoNaive: true })\n'
         + '          or it does not exercise anything payableValue adds.');
+    }
+  }
+  console.log(`  ${vv.length} vector(s) replayed, ${vv.filter((v) => v.alsoNaive).length} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nWhose value block /api/feed ships on a row: the feed\'s, over PI\'s');
+// ---------------------------------------------------------------------------
+{
+  // `feedItemValue` is the expression /api/feed runs where it used to run
+  // `e.value ?? podcast.value`. Podcast Index can hold a STALE item block while
+  // its channel block is current, and the naive expression lets the stale one
+  // win on every track BOOST.
+  //
+  // The first vector is the measured case, from the wire on 2026-09-23: Jimmy V
+  // – Jimmy V Collection (PI feed 6734639). The RSS has ONE channel
+  // <podcast:value> and no item blocks; PI held an item block on 11 of 13
+  // tracks from a 2025-10-09 crawl. Recipients copied from both documents,
+  // trimmed to the legs that differ: the feed pays SirLibre Node 03460a…, PI's
+  // item block pays the old Kolomona node 030a58… and a "Fountain Boostbot"
+  // leg the feed dropped.
+  //
+  //   OVER-TRUST PI      a track BOOST pays a node the feed no longer names.
+  //   OVER-TRUST RSS     a feed the scan did not reach, or could not read,
+  //                      loses the block PI has — BOOST goes dead.
+  const JV = '03b6f613e88bd874177c28c6ad83b3baba43c4c656f56be1f8df84669556054b79';
+  const FEED_CHANNEL = { type: 'lightning', method: 'keysend', recipients: [
+    { name: 'Jimmy V - Musicianship & Hosting', type: 'node', address: JV, customKey: '906608', customValue: '01dIRsYB86CoEkZ4yUubfh', split: 85, fee: false },
+    { name: 'SirLibre Node', type: 'node', address: '03460a453d13c98ff06b36b3b6a8c06a7b48328ad5f983dacc3a7b0991b841bc57', split: 5, fee: false },
+  ] };
+  const PI_STALE_ITEM = { type: 'lightning', method: 'keysend', recipients: [
+    { name: 'Jimmy V - Musicianship & Hosting', type: 'node', address: JV, customKey: '906608', customValue: '01dIRsYB86CoEkZ4yUubfh', split: 85 },
+    { name: 'Fountain Boostbot', type: 'node', address: JV, customKey: '906608', customValue: '01arpnAY9hHWR1ihl8YyUr', split: 1 },
+    { name: 'Kolomona - Sir Libre - LightningThrashes.com - Tech help', type: 'node', address: '030a58b8653d32b99200a2334cfe913e51dc7d155aa0116c176657a4f1722677a3', customKey: '696969', customValue: '912ezE5oAMbMPuxCiHq8', split: 5 },
+  ] };
+  // PI's copy of the channel block matched the feed on that date.
+  const PI_CHANNEL = FEED_CHANNEL;
+  const ARTIST = { type: 'lightning', method: 'keysend', recipients: [{ name: 'Artist', type: 'node', address: '03aaa', split: 100 }] };
+  const OLD_ARTIST = { type: 'lightning', method: 'keysend', recipients: [{ name: 'Artist (old node)', type: 'node', address: '03old', split: 100 }] };
+
+  const vv = [];
+  // args: [rssRead, rssItem, rssChannel, piItem, piChannel]
+  const val = (label, args, expect, opts = {}) => vv.push({ label, args, expect, ...opts });
+
+  // ── must refuse PI's stale copy ──────────────────────────────────────────
+  val('Jimmy V: the feed lists the track with no item block — the CHANNEL pays, not PI\'s stale item block',
+    [true, { value: null }, FEED_CHANNEL, PI_STALE_ITEM, PI_CHANNEL], FEED_CHANNEL);
+  val('the feed\'s own item block beats PI\'s older item block',
+    [true, { value: ARTIST }, FEED_CHANNEL, OLD_ARTIST, PI_CHANNEL], ARTIST);
+  val('a feed that dropped V4V entirely is paid NOTHING, not PI\'s leftovers',
+    // The feed was read, lists the item, and declares no block anywhere. The
+    // publisher took payments down; PI has not noticed.
+    [true, { value: null }, null, PI_STALE_ITEM, PI_CHANNEL], null);
+  val('an item past the scan cap, on a feed that dropped its channel block, does not fall back to PI\'s channel',
+    // The route ships `podcast.value = feedValue` when the feed was read, so
+    // the row must not disagree with the show-level answer.
+    [true, undefined, null, undefined, PI_CHANNEL], null);
+
+  // ── must still work ──────────────────────────────────────────────────────
+  val('the feed could not be read: PI\'s item block, exactly as before',
+    [false, undefined, undefined, ARTIST, PI_CHANNEL], ARTIST, { alsoNaive: true });
+  val('the feed could not be read and PI has no item block: PI\'s channel block',
+    [false, undefined, undefined, undefined, PI_CHANNEL], PI_CHANNEL, { alsoNaive: true });
+  val('the scan did not reach the item: PI\'s item block stands — nothing says it is wrong',
+    [true, undefined, FEED_CHANNEL, ARTIST, PI_CHANNEL], ARTIST, { alsoNaive: true });
+  val('an ordinary show whose feed and PI agree ships the same block either way',
+    [true, { value: null }, FEED_CHANNEL, undefined, PI_CHANNEL], FEED_CHANNEL, { alsoNaive: true });
+  val('a per-track album the feed and PI agree on keeps each track\'s own block',
+    [true, { value: ARTIST }, FEED_CHANNEL, ARTIST, PI_CHANNEL], ARTIST, { alsoNaive: true });
+
+  const ser = (v) => (v === undefined ? 'undefined' : JSON.stringify(v));
+  // The route's old expression: `e.value ?? podcast.value`, with PI supplying both.
+  const naive = (_rssRead, _rssItem, _rssChannel, piItem, piChannel) => piItem ?? piChannel;
+  const call = (impl, v) => {
+    try {
+      return ser(impl === 'real' ? feedItemValue(...v.args) : naive(...v.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+
+  for (const v of vv) {
+    const got = call('real', v);
+    if (got !== ser(v.expect)) {
+      fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+      continue;
+    }
+    if (v.alsoNaive) { ok(`${v.label} (must-still-work — naive() may agree)`); continue; }
+    if (got !== call('naive', v)) ok(`${v.label} — and naive() gets it wrong`);
+    else {
+      fail(`"${v.label}" passes against naive() too — the vector proves nothing.\n`
+        + '          Either it is a must-still-work input (mark it { alsoNaive: true })\n'
+        + '          or it does not exercise anything feedItemValue adds.');
     }
   }
   console.log(`  ${vv.length} vector(s) replayed, ${vv.filter((v) => v.alsoNaive).length} exempt as must-still-work`);

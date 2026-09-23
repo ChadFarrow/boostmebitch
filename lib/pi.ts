@@ -1246,10 +1246,21 @@ interface RssEpisodeEnrichment {
   transcriptType?: string;
   link?: string;
   alternateEnclosures?: AlternateEnclosure[];
+  /** The item's own `<podcast:value>`, or null when it declares none. Read
+   *  from the live feed because Podcast Index can hold a stale one — see
+   *  `feedItemValue` (lib/util.ts). */
+  value: ValueBlock | null;
 }
 
 export interface RssFeedEnrichment {
+  /** One entry for EVERY `<item>` with a guid the scan reached, enriched or
+   *  not, so "the feed lists this item" is answerable from `has(guid)`. */
   episodes: Map<string, RssEpisodeEnrichment>;
+  /** True when the feed document was read. Every other field is only an
+   *  answer about the feed when this is. */
+  rssRead?: boolean;
+  /** The channel `<podcast:value>`, or null when the channel declares none. */
+  feedValue?: ValueBlock | null;
   feedMedium?: string;
   feedPodroll?: PodrollItem[];
   feedFunding?: FundingLink[];
@@ -1475,11 +1486,15 @@ export async function getRssEpisodeEnrichment(
     const alternateEnclosures = parseAlternateEnclosures(inner);
     // <podcast:txt purpose="nostr"> — this track's/episode's own artist.
     const nostrNpubs = parseFeedNpubs(inner);
-    if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl || link || alternateEnclosures || nostrNpubs) {
-      episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs });
-    }
+    // The item's own value block, read here because Podcast Index can hold a
+    // stale one. Every item gets an entry, enriched or not, so the route can
+    // tell "the feed lists this item and gives it no block" from "the scan
+    // never reached it" — only the first is an answer about the payee.
+    const value = parseValueBlock(inner);
+    episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, value });
   }
-  return { episodes, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle };
+  const feedValue = parseValueBlock(channelXml);
+  return { episodes, rssRead: true, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle };
 }
 
 // --- Non-PI feed preview ---------------------------------------------------
