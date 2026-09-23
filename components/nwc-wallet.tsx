@@ -14,10 +14,12 @@ import {
 } from '@/lib/v4v/nwc';
 import { BRAND } from '@/lib/brand';
 import { getErrorMessage } from '@/lib/util';
+import { timeAgo } from '@/lib/format';
 import { markNwcRestored, wasNwcRestored, clearNwcRestored } from '@/lib/v4v/nwc-state';
 import {
-  publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, fetchEncryptedNwcDetailed,
-  getNip44, isAmberActive,
+  publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwcDetailed,
+  getNip44, isAmberActive, subscribeSigner,
+  readNwcBackupHead, backupIsAnotherDevices, type NwcBackupHead,
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -235,11 +237,14 @@ interface Props {
 // Module-scope (not nested in NwcWallet) so it keeps a stable identity across
 // the parent's busy/state re-renders — a nested component would remount the
 // <input> on every render.
-function BackupToggle({ checked, disabled, canBackup, signedIn, amber, onToggle }: {
+function BackupToggle({ checked, disabled, canBackup, signedIn, signerPending, amber, onToggle }: {
   checked: boolean;
   disabled: boolean;
   canBackup: boolean;
   signedIn: boolean;
+  /** Signed in with a remote signer whose adapter has not installed yet — a
+   *  signer that is still reconnecting, NOT one without NIP-44. */
+  signerPending: boolean;
   /** Amber is the active signer, so this costs two approvals — see below. */
   amber: boolean;
   onToggle: (next: boolean) => void;
@@ -268,12 +273,54 @@ function BackupToggle({ checked, disabled, canBackup, signedIn, amber, onToggle 
           </span>
         ) : (
           <span className="block text-muted">
-            {signedIn ? 'Your signer doesn’t support NIP-44 encryption.' : 'Sign in with Nostr to enable.'}
+            {!signedIn
+              ? 'Sign in with Nostr to enable.'
+              : signerPending
+                ? 'Waiting for your signer to connect.'
+                : 'Your signer doesn’t support NIP-44 encryption.'}
           </span>
         )}
       </span>
     </label>
   );
+}
+
+/**
+ * Whether the backup on Nostr is THIS device's connection.
+ *
+ * The checkbox cannot say it. It records that this device once published, and
+ * one account on two devices is two writers at one coordinate: both boxes stay
+ * checked while only the last publish is on the relays, so a phone restoring
+ * from Nostr gets whichever device backed up last. Reported 2026-09-23 as two
+ * balances for one account — an Android app and an iPhone app each holding a
+ * different connection, both "backed up".
+ *
+ * Silent while the read has not answered or could not say, and for an OLDER
+ * event than this device's own, which is a relay that missed our publish
+ * rather than another writer.
+ */
+function BackupStatus({ head, written, canRepair }: {
+  head: NwcBackupHead;
+  written: { id: string; createdAt: number } | null;
+  canRepair: boolean;
+}) {
+  const repair = canRepair ? ' Tap Back up again to save this connection instead.' : '';
+  let text: string | null = null;
+  let ok = false;
+  if (head.state === 'none') {
+    text = `There is no backup on Nostr now. It was removed, possibly from another device.${canRepair ? ' Tap Back up again to save this connection.' : ''}`;
+  } else if (head.state === 'present') {
+    if (written && head.id === written.id) {
+      text = '✓ The backup on Nostr is this connection.';
+      ok = true;
+    } else if (!written) {
+      text = `This device can’t tell whether the backup on Nostr is this connection.${repair}`;
+    } else if (backupIsAnotherDevices(head, written)) {
+      text = `The backup on Nostr is a different connection, saved ${timeAgo(head.createdAt)} — probably from another device.${repair}`;
+    }
+  }
+  if (!text) return null;
+  return <div className={`text-[11px] break-words ${ok ? 'text-muted' : 'text-bolt/80'}`}>{text}</div>;
 }
 
 // One quiet backup auto-check per account per page load. The login-time
@@ -301,10 +348,48 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   // auto-restore or an identity arriving async is always reflected.
   const [formBackup, setFormBackup] = useState(false);
 
+  // What sits at the backup coordinate, read without a decrypt on card open.
+  // `unknown` until it answers — and after a read that could not say.
+  const [head, setHead] = useState<NwcBackupHead>({ state: 'unknown' });
+
   // Backup needs a signed-in identity AND a signer that can NIP-44 encrypt.
+  // Read during render, so the subscription below is what makes it current: a
+  // NIP-46 signer installs its adapter AFTER page load, and a card that opened
+  // first used to say the signer had no NIP-44 for as long as it stayed open.
   const canBackup = !!identity && getNip44() !== null;
+  const signerPending = !!identity && !canBackup && storage.signer.get() === 'bunker';
 
   function bump() { setTick((t) => t + 1); }
+
+  useEffect(() => subscribeSigner(bump), []);
+
+  // Record the event a publish or a restore produced, so this device knows
+  // WHICH backup it wrote — see `storage.nwcBackup.written`.
+  function recordBackup(npub: string, event: { id: string; created_at: number }) {
+    storage.nwcBackup.set(npub, event);
+    setHead({ state: 'present', id: event.id, createdAt: event.created_at });
+  }
+
+  /**
+   * Tombstone the backup only when it is not another device's.
+   *
+   * Reads the head first — a plain read, no decrypt, so no extra signer
+   * prompt. When the backup is a NEWER connection than the one this device
+   * wrote, deleting it would remove the other device's restore, so it is left
+   * alone and only this device's flag is cleared. Returns whether it was left.
+   */
+  async function removeBackupIfOurs(id: NonNullable<typeof identity>): Promise<'removed' | 'left'> {
+    const current = await readNwcBackupHead(id).catch((): NwcBackupHead => ({ state: 'unknown' }));
+    setHead(current);
+    if (backupIsAnotherDevices(current, storage.nwcBackup.written(id.npub))) {
+      storage.nwcBackup.clear(id.npub);
+      return 'left';
+    }
+    await deleteEncryptedNwc(id);
+    storage.nwcBackup.clear(id.npub);
+    setHead({ state: 'none' });
+    return 'removed';
+  }
 
   // Auto-restore on form mount: if this device has no NWC URI but the account
   // has an encrypted backup on Nostr, restore it without a manual click. Runs
@@ -317,12 +402,12 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     autoCheckedNpubs.add(identity.npub);
     let cancelled = false;
     setAutoChecking(true);
-    fetchEncryptedNwc(identity, 'user-initiated')
-      .then((uri) => {
+    fetchEncryptedNwcDetailed(identity, 'user-initiated')
+      .then(({ uri, event }) => {
         if (!uri) return;
         // Save even if the modal closed mid-fetch — the restore is global.
         saveNwcUri(uri);
-        storage.nwcBackup.set(identity.npub);
+        storage.nwcBackup.set(identity.npub, event ?? undefined);
         markNwcRestored(identity.npub);
         if (!cancelled) { bump(); onConnected?.(); }
       })
@@ -382,12 +467,69 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     return () => { cancelled = true; };
   }, [mode]);
 
+  // Is the backup on Nostr still THIS device's connection? Read on card open,
+  // and again when the signed-in account changes. A plain read of the event's
+  // id — never a decrypt, which on Amber or Clave would put the connection
+  // string on an approval sheet the user did not ask for.
+  //
+  // Read whether or not this device has the backup flag. A device that already
+  // held a connection when the user signed in keeps it and never restores
+  // (restore runs only with no local connection), so it can be using an OLD
+  // wallet while a different backup sits on Nostr, with no flag and nothing
+  // on screen to say so.
+  const cardOpen = mode === 'card' && !!identity;
+  useEffect(() => {
+    if (!cardOpen || !identity) return;
+    let cancelled = false;
+    readNwcBackupHead(identity)
+      .then((h) => { if (!cancelled) setHead(h); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [cardOpen, identity]);
+
+  /**
+   * Replace this device's connection with the one backed up on Nostr.
+   *
+   * The repair for a device that kept an old connection across sign-in. It
+   * decrypts, so it runs only on the user's tap ('user-initiated'). It never
+   * touches the backup — the local connection is simply dropped, which is the
+   * whole point: tombstoning here would delete the connection the user asked
+   * to switch TO.
+   */
+  async function useBackupInstead() {
+    if (!identity || !canBackup || busy) return;
+    setBusy(true);
+    setErr(null);
+    setNote(null);
+    try {
+      const { uri, unreadable, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
+      if (!uri) {
+        setErr(unreadable
+          ? 'The backup on Nostr could not be read. This connection stays.'
+          : 'No backup found on Nostr for this account. This connection stays.');
+        return;
+      }
+      storage.walletBalance.clear(identity.npub);
+      saveNwcUri(uri);
+      if (event) recordBackup(identity.npub, event);
+      else storage.nwcBackup.set(identity.npub);
+      markNwcRestored(identity.npub);
+      setBudget(null);
+      nwcGetBudget().then(setBudget).catch(() => {});
+      bump();
+    } catch (e) {
+      setErr(`Couldn’t use the backup: ${e instanceof Error ? e.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function restoreFromNostr() {
     if (!identity || !canBackup) return;
     setBusy(true);
     setErr(null);
     try {
-      const { uri, unreadable } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
+      const { uri, unreadable, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
       if (!uri) {
         // Two different facts, and the second one names its own repair. An
         // unreadable backup is one this account owns and cannot use — the shape
@@ -399,7 +541,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         return;
       }
       saveNwcUri(uri);
-      storage.nwcBackup.set(identity.npub);
+      storage.nwcBackup.set(identity.npub, event ?? undefined);
       markNwcRestored(identity.npub);
       bump();
       onConnected?.();
@@ -444,8 +586,8 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
       // failure here doesn't undo the (working) local connection.
       if (formBackup && canBackup && identity) {
         try {
-          await publishEncryptedNwc(identity, uri);
-          storage.nwcBackup.set(identity.npub);
+          const note = await publishEncryptedNwc(identity, uri);
+          recordBackup(identity.npub, note.event);
         } catch (e) {
           setErr(`Connected, but Nostr backup failed: ${e instanceof Error ? e.message : 'unknown error'}`);
         }
@@ -469,8 +611,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
       setErr(null);
       setNote(null);
       try {
-        await deleteEncryptedNwc(identity);
-        storage.nwcBackup.clear(identity.npub);
+        await removeBackupIfOurs(identity);
       } catch (e) {
         setErr(`Couldn’t remove the Nostr backup: ${e instanceof Error ? e.message : 'unknown error'}. Tap Disconnect again to retry.`);
         setBusy(false);
@@ -514,8 +655,8 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     setErr(null);
     setNote(null);
     try {
-      await publishEncryptedNwc(identity, uri);
-      storage.nwcBackup.set(identity.npub);
+      const published = await publishEncryptedNwc(identity, uri);
+      recordBackup(identity.npub, published.event);
       setNote('✓ Backup replaced with this connection.');
     } catch (e) {
       setErr(`Backup failed: ${e instanceof Error ? e.message : 'unknown error'}`);
@@ -533,11 +674,10 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     setNote(null);
     try {
       if (next) {
-        await publishEncryptedNwc(identity, uri!);
-        storage.nwcBackup.set(identity.npub);
-      } else {
-        await deleteEncryptedNwc(identity);
-        storage.nwcBackup.clear(identity.npub);
+        const published = await publishEncryptedNwc(identity, uri!);
+        recordBackup(identity.npub, published.event);
+      } else if (await removeBackupIfOurs(identity) === 'left') {
+        setNote('Stopped backing up this connection. The backup on Nostr is another device’s connection, so it stays.');
       }
     } catch (e) {
       setErr(`Backup ${next ? 'enable' : 'disable'} failed: ${e instanceof Error ? e.message : 'unknown error'}`);
@@ -601,9 +741,30 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
           disabled={!canBackup || busy}
           canBackup={canBackup}
           signedIn={!!identity}
+          signerPending={signerPending}
           amber={isAmberActive()}
           onToggle={toggleBackup}
         />
+        {cardBackup && identity && (
+          <BackupStatus head={head} written={storage.nwcBackup.written(identity.npub)} canRepair={canBackup} />
+        )}
+        {/* No flag, and a backup IS on Nostr: this device neither wrote nor
+            restored it, so it is almost certainly running its own connection
+            — an old one kept across sign-in. Say so, and offer the switch. */}
+        {!cardBackup && identity && head.state === 'present' && (
+          <div className="text-[11px] text-bolt/80 break-words space-y-1.5">
+            <div>
+              This device uses its own connection. The backup on Nostr (saved {timeAgo(head.createdAt)}) was
+              not made or restored here, so it is probably a different connection. Ticking the box above
+              replaces that backup with this connection.
+            </div>
+            {canBackup && (
+              <button onClick={useBackupInstead} disabled={busy} className="btn-mini disabled:opacity-40">
+                ↩ Use the backup instead
+              </button>
+            )}
+          </div>
+        )}
         {note && <div className="text-[11px] text-bolt break-words">{note}</div>}
         {err && <div className="text-[11px] text-nostr/80 break-words">{err}</div>}
         {canMakeInvoice && <ReceivePanel />}
@@ -654,6 +815,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         disabled={!canBackup || busy}
         canBackup={canBackup}
         signedIn={!!identity}
+        signerPending={signerPending}
         amber={isAmberActive()}
         onToggle={setFormBackup}
       />

@@ -18,7 +18,7 @@ import {
   fetchRelayList,
   fetchEncryptedMnemonicDetailed,
   publishEncryptedMnemonic,
-  fetchEncryptedNwc,
+  fetchEncryptedNwcDetailed,
   fetchSettings,
   applySyncedSettings,
   favoritesMode,
@@ -329,9 +329,11 @@ export function NostrAuth() {
     // NWC backup: restore the encrypted connection string if this device has
     // no NWC URI yet.
     const nwcPromise = decryptOk && !hasNwc()
-      ? fetchEncryptedNwc(enriched, 'unattended')
-          .then((uri) => {
-            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); markNwcRestored(id.npub); }
+      ? fetchEncryptedNwcDetailed(enriched, 'unattended')
+          .then(({ uri, event }) => {
+            // `event` too, so the card can later tell this device's backup
+            // from one another device wrote over it.
+            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub, event ?? undefined); markNwcRestored(id.npub); }
           })
           .catch(() => {})
       : Promise.resolve();
