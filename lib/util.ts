@@ -1854,6 +1854,82 @@ export function redirectLegs(args: {
   };
 }
 
+/**
+ * What a boost note says about the TRACK a boost paid — the `🎵` line and the
+ * track's NIP-73 identifiers — or `null` when it says nothing.
+ *
+ * A boost pressed during a song pays the song (a `<podcast:valueTimeSplit>`
+ * window, or a live show's Split Kit block), and the boostagram names it in
+ * `remote_feed_guid`/`remote_item_guid`. The public note used to name only the
+ * show and the episode, so the artist who was paid appeared nowhere a reader
+ * could see. This decides what the note adds, and every rule is about not
+ * putting a false or unsafe claim into a signed kind:1 that cannot be edited:
+ *
+ * - **Only when a TRACK leg settled** — `trackResults` are the legs that paid
+ *   the track's block. When the track leg failed and only the show's remainder
+ *   went through, the note would name an artist who received nothing. Same
+ *   test as `paidAny` (`lib/v4v/boost.ts`): an `ok` 0-sat leg contacted nobody.
+ * - **The line needs a title.** An artist alone, or a bare guid, is not
+ *   something a reader can recognize. The artist is dropped when it repeats the
+ *   title — a single-track release often titles its feed after the song.
+ * - **Feed text is flattened and capped.** The title and artist are strings a
+ *   feed wrote about itself, and the note may be signed by the SITE through an
+ *   unauthenticated route with a 2000-character body; a newline would let a
+ *   feed forge a second line of the note.
+ * - **An identifier the note already carries is not repeated** — a `musicL`
+ *   playlist row already IS the track, so its guids are the note's own.
+ * - **An over-long guid is dropped, never truncated** — a truncated guid names
+ *   a different item, and the site-sign route rejects a tag value over 512.
+ */
+export interface BoostNoteTrack {
+  /** `🎵 <title>[ — <artist>]`, or null when there is no title to name. */
+  line: string | null;
+  /** The track's parent feed guid, when it is not the note's show guid. */
+  feedGuid?: string;
+  /** The track's item guid, when it is not the note's episode guid. */
+  itemGuid?: string;
+}
+
+const NOTE_TRACK_TEXT_MAX = 120;
+const NOTE_TRACK_GUID_MAX = 200;
+
+function noteTrackText(s: string | undefined): string {
+  const flat = (s ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length > NOTE_TRACK_TEXT_MAX
+    ? `${flat.slice(0, NOTE_TRACK_TEXT_MAX - 1).trimEnd()}…`
+    : flat;
+}
+
+function noteTrackGuid(g: string | undefined, already: string | undefined): string | undefined {
+  const v = g?.trim();
+  if (!v || v.length > NOTE_TRACK_GUID_MAX || /\s/.test(v) || v === already) return undefined;
+  return v;
+}
+
+export function boostNoteTrack(args: {
+  split: Pick<ValueTimeSplit, 'title' | 'artist' | 'remoteItem'> | null | undefined;
+  trackResults: Pick<BoostResult, 'ok' | 'sats'>[];
+  /** The guids the note already tags as its show and its episode. */
+  showGuid?: string;
+  episodeGuid?: string;
+}): BoostNoteTrack | null {
+  const { split } = args;
+  if (!split) return null;
+  if (!args.trackResults.some((r) => r.ok && r.sats > 0)) return null;
+  const title = noteTrackText(split.title);
+  let artist = noteTrackText(split.artist);
+  if (artist.toLowerCase() === title.toLowerCase()) artist = '';
+  const line = title ? `🎵 ${title}${artist ? ` — ${artist}` : ''}` : null;
+  const feedGuid = noteTrackGuid(split.remoteItem?.feedGuid, args.showGuid);
+  const itemGuid = noteTrackGuid(split.remoteItem?.itemGuid, args.episodeGuid);
+  if (!line && !feedGuid && !itemGuid) return null;
+  return {
+    line,
+    ...(feedGuid ? { feedGuid } : {}),
+    ...(itemGuid ? { itemGuid } : {}),
+  };
+}
+
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
 // IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
 /**

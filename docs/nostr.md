@@ -1479,16 +1479,17 @@ with the **same NIP-73 `i`/`k` pair SHAPE, in the same order and the same
 pairing**, that `buildBoostNoteTemplate` emits — that is the point of it. Drift
 the tag shape and nothing can read the two under one filter.
 
-**But the shape matching does not mean the VALUES match, and only the host
-bucket actually meets its boost note.** `buildBoostNoteTemplate` always tags the
-SHOW and the EPISODE, and `components/boost-modal/index.tsx` passes those even
-for a track-redirected boost — while `paymentIds` for a track bucket returns the
-track's own album feed guid and item guid. So a manual boost of a song and a
-streaming receipt for that same song carry **disjoint** `i` tags and never come
-back under one `#i` query; only a host-bucket receipt matches the note. Do not
-"fix" that by making the receipt tag the show: the receipt names who was
-actually paid, which is the artist, and that is the more useful of the two.
-Widen the query instead — the album-page track union below is the pattern.
+**The shape matching does not mean the VALUES match.** `buildBoostNoteTemplate`
+always tags the SHOW and the EPISODE first, while `paymentIds` for a track
+bucket returns the track's own album feed guid and item guid. A manual boost of
+a song whose track leg SETTLED now carries the track's pair too, after the
+show's and the episode's (`PublishArgs.track`, below), so it meets that
+streaming receipt under an `#i` query on the track. A boost whose track leg
+failed does not, and neither does a note built before this — so an `#i` query
+on a track still misses some boosts of it. Do not "fix" that by making the
+receipt tag the show: the receipt names who was actually paid, which is the
+artist, and that is the more useful of the two. Widen the query instead — the
+album-page track union below is the pattern.
 
 Then `amount` (millisats that SETTLED), `action` (`auto`), `start`/`end` (the
 wall-clock interval), `position` (playback seconds), `session`, `app`, and a
@@ -1519,6 +1520,15 @@ count is logged instead, so "why are there no receipts?" stays answerable.
 `publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
 
 - NIP-73 `i`/`k` pairs for `podcast:guid:<feed-guid>` and (per-episode) `podcast:item:guid:<item-guid>`.
+- **The TRACK the boost paid, when it paid one** (`PublishArgs.track`): a boost pressed inside a `<podcast:valueTimeSplit>` window, or on a live show whose on-air Split Kit block is a song, adds the track's `podcast:guid:` and `podcast:item:guid:` `i` tags right after the episode pair, and a `🎵 <title> — <artist>` line under the `📻` line. `boostNoteTrack` (`lib/util.ts`, pinned by `check:vts`) decides it, and every rule there is a claim the note must not make:
+  - **Only when a TRACK leg settled** (`ok && sats > 0` on the legs that paid the track's block). A boost whose track leg failed while the show's remainder went through would otherwise name an artist who got nothing, in a note nobody can edit.
+  - **No extra `k` tag.** `k` names the identifier's KIND, and both kinds are already declared by the show/episode pairs.
+  - **A guid the note already tags is not repeated** — a `musicL` playlist row already IS the track. **An over-long guid is dropped, never truncated**: a truncated guid names a different item.
+  - **Title and artist are feed text: flattened to one line and capped at 120 characters each.** A newline in a title would otherwise forge a second line of a note the SITE may sign.
+  - **The line and the tags give way before the note does.** `/api/nostr/site-sign` refuses the whole template past 2000 characters of body or 4096 of tag text, so the builder drops the `🎵` line when the body would pass 2000, and the track's hints, then its tags, when the tags would pass 4096 (`SITE_SIGN_*` in `boost-notes.ts`, kept beside the route's numbers). A long message with eight mentions measured 1975 characters before the line.
+  - **The live source is the SAME snapshot the boostagram's `remote_*` came from** (`liveTargetSnapshot()`, read once in `go()`), so the note and the boostagram name one song. A block the played-tracks list would not keep — the show's own default block, a host segment with no item — is not named (`isNotPlayed`, `lib/live-played.ts`).
+  - **The artist is display text**, from `/api/remote-item` (`fetchRemoteItemParent`, shared with the played list) or the played list's own row. It is asked for while the wallet pays and waited for at most 2 s (`NOTE_ARTIST_WAIT_MS`); a miss drops only the "— artist" half.
+  - `contentOverride` (Boost-all) never gets the line — its summary names every track itself.
 - **Two `r` tags** when the URLs differ: a listen-link via `podcastLandingUrl` and a BMB deep-link via `bmbLandingUrl`. Both are appended to the body so readers see "listen elsewhere" and "boost back on BMB" as separate affordances. **Both take the `episode` and point at it when there is one** — a boost note about one episode that lands the reader on the show's front door makes them go hunt for it:
   - `podcastLandingUrl` prefers the **episode's own page** (`Episode.link`, the RSS `<link>`), then **the item guid when it's an http(s) URL** — RSS defines `<guid>` as a permalink unless `isPermaLink="false"`, and plenty of feeds (Bowl After Bowl) use the episode page URL verbatim; we don't parse that attribute, so it's a heuristic that only runs when the feed published no `<link>` at all, where the alternative is dropping the reader on the show. Then `https://pod.link/<itunesId>`, `https://podcastindex.org/podcast/<feedId>`, the raw RSS URL. Those last three are show-level on purpose: neither pod.link nor PI has an episode URL constructible from a guid (pod.link's episode paths key on an id of their own).
   - `bmbLandingUrl` appends `&episode=<guid>` (encodeURIComponent'd — unlike the podcast UUID, an item guid is arbitrary feed-chosen text and is routinely a URL). `?podcast=&episode=` is a restorable view per the URL contract and `app/page.tsx` emits episode-level OG tags for it, so the unfurl carries the episode's own title and art. Still null without a `podcastGuid`, which is what keeps live-stream boosts (synthetic podcast, no guid) from emitting one.
@@ -1582,6 +1592,7 @@ Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent
 
 [sender name] boosted N sats → [podcast title]
 📻 [episode title, omitted on show-level boosts]
+🎵 [track title — artist, only when a track leg settled]
 
 [pod.link or PI URL]
 [boostmebitch.com deep link]
