@@ -177,7 +177,7 @@ export {
   recordFavoritesPrivacy,
 } from './settings-backup';
 
-export { hydrateFavorites } from './favorites-hydrator';
+export { hydrateFavorites, startFavoritesReadRetry } from './favorites-hydrator';
 
 export {
   MUTES_KIND,

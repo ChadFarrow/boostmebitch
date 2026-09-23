@@ -976,6 +976,43 @@ silent, so both report through one in-memory `favoritesSync` flag (`lib/store.ts
   inside `setIdentity`, which runs mid-hydration with the enriched identity and
   would clobber a fresh `'ok'`.
 
+**AND THE READ RETRIES ITSELF, because on a phone the radio is simply late.**
+`startFavoritesReadRetry` (`favorites-hydrator.ts`, mounted by `<NostrAuth>`
+beside `startBunkerRevive`) is #428's ladder pointed at this read: rungs at 2 s,
+8 s and 20 s, re-armed on `online`/`focus`/`visibilitychange`. Reported from an
+Android phone signed in with Amber: *"I still get this retry message but the
+Amber login seems to reconnect ok … the retry message gets displayed before the
+red light disappears."* Both readers start at t=0 of a cold launch — every
+Android launch is one (`docs/android.md`) — and the radio is up for neither. The
+signer got a ladder in #428 and came back in 5–10 seconds; this read had none, so
+a correct notice outlived the fault that raised it and could only be cleared by
+hand.
+
+Three properties, and two of them were wrong in the first draft:
+
+- **Only a SUCCESS resets the budget.** Resetting on "not degraded" re-armed
+  rung 1 from the `'loading'` each retry causes: measured against a relay port
+  nothing listens on, two reads every four seconds for as long as the page was
+  open, instead of three and silence.
+- **Only the reasonless degradation is retried** (`favoritesReadRetryable`,
+  pinned by `check:favsync`). A withheld private half is a choice, an unreadable
+  one needs a press — a timer must never raise an Amber sheet showing somebody's
+  plaintext — and `wholesale-delete`, `private-too-large` and `mode-ambiguous`
+  are not transport faults at all.
+- **Unattended, always**, and the cycle is still single-flight per npub, so a
+  rung landing on a user's toggle queues behind it rather than merging against
+  the same read.
+
+`e2e:favorites` section 9 pins it against a relay that connects and answers
+nothing — `reached` 1, `answered` 0, which is a radio mid-association — then
+points the same page at a working relay with nothing pressed. Two fixtures that
+look identical on screen are deliberately not used, and both were tried first:
+blocking every WebSocket (the app then never reads at all, so nothing fails),
+and this suite's EOSE-answering `bad` relay (that read is trustworthy and empty,
+so over a non-empty cache it raises `wholesale-delete` — the same sentence, a
+refusal that must never be retried on a timer). Without the mount the notice
+sits for 45 s; with it, 2 s.
+
 **A refusal is a `null`, not a throw — a caller that acts on success must test
 the return value.** `syncFavorites` (and `withdrawFavorites` through it) returns
 `Promise<PublishedNote | null>`, and returns `null` *without recording anything*
