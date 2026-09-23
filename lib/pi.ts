@@ -1623,6 +1623,57 @@ function previewPodcastFromChannel(rssUrl: string, channelXml: string): Podcast 
   };
 }
 
+/**
+ * One RSS `<item>` as an `Episode`, or null when it is not a playable episode
+ * (neither a guid nor a media enclosure).
+ *
+ * Shared by the not-in-PI preview (`getFeedFromRss`) and by the items a
+ * PI-backed feed has published since Podcast Index last crawled it
+ * (`getRssEpisodesNewerThan`), so the two cannot disagree about what one item
+ * is called, when it was published or what id it carries.
+ *
+ * The id is SYNTHETIC and negative (`-fnvHash(guid)`), the "not a Podcast
+ * Index record" convention live items and preview feeds already use.
+ * `getRssItemValueTimeSplits` finds the item again by that same number, so
+ * the formula lives here once. `value` is the item's OWN block or
+ * null — the caller decides the fallback, because the two callers have
+ * different ones.
+ */
+function episodeFromRssItem(inner: string, rssUrl: string, idx: number, feedId: number): Episode | null {
+  const guid = extractText(inner, 'guid');
+  const enc = firstTag(inner, 'enclosure');
+  const enclosureUrl = enc ? readAttr(enc.attrs, 'url') : undefined;
+  if (!enclosureUrl && !guid) return null;
+  const raw = extractRawContent(inner, 'content:encoded') ?? extractRawContent(inner, 'description');
+  const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
+  const { season, episode } = parseSeasonEpisode(inner);
+  const { transcriptUrl, transcriptType } = parseTranscripts(inner);
+  const chaptersTag = firstTag(inner, 'podcast:chapters');
+  return {
+    id: -fnvHash(guid ?? enclosureUrl ?? `${rssUrl}#${idx}`),
+    guid,
+    title: extractText(inner, 'title') || 'Untitled',
+    description: extractText(inner, 'description'),
+    contentEncoded,
+    link: extractText(inner, 'link') || undefined,
+    enclosureUrl: enclosureUrl ?? '',
+    enclosureType: enc ? readAttr(enc.attrs, 'type') : undefined,
+    alternateEnclosures: parseAlternateEnclosures(inner),
+    duration: parseItunesDuration(extractText(inner, 'itunes:duration')),
+    datePublished: parsePubDate(extractText(inner, 'pubDate')),
+    image: extractItunesImageHref(inner) ?? extractRssImageUrl(inner),
+    feedId,
+    season,
+    episode,
+    chaptersUrl: chaptersTag ? readAttr(chaptersTag.attrs, 'url') : undefined,
+    transcriptUrl,
+    transcriptType,
+    value: parseValueBlock(inner),
+    socialInteract: parseSocialInteractsFromRss(inner),
+    nostrNpubs: parseFeedNpubs(inner),
+  };
+}
+
 export async function getFeedFromRss(
   rssUrl: string,
 ): Promise<{ podcast: Podcast; episodes: Episode[] } | null> {
@@ -1641,47 +1692,9 @@ export async function getFeedFromRss(
   const episodes: Episode[] = [];
   let idx = 0;
   for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
-    const inner = item.inner;
-    const guid = extractText(inner, 'guid');
-    const enc = firstTag(inner, 'enclosure');
-    const enclosureUrl = enc ? readAttr(enc.attrs, 'url') : undefined;
-    // Not a playable episode without either a guid or a media enclosure.
-    if (!enclosureUrl && !guid) { idx++; continue; }
-    const title = extractText(inner, 'title') || 'Untitled';
-    const raw = extractRawContent(inner, 'content:encoded') ?? extractRawContent(inner, 'description');
-    const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
-    const itemImage = extractItunesImageHref(inner) ?? extractRssImageUrl(inner);
-    const { season, episode: episodeNum } = parseSeasonEpisode(inner);
-    const { transcriptUrl, transcriptType } = parseTranscripts(inner);
-    const chaptersTag = firstTag(inner, 'podcast:chapters');
-    const chaptersUrl = chaptersTag ? readAttr(chaptersTag.attrs, 'url') : undefined;
-    const itemValue = parseValueBlock(inner);
-    const alternateEnclosures = parseAlternateEnclosures(inner);
-    episodes.push({
-      id: -fnvHash(guid ?? enclosureUrl ?? `${rssUrl}#${idx}`),
-      guid,
-      title,
-      description: extractText(inner, 'description'),
-      contentEncoded,
-      link: extractText(inner, 'link') || undefined,
-      enclosureUrl: enclosureUrl ?? '',
-      enclosureType: enc ? readAttr(enc.attrs, 'type') : undefined,
-      alternateEnclosures,
-      duration: parseItunesDuration(extractText(inner, 'itunes:duration')),
-      datePublished: parsePubDate(extractText(inner, 'pubDate')),
-      image: itemImage,
-      feedId,
-      season,
-      episode: episodeNum,
-      chaptersUrl,
-      transcriptUrl,
-      transcriptType,
-      // Episode value block, else the channel's (matches /api/feed's fallback).
-      value: itemValue ?? podcast.value,
-      socialInteract: parseSocialInteractsFromRss(inner),
-      nostrNpubs: parseFeedNpubs(inner),
-    });
-    idx++;
+    const ep = episodeFromRssItem(item.inner, rssUrl, idx++, feedId);
+    // Episode value block, else the channel's (matches /api/feed's fallback).
+    if (ep) episodes.push({ ...ep, value: ep.value ?? podcast.value });
   }
 
   // Music album feeds sort by disc (podcast:season) then track (podcast:episode)
@@ -1691,6 +1704,79 @@ export async function getFeedFromRss(
   episodes.sort(compareEpisodeOrder(medium === 'music'));
 
   return { podcast, episodes };
+}
+
+/**
+ * Items the feed has published since Podcast Index last crawled it.
+ *
+ * `/api/feed` builds its list from PI, and PI crawls on its own schedule — a
+ * feed that sends no podping can wait a day or more. Measured 2026-09-23 on
+ * This Week in Bitcoin (PI feed 6813728): episode 124 was in the RSS at 19:04
+ * UTC, PI's last crawl was 2026-09-22 07:03, so the show page stopped at 123
+ * while Fountain, which reads the RSS itself, listed 124.
+ *
+ * Only items dated AFTER `newerThan` (PI's newest) and absent from `known`
+ * (the guids PI returned) are taken. The date bound is the point: past it the
+ * gap is "PI has not crawled yet", while an OLD item PI lacks is PI's own
+ * decision or its 1000-item ceiling, and appending those would reorder an
+ * archive show's history. An item needs a guid AND an enclosure — without a
+ * guid it cannot be favorited, found again by `/api/value-splits`, or deduped
+ * against PI once PI catches up.
+ *
+ * Each carries its `<podcast:valueTimeSplit>` windows, because the boost modal
+ * reads them to decide that a song is playing. Without them a boost inside a
+ * song pays the show and says nothing. `value` is the item's own block or null;
+ * the route applies the feed's channel fallback (`feedItemValue`).
+ *
+ * Goes through `fetchFeedXml`, so right after `getRssEpisodeEnrichment` this is
+ * a cache hit, not a second download.
+ */
+export async function getRssEpisodesNewerThan(
+  rssUrl: string,
+  feedId: number,
+  newerThan: number,
+  known: ReadonlySet<string>,
+): Promise<Episode[]> {
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null) return [];
+  const out: Episode[] = [];
+  let idx = 0;
+  for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
+    const i = idx++;
+    // Cheap tests first: the full build sanitizes show notes, and almost every
+    // item of a PI-crawled feed is one PI already returned.
+    const guid = extractText(item.inner, 'guid');
+    if (!guid || known.has(guid)) continue;
+    const date = parsePubDate(extractText(item.inner, 'pubDate'));
+    if (date == null || date <= newerThan) continue;
+    const ep = episodeFromRssItem(item.inner, rssUrl, i, feedId);
+    if (!ep || !ep.enclosureUrl) continue;
+    const valueTimeSplits = parseValueTimeSplitsFromRss(item.inner);
+    out.push(valueTimeSplits.length ? { ...ep, valueTimeSplits } : ep);
+  }
+  return out;
+}
+
+/**
+ * The `<podcast:valueTimeSplit>` windows of the RSS item whose synthetic id is
+ * `episodeId`, or null when the feed cannot be read or lists no such item.
+ *
+ * `/api/value-splits` looks episodes up in Podcast Index, which does not hold
+ * an item `getRssEpisodesNewerThan` added — so without this, every boost inside
+ * a song on a just-published episode would resolve nothing. Matched on the id
+ * `episodeFromRssItem` gave it, so the two cannot drift.
+ */
+export async function getRssItemValueTimeSplits(
+  rssUrl: string,
+  episodeId: number,
+): Promise<ValueTimeSplit[] | null> {
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null) return null;
+  for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
+    const guid = extractText(item.inner, 'guid');
+    if (guid && -fnvHash(guid) === episodeId) return parseValueTimeSplitsFromRss(item.inner);
+  }
+  return null;
 }
 
 /** A `musicL` playlist's channel metadata and its track references. */
