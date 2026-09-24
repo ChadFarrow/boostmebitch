@@ -19,6 +19,9 @@ interface Args {
   duration: number;
   /** Current artwork per `nowPlayingArt` — live, i.e. changes on every chapter. */
   nowArt: string | undefined;
+  /** The element's speed, so the lock-screen scrub bar advances at the same
+   *  rate as the audio instead of drifting behind it. */
+  playbackRate: number;
   audio: RefObject<HTMLAudioElement | null>;
   video: RefObject<HTMLVideoElement | null>;
   /** Whether the video element is the active one, read as a ref so an episode
@@ -44,7 +47,7 @@ interface Args {
  * correctness in ways a mechanical extraction would obscure.
  */
 export function useMediaSession({
-  current, isPlaying, positionSec, duration, nowArt,
+  current, isPlaying, positionSec, duration, nowArt, playbackRate,
   audio, video, isVideoRef, lastTick,
   setPosition, setPlaying, skipBy,
 }: Args): void {
@@ -102,10 +105,10 @@ export function useMediaSession({
       navigator.mediaSession.setPositionState({
         duration,
         position: Math.min(positionSec, duration),
-        playbackRate: 1,
+        playbackRate,
       });
     } catch { /* invalid state (e.g. position > duration mid-seek) — skip */ }
-  }, [positionSec, duration]);
+  }, [positionSec, duration, playbackRate]);
 
   // The lock screen follows the chapter too — but it is handed a SETTLED url,
   // never the live one.

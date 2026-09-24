@@ -2093,6 +2093,21 @@ export function fnvHash(s: string): number {
   return h & 0x7fffffff;
 }
 
+/**
+ * The playback speeds the SPEED control cycles through, in order. An ALLOWLIST,
+ * not a range: `storage.playbackRate` reads anything else back as 1, so a
+ * corrupt or hand-edited value plays at normal speed rather than at whatever
+ * number it happens to hold. Here rather than in the component because the
+ * storage accessor needs the same list and must not import a component.
+ */
+export const PLAYBACK_RATES = [1, 1.25, 1.5, 2] as const;
+
+/** The speed after `rate` in `PLAYBACK_RATES`, wrapping back to 1. */
+export function nextPlaybackRate(rate: number): number {
+  const i = PLAYBACK_RATES.indexOf(rate as (typeof PLAYBACK_RATES)[number]);
+  return PLAYBACK_RATES[(i + 1) % PLAYBACK_RATES.length];
+}
+
 // True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js
 // (or native Safari support) and a <video> surface — not the native <audio>
 // element the rest of the app uses. Nostr live streams (kind:30311) carry HLS

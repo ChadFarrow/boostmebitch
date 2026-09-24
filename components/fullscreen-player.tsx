@@ -69,6 +69,7 @@ import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
+import { SpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
@@ -838,8 +839,12 @@ export function FullscreenPlayer({
                     aria-valuetext={fmt(positionSec)}
                   />
                 </div>
-                <div className="flex justify-between text-[11px] text-muted tabular-nums">
+                {/* The speed chip sits between the times; this whole branch is
+                    already the not-live one, which is the only kind it applies
+                    to. See <SpeedButton> for why it is not a tile. */}
+                <div className="flex items-center justify-between text-[11px] text-muted tabular-nums">
                   <span>{fmt(positionSec)}</span>
+                  <SpeedButton />
                   <span>{fmt(duration)}</span>
                 </div>
                 <ChapterLabel chapter={activeChapter} end={activeChapterEnd} className="text-xs" />

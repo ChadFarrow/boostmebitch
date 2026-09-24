@@ -9,6 +9,7 @@ import {
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
+import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
@@ -128,6 +129,7 @@ export function Player() {
   const setPosition = useApp((s) => s.setPosition);
   const playNext = useApp((s) => s.playNext);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
+  const playbackRate = useApp((s) => s.playbackRate);
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
@@ -625,6 +627,28 @@ export function Player() {
   // the same id must re-attach the source; an identical url never re-runs.
   }, [current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Playback speed. Hydrated here rather than at store creation, which also
+  // runs on the server.
+  useEffect(() => {
+    useApp.setState({ playbackRate: storage.playbackRate.get() });
+  }, []);
+
+  // Applies the speed to the active element. Declared AFTER the source effect
+  // and keyed on the same deps, so it runs once the element has been
+  // re-sourced. `defaultPlaybackRate` is set as well as `playbackRate` because
+  // `load()` resets the latter to the former — without it every episode change
+  // and every stall reload would drop back to 1×.
+  //
+  // A live item is always 1×: there is no timeline ahead of the live edge to
+  // play faster into, and hls.js would only stall against it.
+  useEffect(() => {
+    const el = isVideoRef.current ? video.current : audio.current;
+    if (!el) return;
+    const rate = isLiveMedia ? 1 : playbackRate;
+    el.defaultPlaybackRate = rate;
+    el.playbackRate = rate;
+  }, [playbackRate, isLiveMedia, current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]);
+
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz
   // timer reading useApp.getState() — mounted from here because <Player> is the
   // one always-mounted owner of playback, but deliberately NOT subscribed to
@@ -873,6 +897,7 @@ export function Player() {
   // HERE, after `nowArt`, because the metadata effect consumes it.
   useMediaSession({
     current, isPlaying, positionSec, duration, nowArt,
+    playbackRate: isLiveMedia ? 1 : playbackRate,
     audio, video, isVideoRef, lastTick,
     setPosition, setPlaying, skipBy,
   });

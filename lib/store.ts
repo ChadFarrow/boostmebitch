@@ -86,6 +86,14 @@ interface AppState {
   artOk: boolean;
   setArtOk: (b: boolean) => void;
 
+  // Player speed, one of `PLAYBACK_RATES` (lib/util.ts). Starts at 1 and is
+  // hydrated from `storage.playbackRate` by <Player>'s mount, never read at
+  // store creation — this module is evaluated on the server too. The setter
+  // writes through to storage. <Player> applies it to the media element and
+  // forces 1× on a live item.
+  playbackRate: number;
+  setPlaybackRate: (r: number) => void;
+
   // Whether the Nostr sign-in modal is open. Lifted into the store so surfaces
   // other than the header (e.g. the fullscreen player / live chat) can open it
   // without leaving the page. <NostrAuth> owns the modal render.
@@ -514,6 +522,9 @@ export const useApp = create<AppState>((set, get) => ({
 
   playerExpanded: false,
   setPlayerExpanded: (b) => set({ playerExpanded: b }),
+
+  playbackRate: 1,
+  setPlaybackRate: (r) => { storage.playbackRate.set(r); set({ playbackRate: r }); },
 
   artOk: true,
   setArtOk: (b) => set({ artOk: b }),
