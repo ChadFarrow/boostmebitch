@@ -394,6 +394,34 @@ const activeApprovalWaits = new Set<symbol>();
 // moves. A counter rather than a boolean so a cancel cannot leak into the NEXT
 // wait — the user cancelling one signature must not pre-cancel the next.
 let approvalGeneration = 0;
+// How many of OUR requests are on the wire right now. Incremented by
+// `trackBunkerCall`, which every method of the adapter goes through, so this
+// counts the whole surface rather than one path through it. See `bunkerBusy`.
+let callsInFlight = 0;
+
+/**
+ * "A request of ours is on the wire, or a human is being asked about one."
+ *
+ * THE ONE QUESTION A LIVENESS PROBE HAS TO ASK FIRST. `restoreBunkerSigner`
+ * rebuilds the transport when its ping goes unanswered, and `closeStaleBunkerTransport`
+ * takes the pending kind:24133 subscription down with it — so a probe fired
+ * while a `sign_event` is in flight can destroy the very request it is meant to
+ * protect. That is the money path: `publishBoostNote` signs AFTER the sats have
+ * moved, so the note is unrecoverable and `<PublishStatus>` offers no retry.
+ *
+ * BOTH HALVES ARE NEEDED, and each covers an interval the other does not.
+ * `callsInFlight` is zero during `withApprovalWait`'s gap between re-issues —
+ * the request is settled, the loop is sleeping, and the signer is still showing
+ * the user a prompt. `activeApprovalWaits` is empty for the first attempt of
+ * every call, before any signer has answered "not yet". Reading one alone leaves
+ * a window where this answers false about a session that is demonstrably busy.
+ *
+ * It is NOT a health signal: busy means the link is being used, which says
+ * nothing about whether it works. `bunkerStale` is that question.
+ */
+export function bunkerBusy(): boolean {
+  return callsInFlight > 0 || activeApprovalWaits.size > 0;
+}
 
 function setApprovalStage(next: BunkerApprovalStage) {
   if (approvalStage.waiting === next.waiting
@@ -660,8 +688,28 @@ type BunkerCallOpts = {
  *    live on nostr-tools' side (no response means no `delete listeners[id]`), so
  *    re-issuing on a new id would queue a SECOND approval at the signer, and the
  *    user would be asked twice for one action.
+ *
+ * THE COUNTING IS SPLIT OFF INTO A WRAPPER so the body below keeps its own
+ * shape: it returns and throws from inside a `for(;;)`, and a decrement written
+ * at each of those exits is one `throw` away from leaking. `bunkerBusy()` is
+ * what reads the count, and a count that drifts up never comes back down —
+ * every later foreground revive would skip itself, silently, forever.
  */
 async function trackBunkerCall<T>(
+  issue: () => Promise<T>,
+  label: string,
+  opts: BunkerCallOpts = {},
+): Promise<T> {
+  callsInFlight += 1;
+  try {
+    return await runBunkerCall(issue, label, opts);
+  } finally {
+    callsInFlight -= 1;
+  }
+}
+
+/** The body of `trackBunkerCall`; see its header for all of the reasoning. */
+async function runBunkerCall<T>(
   issue: () => Promise<T>,
   label: string,
   { probe, deadline }: BunkerCallOpts = {},

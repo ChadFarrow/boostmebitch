@@ -18,7 +18,7 @@
 
 import { FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { assertPublished, signAndPublish, type PublishedNote } from './publish';
-import { fetchLatestEvent, fetchLatestEventDetailed } from './event-queries';
+import { fetchLatestEventDetailed } from './event-queries';
 import { backupReadRelays, resolvePublishRelays } from './relays';
 import { requireNip44, decryptWithTimeout, type DecryptPurpose } from './signer';
 import { encodeAmberSafe, decodeAmberSafe } from './amber-safe-text';
@@ -181,17 +181,40 @@ export async function fetchEncryptedNwc(
  * `{"uri":"nostr+walletconnect://<pubkey>` and nothing more. Reported as "no
  * backup found", that reads as the feature never having run; reported as
  * unreadable, it names the repair.
+ *
+ * `trustworthy` separates the first state from "nothing answered". A null
+ * event is only "nobody published a backup" when every relay we reached sent a
+ * real EOSE — see `readIsTrustworthy`. This read used the plain
+ * `fetchLatestEvent`, so a relay blackout or a slow phone radio reached the
+ * card as "No backup found on Nostr for this account" about a backup that was
+ * sitting on the relays, and the user reasonably concluded it had never saved.
+ * `removed` separates the tombstone from "never published": both used to read
+ * "No backup found", which sent a user looking for a backup they had made
+ * rather than for the Disconnect that deleted it.
+ * The `expect` predicate is the one `readNwcBackupHead` passes, for the reason
+ * given on `fetchEncryptedMnemonicDetailed`: three d-tags share this kind.
  */
 export async function fetchEncryptedNwcDetailed(
   identity: NostrIdentity,
   purpose: DecryptPurpose,
-): Promise<{ uri: string | null; unreadable: boolean }> {
-  const event = await fetchLatestEvent(
+): Promise<{
+  uri: string | null;
+  unreadable: boolean;
+  trustworthy: boolean;
+  /** The newest event at the coordinate is `deleteEncryptedNwc`'s tombstone:
+   *  a Disconnect or an unticked box, on SOME device, removed the backup. */
+  removed: boolean;
+  event: { id: string; created_at: number } | null;
+}> {
+  const { event, trustworthy } = await fetchLatestEventDetailed(
     backupReadRelays(identity),
     { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_NWC_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
+    { pubkey: identity.pubkey, kinds: [WALLET_BACKUP_KIND], dTag: WALLET_NWC_D_TAG },
   );
-  if (!event || !event.content) return { uri: null, unreadable: false };
+  if (!event || !event.content) {
+    return { uri: null, unreadable: false, trustworthy, removed: !!event, event: null };
+  }
   // Deliberately outside the try below: a decrypt that fails or times out is
   // not a finding about the backup, so it propagates.
   const plaintext = await decryptWithTimeout(identity.pubkey, event.content, purpose);
@@ -202,10 +225,62 @@ export async function fetchEncryptedNwcDetailed(
     // as-is — so both formats round-trip and no existing backup is orphaned.
     const parsed = JSON.parse(decodeAmberSafe(plaintext) ?? plaintext);
     const uri = typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
-    return { uri, unreadable: uri === null };
+    return { uri, unreadable: uri === null, trustworthy, removed: false, event: uri ? { id: event.id, created_at: event.created_at } : null };
   } catch {
-    return { uri: null, unreadable: true };
+    return { uri: null, unreadable: true, trustworthy, removed: false, event: null };
   }
+}
+
+/**
+ * What sits at the NWC backup coordinate right now, WITHOUT decrypting it.
+ *
+ * One account on two devices is two writers at one address, and only the last
+ * publish survives — so "this device backed up its connection" stops being true
+ * the moment the other device does the same, while this device's box stays
+ * checked. Comparing the event's id with the one this device recorded
+ * (`storage.nwcBackup.written`) answers "is the backup still MY connection"
+ * with a plain read: no decrypt, so no signer prompt, and no NWC secret on an
+ * approval sheet.
+ *
+ *  - `unknown` — the read did not answer well enough to say. Callers do
+ *    nothing on it, per "never record an absence you didn't reliably observe".
+ *  - `none` — no backup, or the latest event is the empty tombstone.
+ *  - `present` — the latest event, by id and time.
+ */
+export type NwcBackupHead =
+  | { state: 'unknown' }
+  | { state: 'none' }
+  | { state: 'present'; id: string; createdAt: number };
+
+export async function readNwcBackupHead(identity: NostrIdentity): Promise<NwcBackupHead> {
+  const read = await fetchLatestEventDetailed(
+    backupReadRelays(identity),
+    { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_NWC_D_TAG], limit: 1 },
+    FEED_QUERY_MAX_WAIT_MS,
+    { pubkey: identity.pubkey, kinds: [WALLET_BACKUP_KIND], dTag: WALLET_NWC_D_TAG },
+  );
+  if (!read.trustworthy) return { state: 'unknown' };
+  if (!read.event || !read.event.content) return { state: 'none' };
+  return { state: 'present', id: read.event.id, createdAt: read.event.created_at };
+}
+
+/**
+ * Is the backup on Nostr a NEWER connection than the one this device wrote?
+ *
+ * The one case where this device must not tombstone the coordinate on
+ * Disconnect or on turning the box off: the backup there belongs to another
+ * device, and deleting it removes that device's restore, not this one's.
+ * NEWER, not merely different — a relay that missed this device's publish can
+ * answer with an older event, and treating that as "someone else's" would skip
+ * the tombstone and leave this device's credential to be restored after the
+ * user disconnected it. Anything short of proof keeps the old behaviour.
+ */
+export function backupIsAnotherDevices(
+  head: NwcBackupHead,
+  written: { id: string; createdAt: number } | null,
+): boolean {
+  return head.state === 'present' && written !== null
+    && head.id !== written.id && head.createdAt > written.createdAt;
 }
 
 /**

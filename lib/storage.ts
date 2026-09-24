@@ -84,7 +84,7 @@ const KEYS = {
   ncPending: 'bmb:nc_pending',        // the nostrconnect:// pairing we are WAITING on: { uri, clientSk, ts }. Survives a navigation away, so an app-switch that reloads the tab can resume instead of orphaning the pairing. Ephemeral by TTL; no user key, same class of secret as bmb:bunker's clientSk.
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
-  nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
+  nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub `<eventId>@<created_at>` (or legacy '1') when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   followsPrefix: 'bmb:follows',       // per-npub last-known-good kind:3 follow set (hex[]) — a nuke-guard signal, see lib/nostr/follows.ts
   writeRelaysPrefix: 'bmb:wrelays',   // + ':<npub>' — that account's NIP-65 (kind:10002) WRITE relays, cached so the next load can read the shared lists from the same relays it publishes them to. NOT evictable: losing it re-opens the read-narrower-than-write window, see lib/nostr/relays.ts.
   listUnlockPrefix: 'bmb:list_unlock', // + ':<npub>' — '1' once THIS account has explicitly opened its private favorites/mutes on this device, which lets the two hydrators decrypt those two coordinates on load instead of asking again every cold start. LISTS ONLY: the wallet mnemonic is never covered, and reads `unattendedDecryptOk()` alone. Absent means "not asked for", which is the safe default and what a new device gets. Deliberately absent from EVICTABLE_PREFIXES — evicting it silently reinstates the notice the user dismissed, which reads as the setting not sticking.
@@ -830,10 +830,33 @@ export const storage = {
    *  string encrypted and backed up to Nostr (kind:30078). Absent = off
    *  (the default — an NWC URI is a spending credential). */
   nwcBackup: {
+    /** The opt-in flag. True for BOTH value shapes — see `written` below. */
     get: (npub: string | null | undefined) =>
-      safeGet(identityKey(KEYS.nwcBackupPrefix, npub)) === '1',
-    set: (npub: string | null | undefined) =>
-      safeSet(identityKey(KEYS.nwcBackupPrefix, npub), '1'),
+      !!safeGet(identityKey(KEYS.nwcBackupPrefix, npub)),
+    /**
+     * WHICH backup event this device wrote or restored from, or null when it
+     * does not know.
+     *
+     * The flag alone said "this device once backed up a connection", and one
+     * account on two devices is two writers at one coordinate: each device's
+     * box stays checked while only the LAST publish is on the relays. Knowing
+     * the event lets the card say whether the backup is still this device's
+     * connection by reading the event's id — no decrypt, so no signer prompt —
+     * and lets Disconnect leave another device's backup alone.
+     *
+     * Stored as `<id>@<created_at>`. `'1'` is the shape written before this,
+     * and still by the same-tab session restore, which never saw an event; it
+     * reads as null here and as true in `get`, so no existing flag is lost.
+     */
+    written: (npub: string | null | undefined): { id: string; createdAt: number } | null => {
+      const m = /^([0-9a-f]{64})@(\d+)$/.exec(safeGet(identityKey(KEYS.nwcBackupPrefix, npub)) ?? '');
+      return m ? { id: m[1], createdAt: Number(m[2]) } : null;
+    },
+    set: (npub: string | null | undefined, event?: { id: string; created_at: number }) =>
+      safeSet(
+        identityKey(KEYS.nwcBackupPrefix, npub),
+        event && /^[0-9a-f]{64}$/.test(event.id) ? `${event.id}@${event.created_at}` : '1',
+      ),
     clear: (npub: string | null | undefined) =>
       safeRemove(identityKey(KEYS.nwcBackupPrefix, npub)),
   },

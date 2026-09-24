@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
+import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment, getRssEpisodesNewerThan } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { isMusicMedium, compareEpisodeOrder } from '@/lib/util';
+import { isMusicMedium, compareEpisodeOrder, feedItemValue } from '@/lib/util';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -135,12 +135,29 @@ export async function GET(req: Request) {
     const EMPTY_ENRICHMENT = {
       episodes: new Map(), feedMedium: undefined, feedPodroll: undefined,
       feedFunding: undefined, feedNostrNpubs: undefined, feedTitle: undefined,
+      rssRead: false, feedValue: undefined,
     };
-    const { episodes: enrichMap, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle } =
+    const { episodes: enrichMap, rssRead, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle } =
       podcast?.url
         ? await getRssEpisodeEnrichment(podcast.url).catch(() => EMPTY_ENRICHMENT)
         : EMPTY_ENRICHMENT;
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    // Episodes the feed published since PI last crawled it. PI crawls on its
+    // own schedule, so a new episode could stay off this page for a day while
+    // every app that reads the RSS itself already listed it. Only items newer
+    // than PI's newest — see `getRssEpisodesNewerThan` for why the bound. They
+    // go through the same dedupe and value merge below as PI's rows, and they
+    // are in `enrichMap`, so their payee is the feed's item block, else its
+    // channel block, else none. Best-effort, like the enrichment itself.
+    const newestPi = episodes.reduce((max, e) => Math.max(max, e.datePublished ?? 0), 0);
+    const fresh = rssRead && podcast.url
+      ? await getRssEpisodesNewerThan(
+          podcast.url,
+          id,
+          newestPi,
+          new Set(episodes.map((e) => e.guid).filter((g): g is string => !!g)),
+        ).catch(() => [] as Episode[])
+      : [];
     // PI's /episodes/live only returns currently-broadcasting items; pending
     // liveItems live in the RSS itself, so we additionally parse the feed XML.
     const rssLive = podcast.url
@@ -163,7 +180,7 @@ export async function GET(req: Request) {
     const seenRegularGuid = new Set<string>();
     const seenRegularId = new Set<number>();
     const seenTitleDate = new Set<string>();
-    const regular = episodes.filter((e) => {
+    const regular = [...episodes, ...fresh].filter((e) => {
       if (e.guid && seenGuid.has(e.guid)) return false;   // collides with a live item
       if (liveIds.has(e.id)) return false;
       if (e.guid && seenRegularGuid.has(e.guid)) return false;
@@ -180,8 +197,12 @@ export async function GET(req: Request) {
       const rss = e.guid ? enrichMap.get(e.guid) : undefined;
       return {
         ...e,
-        // Episodes inherit the channel value block when they don't have their own.
-        value: e.value ?? podcast.value,
+        // WHO GETS PAID. The feed's own block outranks PI's copy whenever the
+        // feed was read and lists this item — PI can hold a stale ITEM block
+        // while its channel block is current, and that stale block used to win
+        // here. An item with no block of its own inherits the channel's.
+        // `feedItemValue` (lib/util.ts, pinned by check:musicl) has the cases.
+        value: feedItemValue(!!rssRead, rss, feedValue, e.value, podcast.value),
         // socialInteract and contentEncoded come from RSS — PI doesn't index them.
         socialInteract: e.socialInteract ?? rss?.socialInteract,
         contentEncoded: rss?.contentEncoded,
@@ -242,6 +263,11 @@ export async function GET(req: Request) {
     // while PI's decided what shipped to the client. `feedMedium` is read from
     // `channelSlice` of the live feed moments ago; prefer it whenever it exists.
     if (feedMedium) podcast.medium = feedMedium;
+    // Same rule for the CHANNEL value block — the show-level BOOST. A read feed
+    // is the authority, including when it declares no block: a publisher who
+    // took V4V down is not paid through PI's leftover copy. Assigned after the
+    // row merge above on purpose, which reads PI's value as its own fallback.
+    if (rssRead) podcast.value = feedValue ?? null;
     // Same reasoning for a BLANK title. PI can hold a feed it crawled badly with
     // `title: ""`, which renders as an invisible row in search results and a
     // headerless show page — "I don't see it listed", for a feed that is right

@@ -8,6 +8,7 @@ import {
   normalizeAmberPubkey,
   restoreAmberSigner,
   restoreBunkerSigner,
+  startBunkerRevive,
   restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,
@@ -17,11 +18,12 @@ import {
   fetchRelayList,
   fetchEncryptedMnemonicDetailed,
   publishEncryptedMnemonic,
-  fetchEncryptedNwc,
+  fetchEncryptedNwcDetailed,
   fetchSettings,
   applySyncedSettings,
   favoritesMode,
   hydrateFavorites,
+  startFavoritesReadRetry,
   hydrateMutes,
   unionMutedPubkeys,
   type NostrIdentity,
@@ -327,9 +329,11 @@ export function NostrAuth() {
     // NWC backup: restore the encrypted connection string if this device has
     // no NWC URI yet.
     const nwcPromise = decryptOk && !hasNwc()
-      ? fetchEncryptedNwc(enriched, 'unattended')
-          .then((uri) => {
-            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); markNwcRestored(id.npub); }
+      ? fetchEncryptedNwcDetailed(enriched, 'unattended')
+          .then(({ uri, event }) => {
+            // `event` too, so the card can later tell this device's backup
+            // from one another device wrote over it.
+            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub, event ?? undefined); markNwcRestored(id.npub); }
           })
           .catch(() => {})
       : Promise.resolve();
@@ -495,6 +499,48 @@ export function NostrAuth() {
     // loadProfile is re-created each render; the effect self-guards on
     // `identity` so listing it would only add no-op re-runs.
   }, [identity, setIdentity, setFavorites, setFavoriteEpisodes, setMutedPubkeys]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // BRING THE NIP-46 TRANSPORT BACK WITH THE APP. Both mobile OSes suspend the
+  // page's WebSocket while the browser is backgrounded, and for a remote signer
+  // that socket IS the signer: the session comes back unable to sign, says so at
+  // the next thing that signs, and the user presses RECONNECT — the same call
+  // this makes, at the moment they had to make it themselves. Reported as "I
+  // have to reconnect Amber every time I use the app". `startBunkerRevive` owns
+  // the guards (busy session, refusal, throttle) and probes before it rebuilds.
+  //
+  // IT MUST BE MOUNTED EVEN THOUGH THE RESTORE ABOVE ALREADY RAN, because on
+  // Android every launch is a cold one: the Zapstore build is a TWA and
+  // docs/android.md row 7 records that each launch is a full network page load.
+  // So the restore above fires at t=0 against a radio that may not be up, fails
+  // in milliseconds, and — before this — was never tried again, because a
+  // document that has been visible since it existed never fires a
+  // `visibilitychange`. This arms the retry ladder off that failure.
+  //
+  // Mounted on `identity` rather than on the signer kind, because `bmb:signer`
+  // is not reactive: it is written by completeSignIn one render before the
+  // identity lands, and the revive re-reads it on every wake anyway. Signed out
+  // there is nothing to revive.
+  useEffect(() => {
+    if (!identity) return;
+    return startBunkerRevive();
+  }, [identity]);
+
+  // AND THE SAME LADDER FOR THE FAVORITES READ, which races the same radio.
+  // The restore above fails at t=0 on a cold Android launch and is retried; the
+  // hydrate fired beside it fails in the same instant, raises the degraded
+  // notice — correctly, nothing answered — and had nothing to retry it. The
+  // user read the two as one Amber fault, because the notice appears while the
+  // signer's red light is still on and outlives it: *"the retry message gets
+  // displayed before the red light disappears."*
+  //
+  // Mounted HERE rather than in <FavoritesSyncNotice>, which renders on two
+  // routes and would arm two ladders against one list. Signed out there is no
+  // read to retry, and `hydrateFavorites` is the same call this component's own
+  // restore makes.
+  useEffect(() => {
+    if (!identity) return;
+    return startFavoritesReadRetry();
+  }, [identity]);
 
   // Account-change detector for multi-identity NIP-07 extensions
   // (Alby and nos2x both let the user switch active accounts in their

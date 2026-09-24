@@ -558,6 +558,76 @@ check('...and it does not claim the library is empty', placement.emptyClaim, fal
 check('...and nothing was published over the read', published.length, beforePlacement);
 
 
+console.log(`
+--- 9. A DEGRADED READ RETRIES ITSELF, because the radio is the thing that was late ---`);
+// Reported from an Android phone on 2026-09-23, signed in with Amber:
+//   "I still get this retry message but the Amber login seems to reconnect ok.
+//    I notice it has a red light on my avatar for 5/10secs each time and the
+//    retry message gets displayed before the red light disappears."
+// Two readers start at t=0 on a cold launch — the NIP-46 restore and this read —
+// and the radio is up for neither. #428 gave the signer a ladder; the read had
+// none, so its notice outlived the fault that raised it.
+//
+// THE FIXTURE IS A RELAY THAT CONNECTS AND ANSWERS NOTHING, which is what a
+// radio mid-association looks like from the page: `reached` 1, `answered` 0, so
+// the read is untrustworthy and the notice is raised — correctly. Two shapes
+// that look the same from the screen are deliberately NOT used here, and each
+// was tried first:
+//   - blocking every WebSocket: the app then never gets far enough to read at
+//     all, so nothing fails and nothing is proved;
+//   - this suite's `bad` relay, which answers EOSE: that read is trustworthy
+//     and EMPTY, so over the cache left by the scenarios above it raises
+//     `wholesale-delete` — the same sentence on screen, a refusal that must
+//     never be retried on a timer, and the reason this section clears the
+//     account's local keys first.
+{
+  const silent = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  silent.on('connection', () => { /* connects, says nothing, ever */ });
+  await new Promise((resolve, reject) => { silent.once('listening', resolve); silent.once('error', reject); });
+  const SILENT_PORT = silent.address().port;
+
+  const degradedReads = () => pageLog.filter((l) => /read was degraded/.test(l)).length;
+  const before = degradedReads();
+  const noticeUp = () => js(`/couldn.t confirm your list/i.test(document.body.innerText)`);
+  const hasRetry = () => js(`(() => [...document.querySelectorAll('button,a')].some((x) => /^retry$/i.test(x.textContent.trim())))()`);
+
+  // Nothing local for this account, so the only way to the notice is the read.
+  await js(`(() => {
+    Object.keys(localStorage).filter((k) => k.startsWith('bmb:fav')).forEach((k) => localStorage.removeItem(k));
+    localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${SILENT_PORT}`]))});
+    return 1; })()`);
+  await send('Page.navigate', { url: `${APP}/favorites` });
+
+  // The read runs to its own ceiling before it can call itself untrustworthy.
+  let raised = false;
+  for (let i = 0; i < 50 && !raised; i++) { await wait(500); raised = await noticeUp(); }
+  check('a read nothing answered raises the notice', raised, true);
+  check('...because the READ failed, not because a merge was refused',
+    degradedReads() > before, true);
+  check('...and it offers a retry', await hasRetry(), true);
+
+  // THE RADIO COMES UP: the same page, no reload, the working relay. Nothing is
+  // pressed from here on — that is the whole assertion.
+  await js(`localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))})`);
+  const startedAt = Date.now();
+  let cleared = false;
+  for (let i = 0; i < 90; i++) {
+    await wait(500);
+    if (!(await noticeUp())) { cleared = true; break; }
+  }
+  const took = Math.round((Date.now() - startedAt) / 100) / 10;
+  console.log(`     ${cleared ? `notice cleared by itself after ${took}s` : `notice STILL up after ${took}s`} (degraded reads: ${degradedReads() - before})`);
+  check('the notice clears with nothing pressed, once a relay answers', cleared, true);
+  check('...and no other notice replaced it',
+    await js(`/couldn.t (confirm|open)/i.test(document.body.innerText)`), false);
+  // The ladder is BOUNDED: three rungs and silence, or a page left open on a
+  // dead radio re-reads for ever. The first version reset its budget on the
+  // 'loading' its own retry caused — measured at two reads every four seconds,
+  // for as long as the page was open.
+  check('...and it spent at most its three rungs', degradedReads() - before <= 4, true);
+  silent.close();
+}
+
 console.log('\n--- publish timeline ---');
 published.forEach((e, i) => {
   const iTags = e.tags.filter((t) => t[0] === 'i').length;

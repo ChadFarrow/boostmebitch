@@ -10,6 +10,7 @@ export {
   loginWithLocalKey,
   restoreAmberSigner,
   restoreBunkerSigner,
+  startBunkerRevive,
   restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,
@@ -21,7 +22,7 @@ export {
   type ProfileMetadata,
 } from './auth';
 
-export { isAmberActive, canSignUnattended, getNip44 } from './signer';
+export { isAmberActive, canSignUnattended, getNip44, subscribeSigner } from './signer';
 // Exported for abandonRestoredSession: dropping the polyfill without wiping
 // the stored key (which is what clearLocalSigner does).
 export { deactivateLocalSigner } from './signer';
@@ -167,6 +168,9 @@ export {
   fetchEncryptedNwcDetailed,
   publishEncryptedNwc,
   deleteEncryptedNwc,
+  readNwcBackupHead,
+  backupIsAnotherDevices,
+  type NwcBackupHead,
 } from './wallet-backup';
 
 export {
@@ -176,7 +180,7 @@ export {
   recordFavoritesPrivacy,
 } from './settings-backup';
 
-export { hydrateFavorites } from './favorites-hydrator';
+export { hydrateFavorites, startFavoritesReadRetry } from './favorites-hydrator';
 
 export {
   MUTES_KIND,

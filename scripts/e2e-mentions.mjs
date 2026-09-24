@@ -375,6 +375,108 @@ console.log('\n--- 5. The relay really holds them (read back over NIP-01) ---');
 }
 
 // ===========================================================================
+console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the tags ---');
+// ===========================================================================
+// Wiring, not arithmetic: check:vts pins boostNoteTrack, and cannot see where
+// the builder puts its answer, whether the site path still passes the route's
+// caps with it, or whether a note WITHOUT a paid track is left exactly as it
+// was. After section 5 on purpose, so that section's count is unchanged.
+{
+  const track = {
+    split: {
+      title: 'Copenhagen Time', artist: 'Matt Finlay',
+      remoteItem: {
+        feedGuid: 'e88a4a67-877c-5e03-b8fd-a70cebc821af',
+        itemGuid: '9f515f93-eda1-4146-8637-7def160879b5',
+      },
+    },
+    results: [{ ok: true, sats: 340 }],
+  };
+  const iTags = (e) => e.tags.filter((t) => t[0] === 'i').map((t) => t[1]);
+  const kTags = (e) => e.tags.filter((t) => t[0] === 'k').map((t) => t[1]);
+
+  const note = await publishBoostNote({
+    podcast, episode, boostagram: boostagram('what a song'), results: [], relays: [RELAY], track,
+  });
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  check('the track note reached the relay', !!e, true);
+  const lines = e?.content.split('\n') ?? [];
+  check('the 🎵 line sits right under the 📻 line',
+    lines[lines.indexOf(`📻 ${episode.title}`) + 1], '🎵 Copenhagen Time — Matt Finlay');
+  check('the show and episode pairs stay FIRST, unchanged', e?.tags.slice(0, 4).map((t) => t[0] + ' ' + t[1]), [
+    `i podcast:guid:${podcast.podcastGuid}`, 'k podcast:guid',
+    `i podcast:item:guid:${episode.guid}`, 'k podcast:item:guid',
+  ]);
+  check('then the track\'s feed and item', iTags(e).slice(2), [
+    'podcast:guid:e88a4a67-877c-5e03-b8fd-a70cebc821af',
+    'podcast:item:guid:9f515f93-eda1-4146-8637-7def160879b5',
+  ]);
+  check('...directly after the episode pair', e?.tags[4]?.[1], 'podcast:guid:e88a4a67-877c-5e03-b8fd-a70cebc821af');
+  check('no extra k tag — both kinds are already declared', kTags(e), ['podcast:guid', 'podcast:item:guid']);
+  check('the track tags carry a restorable hint on this site',
+    e?.tags[5]?.[2], `${BRAND.origin}/?podcast=e88a4a67-877c-5e03-b8fd-a70cebc821af&episode=9f515f93-eda1-4146-8637-7def160879b5`);
+
+  // A track leg that did NOT settle must leave the note byte-for-byte as a
+  // boost with no track at all — the only way to prove "unchanged" without
+  // pinning a per-brand banner URL here.
+  const capture = async (args) => {
+    let sent = null;
+    const realFetch = globalThis.fetch;
+    // ok:false stops publishBoostNoteViaSite before it publishes anywhere.
+    globalThis.fetch = async (_u, init) => { sent = JSON.parse(init.body); return { ok: false, status: 599, json: async () => ({}) }; };
+    await publishBoostNoteViaSite(args).catch(() => {});
+    globalThis.fetch = realFetch;
+    if (sent) delete sent.created_at;
+    return sent;
+  };
+  const base = { podcast, episode, boostagram: boostagram('x'), results: [] };
+  const plain = await capture(base);
+  const unpaid = await capture({ ...base, track: { ...track, results: [{ ok: false, sats: 340 }] } });
+  check('an UNPAID track leg leaves the note identical to no track at all',
+    JSON.stringify(unpaid), JSON.stringify(plain));
+  const paid = await capture({ ...base, track });
+  check('the site path carries the 🎵 line too', paid?.content.includes('🎵 Copenhagen Time — Matt Finlay'), true);
+  check('...and the prefix the route validates on', paid?.content.startsWith('⚡ Boost ⚡'), true);
+
+  // The route's caps, in the worst case this builder can meet: the most p
+  // tags it can emit, a long URL episode guid, and 200-character track guids
+  // (the longest boostNoteTrack keeps). Mirrors app/api/nostr/site-sign.
+  const many = Array.from({ length: 8 }, (_, i) => {
+    const sk = generateSecretKey();
+    return { npub: nip19.npubEncode(getPublicKey(sk)), pubkey: getPublicKey(sk), name: `m${i}` };
+  });
+  const longEp = { ...episode, guid: `https://example.com/${'e'.repeat(220)}`, title: 'T'.repeat(150), link: `https://example.com/${'l'.repeat(300)}` };
+  const worst = await capture({
+    podcast: { ...podcast, nostrNpubs: many.slice(0, 4) }, episode: longEp,
+    boostagram: boostagram('m'.repeat(280)), results: [], mentions: many,
+    track: { split: { title: 'S'.repeat(300), artist: 'A'.repeat(300),
+      remoteItem: { feedGuid: 'f'.repeat(200), itemGuid: 'g'.repeat(200) } }, results: [{ ok: true, sats: 1 }] },
+  });
+  const total = worst.tags.reduce((n, t) => n + t.reduce((m, x) => m + x.length, 0), 0);
+  check('worst case: tag total within MAX_TAGS_TOTAL_LEN 4096', total <= 4096, true);
+  check('worst case: every tag item within 512', worst.tags.every((t) => t.every((x) => x.length <= 512)), true);
+  check('worst case: at most 40 tags', worst.tags.length <= 40, true);
+  check('worst case: every tag name is in the route allowlist',
+    worst.tags.every((t) => ['i','k','r','p','amount','client','t','imeta','q'].includes(t[0])), true);
+  const worstNoTrack = await capture({
+    podcast: { ...podcast, nostrNpubs: many.slice(0, 4) }, episode: longEp,
+    boostagram: boostagram('m'.repeat(280)), results: [], mentions: many,
+  });
+  check('worst case: body within 2000', worst.content.length <= 2000, true);
+  // Without the track this body is already within a few characters of the
+  // cap, and the line adds up to ~250: it must be the line that goes, never
+  // the note.
+  check('worst case: a body the line would overfill drops the LINE',
+    worst.content, worstNoTrack.content);
+  check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
+  const roomy = await capture({ ...base, track: { ...track, split: { ...track.split,
+    title: 'S'.repeat(300), artist: 'A'.repeat(300) } } });
+  check('a body with room keeps the capped line',
+    roomy?.content.includes(`🎵 ${'S'.repeat(119)}… — ${'A'.repeat(119)}…`), true);
+}
+
+// ===========================================================================
 console.log('\n--- 6. Nothing left this machine ---');
 // ===========================================================================
 if (!ISOLATED) {

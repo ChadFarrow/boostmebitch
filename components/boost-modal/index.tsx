@@ -2,7 +2,7 @@
 import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useMemo, useState } from 'react';
 import { ModalShell } from '../modal-shell';
-import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
+import type { Episode, Podcast, Boostagram, StoredBoost, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, collectZapReceipts, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
@@ -26,7 +26,8 @@ import { DroppedPayees } from './dropped-payees';
 import { LiveNowPlaying, NowPayingRow, splitTargetLabel } from '../live-now-playing';
 import { useActiveSplit } from './use-active-split';
 import { useZapRouting } from './use-zap-routing';
-import { liveTargetSnapshot } from '@/lib/v4v/live-value';
+import { liveTargetSnapshot, type LiveTarget } from '@/lib/v4v/live-value';
+import { fetchRemoteItemParent, isNotPlayed, livePlayedKey, livePlayedSnapshot } from '@/lib/live-played';
 import { PublishStatus, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
 import { activeNostr } from '@/lib/nostr/signer';
@@ -46,8 +47,7 @@ import { activeNostr } from '@/lib/nostr/signer';
  * `undefined` would not "fall through" — it would overwrite the episode's real
  * `remote_item_guid` with nothing.
  */
-function liveBoostFields(episodeGuid?: string) {
-  const t = liveTargetSnapshot();
+function liveBoostFields(t: LiveTarget | null, episodeGuid?: string) {
   if (!episodeGuid || t?.guid !== episodeGuid || !t.split?.value?.recipients?.length) return {};
   const remote = t.split.remoteItem;
   return {
@@ -56,6 +56,49 @@ function liveBoostFields(episodeGuid?: string) {
     ...(t.event ?? {}),
   };
 }
+
+/**
+ * The live block the boost note may name as the track it paid, from the SAME
+ * snapshot `liveBoostFields` put on the boostagram — so the note and the
+ * boostagram cannot name two different songs. Null for the show's own block and
+ * for a host segment: a block the played-tracks list would not keep
+ * (`isNotPlayed`) is not a track.
+ */
+function liveNoteSplit(
+  t: LiveTarget | null,
+  episodeGuid: string | undefined,
+  showFeedGuid: string | undefined,
+): ValueTimeSplit | null {
+  if (!episodeGuid || t?.guid !== episodeGuid || !t.split?.value?.recipients?.length) return null;
+  if (isNotPlayed({ ...t, showFeedGuid }, t.split)) return null;
+  return t.split;
+}
+
+/**
+ * Who made the track, for the note's `🎵` line — display only. Podcast Index
+ * carries `author` on the FEED record, so neither a resolved window nor a live
+ * block has it; the played list may already have asked, and otherwise this
+ * asks `/api/remote-item`. Started when the boost is sent, so it runs while the
+ * wallet pays; undefined on any miss.
+ */
+async function noteTrackArtist(split: ValueTimeSplit, t: LiveTarget | null): Promise<string | undefined> {
+  if (split.artist) return split.artist;
+  if (t?.split === split) {
+    const key = livePlayedKey(t);
+    const row = livePlayedSnapshot(t.guid).find((p) => p.key === key);
+    if (row?.split.artist) return row.split.artist;
+  }
+  const feedGuid = split.remoteItem?.feedGuid;
+  const itemGuid = split.remoteItem?.itemGuid;
+  if (!feedGuid || !itemGuid) return undefined;
+  return (await fetchRemoteItemParent(feedGuid, itemGuid))?.artist;
+}
+
+/**
+ * The longest the note waits for the artist. The sats have already moved when
+ * it publishes, and a missing artist costs only the "— artist" half of one line.
+ */
+const NOTE_ARTIST_WAIT_MS = 2000;
 
 interface Props {
   podcast: Podcast;
@@ -305,17 +348,20 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // paths carry it: a self-signed note's request was signed by the user, a
     // site-published note's by the site, so neither names anyone it shouldn't.
     summaryReceipt?: QuotedZapReceipt,
+    // The track the boost paid, with the legs that paid it — see
+    // PublishArgs.track. The note names it only if one of those legs settled.
+    track?: { split: ValueTimeSplit; results: BoostResult[] },
   ) {
     if (!shareNostr) return;
     setPubState({ kind: 'publishing' });
     try {
       const note = identity && shareAs === 'self'
-        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt })
+        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt, track })
         // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
         // what each may do with them — the body always, the `p` tags only when
         // the user's own key signs — and that decision belongs there, not in a
         // caller that would have to remember it at every site.
-        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions, summaryReceipt });
+        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions, summaryReceipt, track });
       setPubState({ kind: 'done', note });
       storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
       bumpBoosts();
@@ -339,6 +385,17 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // "From" default, and withholding it from the wire is what anonymity means
     // here, not forgetting what they typed.
     if (name) storage.senderName.set(identity?.npub, name);
+
+    // The live target, read ONCE: the boostagram's remote guids and the note's
+    // track line both come from this snapshot, so they name the same song.
+    const liveTarget = liveTargetSnapshot();
+    // The track the note may name: the frozen window on a recorded episode,
+    // the on-air block on a live one. Its artist is looked up now, while the
+    // wallet pays, and only when there will be a note to put it in.
+    const noteSplit = redirect ?? liveNoteSplit(liveTarget, episode?.guid, podcast.podcastGuid);
+    const noteArtist = shareNostr && noteSplit
+      ? noteTrackArtist(noteSplit, liveTarget).catch(() => undefined)
+      : Promise.resolve(undefined);
 
     const boostagram: Boostagram = {
       app_name: BRAND.wireName,
@@ -370,7 +427,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       // fields stay the SHOW — the broadcast the listener chose — while the
       // remote guids name the track, so the artist sees real context and the
       // host can correlate. Same shape as a valueTimeSplit leg.
-      ...liveBoostFields(episode?.guid),
+      ...liveBoostFields(liveTarget, episode?.guid),
       // The pre-recorded equivalent, and the same shape for the same reason:
       // primary fields describe the episode the listener is playing, remote_*
       // names the track that earned the payment. Spread last so it wins over
@@ -697,7 +754,20 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             as: identity && shareAs === 'self' && hasSigner ? 'self' : 'site',
           })
         : null;
-      await maybePublishNote(boostagram, allLegs, summaryReceipt ?? undefined);
+      // `collected` is the TRACK's legs whenever there is a track to name: a
+      // redirect sends the primary leg to the window's block, and a live show
+      // pays the on-air block as its only leg. `boostNoteTrack` names nothing
+      // unless one of them settled.
+      const artist = noteSplit
+        ? await Promise.race([
+            noteArtist,
+            new Promise<undefined>((r) => setTimeout(() => r(undefined), NOTE_ARTIST_WAIT_MS)),
+          ])
+        : undefined;
+      const track = noteSplit
+        ? { split: artist ? { ...noteSplit, artist } : noteSplit, results: collected }
+        : undefined;
+      await maybePublishNote(boostagram, allLegs, summaryReceipt ?? undefined, track);
     }
   }
 

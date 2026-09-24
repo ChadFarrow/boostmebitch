@@ -155,6 +155,29 @@ export function extensionNostr(): Window['nostr'] | undefined {
   return typeof window === 'undefined' ? undefined : window.nostr;
 }
 
+/**
+ * Tell a surface that WHO SIGNS changed — an adapter installed or removed.
+ *
+ * `getNip44()` and friends are read during render, and the bunker and local
+ * adapters install asynchronously after page load. A surface that asks once,
+ * too early, keeps the answer: the NWC card on an iPhone signed in with Clave
+ * read "Your signer doesn't support NIP-44 encryption" beside a checked backup
+ * box, for a signer that supports it and had simply not reconnected yet.
+ * Subscribing and re-rendering is the fix; the answer itself stays a read.
+ */
+const signerListeners = new Set<() => void>();
+
+export function subscribeSigner(fn: () => void): () => void {
+  signerListeners.add(fn);
+  return () => { signerListeners.delete(fn); };
+}
+
+function notifySigner() {
+  for (const fn of signerListeners) {
+    try { fn(); } catch { /* one bad listener must not stop the rest */ }
+  }
+}
+
 export function activateAmberSigner(pubkey?: string): AmberSigner {
   if (typeof window === 'undefined') {
     throw new Error('Amber signer requires a browser environment');
@@ -170,6 +193,7 @@ export function activateAmberSigner(pubkey?: string): AmberSigner {
   amberInstance = new AmberSigner(pubkey);
   // Cast: AmberSigner satisfies the structural shape declared in auth.ts.
   if (!setWindowNostr(amberInstance as unknown as Window['nostr'])) noteLockedGlobal();
+  notifySigner();
   return amberInstance;
 }
 
@@ -181,6 +205,7 @@ export function deactivateAmberSigner() {
     // sign the user out.
     setWindowNostr(originalWindowNostr);
   }
+  notifySigner();
 }
 
 export function isAmberActive(): boolean {
@@ -254,6 +279,7 @@ export function activateBunkerSigner(adapter: BunkerAdapter) {
   localInstance = null;
   bunkerInstance = adapter;
   if (!setWindowNostr(adapter.nostrApi)) noteLockedGlobal();
+  notifySigner();
 }
 
 /**
@@ -284,6 +310,7 @@ export function revokeBunkerSession() {
   if (typeof window !== 'undefined' && originalCaptured) {
     setWindowNostr(originalWindowNostr);
   }
+  notifySigner();
   if (!adapter) return;
   void sendBunkerLogout(adapter).finally(() => {
     try { adapter.inner.close(); } catch { /* ignore */ }
@@ -303,6 +330,7 @@ export function deactivateBunkerSigner() {
     // sign the user out.
     setWindowNostr(originalWindowNostr);
   }
+  notifySigner();
 }
 
 export function isBunkerActive(): boolean {
@@ -333,6 +361,7 @@ export function activateLocalSigner(skHex: string): LocalSigner {
   // window.nostr.sk for any script on this origin. Mirrors the bunker's
   // adapter.nostrApi above. See the comment on LocalSigner.nostrApi.
   if (!setWindowNostr(localInstance.nostrApi as unknown as Window['nostr'])) noteLockedGlobal();
+  notifySigner();
   return localInstance;
 }
 
@@ -344,6 +373,7 @@ export function deactivateLocalSigner() {
     // sign the user out.
     setWindowNostr(originalWindowNostr);
   }
+  notifySigner();
 }
 
 /**
