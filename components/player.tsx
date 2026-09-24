@@ -9,6 +9,8 @@ import {
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
+import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
+import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
@@ -18,6 +20,8 @@ import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
+import { downloadManager } from '@/lib/downloads/download-manager';
+import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
@@ -32,7 +36,8 @@ const BoostModal = dynamic(
 );
 import { StreamPulse } from './streaming-settings';
 import { BoltIcon, PipIcon } from './icons';
-import { FullscreenPlayer } from './fullscreen-player';
+import { FullscreenPlayer, warmPlayerPanes } from './fullscreen-player';
+import { PodcastCover } from './podcast-cover';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveBadge } from './live-badge';
@@ -110,6 +115,18 @@ function playOrPark(el: HTMLMediaElement, park: () => void): void {
   });
 }
 
+/**
+ * How far backwards the playhead must jump, with no control pressed, before it
+ * is read as the element having lost its buffer rather than as playback.
+ *
+ * Well above any rebuffer or clock wobble, and well below the "did I lose my
+ * place?" a listener would notice. The writer refuses a rewind over the same
+ * distance for the same reason — see RESUME_REWIND_MAX_SEC.
+ */
+const RESTORE_JUMP_SEC = 120;
+/** See `lastGoodPos`: three attempts, then stand down rather than fight. */
+const RESTORE_MAX_TRIES = 3;
+
 export function Player() {
   // Per-field selectors, not a bare `useApp()`. In zustand v5 a selector-less
   // call re-renders on EVERY store write; <Player> is mounted in the root
@@ -128,6 +145,7 @@ export function Player() {
   const setPosition = useApp((s) => s.setPosition);
   const playNext = useApp((s) => s.playNext);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
+  const playbackRate = useApp((s) => s.playbackRate);
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
@@ -145,6 +163,49 @@ export function Player() {
   // every consumer renders whole seconds (fmt(), step=1 seek bars, chapter
   // highlighting) — gating on the floor cuts store-driven re-renders to 1 Hz.
   const lastTick = useRef(-1);
+  // True while a DOWNLOADED episode's local source is being resolved. Until
+  // `attach()` runs, `el.src` is still the PREVIOUS episode, and its
+  // `timeupdate`s would be written into the store as the NEW episode's position —
+  // which the resume writer (#414) then saves under the new episode, with the old
+  // file's duration. Near the old file's end that even FORGETS the new episode's
+  // saved place. So the audio element's position is ignored until the source it
+  // is reporting on is the one `current` names.
+  const pendingLocalSrc = useRef(false);
+
+/**
+ * The last position the element actually reported, and how many times we have
+ * tried to put it back.
+ *
+ * **iOS RELEASES A BACKGROUNDED MEDIA ELEMENT'S BUFFER.** It returns playable
+ * but sitting at 0, and nothing in the source effect re-runs — its deps are the
+ * episode and the url, and neither changed. So the element plays from the
+ * beginning while the store and storage still hold the real place. Reported
+ * twice from an iPhone, the second time with the download still present, which
+ * is what ruled out eviction: *"I did resume the episode earlier without an
+ * issue but the second time I tried minutes later it started over."*
+ *
+ * The guards in `lib/resume-position.ts` stop that from destroying the SAVED
+ * value, and `↺ Resume` gives a way back by hand. Neither puts the audio back,
+ * which is what a listener actually wants — hence this.
+ *
+ * CAPPED, and the cap is the point. If the element cannot seek — a stream whose
+ * server refuses ranges, a source still loading — retrying on every `timeupdate`
+ * would fight it four times a second forever. Three attempts, then it stands
+ * down and leaves `↺ Resume` as the way back.
+ */
+  const lastGoodPos = useRef(0);
+  const restoreTries = useRef(0);
+  /**
+   * An element that reached its end starts again at 0 on the next play() — the
+   * spec requires it. Left at the duration, the baseline read that restart as a
+   * lost buffer and put the playhead back at the end, which ended it again:
+   * replaying a finished episode took four presses. The end is not a place to
+   * restore to.
+   */
+  const forgetRestoreBaseline = () => {
+    lastGoodPos.current = 0;
+    restoreTries.current = 0;
+  };
 
   // Video plays through a <video> + (for HLS) hls.js instead of the native
   // <audio>. Two sources feed the <video>: (1) an HLS (.m3u8) enclosure — a
@@ -350,6 +411,42 @@ export function Player() {
   const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
+
+  /**
+   * The blob URL of the downloaded file currently attached to `<audio>`, if any.
+   *
+   * A ref rather than state on purpose: it must NOT be a dependency of the
+   * source effect below, or a URL that resolves after playback has begun
+   * restarts the episode from zero. At most one is alive at a time.
+   */
+  const localSrcRef = useRef<string | null>(null);
+  const revokeLocalSrc = useCallback(() => {
+    if (!localSrcRef.current) return;
+    URL.revokeObjectURL(localSrcRef.current);
+    localSrcRef.current = null;
+  }, []);
+  // Revoke on unmount too. <Player> lives in the root layout so this is rare,
+  // but a Fast Refresh in dev remounts it on every edit.
+  useEffect(() => revokeLocalSrc, [revokeLocalSrc]);
+
+  /**
+   * Read the download library into memory now, not on the first tap.
+   *
+   * `downloadManager.localKeyFor` can only answer synchronously once this has
+   * landed, and a synchronous answer is what keeps `el.src = …` on the same
+   * tick as the user's gesture — see the source effect below. Doing it at mount
+   * instead means the IndexedDB read happens while somebody is still choosing
+   * an episode, rather than in front of the one they chose.
+   */
+  useEffect(() => { void downloadManager.hydrate(); }, []);
+
+  // Pull the fullscreen player's lazy pane chunks down while there IS a
+  // connection. They are fetched on FIRST OPEN otherwise, so a listener who
+  // downloads episodes, goes offline and then opens the player asks for files
+  // nothing ever cached — reported from an iPhone, twice. `<Pane>` keeps that
+  // from killing playback; this is what makes the tabs actually work. Runs on
+  // idle, so the deferral that keeps them out of the first load still holds.
+  useEffect(() => { warmPlayerPanes(); }, []);
 
   // Source the active media element when the current item changes. Audio and
   // video are mutually exclusive (one `current`), so the inactive element is
@@ -586,10 +683,10 @@ export function Player() {
       };
     }
 
-    // Audio path (unchanged behaviour).
+    // Audio path.
     if (!audio.current || !current) return;
     const el = audio.current;
-    el.src = current.episode.enclosureUrl;
+    const episode = current.episode;
     // Start position: play(episode, podcast, startSec) sets positionSec before
     // this effect runs, so an episode launched from a transcript line / chapter
     // begins there. Applied once metadata is ready (currentTime isn't settable
@@ -597,12 +694,85 @@ export function Player() {
     // the same reason as the video branch above.
     const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
     const seekOnLoad = () => { el.currentTime = startAt; };
-    if (startAt > 0) {
-      el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
-    }
-    if (isPlaying) {
-      primePlaybackAudioSession();
-      el.play().catch(() => setPlaying(false));
+
+    let cancelled = false;
+
+    const attach = (src: string) => {
+      pendingLocalSrc.current = false;
+      // A new source starts with NO baseline, and seeding it from `startAt`
+      // was a real bug: a fresh source reports ~0 for a moment before
+      // `loadedmetadata` seeks to `startAt`, so a seeded baseline read that
+      // transient as a lost position and "restored" it — consuming the very
+      // transient `e2e:resume` step 4 exists to measure, and suppressing the
+      // store update that step needs. `lastGoodPos` may only ever hold a
+      // position this element was OBSERVED to reach.
+      lastGoodPos.current = 0;
+      restoreTries.current = 0;
+      revokeLocalSrc();
+      if (src.startsWith('blob:')) localSrcRef.current = src;
+      el.src = src;
+      if (startAt > 0) el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
+      if (isPlayingRef.current) {
+        primePlaybackAudioSession();
+        el.play().catch(() => setPlaying(false));
+      }
+    };
+
+    /**
+     * A downloaded episode plays from local bytes.
+     *
+     * **THE NO-DOWNLOAD PATH STAYS SYNCHRONOUS, AND THAT IS THE WHOLE POINT OF
+     * `localKeyFor`.** iOS ties `play()` to the user gesture and an `await` over
+     * real I/O can lose it, so an episode nobody downloaded must reach `el.src`
+     * on the same tick as before. Written the obvious way — always `await
+     * resolveSource()` — this feature would put an IndexedDB read in front of
+     * every play, downloaded or not, and the failure would be a play button
+     * that needs pressing twice, on the one platform this app is mostly
+     * listened on.
+     *
+     * `undefined` means hydration has not landed. It is NOT "no": reading it
+     * that way streams over a file the listener already has. `<Player>` mounts
+     * in the root layout and hydrates below, so by the first tap this is
+     * normally already decided; the async branch is the honest answer when it
+     * is not.
+     *
+     * **The resolved URL is never state.** This effect's deps are
+     * `[id, enclosureUrl, videoMode, reloadNonce]`, so a blob URL arriving in a
+     * `useState` AFTER playback began would re-run the effect, repoint `el.src`
+     * and restart the episode from zero.
+     */
+    const localKey = downloadManager.localKeyFor(episode);
+    if (localKey === null) {
+      attach(episode.enclosureUrl);
+    } else {
+      pendingLocalSrc.current = true;
+      void (localKey === undefined
+        ? downloadManager.resolveSource(episode)
+        : downloadManager.objectUrlFor(localKey)
+      ).then((localSrc) => {
+        // The episode changed while the read was in flight. Revoke immediately —
+        // nothing else holds this URL, so skipping it leaks the whole file.
+        if (cancelled || audio.current !== el) {
+          if (localSrc) URL.revokeObjectURL(localSrc);
+          return;
+        }
+        // `null` here is an evicted download, which the manager has already
+        // forgotten. Streaming is what the listener had before they pressed it.
+        attach(localSrc ?? episode.enclosureUrl);
+        // The download record's value block may be stale — payableValue reads
+        // episode.value first, so a stale copy outranks the feed's own.
+        if (localSrc && episode.feedId && episode.guid) {
+          const g = episode.guid;
+          loadEpisodeFromFeed(episode.feedId, g).then((r) => {
+            if (cancelled || !r?.episode) return;
+            useApp.getState().refreshCurrentValue(
+              g,
+              r.episode.value ?? null,
+              r.episode.valueTimeSplits,
+            );
+          });
+        }
+      });
     }
     // `{ once: true }` removes the listener when it FIRES, which is not the same
     // as removing it when this effect is torn down — and the audio element is a
@@ -619,11 +789,54 @@ export function Player() {
     //
     // The video branch above already removes its copy in cleanup. This is the
     // same line; the two branches had simply drifted.
-    return () => { el.removeEventListener('loadedmetadata', seekOnLoad); };
+    //
+    // `cancelled` covers the resolve still being in flight; `revokeLocalSrc`
+    // covers it having landed. A blob URL that is never revoked pins the whole
+    // downloaded file in memory for the life of the document — tens of
+    // megabytes per episode switch, on a phone.
+    return () => {
+      cancelled = true;
+      pendingLocalSrc.current = false;
+      el.removeEventListener('loadedmetadata', seekOnLoad);
+      revokeLocalSrc();
+    };
   // `enclosureUrl` is a dep as well as `id`: an episode object can be enriched
   // in place (`syncSelectedPodcast`, the /api/feed backfill) and a NEW url on
   // the same id must re-attach the source; an identical url never re-runs.
   }, [current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Playback speed. Hydrated here rather than at store creation, which also
+  // runs on the server.
+  useEffect(() => {
+    useApp.setState({ playbackRate: storage.playbackRate.get() });
+  }, []);
+
+  // Applies the speed to the active element. Declared AFTER the source effect
+  // and keyed on the same deps, so it runs once the element has been
+  // re-sourced. `defaultPlaybackRate` is set as well as `playbackRate` because
+  // `load()` resets the latter to the former — without it every episode change
+  // and every stall reload would drop back to 1×.
+  //
+  // A live item is always 1×: there is no timeline ahead of the live edge to
+  // play faster into, and hls.js would only stall against it.
+  useEffect(() => {
+    const el = isVideoRef.current ? video.current : audio.current;
+    if (!el) return;
+    const rate = isLiveMedia ? 1 : playbackRate;
+    // A browser may refuse a speed: the spec lets it throw NotSupportedError
+    // for one it cannot play, and Chrome does outside 0.0625–16. Uncaught, that
+    // throw is an effect error that takes the player down with it. Fall back
+    // to 1× on the element, and in the store, so the tile does not claim a
+    // speed the audio is not playing at.
+    try {
+      el.defaultPlaybackRate = rate;
+      el.playbackRate = rate;
+    } catch {
+      el.defaultPlaybackRate = 1;
+      el.playbackRate = 1;
+      if (rate !== 1) useApp.getState().setPlaybackRate(1);
+    }
+  }, [playbackRate, isLiveMedia, current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]);
 
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz
   // timer reading useApp.getState() — mounted from here because <Player> is the
@@ -696,6 +909,9 @@ export function Player() {
     if (!seekReq) return;
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
+    markDeliberateSeek(); // `requestSeek` only ever comes from a control.
+    lastGoodPos.current = seekReq.t; // and the baseline moves with it — see `seekMedia`.
+    restoreTries.current = 0;
     el.currentTime = seekReq.t;
     lastTick.current = Math.floor(seekReq.t);
     setPosition(seekReq.t);
@@ -786,14 +1002,36 @@ export function Player() {
    * `useCallback` and the Media Session effect below can close over it.
    */
   const skipBy = useCallback((deltaSec: number) => {
+    markDeliberateSeek(); // as in `seekMedia` — a press is intent.
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
     const dur = el.duration;
     const target = el.currentTime + deltaSec;
     const clamped = Math.max(0, Number.isFinite(dur) ? Math.min(target, dur) : target);
     el.currentTime = clamped;
+    // As in `seekMedia`, and on the same terms: hardening, not a demonstrated
+    // fix. The press knows where it is going; nothing should have to observe it.
+    lastGoodPos.current = clamped;
+    restoreTries.current = 0;
     lastTick.current = Math.floor(clamped);
     setPosition(clamped);
+  }, [setPosition]);
+
+  /**
+   * The lock screen's ABSOLUTE scrub (`seekto`). It is a deliberate move exactly
+   * as the in-app seek bar is, so it marks intent and moves the restore baseline
+   * too — without that, a lock-screen or CarPlay rewind of more than
+   * `RESTORE_JUMP_SEC` read as a lost buffer: `onTimeUpdate` put the playhead
+   * back and `recordPosition` refused to save the rewind.
+   */
+  const seekTo = useCallback((t: number) => {
+    markDeliberateSeek();
+    lastGoodPos.current = t;
+    restoreTries.current = 0;
+    const el = isVideoRef.current ? video.current : audio.current;
+    if (el) el.currentTime = t;
+    lastTick.current = Math.floor(t);
+    setPosition(t);
   }, [setPosition]);
 
   // Space / k, ← / j, → / l — document-wide, guarded so a key pressed while
@@ -868,18 +1106,63 @@ export function Player() {
     artOk: artUsable,
   });
 
+  /**
+   * The current item's DOWNLOADED cover, published for the surfaces that paint
+   * now-playing art.
+   *
+   * Every download already stores its cover, and until this existed only
+   * `/downloads` could read it: on a plane the episode played from local bytes
+   * under a coloured initial tile, which is not what "the cover comes too"
+   * promised. Reported from an iPhone in airplane mode.
+   *
+   * It is always a LAST rung — see <PodcastCover>'s `localSrc` and the mini
+   * bar's ladder below. Online, chapter and track art still win; this only
+   * catches when every network candidate fails, which offline they all do.
+   *
+   * This effect OWNS the blob URL. An unrevoked one pins the whole decoded
+   * image for the life of the document, and `<Player>` lives in the root
+   * layout, so nothing else would ever collect it.
+   */
+  const setNowPlayingCover = useApp((s) => s.setNowPlayingCover);
+  const nowPlayingCover = useApp((s) => s.nowPlayingCover);
+  useEffect(() => {
+    const ep = current?.episode;
+    let cancelled = false;
+    let mine: string | null = null;
+    if (ep) {
+      void (async () => {
+        // The cover is not on a user-gesture deadline the way `el.src` is, so
+        // this one may wait for the library rather than answering `undefined`.
+        await downloadManager.hydrate();
+        const key = cancelled ? null : downloadManager.storedKeyFor(ep);
+        const url = key ? await downloadManager.coverUrlFor(key) : null;
+        if (cancelled || !url) {
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
+        mine = url;
+        setNowPlayingCover(url);
+      })();
+    }
+    return () => {
+      cancelled = true;
+      if (mine) URL.revokeObjectURL(mine);
+      setNowPlayingCover(null);
+    };
+  }, [current?.episode.id, current?.episode.enclosureUrl, setNowPlayingCover]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Lock-screen / notification integration — transport handlers, play state,
   // scrub bar and metadata — lives in ./player/use-media-session. It is called
   // HERE, after `nowArt`, because the metadata effect consumes it.
   useMediaSession({
     current, isPlaying, positionSec, duration, nowArt,
-    audio, video, isVideoRef, lastTick,
-    setPosition, setPlaying, skipBy,
+    playbackRate: isLiveMedia ? 1 : playbackRate,
+    setPlaying, skipBy, seekTo,
   });
 
   // Saves where each episode was left, so the next play() of it resumes there.
   // See ./player/use-resume-position and lib/resume-position.ts.
-  useResumePosition({ audio, video, isVideoRef });
+  useResumePosition({ audio, video, isVideoRef, pendingLocalSrc });
 
   if (!current) return null;
   const { episode, podcast } = current;
@@ -892,6 +1175,19 @@ export function Player() {
   const isLive = episode.liveStatus === 'live';
 
   function seekMedia(v: number) {
+    // The listener moved the playhead on purpose: licenses a large rewind that
+    // ordinary playback may not make. See `markDeliberateSeek`.
+    markDeliberateSeek();
+    // AND MOVE THE BASELINE WITH IT — hardening, NOT a fix for anything
+    // observed. Chromium fires `timeupdate` when `currentTime` is assigned even
+    // on a paused element, so the baseline stays fresh there on its own, and
+    // `e2e:resume` section 7b passes with and without these two lines. It was
+    // written for a reported "the skip buttons don't work" that it turned out
+    // NOT to explain, and it is kept because the invariant should not depend on
+    // an event firing: every deliberate move knows its destination, and WebKit
+    // is not verified to fire that event on a paused seek.
+    lastGoodPos.current = v;
+    restoreTries.current = 0;
     const el = isVideoRef.current ? video.current : audio.current;
     if (el) el.currentTime = v;
     lastTick.current = Math.floor(v);
@@ -982,7 +1278,7 @@ export function Player() {
             }}
             // Progressive video (a podcast video rendition) just stops at the end;
             // live HLS never fires this. Music auto-advance stays on the <audio>.
-            onEnded={() => setPlaying(false)}
+            onEnded={() => { forgetRestoreBaseline(); setPlaying(false); }}
             // THIS IS WHERE A LIVE-STREAM RECONNECT BECOMES VISIBLE, and the
             // ordinary rebuffer must stay distinguishable from it. `stalled`
             // alone is the mini-bar's "⋯ buffering — press play to retry"; only
@@ -1038,7 +1334,24 @@ export function Player() {
         <audio
           ref={audio}
           onTimeUpdate={(e) => {
+            // The previous episode, still playing while a download resolves.
+            if (pendingLocalSrc.current) return;
             const t = e.currentTarget.currentTime;
+            // PUT IT BACK. A large jump BACKWARDS that no control asked for is
+            // the element having lost its buffer — see `lastGoodPos`. The same
+            // numbers just after a seek are the listener's instruction, which
+            // `seekedRecently` is what tells them apart; one timestamp answers
+            // that for the writer and for here, so the two cannot disagree.
+            if (
+              lastGoodPos.current - t > RESTORE_JUMP_SEC
+              && restoreTries.current < RESTORE_MAX_TRIES
+              && !seekedRecently()
+            ) {
+              restoreTries.current += 1;
+              e.currentTarget.currentTime = lastGoodPos.current;
+              return;
+            }
+            if (t > 0) lastGoodPos.current = t;
             const tick = Math.floor(t);
             if (tick !== lastTick.current) {
               lastTick.current = tick;
@@ -1061,6 +1374,8 @@ export function Player() {
           // stopped and the transport drew ❚❚ over silence — true of albums
           // since before playlists existed. Ask whether it moved.
           onEnded={() => {
+            if (pendingLocalSrc.current) return;
+            forgetRestoreBaseline();
             if (current && playsAsTracks(current.podcast) && playNext()) return;
             setPlaying(false);
           }}
@@ -1097,43 +1412,38 @@ export function Player() {
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
             </div>
-          ) : (nowArt || episode.image) ? (
+          ) : (nowArt || episode.image || nowPlayingCover) ? (
             // `nowPlayingArt` picks the record a live Split Kit show is playing,
             // then the track a <podcast:valueTimeSplit> redirects to, then the
             // active chapter's artwork (Podcasting 2.0 chapters `img`), falling
-            // back to the episode cover on a missing/broken image.
+            // back to the episode cover on a missing/broken image. The
+            // downloaded cover is LAST — see `nowPlayingCover` above.
             //
-            // `key` is the URL, so a chapter or track change REPLACES this
-            // element rather than mutating it. Two things depend on that. It
-            // cancels the outgoing image's download — chapter art is routinely
-            // tens of MB on these feeds, and a rapid ⏭ run otherwise leaves
-            // every one of them in flight against the audio's own origin. And it
-            // resets the onError bookkeeping below, which would otherwise
-            // persist on a reused element and blank a later chapter that was
-            // perfectly fine.
+            // THIS USED TO BE A HAND-ROLLED <img> ON THE RAW URL, and the two
+            // faults it had are both the reason <PodcastCover> exists. It paid
+            // the feed's full-size file for a 48px tile: measured on Mutton,
+            // Mead & Music, one chapter's animated cover is 4,472,805 bytes
+            // against 5,502 proxied at w=160, on the connection the audio is
+            // streaming over. And its ladder ended on a broken-image glyph
+            // where this one ends on the initial tile.
             //
-            // fetchPriority low + decoding async keep it behind the media on the
-            // shared HTTP/2 connection: this is a 48px thumbnail, and nothing
-            // about it is worth a frame of audio.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              key={nowArt || episode.image}
-              src={nowArt || episode.image}
-              alt=""
-              fetchPriority="low"
-              decoding="async"
-              onError={(e) => {
-                // One attempt at the episode cover, tracked on the element
-                // rather than by comparing `src` against the fallback string:
-                // the `src` GETTER returns a RESOLVED absolute URL, so an
-                // untrimmed or relative feed URL never compares equal and the
-                // handler re-assigns the same failing URL forever.
-                const el = e.currentTarget;
-                if (el.dataset.fellBack || !episode.image) return;
-                el.dataset.fellBack = '1';
-                el.src = episode.image;
-              }}
-              className="w-12 h-12 object-cover border border-bone/20 flex-shrink-0"
+            // `w={160}` is the smallest allowlisted width and the right one:
+            // 48 CSS px at a phone's 3x device pixel ratio is 144.
+            //
+            // It is also why the big cover in <FullscreenPlayer> now asks for
+            // `preferOriginal` — the proxy takes frame one, so the animation
+            // the artist published belongs on the surface that paints it 400px
+            // across, not behind a thumbnail.
+            <PodcastCover
+              image={nowArt || episode.image}
+              artwork={episode.image}
+              localSrc={nowPlayingCover}
+              title={podcast.title}
+              seed={podcast.id?.toString()}
+              // Nothing about a 48px thumbnail is worth a frame of audio.
+              lowPriority
+              w={160}
+              className="w-12 h-12 border border-bone/20 flex-shrink-0"
             />
           ) : null}
           <div className="min-w-0 flex-1">

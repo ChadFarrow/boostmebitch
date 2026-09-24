@@ -1,0 +1,483 @@
+import { MAX_DOWNLOAD_BYTES, roomVerdict, downloadFailureMessage, proxiedAudioUrl } from './download-rules';
+
+/**
+ * Did the host answer AT ALL — any status, including one it refuses to let us
+ * read?
+ *
+ * `mode: 'no-cors'` asks the browser for an opaque response, which it hands
+ * back for ANY reply the server made: 200, 405, 500. It rejects only when the
+ * request never completed — no DNS, no route, no server. That is exactly the
+ * line between "this host will not let other apps save its audio" and "this
+ * device is offline", and it is the one signal `navigator.onLine` cannot give:
+ * that reports whether an interface exists, so it is `true` on a captive
+ * portal and on wifi with no route out.
+ *
+ * HEAD, not GET: `no-cors` permits it, and a GET here would start pulling the
+ * whole enclosure again to answer a yes/no question.
+ *
+ * FAILS TOWARDS "OFFLINE" on its own timeout. Saying "no connection" when the
+ * host was merely slow sends the user somewhere harmless; saying "this host
+ * blocks downloads" about a working host is a claim about somebody else's
+ * server that they cannot check.
+ *
+ * **Both signal helpers are feature-detected, and that is not defensive
+ * programming for its own sake.** `AbortSignal.timeout` landed in Safari 16 and
+ * `AbortSignal.any` only in 17.4, while this app is used on older iPhones — and
+ * a `TypeError` thrown HERE would replace a wrong-but-readable message with a
+ * blank failure, which is strictly worse than the bug being fixed.
+ */
+const REACHABILITY_PROBE_MS = 6000;
+
+function probeSignalFor(signal?: AbortSignal): AbortSignal | undefined {
+  const timeout = typeof AbortSignal?.timeout === 'function'
+    ? AbortSignal.timeout(REACHABILITY_PROBE_MS)
+    : undefined;
+  if (!signal) return timeout;
+  if (!timeout) return signal;
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, timeout]) : signal;
+}
+
+async function hostAnswers(url: string, signal?: AbortSignal): Promise<boolean> {
+  try {
+    await fetch(url, {
+      method: 'HEAD',
+      mode: 'no-cors',
+      credentials: 'omit',
+      signal: probeSignalFor(signal),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The bytes half of a download.
+ *
+ * CACHE API, NOT INDEXEDDB, and the reason is atomicity: `Cache.put` either
+ * stores the whole response or nothing. A cancelled or failed download
+ * therefore leaves nothing behind, so there is no half-written entry to detect
+ * and clean up — which is the class of bug that would otherwise produce a green
+ * tick over a truncated file.
+ *
+ * PERSISTENCE INVARIANT: all three bucket names are on-disk identifiers. Renaming
+ * one does not migrate anything; it orphans every listener's library silently,
+ * leaving the bytes on disk with nothing able to find, play or delete them.
+ */
+const AUDIO_CACHE = 'bmb-downloads-v1';
+const ART_CACHE = 'bmb-downloads-art-v1';
+/**
+ * Chapters and transcripts, keyed by THIS APP'S OWN request URL
+ * (`/api/chapters?url=…`), not by the third-party document URL.
+ *
+ * That choice is what keeps `useChapters` and `useTranscript` ignorant of
+ * downloads. Both take a URL and no episode, so keying by the request they were
+ * about to make lets them ask "is this already here?" without being handed an
+ * episode they have no other use for. It also means the cached bytes are
+ * same-origin and therefore readable — a cross-origin fetch of the raw document
+ * would be opaque.
+ */
+const DOC_CACHE = 'bmb-downloads-doc-v1';
+
+export interface DownloadProgress {
+  receivedBytes: number;
+  /** `null` when the host sent no `Content-Length`. */
+  totalBytes: number | null;
+  /** 0..1, or `null` when the total is unknown. */
+  fraction: number | null;
+}
+
+/**
+ * Raised when the download was refused before a single byte was fetched.
+ *
+ * Distinct from a failure on purpose: nothing was attempted, nothing was spent,
+ * and the message is written to be shown to a person rather than logged.
+ */
+export class DownloadRefused extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DownloadRefused';
+  }
+}
+
+function cachesAvailable(): boolean {
+  return typeof caches !== 'undefined';
+}
+
+export async function estimateUsage(): Promise<{ usage: number; quota: number } | null> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.estimate) return null;
+  try {
+    const { usage, quota } = await navigator.storage.estimate();
+    if (typeof quota !== 'number') return null;
+    return { usage: usage ?? 0, quota };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ask the browser to keep this origin's storage rather than evicting it under
+ * pressure. Best effort — Safari does not grant it, which is why the eviction
+ * self-heal path in the player exists rather than being a fallback nobody hits.
+ */
+export async function requestPersistence(): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persist) return false;
+  try {
+    if (await navigator.storage.persisted?.()) return true;
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
+}
+
+/** The room check, split so `roomVerdict`'s arithmetic stays pinnable. */
+export async function hasRoomFor(bytes: number | null | undefined): Promise<'yes' | 'no' | 'unknown'> {
+  return roomVerdict(await estimateUsage(), bytes);
+}
+
+/**
+ * Fetch an enclosure and store it under `key`.
+ *
+ * NO PROXY, AND THAT IS A MEASUREMENT — but the first measurement was a
+ * SAMPLE, and it was not representative. `<audio src>` needs no CORS header
+ * and `fetch()` does. Five real enclosures were tested on 2026-09-09 — a
+ * self-hosted mp3, Megaphone and Simplecast each behind a Podtrac redirect,
+ * archive.org, and a Fountain music track — and every one sent
+ * `Access-Control-Allow-Origin`, which was read as "hosts send it".
+ *
+ * **That was wrong, and an iPhone found it on 2026-09-20**: `mmmusic.show`
+ * serves a 90 MB `audio/mpeg` off Apache with no such header, so Mutton, Mead
+ * & Music streams perfectly and cannot be saved. Re-measured that day —
+ * op3.dev, libsyn, megaphone, transistor and buzzsprout send it; `anchor.fm`,
+ * `mp3s.nashownotes.com` and `mmmusic.show` do not. The five that passed were
+ * all commercial hosts or a CORS-enabled prefix; **self-hosted shows are the
+ * gap, and V4V podcasts are disproportionately self-hosted.**
+ *
+ * The "no proxy" property did NOT survive that, and the replacement is
+ * `lnurlFetch`'s shape rather than a new one: direct first, `/api/audio` only
+ * when the browser THROWS. So every host that allows a direct read still takes
+ * it and costs us nothing, and there is **no allowlist to drift** — the
+ * browser's own refusal is the trigger. The route's own header carries the
+ * three objections and what answers each.
+ *
+ * One shot, whole file, no Range requests and no resume. Resuming would need
+ * the partial bytes kept somewhere, which is the half-written entry the Cache
+ * API arrangement above exists to avoid.
+ *
+ * @returns the number of bytes stored.
+ */
+export async function downloadBytes(
+  key: string,
+  opts: {
+    sourceUrl: string;
+    /** The feed's `<enclosure type>`, used only for a download that came
+     *  through `/api/audio` — see `type` below. */
+    enclosureType?: string;
+    expectedBytes?: number | null;
+    onProgress?: (p: DownloadProgress) => void;
+    signal?: AbortSignal;
+  },
+): Promise<number> {
+  if (!cachesAvailable()) throw new DownloadRefused('This browser cannot store downloads.');
+
+  const { sourceUrl, enclosureType, expectedBytes, onProgress, signal } = opts;
+  let proxied = false;
+
+  // Ask BEFORE fetching. Refusing after the bytes are on the wire has already
+  // spent the bandwidth this feature exists to save.
+  if (expectedBytes) {
+    const room = await hasRoomFor(expectedBytes);
+    if (room === 'no') {
+      throw new DownloadRefused('Not enough space — remove a download to make room.');
+    }
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(sourceUrl, { signal, credentials: 'omit', mode: 'cors' });
+  } catch (e) {
+    // An abort is the user cancelling and must stay distinguishable.
+    if (e instanceof DOMException && e.name === 'AbortError') throw e;
+    // A CORS refusal and an offline device are the same TypeError here, so ASK
+    // rather than guess: a `no-cors` HEAD resolves whenever the server answered
+    // at all and rejects only when the device could not get there.
+    //
+    // ONLY A HOST THAT ANSWERED MAY BE RETRIED THROUGH US. An offline device
+    // would otherwise send every failed download at our server for a second
+    // failure, and the message it earns ("No connection") is already correct.
+    if (!(await hostAnswers(sourceUrl, signal))) {
+      throw new Error(downloadFailureMessage(hostOf(sourceUrl), false));
+    }
+    try {
+      res = await fetch(proxiedAudioUrl(sourceUrl), { signal, credentials: 'omit' });
+      proxied = true;
+    } catch (e2) {
+      if (e2 instanceof DOMException && e2.name === 'AbortError') throw e2;
+      // Our own route is unreachable while the host is not. Say what is true
+      // rather than blaming the host, whose only sin is a missing header.
+      throw new Error('Could not reach this app’s server to fetch the episode.');
+    }
+    if (!res.ok) {
+      // The route answers the host's 404 verbatim and 502 for anything else, so
+      // a miss stays a fact about the feed rather than an outage of ours.
+      if (res.status === 404) throw new Error(`${hostOf(sourceUrl)} no longer has this episode.`);
+      if (res.status === 413) {
+        throw new DownloadRefused('This episode is too large to download.');
+      }
+      // We reached our own server and IT could not read the host — so the host
+      // is still the subject, and this is where `reachable: true` earns its
+      // keep: some hosts refuse a datacentre IP as readily as a browser.
+      throw new Error(downloadFailureMessage(hostOf(sourceUrl), true));
+    }
+  }
+  if (!res.ok) throw new Error(`${hostOf(sourceUrl)} answered ${res.status}.`);
+  if (!res.body) throw new Error('This host sent no audio.');
+
+  const declared = Number(res.headers.get('content-length'));
+  const totalBytes = Number.isFinite(declared) && declared > 0 ? declared : null;
+
+  // The size is often only knowable now. Check again rather than trusting the
+  // feed's `enclosureLength`, which is routinely wrong or absent.
+  if (totalBytes && totalBytes !== expectedBytes) {
+    const room = await hasRoomFor(totalBytes);
+    if (room === 'no') {
+      throw new DownloadRefused('Not enough space — remove a download to make room.');
+    }
+  }
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let receivedBytes = 0;
+  // Progress fires on ~5% buckets. Notifying per chunk re-renders the whole
+  // subtree hundreds of times a second for a bar that moves one pixel.
+  let lastBucket = -1;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      chunks.push(value);
+      receivedBytes += value.byteLength;
+      // THE CAP IS ENFORCED ON WHAT ARRIVED, NOT ON WHAT WAS DECLARED. An
+      // endless source sends no `Content-Length` at all, so every check above
+      // this line passes it; these chunks are held in memory until the download
+      // completes, so an unbounded one takes the tab down rather than filling
+      // the disk. Same rule as lib/capped-body.ts, pointed at audio.
+      if (receivedBytes > MAX_DOWNLOAD_BYTES) {
+        throw new DownloadRefused('This file is too large to download — it may be a live stream rather than an episode.');
+      }
+      const fraction = totalBytes ? Math.min(1, receivedBytes / totalBytes) : null;
+      const bucket = fraction === null ? -1 : Math.floor(fraction * 20);
+      if (onProgress && bucket !== lastBucket) {
+        lastBucket = bucket;
+        onProgress({ receivedBytes, totalBytes, fraction });
+      }
+    }
+  } catch (e) {
+    // Release the connection before rethrowing, or an aborted download leaves
+    // the socket open until the tab is closed.
+    reader.cancel().catch(() => {});
+    throw e;
+  }
+
+  // `/api/audio` answers `application/octet-stream` ON PURPOSE, so a hostile
+  // host cannot pick a type in our origin. Stored as that, the blob is a type
+  // no media element is promised to play (WebKit is the one to doubt), so a
+  // proxied download takes the FEED's declared type — and only a media type,
+  // for the same reason the route refuses the host's.
+  const type = proxied
+    ? (/^(audio|video)\/[\w.+-]+$/i.test(enclosureType ?? '') ? enclosureType! : 'audio/mpeg')
+    : res.headers.get('content-type') ?? 'audio/mpeg';
+  const blob = new Blob(chunks as BlobPart[], { type });
+  const cache = await caches.open(AUDIO_CACHE);
+  try {
+    await cache.put(key, new Response(blob, { headers: { 'content-type': type } }));
+  } catch {
+    // The only way past `hasRoomFor` is a quota we could not estimate, which is
+    // exactly the iOS case `roomVerdict` returns 'unknown' for. This is that
+    // decision arriving late, and it is still a refusal rather than a failure.
+    throw new DownloadRefused('Not enough space — remove a download to make room.');
+  }
+  return blob.size;
+}
+
+/**
+ * The blob URL for a stored download, or `null` if the bytes are gone.
+ *
+ * **`null` is not an error.** iOS evicts an origin's storage under pressure
+ * without telling anyone, so a record whose bytes have vanished is an ordinary
+ * state. The caller forgets the record and streams instead — which is what the
+ * listener had before they pressed download.
+ *
+ * **The caller owns revoking the URL.** A leaked one pins the whole file in
+ * memory for the life of the document.
+ */
+export async function getObjectUrl(key: string): Promise<string | null> {
+  if (!cachesAvailable()) return null;
+  const cache = await caches.open(AUDIO_CACHE);
+  const res = await cache.match(key);
+  if (!res) return null;
+  return URL.createObjectURL(await res.blob());
+}
+
+export async function deleteBytes(key: string): Promise<void> {
+  if (!cachesAvailable()) return;
+  try {
+    const cache = await caches.open(AUDIO_CACHE);
+    await cache.delete(key);
+  } catch {
+    // A delete that fails leaves bytes we can no longer reach. Nothing useful
+    // to tell the user, and the record is removed either way.
+  }
+}
+
+export async function clearAllBytes(): Promise<void> {
+  if (!cachesAvailable()) return;
+  try {
+    await caches.delete(AUDIO_CACHE);
+    await caches.delete(ART_CACHE);
+    await caches.delete(DOC_CACHE);
+  } catch {
+    // As above.
+  }
+}
+
+/**
+ * Fetch one of this app's own API routes and keep the response.
+ *
+ * Returns the request URL when it stored something, `null` otherwise. Failure is
+ * swallowed: chapters and a transcript are extras, and a download without them
+ * still plays. A non-ok response is deliberately NOT cached — a 404 or a 502
+ * outlives the outage that produced it, and the loader would then show an empty
+ * transcript as though the feed had none.
+ */
+export async function cacheDoc(requestUrl: string): Promise<string | null> {
+  if (!cachesAvailable()) return null;
+  try {
+    const res = await fetch(requestUrl);
+    if (!res.ok) return null;
+    const cache = await caches.open(DOC_CACHE);
+    await cache.put(requestUrl, res);
+    return requestUrl;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read one of this app's own document URLs, NETWORK FIRST.
+ *
+ * The same rule the service worker applies to documents, and for the same
+ * reason. Cache-first is the tempting shape — the bytes are already here — but
+ * a cached chapters or transcript document has no version key, no expiry, and
+ * is dropped only when the download is removed. So it is served forever: a
+ * publisher who corrects a chapter never reaches anyone who downloaded the
+ * episode, and since the chapter `url` became a live `href` that is a dead or
+ * wrong link with no way back.
+ *
+ * **The cache answers only when the fetch REJECTS**, which is the network being
+ * gone. A non-ok status is an ANSWER — our own route saying 404 or 502 — and
+ * the caller handles it exactly as it does for an episode nobody downloaded.
+ * Cheap and never throws: a browser with no Cache API, or nothing stored,
+ * re-raises the original network failure so the caller's own `.catch` runs.
+ */
+export async function fetchDoc(requestUrl: string): Promise<Response> {
+  try {
+    return await fetch(requestUrl);
+  } catch (networkError) {
+    const hit = await matchDoc(requestUrl);
+    if (hit) return hit;
+    throw networkError;
+  }
+}
+
+/**
+ * The stored response for one of this app's own request URLs, or `null`.
+ *
+ * Cheap and never throws — a browser with no Cache API answers `null`. Prefer
+ * `fetchDoc` at a read site; this is the raw lookup it is built on.
+ */
+export async function matchDoc(requestUrl: string): Promise<Response | null> {
+  if (!cachesAvailable()) return null;
+  try {
+    const cache = await caches.open(DOC_CACHE);
+    return (await cache.match(requestUrl)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteDocs(requestUrls: string[]): Promise<void> {
+  if (!cachesAvailable() || !requestUrls.length) return;
+  try {
+    const cache = await caches.open(DOC_CACHE);
+    await Promise.all(requestUrls.map((u) => cache.delete(u)));
+  } catch {
+    // As above.
+  }
+}
+
+/**
+ * Store an episode's cover art, trying each candidate in order.
+ *
+ * **Every candidate must be an `/api/art` URL, which is same-origin.** A bare
+ * cross-origin image fetch yields an opaque response, and an opaque response can
+ * never become a blob URL — it would store bytes that read back empty.
+ *
+ * A LADDER, NOT ONE URL, for the reason `<PodcastCover>` already has a four-deep
+ * `onError` chain: Podcast Index's `image` and `artwork` routinely disagree and
+ * either can be broken. Measured 2026-09-09 on Homegrown Hits, the episode's own
+ * cover is a 19 MB GIF that `/api/art` answers 502 for — so taking only the
+ * first candidate meant no art at all, when the feed-level PNG was sitting right
+ * behind it.
+ *
+ * Failure is swallowed at every rung: art is an extra, and a download without it
+ * still plays. That is the same rule the artwork proxy is under everywhere else —
+ * a failing route costs appearance and nothing more.
+ */
+export async function downloadImage(key: string, proxiedUrls: string[]): Promise<boolean> {
+  if (!cachesAvailable()) return false;
+  for (const url of proxiedUrls) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const cache = await caches.open(ART_CACHE);
+      await cache.put(key, res);
+      return true;
+    } catch {
+      // Try the next rung.
+    }
+  }
+  return false;
+}
+
+export async function getImageObjectUrl(key: string): Promise<string | null> {
+  if (!cachesAvailable()) return null;
+  try {
+    const cache = await caches.open(ART_CACHE);
+    const res = await cache.match(key);
+    if (!res) return null;
+    return URL.createObjectURL(await res.blob());
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteImage(key: string): Promise<void> {
+  if (!cachesAvailable()) return;
+  try {
+    const cache = await caches.open(ART_CACHE);
+    await cache.delete(key);
+  } catch {
+    // See above.
+  }
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return 'this host';
+  }
+}

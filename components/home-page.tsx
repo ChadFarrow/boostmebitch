@@ -606,7 +606,11 @@ export function HomePage() {
   const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
 
   return (
-    <main className="min-h-screen" style={{ paddingBottom: 'calc(var(--dock-b) + 8rem)' }}>
+    // NO min-h-screen AND NO BOTTOM PADDING. `<body>` already carries
+    // `min-h-screen`, and the layout footer's `calc(var(--dock-b) + 7rem)` is
+    // the one clearance under every route — this main had both on top of it, so
+    // a page with one search result still scrolled ~490px of nothing.
+    <main>
       {/* Shared with /favorites — see <AppHeader> for why the wordmark is a
           button here and a link everywhere else, and for the 71px it owes
           `--app-header-h`. */}

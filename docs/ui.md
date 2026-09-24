@@ -29,7 +29,7 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 **Lightning and Nostr are two separate logins.** A user can connect a wallet and boost with **no Nostr identity** — the payment rails, boost orchestrator and `:guest` storage never touch `identity`. `components/auth-control.tsx` fronts both: one **"Sign in ▾"** dropdown when neither is connected (◆ Sign in with Nostr / ◉ Continue with Google / ⚡ Connect wallet), the wallet balance chip inline once a wallet connects, and a direct button for whichever login remains; once both are set it delegates the Nostr side to `<NostrAuth>`'s `<AccountMenu>`. Both modals' open-state lives in the store (`walletOpen`/`signInOpen`); `<NostrAuth>` owns `<SignInModal>`, and **`<WalletModal>` is rendered by `<WalletModalHost>` in the root layout, not here** — see the dock section below for why it had to move. The account menu is **Nostr-only**.
 
-**IT HAS TWO HOSTS, AND THE SECOND ONE IS WHY.** `<AppHeader>` renders it on `/`, `/live`, `/favorites` and `/playlists`; **`<FullscreenPlayer>` renders a second instance with `overlay`**. That overlay is `fixed z-50` and covers `<TabBar>` (`z-30`), and `/live/<npub>`, `/stream/<naddr>` and `/npub/<npub>` have no header at all — so on those routes *neither* login had a trigger. Google was the visible half: this dropdown is the only place that row has ever existed, so the player's bare "◆ Sign in" button opened `<SignInModal>` with the default intent and a listener with no key got three signer methods and no way out. The wallet half was worse, because the boost modal tells people to *"connect one with ⚡ Connect wallet (top right)"* — a control that was not on the route. **Two mounted instances are safe**: nothing in it is module-level, `useWalletChange` and `useMenuKeys` are per-instance, and `useThemeMode` subscribes for exactly this reason (see the theme section). Reported from a live show.
+**IT HAS TWO HOSTS, AND THE SECOND ONE IS WHY.** `<AppHeader>` renders it on `/`, `/live`, `/favorites`, `/playlists` and `/downloads`; **`<FullscreenPlayer>` renders a second instance with `overlay`**. That overlay is `fixed z-50` and covers `<TabBar>` (`z-30`), and `/live/<npub>`, `/stream/<naddr>` and `/npub/<npub>` have no header at all — so on those routes *neither* login had a trigger. Google was the visible half: this dropdown is the only place that row has ever existed, so the player's bare "◆ Sign in" button opened `<SignInModal>` with the default intent and a listener with no key got three signer methods and no way out. The wallet half was worse, because the boost modal tells people to *"connect one with ⚡ Connect wallet (top right)"* — a control that was not on the route. **Two mounted instances are safe**: nothing in it is module-level, `useWalletChange` and `useMenuKeys` are per-instance, and `useThemeMode` subscribes for exactly this reason (see the theme section). Reported from a live show.
 
 **`overlay` drops two things, and only one of them is cosmetic.** The theme control goes because a palette switch inside a media overlay is the one control nobody opened it for — see the theme section for what that costs. **`<WalletBalanceChip>` goes for a money-path reason**: `useWalletBalance` re-reads on every `payment_sent` notification and each read opens a NIP-47 connection, which `components/wallet-balance.tsx` records as *"the single largest contributor to the socket leak that took payments down mid-session"*. Header chip + boost modal is two instances; a third — mounted for the rest of the session once the player has been opened, since "closed" there is `invisible`, not an unmount — would make every leg of a boost sent from the fullscreen player three reads instead of two. The lone ⚡ still reads as "connected", which is the same argument the paragraph below makes about the chip returning null.
 
@@ -291,7 +291,7 @@ The wordmark is a `<button>` on `/` (where "home" means clearing the search and 
 
 ## The dock: `<TabBar>` and the two layout variables
 
-**Navigation is a bottom tab bar on every route** (`components/tab-bar.tsx`, mounted in the root layout beside `<Player>`). Home / Live / Favorites / Wallet. It exists because `<AppHeader>`'s right-hand cluster had zero slack and every link added there came off the wordmark — the measurements are in the header section above, and they are why this is a move rather than a re-division.
+**Navigation is a bottom tab bar on every route** (`components/tab-bar.tsx`, mounted in the root layout beside `<Player>`). Home / Live / Favorites / Downloads / Wallet. It exists because `<AppHeader>`'s right-hand cluster had zero slack and every link added there came off the wordmark — the measurements are in the header section above, and they are why this is a move rather than a re-division.
 
 **`/live`'s two sections share one card and one grid, and the split between them is content, not layout.** `<LiveCard>` + `LIVE_GRID` (`components/live-card.tsx`) own the frame, the 64px art, the badge row, the three text lines and the action row; each section fills the slots. What stays separate is the CONTENT, because the objects are: a `<podcast:liveItem>` has a feed, a `podcastGuid`, a share URL and a ♡, while a kind:30311 stream has an npub, an naddr, a viewer count and hashtags. Merging those would be one component holding two sets of affordances and a flag to choose between them; merging the *frame* is what stops them drifting apart again, which is what happened.
 
@@ -309,11 +309,17 @@ The wordmark is a `<button>` on `/` (where "home" means clearing the search and 
 
 **Live IS a tab, and it is the entry this section used to say was missing.** It needed an index route to point at, which `/live` now is — a static segment beside the existing `/live/<npub>`, which until then made `/live` itself a 404. `match` is `startsWith('/live')`, a prefix like `/favorites`, so the tab also lights on `/live/<npub>`: correct, that route *is* a live stream, and before this nothing lit there at all. Adding it moved the Nostr live row off `/`, which is why `<HomePage>` now code-splits three heavy surfaces rather than four and no longer opens a relay subscription on a first paint it may discard.
 
-**Four tabs, and the touch floor is not close.** At 390px four columns of `max-w-7xl` are 97.5px each, and the row is the full `--tabbar-h` (56px), so height is the binding dimension at 56 > 44 — the tap area is the grid cell and the icon-and-label stack is centred inside it, which is why no item needs a `min-h`. The floor is not threatened until **seven** tabs (390/7 = 55.7px). That number is here so the next person adding one does not re-derive it.
+**The label is `font-display`, and that is arithmetic rather than taste.** `html, body` set JetBrains Mono, so a dock label costs a FIXED advance per character — `Downloads` and `Favorites` are nine characters and measured **56px** against `Home`'s 25px, inside cells that are all the same width. What a reader sees is the gap between label EDGES, so the dock read as evenly spaced on the left and crowded on the right: 49px between the first two labels and **22px** between the last two at 390px, and only **8px** at 320px. Measured against the real font files, `font-display` at the same 10px takes the widest label to 52px and the tightest gap to **16px at 320px and 30px at 390px** — `Favorites` alone drops 56 → 43px. `tracking-wide` went with it: letter-spacing on a nine-character label is width spent where there is least of it.
+
+**The gaps are still not equal, and they cannot be while the cells are.** That is the trade and it is deliberate: the tap area is the grid cell, so equal cells are what keeps every tab over the 44px floor. Proportional columns would even the gaps and put the narrowest tab under that floor at 320px.
+
+**Five tabs, and the touch floor is still not close.** At 390px five columns of `max-w-7xl` are 78px each, and the row is the full `--tabbar-h` (56px), so height is the binding dimension at 56 > 44 — the tap area is the grid cell and the icon-and-label stack is centred inside it, which is why no item needs a `min-h`. The floor is not threatened until **seven** tabs (390/7 = 55.7px). That number is here so the next person adding one does not re-derive it. The grid is data-driven off `TABS.length`, so Downloads needed no CSS change; `npm run e2e:downloads` measures all five under real device emulation.
 
 **Wallet is a modal, not a route, and that is why `<WalletModal>` moved to the layout.** The tab flips `walletOpen`, the same store flag the header's balance chip flips. That flag was only ever *read* by `<AuthControl>`, which at the time rendered on the `<AppHeader>` routes alone (`/`, `/live`, `/favorites`, `/playlists` — three when this was written, four since `/live` gained an index) — so a tab bar on every route flipping it would have been a **dead control** on `/live/<npub>`, `/stream/<naddr>` and `/npub/<npub>`: flag set, nothing mounted to answer, no error. **The premise has since moved and the repair still stands:** `<FullscreenPlayer>` renders a second `<AuthControl>`, so those three routes now have a wallet trigger — but only while the player is open, and the tab bar is on every route whether it is or not. `<WalletModalHost>` renders it from the root layout instead. This is the same failure and the same repair as `<FavoritesPrivacyPrompt>` and `onFavoritesModeNeeded` — a single consumer mounted on fewer surfaces than the controls that address it.
 
-**`--tabbar-h` (56px) and `--dock-b`** (`app/globals.css`). `--dock-b` is the bar's height plus `env(safe-area-inset-bottom)`, and it is what everything above the bar offsets by: the mini-bar's `bottom`, the layout footer's padding, `<HomePage>`'s. **Read the variable, never a literal** — a literal is how the two go out of step, and there are already five page-level `pb-32`s predating the dock that do exactly that (see the open items below).
+**`--tabbar-h` (56px) and `--dock-b`** (`app/globals.css`). `--dock-b` is the bar's height plus `env(safe-area-inset-bottom)`, and it is what everything above the bar offsets by: the mini-bar's `bottom`, the layout footer's padding, `<HomePage>`'s. **Read the variable, never a literal** — a literal is how the two go out of step.
+
+**And a route adds NO bottom clearance of its own: the layout footer's `calc(var(--dock-b) + 7rem)` is the ONLY one, because it sits under every route.** Six pages carried a `pb-32` (128px) on top of it and three carried a `min-h-screen`, which nothing clipped and everybody paid for in dead space — until a page was short enough for the dead space to be the whole difference. Reported from an iPhone about `/queue`: *"This page scrolls when it doesn't need to."* Measured at 390×844 with a 34px bottom inset: that page was **22px** taller than the screen with three rows and **98px** empty, `/` was **~490px** over with a single search result, and the 404 page **271px**. With the duplicates gone each one fits exactly, and nothing moved on a long page. `e2e:keyboard` section 14 measures `scrollHeight - innerHeight` on four short routes AND that the footer's own link still clears the dock — the second half is what stops a later "fix" from deleting a clearance that was doing a job. `<LivePage>` keeps its `calc(var(--dock-b) + 8rem)`: that padding is inside the route's own scroll container, not the document's.
 
 **The tab bar is the only element IN THE NORMAL FLOW that pays `env(safe-area-inset-bottom)`.** Two elements each adding the inset was a visible gap on notched phones, which is why the mini-bar dropped its own. The exception is the two full-viewport overlays, `<ModalShell>` and `<FullscreenPlayer>`: they **cover** the bar rather than sitting on it, so they pay the inset themselves. Read the rule as "in the flow", not as an absolute — stated absolutely, the next person deletes an inset an overlay needs.
 
@@ -390,11 +396,11 @@ Two rows make it concrete, and both had already drifted inside a single flex con
 
 ## `.tile` — a secondary action in a row of peers
 
-**Glyph over a one-word label, 52px, full width of its grid cell** (`app/globals.css`). Three surfaces are built from it: the show header, the episode page and the fullscreen player, each an auto-fit `grid-cols-[repeat(auto-fit,minmax(56px,1fr))]` so a conditional member changes the row's width and not its shape.
+**Glyph over a one-word label, 52px, full width of its grid cell** (`app/globals.css`). Four surfaces are built from it: the show header, the episode page, and the two `⋯` menus — the fullscreen player's and the episode row's below `lg:` — each an auto-fit `grid-cols-[repeat(auto-fit,minmax(56px,1fr))]` so a conditional member changes the row's width and not its shape.
 
 It exists because those rows were the same set of actions rendered at three or four sizes each — `.btn`, `.btn-ghost text-xs`, `text-[11px]`, a `.stamp` — competing as equals, and the eye read a pile rather than a row. One shape at one size is what makes it scan; **that is also what makes keeping every control affordable**, which matters because `docs/ui.md` requires the show header's five to stay and none to hide behind a menu.
 
-**Shared controls take it through the props they already have** — `<CopyLinkButton className="tile">`, `<FavEpisodeHeart size="tile">` — so the heart's magenta ON state and the COPIED flash stay owned by the components that own them. `useStreamPanel`'s button is restyled with `cloneElement` rather than a new prop: the hook lives in `streaming-settings.tsx`, a money-path file, and this is a class name. Its handler, `aria-expanded` and `title` are untouched.
+**Shared controls take it through the props they already have** — `<CopyLinkButton className="tile">`, `<FavEpisodeHeart size="tile">` — so the heart's magenta ON state and the COPIED flash stay owned by the components that own them. `useStreamPanel`'s button is restyled with `cloneElement` rather than a new prop: the hook lives in `streaming-settings.tsx`, a money-path file, and this is a class name. Its handler, `aria-haspopup` and `title` are untouched — and it opens a DIALOG, never a panel in the page (`docs/streaming.md`).
 
 **`.tile svg` is `w-[18px] h-[18px]` and its specificity (0,1,1) beats any Tailwind size utility (0,1,0).** An icon's own `className` size is silently ignored inside a tile. That is the intent — `<ShareIcon>`'s `w-4 h-4` becomes 18px so every tile's glyph matches — but it is the same ordering hazard `.btn-compact` carries a warning about.
 
@@ -456,6 +462,8 @@ A `<Chip>` above the list: `↓ NEWEST FIRST` / `↑ OLDEST FIRST`. Per show, re
 
 **No control where there is no choice** (`<RailPicker>`'s rule): hidden on a `musicL` playlist, whose pages are *fetched* so the array is a prefix of the real list, and hidden when there are fewer than two non-live rows. The memo re-checks the playlist medium rather than trusting the hidden control, so a flag left from the previous show cannot reverse the first playlist opened after it. Flipping resets the reveal to 10, for the reason `<FavoritesPage>`'s reset key includes its sort: after a flip, "revealed 200" names a different 200.
 
+**On a `music` album this row also holds DOWNLOAD ALBUM** (`components/album-download.tsx`), beside the chip rather than among the header's tiles: that row is the show's actions, measured tight at 390px, and this is an action on the LIST. `canReverse` is true for every album of two tracks or more, which is exactly when that control renders, so the row never exists for it alone. Measured at 390px: 26.5px tall, and the row wraps without widening the page. Its rules are in `docs/downloads.md`, "Downloading an album".
+
 **The state is seeded in an EFFECT, not a `useState` initializer.** This list reaches server-rendered routes, and reading storage during the first render is the mismatch `<FavoritesPage>`'s `mounted` gate exists for. `<EpisodeList>` read no storage at all before this, so the hazard is new to it.
 
 **A related latent bug went with it**: the fullscreen album tracklist numbered rows `i + 1`, which only ever agreed with the track number by coincidence of the sort — it now reads the feed's `<podcast:episode>` with position as the fallback. Reversing would have made it label track 1 as "12".
@@ -470,6 +478,23 @@ A `<Chip>` above the list: `↓ NEWEST FIRST` / `↑ OLDEST FIRST`. Per show, re
 
 **The word moves with the glyph.** That button rendered `{… ? '❚❚' : '▶'} PLAY` — a pause icon beside the word PLAY — and carried no `aria-label`, so its accessible name was the text content and a screen reader announced a pause control as "play". It is PAUSE / RESUME / PLAY now, the same vocabulary `<EpisodeDetailView>` uses, with a matching `aria-label`. `title` is not an accessible name; the BOOST button beside it already says so in a comment.
 
+### Below `lg:` the episode row is BOOST and a `⋯`, and the rest is in the menu
+
+**The title was paying for every button, and at two widths it had nothing left.** The row is one flex line — cover, title column, then the controls, each `flex-shrink-0` — so `min-w-0 flex-1` on the title makes it absorb the whole shortfall. DOWNLOAD's 44px on a phone took the title to **108px at 390px**: "Episode 459 ..." with the date, duration and ⚡ V4V stacked on three lines, reported from an iPhone. From `sm:` BOOST, DOWNLOAD and FAVORITE take their words, measured on Bowl After Bowl with all three on the line: **91px at 640**, 219 at 768, 351 at 900, 475 at 1024. So the break is `lg:`, not `sm:`.
+
+**Below `lg:` the row keeps BOOST and gains a `⋯` (`<EpisodeRowMenu>`, `components/lists/episode-row-menu.tsx`); FAV and DOWNLOAD are in its menu. From `lg:` up they are on the row as before.** The title takes two lines below `lg:` (`max-lg:line-clamp-2`, and `lg:truncate` — not `truncate` overridden at `lg:`, because `truncate` and `line-clamp-none` both set `overflow` and would resolve by stylesheet order). Measured: 168px at 390, where a row is 100px; 331 at 640; 459 at 768.
+
+**The buttons on a line of their own, under the text, was tried first and rejected.** The title got 264px at 390, but a phone row grew from 98px to 125–135px and a music track row from ~73px to 124px — fewer episodes on the screen, which is what the menu answers.
+
+Four things the menu does that are each a way to get it wrong:
+
+- **Its contents are the shared controls as `.tile`s**, never menu items that re-implement them — `<FavEpisodeHeart>` carries the container-is-not-the-parent rule, `<DownloadButton>` five states. It stays open after a press, so the tile's own state change is the confirmation.
+- **Its clicks stop at the menu.** React propagates a synthetic event through a PORTAL to the component that rendered it, so a press on the menu's padding reached the row's `<li onClick>` and opened the episode. The tiles stop their own; the container stops the rest.
+- **No trigger when the menu would open empty**, asked through each control's own refusal — `canFavoriteEpisode`, `downloadManager.canDownload` — never a copy of it. An unresolved playlist row has no enclosure, so DOWNLOAD refuses it while its heart may still render off the remote item's guids; hiding `⋯` on `e.unresolved` would have dropped that heart.
+- **The row says what the menu hides** (`<EpisodeRowMarks>`): `· ♥`, `· ✓ downloaded` or `· ↓ 47%` on the date line, below `lg:` only. Without it a phone showed neither state, and a download running for minutes showed its progress nowhere. Each mark reads the SAME expression as its control — `useEpisodeFavorited`, `<DownloadMark>` — exported from the control's own module.
+
+**The menu's portal, placement and dismissal are `useAnchoredMenu` (`components/use-anchored-menu.ts`)**, shared with the episode page's `⋯ MORE`; the reasons (the `relative z-0` stacking context, the `?.` outside-click test) are in its header.
+
 ## Players (mini + fullscreen)
 
 Two surfaces share one `<audio>` and the store's playback state: the always-mounted mini-player (`components/player.tsx`) and the `<FullscreenPlayer>` it opens. **`<Player>` is mounted in `app/layout.tsx`**, not any page, so playback and the overlay survive route changes (browse ↔ `/stream/<naddr>`).
@@ -477,6 +502,244 @@ Two surfaces share one `<audio>` and the store's playback state: the always-moun
 **Both read the store via per-field selectors, never a bare `useApp()`.** In zustand v5 a selector-less `useApp()` re-renders on *every* store write; `<Player>` is always mounted and owns the fullscreen player, the chapters/transcript fetches and the reverse-portal `<video>`, so a bare subscription re-renders that heavy subtree on every unrelated mutation on top of the 1 Hz position ticks. Actions are stable refs, so selecting them is free.
 
 - **Transport controls are shared.** `<TransportControls size="sm"|"lg">` renders ⏮ / play-pause / ⏭ as a **fragment** (drops into each parent's flex row) and owns the queue math: `idx = episodeQueue.findIndex(...)`, then `nextPlayableIndex` in each direction. Backed by `playPrev`/`playNext` (mirror images — walk `episodeQueue`, reset `positionSec`) and `togglePlay`. Don't re-inline these buttons.
+
+### The author line only shows when it adds something (`authorLine`)
+
+Reported 2026-09-21 with a screenshot of the fullscreen player: **"Our Big Dumb Mouth"
+printed under "Our Big Dumb Mouth"**. Podcast Index returns that feed as
+`title: "Our Big Dumb Mouth"`, `author: "Our Big Dumb Mouth"` — byte-identical, which
+is how most feeds fill `<itunes:author>`.
+
+The cost is not only that it reads oddly. **The player's cover is capped by the room
+left under it** (see below), so a line that says nothing still takes height from the
+artwork on the screen with the least of it.
+
+`authorLine(title, author)` (`lib/util.ts`) returns the author, or `null` when it
+would only repeat the title. **Four surfaces paired these and all four showed it** —
+`<FullscreenPlayer>` twice (the audio and video layouts), the episode list's show
+header, `<Podroll>`, and the carried-favorite row. One helper rather than four guards,
+for the reason the conventions table gives: the fourth copy is the one that drifts.
+
+**The comparison is normalised, not `===`.** A feed writing `"Our Big Dumb Mouth "` or
+lower-case means the same thing and would defeat a bare equality test. Getting it
+wrong here costs the duplicate line this exists to remove, so the loose test is the
+safe direction — it only ever HIDES a line, and never one the title did not already
+say.
+
+**No `check:*` pins it, deliberately.** The check scripts guard functions whose silent
+breakage costs something irreversible; a repeated line is cosmetic, and nothing in
+`lib/util.ts`'s display group (`targetWord`, `showShareUrl`) is pinned either. It was
+proved instead against the shipping module under `node --experimental-strip-types`
+(8 cases, including the reported one and the two normalisation forms), and on the real
+show page: the `<h2>` reads "Our Big Dumb Mouth" and no paragraph under it repeats it.
+
+### An element that lost its buffer is put back
+
+*"This should be saving to playback position anyways."* — and it should. The two
+guards below protect the saved VALUE and give a way back by hand; neither puts the
+audio back, which is what a listener actually wants.
+
+**iOS releases a backgrounded media element's buffer.** It returns playable but
+sitting at 0, and nothing in the source effect re-runs — its deps are the episode and
+the url, and neither changed. So it plays from the beginning while the store and
+storage still hold the real place.
+
+`<Player>`'s `onTimeUpdate` now reads a large backwards jump that **no control asked
+for** as exactly that, and puts the playhead back. Same discriminator as the writer's:
+`seekedRecently()`, one timestamp, so the player and the writer cannot disagree about
+whether the listener just moved.
+
+Three things it has to get right, and the first two were found by the suite:
+
+- **`lastGoodPos` may only hold a position the element was OBSERVED to reach.** The
+  first version seeded it from `startAt`, and a fresh source reports ~0 for a moment
+  before `loadedmetadata` seeks — so the baseline read that transient as a lost
+  position and "restored" it, consuming the very transient step 4 exists to measure
+  and suppressing the store update that step needs. Two checks in section 4 caught it.
+- **It is CAPPED at `RESTORE_MAX_TRIES` (3).** If the element cannot seek — a stream
+  whose server refuses ranges, a source still loading — retrying on every `timeupdate`
+  would fight it four times a second forever. After three it stands down and leaves
+  `↺ Resume` as the way back. **That is the state `e2e:downloads` section 14 now has
+  to manufacture deliberately**, by knocking the playhead down four times: with the
+  restore working, the control is no longer reachable by accident, which is the point.
+- **A restore must not write the bogus position to the store.** The handler returns
+  before `setPosition`, so the only value the writer ever sees is the restored one.
+
+**Pinned by `e2e:resume` section 7**, and how it moves the playhead IS the test:
+writing `audio.currentTime` directly stands in for an element moving on its own, while
+the **real seek bar** is driven for the deliberate half, because writing `currentTime`
+is precisely what must not count as intent. Against the build without the restore it
+reports the element left at 7 s and at 298 s; with it, above 1000 s both times.
+
+### A saved place is not erased by an element that came back at zero
+
+Reported 2026-09-21, **with the download still present** so nothing was evicted:
+*"I did resume the episode earlier without an issue but the second time I tried
+minutes later it started over."*
+
+**Both halves of that sentence are the evidence.** iOS drops a backgrounded media
+element's buffer, and it returns sitting at 0 while storage still holds 17:04. Nothing
+re-seeks it, so a press of play runs from the beginning — and fifteen seconds later
+the writer has replaced 17:04 with 16, then 26. `RESUME_MIN_SEC` is the only reason
+the FIRST attempt still worked: under 15 s nothing is written at all.
+
+**The first guard was positional, and it had a hole the reporter walked into.** It
+also required the new position to be inside the first two minutes — and the next
+screenshot showed the mini-bar at **4:56**, past any head. An element left running
+sails through a distance threshold in a few minutes and the hour is gone again.
+Running the section against that build reports `t: 296`, which is 4:56 to the second.
+
+**A distance rule cannot express this**, because what separates the two cases is not
+WHERE the playhead is — it is whether anybody asked it to go there.
+
+So the guard asks about intent. `markDeliberateSeek()` (`lib/resume-position.ts`) is
+called by the three paths that move the playhead on purpose, and a rewind of more than
+`RESUME_REWIND_MAX_SEC` (120 s) is accepted only inside
+`DELIBERATE_SEEK_WINDOW_MS` (15 s) of one:
+
+| Path | What presses it |
+| --- | --- |
+| `seekMedia` | the seek bar, chapter taps, transcript taps, the player's `onSeek` |
+| `skipBy` | the ±15 / ±30 buttons and the keyboard shortcuts |
+| the `seekReq` effect | anything calling the store's `requestSeek` |
+
+**Ordinary playback marks nothing**, which is exactly the case being refused. The
+window is generous because the writer fires on a store tick, a pause or a page hide,
+so the write after a scrub can arrive seconds later — too short costs the bug, too
+long costs one accepted rewind in the seconds after a real gesture.
+
+**The cost is narrow and stated:** a rewind of more than two minutes achieved without
+any of those three would be ignored until a control is touched. There is no such
+gesture today; everything a person can press marks intent.
+
+**Pinned by `npm run e2e:resume` section 7, in the real wiring**, because
+`lib/resume-position.ts` imports `lib/storage` and will not load under
+`--experimental-strip-types` — the same reason this feature is an e2e and not a
+`check:*`. The section is careful about HOW it moves the playhead, and that is the
+test's whole point: it writes `audio.currentTime` directly to stand in for an element
+moving on its own, and drives the **real seek bar** for the deliberate half, because
+writing `currentTime` is precisely what must not count. Run it against either earlier
+build and it fails at the step that build could not do.
+
+### The player offers a way back when the element has lost the place
+
+Reported 2026-09-21: *"I was listening to this downloaded episode but when I went
+back to it and hit play it just started over… The episode was at 17 minutes."* Asked
+where the press was, the answer was the now-playing bar.
+
+**That press is `togglePlay()`, and it never consults the saved position.** It flips
+the element's play state, nothing more. The saved point is read only where playback is
+*started* — `play()` in `lib/store.ts` defaults `startSec` to `savedStartSec`, which
+covers a list row and an episode page and nothing else. So once the element had been
+reset to the start, the saved 17:04 sat in storage **unreachable from the one screen
+the listener was on**, and there was no control anywhere that would go and get it.
+(Grep confirmed the other half at the time: nothing in the tree passed an explicit
+`0`, so there was no way to deliberately start over either.)
+
+`<FullscreenPlayer>` now renders **`↺ Resume <time>`** above the transport when
+`savedPos.t - positionSec > RESUME_GAP_SEC` (30 s, `lib/resume-position.ts`).
+
+Three properties, each a way to get it wrong:
+
+- **The rule is a COMPARISON, not a flag.** The writer updates the entry every ten
+  seconds of movement, so during ordinary listening the saved point and the element
+  track each other and the control stays hidden; pausing writes the current second,
+  so a deliberate scrub backwards hides it too. It appears in exactly the state it is
+  for — the element at 0:05 while storage says 4:14 — which is why 30 s has to clear
+  the ten-second write interval with room.
+- **It does not hijack PLAY.** The listener asked for play and play is what they get.
+  Jumping them 17 minutes on a press they meant as "start over" is the same complaint
+  one step further on.
+- **The hook is called ABOVE the early return.** `useSavedPosition` takes null
+  precisely so a surface can call it over its own "nothing selected" guard; calling it
+  after `if (!current) return null` is a conditional hook, which `react-hooks` catches
+  and which would break the render order the moment an episode ends.
+
+**Pinned by `npm run e2e:downloads` section 14**, which writes the saved entry
+directly rather than playing to it: the state under test is storage-ahead-of-element,
+and reaching it by playing would take four minutes and still not prove the comparison.
+
+**CAUTION — the recovery window is about 15 seconds, and that is not this control's
+doing.** `recordPosition` refuses anything under `RESUME_MIN_SEC`, so the old entry
+survives only while the element stays inside the first 15 seconds; play on from zero
+and the writer overwrites 17:04 with 16, then 26, and the point is gone. Whether that
+overwrite should be refused when it moves the saved point back by many minutes is a
+separate question this does not answer.
+
+**Still unexplained: what reset the element.** The likeliest candidate is iOS evicting
+the download while the app was backgrounded, forcing a re-attach to the network — the
+report came with "I was on a weak cell connection", and `<Player>`'s source effect
+falls back to `episode.enclosureUrl` when `objectUrlFor` returns null. Not proved.
+
+### A pane that cannot load costs the pane, not playback
+
+Reported from an iPhone on 2026-09-20, in airplane mode, playing a **downloaded**
+episode: *"I can play the episode in airplane mode but when I click the now playing
+bar at the bottom it stops playing and the now playing bar goes away."* Asked to
+describe it more precisely: *"it flashes open, then vanishes"*, and the same tap was
+fine on wifi.
+
+**Three symptoms, one cause, and the boundary that was supposed to help is half of
+it.** `<FullscreenPlayer>` loads five panes with `next/dynamic` — `TranscriptPanel`,
+`EpisodeContents`, `LivePlayedTracks`, `EpisodeSocialThread`, `LiveChat`. Measured:
+opening the player issues **exactly one network request**, and it is a lazy pane
+chunk (`/_next/static/chunks/<n>.<hash>.js`). Offline that request fails, `import()`
+rejects, and React raises it as a throw. `<Player>` sits behind
+`<ErrorBoundary label="Player">` whose fallback is **`null`** (`app/layout.tsx`) — so
+the throw unmounted the entire player, **including the `<audio>` element that was
+mid-episode**. Losing a tab took playback with it.
+
+The outer boundary is not wrong; its granularity was. Its own comment says *"losing
+playback should cost you playback, not the page"* — and **a tab nobody is looking at
+is not playback**. Each pane now renders inside `<Pane>`, a nested boundary whose
+fallback is a sentence rather than `null`, because a blank tab beside a working
+transport reads as a bug in the tab. The two panes inside `<EpisodeInfoPanel>` pass
+no `resetKey` and need none: they render only while their tab is `active`, so leaving
+the tab unmounts the boundary and returning is already a fresh mount.
+
+**Why offline is the whole condition.** The chunks are fetched on FIRST OPEN, and the
+service worker caches `/_next/static/*` cache-first — but only what it has already
+seen. A listener who downloads episodes, goes offline, and *then* opens the player
+for the first time asks for a file nothing ever cached. On wifi it simply loads.
+
+**`npm run e2e:downloads` section 13 pins it**, and the way it blocks matters. It uses
+`Network.setBlockedURLs(['*/_next/static/chunks/*'])` rather than going offline: by
+that point the app's own chunks are loaded, so the only chunk requested is the pane,
+and blocking it isolates the condition without also breaking the blob the episode
+plays from. It taps with a real `Input.dispatchMouseEvent` — the bar's inner controls
+`stopPropagation`, so an `element.click()` on the wrong child expands nothing and the
+section would pass against the bug. **Run it against the unfixed build before trusting
+it**: with the per-pane boundaries reverted it reports `audio:null, bar:false,
+expanded:false` — the report verbatim.
+
+**A second report followed the fix, and it was the DEPLOY, not the code.** *"I closed
+the app, turned on airplane mode and then opened the app"* — an installed PWA that
+goes offline before it ever loads the new build serves the old one from cache, fix
+included or not. **To get any fix into the installed app you must open it once WITH a
+connection.** Say that when asking someone to re-test, or the next round measures the
+previous build.
+
+**Driven as the reported sequence, 10/10** (`/tmp` harness, not a suite): install the
+worker online, seed a download, then a **cold start that is already offline** —
+`Network.emulateNetworkConditions offline` set BEFORE the first navigation. The app
+starts, lists the download, plays it from local bytes, and the tap opens the player
+with the bar intact, playback advancing and no pane apologising.
+
+**What actually makes that work is the HTTP cache, and it is worth knowing which.**
+`warmPlayerPanes` pulls the five pane modules on idle, after
+`navigator.serviceWorker.ready`, so anything it does fetch is cached by the worker.
+Measured: after the cold offline start the panes load and **`bmb-sw-static-*` does not
+exist at all** — Next preloads these chunks during the first page load, before the
+worker controls it, so they are already in the HTTP cache and the warm-up is usually a
+no-op. It stays because it is free on idle and covers the case where that preload does
+not happen. The HTTP cache survives an app close but is the browser's to evict, and
+`<Pane>` is what covers the eviction.
+
+**Two traps met while diagnosing this, both worth knowing.** Chunk filenames are
+HASHED, so a regex on the module name matches nothing — block the path, not the name.
+And headless Chrome does not reproduce it from `Network.emulateNetworkConditions
+offline` alone if the episode has no chapters or splits, because then no pane mounts
+at all; the first repro passed 10/10 against a live bug for exactly that reason.
 
 ### The cover is capped by the height left under it, not by the pane's width
 
@@ -521,6 +784,19 @@ Measured at a 30rem reserve, clearance under the tile row, ordinary episode / li
 
 **`Emulation.setSafeAreaInsetsOverride({ insets: { top: 59, bottom: 34 } })` is the whole test.** Without it every viewport here reads as fitting. A CSS override of the overlay's padding stands the insets up too, but it does not reach `env()` inside the `calc()` — so the cover comes out at its uncapped width and the run quietly measures nothing.
 
+**THE NOW-PLAYING SCREEN KEEPS THE SHOW, THE TRANSPORT AND BOOST; the six secondary actions are in a `⋯` menu.** Both hearts, DOWNLOAD, both SHAREs and STREAM were a row of `.tile`s under BOOST, and that row was what a long title pushed off the bottom of a phone — first as a sixth tile wrapping ≋ STREAM onto a second line, then as the whole row. Asked for by the user on 2026-09-19: *"the show info, playback controls and boost button are the key items"*. The trigger is a 36 × 38 chip in the top bar (`.btn-ghost`'s height, so the bar stays 63px), and the panel is `useAnchoredMenu` + `createPortal` at **`z-[55]`** — the rows' `z-40` would be under this overlay's own `z-50`, and `z-[60]`/`z-[70]` belong to `<ModalShell>` and the iOS status strip, so a boost modal opened from a tile still covers the menu. `grid-cols-3`, not `auto-fit`: six tiles fill two rows exactly, where a four-wide grid left STREAM alone beside three empty cells.
+
+**Two things the bar taught while the six were moving through it.** DOWNLOAD spent an afternoon there as its own `size="header"` chip, and the size is gone with it — but the measurements stand: the right-hand cluster and ← BACK are `flex-shrink-0`, because signed out below ~400px the SIGN IN chip wrapped onto two lines and took the bar from 63px to 83px; and **NOW PLAYING is `hidden sm:inline`**, because with ⋯ beside the account chip and ✕ the label had 39px for a word that needs 54 and overlapped the ⋯ instead of folding. The screen it labels is a full-screen cover with the show's title under it.
+
+**THE CONSTANT IS NOW THE FIRST PAINT ONLY — the cover measures the rest.** A reserve cannot know the title, and a long one spends the cover's room: *"OBDM1424 - Recycled UFO Disclosure | China Nuclear War Scare | Greenland Deal | Missing 411 Cruise"* is FOUR lines at 390px, 120px where 30rem budgeted two, which left the tile row +11px at 390×844 and −71px at 375×667. Reported from an iPhone. `<FullscreenPlayer>` now measures the SLACK — `row.clientHeight` minus where the BOOST line ends, in the scroll row's own content coordinates so a scrolled row reads the same — and moves the cover's inline `max-width` by exactly that, keeping **12px** free (at slack 0 the last control sits ON the edge, which reads as a cut row). The CSS `max-w` keeps the 30rem constant for the first paint and the 28rem ceiling, and **the JS floor is 144px where the CSS one is 11rem**: at 176 a four-line title on a 375×667 phone left BOOST 11px under the edge, and BOOST is the one control here that may not need a scroll.
+
+| Episode at 390×844 | Cover | Under BOOST |
+| --- | --- | --- |
+| 4-line title (OBDM1424) | 330px | 12px |
+| 2-line title (Bowl After Bowl 459) | 350px (width-bound) | 52px |
+
+**Three properties, each a way to get it wrong.** It observes the SCROLL ROW and the BOOST LINE only — the cover is neither, so shrinking the cover cannot re-trigger the observer; a `ResizeObserver` on the media pane loops. It measures to the last control that must be on screen and no further: the value-split row under BOOST is 55px and is allowed to be scrolled to, which is the line the 30rem constant drew too. And it clears the inline value from `sm:` up, where the panes sit side by side and the cover competes with nothing.
+
 **A Podcasting 2.0 live item is this layout, and a Nostr live stream is not.** `liveStreamId` renders the video + `<LiveChat>` pane, whose `flex-1 min-h-0` chat gives up its own height first; it never overflowed at 375×667 or 393×852. To drive a live item when no show is on air, intercept `/api/feed` with CDP `Fetch` and set `liveStatus` on its episodes — one field of one response, everything downstream shipping code.
 
 ### Auto-advance: which feeds, and which rows (#279)
@@ -534,6 +810,7 @@ Measured at a 30rem reserve, clearance under the tile row, ordinary episode / li
 
 **None of it is reachable by a `check:*` script**, because the bug lived in the wiring between a store action, a media event and a medium test — each of which reads correctly alone. `npm run e2e:playlist` drives it end to end: a real click on a real row, a real decodable file, and the browser's own `ended` event, over a three-row playlist whose middle row is unresolved. Both fixes were checked against a failing state first — restore the `music`-only gate, or the `idx ± 1` step, and that scenario fails.
 - **Skip (−15s / +30s) is `onSkip`, opt-in, and lives INSIDE the transport cluster** — both players pass it. It exists because `⏮`/`⏭` are **chapter-stepping** whenever the episode has chapters (`buildChapterNav`), so on a chaptered show there was no control anywhere in the app that moved by a fixed interval; the *lock screen* had `seekbackward`/`seekforward` from the day Media Session was wired, and the screen had nothing. Asymmetric intervals are the podcast convention, not a whim: you skip back because you missed a sentence and forward to clear a segment, so a symmetric pair makes one of the two jobs take repeated taps. `SKIP_BACK_SEC`/`SKIP_FORWARD_SEC` feed both the jump and the number drawn on the icon, so the button can't claim 15 and move 30. Opt-in rather than default because it's meaningless on a live stream (no timeline to jump within — the fullscreen player passes `undefined` when `isLive`, the same condition that replaces the seek bar with the ● LIVE stamp; the mini-bar needs no gate because `playOnly={isLive}` already collapses the cluster to play/pause before skip is reached).
+- **The skip glyph is ONE SVG mirrored for the back button, and only the ARROW may carry that mirror.** `<SkipIcon>` (`components/icons.tsx`) draws the forward arrow and flips it for back, so the two cannot drift by a pixel, and the interval is a `<text>` fed by the same constant the handler seeks with — the button cannot say 15 and jump 30. The flip was a CSS `transform: scaleX(-1)` on the whole `<svg>` with a second CSS transform putting the label back at `transformOrigin: 'center'`, and *what centre* is a question CSS answers through `transform-box`, whose used value differs between engines: Chrome centred the number in the arc, iOS Safari put it low and right, reported from a phone as *"the 10 in the skip back button is off center"*. The mirror is now `transform="translate(24,0) scale(-1,1)"` on the `<g>` — the same flip in the viewBox's own coordinates, x → 24 − x — and the label sits outside that group with **no transform at all**. Measured in Chrome after: both labels 0.00px off the icon's centre line.
 - **On the mini-bar skip returns at `lg:`, not at `sm:` with ⏮/⏭, and that breakpoint is measured.** The pair costs a flat **96px** — two 40px buttons plus two 8px gaps — at every width, and the mini-bar is one flex line whose every button is `flex-shrink-0`, so all 96px comes out of the title and the seek bar. Measured on the same row with the pair hidden vs shown: 1280px seek **641→545**, 1024px **385→289** (both fine); 768px **129→33**; 700px **61→0**. The band just above `sm:` has nothing to give, because 640px is where ⏮/⏭, the AUDIO/VIDEO toggle *and* BOOST expanding 44→104 all reappear at once — **at 640px the seek bar was already 1px wide before skip existed**, which is a pre-existing squeeze this deliberately does not make worse. So the ladder is: `<640` play only, `640–1023` the three original buttons (numbers byte-identical to before), `≥1024` all five. Hiding is honest at every step because the mini-bar is itself a button that opens the fullscreen player, which carries all five at *every* width — verified at 390px. `skipShow` is a separate variable, never `` `${sideShow} lg:flex` ``: both are display utilities at equal specificity, so a string still containing bare `flex` would let Tailwind's emit order decide the layout — the same trap `sideShow` documents.
 - **`skipBy` reads `el.currentTime`, never `positionSec` — relative seeking cannot be built out of `onSeek` + the store position.** The store's position is a copy refreshed from `timeupdate` (~4 Hz) and mirrored into React state, so two quick taps on +30 both compute from the same stale base and the second *overwrites* the first: press twice, move thirty seconds. It lives in `<Player>` (which owns the element) as a dependency-free `useCallback` built only from refs, so the `[]`-dep Media Session effect can close over it — and **the lock-screen `seekbackward`/`seekforward` handlers now go through it too**, since they had exactly the same stale-base bug against `getState().positionSec`. `seekto` stays on the absolute path. Clamped to `[0, duration]` with `duration` read off the element, because it is `Infinity` on a live stream and `NaN` before metadata; the upper bound is skipped in both cases rather than becoming a NaN comparison that swallows the seek.
 - **The fullscreen control row is `flex-wrap` and BOOST is `basis-full sm:basis-auto sm:flex-1`.** Five transport buttons don't fit beside BOOST on a phone: measured at 390px the pane's `p-4` leaves 358px, and ⏮ + −15 + ▶ + +30 + ⏭ is 248px of button plus 48px of `gap-3`, which would have left BOOST ~50px — the same squeeze the mini-bar answered by shedding ⏮/⏭. BOOST takes its own full-width line instead, which is the better shape for the primary action anyway. Identical to before from `sm:` up. **The row is also `justify-center`, and the wrap is what makes that necessary:** once BOOST leaves the line the five transport buttons are alone on it — 248px of button plus 48px of gap in a 358px content box — so a left-aligned row left 62px of dead space on the right, under a full-width BOOST and a full-width tile grid that are both symmetric. It costs nothing from `sm:` up, where `sm:flex-1` on BOOST leaves the line no free space for `justify-content` to distribute.
@@ -553,7 +830,7 @@ Measured at a 30rem reserve, clearance under the tile row, ordinary episode / li
 - **Video mode widens the media pane at `lg`+ (60/40), and the video box's width cap is bounded by the available HEIGHT.** `mediaPane`/`infoPane` are computed once and applied to **both** panes: the media column is `flex-shrink-0`, so setting only its width would leave the real split to flex shrinking. The widening starts at `lg` because a 40% info pane between 640 and 1023px is 256–410px, too tight for the title + seek + transport/BOOST row it pins. The box is `aspect-video`, so its height *derives* from its width — a `max-h` would clamp the height while `w-full` held the width and quietly break the 16:9 frame. Hence `lg:max-w-[min(64rem,calc((100dvh-13rem)*16/9))]`: cap the width by what the height can afford and the ratio stays exact. The 13rem is rounded **up** on purpose (header + `lg:p-10` + `gap-4` + the AUDIO/VIDEO pill) — under-budgeting it re-creates the row scrollbar above. Audio mode keeps the 50/50 split and its `aspect-square` caps.
 - **Native fullscreen promotes the video's STAGE div, not the `<video>`** (`fullscreenSupported`/`toggleFullscreen`/`exitFullscreen` in `lib/util.ts`, beside the PiP pair), so our own overlay controls — tap-to-play, PiP, the exit button — ride along on top of the picture. iPhone Safari implements element fullscreen for *nothing*, so it falls back to `video.webkitEnterFullscreen()` and hands off to the native iOS player, which owns its own exit; that path fires no `fullscreenchange`, so the button's label stays "Full screen" there. Two rules that aren't optional: **collapsing the player must exit fullscreen** (`useEffect` on `open`) or a top-layer video outlives the overlay it belongs to and covers the whole app with no way back; and the stage's in-page size caps must be **shed in the top layer** via `.video-stage:fullscreen` in `app/globals.css` — author styles still beat the UA's `:fullscreen` rules, so `max-w`/`aspect-video` would otherwise render fullscreen as a capped 16:9 box in the corner of a black screen. That CSS is **two rules, never one comma-joined selector list**: a browser that can't parse `:-webkit-full-screen` discards the entire rule if they're joined.
 - **The stage's PiP button is gated on `pipNeedsOwnButton`, not `pipSupported`.** Chrome and Firefox paint their *own* PiP control on hover over any sizeable video, with or without `controls`, so ours lands as a second identical icon in the same corner. `disablepictureinpicture` would suppress theirs but also disables the API ours calls, so not drawing ours is the only lever. The mini-bar keeps `pipSupported` — its 48px thumbnail is below the size at which browsers paint anything. If a browser ever ships the standard API *without* the hover control, this hides the only way in; the fallback is to render ours always and move the cluster to `bottom-2 right-2`.
-- **Right pane:** title/seek → control row (`<TransportControls size="lg">` + a `flex-1` `⚡ BOOST`), then a second row of `<FavHeart size="md">` + SHARE + the STREAM button → value-split disclosure → **album tracklist** for music (`Album · N tracks`, `episodeQueue` clickable, current highlighted, `max-h-80` scroll) → `<EpisodeInfoPanel>` → `socialInteract` thread. **For Nostr live streams the right pane is replaced by the live chat.**
+- **Right pane:** title/seek → control row (`<TransportControls size="lg">` + a `flex-1` `⚡ BOOST`) → value-split disclosure → **album tracklist** for music (`Album · N tracks`, `episodeQueue` clickable, current highlighted, `max-h-80` scroll) → `<EpisodeInfoPanel>` → `socialInteract` thread. **For Nostr live streams the right pane is replaced by the live chat.**
 - **HLS video lives alongside the `<audio>`** — see Nostr live streams for the reverse-portal `<video>` and the `isHlsUrl` branching.
 - **The hls.js constructor config is four decisions, and two of them are bounds rather than preferences.** `lowLatencyMode: false` stops part loading — it hugged the live edge with a tiny buffer and any jitter stalled playback — and `liveSyncDurationCount: 4` keeps a four-segment cushion in front of the play head.
   - **`maxLiveSyncPlaybackRate` was here at 1.5 and had NEVER RUN.** `latency-controller.onTimeupdate` returns before reading it unless `lowLatencyMode` is true, so it is inert for every config this player can hold, and the comment beside it claimed the opposite — that it "gently catches up instead of seeking past missed segments". Nothing catches a drifting play head up here: latency grows, and `synchronizeToLiveEdge` seeks only once the play head leaves the sliding window (`liveMaxLatencyDurationCount` defaults to `Infinity`, so the other seek arm never fires). Buying the catch-up back means buying part loading back with it, which is the thing that was removed. **Deleted, not re-tuned.**
@@ -728,6 +1005,15 @@ Two things about that boundary:
 
 **Tap-to-seek plumbing (chapters + transcripts).** The detail view can't touch the audio element, so a store signal bridges: `store.requestSeek(t)` sets `seekReq: { t, n }` and a `<Player>` effect applies it. `play(episode, podcast, startSec?)` takes an optional start position (applied on `loadedmetadata`) so tapping a line/chapter for a **not-current** episode starts it there; when it IS current, `requestSeek` seeks in place. **Omitting `startSec` means "resume"**, not 0 — see below. An explicit start, 0 included, always wins.
 
+## Playback speed (`bmb:playback_rate`)
+
+**The SPEED tile in the fullscreen player's ⋯ menu cycles 1 → 1.25 → 1.5 → 1.75 → 2 → 1, and 3.5× and 5× are two tiles of their own beside it** (`components/player/speed-button.tsx`) — the seventh, eighth and ninth, a third row of three. The 5× tile's word is PERMANERD rather than SPEED, at the user's request; it is set at `tracking-normal` because nine letters at `.tile`'s spacing are ~2px wider than the tile's inside. The fast speeds were at the end of the one cycle until 2026-09-24: 5× cost six presses, and stepping past it dropped straight to 1×. A fast tile turns its speed on, and a press while it is lit goes back to 1×; while one is lit, SPEED shows 1× unlit and its next press is 1.25×, so only one tile ever names the speed that is playing. The menu stays open after a press and each glyph is a speed, so the tile answers its own press. The cycle is `SPEED_CYCLE_RATES` and the fast pair `FAST_PLAYBACK_RATES`; `PLAYBACK_RATES` (`lib/util.ts`) stays the union, the allowlist the storage accessor reads, so a stored value outside it plays at 1×. Not on the mini-bar, which has no width to give (see `<TransportControls>`); the fullscreen player is one tap away.
+
+- **`<Player>` applies it in an effect declared AFTER the source effect, on the same deps**, and sets `defaultPlaybackRate` as well as `playbackRate`: `load()` resets `playbackRate` to the default, so setting only the one drops back to 1× on every episode change and every stall reload.
+- **A live item is always 1×**, and the tile is hidden there. Nothing lies ahead of the live edge to play into.
+- **The Media Session position state carries the same rate**, or the lock-screen scrub bar runs at half speed under 2× audio.
+- **Streaming bills listening time, not content time.** `accrue` charges `min(wall Δ, position Δ)`, so at 2× a per-minute rate pays per wall-clock minute. No change was needed; see [`streaming.md`](streaming.md).
+
 ## Resume position (`bmb:resume`)
 
 An unfinished podcast episode starts where the listener left it. The rules are in `lib/resume-position.ts`; the writer is `components/player/use-resume-position.ts`; the key is in [`storage.md`](storage.md). Device-wide, not synced — a Nostr copy would need a signer decrypt on load, which is its own design (see signers.md on `unattendedDecryptOk`).
@@ -742,6 +1028,7 @@ An unfinished podcast episode starts where the listener left it. The rules are i
 - **The key prefers the EPISODE's `podcastGuid`** over the podcast it was played from, so a `podcastL` playlist row and the same episode on its own show share one entry.
 - **Shown in two places:** `<ResumeLeft>` ("· 23 min left", `components/lists/resume-left.tsx`) on episode rows, and "▶ RESUME 41:07" on the episode page's play button. Both read `useSavedPosition`, which keeps unchanged entries' object identity across writes, so a write re-renders one label, not the list.
 - **A resume always lands on the `<audio>` element**, because `play()` and `stepTo` reset `videoMode`.
+- **A DOWNLOADED episode attaches its source late, and the element's position is ignored until it does** (`pendingLocalSrc` in `<Player>`). Its local bytes resolve asynchronously (docs/downloads.md), so for 10–300 ms `el.src` is still the PREVIOUS episode — and the source effect has just reset `lastTick`, so that file's next `timeupdate` would be written into the store as the NEW episode's position. The writer would then save the old time under the new episode, with the old file's duration, and near that file's end it would even forget the new episode's saved place. The seek itself was always fine: `startAt` is read before the wait. It self-corrects on the next tick, which is what hides it — unless iOS suspends the app inside the gap.
 - **`npm run e2e:resume` pins the wiring** (`npm run build && npm start` first; `CHROME_PATH`, `--headed`). No `check:*` can: every failure above is in which event writes when. Measured against a build with the 15 s floor set to 0 and the outgoing flush removed: **a reload does not exercise the transient 0 at all** — Chromium fires `emptied` then `timeupdate@0.0` only when the source changes on an element that was somewhere else — and **a 100 ms poll of the stored value missed it too**, because a warm element reaches `loadedmetadata` inside that window. Step 4 therefore resumes in-session and wraps `Storage.prototype.setItem` to see every write; with those two changes it is red against that build on steps 3 and 4 and green against this one.
 
 
@@ -755,7 +1042,7 @@ An unfinished podcast episode starts where the listener left it. The rules are i
 
 **`t` is the one param the mirror effect DELETES unconditionally, and that is what forced the restore onto `initialSearch`.** It is a one-shot arrival parameter: the selection the mirror writes from carries no playback position, so there is nothing to re-derive it from and nothing to keep it honest. Left in place it survives every later selection — opening a second episode would leave the first one's timestamp in the address bar attached to it, and a refresh would then start the wrong episode at the wrong second. The podcast restore had been reading `window.location.search` live and getting away with it only because it is declared ahead of the mirror; a parameter the mirror is guaranteed to erase removes that luck, which is why that effect now reads the captured query like `?publisher=` always should have.
 
-The **SHARE button** copies `origin + /?podcast=<guid>` with a 1.8 s "COPIED" flip. Clipboard-only by design — no Web Share API, no pod.link option (that's what the Nostr boost note links to via `podcastLandingUrl`). Header cluster order: `[♡ FAVORITE] [↗ SHARE] [⊙ SUPPORT] [≋ STREAM] [⚡ BOOST]`; STREAM (toggles the per-show `<StreamRate>` panel, via `useStreamPanel`) and BOOST are gated on `showHasValue`, SUPPORT on `podcast.funding`, the rest always visible.
+The **SHARE button** copies `origin + /?podcast=<guid>` with a 1.8 s "COPIED" flip. Clipboard-only by design — no Web Share API, no pod.link option (that's what the Nostr boost note links to via `podcastLandingUrl`). Header cluster order: `[♡ FAVORITE] [↗ SHARE] [⊙ SUPPORT] [≋ STREAM] [⚡ BOOST]`; STREAM (opens the per-show `<StreamRate>` in a dialog, via `useStreamPanel`) and BOOST are gated on `showHasValue`, SUPPORT on `podcast.funding`, the rest always visible.
 
 **The URL is built by `showShareUrl` (`lib/util.ts`) and the button is `<CopyLinkButton>` (`components/copy-link-button.tsx`) — one of each, because there used to be two of each and they disagreed.** The episode list and the fullscreen player each had a private `ShareButton`: same 1.8 s flash, same `btn-ghost` + `<ShareIcon/>` chrome, but one built `new URL(origin + pathname)` and set a search param while the other interpolated `` `${origin}/?podcast=` ``. Those agree only on `/`, so the same show handed out two different links depending on which screen you pressed SHARE on — and neither copy cleared its timeout on unmount, which the fullscreen player does on every collapse.
 
@@ -872,6 +1159,81 @@ cover on the twelve surfaces this component renders on, several seconds after
 they appeared, looking exactly like a CDN fault. Order it the other way round
 and the feature is installed and inert. Both shapes are pinned by
 `npm run check:art`.
+
+### The proxy takes frame one, so who gets the published file is a decision
+
+`/api/art` calls sharp with `animated: false`: every response is a still tile.
+That is right for a tile and wrong for exactly one surface, and until
+2026-09-21 the app had it backwards on both. Reported from an iPhone: *"This is
+a GIF but it only plays in the now playing bar at the bottom."*
+
+The three surfaces that paint the now-playing art, and what each takes:
+
+| Surface | Size | Takes | Why |
+|---|---|---|---|
+| The now-playing bar's tile (`<Player>`) | 48px | proxied, `w=160` | 48 CSS px at a phone's 3× is 144 |
+| `<FullscreenPlayer>`'s big cover | ~350px | the ORIGINAL, while `open && artOk` | this is where a picture is worth looking at |
+| The OS lock screen (`MediaMetadata`) | the phone's | proxied, `w=1024` — offline, the downloaded cover | no element, no `onError`, and it cannot animate anyway |
+
+Measured on Mutton, Mead & Music (podcast `290e12c3…`, episode `21f6be5b…`),
+whose chapter *"THANK YOU CAKE WALLET"* publishes a **4,472,805-byte animated
+GIF** and which carries a second animated chapter earlier. Before: **11,555,231
+bytes of originals with the player COLLAPSED**, on the connection the enclosure
+is streaming over. After: **0** collapsed, and the 4.4 MB original only once
+somebody opens the player to look at it. The same tile proxied at `w=160` is
+**5,502 bytes** — 813× less for a picture 48 pixels across.
+
+**`preferOriginal` (`artCandidates`, `<PodcastCover>`) swaps the two halves and
+drops neither.** The proxied copies stay behind the originals, because the one
+failure left is a host that refuses the request the browser makes — hotlink
+rules, a mixed-content block — and a still cover beats no cover. Both orders are
+pinned by `check:art`; the vectors are proved against a `naive()` that ignores
+the flag entirely, which is the way to ship this inert: the still picture it
+leaves behind is a real cover, so nothing on screen says the flag is dead.
+
+**Both conditions on the big cover are load-bearing.** `open`, because that pane
+is always mounted and merely translated off-screen — without it a collapsed
+player downloads the original of every chapter the listener passes. `artOk`,
+because `nowPlayingArt` only withholds *chapter and track* art when the gate
+shuts: an episode cover that is itself a huge GIF would still be fetched whole
+while the buffer is in trouble.
+
+### The lock screen is the third surface, and it has no element
+
+`MediaMetadata`'s `artwork` fetch is issued by the browser on our behalf. It
+takes no `fetchPriority`, `loading="lazy"` means nothing to it, and it is not
+cancelled when the next chapter supersedes it. The 3-second settle timer in
+`components/player/use-media-session.ts` fixed how OFTEN that happens; it did
+nothing about how BIG each one is, and on the episode above the lock screen was
+10.8 MB of the 11.5 MB total — for a picture no screen in this app was showing.
+
+**It lists ONE entry, the proxied copy, and this is the one place the "raw URL
+always behind the proxied one" rule is deliberately inverted.** An `artwork`
+list is a size-negotiation list, not an `onError` ladder: there is no error
+event to catch, and Chromium **fetches every entry**. Measured 2026-09-21 with
+both listed: the proxied copies came down (267,098 + 114,002 + 37,729 bytes)
+*and* both originals did (6,400,448 + 4,478,255). So a fallback there does not
+cost a retry, it costs the whole file every time — the exact harm the raw tail
+exists to prevent. What it gives up is cosmetic and off-app: if `/api/art`
+cannot serve the picture, the lock screen shows none. `sizes` is stamped on the
+proxied entry only, because that is the one whose dimensions we asked for.
+
+**Offline, the one entry is the DOWNLOADED cover instead** (`nowPlayingCover`,
+a `blob:` URL), when the current item has one. Found on a Pixel 6 in airplane
+mode on 2026-09-21: a download played from local bytes, both in-app covers fell
+back to the stored cover, and the lock screen was blank, because nothing can
+answer `/api/art` then. Chromium accepts a `blob:` there — read through
+`adb shell dumpsys media_session`, offline, the proxied entry left 4 metadata
+keys and the blob 5, the fifth being the bitmap; a revoked blob left 4. **Only
+offline, and it outranks chapter art only offline**: online the proxied copy is
+`w=1024` against the stored `w=640`, and chapter art is never downloaded. The
+switch is `navigator.onLine` plus its two events, so a network that claims to be
+up and answers nothing still leaves the lock screen blank, as before.
+
+All three surfaces are pinned by `npm run e2e:artbytes`, which drives that
+episode in a real browser and asserts on **wire bytes per surface** — the lock
+screen's fetch is invisible to any DOM assertion, so a byte count is the only
+place it can be seen at all. Run against the pre-fix tile it fails four checks.
 
 **The width is an allowlist (`160|320|640|1024`), never a free integer.** Each
 `(url, width)` pair is a CDN cache key whose miss costs a full decode and
@@ -1226,7 +1588,7 @@ shows up on a screen nobody was looking at.
 
 Known, deliberate, and none of them a defect on a screen today. Each is here so the next person finds the reasoning rather than the symptom.
 
-- **Five page-level `pb-32`s predate the dock and should read `--dock-b`** — `app/favorites/page.tsx`, `app/playlists/page.tsx`, `app/npub/[npub]/page.tsx`, `app/privacy/page.tsx`, `app/error.tsx`. Still five: `<LivePage>` was written after this was recorded and uses `calc(var(--dock-b) + 8rem)`, the same expression `<HomePage>` uses. A new page copying one of the five is how a documented wart becomes a convention. Nothing clips, because the layout footer's `calc(var(--dock-b) + 7rem)` sits below all of them. The cost is dead space and a rule with five exceptions: change `--tabbar-h` and two elements move, not seven.
+- **The page-level `pb-32`s are GONE, and the rule that replaced them is in the dock section above**: the layout footer carries the only bottom clearance. `app/favorites`, `app/playlists`, `app/npub/[npub]`, `app/privacy`, `app/error` and `app/downloads` each had one, and `<HomePage>`, `app/not-found` and `app/amber-callback` each had a `min-h-screen` on top of `<body>`'s. Fixed 2026-09-22, on the user's report that a short page scrolled with nothing below the fold.
 - **`<ModalShell>`'s `clearsPlayer` branch is `pb-28`**, 112px, which measured a mini-bar that has since moved up by `--dock-b`. Cosmetic only — the overlay is `z-[60]` and covers the dock — but it is exactly the literal the dock section says must not exist.
 - **~~`<UnderlineTabs>` and the favorites row declare `role="tablist"`/`role="tab"` without the keyboard contract~~ — CLOSED, and three of its four claims had already gone stale before it was.** The entry read: "no `aria-controls`, no `role="tabpanel"` on the panels, no roving `tabIndex`, no arrow keys." By the time it was acted on, the roving `tabIndex` and ←/→/Home/End were both in `<UnderlineTabs>` — the Keyboard transport section below says so in the same file, which is the contradiction that should have been the tell — and the favorites row had become a `<SelectMenu>`, so it carries no tab roles at all. **Only the panel association was genuinely missing**, and it is the one part the strip cannot do alone: the panel is the CALLER's markup. `tabPanelProps(idBase, active)` is exported from `underline-tabs.tsx` and both call sites — `<FullscreenPlayer>` and `<EpisodeDetailView>` — spread it on the element holding their panes, with `idBase` a required prop so a new call site cannot type-check its way back into the gap. One panel per strip, not one per tab: only one pane renders at a time from a chain of `{active === 'x' && …}` siblings, so there is one logical tabpanel whose contents swap and `aria-labelledby` names which tab is showing. No `tabIndex` on the panel — WAI-ARIA wants one only when the panel holds nothing focusable, and these hold links, seek rows and a transcript, so it would insert a tab stop ahead of all of them for a conformance box. **The lesson worth keeping is about the entry, not the code: an open item that is not re-read against the source goes stale in the direction of overstating the problem, and this one sat two paragraphs above its own refutation.**
 - **`<TabBar>`'s Wallet tab is `aria-pressed={walletOpen}` on a handler that only ever sets `true`.** Either toggle it, or use `aria-haspopup="dialog"` + `aria-expanded`.

@@ -23,9 +23,29 @@ function PodcastCoverImpl({
   w = DEFAULT_ART_WIDTH,
   fit = 'cover',
   lowPriority,
+  localSrc,
+  preferOriginal,
 }: {
   image?: string | null;
   artwork?: string | null;
+  /**
+   * A cover already on this device — a `blob:` URL from a download.
+   *
+   * It is the LAST rung, not the first, and that ordering is the whole design.
+   * Online, the network candidates are better: `nowPlayingArt` may be handing
+   * this component the art of the chapter or the track playing THIS SECOND,
+   * and a downloaded feed cover must never outrank it. Offline every network
+   * rung fails and this one catches, which is the case it exists for.
+   *
+   * It must not be proxied — `/api/art` cannot fetch a `blob:` URL, and the
+   * point of this rung is that it needs no network at all. So it is appended
+   * to `artCandidates`' output rather than passed into it, which also leaves
+   * that function, pinned by `check:art`, untouched.
+   *
+   * The CALLER owns revoking it. <Player> is the only writer; see
+   * `nowPlayingCover` in lib/store.ts.
+   */
+  localSrc?: string | null;
   title?: string | null;
   /** Optional seed for the fallback hue; defaults to the title. Use a guid
    *  or feed id when you want the color to follow identity, not display
@@ -81,6 +101,20 @@ function PodcastCoverImpl({
    * art that nobody is looking at.
    */
   lowPriority?: boolean;
+  /**
+   * Ask for the file the artist published, with the proxied copy behind it.
+   *
+   * `/api/art` takes frame one on purpose, so an animated cover is STILL under
+   * the proxy. This is how the one surface that paints the picture large gets
+   * the animation back — and it is narrow deliberately, because the same file
+   * measured 4,472,805 bytes against 5,502 at `w=160`.
+   *
+   * Pass it only while that surface is on screen AND the art gate is open. It
+   * is not a quality switch: every other caller wants the proxy first, and a
+   * 48px tile paying 4.47 MB on the audio's own connection is the failure
+   * `artOk` exists for.
+   */
+  preferOriginal?: boolean;
 }) {
   // Proxied copies first, then the ORIGINAL third-party URLs behind them.
   //
@@ -91,13 +125,20 @@ function PodcastCoverImpl({
   // every cover on all twelve surfaces that render this component. Ordering it
   // the other way round would leave the feature installed and inert. Both
   // shapes are pinned by `npm run check:art`.
-  const candidates = useMemo(() => artCandidates(image, artwork, w), [image, artwork, w]);
+  //
+  // `preferOriginal` swaps the two halves for the one surface that wants the
+  // published file rather than a still tile of it. The other half stays behind
+  // it either way, which is what makes both orders safe.
+  const candidates = useMemo(() => {
+    const net = artCandidates(image, artwork, w, { preferOriginal });
+    return localSrc ? [...net, localSrc] : net;
+  }, [image, artwork, w, localSrc, preferOriginal]);
   const [idx, setIdx] = useState(0);
   // Re-attempt from the first candidate whenever the source URLs change. Without
   // this, a caller that swaps `image` over time (e.g. per-chapter artwork in the
   // player) would keep a stale failing-index: once a bad img advanced idx to the
   // artwork fallback, the next (valid) image would be skipped for artwork.
-  useEffect(() => { setIdx(0); }, [image, artwork, w]);
+  useEffect(() => { setIdx(0); }, [image, artwork, w, localSrc, preferOriginal]);
   const current = candidates[idx];
   if (current) {
     return (
@@ -160,16 +201,17 @@ function PodcastCoverImpl({
  * visible row. Without this, each of those re-renders reconciled a cover whose
  * inputs had not changed.
  *
- * `image`, `artwork`, `title`, `seed`, `className`, `w`, `fit` and
- * `lowPriority` are all strings, numbers or booleans, so the default shallow
+ * `image`, `artwork`, `localSrc`, `title`, `seed`, `className`, `w`, `fit`,
+ * `lowPriority` and `preferOriginal` are all strings, numbers or booleans, so the default shallow
  * comparison is exactly right here — there is no object or callback prop for a
  * caller to hand over a fresh reference of by accident, which is the usual way a
  * `memo` becomes decoration. A new prop has to keep that true.
  *
  * Deliberately NOT a fix for the row itself. Extracting `<EpisodeList>`'s row
  * into a memoized component would mean stabilising about fifteen props including
- * callbacks, on a surface carrying the boost control and the hearts — and a memo
- * whose props are not all stable does nothing while looking like it does. That
- * is a change worth measuring first, not bundling into an audit.
+ * callbacks, on a surface carrying the boost control, the hearts and the
+ * download button — and a memo whose props are not all stable does nothing while
+ * looking like it does. That is a change worth measuring first, not bundling into
+ * an audit.
  */
 export const PodcastCover = memo(PodcastCoverImpl);

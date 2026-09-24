@@ -1,0 +1,782 @@
+# Downloads
+
+Read this before editing anything under `lib/downloads/`, the download button, or
+the `/downloads` page.
+
+Downloads are **supplementary, for low bandwidth**. The listener presses a button
+while they have signal, keeps listening to something else, and plays that episode
+later from local bytes. This is not an offline-first app and the feature is not
+trying to become one.
+
+---
+
+## The measurement that shaped the whole design: most hosts send CORS, and some do not
+
+> **Corrected 2026-09-20.** This section used to end "five of five, so hosts send it".
+> The sample was five **commercial** hosts and a CORS-enabled redirect chain, and it
+> generalised to a population it did not cover. An iPhone found the gap.
+
+`<audio src="https://host/ep.mp3">` needs no CORS header. `fetch()` of the same URL
+does. The obvious fear is therefore that most podcast hosts would refuse a download,
+and that the app would need a server-side audio proxy the way StableKraft does
+(`/api/proxy-audio`, plus a hand-maintained domain allowlist deciding proxy-first
+versus direct-first per host).
+
+Five real enclosures were tested on **2026-09-09**, with
+`Origin: https://boostmebitch.com`:
+
+| Host | `Access-Control-Allow-Origin` | `Accept-Ranges` |
+| --- | --- | --- |
+| Homegrown Hits (self-hosted) | `*` | bytes |
+| Megaphone behind `www.podtrac.com` | `*` | bytes |
+| Simplecast behind `dts.podtrac.com` + two more redirects | echoed our origin | bytes |
+| archive.org | `*` | bytes |
+| Fountain (a `musicL` album track, 53 MB `.wav`) | `*` | bytes |
+
+### What the iPhone found
+
+Reported 2026-09-20: *"Can[']t download the latest Mutton, Mead & Music episode"*,
+with a screenshot of the `⋯` menu showing **"Could not reach mmmusic.show to download
+this episode."** — beside a transport happily playing that very episode. The same
+report added *"Chad and reeds podcast and OBDM just fine"*, which is the shape of the
+answer: it is per-host, not per-app.
+
+Re-measured that day, same `Origin` header:
+
+| Host | `Access-Control-Allow-Origin` | Download |
+| --- | --- | --- |
+| `op3.dev` (the OP3 prefix) | `*` | works |
+| libsyn, megaphone, transistor, buzzsprout | sent | works |
+| **`mmmusic.show`** (Apache, 90 MB `audio/mpeg`) | **absent** | **fails** |
+| `anchor.fm` | absent | fails |
+| `mp3s.nashownotes.com` (the origin *behind* op3.dev) | absent | fails |
+
+That last row is the whole lesson in one line: **the same audio downloads through the
+OP3 prefix and not from its own origin.** The 2026-09-09 sample happened to reach
+every file through a commercial host or a CORS-enabled redirect, so it measured the
+prefixes rather than the publishers. Self-hosted shows are the gap, and V4V podcasts
+are disproportionately self-hosted.
+
+**The feed offers no way out for this case.** `mmmusic.show`'s feed carries no
+`<podcast:alternateEnclosure>` — zero occurrences — so there is no second source to
+fall back to, and using the OP3 prefix ourselves would forge somebody else's
+analytics.
+
+### The proxy was refused on three grounds, and then the minority showed up
+
+The original argument said: *"If that minority ever turns out to matter, adding a
+proxy is a real option; adding one before it matters is paying all three costs for
+nothing."* **It turned out to matter on 2026-09-20**, so the option was taken. The
+three costs, and what each one actually came to:
+
+| Objection | Answer |
+| --- | --- |
+| **SSRF surface** — a feed-supplied URL fetched server-side | `safeFetch` is what this repo already points at that shape, for `/api/transcript`, `/api/chapters` and `/api/art`. It re-validates every redirect hop and re-resolves each hostname. |
+| **Audio bytes through our host** — 90 MB an episode | Real, and the only genuine cost. Bounded three ways: **the direct path still takes every host that allows it**, so op3.dev, libsyn, megaphone, transistor and buzzsprout never touch the route; `MAX_DOWNLOAD_BYTES` caps one file; `rateLimit` caps a client at 6/min. It is paid **once per download** — playback is from the blob and never returns to the network. |
+| **An allowlist that drifts** — StableKraft's two lists went out of sync at 16 entries versus 14 | **There is no allowlist.** The trigger is the browser's own refusal, so there is nothing to maintain and nothing to drift. |
+
+**The shape is `lnurlFetch`'s, not a new one.** `lib/v4v/lnurl-fetch.ts` tries the
+provider directly and falls back to `/api/lnurl` only when the browser *throws* —
+on the money path, with CLAUDE.md's blessing. `downloadBytes` now does exactly that
+with `/api/audio`, and the direct `mode: 'cors'` fetch is untouched.
+
+**Only a host that ANSWERED may be retried through us.** An offline device would
+otherwise send every failed download at our server for a second failure, and the
+message it has already earned — "No connection" — is the correct one.
+
+### Why not the service worker
+
+The alternative was `mode: 'no-cors'` plus a worker serving the opaque response. It
+costs no server bandwidth, and it is very likely broken on the one platform this
+fix is for: **iOS Safari plays media with byte-range requests and expects `206
+Partial Content`, and an opaque response can never produce one** — its body is
+unreadable by definition, which is the same reason
+`URL.createObjectURL(await res.blob())` cannot consume it (see `storeArt`'s note).
+
+Taking the readable route keeps everything downstream unchanged:
+
+| | `no-cors` + worker | `/api/audio` |
+| --- | --- | --- |
+| Progress bar | gone — size unreadable | works |
+| Room pre-check | gone | works |
+| `MAX_DOWNLOAD_BYTES` | unenforceable | works |
+| A cached 404 page | indistinguishable from audio | caught — the route answers 404 |
+| iOS playback | range requests, unproven | the blob URL it already uses |
+| Safari quota | pads opaque entries | true size |
+
+**Measured in a real browser on 2026-09-20, 8/8**, against the episode from the
+report: the direct `cors` fetch throws, the `no-cors` HEAD resolves, `/api/audio`
+answers `200` declaring `90,022,193` bytes, the body reads, the first three bytes
+are `ID3` rather than an error page, and it becomes a `blob:` URL.
+
+**Re-measure before you conclude a host is broken.** `curl -sIL -H 'Origin: …'` on
+the enclosure answers this in one command.
+
+### Three rules for `/api/audio`
+
+- **The catch LOGS the message and returns a constant.** `assertSafeFetchUrl` names
+  the host it rejected, so reflecting it would turn the route into an oracle
+  answering "is this address internal?" for any URL a caller cares to test. This is
+  CLAUDE.md's rule about a route's 500, and the first draft of this route broke it —
+  caught by driving `169.254.169.254` and `127.0.0.1` through it and reading the
+  body.
+- **`Content-Type` is `application/octet-stream`, never the upstream's.** The client
+  only ever makes a Blob of it, and reflecting a hostile host's `text/html` would
+  let it execute in *our* origin, which holds the NWC credential and the nsec. Same
+  reasoning `/api/transcript` states for its `text/plain`.
+- **`maxDuration = 300`.** A download is one long streamed response, and the default
+  would cut a large episode off mid-stream on a slow connection — which arrives as a
+  corrupt file rather than as a timeout. 90 MB at 300 KB/s is 300 s. If that ceiling
+  is ever hit in practice, the fix is range-chunked requests from the client, not a
+  bigger number.
+
+---
+
+## The three modules, and which one may hold a rule
+
+```
+download-rules.ts    pure decisions, IMPORT-FREE, pinned by check:downloads
+downloads-cache.ts   bytes      → Cache API
+downloads-db.ts      metadata   → IndexedDB
+download-manager.ts  orchestration only
+```
+
+`download-rules.ts` is import-free because `scripts/check-downloads.mjs` loads the
+**shipping** module under `node --experimental-strip-types`. Nothing else here can
+be loaded that way — `download-manager.ts` imports `../util`, which plain Node
+cannot resolve without an extension — so **anything in the manager that starts to
+look like a rule belongs down in the leaf**, or it becomes unpinnable at the moment
+it starts to matter.
+
+That import-free constraint costs exactly one thing, deliberately: `isDownloadable`
+carries its own copy of the HLS test rather than calling `isHlsUrl` (`lib/util.ts`),
+which is the app's one answer everywhere else. A second copy drifts, so
+`check:downloads` has a section asserting the two agree about a list of URLs
+including the near-misses (`notes-about-m3u8-files.mp3`,
+`ep.mp3?next=stream.m3u8`). **If that section fails, `isHlsUrl` moved and this file
+follows it — never the other way round.**
+
+### Four names that may never be renamed
+
+`BmbDownloadsDB` (+ its `downloads` store), `bmb-downloads-v1`,
+`bmb-downloads-art-v1` and `bmb-downloads-doc-v1`. These are on-disk
+identifiers. Renaming one migrates nothing: it points the app at storage nothing
+ever wrote, so every existing download reads back as never having existed while
+its bytes stay on disk, unreachable and uncountable. Guard comments sit at all
+four declaration sites. The doc bucket was the one this section forgot, and it
+is the easiest to forget: it arrived a phase later than the other two and it is
+the only one keyed by THIS app's own request URLs rather than by a download key.
+
+`DB_VERSION` may only be raised with an **additive** `onupgradeneeded`; never
+`deleteObjectStore`. Adding a field to `DownloadRecord` needs no bump at all,
+because IndexedDB stores whole objects.
+
+---
+
+## `downloadKey` must be idempotent, and that is the whole feature
+
+`downloadKey(downloadKey(u)) === downloadKey(u)` for every input. The play-side call
+is sometimes handed a URL that has already been through here, so a key that changes
+on re-derivation produces a download that **exists on disk and can never be found** —
+with no error anywhere, because both halves believe they are correct. The listener
+paid for the file, and pays again on the connection they downloaded it to avoid.
+
+Every normalization changes **no bytes on the wire**: the URL it returns fetches
+exactly what the input would have. That is the admission test for adding another one.
+
+- `http:` → `https:` — the app is https-only, so the http form would fail anyway,
+  and a feed that switched mid-life does not orphan what it already wrote.
+- The fragment is dropped — never sent to the server, so two URLs differing only by
+  one name the same resource and must not download twice.
+- A literal space is encoded, because `fetch()` encodes it too. Disagree here and
+  the save key and the play key differ.
+- **An analytics redirect is NOT unwrapped.** `podtrac.com/pts/redirect.mp3/…` and
+  `op3.dev/e/…` are part of the URL the host will serve, and a signed CDN URL
+  underneath one is not ours to rewrite. StableKraft unwraps `op3`; this does not,
+  and the difference is that StableKraft keys music tracks that appear under both
+  forms while this app keys episodes that do not.
+
+Anything that is not an absolute http(s) URL returns `null`. The scheme test is an
+**allowlist**, never a denylist of bad schemes — the same rule `safeUrlAttr` is
+under, for the same reason.
+
+---
+
+## A live item is never downloadable, whatever its status
+
+`isDownloadable` refuses **every** `<podcast:liveItem>`, not just `status="live"`,
+and this rule was written against a real feed rather than a hypothesis.
+
+Measured 2026-09-09: Homegrown Hits episode 150 sat at `status="pending"` with
+the enclosure `https://stream.bowlafterbowl.com/listen/bowlafterbowl/stream.mp3`
+— an **endless icecast stream**. It ends in `.mp3` and answers 200, so nothing
+about the URL says "not a file". Refusing only `'live'` let the download button
+offer it, and the browser test happily started pulling it.
+
+The consequence is worse than a wasted download. An endless source sends no
+`Content-Length`, so neither the feed hint nor the response header can size it,
+and `downloadBytes` accumulates chunks in an **in-memory array** until it can
+write them — so it takes the tab down rather than merely filling the disk.
+`MAX_DOWNLOAD_BYTES` (600 MB, enforced on bytes **received**, never on bytes
+declared) is the backstop; refusing the item is the fix. Same rule as
+`lib/capped-body.ts`, pointed at audio.
+
+`'ended'` is refused too, and that is the deliberate direction to be wrong in. A
+publisher who keeps the recording republishes it as an ordinary `<item>`, which
+carries no `liveStatus` and is accepted; an ended `liveItem` usually still names
+the dead stream. Refusing one costs a single episode. Allowing one costs a
+download that never finishes, on the connection this feature exists to spare.
+
+## Say the size before the press, and never say "0 MB"
+
+Episodes are big — 160–190 MB each on Homegrown Hits, and one Fountain music
+track measured 53 MB as a `.wav`. Somebody deciding whether to spend that needs
+the number *before* they press, so `Episode.enclosureLength` is parsed from RSS's
+`<enclosure length>` and from Podcast Index's mirror of it, and the button puts it
+in its accessible name at every size.
+
+Both sources lie in the same two ways: the attribute is routinely absent or
+`"0"`, and PI mirrors the zero. `numOrUndef` (`lib/pi.ts`) and `fmtBytes`
+(`lib/format.tsx`) both answer *nothing* rather than a number in that case —
+"0 MB" beside a 160 MB file is worse than silence. It is a **hint**, never a
+fact: the response `Content-Length` is what the second room check uses.
+
+The visible size shares ONE FIXED-WIDTH SLOT with the download percentage, and
+that is a layout rule rather than a space saving. `<FavHeart>` documents why: this
+control is the last item in a right-aligned cluster, so anything that changes
+width shoves BOOST and the heart sideways. "162 MB" and "47%" are both about six
+characters, so reserving the width once means no state change can move anything.
+`.tile` is excluded — 52 px cannot hold a third line — and keeps the size in its
+accessible name only.
+
+**The slot is `5.5ch`, and that does NOT hold six tracked characters** — so on
+`'sm'` and `'md'` a size such as "267 MB" wraps onto two lines. On the desktop
+list chip that is load-bearing rather than cosmetic: `'sm'` has no `py`, so the
+second line IS its 26px height, and a slot wide enough for one line would take the
+chip to 14px, under WCAG 2.5.8's floor. A fourth size, `'header'`, existed for one
+afternoon while DOWNLOAD was a chip in the fullscreen player's top bar; it took a
+`6.5ch` slot to hold six characters on one line. DOWNLOAD is a `'tile'` in that
+player's `⋯` menu now (`docs/ui.md`), so the size is gone — but the `5.5ch`
+measurement above is why it existed, and a new inline size will meet it again.
+
+## `roomVerdict` has a blast radius outside this feature
+
+The obvious version — `usage + bytes <= quota` — is wrong twice, and both are
+measured behaviours rather than hypotheticals.
+
+**It fills the origin to the brim.** Downloads share one quota with this origin's
+`localStorage`, which holds the NWC spending credential, the Spark mnemonic and the
+favorites baseline. A full store on iOS Safari makes every subsequent write fail —
+down to a one-byte `bmb:stream_on` — while reads keep working, so nothing else looks
+wrong and a fresh profile never reproduces it. See `docs/storage.md`. So
+`roomVerdict` reserves `max(64 MB, 5% of quota)`, and it needs **both** bounds: the
+flat floor alone refuses every download on a small quota, and the fraction alone
+leaves a few hundred kilobytes on one.
+
+**It answers `'no'` when the browser simply cannot estimate.** `navigator.storage
+.estimate()` is absent on older iOS — the platform this app is mostly listened on —
+so that is a dead button with no explanation, indistinguishable from a broken one.
+`'unknown'` **allows** the download and lets a real `QuotaExceededError` be the
+answer instead.
+
+**`'no'` is never an instruction to evict.** A download is something the listener
+chose to keep. Deleting one to make room for another is a decision they did not ask
+for, and they may be about to get on a plane.
+
+---
+
+## The container feed is not the item's parent
+
+`DownloadRecord.feedGuid` is the **item's own** parent feed, never the guid of
+whatever feed listed it. A `musicL` playlist lists tracks living in hundreds of other
+feeds, so the container's guid is a fact about the playlist, not about the track —
+and this field is what a boost from `/downloads` resolves its payee against.
+
+Same rule and same reasoning as `<FavEpisodeHeart>`; read its comment in
+`components/fav-heart.tsx` before touching `parentFeedGuid`. It refuses **narrowly**:
+the item's own `podcastGuid` wins when present, and the container's is used only when
+the item states none.
+
+**StableKraft stores no value block at all**, so a track played from its Downloads
+page has no recipients and cannot be boosted correctly. This app stores `value` and
+`valueTimeSplits` with the record specifically to avoid that. The stored block is a
+**cache** and never outranks a live read.
+
+**The record keeps the id the episode was LISTED under (`episodeId`), because `id`
+is a money key, not a React key.** `/api/value-splits` and the streaming split cache
+look an episode up by it, and every boostagram carries it as `itemID`. The first
+version rebuilt `id` from the FEED id on the belief that only React read it.
+Measured on Homegrown Hits 149, which has twelve value time splits: the route
+answered all twelve for the real id and 404 for the feed id — and the 404 is cached
+as "no splits", so every song window of a downloaded episode streamed to the host,
+while each boostagram named the feed as the item. `downloadEpisodeId` (`lib/util.ts`,
+pinned by `check:downloads`) is the one decision: the stored id, or `-fnvHash(guid)`
+for a record written before the field existed — the id the RSS path already gives an
+episode Podcast Index has not indexed. Those records are upgraded by guid once per
+load, and only when PI answers for the SAME feed.
+
+---
+
+## The `/downloads` page, and the two handoffs it must get right
+
+**Playing a row does not navigate.** `<Player>` is mounted in the root layout, so
+`play()` from here starts the audio in place and the mini-player appears over the
+list. Verified: `location.pathname` stays `/downloads` while `audio.src` is a
+`blob:` URL the decoder has read.
+
+**Opening the SHOW is the one thing that needs a handoff**, and it is the one
+`<FavoritesPage>` documents: set the store, then `router.push('/')` — never
+`router.push('/?podcast=…')`. `<HomePage>`'s restore effect early-returns whenever
+a selection is already set, and the store is module-level, so a visitor who opened
+any show earlier in the session would have their param silently ignored and land
+back on that show. `setShowOrigin` goes **after** `selectPodcast`, which clears it.
+And the page's own `<Link href="/">` calls `clearShowSelection()`, because the
+handoff works precisely *because* the store outlives the route change.
+
+**Delete is by key.** A download whose feed moved its enclosure URL and which
+carries no item guid is genuinely orphaned — nothing can match it to an episode
+any more — so a row's DELETE is the only way those bytes ever come back.
+
+**The empty state is a claim.** "Nothing downloaded yet" may only be shown once
+`downloadManager.ready()` is true. `<FavoritesPage>` shipped saying "Nothing saved
+yet." over a full library because it had no in-flight state, and it self-corrected
+a moment later, which is what made it worse.
+
+**DELETE ALL is a two-press confirm, not `window.confirm`.** In the installed PWA a
+native dialog is a system sheet over the app.
+
+### A show with two or more downloads is ONE entry that opens
+
+Asked for from an iPhone right after the first DOWNLOAD ALBUM: *"In downloads can
+the album be a single item that expands?"* — fourteen rows, each reading
+"Tinderbox", had pushed every other download off the screen. `groupDownloads`
+(`download-rules.ts`, pinned by `check:downloads`) decides the entries and both
+orders; `<ShowGroup>` in `components/downloads-page.tsx` only renders them.
+
+- **Any show, not only an album.** The rule needs nothing a record on a phone does
+  not already carry, so the fourteen tracks that prompted it grouped the moment
+  it shipped. A podcast with two downloads groups the same way; a show with one
+  stays a plain row.
+- **The show is the item's OWN parent feed** — `feedGuid`, else a positive
+  `feedId` — so a `musicL` playlist's tracks group under their real albums, for
+  the reason `DownloadRecord.feedGuid` documents. **A record that names no show
+  is never grouped.** The obvious version, bucketing on `r.feedGuid`, lumps every
+  such record into one nameless entry keyed `undefined`; that is a vector.
+- **Two orders.** Entries are newest first by their NEWEST download, so the page
+  still opens on what was just saved. Inside, downloads are in the order they
+  were TAKEN — DOWNLOAD ALBUM queues in the album page's order, so a whole album
+  reads as the album. An album taken one track at a time, out of order, reads in
+  that order: the record holds no track number to do better, and the ones already
+  on phones never will. Every tie falls to the key, so nothing reorders between
+  renders.
+- **It starts closed, and the state is not kept.** Closing is the request; every
+  visit opens on one line per show.
+- **SHOW once, on the group.** The rows inside drop SHOW and the show's name,
+  which the group carries once, and the titles get that width back.
+- **The group's DELETE asks**, in a sentence with the count and the size, because
+  one press removes an album; a row's DELETE removes one file and does not. The
+  answer reads **`DELETE 14`**, not `DELETE`: with the question open, three
+  buttons on screen would otherwise say DELETE — the answer, the group's own, and
+  the next row's — and the e2e found that out by pressing the lone row's instead,
+  deleting a download it had not been asked about. Each row inside keeps its own
+  DELETE, which stays the only way an orphaned download is ever removed.
+- **The border marks the group holding what is playing**, so a closed group still
+  says where the current track is.
+- **The count line wraps rather than truncates**, the episode row's rule: at 390px
+  a truncate ate the size, which is the number someone reads before deleting a
+  whole album. The disclosure arrow leads the name, the way a `<details>` summary
+  draws it, rather than taking a column of its own.
+
+`npm run e2e:album` section 5 opens `/downloads` on the fourteen tracks the album
+sections actually downloaded, plus one lone episode written the way the app writes
+one, and checks all of the above — including that the open group lists the tracks
+in the order the album page listed them, captured from that page earlier in the
+run.
+
+The dock is now five tabs. Measured at 390 px under CDP device emulation: 78 × 56
+each, so height is still the binding dimension at 56 > 44. `<TabBar>`'s own comment
+gives the number to check against — the floor is not threatened until **seven**.
+
+## Chapters and the transcript are cached by THIS APP'S request URL
+
+Not by the third-party document URL, and not as parsed content inside the
+record. `useChapters` and `useTranscript` take a **URL and no episode**, so
+keying the cache by the exact request they were about to make lets them try it
+first without being handed an episode they have no other use for. It also means
+the stored bytes are same-origin and therefore readable — a cross-origin fetch of
+the raw document would be opaque.
+
+`chaptersRequestUrl` and `transcriptRequestUrl` live in the import-free leaf and
+are pinned, because **the key IS the string**: the loader builds this URL to
+fetch and the download builds it to cache, so the two agreeing character for
+character is the whole feature. A copy on each side is the shape that broke
+StableKraft's downloads — its proxy-first and direct-first domain lists were
+hand-mirrored and drifted to 16 entries against 14. Here the symptom would be
+quieter still: every download silently re-fetching its chapters. The transcript's
+`type` is part of the key because it is part of the request.
+
+A **non-ok response is never cached.** A 404 or a 502 outlives the outage that
+produced it, and the loader would then render an empty transcript as though the
+feed had none.
+
+The documents are fetched **after** the audio is stored and the record written,
+so a failure there cannot turn a successful download into a failed one. The
+record names what it cached in `docKeys`, which is what lets `remove()` delete
+them; that is deliberately **not** ref-counted, because two episodes sharing a
+chapters URL is not a thing feeds do and the cost of being wrong is one re-fetch
+of a few kilobytes.
+
+## Cover art is a ladder, and it is allowed to fail
+
+`downloadImage` tries **every** proxied `/api/art` candidate in order, for the
+same reason `<PodcastCover>` has a four-deep `onError` chain: Podcast Index's
+`image` and `artwork` routinely disagree and either can be broken. Measured
+2026-09-09 on Homegrown Hits, the episode's own cover is a **19 MB GIF** that
+`/api/art` answers 502 for — so taking only the first candidate meant no art at
+all, with the feed-level PNG sitting right behind it.
+
+It is still allowed to fail, and `check`ing that it succeeded would be wrong. The
+invariant the e2e pins is the honest one: **a cover that could not be fetched
+leaves the download, its record and its documents intact.** That is the rule the
+artwork proxy is under everywhere in this app — a failing route costs appearance
+and nothing else.
+
+`/downloads` renders those stored bytes as its only source, because it is the
+one page that has to paint with no connection. The now-playing surfaces take
+them too, through the store's `nowPlayingCover`: both in-app covers as the LAST
+rung of their ladder, and the OS lock screen as its one entry while the browser
+is offline (`docs/ui.md`, "The lock screen is the third surface").
+
+`/downloads` passes the blob **alone**, with no `artwork` beside it:
+`artCandidates` puts every proxied URL ahead of every raw one and a `blob:` is not
+proxyable, so passing both would order the network copy first and leave the local
+bytes as its fallback.
+
+## The service worker is network-first, which is not precaching
+
+`public/sw.js` used to be a deliberate passthrough, and its comment gave the
+reason: Next emits hashed bundle URLs that change every build, so a stale cache
+would silently break the app for installed users. **That argument is against
+precaching.** Three rules make the failure it describes impossible:
+
+1. **A document is network-first.** Fetch it; on success serve it and keep a
+   copy; use the cache **only when the fetch rejects**. A reader with a
+   connection is never served a stale document, so a stale document can never
+   reference dead chunk hashes while online.
+2. **`/_next/static/*` is cache-first, and that is safe by construction.** Those
+   URLs are content-hashed — a given URL's bytes never change — so a cached copy
+   cannot go stale. This is what makes rule 1 work offline: the last document's
+   chunks are still there.
+3. **The cache names carry the build id** (`bmb-sw-static-<id>`,
+   `bmb-sw-pages-<id>`), and `activate` deletes every `bmb-sw-*` cache that is
+   not the current build's.
+
+**TWO documents are precached, and the exception is what makes rule 1 usable.**
+`install` does `cache.add('/')` and `cache.add('/downloads')`. Without it the worker had no offline shell at
+all after a fresh install: the FIRST document of a visit is fetched before the
+worker controls the page, so it never passes through the fetch handler and never
+enters `PAGES`. Somebody who installed the app and lost signal without loading a
+second time got nothing — measured on an iPhone, in airplane mode, and it did
+not degrade. It produced *"FetchEvent.respondWith received an error: TypeError:
+Load failed"*.
+
+`/downloads` is the second for its own reason, not for symmetry: it is the one
+route whose entire purpose is to work without a network. A dock tab is a Next
+`<Link>`, so tapping it is a client-side route change that fetches an RSC
+payload rather than a document; when that fetch fails the router falls back to a
+real navigation, and that navigation has to land on the route's OWN document.
+Without this it landed on the shell, which is the home page's HTML under a
+`/downloads` URL. Reported from an iPhone — the tab did not open in airplane
+mode and was fine on wifi. **It does not reproduce in headless Chrome**, which
+prefetches every dock `<Link>` on the first load and so always has what the tap
+needs; that is recorded in the e2e beside the check rather than left for the
+next person to rediscover.
+
+It does not weaken network-first. Both are still fetched fresh on every load
+that has a connection, and the precached copy is only ever reached when the
+fetch rejects. It cannot go stale across a deploy either, because `PAGES` carries the
+build id: a new worker precaches its own `/` and `activate` deletes the old one.
+
+**A NAVIGATION MAY NEVER REJECT INSIDE `respondWith`.** This is the rule that
+error screen taught, and it is worth stating separately from the fix. Rejecting
+does not hand the navigation back to the browser's own offline page — it
+REPLACES that page with a service-worker error, which is a worse screen than
+having no worker installed at all. So a navigation that misses its exact URL
+falls back to the shell, and then to a minimal inline document; it never throws.
+The app reads its own deep-link parameters off `window.location` on mount, so
+`/?podcast=…` served from the shell still lands where the reader meant.
+
+A **subresource** is the opposite and still rejects, deliberately: that is
+exactly what happens with no worker installed, and it is what the app's own
+`catch` blocks are written against. Synthesising a `Response` there would turn a
+network failure into a non-ok *answer*, and `fetchDoc` reads the difference — it
+falls back to a downloaded copy only on a rejection.
+
+That prefix is narrow **on purpose**: the download buckets are `bmb-downloads-*`
+and are the user's own files. A sweep that took them would delete a library
+somebody saved deliberately, on a deploy they never asked for.
+
+Four things never enter a cache, and each would be a real bug: anything under
+`/api/*` (a cached `/api/feed` serves a stale episode list; `/api/live-status`
+would report a finished show as live), any non-GET, any cross-origin request
+(enclosure audio and relay traffic are not ours to hold), and any response that
+is not `ok` (a cached 404 outlives the outage that produced it).
+
+### It is served from a route, and `public/sw.js` had to go
+
+A file in `public/` is static bytes and cannot know which build it belongs to, so
+it could never clean up after an older deploy. `app/sw.js/route.ts` interpolates
+`BUILD_ID`; the path stays `/sw.js` because that is what every installed device
+already has registered, and a worker's scope is its own directory, so `/sw.js`
+scopes to `/` with no `Service-Worker-Allowed` header. **`public/sw.js` was
+deleted rather than left alongside** — a file in `public/` wins over a route at
+the same path, so leaving it would have made the route dead code that looked
+live.
+
+`BUILD_ID` must never be a runtime value. A per-request id would make every
+request a different cache name, so the caches would grow without bound and
+`activate` would delete the set it had just written.
+
+### The check that matters is the deploy, not the airplane
+
+Measured 2026-09-09 across a real rebuild, one Chrome profile kept between the
+two halves so the worker and its caches persisted as an installed app's would:
+the build id changed, **every cache from the old build was gone, the new one was
+present, React still mounted and nothing threw.** That is the regression the old
+comment warned about, and it is the check to repeat — an offline launch that
+works proves nothing about whether a deploy is taken.
+
+**One honest limitation.** Immediately after a deploy the static cache is empty:
+the old worker was still controlling while the page's chunks were fetched, and
+`activate` then deleted its caches. So a listener who goes offline between the
+deploy and their next load gets the document but not its chunks. It fills on the
+following load and needs no intervention — but it is why the offline launch is
+"reliable once you have opened the app since the last deploy" rather than
+unconditional.
+
+## Running the e2e
+
+`npm run e2e:downloads` runs against `npm run build && npm start` — the worker is
+registered only in a production build — and it goes through `scripts/cdp.mjs`
+like every other suite (docs/testing.md): a free debug port and a fresh profile
+per run, closed on any exit. That retired this file's old busy-port guard. A
+Chrome left over from an earlier run used to keep the fixed port and the
+profile, so the new one exited and the harness quietly attached to the **old**
+browser, and every assertion ran against storage it was never told about — the
+failure read as *"the app wrote a record but no bytes"*, a shipping bug that was
+not there. Nothing can attach to a port this run did not choose.
+
+Section 12 plays two downloads of one show back to back, from two WAVs it
+generates in the page, with the second one's local read delayed: the resume
+writer must never save the first episode's time under the second (docs/ui.md,
+Resume position).
+
+`npm run e2e:album` drives DOWNLOAD ALBUM on a real album with the audio
+answered by CDP — see "Downloading an album" below.
+
+## Failure is a sentence, not a ✗
+
+Every refusal is rendered in words. A guard that silently withholds is
+indistinguishable from a broken one — the rule `<FavoritesSyncNotice>` exists for.
+
+| Cause | What the listener reads |
+| --- | --- |
+| The host sends no CORS header, and `/api/audio` got it | *nothing — the download succeeds* |
+| The host sends no CORS header, and `/api/audio` could not read it either | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
+| The device could not reach the host at all | "No connection — this device could not reach `<host>`." |
+| Our own route is unreachable while the host is up | "Could not reach this app's server to fetch the episode." |
+| The host no longer has the file (route answered 404) | "`<host>` no longer has this episode." |
+| `roomVerdict` said `'no'` | "Not enough space — remove a download to make room." |
+| HLS, a live item, or no URL | The button does not render at all. |
+| Anything else | The thrown message, or "Download failed — tap to retry." |
+
+**The first two rows used to be ONE row**, reading "Could not reach `<host>` to
+download this episode" for both — and the case that actually happens is the one it
+described wrongly. `mmmusic.show` was up, serving the same 90 MB file to the `<audio>`
+element two inches below the message.
+
+`downloadFailureMessage` (`download-rules.ts`, pinned by `check:downloads`) picks
+between them, and `hostAnswers` supplies the discriminator: a **`no-cors` HEAD** to
+the same URL, which the browser resolves for *any* reply the server made — 200, 405,
+500 — and rejects only when the request never completed. Driven in a real browser on
+2026-09-20, 5/5:
+
+| Case | `cors` GET | `no-cors` HEAD | Message |
+| --- | --- | --- | --- |
+| `mmmusic.show` | threw | **resolved** | the host's policy |
+| `op3.dev` | succeeded | — (never runs) | download proceeds |
+| Chrome `Network.emulateNetworkConditions offline` | threw | **threw** | "No connection" |
+
+Three things about that probe are deliberate:
+
+- **`navigator.onLine` cannot do this job.** It reports whether an interface exists,
+  so it is `true` on a captive portal and on wifi with no route out — the two
+  situations where the answer matters most.
+- **HEAD, not GET.** `no-cors` permits it, and a GET would pull the whole enclosure
+  again to answer a yes/no question.
+- **It fails towards "offline".** `op3.dev` itself rejects a HEAD, so a host that
+  blocks CORS *and* refuses HEAD is reported as a connection problem. That is the
+  safer wrong answer: sending someone to check their signal is harmless, while
+  asserting that a working server blocks downloads is a claim about a third party
+  that the listener cannot check.
+- **Neither message says "try again".** A CORS policy does not change on a retry, and
+  a button that invites a repeat of something that cannot work is how a one-off
+  refusal becomes a habit of distrusting it.
+
+Both `AbortSignal.timeout` and `AbortSignal.any` are feature-detected. The first
+landed in Safari 16 and the second only in 17.4, and a `TypeError` thrown inside the
+error path would replace a wrong-but-readable message with a blank failure — strictly
+worse than the bug being fixed.
+
+**Still open: making these hosts downloadable at all.** It needs `mode: 'no-cors'`
+plus service-worker playback, because `URL.createObjectURL(await res.blob())` cannot
+consume an opaque response. That costs the progress bar, the pre-flight room check,
+the `MAX_DOWNLOAD_BYTES` guard and any way to notice a cached error page, and Safari
+pads opaque cache entries against the quota. It is its own PR, with its own iPhone
+pass.
+
+`DownloadRefused` is a distinct class from a failure on purpose: nothing was
+attempted and nothing was spent.
+
+---
+
+## Eviction is expected, and `null` is not an error
+
+iOS drops an origin's storage under pressure without telling anyone.
+`requestPersistence()` asks not to be, once, lazily, after the first successful
+download — and Safari does not grant it. So `getObjectUrl` returning `null` for a
+record that exists is an **ordinary state**: the manager forgets the record and the
+player streams instead, which is what the listener had before they pressed download.
+
+A `null` target must never be read as "the download never happened."
+
+---
+
+## Two lookups, because a URL can move
+
+`resolveSource` tries the URL-derived key first and the `itemGuid` index second.
+`<Player>`'s src effect documents the case in its own comment: an episode object can
+be **enriched in place** and arrive with a new `enclosureUrl` on the same id — a feed
+moving CDN, or gaining an analytics wrapper. A URL-derived key alone reads that as a
+different episode and re-downloads it.
+
+A download whose URL moved and which has no item guid is genuinely orphaned. The
+`/downloads` page must therefore always allow deleting a row **by key**, so those
+bytes are recoverable.
+
+---
+
+## Downloading an album
+
+**A `music` album offers DOWNLOAD ALBUM, and nothing else does.** Asked for from
+an iPhone on Tinderbox by Nate Johnivan — 14 tracks, 43,051,087 bytes: *"There
+should be an option to download an entire album."* Bulk download was on the
+"deliberately not here" list below, and the reason it gave — it "spends the
+listener's data without a screen in front of them" — is what the design answers
+rather than overrides:
+
+- **The total is on the control before the first press**: `↓ DOWNLOAD ALBUM
+  43 MB`, with the track count in its accessible name.
+- **The first press spends nothing.** It asks — *"Download 14 tracks (43 MB)?"*
+  — and only DOWNLOAD queues. A mis-tap on a phone costs a sentence.
+- **CANCEL and STOP are different words for different things.** CANCEL answers
+  the question, and nothing has been spent. STOP halts a running album and
+  **keeps what finished**: deleting a downloaded track is its own decision, with
+  its own control on every row.
+
+### One plan feeds the number and the press
+
+`albumPlan` (`download-rules.ts`, pinned by `check:downloads`) decides which
+tracks a press fetches and what that costs, and `DownloadManager.planAlbum` is
+its only caller — the control renders it, and `downloadAlbum` asks it AGAIN at
+the moment of the press, so a track that finished while the question was on
+screen is not queued twice. It is the boost modal's rule pointed at bytes: a
+total the surface computed and a list the engine computed can disagree, and then
+the listener agreed to one spend and got another.
+
+The obvious version — every row, and the sum of every `<enclosure length>` — is
+wrong four ways, each a vector proved against that `naive()`:
+
+| The naive version… | …and why that is wrong |
+|---|---|
+| charges a track already on the device | the second press on a half-downloaded album states a spend it will not make |
+| counts one URL listed twice as two files | `download()` refuses a second copy by key, so it is charged twice and fetched once |
+| includes a live item or an HLS manifest | `isDownloadable` is the one answer, so a row and its album cannot disagree |
+| treats an absent or `0` size as zero | understates the spend by exactly the tracks nobody measured; the control shows `+` instead |
+
+After STOP, or after a partial failure, the control reads `DOWNLOAD 11 MORE
+34 MB` — the count, because a half-downloaded album is exactly when the listener
+needs it — and its question names *"the 11 tracks not on this device"*.
+
+### It is not a new download path
+
+Each track goes through `download()` exactly as a press on its own row would, so
+the queue still runs **one at a time**, every per-track refusal still applies,
+and a failure lands on the record the row's own control reads. The album adds
+two things and no more:
+
+- **One room check for the whole album, before anything is queued.** Each
+  `download()` checks its own file, and that alone lets an album that cannot fit
+  download seven tracks of twelve and then refuse — spending the data and
+  leaving no album. `'unknown'` still allows, for the reason on `roomVerdict`.
+  The refusal is a sentence: *"Not enough space for this album (43 MB) — remove
+  a download to make room."*
+- **Failures are counted and said**: *"2 tracks could not download: <the first
+  track's own message>"*, and the same control retries them.
+
+### Why albums only
+
+- **A `musicL` playlist is paged**, so "the whole thing" is not known to the
+  screen that would offer it, and its tracks live in other feeds.
+- **A podcast feed can be hundreds of episodes** at ~160 MB each, where
+  "download everything" is a way to fill a phone.
+- **An album of one track gets no control** — its row already has one.
+
+The control waits for `downloadManager.ready()`: before the IndexedDB read lands,
+every track reads as not downloaded, so it would offer the whole album's size
+over an album already on the device and then correct itself. It sits in the
+list's own row beside the order toggle, not among the header's tiles — that row
+is the show's actions and is measured tight at 390px (docs/ui.md).
+
+### Proof
+
+`npm run e2e:album` drives Tinderbox in a real browser at 390px. Podcast Index,
+the feed and the engine are real; the enclosure requests are paused by CDP
+`Fetch` and answered with 4 KB after 400 ms, so a run costs 56 KB instead of
+43 MB and a parallel queue would show as more than one request in flight. It
+checks: a 90 MB quota refuses the album before one request (every track fits
+alone, the album does not — so only the album-wide check can refuse there); the
+first press spends nothing; STOP keeps the finished tracks and requests nothing
+more; the rest fetches only what was missing, never more than one at a time,
+and ends with 14 records in `BmbDownloadsDB`. Against one build with no
+album-wide room check, no question, and a pool in place of the queue, it fails
+14 of its 22 checks, those three directly.
+
+## One at a time
+
+The queue runs a single download. StableKraft runs three, and three is right for a
+music app on wifi. Here it is wrong: the feature exists for a connection too thin to
+stream on, and on that connection three parallel downloads starve the episode the
+listener is playing right now — turning the fix into the symptom.
+
+`AbortController` is created **before** the queue slot is acquired, so cancelling
+something still waiting is honoured and never issues a fetch.
+
+---
+
+## What is deliberately not here
+
+- **Offline boosting and an offline payment queue.** The value block is stored so a
+  boost works once the network is back; nothing is queued while it is not.
+- **Auto-download, and bulk download of anything but an album.** Both spend the
+  listener's data without a screen in front of them. DOWNLOAD ALBUM is the one
+  exception, and it is one because it puts that screen back: the total before
+  the press, and a question before the spend (above).
+- **Range requests and resuming a partial download.** (Not the playback position,
+  which docs/ui.md calls "resume".) It needs partial bytes kept somewhere, and a
+  half-written entry is the class of bug the Cache API's atomic `put` avoids
+  entirely.
+- **A precaching service worker.** The section above is the argument: a
+  network-first worker is not precaching. The two exceptions are the documents at
+  `/` and `/downloads`, precached because a first visit otherwise leaves nothing
+  to open offline with — and still only ever served when a fetch rejects.

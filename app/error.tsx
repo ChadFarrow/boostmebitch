@@ -24,7 +24,7 @@ export default function Error({
   }, [error]);
 
   return (
-    <main className="min-h-screen pb-32 px-4 pt-[env(safe-area-inset-top)]">
+    <main className="px-4 pt-[env(safe-area-inset-top)]">
       <div className="max-w-xl mx-auto pt-20">
         <div className="card p-5">
           <h2 className="font-display text-2xl">Something broke on this page</h2>

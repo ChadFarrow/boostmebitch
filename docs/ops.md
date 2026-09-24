@@ -462,6 +462,51 @@ gets it when someone notices the feature is missing there. Treat "set the
 variable" as a two-project step, and `.env.example`'s warning about the
 **copied** `ANDROID_*` pair as the one exception where copying is the bug.
 
+## Re-landing a reverted feature: the merge will not tell you what it dropped
+
+**Measured 2026-09-13, merging `feat/favorites-new` (downloads + listen queue +
+new episodes + an audit pass) onto a `main` that had reverted downloads (#389).**
+`git merge` reported **seven** conflicts. The damage was in the files it said
+nothing about.
+
+**A merge only conflicts where BOTH sides touched a file.** A revert is a commit
+like any other: it deletes and edits files. Where the feature branch had not also
+touched those exact files — which is most of them, since the branch is *newer*
+than the code it built on — the revert's deletions and edits apply **unopposed**,
+silently, and the result builds green.
+
+That merge silently:
+
+- **deleted twelve files** the feature needs — `app/downloads/page.tsx`,
+  `app/sw.js/route.ts`, `components/download-button.tsx`,
+  `components/downloads-page.tsx`, `docs/downloads.md`, `lib/build-id.ts`, all
+  five of `lib/downloads/`, and `scripts/e2e-downloads.mjs`;
+- **stripped the wiring out of eighteen more** — `next.config.mjs`'s `BUILD_ID`,
+  `components/sw-register.tsx`, `<Player>`'s local-source branch, `lib/store.ts`,
+  `lib/types.ts`;
+- **re-added `public/sw.js`**, a static file that SHADOWS the route at
+  `app/sw.js/route.ts` which serves the worker with its build id.
+
+Only `scripts/check-downloads.mjs` conflicted, and only because the audit pass had
+independently edited it.
+
+**Resolve it by computing the set, never by reading the conflict list.**
+
+```bash
+git show --name-only --format="" <the-revert-sha>          # every file it touched
+git show --name-only --format="" <each-commit-since>       # main's real new work
+comm -12 <(sort revert.txt) <(sort new.txt)                # the only hand merges
+```
+
+Every file the revert touched takes the feature branch's side; the **overlap**
+with main's genuine new work is the only part needing judgement. On that merge the
+overlap was one file, `CLAUDE.md`. Then check the other direction too — files the
+revert *added back* — with `git diff --diff-filter=A --name-only <base> origin/main`,
+which is how `public/sw.js` was caught.
+
+**Typecheck, lint and `next build` all passed on the broken merge.** The four e2e
+suites are what would have caught it, and only because the features have them.
+
 ## Dependency advisories — which ones are actually reachable
 
 `npm audit` is noisy here because Next bundles its own copies of things, so the

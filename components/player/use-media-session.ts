@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
+import { artCandidates } from '@/lib/util';
 import type { Episode, Podcast } from '@/lib/types';
 
 /**
@@ -19,17 +20,14 @@ interface Args {
   duration: number;
   /** Current artwork per `nowPlayingArt` — live, i.e. changes on every chapter. */
   nowArt: string | undefined;
-  audio: RefObject<HTMLAudioElement | null>;
-  video: RefObject<HTMLVideoElement | null>;
-  /** Whether the video element is the active one, read as a ref so an episode
-   *  switch doesn't re-register handlers. */
-  isVideoRef: RefObject<boolean>;
-  /** Player's own "last whole second emitted" tracker, kept in sync on seeks. */
-  lastTick: RefObject<number>;
-  setPosition: (t: number) => void;
+  /** The element's speed, so the lock-screen scrub bar advances at the same
+   *  rate as the audio instead of drifting behind it. */
+  playbackRate: number;
   setPlaying: (v: boolean) => void;
   /** RELATIVE jump, clamped — shared with the in-app skip buttons. */
   skipBy: (deltaSec: number) => void;
+  /** ABSOLUTE jump that counts as intent — see `seekTo` in <Player>. */
+  seekTo: (t: number) => void;
 }
 
 /**
@@ -38,15 +36,14 @@ interface Args {
  *
  * Extracted from <Player> as a unit because these four effects and the one piece
  * of state between them are entirely about Media Session and touch nothing else
- * in the player except its element refs. The rest of <Player> — the source
+ * in the player except the two seek callbacks it is handed. The rest of <Player> — the source
  * effect, the artwork gate, the HLS path, the iOS foreground resume — is
  * deliberately NOT here: those are entangled with each other and with playback
  * correctness in ways a mechanical extraction would obscure.
  */
 export function useMediaSession({
-  current, isPlaying, positionSec, duration, nowArt,
-  audio, video, isVideoRef, lastTick,
-  setPosition, setPlaying, skipBy,
+  current, isPlaying, positionSec, duration, nowArt, playbackRate,
+  setPlaying, skipBy, seekTo,
 }: Args): void {
   const episodeId = current?.episode.id;
 
@@ -56,25 +53,20 @@ export function useMediaSession({
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
-    const seekActive = (t: number) => {
-      const el = isVideoRef.current ? video.current : audio.current;
-      if (el) el.currentTime = t;
-      lastTick.current = Math.floor(t);
-      setPosition(t);
-    };
     const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
       ['play', () => setPlaying(true)],
       ['pause', () => setPlaying(false)],
       ['previoustrack', () => useApp.getState().playPrev()],
       ['nexttrack', () => useApp.getState().playNext()],
-      // Through `skipBy`, not `seekActive` + `getState().positionSec`: these are
+      // Through `skipBy`, not `seekTo(getState().positionSec + d)`: these are
       // RELATIVE jumps and had the same stale-base bug the in-app buttons would
       // have had — hold down the lock-screen skip and every repeat recomputed
       // from the same ~4Hz-old position, so a run of them moved one interval.
-      // `seekto` below stays on `seekActive`, because it is absolute.
+      // `seekto` below goes through `seekTo`, because it is absolute — and it
+      // must mark intent, or the restore undoes a lock-screen rewind.
       ['seekbackward', (d) => skipBy(-(d.seekOffset || 10))],
       ['seekforward', (d) => skipBy(d.seekOffset || 10)],
-      ['seekto', (d) => { if (d.seekTime != null) seekActive(d.seekTime); }],
+      ['seekto', (d) => { if (d.seekTime != null) seekTo(d.seekTime); }],
     ];
     for (const [action, handler] of handlers) {
       try { ms.setActionHandler(action, handler); } catch { /* unsupported action — skip */ }
@@ -102,10 +94,10 @@ export function useMediaSession({
       navigator.mediaSession.setPositionState({
         duration,
         position: Math.min(positionSec, duration),
-        playbackRate: 1,
+        playbackRate,
       });
     } catch { /* invalid state (e.g. position > duration mid-seek) — skip */ }
-  }, [positionSec, duration]);
+  }, [positionSec, duration, playbackRate]);
 
   // The lock screen follows the chapter too — but it is handed a SETTLED url,
   // never the live one.
@@ -135,6 +127,22 @@ export function useMediaSession({
   }, [nowArt, episodeId]);
   const settledArt = lockArt.epId === episodeId ? lockArt.url : undefined;
 
+  // The current item's DOWNLOADED cover (a blob: URL, or null), and whether the
+  // browser believes it has a network. Together they decide the one case the
+  // proxied entry below cannot serve — see the OFFLINE note in the effect.
+  const localCover = useApp((s) => s.nowPlayingCover);
+  const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => {
+      window.removeEventListener('online', on);
+      window.removeEventListener('offline', off);
+    };
+  }, []);
+
   // Metadata for the lock-screen / notification (title, podcast, artwork).
   // Re-runs on the settled art as well as the episode, and rebuilds the whole
   // MediaMetadata rather than mutating `.artwork` in place — mutation is not
@@ -144,11 +152,53 @@ export function useMediaSession({
     if (!current) { navigator.mediaSession.metadata = null; return; }
     const { episode, podcast } = current;
     const art = settledArt || episode.image || podcast.image || podcast.artwork;
+    // THE PROXIED COPY, and this is the half the settle timer could not fix.
+    // Holding still stopped a run of skips issuing one fetch per chapter; it
+    // did nothing about the SIZE of the one fetch that is issued. Measured on
+    // Mutton, Mead & Music, where two chapter covers are animated GIFs:
+    // 11,555,231 bytes went out on the enclosure's own connection for a
+    // lock-screen thumbnail, and no screen in this app was showing them.
+    // Proxied at 1024 the same two are 151,731.
+    //
+    // 1024 because this is not a tile — it is what the OS paints on a lock
+    // screen, which on a phone is bigger than any surface in the app.
+    //
+    // **ONE ENTRY, and this is the one place the "raw URL always behind the
+    // proxied one" rule is inverted — on purpose.** A MediaMetadata `artwork`
+    // list is not an `onError` ladder: there is no error to catch, and Chromium
+    // fetches EVERY entry rather than stopping at the one it uses. Measured
+    // 2026-09-21 on this episode with both entries listed: the proxied copies
+    // came down (267,098 + 114,002 + 37,729) AND both originals did
+    // (6,400,448 + 4,478,255). So a fallback here does not cost a retry, it
+    // costs the whole file every time, which is the harm the tail exists to
+    // prevent. The failure it gives up is cosmetic and off-app: if /api/art
+    // cannot serve the picture, the lock screen shows none.
+    const proxied = art ? artCandidates(art, null, 1024).find((u) => u !== art) : undefined;
+    // OFFLINE, THE DOWNLOADED COVER — and only offline. Found on a Pixel 6 in
+    // airplane mode, 2026-09-21: a download played from local bytes, both
+    // in-app covers fell back to the stored cover, and the lock screen showed
+    // none, because its one entry is an /api/art URL nothing can answer. The
+    // stored cover is the only picture there is then, and a blob: URL is
+    // accepted: measured through `dumpsys media_session`, offline, the proxied
+    // entry left 4 metadata keys and the blob left 5 (the bitmap).
+    //
+    // Online nothing changes, on purpose: the proxied copy is w=1024 where the
+    // stored one is w=640, and chapter art must still win. It outranks the
+    // chapter offline because chapter art is never downloaded. The previous
+    // episode's URL cannot paint the wrong cover at a change of episode:
+    // <Player> revokes it in an effect cleanup, React runs every cleanup of a
+    // commit before any new effect, and a revoked blob: loads nothing (the same
+    // measurement: 4 keys).
+    const offlineCover = !online && localCover ? localCover : undefined;
+    const lockSrc = offlineCover ?? proxied ?? art;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: episode.title,
       artist: podcast.title,
       album: podcast.title,
-      artwork: art ? [{ src: art }] : undefined,
+      // `sizes` only when it IS the proxied copy: that is the one whose
+      // dimensions we asked for. Stamping a third-party URL with a size nobody
+      // measured turns a guess into a claim the OS picks by.
+      artwork: lockSrc ? [!offlineCover && proxied ? { src: lockSrc, sizes: '1024x1024' } : { src: lockSrc }] : undefined,
     });
-  }, [episodeId, settledArt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [episodeId, settledArt, localCover, online]); // eslint-disable-line react-hooks/exhaustive-deps
 }

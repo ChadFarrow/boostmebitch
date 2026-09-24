@@ -138,6 +138,17 @@ export function ExitFullscreenIcon({ className = 'w-4 h-4' }: { className?: stri
  * that drives the seek, so the button cannot say 15 and jump 30. Rendered at
  * `fontSize` 9 against a 24-unit box: two digits fit inside the arc's gap
  * without touching it, which is why the arc is drawn open at the top.
+ *
+ * ONLY THE ARROW IS MIRRORED, and it is mirrored with SVG's own `transform`
+ * attribute rather than a CSS one. The first version flipped the whole `<svg>`
+ * with `style={{ transform: 'scaleX(-1)' }}` and flipped the label back with a
+ * second CSS transform at `transformOrigin: 'center'` — and *what centre* is a
+ * question CSS answers with `transform-box`, whose used value differs between
+ * engines. In Chrome the 15 sat in the middle of the arc; on iOS it sat low and
+ * to the right, reported from a phone as "the 10 in the skip back button is off
+ * center". `translate(24,0) scale(-1,1)` on the `<g>` is the same mirror in the
+ * viewBox's own coordinates — x becomes 24 − x — and it cannot reach the label,
+ * because the label is not inside it.
  */
 function SkipIcon({
   seconds,
@@ -153,32 +164,30 @@ function SkipIcon({
       aria-hidden
       viewBox="0 0 24 24"
       className={`flex-shrink-0 ${className}`}
-      // Mirrored rather than drawn twice: the two icons are the same shape and
-      // keeping one path means they can't drift apart by a pixel.
-      //
-      // The path below is drawn as the FORWARD arrow — arc sweeping clockwise
-      // with the tip at the top right — so it is *back* that gets the mirror.
-      // Worth stating, because the first version had this the wrong way round
-      // and it is close to invisible in review: both buttons still showed a
-      // circular arrow with the right number, just each wearing the other's
-      // direction.
-      style={forward ? undefined : { transform: 'scaleX(-1)' }}
     >
-      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      {/* Mirrored rather than drawn twice: the two icons are the same shape and
+          keeping one path means they can't drift apart by a pixel.
+
+          The path below is drawn as the FORWARD arrow — arc sweeping clockwise
+          with the tip at the top right — so it is *back* that gets the mirror.
+          Worth stating, because the first version had this the wrong way round
+          and it is close to invisible in review: both buttons still showed a
+          circular arrow with the right number, just each wearing the other's
+          direction. */}
+      <g
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        transform={forward ? undefined : 'translate(24,0) scale(-1,1)'}
+      >
         {/* Open at the top so the digits sit in the gap, not on the stroke. */}
         <path d="M20 12a8 8 0 1 1-3.5-6.6" />
         <path d="M16.2 2.3v3.6h-3.6" />
       </g>
-      <text
-        x="12"
-        y="15.5"
-        textAnchor="middle"
-        fontSize="9"
-        className="fill-current"
-        // Undo the mirror on the label — a flipped "15" is unreadable. Tracks
-        // whichever side actually carries the mirror above.
-        style={forward ? undefined : { transform: 'scaleX(-1)', transformOrigin: 'center' }}
-      >
+      {/* No transform of any kind: the mirror above is on the `<g>`, so the
+          label is already upright and already centred on the 24-unit box. */}
+      <text x="12" y="15.5" textAnchor="middle" fontSize="9" className="fill-current">
         {seconds}
       </text>
     </svg>

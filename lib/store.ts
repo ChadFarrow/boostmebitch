@@ -1,6 +1,6 @@
 'use client';
 import { create } from 'zustand';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock } from './types';
+import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock, ValueTimeSplit } from './types';
 import type { NostrIdentity, PublishReason } from './nostr';
 
 /** Why `favoritesSync` is 'degraded' — see the field for the extra value. */
@@ -55,6 +55,11 @@ interface AppState {
   // for free. A no-op unless `guid` is the item playing now, so a resolve that
   // lands after the user moved on can't retarget their payment.
   syncCurrentValue: (guid: string, value: ValueBlock | null) => void;
+  // Refresh both `value` and `valueTimeSplits` from a live feed read.
+  // A downloaded episode's stored block may name a payee the feed has since
+  // dropped; `payableValue` reads `episode.value` first, so the stale copy
+  // outranks the feed's own.
+  refreshCurrentValue: (guid: string, value: ValueBlock | null | undefined, vts: ValueTimeSplit[] | undefined) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
   /**
    * Advance to the next PLAYABLE row, and say whether there was one.
@@ -85,6 +90,31 @@ interface AppState {
   // playback starts is not blank. <Player> is the only writer.
   artOk: boolean;
   setArtOk: (b: boolean) => void;
+
+  // A `blob:` URL for the CURRENT item's downloaded cover, or null.
+  //
+  // Lifted for the same reason as `artOk` above, and it is the same shape of
+  // bug: the cover was stored with every download and only `/downloads` could
+  // read it, through `downloadManager.coverUrlFor`. So on a plane the episode
+  // played from local bytes under a coloured initial tile, and the phase that
+  // promised "the cover comes too" delivered it to one surface out of the
+  // three that paint now-playing art. Reported from an iPhone.
+  //
+  // It is a fallback RUNG, never a replacement: see <PodcastCover>'s
+  // `localSrc`. Chapter and track art still win whenever the network answers.
+  //
+  // <Player> is the only writer, and it owns revoking the previous URL — an
+  // unrevoked one pins the whole decoded image for the life of the document.
+  nowPlayingCover: string | null;
+  setNowPlayingCover: (u: string | null) => void;
+
+  // Player speed, one of `PLAYBACK_RATES` (lib/util.ts). Starts at 1 and is
+  // hydrated from `storage.playbackRate` by <Player>'s mount, never read at
+  // store creation — this module is evaluated on the server too. The setter
+  // writes through to storage. <Player> applies it to the media element and
+  // forces 1× on a live item.
+  playbackRate: number;
+  setPlaybackRate: (r: number) => void;
 
   // Whether the Nostr sign-in modal is open. Lifted into the store so surfaces
   // other than the header (e.g. the fullscreen player / live chat) can open it
@@ -502,6 +532,15 @@ export const useApp = create<AppState>((set, get) => ({
       if (s.current.episode.value === value) return {};
       return { current: { ...s.current, episode: { ...s.current.episode, value } } };
     }),
+  refreshCurrentValue: (guid, value, vts) =>
+    set((s) => {
+      if (!s.current || !guid || s.current.episode.guid !== guid) return {};
+      const ep = { ...s.current.episode };
+      let changed = false;
+      if (value !== undefined && ep.value !== value) { ep.value = value; changed = true; }
+      if (vts !== undefined && ep.valueTimeSplits !== vts) { ep.valueTimeSplits = vts; changed = true; }
+      return changed ? { current: { ...s.current, episode: ep } } : {};
+    }),
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
   // Both step through `nextPlayableIndex`, never `idx ± 1`. A playlist's queue
   // holds a row for every `<podcast:remoteItem>` including the ones Podcast
@@ -515,8 +554,14 @@ export const useApp = create<AppState>((set, get) => ({
   playerExpanded: false,
   setPlayerExpanded: (b) => set({ playerExpanded: b }),
 
+  playbackRate: 1,
+  setPlaybackRate: (r) => { storage.playbackRate.set(r); set({ playbackRate: r }); },
+
   artOk: true,
   setArtOk: (b) => set({ artOk: b }),
+
+  nowPlayingCover: null,
+  setNowPlayingCover: (u) => set({ nowPlayingCover: u }),
 
   signInOpen: false,
   signInIntent: 'default',

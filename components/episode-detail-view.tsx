@@ -1,7 +1,7 @@
 'use client';
 import dynamic from 'next/dynamic';
-import { cloneElement, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { useMenuKeys } from './use-menu-keys';
+import { cloneElement, useEffect, useId, useState } from 'react';
+import { useAnchoredMenu } from './use-anchored-menu';
 import { createPortal } from 'react-dom';
 import { useApp } from '@/lib/store';
 import { fmt, fmtDate, fmtDuration } from '@/lib/format';
@@ -20,6 +20,7 @@ import { CopyLinkButton } from './copy-link-button';
 import { BoltIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart } from './fav-heart';
+import { DownloadButton } from './download-button';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
 // download match that condition. `.then((m) => m.BoostModal)` because it is a
@@ -107,69 +108,17 @@ export function EpisodeDetailView() {
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
   // The MORE tile's menu — the two actions that are real but rare (boost every
-  // track at once, open the episode's own web page). Dismissed on
-  // outside-click and Escape, same as <AuthControl>'s dropdown.
-  //
-  // IT PORTALS TO document.body, and that is not a style choice. The layout
-  // wraps {children} in `relative z-0` (app/layout.tsx), which is a stacking
-  // context — so no z-index inside it can rise above the root-level <TabBar>
-  // and mini-bar at z-30, whatever number it carries. Rendered in place at
-  // z-40 the menu opened downward into the dock and its items were painted
-  // over. This is the same reason CLAUDE.md requires modals to portal; a menu
-  // that opens near the bottom of the viewport has the identical problem.
-  //
-  // OUTSIDE-CLICK TESTS BOTH ELEMENTS, and both tests are `?.` rather than a
-  // `ref.current &&` guard. The trigger is CONDITIONALLY rendered — an episode
-  // with no tracks and no `link` has no MORE tile at all — so a guard that
-  // requires the ref to be live turns "the trigger went away" into "do
-  // nothing": `moreOpen` stays true, the effect never re-runs its cleanup, and
-  // both document listeners outlive the menu. Come back to an episode that
-  // does have the tile and it is already open with no gesture.
-  const [moreOpen, setMoreOpen] = useState(false);
-  const moreBtnRef = useRef<HTMLButtonElement | null>(null);
-  const moreMenuRef = useRef<HTMLDivElement | null>(null);
-  const closeMore = useCallback(() => setMoreOpen(false), []);
-  useMenuKeys({ open: moreOpen, menuRef: moreMenuRef, triggerRef: moreBtnRef, close: closeMore });
-  const [moreAt, setMoreAt] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
-
-  // Measured from the trigger each time, and again on scroll and resize: a
-  // `fixed` element does not follow the page. Below the trigger when there is
-  // room for the two rows, above it otherwise, and the right edge is clamped
-  // to the viewport so the last tile in the row cannot push it off-screen.
-  const placeMore = useCallback(() => {
-    const el = moreBtnRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const right = Math.max(8, window.innerWidth - r.right);
-    setMoreAt(
-      window.innerHeight - r.bottom >= 140
-        ? { top: r.bottom + 8, right }
-        : { bottom: window.innerHeight - r.top + 8, right },
-    );
-  }, []);
-
-  useEffect(() => {
-    if (!moreOpen) return;
-    placeMore();
-    function onDown(e: MouseEvent) {
-      const t = e.target as Node;
-      if (moreBtnRef.current?.contains(t) || moreMenuRef.current?.contains(t)) return;
-      setMoreOpen(false);
-    }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setMoreOpen(false); }
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    window.addEventListener('scroll', placeMore, true);
-    window.addEventListener('resize', placeMore);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-      window.removeEventListener('scroll', placeMore, true);
-      window.removeEventListener('resize', placeMore);
-    };
-  }, [moreOpen, placeMore]);
+  // track at once, open the episode's own web page). Portalled, placed, and
+  // dismissed by `useAnchoredMenu`; read its note before changing any of that.
+  const {
+    open: moreOpen,
+    setOpen: setMoreOpen,
+    triggerRef: moreBtnRef,
+    menuRef: moreMenuRef,
+    at: moreAt,
+  } = useAnchoredMenu();
   // Above the early return below, so hook order stays stable.
-  const { button: streamButton, panel: streamPanel } = useStreamPanel(
+  const { button: streamButton, dialog: streamDialog } = useStreamPanel(
     podcast,
     hasValueRecipients(payableValue(episode, podcast)),
   );
@@ -203,11 +152,12 @@ export function EpisodeDetailView() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
     // A menu belongs to the episode it was opened on. Closing it here is the
-    // belt to the outside-click brace above: the next episode may have no MORE
-    // tile at all, and an open menu with no trigger is not something the user
-    // can dismiss.
+    // belt to `useAnchoredMenu`'s outside-click brace: the next episode may
+    // have no MORE tile at all, and an open menu with no trigger is not
+    // something the user can dismiss. `setMoreOpen` is a state setter, so
+    // listing it re-runs nothing.
     setMoreOpen(false);
-  }, [episode?.id]);
+  }, [episode?.id, setMoreOpen]);
 
   if (!episode || !podcast) return null;
 
@@ -360,6 +310,7 @@ export function EpisodeDetailView() {
             share of whatever that is. */}
         <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
+          <DownloadButton episode={episode} podcast={podcast} size="tile" />
           <EpisodeShareButton episode={episode} podcast={podcast} />
           {/* Streaming is a SHOW-scoped setting, so this edits the same keys as
               the show header's STREAM — it's here because this is the page a
@@ -477,7 +428,8 @@ export function EpisodeDetailView() {
           </div>
         )}
 
-        {streamPanel && <div className="border-t border-bone/10 pt-4">{streamPanel}</div>}
+        {/* Portalled by <ModalShell>; rendered bare, see `useStreamPanel`. */}
+        {streamDialog}
 
         {/* The songs a live broadcast has played so far, each favoritable — the
             live twin of the contents tab below, which has no timeline to list on

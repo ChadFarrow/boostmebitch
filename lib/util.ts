@@ -1955,6 +1955,37 @@ export function boostNoteTrack(args: {
  * the `showShareUrl` situation again — the alternative was one component
  * importing another for a string.
  */
+/**
+ * The author line, or `null` when it would only repeat the title.
+ *
+ * **Most feeds set `<itunes:author>` to the show's own name**, so a surface that
+ * renders the title and then the author prints the same words twice. Reported
+ * from an iPhone on 2026-09-21 with a screenshot of the fullscreen player:
+ * "Our Big Dumb Mouth" under "Our Big Dumb Mouth", the second line adding
+ * nothing but height on the screen where height is scarcest — the cover is
+ * capped by the room left under it, so every wasted line shrinks the artwork.
+ *
+ * FOUR SURFACES pair these, and all four showed it: `<FullscreenPlayer>` twice
+ * (the audio and video layouts), the episode list's show header, `<Podroll>`
+ * and the carried-favorite row. One helper rather than four guards, for the
+ * reason the conventions table gives: the fourth copy is the one that drifts.
+ *
+ * **The comparison is normalised, not `===`.** A feed that writes "Our Big Dumb
+ * Mouth " or "our big dumb mouth" means the same thing and would defeat a bare
+ * equality test — and getting it wrong here costs the duplicate line this
+ * exists to remove, so the loose test is the safe direction. It only ever
+ * HIDES a line; nothing is lost that the title did not already say.
+ */
+export function authorLine(
+  title: string | null | undefined,
+  author: string | null | undefined,
+): string | null {
+  const a = (author ?? '').trim();
+  if (!a) return null;
+  const norm = (v: string) => v.toLowerCase().replace(/\s+/g, ' ').trim();
+  return norm(a) === norm(title ?? '') ? null : a;
+}
+
 export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): string {
   // The two halves key off DIFFERENT gates on purpose. The container word
   // follows `isPlaylistMedium`: a curated list is not an ALBUM, which would
@@ -2099,6 +2130,68 @@ export function fnvHash(s: string): number {
     h = Math.imul(h, 0x01000193) >>> 0;
   }
   return h & 0x7fffffff;
+}
+
+/**
+ * The episode id a DOWNLOAD plays back under — which is a money fact, not a
+ * React key.
+ *
+ * A download is rebuilt into an `Episode` with no network, and that object is
+ * handed to everything a streamed one is: `/api/value-splits` and the streaming
+ * split cache key off `episode.id`, and so does every boostagram's `itemID`.
+ * The rebuild used to synthesise `id` from the FEED id, so `/api/value-splits`
+ * asked for an episode whose id was its show's, answered 404, and every
+ * `<podcast:valueTimeSplit>` window on a downloaded episode streamed to the
+ * host instead of the song — while the boostagram named the feed as the item.
+ *
+ * So the record keeps the id the episode was LISTED under (`episodeId`), and a
+ * download plays back under exactly the identity it had before it was saved.
+ * A record written before that field existed falls back to the id the RSS path
+ * already gives an episode Podcast Index has not indexed, `-fnvHash(guid)`,
+ * which is the right answer for those and a distinct, non-colliding one for
+ * the rest. `||`, not `??`, on the guid: a feed can publish `<guid></guid>`,
+ * and `''` would give every such episode of every feed the same id.
+ */
+export function downloadEpisodeId(r: {
+  episodeId?: number | null;
+  itemGuid?: string | null;
+  enclosureUrl: string;
+}): number {
+  if (typeof r.episodeId === 'number' && Number.isInteger(r.episodeId) && r.episodeId !== 0) {
+    return r.episodeId;
+  }
+  return -fnvHash(r.itemGuid || r.enclosureUrl);
+}
+
+/**
+ * The playback speeds the SPEED control cycles through, in order. An ALLOWLIST,
+ * not a range: `storage.playbackRate` reads anything else back as 1, so a
+ * corrupt or hand-edited value plays at normal speed rather than at whatever
+ * number it happens to hold. Here rather than in the component because the
+ * storage accessor needs the same list and must not import a component.
+ */
+export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 3.5, 5] as const;
+
+/**
+ * The speeds the SPEED tile cycles through. 3.5× and 5× are NOT in it: each
+ * has a tile of its own (`FAST_PLAYBACK_RATES`), because reaching 5× by
+ * stepping meant six presses, and stepping past it meant a jump from 5× back
+ * to 1× — the two speeds nobody lands on by accident sat at the end of the one
+ * cycle everybody walks through.
+ */
+export const SPEED_CYCLE_RATES = [1, 1.25, 1.5, 1.75, 2] as const;
+
+/** The speeds with a tile each, beside SPEED. */
+export const FAST_PLAYBACK_RATES = [3.5, 5] as const;
+
+/**
+ * The speed after `rate` in `SPEED_CYCLE_RATES`, wrapping back to 1. From a
+ * speed outside the cycle (a fast tile's) it answers 1.25, because the SPEED
+ * tile shows 1× while a fast tile is on — the press steps from what it shows.
+ */
+export function nextPlaybackRate(rate: number): number {
+  const i = Math.max(0, SPEED_CYCLE_RATES.indexOf(rate as (typeof SPEED_CYCLE_RATES)[number]));
+  return SPEED_CYCLE_RATES[(i + 1) % SPEED_CYCLE_RATES.length];
 }
 
 // True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js
@@ -2658,16 +2751,30 @@ function artProxyUrl(url: string, width: ArtWidth): string {
  * twelve surfaces that render this component, several seconds after they
  * appeared, looking like a CDN fault. Put the raw URLs first and the feature is
  * installed but inert.
+ *
+ * **`preferOriginal` swaps the two halves and is not an optimisation switch.**
+ * `/api/art` takes frame one — it is a still tile — so a chapter whose art is
+ * an animated GIF does not move under the proxy. One surface wants the file as
+ * the artist published it: the fullscreen player's big cover, and only while it
+ * is open and the art gate allows it. Everywhere else the proxy stays first,
+ * because that cover measured 4,472,805 bytes against 5,502 at w=160.
+ *
+ * **The other half is still BEHIND it, not dropped**, for the same reason the
+ * raw tail exists in the normal order: a host that refuses the request the
+ * browser makes (hotlink rules, a mixed-content block) leaves the proxied copy
+ * as a real second chance, and a still cover beats no cover.
  */
 export function artCandidates(
   image: string | null | undefined,
   artwork: string | null | undefined,
   width: ArtWidth,
+  { preferOriginal = false }: { preferOriginal?: boolean } = {},
 ): string[] {
   const raw: string[] = [];
   if (image) raw.push(image);
   if (artwork && artwork !== image) raw.push(artwork);
-  return [...raw.filter(isProxyable).map((u) => artProxyUrl(u, width)), ...raw];
+  const proxied = raw.filter(isProxyable).map((u) => artProxyUrl(u, width));
+  return preferOriginal ? [...raw, ...proxied] : [...proxied, ...raw];
 }
 
 /**

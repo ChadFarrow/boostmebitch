@@ -59,6 +59,9 @@
     "e2e:favorites": "node scripts/e2e-favorites.mjs",
     "e2e:keyboard": "node scripts/e2e-keyboard.mjs",
     "e2e:artgate": "node scripts/e2e-artgate.mjs",
+    "e2e:artbytes": "node scripts/e2e-artbytes.mjs",
+    "e2e:album": "node scripts/e2e-album.mjs",
+    "e2e:streamdialog": "node scripts/e2e-stream-dialog.mjs",
     "e2e:seekhover": "node scripts/e2e-seekhover.mjs",
     "e2e:resume": "node scripts/e2e-resume.mjs",
     "e2e:mutes": "node scripts/e2e-mutes.mjs",
@@ -67,6 +70,7 @@
     "e2e:playlist": "node scripts/e2e-playlist.mjs",
     "e2e:yield": "node scripts/e2e-yield.mjs",
     "e2e:launcher": "node scripts/e2e-launcher.mjs",
+    "e2e:downloads": "node scripts/e2e-downloads.mjs",
     "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs",
     "check:fanout": "node --experimental-strip-types scripts/check-fanout.mjs",
@@ -75,7 +79,8 @@
     "check:relaysocket": "node --experimental-strip-types scripts/check-relay-socket.mjs",
     "check:livemerge": "node --experimental-strip-types scripts/check-live-merge.mjs",
     "check:liveover": "node --experimental-strip-types scripts/check-live-over.mjs",
-    "check:liveroster": "node --experimental-strip-types scripts/check-live-roster.mjs"
+    "check:liveroster": "node --experimental-strip-types scripts/check-live-roster.mjs",
+    "check:downloads": "node --experimental-strip-types scripts/check-downloads.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",

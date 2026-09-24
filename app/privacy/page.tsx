@@ -32,7 +32,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export default function PrivacyPage() {
   return (
-    <main className="max-w-2xl mx-auto px-4 py-10 flex flex-col gap-8 pb-32 pt-[calc(2.5rem+env(safe-area-inset-top))]">
+    <main className="max-w-2xl mx-auto px-4 py-10 flex flex-col gap-8 pt-[calc(2.5rem+env(safe-area-inset-top))]">
       <div className="flex flex-col gap-2">
         {/* `py-1.5` is a TOUCH TARGET — this is the page's only way back, and
             at text-xs with no vertical padding it was a 16px-tall box. */}

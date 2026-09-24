@@ -1,14 +1,18 @@
 'use client';
 import dynamic from 'next/dynamic';
 import { CopyLinkButton } from './copy-link-button';
-import { cloneElement, useEffect, useId, useRef, useState, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
+import { useAnchoredMenu } from './use-anchored-menu';
+import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { nowPlayingArt } from '@/lib/track-art';
 import { lockScroll } from '@/lib/scroll-lock';
+import { useSavedPosition, RESUME_GAP_SEC } from '@/lib/resume-position';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
+import { ErrorBoundary } from './error-boundary';
 import type { TranscriptCue } from '@/lib/transcript';
 // DEFERRED, all five, and the mount gate below is what makes it safe.
 //
@@ -24,6 +28,25 @@ import type { TranscriptCue } from '@/lib/transcript';
 //
 // `ssr: false` because `everOpened` is false on the server and on the first
 // client render, so there is nothing to server-render here in any case.
+//
+// **EVERY ONE OF THESE IS RENDERED INSIDE `<Pane>` BELOW, AND THAT IS NOT
+// TIDINESS — IT IS THE DIFFERENCE BETWEEN LOSING A TAB AND LOSING PLAYBACK.**
+// `dynamic()` downloads a chunk on first render, and a chunk that will not
+// download makes `import()` REJECT, which React raises as a throw. `<Player>`
+// is wrapped in `<ErrorBoundary label="Player">` with a `null` fallback
+// (`app/layout.tsx`), and `<FullscreenPlayer>` renders inside `<Player>` — so
+// that throw unmounted the ENTIRE player: the mini-bar, and with it the
+// `<audio>` element that was playing.
+//
+// Reported from an iPhone on 2026-09-20, in airplane mode, playing a DOWNLOADED
+// episode: *"I can play the episode in airplane mode but when I click the now
+// playing bar at the bottom it stops playing and the now playing bar goes
+// away."* — and, asked to describe it, *"it flashes open, then vanishes"*, with
+// the same tap fine on wifi. Offline is the whole condition: these chunks are
+// fetched on FIRST OPEN, so a listener who downloads episodes, goes offline and
+// then opens the player for the first time asks for a file that was never
+// cached. The service worker caches `/_next/static/*` cache-first, but only
+// what it has already SEEN.
 const TranscriptPanel = dynamic(
   () => import('./transcript-ui').then((m) => m.TranscriptPanel),
   { ssr: false },
@@ -49,11 +72,13 @@ import {
   isMusicMedium,
   showShareUrl,
   targetWord,
+  authorLine,
   stripHtml,
   fullscreenElement,
   fullscreenSupported,
   toggleFullscreen,
   exitFullscreen,
+  FAST_PLAYBACK_RATES,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -63,12 +88,117 @@ const EpisodeSocialThread = dynamic(
   () => import('./episode-social-thread').then((m) => m.EpisodeSocialThread),
   { ssr: false },
 );
+/**
+ * Pull the five pane chunks into the HTTP/service-worker cache WHILE THERE IS A
+ * CONNECTION, so opening the player offline needs no network at all.
+ *
+ * `<Pane>` below stops a missing chunk from killing playback. It does not make
+ * the tab WORK — and "Tracks" showing an apology on the one screen a listener
+ * opened specifically because they are offline is a poor second prize. The
+ * service worker caches `/_next/static/*` cache-first, but only what it has
+ * already SEEN, and these are fetched on FIRST OPEN: download episodes, go
+ * offline, open the player for the first time, and nothing ever cached them.
+ *
+ * ON IDLE, NOT ON MOUNT, and that ordering is the whole reason `dynamic()` is
+ * here. A static import would put this code in the first load of every route,
+ * because `<Player>` is in the ROOT LAYOUT — the deferral exists to keep it out.
+ * Warming after the page is interactive keeps that win and pays the download
+ * from spare time instead.
+ *
+ * `requestIdleCallback` with a `setTimeout` fallback: iOS Safari only shipped it
+ * in 17.4, and this app is used on older iPhones — the exact devices this whole
+ * offline path is for.
+ *
+ * Failures are swallowed on purpose. This is an optimisation; if it cannot run,
+ * the boundary below is still there and nothing is worse than before.
+ */
+let panesWarmed = false;
+export function warmPlayerPanes(): void {
+  if (panesWarmed || typeof window === 'undefined') return;
+  // `navigator.onLine` is a weak signal — true on a captive portal — but it is
+  // the right one HERE, where a false positive costs a failed prefetch nobody
+  // sees. It is only unusable where the answer must be trusted.
+  if (navigator.onLine === false) return;
+  panesWarmed = true;
+  const run = () => {
+    void import('./transcript-ui').catch(() => {});
+    void import('./episode-contents').catch(() => {});
+    void import('./live-played-tracks').catch(() => {});
+    void import('./episode-social-thread').catch(() => {});
+    void import('./live-chat').catch(() => {});
+  };
+  const idle = (window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+    .requestIdleCallback;
+  const schedule = () => {
+    if (typeof idle === 'function') idle(run, { timeout: 8000 });
+    else setTimeout(run, 4000);
+  };
+  // Wait for the worker before warming, so a chunk this DOES fetch is
+  // intercepted and cached by it rather than only by the browser.
+  //
+  // MEASURED, and not what I first assumed: after a cold offline start the
+  // panes load and `bmb-sw-static-*` does not exist at all. Next preloads these
+  // chunks during the first page load — before the worker controls that load —
+  // so they are already in the HTTP cache and this `import()` is usually a
+  // no-op. It stays because it costs nothing on idle and covers the case where
+  // that preload does not happen; it is NOT what makes the offline open work.
+  // What makes it work is the HTTP cache, which survives an app close but is
+  // the browser's to evict — and `<Pane>` below is what covers the eviction.
+  const swReady = navigator.serviceWorker?.ready;
+  if (swReady) swReady.then(schedule).catch(schedule);
+  else schedule();
+}
+
+/**
+ * The blast radius of a lazy pane, cut down to the pane.
+ *
+ * `<Player>` sits behind one `<ErrorBoundary label="Player">` whose fallback is
+ * `null` — deliberately, because losing playback should cost the player and not
+ * the page. **But a tab nobody is looking at is not playback**, and that
+ * boundary could not tell the difference: an `import()` that rejected for a
+ * chunk this device never cached took the mini-bar and the `<audio>` element
+ * with it, mid-episode, offline, which is when a downloaded episode is the only
+ * thing that still works.
+ *
+ * So each pane gets its own boundary, nested inside that one. The fallback is a
+ * SENTENCE rather than `null`: this repo's rule is that a guard which silently
+ * withholds is indistinguishable from a broken one, and an empty tab beside a
+ * working transport reads as a bug in the tab.
+ *
+ * `id` is the episode, where the caller has one: the same contract the outer
+ * boundary documents, so a chunk that failed for one episode does not leave the
+ * tab dead for the next. The two panes inside `<EpisodeInfoPanel>` pass none and
+ * need none — they are rendered only while their tab is `active`, so leaving the
+ * tab unmounts the boundary with them and returning is already a fresh mount.
+ * (`<EpisodeInfoPanel>` has never taken `episode`, and this is not the reason to
+ * start.) Either way the chunk is not re-downloaded — React caches a rejected
+ * `lazy()` — but the remount is what lets a later online open succeed.
+ */
+function Pane({ id, label, children }: { id?: string | number; label: string; children: ReactNode }) {
+  return (
+    <ErrorBoundary
+      label={label}
+      resetKey={id}
+      fallback={
+        <p className="text-xs text-muted">
+          This part could not load. It needs a connection the first time you open it — the
+          episode keeps playing.
+        </p>
+      }
+    >
+      {children}
+    </ErrorBoundary>
+  );
+}
+
 import { LinkedText } from './linked-text';
 import { UnderlineTabs, tabPanelProps } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
+import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
+import { SpeedButton, FastSpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
@@ -205,25 +335,29 @@ function EpisodeInfoPanel({
           See <EpisodeContents>. */}
       {active === 'contents' &&
         (hasContents ? (
-          <EpisodeContents
-            splits={splits}
-            chapters={chapters}
-            currentSec={currentSec}
-            onSeek={onSeek}
-            shareUrlFor={shareUrlFor}
-            fallbackImg={chapterFallbackImg}
-          />
+          <Pane label="EpisodeContents">
+            <EpisodeContents
+              splits={splits}
+              chapters={chapters}
+              currentSec={currentSec}
+              onSeek={onSeek}
+              shareUrlFor={shareUrlFor}
+              fallbackImg={chapterFallbackImg}
+            />
+          </Pane>
         ) : (
           <p className="text-xs text-muted">Loading chapters…</p>
         ))}
 
       {active === 'transcript' && (
-        <TranscriptPanel
-          cues={transcriptCues}
-          activeIdx={transcriptActiveIdx}
-          onSeek={onSeek}
-          loading={transcriptLoading}
-        />
+        <Pane label="TranscriptPanel">
+          <TranscriptPanel
+            cues={transcriptCues}
+            activeIdx={transcriptActiveIdx}
+            onSeek={onSeek}
+            loading={transcriptLoading}
+          />
+        </Pane>
       )}
       </div>
     </div>
@@ -370,6 +504,10 @@ export function FullscreenPlayer({
   // Per-field selectors (see the note in player.tsx) — a bare useApp() here
   // re-renders the whole fullscreen surface on every unrelated store write.
   const current = useApp((s) => s.current);
+  // Read from the store rather than threaded as a prop: <Player> is the only
+  // writer and owns revoking it, and a prop is what a future surface forgets
+  // to pass — the fault this whole change exists to fix.
+  const nowPlayingCover = useApp((s) => s.nowPlayingCover);
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
   const episodeQueue = useApp((s) => s.episodeQueue);
@@ -392,7 +530,7 @@ export function FullscreenPlayer({
 
   // Above the `!current` return — hook order has to stay stable, and the hook
   // no-ops while there's nothing playing.
-  const { button: streamButton, panel: streamPanel } = useStreamPanel(
+  const { button: streamButton, dialog: streamDialog } = useStreamPanel(
     current?.podcast,
     hasValueRecipients(payableValue(current?.episode, current?.podcast)),
   );
@@ -425,6 +563,17 @@ export function FullscreenPlayer({
     };
   }, []);
 
+  // The ⋯ in the top bar: the five secondary tiles — both hearts, both SHAREs
+  // and STREAM — in a menu, so the screen keeps what the listener came for.
+  // See the block that renders it for why they left the screen.
+  const tiles = useAnchoredMenu({ roomBelow: 200, menuWidth: 224 });
+
+  // The boxes the cover's size is measured against, plus the cover itself.
+  // See the effect below the `everOpened` latch.
+  const coverBoxRef = useRef<HTMLDivElement | null>(null);
+  const controlsRef = useRef<HTMLDivElement | null>(null);
+  const scrollRowRef = useRef<HTMLDivElement | null>(null);
+
   // Latches on first open and never resets — see the mount gate in the render
   // below for why the subtree is gated on this rather than on `open`.
   const [everOpened, setEverOpened] = useState(false);
@@ -437,11 +586,84 @@ export function FullscreenPlayer({
     if (!open) void exitFullscreen();
   }, [open]);
 
+  // THE COVER TAKES THE ROOM THAT IS LEFT, and below sm: only JS can know how
+  // much that is. The `max-w` on the box carries a measured CONSTANT (30rem) for
+  // the first paint, and a constant is wrong for a title the reserve never saw:
+  // "OBDM1424 - Recycled UFO Disclosure | China Nuclear War Scare | Greenland
+  // Deal | Missing 411 Cruise" is FOUR lines at 390px, 120px where the reserve
+  // budgeted two, and it put the tile row on the edge of the screen. CSS cannot
+  // measure a sibling, so this measures the slack and hands it to the cover.
+  //
+  // THE SLACK, NOT A RESERVE. `controlsRef` is the BOOST line, the last thing
+  // that must stay on the screen: the title, the seek bar and the transport are
+  // above it, and everything under it — the value split, Up Next, the album
+  // list, the notes — is allowed to be scrolled to. It was the tile row until
+  // those five moved into the ⋯ menu. `slack = row.clientHeight - where BOOST ends`, measured
+  // in the row's own content coordinates so a scrolled row reads the same, and
+  // the cover's cap moves by exactly that. One pass settles it: the cover gives
+  // up or takes the slack and the slack becomes ~0.
+  //
+  // IT CANNOT LOOP. The observer watches the row and the controls block; the
+  // cover is neither, and shrinking it changes neither's height (the block's
+  // width does not move). The floor and ceiling are the CSS cap's own: 11rem
+  // and 28rem.
+  //
+  // From sm: up it clears the inline value and the class takes over, because
+  // there the panes sit side by side and the cover competes with nothing.
+  useEffect(() => {
+    const box = coverBoxRef.current;
+    const controls = controlsRef.current;
+    const row = scrollRowRef.current;
+    if (!box || !controls || !row) return;
+    const apply = () => {
+      if (window.matchMedia('(min-width: 640px)').matches) {
+        box.style.maxWidth = '';
+        return;
+      }
+      const rowTop = row.getBoundingClientRect().top;
+      const endsAt = controls.getBoundingClientRect().bottom - rowTop + row.scrollTop;
+      // 12px of it stays unspent: at slack 0 the tiles sit ON the bottom edge,
+      // which reads as a cut row rather than as the end of the page.
+      const slack = row.clientHeight - endsAt - 12;
+      // 144px, where the CSS cap's floor is 11rem: on a 375x667 phone a
+      // four-line title left BOOST 11px under the edge at 176, and BOOST is
+      // the one control on this screen that may not need a scroll. A 144px
+      // cover is small; a boost button below the fold is worse.
+      const next = Math.max(144, Math.min(448, box.offsetWidth + slack));
+      box.style.maxWidth = `${Math.round(next)}px`;
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(controls);
+    ro.observe(row);
+    window.addEventListener('resize', apply);
+    window.addEventListener('orientationchange', apply);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', apply);
+      window.removeEventListener('orientationchange', apply);
+      box.style.maxWidth = '';
+    };
+    // `everOpened` and `open` mount the subtree these refs point at, and the
+    // episode decides which branch renders (a Nostr live stream has no cover at
+    // all). Everything else that moves — a longer title, a chapter label
+    // appearing — is the ResizeObserver's job.
+  }, [everOpened, open, current?.episode?.id, current?.episode?.guid]);
+
+  // ABOVE the early return: a hook may not be called conditionally, and
+  // `useSavedPosition` takes null precisely so a surface can call it over its
+  // own "nothing selected" guard. Reactive, so the control appears and clears
+  // as the entry moves; null for anything that never resumes (a track, a live
+  // item, an HLS URL), so the control is absent there by construction.
+  const savedPos = useSavedPosition(current?.episode ?? null, current?.podcast ?? null);
+
   if (!current) return null;
 
   const { episode, podcast } = current;
   const isMusic = isMusicMedium(podcast);
   const isLive = episode.liveStatus === 'live';
+  const resumeTo =
+    savedPos && !isLive && savedPos.t - positionSec > RESUME_GAP_SEC ? savedPos.t : null;
   // A Nostr live stream's NIP-33 id is `<64-hex pubkey>:<dTag>`, carried as the
   // episode guid. When present (and it's an HLS video stream) the right pane
   // becomes the kind:1311 live chat instead of the usual episode info.
@@ -520,12 +742,25 @@ export function FullscreenPlayer({
       {everOpened && (<>
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
         <div className="flex items-center gap-3">
-          <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs" aria-label="Back">
+          <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs flex-shrink-0" aria-label="Back">
             ← back
           </button>
-          <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
+          {/* HIDDEN BELOW sm:, because the bar's right-hand cluster is now four
+              controls wide — ⋯, ↓, the account chip and ✕ — and at 390px that
+              leaves this label 39px of the ~54px its shortest word needs. It
+              overlapped the ⋯ rather than folding. The screen it labels is a
+              full-screen cover with the show's title under it, so the label is
+              the one thing on this bar that says what is already obvious. */}
+          <span className="hidden sm:inline text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
         </div>
-        <div className="flex items-center gap-2">
+        {/* `flex-shrink-0`, here and on ← BACK, because neither may grow
+            taller. Signed out below ~400px this cluster holds ↓, SIGN IN ▾ and
+            ✕, and SIGN IN wrapped onto two lines and took the bar from 63px to
+            83px — 20px off the cover's reserve. The squeeze lands on NOW
+            PLAYING instead, which folds onto two 16px lines and so stays inside
+            the 38px the chips already set. Not `whitespace-nowrap`: that is
+            inherited, and the SIGN IN menu opens inside this cluster. */}
+        <div className="flex items-center gap-2 flex-shrink-0">
           {/* THE HEADER'S OWN AUTH CONTROL, not a second copy of it. This was a
               bare "◆ Sign in" button, and it offered exactly one of the app's
               two logins: the Nostr one, opened with no intent, so its modal
@@ -540,6 +775,31 @@ export function FullscreenPlayer({
               <AuthControl>. With BOTH logins set this renders nothing, exactly
               as the old button did (it was gated on `!identity`) — the account
               menu belongs to <NostrAuth>, which these routes mount hidden. */}
+          {/* THE SEVEN SECONDARY ACTIONS, one tap away instead of on the screen.
+              The now-playing screen is for the show, the transport and BOOST;
+              both favorites, DOWNLOAD, the two SHAREs, STREAM and SPEED are
+              none of those, and as a row of tiles they were the thing a long
+              title pushed off the bottom of the phone. The menu is the same shape the
+              episode rows use, and every tile is the shared control, not a copy
+              of it. */}
+          <button
+            ref={tiles.triggerRef}
+            type="button"
+            onClick={() => tiles.setOpen((v) => !v)}
+            // `.btn-ghost`'s 38px at every width, like the ↓ chip and the ⚡
+            // control beside it: the bar's height is what the cover measures
+            // against, so a 44px control here would take 6px off the cover on
+            // every phone. 36 x 38 still clears WCAG 2.5.8's 24px floor.
+            className={`inline-flex items-center justify-center w-9 min-h-[38px] flex-shrink-0 border transition ${
+              tiles.open ? 'border-bone bg-bone/5 text-bone' : 'border-bone/40 text-bone/70 hover:border-bone hover:text-bone'
+            }`}
+            aria-haspopup="menu"
+            aria-expanded={tiles.open}
+            aria-label="More actions for this episode"
+            title="More actions"
+          >
+            <span aria-hidden className="text-lg leading-none">⋯</span>
+          </button>
           <AuthControl overlay />
           <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
             ✕
@@ -557,7 +817,61 @@ export function FullscreenPlayer({
           this overlay and the mini-player bar both. Containing it here covers
           the nested lists too (the album list, the transcript box), because
           chaining walks outward to the nearest scrollable ancestor. */}
-      <div className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
+      {/* THE ⋯ MENU'S PANEL. Portalled and `fixed`, for the reason
+          `useAnchoredMenu` states: the layout's `relative z-0` wrapper is a
+          stacking context, so an in-place z-index cannot leave it. `z-[55]` and
+          not the rows' `z-40`: this one has to clear THIS overlay's own `z-50`,
+          and it still sits under <ModalShell> (`z-[60]`) and the iOS status
+          strip (`z-[70]`), so a boost modal opened from a tile covers it.
+
+          The tiles are the SHARED controls, never menu items that re-implement
+          them: both hearts name their target (SHOW/EPISODE, or ALBUM/TRACK on a
+          music feed), the two SHAREs name theirs (see <ShareTargets>), and
+          STREAM is `useStreamPanel`'s own button restyled with `cloneElement`
+          — a class name, not a new prop on a money-path file. The menu stays
+          open after a press, so the tile's own state change is the answer —
+          except STREAM, whose answer is a DIALOG over the menu. It used to
+          open a panel under BOOST, below the bottom of a phone, which read as
+          a press that did nothing. */}
+      {tiles.open && tiles.at && createPortal(
+        <div
+          ref={tiles.menuRef}
+          role="menu"
+          aria-label="Actions for this episode"
+          // THREE COLUMNS, not `auto-fit`: five tiles in a four-wide grid put
+          // STREAM alone on a second row beside three empty cells. 3 + 2 reads
+          // as a block. 224px is the width `useAnchoredMenu` is told about, so
+          // the panel cannot hang off the left of the screen.
+          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2"
+          style={{ top: tiles.at.top, bottom: tiles.at.bottom, right: tiles.at.right }}
+        >
+          <FavHeart podcast={podcast} size="tile" nameTarget />
+          <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+          {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
+              longer shows: ↓, a progress fill, ✓ when the episode is on the
+              device. It was a chip in the bar for one afternoon; six tiles fill
+              the menu's two rows exactly, and the bar keeps ⋯, the account
+              control and ✕. It renders nothing for a live item or an HLS
+              stream, and then the menu is five. */}
+          <DownloadButton episode={episode} podcast={podcast} size="tile" />
+          <ShareTargets podcast={podcast} episode={episode} />
+          {streamButton && cloneElement(
+            streamButton,
+            { className: 'tile' },
+            <span aria-hidden className="text-lg leading-none">≋</span>,
+            'STREAM',
+          )}
+          {/* SPEED, then 3.5× and 5×, fill a third row of three. Last because
+              they are about playback, not about this show or episode. No speed
+              on a live item: <Player> holds it at 1×, since there is nothing
+              ahead of the live edge to play into. */}
+          {!isLive && <SpeedButton />}
+          {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+        </div>,
+        document.body,
+      )}
+
+      <div ref={scrollRowRef} className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
         {/* Artwork (or live video) — centered in the left half; sticky so it
             stays put as the page scrolls. For HLS streams the shared <video>
             is displayed here via its OutPortal while the player is open; when
@@ -697,7 +1011,7 @@ export function FullscreenPlayer({
             // fit and a vanishing cover helps no one. From sm: up
             // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
             // info column, so its height is not the constraint.
-            <div className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
+            <div ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Whatever is playing at this second, via `nowPlayingArt`: the
                   LIVE BLOCK's art first — on a Split Kit show that's the cover
                   of the record actually playing, and it's the one thing on
@@ -723,12 +1037,40 @@ export function FullscreenPlayer({
                   }) || episode.image || podcast.image
                 }
                 artwork={podcast.artwork}
+                // The downloaded cover, and it is the LAST rung — see
+                // <PodcastCover>'s `localSrc` and `nowPlayingCover` in the
+                // store. Chapter and track art still win whenever the network
+                // answers; this is what stops an offline launch painting a
+                // coloured initial tile over an episode whose cover is sitting
+                // on the device.
+                localSrc={nowPlayingCover}
                 title={podcast.title}
                 seed={podcast.id?.toString()}
                 lowPriority
                 // The one surface that paints a cover large. Every other
                 // caller takes the 320 default, which is a list tile at 2x.
                 w={640}
+                // ANIMATION, and the two conditions are both load-bearing.
+                //
+                // `/api/art` takes frame one — a chapter whose `img` is an
+                // animated GIF is still under it — so the picture moved in the
+                // 48px now-playing tile, which used to render the raw URL, and
+                // stood still here where it is 400px across. Reported from an
+                // iPhone: *"This is a GIF but it only plays in the now playing
+                // bar at the bottom."*
+                //
+                // `open`: this pane is always mounted, merely translated
+                // off-screen, so without it a collapsed player downloads the
+                // original of every chapter it passes. Measured on Mutton, Mead
+                // & Music: 4,472,805 bytes against 5,502 proxied at w=160, on
+                // the connection the audio is streaming over, 9 chapters deep.
+                //
+                // `artOk`: the same verdict every other art decision here
+                // takes. It is not belt-and-braces — `nowPlayingArt` only
+                // suppresses CHAPTER and TRACK art when the gate shuts, so
+                // without this an episode cover that is itself a huge GIF would
+                // still be fetched whole while the buffer is in trouble.
+                preferOriginal={open && artOk}
                 // The whole picture, letterboxed — never a crop. Episode art
                 // is not reliably square: a show that reuses its video
                 // thumbnail publishes 16:9, and `object-cover` in a square box
@@ -763,8 +1105,8 @@ export function FullscreenPlayer({
                 {podcast.title && podcast.title !== episode.title && (
                   <p className="text-sm text-muted mt-1">{podcast.title}</p>
                 )}
-                {podcast.author && (
-                  <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
+                {authorLine(podcast.title, podcast.author) && (
+                  <p className="text-xs text-muted/70 mt-0.5">{authorLine(podcast.title, podcast.author)}</p>
                 )}
               </div>
               {/* Play/pause now lives on the video; prev/next aren't meaningful
@@ -788,7 +1130,7 @@ export function FullscreenPlayer({
               </div>
             </div>
             <div className="flex-1 min-h-0">
-              <LiveChat streamId={liveStreamId} />
+              <Pane id={liveStreamId} label="LiveChat"><LiveChat streamId={liveStreamId} /></Pane>
             </div>
           </div>
         ) : (
@@ -809,8 +1151,8 @@ export function FullscreenPlayer({
             <div>
               <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
               <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
-              {podcast.author && (
-                <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
+              {authorLine(podcast.title, podcast.author) && (
+                <p className="text-xs text-muted/70 mt-0.5">{authorLine(podcast.title, podcast.author)}</p>
               )}
               {audioErr && (
                 <p className="text-xs text-nostr mt-2 break-words">⚠ {audioErr}</p>
@@ -866,7 +1208,46 @@ export function FullscreenPlayer({
                   full-width tile grid that are both symmetric. It costs nothing
                   from sm: up: BOOST is `sm:flex-1` there, so the line has no
                   free space for justify-content to distribute. */}
-              <div className="flex flex-wrap items-center justify-center gap-3">
+              {/* THE WAY BACK TO WHERE YOU WERE, and it exists because there was
+                  none. Reported 2026-09-21: "I was listening to this downloaded
+                  episode but when I went back to it and hit play it just started
+                  over… The episode was at 17 minutes." The play control on the
+                  bar and in here is `togglePlay()` — it flips the element's
+                  play state and NEVER consults the saved position, which is read
+                  only when playback is STARTED from a list row or an episode
+                  page. So once the element had been reset to the start, nothing
+                  on this screen could take the listener back, and the saved
+                  17:04 was sitting in storage unreachable.
+
+                  IT APPEARS ONLY WHEN IT IS USEFUL, and the rule is a comparison
+                  rather than a flag: `saved.t` is more than RESUME_GAP_SEC ahead
+                  of where the element is. While playing normally the writer
+                  updates `saved.t` every ten seconds, so the two track each
+                  other and this stays hidden; pausing writes the current second,
+                  so a deliberate scrub backwards hides it too. It shows exactly
+                  in the case it is for — the element sitting at 0:05 while
+                  storage still says 17:04.
+
+                  IT DOES NOT HIJACK PLAY. The listener asked for play, and play
+                  is what they get; this is a separate, named control beside it.
+                  Jumping them 17 minutes on a press they meant as "start over"
+                  is the complaint one step further on.
+
+                  CAUTION — THE WINDOW IS SHORT, and that is not this control's
+                  doing: `recordPosition` refuses anything under RESUME_MIN_SEC
+                  (15 s), so the old entry survives only while the element stays
+                  inside the first 15 seconds. Play on from zero and the writer
+                  overwrites 17:04 with 16, then 26. Whether that overwrite
+                  should be refused when it moves the point back by many minutes
+                  is a separate question this does not answer. */}
+              {resumeTo !== null && (
+                <div className="flex justify-center">
+                  <button type="button" onClick={() => onSeek(resumeTo)} className="btn-mini">
+                    ↺ Resume {fmt(resumeTo)}
+                  </button>
+                </div>
+              )}
+              <div ref={controlsRef} className="flex flex-wrap items-center justify-center gap-3">
                 <TransportControls
                   size="lg"
                   prev={chapterNav?.prev}
@@ -885,39 +1266,13 @@ export function FullscreenPlayer({
                   <BoltIcon /> BOOST
                 </button>
               </div>
-              {/* The one cluster holding BOTH hearts, so both name their target
-                  (SHOW/EPISODE, or ALBUM/TRACK on a music feed). They otherwise
-                  render the identical word side by side and nothing on screen
-                  says which favorites what. The two SHARE buttons name theirs
-                  for the same reason — see <ShareTargets>.
-                  One row of equal `.tile`s, the same shape as the episode
-                  page's action row: five peers, glyph over word. They were
-                  five .btn-ghost chips of five different widths wrapping onto
-                  two lines at 390px. */}
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
-                <FavHeart podcast={podcast} size="tile" nameTarget />
-                <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
-                <ShareTargets podcast={podcast} episode={episode} />
-                {/* The meter below says what streaming is DOING; this is the
-                    only place in the player you can change it. Without it the
-                    reaction to "≋ streaming 10 sats/min" is to go hunting for
-                    the switch, and the player is full-screen — there is nothing
-                    else on screen to hunt through. Show-scoped, same keys as
-                    the show header and episode page.
-                    `cloneElement` to restyle, not a prop on `useStreamPanel`
-                    — same call as the episode page, same reason. */}
-                {streamButton && cloneElement(
-                  streamButton,
-                  { className: 'tile' },
-                  <span aria-hidden className="text-lg leading-none">≋</span>,
-                  'STREAM',
-                )}
-              </div>
             </div>
 
-            {streamPanel && (
-              <div className="-mt-1 border-t border-bone/10 pt-4">{streamPanel}</div>
-            )}
+            {/* STREAM's dialog. Portalled by <ModalShell>, so this spot is not
+                where it appears — and it is rendered BARE: the old inline panel
+                sat here under BOOST, off the bottom of a phone, while its
+                button was in the ⋯ menu at the top. */}
+            {streamDialog}
 
             {/* Sits with the value split, which is what streaming pays into.
                 Renders nothing unless streaming is actually running (or has
@@ -1002,11 +1357,13 @@ export function FullscreenPlayer({
                 no valueTimeSplit windows to enumerate, only the blocks that have
                 already gone by — so this is its live twin and sits above it.
                 Renders nothing on an ordinary episode. */}
-            <LivePlayedTracks
-              episode={episode}
-              fallbackImg={episode.image || podcast.image || podcast.artwork}
-              className="border-t border-bone/10 pt-5"
-            />
+            <Pane id={episode.id} label="LivePlayedTracks">
+              <LivePlayedTracks
+                episode={episode}
+                fallbackImg={episode.image || podcast.image || podcast.artwork}
+                className="border-t border-bone/10 pt-5"
+              />
+            </Pane>
             <EpisodeInfoPanel
               description={description}
               splits={splits}
@@ -1036,7 +1393,7 @@ export function FullscreenPlayer({
 
             {episode.socialInteract?.length ? (
               <div className="border-t border-bone/10 pt-5">
-                <EpisodeSocialThread entries={episode.socialInteract} />
+                <Pane id={episode.id} label="EpisodeSocialThread"><EpisodeSocialThread entries={episode.socialInteract} /></Pane>
               </div>
             ) : null}
           </div>
