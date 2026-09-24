@@ -4,11 +4,11 @@ import { nextPlaybackRate } from '@/lib/util';
 
 /**
  * The SPEED tile in the fullscreen player's ⋯ menu: each press steps through
- * `PLAYBACK_RATES` (1 → 1.25 → 1.5 → 1.75 → 2 → 3.5 → 1). The glyph IS the
+ * `PLAYBACK_RATES` (1 → 1.25 → 1.5 → 1.75 → 2 → 3.5 → 5 → 1). The glyph IS the
  * current speed, so the tile answers its own press — the menu stays open
- * after one, and the new number is what the listener sees. <Player> applies the value to
- * the media element and holds a live item at 1×, so the caller hides this on
- * a live item rather than offering a control that does nothing.
+ * after one, and the new number is what the listener sees. <Player> applies
+ * the value to the media element and holds a live item at 1×, so the caller
+ * hides this on a live item rather than offering a control that does nothing.
  */
 export function SpeedButton() {
   const rate = useApp((s) => s.playbackRate);
