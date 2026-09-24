@@ -505,11 +505,13 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     setErr(null);
     setNote(null);
     try {
-      const { uri, unreadable, trustworthy, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
+      const { uri, unreadable, trustworthy, removed, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
       if (!uri) {
         setErr(unreadable
           ? 'The backup on Nostr could not be read. This connection stays.'
-          : trustworthy
+          : removed
+            ? 'The backup on Nostr was removed — a Disconnect or an unticked backup box, possibly on another device. This connection stays.'
+            : trustworthy
             ? 'No backup found on Nostr for this account. This connection stays.'
             : 'Couldn’t reach your relays to look for the backup. This connection stays. Try again in a moment.');
         return;
@@ -534,9 +536,9 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      const { uri, unreadable, trustworthy, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
+      const { uri, unreadable, trustworthy, removed, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
       if (!uri) {
-        // Three different facts, and each names its own next step. An
+        // Four different facts, and each names its own next step. An
         // unreadable backup is one this account owns and cannot use — the shape
         // Amber wrote for every Android backup made before `encodeAmberSafe`,
         // since it truncated the connection string at its own `?relay=`. An
@@ -544,7 +546,9 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         // user to set up a wallet they already backed up.
         setErr(unreadable
           ? 'The backup on Nostr could not be read. Connect this wallet again with the backup box ticked to replace it.'
-          : trustworthy
+          : removed
+            ? 'The backup on Nostr was removed — a Disconnect or an unticked backup box, possibly on another device. Connect the wallet again with the backup box ticked.'
+            : trustworthy
             ? 'No backup found on Nostr for this account.'
             : 'Couldn’t reach your relays to look for the backup. Try again in a moment.');
         return;
