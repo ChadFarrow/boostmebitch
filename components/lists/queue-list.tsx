@@ -51,7 +51,7 @@ export function QueueList() {
   const currentKey = current ? epKey(current.episode) : null;
 
   return (
-    <div className="border-t border-bone/10 pt-5">
+    <div className="border-t border-bone/10 pt-5 lg:border-t-0 lg:pt-0">
       <div className="flex items-center justify-between gap-2 mb-2">
         <p className="text-[11px] uppercase tracking-widest text-muted">
           Up Next · {queue.length}
@@ -83,7 +83,10 @@ export function QueueList() {
         </p>
       )}
 
-      <ul className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+      {/* Not height-capped: this has ONE mount, the /queue route, so the page
+          scrolls — an inner 320px scroll box on a page of its own hid most of
+          the queue on desktop. */}
+      <ul className="space-y-1 text-sm sm:space-y-0.5">
         {queue.map((item, i) => {
           const active = currentKey === epKey(item.episode);
           return (
@@ -103,7 +106,7 @@ export function QueueList() {
                   if (active) togglePlay();
                   else playFromQueue(i);
                 }}
-                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
+                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 sm:py-2.5 ${
                   active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
                 }`}
                 // The name says what the press DOES, so it reads the same two
@@ -117,7 +120,7 @@ export function QueueList() {
                       : `Play ${item.episode.title}`
                 }
               >
-                <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
+                <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right sm:w-7 sm:text-base">
                   {active && isPlaying ? '❚❚' : i + 1}
                 </span>
                 <PodcastCover
@@ -125,16 +128,16 @@ export function QueueList() {
                   artwork={item.podcast.artwork}
                   title={item.podcast.title}
                   seed={item.podcast.podcastGuid ?? String(item.podcast.id)}
-                  className="w-9 h-9 border border-bone/20 flex-shrink-0 text-xs"
+                  className="w-9 h-9 sm:w-14 sm:h-14 border border-bone/20 flex-shrink-0 text-xs"
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate leading-tight">{item.episode.title}</span>
+                  <span className="block truncate leading-tight sm:font-display sm:text-base">{item.episode.title}</span>
                   {/* The show, on every row. The queue mixes them, so a title
                       alone does not say what you are about to hear. */}
-                  <span className="block truncate text-xs text-muted">{item.podcast.title}</span>
+                  <span className="block truncate text-xs text-muted sm:text-sm sm:mt-0.5">{item.podcast.title}</span>
                 </span>
                 {item.episode.duration ? (
-                  <span className="text-muted tabular-nums text-xs flex-shrink-0">
+                  <span className="text-muted tabular-nums text-xs flex-shrink-0 sm:text-sm">
                     {fmtDuration(item.episode.duration)}
                   </span>
                 ) : null}
@@ -148,7 +151,7 @@ export function QueueList() {
                   type="button"
                   onClick={() => moveQueueItem(i, -1)}
                   disabled={i === 0}
-                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone disabled:opacity-30 transition"
+                  className="min-h-[24px] min-w-[24px] sm:min-h-[36px] sm:min-w-[36px] inline-flex items-center justify-center text-xs sm:text-base text-muted hover:text-bone disabled:opacity-30 transition"
                   aria-label={`Move ${item.episode.title} up`}
                 >
                   ↑
@@ -157,7 +160,7 @@ export function QueueList() {
                   type="button"
                   onClick={() => moveQueueItem(i, 1)}
                   disabled={i === queue.length - 1}
-                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone disabled:opacity-30 transition"
+                  className="min-h-[24px] min-w-[24px] sm:min-h-[36px] sm:min-w-[36px] inline-flex items-center justify-center text-xs sm:text-base text-muted hover:text-bone disabled:opacity-30 transition"
                   aria-label={`Move ${item.episode.title} down`}
                 >
                   ↓
@@ -165,7 +168,7 @@ export function QueueList() {
                 <button
                   type="button"
                   onClick={() => removeFromQueue(epKey(item.episode))}
-                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone transition"
+                  className="min-h-[24px] min-w-[24px] sm:min-h-[36px] sm:min-w-[36px] inline-flex items-center justify-center text-xs sm:text-base text-muted hover:text-bone transition"
                   aria-label={`Remove ${item.episode.title} from the queue`}
                 >
                   ✕

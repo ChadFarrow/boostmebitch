@@ -39,6 +39,7 @@ import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer, warmPlayerPanes } from './fullscreen-player';
 import { PodcastCover } from './podcast-cover';
 import { TransportControls } from './transport-controls';
+import { SpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 import { LiveBadge } from './live-badge';
 
@@ -1554,6 +1555,9 @@ export function Player() {
               // cluster to play/pause on a live stream, before skip is reached.
               onSkip={skipBy}
             />
+            {/* Speed from lg: only, where the bar has the width (docs/ui.md,
+                "Playback speed"). A live item is always 1×, so no control. */}
+            {!isLive && <SpeedButton variant="chip" className="hidden lg:inline-flex" />}
             {/* Compact enough for the mini-bar on desktop; hidden on the cramped
                 mobile mini-bar (the fullscreen player carries the toggle there). */}
             <VideoToggle className="hidden sm:inline-flex" />

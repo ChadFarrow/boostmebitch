@@ -26,20 +26,26 @@ export function QueuePage() {
   useEffect(() => { setMounted(true); }, []);
 
   return (
-    <>
-      <h1 className="headline text-3xl sm:text-5xl">up next<span className="text-bolt">.</span></h1>
-      <p className="text-muted text-sm mt-2">
-        Episodes you lined up, in the order they will play. Kept on this device
-        {mounted && count > 0 ? ` · ${count} of ${LISTEN_QUEUE_CAP}` : ''}.
-      </p>
+    // One column on a phone (capped at the old `max-w-3xl` measure up to lg:);
+    // from lg: the heading moves to a sticky left column so the list — which
+    // must stay ONE ordered column — gets the width instead of the right half
+    // of the page sitting empty.
+    <div className="max-w-3xl lg:max-w-none lg:grid lg:grid-cols-[18rem_minmax(0,1fr)] lg:gap-12 lg:items-start">
+      <div className="lg:sticky lg:top-24">
+        <h1 className="headline text-3xl sm:text-5xl">up next<span className="text-bolt">.</span></h1>
+        <p className="text-muted text-sm mt-2">
+          Episodes you lined up, in the order they will play. Kept on this device
+          {mounted && count > 0 ? ` · ${count} of ${LISTEN_QUEUE_CAP}` : ''}.
+        </p>
+      </div>
 
-      <div className="mt-6">
+      <div className="mt-6 lg:mt-0">
         {/* Before the first client tick the store's answer is the SERVER's, so
             neither branch below may run: an empty page is wrong for anybody
             holding a queue, and the empty state is a claim. */}
         {!mounted ? null : count > 0 ? <QueueList /> : <EmptyQueue />}
       </div>
-    </>
+    </div>
   );
 }
 

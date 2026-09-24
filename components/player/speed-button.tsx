@@ -13,17 +13,38 @@ import { SPEED_CYCLE_RATES, nextPlaybackRate } from '@/lib/util';
  * While a fast tile is on (<FastSpeedButton>), this one shows 1× and is not
  * lit: the lit tile is the one that names the speed playing, and two lit
  * tiles saying 3.5× would ask which one to press to turn it off.
+ *
+ * `variant="chip"` is the same control for the desktop mini-bar: the one
+ * cycle, the one store action, drawn as a `.btn-ghost` beside the transport.
+ * The caller shows it from lg: only — below that the bar has no width to give.
  */
-export function SpeedButton() {
+export function SpeedButton({ variant = 'tile', className = '' }: { variant?: 'tile' | 'chip'; className?: string } = {}) {
   const rate = useApp((s) => s.playbackRate);
   const setRate = useApp((s) => s.setPlaybackRate);
   const inCycle = (SPEED_CYCLE_RATES as readonly number[]).includes(rate);
   const label = `${inCycle ? rate : 1}×`;
+  const lit = inCycle && rate !== 1;
+  if (variant === 'chip') {
+    // A fast speed (3.5×/5×) is SHOWN here, unlike on the tile: the chip is
+    // alone in the bar, so it is the one place saying what is playing. A
+    // press from a fast speed goes back to 1×, as the lit fast tile does.
+    return (
+      <button
+        type="button"
+        onClick={() => setRate(inCycle ? nextPlaybackRate(rate) : 1)}
+        className={`btn-ghost px-2 tabular-nums normal-case ${rate !== 1 ? 'border-bolt text-bolt' : ''} ${className}`}
+        title="Playback speed"
+        aria-label={`Playback speed ${rate}×, change`}
+      >
+        {rate}×
+      </button>
+    );
+  }
   return (
     <button
       type="button"
       onClick={() => setRate(nextPlaybackRate(rate))}
-      className={`tile ${inCycle && rate !== 1 ? 'border-bolt text-bolt' : ''}`}
+      className={`tile ${lit ? 'border-bolt text-bolt' : ''} ${className}`}
       title="Playback speed"
       aria-label={`Playback speed ${label}, change`}
     >
