@@ -264,10 +264,12 @@ export async function GET(req: Request) {
     // `channelSlice` of the live feed moments ago; prefer it whenever it exists.
     if (feedMedium) podcast.medium = feedMedium;
     // Same rule for the CHANNEL value block — the show-level BOOST. A read feed
-    // is the authority, including when it declares no block: a publisher who
-    // took V4V down is not paid through PI's leftover copy. Assigned after the
-    // row merge above on purpose, which reads PI's value as its own fallback.
-    if (rssRead) podcast.value = feedValue ?? null;
+    // is the authority when it DECLARES a block (or its absence). But a feed
+    // whose host does not emit <podcast:value> at all (Anchor, Spotify, etc.)
+    // returns undefined — keep PI's block for those, because the tag's absence
+    // is not a publisher decision.  feedValue null = tag present, empty/no
+    // recipients → the publisher took V4V down.
+    if (rssRead && feedValue !== undefined) podcast.value = feedValue;
     // Same reasoning for a BLANK title. PI can hold a feed it crawled badly with
     // `title: ""`, which renders as an invisible row in search results and a
     // headerless show page — "I don't see it listed", for a feed that is right

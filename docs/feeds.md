@@ -19,9 +19,10 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 - feed read AND item listed → the feed's item block, else its channel block, else **none**. A publisher who took V4V down is not paid through PI's leftovers.
 - feed read, item not reached (`MAX_RSS_ITEMS`, or a guid PI normalized) → PI's item block, else the feed's channel block.
+- feed read, but `<podcast:value>` tag ABSENT from channel AND item → PI's answer, exactly as before. Hosts like Anchor/Spotify never emit `<podcast:value>`; publishers on those platforms set up V4V through Podcaster Wallet or PI's dashboard, so the tag's absence is a host limitation, not a publisher decision. `parseValueBlock` returns `undefined` (absent) vs `null` (present-but-empty) to distinguish the two; `feedItemValue` falls through to PI when both are `undefined`.
 - feed not read (`rssRead` false: fetch failed, 404) → PI's answer, exactly as before. A dead host must not kill BOOST.
 
-`podcast.value` (the show-level BOOST) is replaced by `feedValue` whenever `rssRead`, after the row merge. **This covers `/api/feed` only.** `/api/episode-by-guid`, `/api/remote-item` (valueTimeSplit tracks) and the playlist rows still read PI's block; each would need its own RSS read.
+`podcast.value` (the show-level BOOST) is replaced by `feedValue` when `rssRead` AND `feedValue` is not `undefined`, after the row merge. An `undefined` feedValue (tag absent) leaves PI's block in place. **This covers `/api/feed` only.** `/api/episode-by-guid`, `/api/remote-item` (valueTimeSplit tracks) and the playlist rows still read PI's block; each would need its own RSS read.
 
 **Episodes PI has not crawled yet come from the RSS (`getRssEpisodesNewerThan`, `lib/pi.ts`).** PI crawls on its own schedule, and a feed that sends no podping can wait a day. Measured 2026-09-23 on This Week in Bitcoin (PI feed 6813728): episode 124 was in the RSS at 19:04 UTC, PI's last crawl was 2026-09-22 07:03, so the show page stopped at 123 while Fountain listed 124 — reported as "the newest episode isn't there", on several shows. The route now appends every RSS item that has a guid PI did not return AND a `pubDate` later than PI's newest episode. Four things hold it together:
 
