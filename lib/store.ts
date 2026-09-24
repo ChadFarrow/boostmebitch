@@ -1,6 +1,6 @@
 'use client';
 import { create } from 'zustand';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock } from './types';
+import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock, ValueTimeSplit } from './types';
 import type { NostrIdentity, PublishReason } from './nostr';
 
 /** Why `favoritesSync` is 'degraded' — see the field for the extra value. */
@@ -55,6 +55,11 @@ interface AppState {
   // for free. A no-op unless `guid` is the item playing now, so a resolve that
   // lands after the user moved on can't retarget their payment.
   syncCurrentValue: (guid: string, value: ValueBlock | null) => void;
+  // Refresh both `value` and `valueTimeSplits` from a live feed read.
+  // A downloaded episode's stored block may name a payee the feed has since
+  // dropped; `payableValue` reads `episode.value` first, so the stale copy
+  // outranks the feed's own.
+  refreshCurrentValue: (guid: string, value: ValueBlock | null | undefined, vts: ValueTimeSplit[] | undefined) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
   /**
    * Advance to the next PLAYABLE row, and say whether there was one.
@@ -526,6 +531,15 @@ export const useApp = create<AppState>((set, get) => ({
       if (!s.current || !guid || s.current.episode.guid !== guid) return {};
       if (s.current.episode.value === value) return {};
       return { current: { ...s.current, episode: { ...s.current.episode, value } } };
+    }),
+  refreshCurrentValue: (guid, value, vts) =>
+    set((s) => {
+      if (!s.current || !guid || s.current.episode.guid !== guid) return {};
+      const ep = { ...s.current.episode };
+      let changed = false;
+      if (value !== undefined && ep.value !== value) { ep.value = value; changed = true; }
+      if (vts !== undefined && ep.valueTimeSplits !== vts) { ep.valueTimeSplits = vts; changed = true; }
+      return changed ? { current: { ...s.current, episode: ep } } : {};
     }),
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
   // Both step through `nextPlayableIndex`, never `idx ± 1`. A playlist's queue

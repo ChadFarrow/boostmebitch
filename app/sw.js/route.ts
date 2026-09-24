@@ -66,10 +66,21 @@ self.addEventListener('install', (event) => {
     // Reported from an iPhone: the tab did not open in airplane mode and was
     // fine on wifi. It does not reproduce in headless Chrome, which prefetches
     // every dock <Link> on the first load and so always has what the tap needs.
+    const staticCache = await caches.open(STATIC);
     for (const path of ['/', '/downloads']) {
       try {
+        const res = await fetch(path);
+        if (!res.ok) continue;
+        const html = await res.clone().text();
         const cache = await caches.open(PAGES);
-        await cache.add(path);
+        await cache.put(path, res);
+        // A precached page whose script deps are not cached breaks on the
+        // next deploy: activate deletes the old STATIC cache while the new
+        // page references new hashes. Collect same-origin /_next/static/
+        // URLs and cache them now.
+        const re = /(?:src|href)=["']([^"']*[/]_next[/]static[/][^"']+)["']/g;
+        const deps = [...html.matchAll(re)].map(m => m[1]);
+        await Promise.all(deps.map(u => staticCache.add(u).catch(() => {})));
       } catch (e) {
         // An install must never fail on this. Without it the app simply has no
         // offline shell until the next load, which is where this started.

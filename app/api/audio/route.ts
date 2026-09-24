@@ -46,7 +46,7 @@ import { MAX_DOWNLOAD_BYTES } from '@/lib/downloads/download-rules';
 
 // A download is a long single response. The default would cut a large episode
 // off mid-stream on a slow connection, which reads as a corrupt file rather
-// than a timeout. 90 MB at 300 KB/s is 300 s.
+// than a timeout. MAX_DOWNLOAD_BYTES at 300 KB/s needs well over 120 s.
 export const maxDuration = 300;
 // Audio is never rendered, so nothing here may be cached by a shared cache: the
 // URL carries a third party's address and the body is someone's episode.
@@ -55,7 +55,7 @@ export const dynamic = 'force-dynamic';
 /**
  * Deliberately low. A download is a rare, deliberate act — six in a minute is
  * already someone hammering the button — and every request through here is
- * potentially 90 MB of our bandwidth, which is the one cost this route adds.
+ * potentially MAX_DOWNLOAD_BYTES of our bandwidth, the one cost this route adds.
  */
 const AUDIO_LIMIT_PER_MIN = 6;
 
@@ -80,6 +80,7 @@ export async function GET(req: Request) {
       // Never forward credentials or the caller's headers: this request is ours,
       // not theirs, and an enclosure needs neither.
       headers: { Accept: '*/*' },
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!upstream.ok) {
@@ -91,6 +92,12 @@ export async function GET(req: Request) {
         { error: `host answered ${upstream.status}` },
         { status: upstream.status === 404 ? 404 : 502 },
       );
+    }
+
+    const ct = (upstream.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+    if (ct && !ct.startsWith('audio/') && !ct.startsWith('video/') && ct !== 'application/octet-stream') {
+      await upstream.body?.cancel().catch(() => {});
+      return NextResponse.json({ error: 'not an audio file' }, { status: 415 });
     }
 
     // REFUSE BEFORE STREAMING when the host declares a size over the cap. The

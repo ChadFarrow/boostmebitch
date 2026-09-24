@@ -377,9 +377,16 @@ export class DownloadManager {
       transcriptType: episode.transcriptType,
     };
 
-    await this.backend.putRecord(record);
+    try {
+      await this.backend.putRecord(record);
+    } catch (e) {
+      await this.backend.deleteBytes(key).catch(() => {});
+      throw e;
+    }
     this.remember(record);
     this.setState(key, null);
+
+    if (signal.aborted || !this.records.has(key)) return;
 
     // Chapters, the transcript and the cover are EXTRAS: each is fetched after
     // the audio is already stored and the record already written, so a failure
@@ -392,7 +399,7 @@ export class DownloadManager {
         .map((u) => this.backend.cacheDoc(u)),
     );
     const docKeys = docs.filter((u): u is string => !!u);
-    if (docKeys.length) {
+    if (docKeys.length && !signal.aborted && this.records.has(key)) {
       record.docKeys = docKeys;
       await this.backend.putRecord(record).catch(() => {});
       this.remember(record);
@@ -560,7 +567,12 @@ export class DownloadManager {
     }
     if (!episode.guid) return null;
     const viaGuid = this.byItemGuid.get(episode.guid);
-    return (viaGuid && this.records.get(viaGuid)) || null;
+    if (!viaGuid) return null;
+    const rec = this.records.get(viaGuid);
+    if (!rec) return null;
+    if (episode.feedId && rec.feedId && rec.feedId !== episode.feedId) return null;
+    if (episode.podcastGuid && rec.feedGuid && rec.feedGuid !== episode.podcastGuid) return null;
+    return rec;
   }
 
   /**
@@ -595,9 +607,14 @@ export class DownloadManager {
    * **The caller owns revoking the URL.**
    */
   async objectUrlFor(key: string): Promise<string | null> {
-    const url = await this.backend.getObjectUrl(key);
+    let url: string | null;
+    try {
+      url = await this.backend.getObjectUrl(key);
+    } catch {
+      return null;
+    }
     if (url) return url;
-    // The bytes are gone but the record is not: iOS evicted them. Forget it and
+    // The bytes are confirmed absent: iOS evicted them. Forget the record and
     // let the caller stream, which is what they had before pressing download.
     await this.forgetEvicted(key);
     return null;

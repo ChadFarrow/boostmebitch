@@ -315,14 +315,10 @@ export async function downloadBytes(
  */
 export async function getObjectUrl(key: string): Promise<string | null> {
   if (!cachesAvailable()) return null;
-  try {
-    const cache = await caches.open(AUDIO_CACHE);
-    const res = await cache.match(key);
-    if (!res) return null;
-    return URL.createObjectURL(await res.blob());
-  } catch {
-    return null;
-  }
+  const cache = await caches.open(AUDIO_CACHE);
+  const res = await cache.match(key);
+  if (!res) return null;
+  return URL.createObjectURL(await res.blob());
 }
 
 export async function deleteBytes(key: string): Promise<void> {

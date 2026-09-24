@@ -21,6 +21,7 @@ import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { downloadManager } from '@/lib/downloads/download-manager';
+import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
@@ -758,6 +759,19 @@ export function Player() {
         // `null` here is an evicted download, which the manager has already
         // forgotten. Streaming is what the listener had before they pressed it.
         attach(localSrc ?? episode.enclosureUrl);
+        // The download record's value block may be stale — payableValue reads
+        // episode.value first, so a stale copy outranks the feed's own.
+        if (localSrc && episode.feedId && episode.guid) {
+          const g = episode.guid;
+          loadEpisodeFromFeed(episode.feedId, g).then((r) => {
+            if (cancelled || !r?.episode) return;
+            useApp.getState().refreshCurrentValue(
+              g,
+              r.episode.value ?? null,
+              r.episode.valueTimeSplits,
+            );
+          });
+        }
       });
     }
     // `{ once: true }` removes the listener when it FIRES, which is not the same
@@ -1148,7 +1162,7 @@ export function Player() {
 
   // Saves where each episode was left, so the next play() of it resumes there.
   // See ./player/use-resume-position and lib/resume-position.ts.
-  useResumePosition({ audio, video, isVideoRef });
+  useResumePosition({ audio, video, isVideoRef, pendingLocalSrc });
 
   if (!current) return null;
   const { episode, podcast } = current;
@@ -1360,6 +1374,7 @@ export function Player() {
           // stopped and the transport drew ❚❚ over silence — true of albums
           // since before playlists existed. Ask whether it moved.
           onEnded={() => {
+            if (pendingLocalSrc.current) return;
             forgetRestoreBaseline();
             if (current && playsAsTracks(current.podcast) && playNext()) return;
             setPlaying(false);

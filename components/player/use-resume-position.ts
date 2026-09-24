@@ -13,6 +13,9 @@ interface Args {
   video: RefObject<HTMLVideoElement | null>;
   /** Whether the video element is the active one. */
   isVideoRef: RefObject<boolean>;
+  /** True while a downloaded source is resolving — the element's clock is
+   *  the PREVIOUS episode's, so no position may be written. */
+  pendingLocalSrc: RefObject<boolean>;
 }
 
 type Item = { episode: Episode; podcast: Podcast };
@@ -40,7 +43,7 @@ type Item = { episode: Episode; podcast: Podcast };
  * `visibilitychange` as well as `pagehide`, because iOS kills a backgrounded
  * home-screen app without firing `pagehide`.
  */
-export function useResumePosition({ audio, video, isVideoRef }: Args): void {
+export function useResumePosition({ audio, video, isVideoRef, pendingLocalSrc }: Args): void {
   useEffect(() => {
     const media = () => (isVideoRef.current ? video.current : audio.current);
     let lastWritten = NaN;
@@ -76,6 +79,7 @@ export function useResumePosition({ audio, video, isVideoRef }: Args): void {
     // while a new source loads, which the 15 s floor ignores; fall back to the
     // store's value then.
     const flushNow = () => {
+      if (pendingLocalSrc.current) return;
       const s = useApp.getState();
       if (!s.current) return;
       const t = media()?.currentTime;
@@ -89,5 +93,5 @@ export function useResumePosition({ audio, video, isVideoRef }: Args): void {
       window.removeEventListener('pagehide', flushNow);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [audio, video, isVideoRef]);
+  }, [audio, video, isVideoRef, pendingLocalSrc]);
 }
