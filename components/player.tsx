@@ -809,8 +809,19 @@ export function Player() {
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
     const rate = isLiveMedia ? 1 : playbackRate;
-    el.defaultPlaybackRate = rate;
-    el.playbackRate = rate;
+    // A browser may refuse a speed: the spec lets it throw NotSupportedError
+    // for one it cannot play, and Chrome does outside 0.0625–16. Uncaught, that
+    // throw is an effect error that takes the player down with it. Fall back
+    // to 1× on the element, and in the store, so the tile does not claim a
+    // speed the audio is not playing at.
+    try {
+      el.defaultPlaybackRate = rate;
+      el.playbackRate = rate;
+    } catch {
+      el.defaultPlaybackRate = 1;
+      el.playbackRate = 1;
+      if (rate !== 1) useApp.getState().setPlaybackRate(1);
+    }
   }, [playbackRate, isLiveMedia, current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]);
 
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz

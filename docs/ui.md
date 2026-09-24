@@ -1007,7 +1007,7 @@ Two things about that boundary:
 
 ## Playback speed (`bmb:playback_rate`)
 
-**The SPEED tile in the fullscreen player's ⋯ menu cycles 1 → 1.25 → 1.5 → 1.75 → 2 → 1** (`components/player/speed-button.tsx`). It is the seventh tile, so it sits alone on a third row; that was a deliberate choice over widening the three-column grid. The menu stays open after a press and the glyph is the current speed, so the tile answers its own press. The list is `PLAYBACK_RATES` in `lib/util.ts`, an allowlist the storage accessor also reads, so a stored value outside it plays at 1×. Not on the mini-bar, which has no width to give (see `<TransportControls>`); the fullscreen player is one tap away.
+**The SPEED tile in the fullscreen player's ⋯ menu cycles 1 → 1.25 → 1.5 → 1.75 → 2 → 3.5 → 1** (`components/player/speed-button.tsx`). It is the seventh tile, so it sits alone on a third row; that was a deliberate choice over widening the three-column grid. The menu stays open after a press and the glyph is the current speed, so the tile answers its own press. The list is `PLAYBACK_RATES` in `lib/util.ts`, an allowlist the storage accessor also reads, so a stored value outside it plays at 1×. Not on the mini-bar, which has no width to give (see `<TransportControls>`); the fullscreen player is one tap away.
 
 - **`<Player>` applies it in an effect declared AFTER the source effect, on the same deps**, and sets `defaultPlaybackRate` as well as `playbackRate`: `load()` resets `playbackRate` to the default, so setting only the one drops back to 1× on every episode change and every stall reload.
 - **A live item is always 1×**, and the tile is hidden there. Nothing lies ahead of the live edge to play into.
