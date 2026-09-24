@@ -403,7 +403,10 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     let cancelled = false;
     setAutoChecking(true);
     fetchEncryptedNwcDetailed(identity, 'user-initiated')
-      .then(({ uri, event }) => {
+      .then(({ uri, trustworthy, event }) => {
+        // An unanswered read learned nothing, so it must not use up the one
+        // check this page load allows: the next modal open asks again.
+        if (!uri && !trustworthy) autoCheckedNpubs.delete(identity.npub);
         if (!uri) return;
         // Save even if the modal closed mid-fetch — the restore is global.
         saveNwcUri(uri);
@@ -502,11 +505,15 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     setErr(null);
     setNote(null);
     try {
-      const { uri, unreadable, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
+      const { uri, unreadable, trustworthy, removed, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
       if (!uri) {
         setErr(unreadable
           ? 'The backup on Nostr could not be read. This connection stays.'
-          : 'No backup found on Nostr for this account. This connection stays.');
+          : removed
+            ? 'The backup on Nostr was removed — a Disconnect or an unticked backup box, possibly on another device. This connection stays.'
+            : trustworthy
+            ? 'No backup found on Nostr for this account. This connection stays.'
+            : 'Couldn’t reach your relays to look for the backup. This connection stays. Try again in a moment.');
         return;
       }
       storage.walletBalance.clear(identity.npub);
@@ -529,15 +536,21 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      const { uri, unreadable, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
+      const { uri, unreadable, trustworthy, removed, event } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
       if (!uri) {
-        // Two different facts, and the second one names its own repair. An
+        // Four different facts, and each names its own next step. An
         // unreadable backup is one this account owns and cannot use — the shape
         // Amber wrote for every Android backup made before `encodeAmberSafe`,
-        // since it truncated the connection string at its own `?relay=`.
+        // since it truncated the connection string at its own `?relay=`. An
+        // unanswered read is not an absence: saying "no backup" there sends the
+        // user to set up a wallet they already backed up.
         setErr(unreadable
           ? 'The backup on Nostr could not be read. Connect this wallet again with the backup box ticked to replace it.'
-          : 'No backup found on Nostr for this account.');
+          : removed
+            ? 'The backup on Nostr was removed — a Disconnect or an unticked backup box, possibly on another device. Connect the wallet again with the backup box ticked.'
+            : trustworthy
+            ? 'No backup found on Nostr for this account.'
+            : 'Couldn’t reach your relays to look for the backup. Try again in a moment.');
         return;
       }
       saveNwcUri(uri);
