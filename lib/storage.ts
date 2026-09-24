@@ -5,7 +5,7 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, QueueItem, StoredBoost } from './types';
+import type { Episode, NewEpisodeMarks, FavoriteEpisode, FavoritePodcast, Podcast, QueueItem, StoredBoost } from './types';
 import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState, ProfileMetadata } from './nostr';
 // Value import, so it must come from the import-free leaf rather than the
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { httpUrl, LISTEN_QUEUE_CAP, PLAYBACK_RATES } from './util';
+import { FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAYBACK_RATES, trimForQueue } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -67,6 +67,7 @@ const KEYS = {
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
+  newMarksPrefix: 'bmb:newmarks',     // + ':<npub>' — `{ checkedAt, marks: { [podcastGuid]: datePublished }, rows, uncovered, failed }`: the "new episodes" list on /favorites AND what this device has already shown you of it. The rows are the persisted thing and the marks describe them — holding the rows in React state alone made the CHECK consume the list rather than the reader. Seconds, because that is the unit Podcast Index's `since` takes back. A user-facing READ MARKER, not a cache — nothing on any wire records what this device showed somebody — so deliberately absent from EVICTABLE_PREFIXES, same class as bmb:listen_queue and bmb:ep_order. Evicting it does not cost a refetch, it re-announces a week of episodes as new. Pruned to the current favorites on every write (lib/util.ts `pruneMarks`).
   listenQueuePrefix: 'bmb:listen_queue', // + ':<npub>' — the "Up Next" cross-show listen queue. An ORDERED ARRAY, never a keyed object: the order IS the data. A user DECISION, not a network-regenerable cache — deliberately absent from EVICTABLE_PREFIXES, same class as bmb:ep_order and bmb:list_unlock. Items are trimmed at ENQUEUE (lib/util.ts `trimForQueue`) and capped at LISTEN_QUEUE_CAP. No migration from any global key: there has never been one.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
@@ -1791,6 +1792,85 @@ export const storage = {
      */
     clear: (npub: string | null | undefined) =>
       safeRemove(identityKey(KEYS.listenQueuePrefix, npub)),
+  },
+
+  /**
+   * What this device has already shown you, per favorited show.
+   *
+   * The read is TOLERANT per entry and the write is not: a malformed or
+   * half-written mark is dropped and the rest survive, because refusing the
+   * whole map because one entry is wrong would re-announce every episode of
+   * every show — the wall this feature exists to avoid.
+   *
+   * Not `getTimed`/`setTimed`. Those expire the whole cell on a TTL, and an
+   * EXPIRED mark set is worse than no mark set: it re-offers a week of
+   * episodes the reader already dismissed.
+   */
+  newEpisodeMarks: {
+    get: (npub: string | null | undefined): NewEpisodeMarks => {
+      const raw = safeGet(identityKey(KEYS.newMarksPrefix, npub));
+      if (!raw) return { checkedAt: 0, marks: {} };
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return { checkedAt: 0, marks: {} };
+        const marks: Record<string, number> = {};
+        for (const [guid, v] of Object.entries(parsed.marks ?? {})) {
+          if (typeof v === 'number' && Number.isFinite(v) && v > 0) marks[guid] = v;
+        }
+        // Per ENTRY, like the marks above and for the same reason: refusing
+        // the whole array over one bad row empties a list the reader has not
+        // seen yet, and the next pass cannot rebuild it — the marks have
+        // already moved past those episodes.
+        //
+        // The two fields tested are the two the section cannot work without.
+        // `feedId` is what `pruneNewRows` matches on and what the queue press
+        // resolves through, and `datePublished` is what orders the list and
+        // what a mark is made of. A row missing either is not a row this
+        // surface can place. Deliberately NOT a whitelist of the rest: these
+        // bytes were written by `trimForQueue` over our own API's answer, and
+        // nothing here reaches an `href` — `<PodcastCover>` renders the two
+        // image fields as an `<img src>`, which cannot execute.
+        const rows: Episode[] = [];
+        if (Array.isArray(parsed.rows)) {
+          for (const r of parsed.rows) {
+            if (!r || typeof r !== 'object') continue;
+            if (typeof r.feedId !== 'number') continue;
+            if (typeof r.datePublished !== 'number') continue;
+            rows.push(r as Episode);
+            if (rows.length >= FAV_NEW_CAP) break;
+          }
+        }
+        return {
+          checkedAt: typeof parsed.checkedAt === 'number' ? parsed.checkedAt : 0,
+          marks,
+          rows,
+          uncovered: Number.isInteger(parsed.uncovered) && parsed.uncovered > 0 ? parsed.uncovered : 0,
+          failed: parsed.failed === true,
+          dismissed: Array.isArray(parsed.dismissed)
+            ? parsed.dismissed.filter((k: unknown) => typeof k === 'string').slice(0, FAV_NEW_CAP)
+            : undefined,
+        };
+      } catch {
+        return { checkedAt: 0, marks: {} };
+      }
+    },
+    /** Returns whether the value reached DISK, and the caller must not drop
+     *  that answer: marks held only in `safeSet`'s memory mirror work all
+     *  session and are gone on the next load, so the same episodes come back
+     *  announced as new. That presents as the feature being broken, never as a
+     *  storage fault — the same contract `favorites` and `listenQueue` carry. */
+    set: (npub: string | null | undefined, v: NewEpisodeMarks): boolean =>
+      safeSet(
+        identityKey(KEYS.newMarksPrefix, npub),
+        // TRIMMED here rather than at the caller, so every writer gets it.
+        // `description` on a Podcast Index record is routinely a kilobyte of
+        // show notes and this section renders none of it, so keeping it would
+        // multiply a not-evictable key by about twenty for nothing. Same
+        // helper, and the same denylist reasoning, as the listen queue.
+        JSON.stringify(
+          v.rows ? { ...v, rows: v.rows.slice(0, FAV_NEW_CAP).map(trimForQueue) } : v,
+        ),
+      ),
   },
 
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */

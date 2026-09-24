@@ -26,6 +26,7 @@ import {
   warmEpisodeCache, warmPodcastCache,
 } from '@/lib/podcast-meta';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
+import { FavoritesNewEpisodes } from '@/components/favorites-new-episodes';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
@@ -34,7 +35,7 @@ import {
   groupByMedium, feedNoun, itemNoun, splitLabels, crossSplitLabel,
   useCollapsedGroups, CollapsibleHeading,
 } from '@/components/lists/grouping';
-import type { FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
+import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
 
 /**
  * The favorites library at `/favorites`.
@@ -268,6 +269,44 @@ export function FavoritesPage() {
     if (loaded.episode) openEpisode(loaded.episode);
   }
 
+  /**
+   * Open a NEW EPISODES row — the same handoff as `openItem`, from a different
+   * shape. Those rows are Podcast Index's indexed record, so they carry a
+   * `feedId` and a guid and nothing else this page can trust: no value block,
+   * no `valueTimeSplits` (see `<NoteQueueButton>`'s note in that section). The
+   * show goes up first and unconditionally, for the three reasons `openItem`
+   * gives, and the episode follows once the feed has answered.
+   *
+   * IT LIVES HERE rather than in `<FavoritesNewEpisodes>` because this is where
+   * the three halves of the handoff already are — `selectPodcast`, then
+   * `setShowOrigin`, then `router.push('/')` — and a second copy is how one of
+   * them goes missing. A row with no guid still opens its SHOW: that is the
+   * page the reader asked for minus one step, not a dead control.
+   */
+  async function openNewEpisode(e: Episode) {
+    if (!e.feedId) return;
+    // The SHOW's name from the reader's own favorite, as the row itself does:
+    // these records carry no `feedTitle`, so `e.title` put the EPISODE's title
+    // in the show header, where it stayed if the feed never answered.
+    const fav = Object.values(useApp.getState().favorites).find((f) => f.id === e.feedId);
+    selectPodcast({
+      id: e.feedId,
+      podcastGuid: e.podcastGuid ?? fav?.podcastGuid,
+      title: e.feedTitle || fav?.title || e.title || '',
+      image: e.feedImage ?? fav?.image ?? e.image,
+    });
+    setShowOrigin(FAVORITES_ORIGIN); // see openFeed
+    router.push('/');
+    if (!e.guid) return;
+    const loaded = await loadEpisodeFromFeed(e.feedId, e.guid);
+    if (!loaded) return;
+    // A second tap (or BACK) during the fetch wins — `openItem` says why.
+    const selected = useApp.getState().selectedPodcast;
+    if (!selected || selected.id !== e.feedId) return;
+    syncSelectedPodcast(loaded.podcast);
+    if (loaded.episode) openEpisode(loaded.episode);
+  }
+
   // The "show N more …" nouns follow the SECTION's medium, not the tab. Under
   // `all` the tab knows no medium and had to say "favorites"; a section does
   // know one, so the control under ALBUMS now offers more albums. `~unknown`
@@ -400,23 +439,6 @@ export function FavoritesPage() {
           {mounted && total > 0 && (
             <span className="text-[11px] uppercase tracking-widest text-muted">{total} saved</span>
           )}
-          {/* THE SECOND WAY INTO /playlists, and the app is down to two.
-              <PlaylistsLink> in the header is gone with the rest of the
-              header's navigation, and playlists are not a tab in <TabBar> —
-              they are content, not a destination. That left exactly one route
-              in: the hero's BROWSE PLAYLISTS button on /, which is gated on an
-              empty home page and hides the moment the visitor searches or
-              opens a show. From here, from a search, or from a drilled-in show
-              there was no way to the collection at all.
-              The two that remain are different controls, which is why this is
-              a link and not a copy of the hero button: that one is DISCOVERY
-              and hides as soon as you use the page, this one is NAVIGATION and
-              is here whatever state the library is in. It sits above the
-              loading / empty / rows split so it is reachable in all three.
-              A bare <Link>, no logic, nothing to drift. */}
-          <Link href="/playlists" className="btn-ghost btn-compact text-xs">
-            PLAYLISTS
-          </Link>
         </div>
       </div>
 
@@ -449,6 +471,15 @@ export function FavoritesPage() {
           undo that (see its comment: deleted as clutter once, restored the same
           night). */}
       <FavoritesPrivacyControl trailing={<RelayTools />} />
+
+      {/* BELOW the sync notices and ABOVE the loading/empty/rows split.
+          Not above the notices: those explain why the library is short, and
+          they stay the topmost thing. Not inside the rows branch either — but
+          it self-hides when no favorite has a resolved feed id, so an empty
+          library never gets a "new episodes" heading over "Nothing saved yet."
+          It is NOT part of the tab / sort / split state: those describe the
+          library, this describes the wire. */}
+      <FavoritesNewEpisodes key={identity?.npub ?? 'guest'} onOpen={openNewEpisode} />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
