@@ -2054,10 +2054,26 @@ export function downloadEpisodeId(r: {
  */
 export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 3.5, 5] as const;
 
-/** The speed after `rate` in `PLAYBACK_RATES`, wrapping back to 1. */
+/**
+ * The speeds the SPEED tile cycles through. 3.5× and 5× are NOT in it: each
+ * has a tile of its own (`FAST_PLAYBACK_RATES`), because reaching 5× by
+ * stepping meant six presses, and stepping past it meant a jump from 5× back
+ * to 1× — the two speeds nobody lands on by accident sat at the end of the one
+ * cycle everybody walks through.
+ */
+export const SPEED_CYCLE_RATES = [1, 1.25, 1.5, 1.75, 2] as const;
+
+/** The speeds with a tile each, beside SPEED. */
+export const FAST_PLAYBACK_RATES = [3.5, 5] as const;
+
+/**
+ * The speed after `rate` in `SPEED_CYCLE_RATES`, wrapping back to 1. From a
+ * speed outside the cycle (a fast tile's) it answers 1.25, because the SPEED
+ * tile shows 1× while a fast tile is on — the press steps from what it shows.
+ */
 export function nextPlaybackRate(rate: number): number {
-  const i = PLAYBACK_RATES.indexOf(rate as (typeof PLAYBACK_RATES)[number]);
-  return PLAYBACK_RATES[(i + 1) % PLAYBACK_RATES.length];
+  const i = Math.max(0, SPEED_CYCLE_RATES.indexOf(rate as (typeof SPEED_CYCLE_RATES)[number]));
+  return SPEED_CYCLE_RATES[(i + 1) % SPEED_CYCLE_RATES.length];
 }
 
 // True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js

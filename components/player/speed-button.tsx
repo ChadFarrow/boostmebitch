@@ -1,28 +1,57 @@
 'use client';
 import { useApp } from '@/lib/store';
-import { nextPlaybackRate } from '@/lib/util';
+import { SPEED_CYCLE_RATES, nextPlaybackRate } from '@/lib/util';
 
 /**
  * The SPEED tile in the fullscreen player's ⋯ menu: each press steps through
- * `PLAYBACK_RATES` (1 → 1.25 → 1.5 → 1.75 → 2 → 3.5 → 5 → 1). The glyph IS the
+ * `SPEED_CYCLE_RATES` (1 → 1.25 → 1.5 → 1.75 → 2 → 1). The glyph IS the
  * current speed, so the tile answers its own press — the menu stays open
  * after one, and the new number is what the listener sees. <Player> applies
  * the value to the media element and holds a live item at 1×, so the caller
  * hides this on a live item rather than offering a control that does nothing.
+ *
+ * While a fast tile is on (<FastSpeedButton>), this one shows 1× and is not
+ * lit: the lit tile is the one that names the speed playing, and two lit
+ * tiles saying 3.5× would ask which one to press to turn it off.
  */
 export function SpeedButton() {
   const rate = useApp((s) => s.playbackRate);
   const setRate = useApp((s) => s.setPlaybackRate);
-  const label = `${rate}×`;
+  const inCycle = (SPEED_CYCLE_RATES as readonly number[]).includes(rate);
+  const label = `${inCycle ? rate : 1}×`;
   return (
     <button
       type="button"
       onClick={() => setRate(nextPlaybackRate(rate))}
-      className={`tile ${rate !== 1 ? 'border-bolt text-bolt' : ''}`}
+      className={`tile ${inCycle && rate !== 1 ? 'border-bolt text-bolt' : ''}`}
       title="Playback speed"
       aria-label={`Playback speed ${label}, change`}
     >
       <span aria-hidden className="text-base leading-none tabular-nums normal-case">{label}</span>
+      SPEED
+    </button>
+  );
+}
+
+/**
+ * One fast speed as a tile of its own — 3.5× or 5×. A press turns it on; a
+ * press while it is on goes back to 1×, so the lit tile is also the way off.
+ * Hidden on a live item for the same reason as SPEED.
+ */
+export function FastSpeedButton({ rate: target }: { rate: number }) {
+  const rate = useApp((s) => s.playbackRate);
+  const setRate = useApp((s) => s.setPlaybackRate);
+  const on = rate === target;
+  return (
+    <button
+      type="button"
+      onClick={() => setRate(on ? 1 : target)}
+      className={`tile ${on ? 'border-bolt text-bolt' : ''}`}
+      title={on ? 'Back to normal speed' : `Play at ${target}×`}
+      aria-label={on ? `Playback speed ${target}×, turn off` : `Playback speed ${target}×`}
+      aria-pressed={on}
+    >
+      <span aria-hidden className="text-base leading-none tabular-nums normal-case">{target}×</span>
       SPEED
     </button>
   );

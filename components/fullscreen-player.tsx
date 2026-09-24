@@ -78,6 +78,7 @@ import {
   fullscreenSupported,
   toggleFullscreen,
   exitFullscreen,
+  FAST_PLAYBACK_RATES,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -197,7 +198,7 @@ import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
-import { SpeedButton } from './player/speed-button';
+import { SpeedButton, FastSpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
@@ -860,11 +861,12 @@ export function FullscreenPlayer({
             <span aria-hidden className="text-lg leading-none">≋</span>,
             'STREAM',
           )}
-          {/* SPEED is the seventh, so it opens a third row on its own. Last
-              because it is about playback, not about this show or episode.
-              No speed on a live item: <Player> holds it at 1×, since there is
-              nothing ahead of the live edge to play into. */}
+          {/* SPEED, then 3.5× and 5×, fill a third row of three. Last because
+              they are about playback, not about this show or episode. No speed
+              on a live item: <Player> holds it at 1×, since there is nothing
+              ahead of the live edge to play into. */}
           {!isLive && <SpeedButton />}
+          {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
         </div>,
         document.body,
       )}
