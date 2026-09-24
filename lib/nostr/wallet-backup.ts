@@ -18,7 +18,7 @@
 
 import { FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { assertPublished, signAndPublish, type PublishedNote } from './publish';
-import { fetchLatestEvent, fetchLatestEventDetailed } from './event-queries';
+import { fetchLatestEventDetailed } from './event-queries';
 import { backupReadRelays, resolvePublishRelays } from './relays';
 import { requireNip44, decryptWithTimeout, type DecryptPurpose } from './signer';
 import { encodeAmberSafe, decodeAmberSafe } from './amber-safe-text';
@@ -181,17 +181,32 @@ export async function fetchEncryptedNwc(
  * `{"uri":"nostr+walletconnect://<pubkey>` and nothing more. Reported as "no
  * backup found", that reads as the feature never having run; reported as
  * unreadable, it names the repair.
+ *
+ * `trustworthy` separates the first state from "nothing answered". A null
+ * event is only "nobody published a backup" when every relay we reached sent a
+ * real EOSE — see `readIsTrustworthy`. This read used the plain
+ * `fetchLatestEvent`, so a relay blackout or a slow phone radio reached the
+ * card as "No backup found on Nostr for this account" about a backup that was
+ * sitting on the relays, and the user reasonably concluded it had never saved.
+ * The `expect` predicate is the one `readNwcBackupHead` passes, for the reason
+ * given on `fetchEncryptedMnemonicDetailed`: three d-tags share this kind.
  */
 export async function fetchEncryptedNwcDetailed(
   identity: NostrIdentity,
   purpose: DecryptPurpose,
-): Promise<{ uri: string | null; unreadable: boolean; event: { id: string; created_at: number } | null }> {
-  const event = await fetchLatestEvent(
+): Promise<{
+  uri: string | null;
+  unreadable: boolean;
+  trustworthy: boolean;
+  event: { id: string; created_at: number } | null;
+}> {
+  const { event, trustworthy } = await fetchLatestEventDetailed(
     backupReadRelays(identity),
     { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_NWC_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
+    { pubkey: identity.pubkey, kinds: [WALLET_BACKUP_KIND], dTag: WALLET_NWC_D_TAG },
   );
-  if (!event || !event.content) return { uri: null, unreadable: false, event: null };
+  if (!event || !event.content) return { uri: null, unreadable: false, trustworthy, event: null };
   // Deliberately outside the try below: a decrypt that fails or times out is
   // not a finding about the backup, so it propagates.
   const plaintext = await decryptWithTimeout(identity.pubkey, event.content, purpose);
@@ -202,9 +217,9 @@ export async function fetchEncryptedNwcDetailed(
     // as-is — so both formats round-trip and no existing backup is orphaned.
     const parsed = JSON.parse(decodeAmberSafe(plaintext) ?? plaintext);
     const uri = typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
-    return { uri, unreadable: uri === null, event: uri ? { id: event.id, created_at: event.created_at } : null };
+    return { uri, unreadable: uri === null, trustworthy, event: uri ? { id: event.id, created_at: event.created_at } : null };
   } catch {
-    return { uri: null, unreadable: true, event: null };
+    return { uri: null, unreadable: true, trustworthy, event: null };
   }
 }
 
