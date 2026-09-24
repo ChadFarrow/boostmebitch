@@ -34,6 +34,14 @@ export function SpeedButton() {
 }
 
 /**
+ * The word under a fast tile's speed. 5× is PERMANERD, at the user's request —
+ * and at `tracking-normal`, because nine letters at `.tile`'s `tracking-wider`
+ * measure ~58px against the ~56px a tile in the 224px menu has inside its
+ * padding. Without the tracking it is ~54px and clears both edges.
+ */
+const FAST_WORD: Record<number, string> = { 5: 'Permanerd' };
+
+/**
  * One fast speed as a tile of its own — 3.5× or 5×. A press turns it on; a
  * press while it is on goes back to 1×, so the lit tile is also the way off.
  * Hidden on a live item for the same reason as SPEED.
@@ -52,7 +60,7 @@ export function FastSpeedButton({ rate: target }: { rate: number }) {
       aria-pressed={on}
     >
       <span aria-hidden className="text-base leading-none tabular-nums normal-case">{target}×</span>
-      SPEED
+      {FAST_WORD[target] ? <span className="tracking-normal">{FAST_WORD[target]}</span> : 'SPEED'}
     </button>
   );
 }
