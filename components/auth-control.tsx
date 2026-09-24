@@ -83,15 +83,38 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
   const closeMenu = useCallback(() => setMenuOpen(false), []);
   useMenuKeys({ open: menuOpen, menuRef: authMenuRef, triggerRef: authTriggerRef, close: closeMenu });
 
+  // THE OVERLAY'S CONTROLS ARE 26px, not `.btn-ghost`'s 38. That bar is
+  // <FullscreenPlayer>'s — ← BACK, the ⋯ menu, the balance box and ✕ are all
+  // `px-2 py-1` with a 16px line box — and a 38px SIGN IN among them read as a
+  // different control rather than a peer. `text-xs`'s line-height is 1rem, so
+  // 16 + 8 + 2 = 26, the same arithmetic ← BACK does.
+  const trigger = `btn-ghost flex items-center ${overlay ? 'px-2 py-1 text-xs' : ''}`;
+
+
   const walletConnected = mounted && hasAnyWallet();
   const needNostr = !identity;
   // Reads an inlined NEXT_PUBLIC_* var, so it's identical on server and client —
   // no `mounted` gate needed, unlike walletConnected (which reads localStorage).
   const googleConfigured = isGoogleAuthConfigured();
 
+  // NOTHING TO RENDER IS A NULL, not an empty wrapper. In the overlay the two
+  // wallet chips are gone, so a signed-in user leaves this component with no
+  // children — and an empty `flex` div still takes one of the bar's `gap-2`s,
+  // which puts 8px between ✕ and the control before it for no reason.
+  if (overlay && !needNostr) return null;
+
   return (
     <div ref={wrapperRef} className="relative flex items-center gap-2">
-      {walletConnected && (
+      {/* NOT IN THE OVERLAY. <FullscreenPlayer>'s bar had this chip because the
+          wallet had no other route from a screen that covers <AppHeader> and
+          the dock — and the boost modal, opened from that same screen, now
+          carries its own ⚡ WALLET button in BOTH states (see its note). Two
+          controls for one modal on one screen, and the player's bar is the one
+          with no room: it holds ← BACK, the ⋯ menu and ✕, and the six tiles
+          moved into that menu to give the cover its space back. The SIGN IN
+          entries below stay — those are a different question, and #413's gap
+          was about them too. */}
+      {walletConnected && !overlay && (
         <button
           onClick={() => setWalletOpen(true)}
           className="btn-ghost flex items-center gap-2"
@@ -129,7 +152,7 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
               if (googleConfigured) preloadGis();
               setMenuOpen((o) => !o);
             }}
-            className="btn-ghost flex items-center gap-1"
+            className={`${trigger} gap-1`}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
           >
@@ -263,7 +286,9 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
           without this the header spends those seconds inviting the user to
           connect a wallet they already have. Still opens the modal on tap —
           it's a status label, not a lock. */}
-      {!walletConnected && !needNostr && (
+      {/* Also not in the overlay, and for the same reason: the boost modal's
+          button reads "⚡ NO WALLET — CONNECT ONE" in exactly this state. */}
+      {!walletConnected && !needNostr && !overlay && (
         <button
           onClick={() => setWalletOpen(true)}
           className="btn-ghost flex items-center gap-2"
@@ -288,7 +313,7 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
         <>
           <button
             onClick={() => setSignInOpen(true)}
-            className="btn-ghost flex items-center gap-2"
+            className={`${trigger} gap-2`}
           >
             <span className="text-nostr">◆</span>
             <span className="hidden sm:inline">Sign in</span>

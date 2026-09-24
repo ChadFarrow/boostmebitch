@@ -21,6 +21,7 @@ import { BoltIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart } from './fav-heart';
 import { DownloadButton } from './download-button';
+import { QueueButton } from './queue-button';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
 // download match that condition. `.then((m) => m.BoostModal)` because it is a
@@ -309,6 +310,11 @@ export function EpisodeDetailView() {
             so the row is three to six tiles wide and every tile takes an equal
             share of whatever that is. */}
         <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
+          {/* First in the row, because it is the closest sibling of the PLAY
+              primary directly above: both answer "when do I hear this". It is
+              deliberately NOT behind the MORE menu — that menu is where the two
+              rare actions live, and queueing is the feature. */}
+          <QueueButton episode={episode} podcast={podcast} size="tile" />
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
           <EpisodeShareButton episode={episode} podcast={podcast} />

@@ -334,6 +334,47 @@ export function WalletBalanceChip() {
 }
 
 /**
+ * The same number in a box of its own, for a bar with no wallet BUTTON to sit
+ * inside: the fullscreen player's. It carries the ⚡ the chip leaves to its
+ * caller, and the `≤` marker for a budget-capped number, for the reason the
+ * chip states — a figure that is a grant rather than a balance reads as a bug
+ * beside the wallet app's own number.
+ *
+ * MOUNT IT ONLY WHILE THE SURFACE IS ON SCREEN. `useWalletBalance` re-reads on
+ * every `payment_sent`, and each NWC read opens a NIP-47 connection; this file
+ * records that burst as the single largest contributor to the socket leak that
+ * took payments down mid-session. The player's overlay is never unmounted once
+ * opened, so the call site gates this on the overlay actually being open —
+ * otherwise every leg of every boost would carry a third read for the rest of
+ * the session.
+ */
+export function WalletBalanceBox({ className = '' }: { className?: string }) {
+  const { balance, rail, budget } = useWalletBalance();
+  if (rail === null || balance === null) return null;
+  const formatted = balance.toLocaleString();
+  const railName = rail === 'nwc' ? 'NWC' : rail === 'webln' ? 'WebLN' : 'Spark';
+  return (
+    // ← BACK's and ✕'s shape, minus the hover: this is a readout, not a
+    // control, and a border that lights up under the finger promises a press
+    // that does nothing. `text-base leading-none` on the outside is what makes
+    // it 26px like them — the strut, not the digits, sets the line box, so the
+    // number can be 11px without the box standing shorter than its neighbours.
+    <span
+      className={`inline-flex items-center gap-1.5 border border-bone/40 px-2 py-1 text-base leading-none whitespace-nowrap ${className}`}
+      title={budget
+        ? `${formatted} sats spendable (${railName}) — ${budgetTitle(budget)}`
+        : `${formatted} sats (${railName})`}
+    >
+      <span aria-hidden className="text-bolt text-xs">⚡</span>
+      <span className="sr-only">Wallet balance: </span>
+      <span className="text-bolt text-[11px] font-mono tabular-nums">
+        {budget ? '≤' : ''}{formatted}
+      </span>
+    </span>
+  );
+}
+
+/**
  * Balance display for the boost modal footer. Shows the user-selected rail's
  * balance (so it tracks the boost-modal picker, not the global priority
  * order), switching to nostr-magenta when `amountSats > balance`. Hidden when

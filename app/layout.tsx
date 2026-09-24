@@ -327,8 +327,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             also lose the way to /favorites. */}
         <TabBar />
         {/* Renders <WalletModal> whenever `walletOpen` is set. In the layout so the
-            tab bar's Wallet tab works on every route, not only the three that
-            render <AppHeader> — see the file for the dead-control failure this
+            boost modal's wallet button and <FullscreenPlayer>'s overlay
+            <AuthControl> work on every route, not only the ones that render
+            <AppHeader> — see the file for the dead-control failure this
             avoids. */}
         <WalletModalHost />
         {/* Mounted in the LAYOUT, beside <Player>, and not in <AppHeader>.

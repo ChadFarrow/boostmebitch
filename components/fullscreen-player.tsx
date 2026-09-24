@@ -6,6 +6,7 @@ import { useAnchoredMenu } from './use-anchored-menu';
 import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
+import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { nowPlayingArt } from '@/lib/track-art';
@@ -202,6 +203,8 @@ import { SpeedButton, FastSpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
+import { WalletBalanceBox } from './wallet-balance';
+import { NostrIdentityChip } from './nostr-auth/identity-chip';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 import { LiveBadge } from './live-badge';
@@ -586,6 +589,52 @@ export function FullscreenPlayer({
     if (!open) void exitFullscreen();
   }, [open]);
 
+  // SHOW NOTES FOR AN EPISODE PLAYED FROM THE QUEUE. `trimForQueue` deletes
+  // `description` and `contentEncoded` before the queue reaches localStorage —
+  // they are the two large fields and the queue list renders neither — so an
+  // episode reached through `playFromQueue`, `queueStepTo`, `revealQueue` or
+  // `handlePlaybackEnded` arrives here with no notes at all, and the About tab
+  // had nothing to show. Reported from the phone, on an episode whose sibling
+  // opened from a feed row showed its notes in the same build.
+  //
+  // THE FETCH IS HERE rather than in the four store paths: this is the one
+  // surface that renders notes for whatever is playing, and `loadFeed`
+  // (`lib/podcast-meta.ts`) coalesces a request already in flight and caches
+  // the answer, so a step through a queue of one show costs one request. It
+  // runs ONLY when the episode carries neither field — an episode opened from a
+  // list already has them — and the result is keyed by episode id, so a step to
+  // the next item cannot paint the previous one's notes.
+  const [queuedNotes, setQueuedNotes] = useState<{ id: number; description: string } | null>(null);
+  const notesEpisode = current?.episode;
+  const notesFeedId = current?.podcast?.id ?? current?.episode?.feedId;
+  useEffect(() => {
+    if (!notesEpisode || notesEpisode.description || notesEpisode.contentEncoded) return;
+    const guid = notesEpisode.guid;
+    if (!guid || !notesFeedId) return;
+    const id = notesEpisode.id;
+    let cancelled = false;
+    void loadEpisodeFromFeed(notesFeedId, guid).then((r) => {
+      if (cancelled || !r?.episode) return;
+      const text = r.episode.description;
+      if (text) setQueuedNotes({ id, description: text });
+      // The queued copy's value block may be stale (same fix as the download
+      // path in <Player>). `loadFeed` coalesces, so this read is free when
+      // <Player> fires the same one.
+      useApp.getState().refreshCurrentValue(
+        guid,
+        r.episode.value ?? null,
+        r.episode.valueTimeSplits,
+      );
+    }).catch(() => {
+      // OFFLINE IS THE ORDINARY CASE HERE, not an exception: this is the surface
+      // a listener opens to play a DOWNLOADED episode with no connection.
+      // Without this the rejection was unhandled. The About tab simply stays as
+      // it was, which is the honest result — the notes live on a server we
+      // cannot reach.
+    });
+    return () => { cancelled = true; };
+  }, [notesEpisode, notesFeedId]);
+
   // THE COVER TAKES THE ROOM THAT IS LEFT, and below sm: only JS can know how
   // much that is. The `max-w` on the box carries a measured CONSTANT (30rem) for
   // the first paint, and a constant is wrong for a title the reserve never saw:
@@ -685,7 +734,9 @@ export function FullscreenPlayer({
   const boost = boostGate(episode, podcast);
   const value = boost.value;
   const hasValue = boost.hasValue;
-  const description = episode.description ? stripHtml(episode.description) : '';
+  const notes = episode.description
+    || (queuedNotes && queuedNotes.id === episode.id ? queuedNotes.description : '');
+  const description = notes ? stripHtml(notes) : '';
   const { index: activeIdx, chapter: activeChapter, end: activeChapterEnd } = chapterState(
     chapters,
     positionSec,
@@ -765,16 +816,15 @@ export function FullscreenPlayer({
               bare "◆ Sign in" button, and it offered exactly one of the app's
               two logins: the Nostr one, opened with no intent, so its modal
               could not reach Google — the row lives in <AuthControl>'s
-              dropdown and nowhere else. The wallet had no trigger here at all,
-              because the only other one is <TabBar> and this overlay (`z-50`)
-              covers it (`z-30`). On `/live/<npub>` that left a listener with a
-              BOOST button, a boost modal telling them to "connect one with ⚡
-              Connect wallet (top right)", and no such control on the route.
+              dropdown and nowhere else. On `/live/<npub>`, which renders no
+              header at all, that left a listener with no login in reach.
 
-              `overlay` drops the theme row and the balance number; see
-              <AuthControl>. With BOTH logins set this renders nothing, exactly
-              as the old button did (it was gated on `!identity`) — the account
-              menu belongs to <NostrAuth>, which these routes mount hidden. */}
+              `overlay` drops the theme row, the balance number AND both wallet
+              chips; see <AuthControl>. The wallet is a tap away in the boost
+              modal this screen opens, which says "⚡ NO WALLET — CONNECT ONE"
+              when there is none. So with both logins set this renders nothing
+              and the bar is ← BACK, ⋯ and ✕ — the account menu belongs to
+              <NostrAuth>, which these routes mount hidden. */}
           {/* THE SEVEN SECONDARY ACTIONS, one tap away instead of on the screen.
               The now-playing screen is for the show, the transport and BOOST;
               both favorites, DOWNLOAD, the two SHAREs, STREAM and SPEED are
@@ -786,20 +836,38 @@ export function FullscreenPlayer({
             ref={tiles.triggerRef}
             type="button"
             onClick={() => tiles.setOpen((v) => !v)}
-            // `.btn-ghost`'s 38px at every width, like the ↓ chip and the ⚡
-            // control beside it: the bar's height is what the cover measures
-            // against, so a 44px control here would take 6px off the cover on
-            // every phone. 36 x 38 still clears WCAG 2.5.8's 24px floor.
-            className={`inline-flex items-center justify-center w-9 min-h-[38px] flex-shrink-0 border transition ${
-              tiles.open ? 'border-bone bg-bone/5 text-bone' : 'border-bone/40 text-bone/70 hover:border-bone hover:text-bone'
+            // ← BACK's and ✕'s own shape, because those are what it sits
+            // between now: the wallet chip it was sized against has left the
+            // bar. It was 36 x 38 beside them at 30, which read as one control
+            // shouting. 30 x 26 still clears WCAG 2.5.8's 24px floor, and the
+            // bar's height — what the cover measures against — is unchanged.
+            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 ${
+              tiles.open ? 'border-bone bg-bone/5 text-bone' : ''
             }`}
             aria-haspopup="menu"
             aria-expanded={tiles.open}
             aria-label="More actions for this episode"
             title="More actions"
           >
-            <span aria-hidden className="text-lg leading-none">⋯</span>
+            {/* text-base, the ✕'s own size: at text-lg the glyph's line box
+                made this button 28px beside a 26px ✕. */}
+            <span aria-hidden className="text-base leading-none">⋯</span>
           </button>
+          {/* THE BALANCE, WITHOUT A WALLET BUTTON UNDER IT. The bar dropped both
+              wallet chips when the boost modal became the route to that modal,
+              and what the listener actually reads before pressing BOOST is the
+              number, not the control. `open` is the gate, not `everOpened`:
+              this overlay stays mounted for the session once it has been
+              opened, and a mounted `useWalletBalance` is a NIP-47 read on
+              every `payment_sent` — see <WalletBalanceBox>. */}
+          {open && <WalletBalanceBox />}
+          {/* WHO SIGNS THE NOTE, beside what pays for it. `<AuthControl
+              overlay>` below offers the two logins while signed OUT and
+              renders nothing once signed in — the account menu belongs to
+              <NostrAuth>, which these routes mount hidden — so this bar showed
+              no Nostr at all to the one user whose boost note it would sign.
+              A readout, like the balance: the menu is one ← BACK away. */}
+          <NostrIdentityChip />
           <AuthControl overlay />
           <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
             ✕

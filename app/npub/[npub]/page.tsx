@@ -18,9 +18,8 @@ import { BRAND } from '@/lib/brand';
  *
  * A real scrollable page, not a fixed overlay like /live/<npub> — that route
  * covers the screen because it opens the player, and this one is something you
- * read. It adds NO bottom padding: the layout footer's
- * `calc(var(--dock-b) + 7rem)` is the one clearance under every route, and a
- * second one here is dead space that makes a short page scroll (docs/ui.md).
+ * read. It adds no bottom padding: the layout footer is the one clearance for
+ * the mini-player and the dock (docs/ui.md).
  *
  * The segment is normalized rather than required to be an npub: an nprofile, a
  * hex pubkey or a pasted profile link all resolve through the same

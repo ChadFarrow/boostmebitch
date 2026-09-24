@@ -35,6 +35,7 @@ import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
 import { DownloadButton } from '../download-button';
 import { AlbumDownload } from '../album-download';
+import { QueueButton } from '../queue-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
@@ -877,10 +878,11 @@ export function EpisodeList({
                   menu (<EpisodeRowMenu>). The title column pays for every
                   button on this line: ⚡, DOWNLOAD and ♡ at 44px each left it
                   108px at 390px — "Episode 459 ..." with its date, duration and
-                  V4V stacked on three lines. From sm: the three take their
-                  words, and the title measured 91px at 640, 219 at 768 and 475
-                  at 1024, which is why the break is lg: and not sm:. From lg:
-                  up the row carries all three, as before. */}
+                  V4V stacked on three lines — and QUEUE was already hidden
+                  below sm: for the same squeeze. From sm: the four take their
+                  words (~450px), and the title measured 2px at 640, 130 at 768,
+                  262 at 900 and 386 at 1024, which is why the break is lg: and
+                  not sm:. From lg: up the row carries all four, as before. */}
               <div className="flex gap-2 sm:gap-3 py-3 pr-1 sm:pr-3">
               {/* An unresolved playlist row has an empty enclosure, so the
                   play control is SUPPRESSED rather than disabled — a disabled
@@ -1037,6 +1039,9 @@ export function EpisodeList({
                   only; below it they are in the `⋯` menu. */}
               <div className="hidden lg:flex self-center flex-shrink-0 items-center gap-3">
                 <DownloadButton episode={e} podcast={data.podcast} />
+                <span className="hidden sm:inline-flex">
+                  <QueueButton episode={e} podcast={data.podcast} />
+                </span>
                 <FavEpisodeHeart episode={e} podcast={data.podcast} />
               </div>
               <EpisodeRowMenu episode={e} podcast={data.podcast} className="lg:hidden self-center" />
