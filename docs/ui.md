@@ -1007,7 +1007,7 @@ Two things about that boundary:
 
 ## Playback speed (`bmb:playback_rate`)
 
-**One chip between the times under the fullscreen seek bar cycles 1 → 1.25 → 1.5 → 2 → 1** (`components/player/speed-button.tsx`). Not a `.tile`: the action row already holds six whenever the show has a value block, and a seventh wrapped onto a line of its own at 390px. The list is `PLAYBACK_RATES` in `lib/util.ts`, an allowlist the storage accessor also reads, so a stored value outside it plays at 1×. Not on the mini-bar, which has no width to give (see `<TransportControls>`); the fullscreen player is one tap away.
+**One chip between the times under the fullscreen seek bar cycles 1 → 1.25 → 1.5 → 1.75 → 2 → 1** (`components/player/speed-button.tsx`). Not a `.tile`: the action row already holds six whenever the show has a value block, and a seventh wrapped onto a line of its own at 390px. The list is `PLAYBACK_RATES` in `lib/util.ts`, an allowlist the storage accessor also reads, so a stored value outside it plays at 1×. Not on the mini-bar, which has no width to give (see `<TransportControls>`); the fullscreen player is one tap away.
 
 - **`<Player>` applies it in an effect declared AFTER the source effect, on the same deps**, and sets `defaultPlaybackRate` as well as `playbackRate`: `load()` resets `playbackRate` to the default, so setting only the one drops back to 1× on every episode change and every stall reload.
 - **A live item is always 1×**, and the chip is hidden there (the whole time row is). Nothing lies ahead of the live edge to play into.

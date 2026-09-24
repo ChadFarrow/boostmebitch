@@ -2052,7 +2052,7 @@ export function downloadEpisodeId(r: {
  * number it happens to hold. Here rather than in the component because the
  * storage accessor needs the same list and must not import a component.
  */
-export const PLAYBACK_RATES = [1, 1.25, 1.5, 2] as const;
+export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2] as const;
 
 /** The speed after `rate` in `PLAYBACK_RATES`, wrapping back to 1. */
 export function nextPlaybackRate(rate: number): number {
