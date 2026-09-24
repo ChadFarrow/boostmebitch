@@ -774,11 +774,11 @@ export function FullscreenPlayer({
               <AuthControl>. With BOTH logins set this renders nothing, exactly
               as the old button did (it was gated on `!identity`) — the account
               menu belongs to <NostrAuth>, which these routes mount hidden. */}
-          {/* THE SIX SECONDARY ACTIONS, one tap away instead of on the screen.
+          {/* THE SEVEN SECONDARY ACTIONS, one tap away instead of on the screen.
               The now-playing screen is for the show, the transport and BOOST;
-              both favorites, DOWNLOAD, the two SHAREs and STREAM are none of
-              those, and as a row of tiles they were the thing a long title
-              pushed off the bottom of the phone. The menu is the same shape the
+              both favorites, DOWNLOAD, the two SHAREs, STREAM and SPEED are
+              none of those, and as a row of tiles they were the thing a long
+              title pushed off the bottom of the phone. The menu is the same shape the
               episode rows use, and every tile is the shared control, not a copy
               of it. */}
           <button
@@ -860,6 +860,11 @@ export function FullscreenPlayer({
             <span aria-hidden className="text-lg leading-none">≋</span>,
             'STREAM',
           )}
+          {/* SPEED is the seventh, so it opens a third row on its own. Last
+              because it is about playback, not about this show or episode.
+              No speed on a live item: <Player> holds it at 1×, since there is
+              nothing ahead of the live edge to play into. */}
+          {!isLive && <SpeedButton />}
         </div>,
         document.body,
       )}
@@ -1173,12 +1178,8 @@ export function FullscreenPlayer({
                     aria-valuetext={fmt(positionSec)}
                   />
                 </div>
-                {/* The speed chip sits between the times; this whole branch is
-                    already the not-live one, which is the only kind it applies
-                    to. See <SpeedButton> for why it is not a tile. */}
-                <div className="flex items-center justify-between text-[11px] text-muted tabular-nums">
+                <div className="flex justify-between text-[11px] text-muted tabular-nums">
                   <span>{fmt(positionSec)}</span>
-                  <SpeedButton />
                   <span>{fmt(duration)}</span>
                 </div>
                 <ChapterLabel chapter={activeChapter} end={activeChapterEnd} className="text-xs" />
