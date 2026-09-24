@@ -614,8 +614,17 @@ export function FullscreenPlayer({
     const id = notesEpisode.id;
     let cancelled = false;
     void loadEpisodeFromFeed(notesFeedId, guid).then((r) => {
-      const text = r?.episode?.description;
-      if (!cancelled && text) setQueuedNotes({ id, description: text });
+      if (cancelled || !r?.episode) return;
+      const text = r.episode.description;
+      if (text) setQueuedNotes({ id, description: text });
+      // The queued copy's value block may be stale (same fix as the download
+      // path in <Player>). `loadFeed` coalesces, so this read is free when
+      // <Player> fires the same one.
+      useApp.getState().refreshCurrentValue(
+        guid,
+        r.episode.value ?? null,
+        r.episode.valueTimeSplits,
+      );
     }).catch(() => {
       // OFFLINE IS THE ORDINARY CASE HERE, not an exception: this is the surface
       // a listener opens to play a DOWNLOADED episode with no connection.
