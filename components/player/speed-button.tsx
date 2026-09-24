@@ -4,10 +4,10 @@ import { nextPlaybackRate } from '@/lib/util';
 
 /**
  * The playback-speed chip: each press steps through `PLAYBACK_RATES` (1 → 1.25
- * → 1.5 → 2 → 1), and the label IS the current speed, so the chip says what it
- * is doing without being pressed. <Player> applies the value to the media
- * element and holds a live item at 1×, so the caller hides this on a live item
- * rather than offering a control that does nothing.
+ * → 1.5 → 1.75 → 2 → 1), and the label IS the current speed, so the chip says
+ * what it is doing without being pressed. <Player> applies the value to the
+ * media element and holds a live item at 1×, so the caller hides this on a
+ * live item rather than offering a control that does nothing.
  *
  * It sits between the two times under the seek bar, not in the `.tile` row:
  * that row already holds six tiles whenever the show has a value block, and a
