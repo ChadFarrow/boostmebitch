@@ -60,7 +60,8 @@ import type { Episode, NewEpisodeMarks } from '@/lib/types';
  * The rows now round-trip through `storage.newEpisodeMarks`, a pass MERGES into
  * that list rather than replacing it, and a mark may only describe a row the
  * merge kept. A row leaves by aging past the seven-day horizon, by its show
- * being unfavorited, or by the reader pressing CLEAR. Nothing else retires one.
+ * being unfavorited, or by the reader pressing CLEAR or a row's ✕. Nothing
+ * else retires one.
  *
  * **THE TWO RULES MEET AT THE ORDER OF THE MARK UPDATE**, which is the one
  * thing neither feature can decide alone. Requests are independent, so marks
@@ -156,6 +157,16 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
   // and a boolean left true by account A's pass refused account B's first check
   // after a switch.
   const running = useRef<string | null>(null);
+  /**
+   * Rows the reader removed WHILE a pass was running — by ✕ or by CLEAR.
+   *
+   * A pass copies `stored.rows` when it starts, merges into that copy, paints it
+   * after every request and writes it back at the end. So a row removed during
+   * the pass came straight back, painted by the next request and written to
+   * disk by the last one. Every paint and the final write filter through this
+   * set; the pass empties it when it starts and when it settles.
+   */
+  const dismissed = useRef<Set<string>>(new Set());
 
   useEffect(() => setMounted(true), []);
 
@@ -283,6 +294,9 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     }
 
     running.current = runKey;
+    dismissed.current = new Set();
+    const keep = (list: Episode[]) =>
+      dismissed.current.size ? list.filter((e) => !dismissed.current.has(epKey(e))) : list;
     setPhase('checking');
     setProgress({ done: 0, total: asked.length });
 
@@ -365,7 +379,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
             now,
           );
           // Paint what the pass holds so far, before the next request goes out.
-          if (onScreen()) setRows(merged);
+          if (onScreen()) setRows(keep(merged));
         } catch {
           // This request's feeds stay OUT of `covered`, exactly as a chunk the
           // route could not ask about does. A request that failed is not a set
@@ -393,7 +407,10 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
        */
       let marks = advanceMarks(stored.marks, merged, advanceable, guidByFeedId, false);
 
-      let nextRows = merged;
+      // The marks above see the UNFILTERED list, and that is deliberate: a row
+      // the reader dismissed was shown to them, so its mark must move past it or
+      // the next pass fetches it again. Only the rows drop it.
+      let nextRows = keep(merged);
       if (answered) {
         /**
          * PRUNING IS A DELETION, so it needs a favorites list worth deleting
@@ -447,7 +464,10 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
         setPhase(answered ? 'done' : 'failed');
       }
     } finally {
-      if (running.current === runKey) running.current = null;
+      if (running.current === runKey) {
+        running.current = null;
+        dismissed.current = new Set();
+      }
     }
   }, [npub]);
 
@@ -460,17 +480,38 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
    * the whole seven-day window on the next check, which is the opposite of what
    * the press asked for.
    *
-   * The section needs it because nothing else retires a row now except age. A
+   * The section needs it because nothing else retires a row now except age (and
+   * `dismissRow`, the same press for one row). A
    * list that only drains after seven days is the mirror of the bug this fixes,
    * and the reader would have no way to say "done".
    */
   const clearRows = useCallback(() => {
+    // Everything on screen, for a pass that is still running. See `dismissed`.
+    for (const e of rows) dismissed.current.add(epKey(e));
     const stored = storage.newEpisodeMarks.get(npub);
     const next = { ...stored, rows: [] };
     setMarksSaved(storage.newEpisodeMarks.set(npub, next));
     setRecord(next);
     setRows([]);
     setShown(PAGE);
+  }, [npub, rows]);
+
+  /**
+   * CLEAR for ONE row — the ✕ on each row.
+   *
+   * Same rule as CLEAR: the row goes and the MARKS stay, so the next pass does
+   * not fetch it again. It filters the list on DISK, not the list in state,
+   * because a pass may have written a newer list since this render. By
+   * `epKey`, the same key the rows render under.
+   */
+  const dismissRow = useCallback((e: Episode) => {
+    const k = epKey(e);
+    dismissed.current.add(k);
+    const stored = storage.newEpisodeMarks.get(npub);
+    const next = { ...stored, rows: (stored.rows ?? []).filter((r) => epKey(r) !== k) };
+    setMarksSaved(storage.newEpisodeMarks.set(npub, next));
+    setRecord(next);
+    setRows((list) => list.filter((r) => epKey(r) !== k));
   }, [npub]);
 
   // A SIGNED-IN library is not settled until the relay read lands. A pass
@@ -708,6 +749,21 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                         }}
                       />
                     ) : null}
+                    {/* ✕ removes this row and nothing else — `dismissRow`.
+                        Last in the row, after QUEUE, so a thumb reaching for
+                        QUEUE does not land on it. 36px square: past WCAG
+                        2.5.8's 24px floor, and the title keeps the width. The
+                        label names the episode, because a screen reader hears
+                        every row's ✕ out of context. */}
+                    <button
+                      type="button"
+                      onClick={() => dismissRow(e)}
+                      className="btn-ghost w-9 h-9 p-0 flex-shrink-0 inline-flex items-center justify-center"
+                      title="Remove from new episodes"
+                      aria-label={`Remove ${e.title} from new episodes`}
+                    >
+                      <span aria-hidden>✕</span>
+                    </button>
                   </li>
                 ))}
               </ul>
