@@ -940,10 +940,12 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
   return out;
 }
 
-function parseValueBlock(xml: string): ValueBlock | null {
+function parseValueBlock(xml: string): ValueBlock | null | undefined {
   const vBlock = firstBlock(xml, 'podcast:value');
-  // A self-closing <podcast:value/> names no recipient, so it is no block.
-  if (!vBlock || vBlock.selfClosing) return null;
+  if (!vBlock) return undefined;
+  // A self-closing <podcast:value/> names no recipient, so it is no block —
+  // but the TAG IS PRESENT, which means the publisher spoke. null, not undefined.
+  if (vBlock.selfClosing) return null;
   const vAttrs = vBlock.attrs;
   // <podcast:valueTimeSplit> is a CHILD of <podcast:value>, and it may carry
   // its own inline <podcast:valueRecipient> tags. Strip those blocks before
@@ -1246,10 +1248,10 @@ interface RssEpisodeEnrichment {
   transcriptType?: string;
   link?: string;
   alternateEnclosures?: AlternateEnclosure[];
-  /** The item's own `<podcast:value>`, or null when it declares none. Read
-   *  from the live feed because Podcast Index can hold a stale one — see
-   *  `feedItemValue` (lib/util.ts). */
-  value: ValueBlock | null;
+  /** The item's own `<podcast:value>`: a block when present, null when the
+   *  tag was present but empty/self-closing, undefined when the tag was
+   *  absent (the host does not emit it). */
+  value: ValueBlock | null | undefined;
 }
 
 export interface RssFeedEnrichment {
@@ -1259,7 +1261,8 @@ export interface RssFeedEnrichment {
   /** True when the feed document was read. Every other field is only an
    *  answer about the feed when this is. */
   rssRead?: boolean;
-  /** The channel `<podcast:value>`, or null when the channel declares none. */
+  /** The channel `<podcast:value>`: a block when present, null when the tag
+   *  was present but empty, undefined when the host does not emit it. */
   feedValue?: ValueBlock | null;
   feedMedium?: string;
   feedPodroll?: PodrollItem[];
@@ -1490,6 +1493,8 @@ export async function getRssEpisodeEnrichment(
     // stale one. Every item gets an entry, enriched or not, so the route can
     // tell "the feed lists this item and gives it no block" from "the scan
     // never reached it" — only the first is an answer about the payee.
+    // undefined = tag absent (host doesn't emit it), null = tag present but
+    // empty/self-closing (publisher removed V4V).
     const value = parseValueBlock(inner);
     episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, value });
   }

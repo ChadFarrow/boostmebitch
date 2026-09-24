@@ -841,6 +841,16 @@ console.log('\nWhose value block /api/feed ships on a row: the feed\'s, over PI\
     // the row must not disagree with the show-level answer.
     [true, undefined, null, undefined, PI_CHANNEL], null);
 
+  // ── host does not emit <podcast:value> (Anchor, Spotify, etc.) ──────────
+  // rssChannel undefined = tag absent, not "publisher removed V4V".
+  // PI holds a value block added through Podcaster Wallet or PI dashboard.
+  val('Anchor host: no value tag in the RSS, PI has a channel block — PI\'s block pays',
+    [true, { value: undefined }, undefined, undefined, PI_CHANNEL], PI_CHANNEL, { alsoNaive: true });
+  val('Anchor host: no value tag, PI has both channel and item blocks — PI item wins',
+    [true, { value: undefined }, undefined, ARTIST, PI_CHANNEL], ARTIST, { alsoNaive: true });
+  val('Anchor host: item past scan cap, PI has a channel block — PI\'s block pays',
+    [true, undefined, undefined, undefined, PI_CHANNEL], PI_CHANNEL, { alsoNaive: true });
+
   // ── must still work ──────────────────────────────────────────────────────
   val('the feed could not be read: PI\'s item block, exactly as before',
     [false, undefined, undefined, ARTIST, PI_CHANNEL], ARTIST, { alsoNaive: true });

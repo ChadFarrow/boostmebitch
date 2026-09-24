@@ -878,12 +878,20 @@ export function payableValue(
  */
 export function feedItemValue(
   rssRead: boolean,
-  rssItem: { value: ValueBlock | null } | undefined,
+  rssItem: { value: ValueBlock | null | undefined } | undefined,
   rssChannel: ValueBlock | null | undefined,
   piItem: ValueBlock | null | undefined,
   piChannel: ValueBlock | null | undefined,
 ): ValueBlock | null | undefined {
   if (!rssRead) return piItem ?? piChannel;
+  // rssChannel undefined → the host does not emit <podcast:value> at all
+  // (Anchor, Spotify, etc.). The RSS has nothing to say about value, so
+  // fall through to PI entirely — same as the !rssRead path.
+  if (rssChannel === undefined && (!rssItem || rssItem.value === undefined)) {
+    return piItem ?? piChannel;
+  }
+  // rssChannel null → the tag was present and empty — the publisher took
+  // V4V down, so PI's leftover copy must not pay.
   if (rssItem) return rssItem.value ?? rssChannel ?? null;
   return piItem ?? rssChannel ?? null;
 }
