@@ -1005,6 +1005,15 @@ Two things about that boundary:
 
 **Tap-to-seek plumbing (chapters + transcripts).** The detail view can't touch the audio element, so a store signal bridges: `store.requestSeek(t)` sets `seekReq: { t, n }` and a `<Player>` effect applies it. `play(episode, podcast, startSec?)` takes an optional start position (applied on `loadedmetadata`) so tapping a line/chapter for a **not-current** episode starts it there; when it IS current, `requestSeek` seeks in place. **Omitting `startSec` means "resume"**, not 0 — see below. An explicit start, 0 included, always wins.
 
+## Playback speed (`bmb:playback_rate`)
+
+**One chip between the times under the fullscreen seek bar cycles 1 → 1.25 → 1.5 → 2 → 1** (`components/player/speed-button.tsx`). Not a `.tile`: the action row already holds six whenever the show has a value block, and a seventh wrapped onto a line of its own at 390px. The list is `PLAYBACK_RATES` in `lib/util.ts`, an allowlist the storage accessor also reads, so a stored value outside it plays at 1×. Not on the mini-bar, which has no width to give (see `<TransportControls>`); the fullscreen player is one tap away.
+
+- **`<Player>` applies it in an effect declared AFTER the source effect, on the same deps**, and sets `defaultPlaybackRate` as well as `playbackRate`: `load()` resets `playbackRate` to the default, so setting only the one drops back to 1× on every episode change and every stall reload.
+- **A live item is always 1×**, and the chip is hidden there (the whole time row is). Nothing lies ahead of the live edge to play into.
+- **The Media Session position state carries the same rate**, or the lock-screen scrub bar runs at half speed under 2× audio.
+- **Streaming bills listening time, not content time.** `accrue` charges `min(wall Δ, position Δ)`, so at 2× a per-minute rate pays per wall-clock minute. No change was needed; see [`streaming.md`](streaming.md).
+
 ## Resume position (`bmb:resume`)
 
 An unfinished podcast episode starts where the listener left it. The rules are in `lib/resume-position.ts`; the writer is `components/player/use-resume-position.ts`; the key is in [`storage.md`](storage.md). Device-wide, not synced — a Nostr copy would need a signer decrypt on load, which is its own design (see signers.md on `unattendedDecryptOk`).
