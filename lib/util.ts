@@ -478,13 +478,16 @@ export function mergeNewEpisodeRows(
   prev: readonly Episode[],
   found: readonly Episode[],
   nowMs: number,
+  dismissed?: ReadonlySet<string>,
 ): Episode[] {
   const horizon = Math.floor((nowMs - FAV_NEW_WINDOW_MS) / 1000);
   const byKey = new Map<string, Episode>();
   for (const e of prev) byKey.set(epKey(e), e);
   for (const e of found) byKey.set(epKey(e), e);
   return [...byKey.values()]
-    .filter((e) => typeof e.datePublished === 'number' && e.datePublished > horizon)
+    .filter((e) =>
+      typeof e.datePublished === 'number' && e.datePublished > horizon &&
+      !(dismissed && dismissed.has(epKey(e))))
     .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0))
     .slice(0, FAV_NEW_CAP);
 }

@@ -479,7 +479,7 @@ export function FavoritesPage() {
           library never gets a "new episodes" heading over "Nothing saved yet."
           It is NOT part of the tab / sort / split state: those describe the
           library, this describes the wire. */}
-      <FavoritesNewEpisodes onOpen={openNewEpisode} />
+      <FavoritesNewEpisodes key={identity?.npub ?? 'guest'} onOpen={openNewEpisode} />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight

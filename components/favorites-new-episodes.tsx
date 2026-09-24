@@ -5,8 +5,8 @@ import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import {
-  advanceMarks, epKey, mergeNewEpisodeRows, NEW_EPISODES_MAX_FEEDS, pruneMarks, pruneNewRows,
-  selectNewEpisodes, sinceForBatch,
+  advanceMarks, epKey, FAV_NEW_CAP, mergeNewEpisodeRows, NEW_EPISODES_MAX_FEEDS, pruneMarks,
+  pruneNewRows, selectNewEpisodes, sinceForBatch,
 } from '@/lib/util';
 import { readCappedJson } from '@/lib/capped-body';
 import { fmtDate, fmtDuration } from '@/lib/format';
@@ -295,6 +295,14 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
 
     running.current = runKey;
     dismissed.current = new Set();
+    const persistedDismissed = new Set(stored.dismissed ?? []);
+    const dismissedSet = () => {
+      if (!dismissed.current.size) return persistedDismissed.size ? persistedDismissed : undefined;
+      if (!persistedDismissed.size) return dismissed.current;
+      const u = new Set(persistedDismissed);
+      for (const k of dismissed.current) u.add(k);
+      return u;
+    };
     const keep = (list: Episode[]) =>
       dismissed.current.size ? list.filter((e) => !dismissed.current.has(epKey(e))) : list;
     setPhase('checking');
@@ -377,6 +385,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
             merged,
             selectNewEpisodes(episodes, stored.marks, guidByFeedId, now),
             now,
+            dismissedSet(),
           );
           // Paint what the pass holds so far, before the next request goes out.
           if (onScreen()) setRows(keep(merged));
@@ -451,9 +460,11 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
       // never as a storage fault.
       //
       // The OUTCOME rides with the stamp, for the throttle's repaint above.
+      const allDismissed = dismissedSet();
       const next = {
         checkedAt: Date.now(), marks, rows: nextRows,
         uncovered: uncoveredCount, failed: !answered,
+        dismissed: allDismissed?.size ? [...allDismissed].slice(0, FAV_NEW_CAP) : undefined,
       };
       const saved = storage.newEpisodeMarks.set(npub, next);
       if (onScreen()) {
@@ -489,7 +500,9 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     // Everything on screen, for a pass that is still running. See `dismissed`.
     for (const e of rows) dismissed.current.add(epKey(e));
     const stored = storage.newEpisodeMarks.get(npub);
-    const next = { ...stored, rows: [] };
+    const keys = rows.map((e) => epKey(e));
+    const prev = stored.dismissed ?? [];
+    const next = { ...stored, rows: [], dismissed: [...prev, ...keys].slice(-FAV_NEW_CAP) };
     setMarksSaved(storage.newEpisodeMarks.set(npub, next));
     setRecord(next);
     setRows([]);
@@ -508,7 +521,12 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     const k = epKey(e);
     dismissed.current.add(k);
     const stored = storage.newEpisodeMarks.get(npub);
-    const next = { ...stored, rows: (stored.rows ?? []).filter((r) => epKey(r) !== k) };
+    const prev = stored.dismissed ?? [];
+    const next = {
+      ...stored,
+      rows: (stored.rows ?? []).filter((r) => epKey(r) !== k),
+      dismissed: [...prev, k].slice(-FAV_NEW_CAP),
+    };
     setMarksSaved(storage.newEpisodeMarks.set(npub, next));
     setRecord(next);
     setRows((list) => list.filter((r) => epKey(r) !== k));

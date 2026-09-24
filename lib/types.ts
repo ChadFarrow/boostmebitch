@@ -548,6 +548,10 @@ export interface NewEpisodeMarks {
    */
   uncovered?: number;
   failed?: boolean;
+  /** Keys of rows the reader explicitly removed (✕ or CLEAR).  Persisted so
+   *  that a truncated batch — whose marks cannot advance — does not re-offer
+   *  them on the next pass. Pruned alongside rows. */
+  dismissed?: string[];
 }
 
 /**

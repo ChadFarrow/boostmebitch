@@ -1846,6 +1846,9 @@ export const storage = {
           rows,
           uncovered: Number.isInteger(parsed.uncovered) && parsed.uncovered > 0 ? parsed.uncovered : 0,
           failed: parsed.failed === true,
+          dismissed: Array.isArray(parsed.dismissed)
+            ? parsed.dismissed.filter((k: unknown) => typeof k === 'string').slice(0, FAV_NEW_CAP)
+            : undefined,
         };
       } catch {
         return { checkedAt: 0, marks: {} };

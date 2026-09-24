@@ -262,6 +262,25 @@ checkMerge('an undated row cannot ride in on the carry',
 }
 
 // ---------------------------------------------------------------------------
+section('mergeNewEpisodeRows: a dismissed row does not come back');
+// ---------------------------------------------------------------------------
+// THE ONE N2 EXISTS FOR. A truncated batch's marks cannot advance, so a
+// dismissed row from that batch reappears on the next pass unless the merge
+// itself filters it. The `dismissed` set is persisted exactly for this.
+checkMerge('a dismissed row is filtered out of the merge',
+  [[ep('kept', 1, NOW_S - 1 * DAY)], [ep('gone', 2, NOW_S - 2 * DAY)], NOW_MS, new Set(['gone'])],
+  ['kept']);
+checkMerge('a dismissed row on the carry is filtered too',
+  [[ep('gone', 1, NOW_S - 1 * DAY), ep('kept', 2, NOW_S - 2 * DAY)], [], NOW_MS, new Set(['gone'])],
+  ['kept']);
+checkMerge('an empty dismissed set changes nothing',
+  [[], [ep('a', 1, NOW_S), ep('b', 2, NOW_S - 1 * DAY)], NOW_MS, new Set()],
+  ['a', 'b'], { alsoNaive: true });
+checkMerge('undefined dismissed changes nothing',
+  [[], [ep('a', 1, NOW_S), ep('b', 2, NOW_S - 1 * DAY)], NOW_MS, undefined],
+  ['a', 'b'], { alsoNaive: true });
+
+// ---------------------------------------------------------------------------
 section('pruneNewRows: unfavoriting a show takes its rows off the list too');
 // ---------------------------------------------------------------------------
 checkPruneRows('a row whose show is no longer favorited is dropped',
