@@ -195,8 +195,8 @@ const ZAPPER = RECEIPT_1.pubkey;                       // b866ce76… Fountain's
 const RECEIPT_ID = RECEIPT_1.id;
 // Fountain writes its OWN zapper key as the zap request's `p` — the payee and
 // the signer are the same pubkey on both receipts, from two senders. That is
-// the shape `useZapRouting` falls back to when NIP-05 names nobody, and this
-// is what pins that the matcher accepts it.
+// the shape a zap takes when NIP-05 names nobody and the provider's
+// nostrPubkey stands in, and this is what pins that the matcher accepts it.
 const PAYEE = tagOf(RECEIPT_1, 'p')[1];
 const REAL_REQUEST = requestOf(RECEIPT_1);
 const REQ_ID = REAL_REQUEST.id;                        // 29e8d034…
@@ -298,8 +298,8 @@ const VECTORS = [
   },
   {
     name: 'MUST STILL WORK: the payee IS the zapper (Fountain writes its own key as `p`)',
-    // The shape `useZapRouting` produces when NIP-05 names nobody and the
-    // provider's nostrPubkey stands in. Real on both receipts.
+    // The shape a zap takes when NIP-05 names nobody and the provider's
+    // nostrPubkey stands in. Real on both receipts.
     args: [receipt(), { ...EXPECT, recipientPubkey: ZAPPER }],
     expect: true,
     alsoNaive: true,
@@ -775,17 +775,34 @@ if (!/zapRequestTags\(/.test(zapSrc) || !/refs:\s*args\.refs/.test(zapSrc)) {
 } else {
   ok('lib/v4v/zap.ts signs the pinned tag list and carries the caller’s refs');
 }
-// 4. Both modals name the show and item for every zap leg. A `sendBoost` call
-//    with `zap:` and no `zapRefs:` produces a receipt that says nothing about
-//    what it paid for, and nothing on screen changes.
-for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal.tsx']) {
+// 4. A boost payment is NEVER a zap — value-block legs and live streams alike.
+//    It is a Podcasting 2.0 payment and carries PC 2.0 metadata: the boostagram
+//    in TLV 7629169 on a keysend, the BoostBox descriptor in the LUD-21 comment
+//    on LNURL. #402 paid qualifying
+//    legs as NIP-57 zaps — a BOLT11 with neither — and a recipient's Helipad
+//    showed "33 sats from Lightning Invoice" and nothing else (2026-09-25). The
+//    note's ⚡ figure is the site-signed summary receipt, which needs no zap
+//    leg. So no `sendBoost` caller may hand in a zap table, and the payment
+//    engine must not reach the zap module at all.
+for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal.tsx', 'lib/v4v/streaming.ts']) {
   const src = readFileSync(f, 'utf8');
-  const zaps = (src.match(/^\s*zap: zapLegs,$/gm) ?? []).length;
-  const refs = (src.match(/^\s*zapRefs: /gm) ?? []).length;
-  if (zaps === 0 || refs < zaps) {
-    fail(`${f}: ${zaps} sendBoost call(s) pass \`zap:\` but only ${refs} pass \`zapRefs:\`.`);
+  if (/^\s*zap(Refs)?\s*:/m.test(src)) {
+    fail(`${f}: a sendBoost call passes \`zap:\`/\`zapRefs:\` — value-block legs must pay by keysend or LNURL.`);
+  } else if (/from\s+['"]@\/lib\/v4v\/zap['"]|import\(\s*['"]@\/lib\/v4v\/zap['"]/.test(src)) {
+    // The live-stream boost was a zap to the host until 2026-09-25; it pays
+    // through sendBoost now. A boost surface importing the zap module is how
+    // that path would come back.
+    fail(`${f}: imports @/lib/v4v/zap — no boost payment may be a zap, live streams included.`);
   } else {
-    ok(`${f}: every zap-routed sendBoost call names its show and item`);
+    ok(`${f}: no boost payment is routed as a zap`);
+  }
+}
+{
+  const engine = readFileSync('lib/v4v/boost.ts', 'utf8');
+  if (/import\(\s*['"]\.\/zap['"]\s*\)|from\s+['"]\.\/zap['"]|sendZap\s*\(/.test(engine)) {
+    fail('lib/v4v/boost.ts reaches the zap module — payOne must not pay a value-block leg as a zap.');
+  } else {
+    ok('lib/v4v/boost.ts never reaches the zap module');
   }
 }
 
