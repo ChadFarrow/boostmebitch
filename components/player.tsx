@@ -1304,16 +1304,16 @@ export function Player() {
         </InPortal>
       )}
 
-      {/* `role="button"` needs `tabIndex` and a key handler to be one. Without
-          them this announces itself as a button to a screen reader, is never
-          reachable by Tab, and does nothing when activated — the control that
-          opens the fullscreen player was pointer-only. A native <button> is not
-          available here: this element wraps the transport controls, the seek
-          input and the BOOST button, and a button may not contain them.
-
-          Space is `preventDefault`ed because the browser would otherwise scroll
-          the page on keydown. The inner controls all `stopPropagation`, so a
-          key pressed while focus is on one of them never reaches this. */}
+      {/* The bar is NOT a `role="button"`, and it used to be. ARIA makes a
+          button's children presentational and its `aria-label` the name of the
+          whole subtree, so a screen reader could present the bar as ONE button
+          named "Open fullscreen player" — with the seek input, the transport and
+          BOOST inside it unreachable. The keyboard/screen-reader way in is the
+          real <button> on the episode title below, a SIBLING of those controls
+          (docs/ui.md: "a real <button> with the other control as its SIBLING,
+          never a role="button" on the row"). The bar keeps its `onClick` as a
+          pointer-only hit area, like <ModalShell>'s backdrop; the inner controls
+          all `stopPropagation`. */}
       {/* `bottom` is the tab bar's full height (`--dock-b`, globals.css), not
           0, and there is no `pb-[env(safe-area-inset-bottom)]` here any more:
           <TabBar> is the one element that pays the inset, and this sits on top
@@ -1330,16 +1330,6 @@ export function Player() {
         className="fixed left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 cursor-pointer"
         style={{ bottom: 'var(--dock-b)', transform: 'translateY(var(--kb-inset, 0px))' }}
         onClick={() => setPlayerExpanded(true)}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return;
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            setPlayerExpanded(true);
-          }
-        }}
-        role="button"
-        tabIndex={0}
-        aria-label="Open fullscreen player"
       >
         <audio
           ref={audio}
@@ -1467,7 +1457,16 @@ export function Player() {
             />
           ) : null}
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-display leading-tight truncate">{episode.title}</div>
+            {/* `-my-1 py-1` grows the target past 24px (WCAG 2.5.8) without
+                moving the row: the margin gives back what the padding takes. */}
+            <button
+              type="button"
+              className="block w-full -my-1 py-1 text-left text-sm font-display leading-tight truncate"
+              aria-label={`Open fullscreen player: ${episode.title}`}
+              onClick={(e) => { e.stopPropagation(); setPlayerExpanded(true); }}
+            >
+              {episode.title}
+            </button>
             {/* The streaming indicator rides on the show line, NOT the controls
                 cluster — that side is already tight on mobile. It's shrink-0
                 (~40px) so the already-truncating title just truncates slightly
