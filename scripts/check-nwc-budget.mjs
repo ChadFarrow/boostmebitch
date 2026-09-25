@@ -132,6 +132,15 @@ checkParse(
   { alsoNaive: true },
 );
 
+// The REMAINDER floors from the msat difference, not from the two floored
+// fields: 10,500 − 600 msat is 9,900 msat, which is 9 sats. Subtracting the
+// floored sats (10 − 0) claims a tenth sat the budget will refuse.
+checkParse(
+  'the remainder floors the msat difference, it does not subtract floored sats',
+  { used_budget: 600, total_budget: 10_500 },
+  { ...budget(0, 10), remainingSats: 9 },
+);
+
 // A budget the wallet has just shrunk. `used > total` is an ordinary state and
 // means zero remaining — rejecting it would restore the full balance to the
 // screen at the moment the connection can spend nothing.

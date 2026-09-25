@@ -1796,7 +1796,10 @@ export function splitSats(total: number, recipients: ValueRecipient[]): number[]
   // Clamp weights at 0: a malformed feed with a negative `split` would
   // otherwise poison totalWeight (even flip it negative) and produce nonsensical
   // — including negative — allocations.
-  const w = (r: ValueRecipient) => Math.max(0, r.split || 0);
+  // Non-finite too: `Number("1e400")` is Infinity, which made totalWeight
+  // Infinity and that recipient's share NaN — and `payOne`'s `sats <= 0` is
+  // false for NaN, so a NaN leg was attempted rather than skipped.
+  const w = (r: ValueRecipient) => (Number.isFinite(r.split) && r.split > 0 ? r.split : 0);
   const totalWeight = recipients.reduce((s, r) => s + w(r), 0);
   if (totalWeight === 0) return recipients.map(() => 0);
   const exact = recipients.map((r) => (total * w(r)) / totalWeight);
@@ -3377,7 +3380,10 @@ export function parseNwcBudget(res: unknown): NwcBudget | null {
   return {
     usedSats,
     totalSats,
-    remainingSats: Math.max(0, totalSats - usedSats),
+    // From the msat difference, NOT `totalSats - usedSats`: flooring the
+    // subtrahend separately overstates by a sat (10500 − 600 msat is 9 sats,
+    // not 10 − 0).
+    remainingSats: Math.max(0, Math.floor((total - used) / 1000)),
     renewsAt: Number.isFinite(renewsAt) && renewsAt > 0 ? renewsAt : undefined,
     renewalPeriod: typeof r.renewal_period === 'string' ? r.renewal_period : undefined,
   };
