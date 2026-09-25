@@ -353,9 +353,15 @@ function writeThrough(key: string, value: string): boolean {
 
 function safeGet(key: string): string | null {
   if (!isBrowser()) return null;
-  let v: string | null = null;
-  try { v = localStorage.getItem(key); } catch { /* blocked — fall through */ }
-  return v ?? memoryMirror.get(key) ?? null;
+  // Mirror FIRST. It holds a value only when the write to disk failed, and a
+  // quota failure does not delete the key, so disk still has the OLD value —
+  // reading disk first let that stale value win and froze the control the
+  // mirror exists to keep working. `safeSet` clears the mirror on every write
+  // that lands and `safeRemove` clears it first, so it can never shadow newer
+  // data on disk.
+  const held = memoryMirror.get(key);
+  if (held !== undefined) return held;
+  try { return localStorage.getItem(key); } catch { return null; }
 }
 
 /**
