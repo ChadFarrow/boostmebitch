@@ -20,7 +20,7 @@ import {
 } from './pi';
 import { resolveItemValueFromRss } from './musicl-resolver';
 import { askIndex } from './nostr-index-server';
-import { hasValueRecipients, probeThenBatch } from './util';
+import { FEED_FANOUT, hasValueRecipients, mapLimit, probeThenBatch } from './util';
 
 /** Hard cap on identifiers per request. An attacker-chosen list length must
  *  never turn one request into an unbounded PI fan-out. The per-request
@@ -240,16 +240,21 @@ export async function fillTrackValues(episodes: Episode[]): Promise<FilledTrackV
     );
   }
 
-  await Promise.allSettled(searched.map(async (url) => {
+  // `mapLimit`, not a bare `Promise.allSettled`: MAX_TRACK_VALUE_FEEDS caps the
+  // COUNT, and a count is not a fan-out bound — 16 at once is 16 × 8 MB of feed
+  // text in memory for one request (CLAUDE.md, "capped walks NEST").
+  await mapLimit(searched, FEED_FANOUT, async (url) => {
     // Sequential WITHIN one feed on purpose: the first call fetches the RSS and
     // the rest are cache hits. Firing them together would open one outbound
     // request per track against the same URL, which is what the cache exists to
     // prevent.
-    for (const p of byFeedUrl.get(url)!) {
-      const value = await resolveItemValueFromRss(url, p.itemGuid);
-      if (hasValueRecipients(value)) out[p.index] = { ...out[p.index], value };
-    }
-  }));
+    try {
+      for (const p of byFeedUrl.get(url)!) {
+        const value = await resolveItemValueFromRss(url, p.itemGuid);
+        if (hasValueRecipients(value)) out[p.index] = { ...out[p.index], value };
+      }
+    } catch { /* settled semantics: one feed's failure must not sink the rest */ }
+  });
 
   return { episodes: out, unasked, capped };
 }
