@@ -765,15 +765,28 @@ if (!/trackRelays\s*=\s*true/.test(waitSrc) || !/receiptRelayHints\(/.test(waitS
   ok('the receipt waiter records the delivering relay and hints with it');
 }
 
-// 3. The tag list `sendZap` signs is the pinned builder, with the refs the
-//    caller handed in — not a hand-written array beside it. And no `client`
-//    tag reaches the 9734 by any other route.
-if (!/zapRequestTags\(/.test(zapSrc) || !/refs:\s*args\.refs/.test(zapSrc)) {
-  fail('lib/v4v/zap.ts no longer builds the kind:9734 tags through zapRequestTags with args.refs.');
+// 3. The tag list `sendZap` signs is the pinned builder — not a hand-written
+//    array beside it. And no `client` tag reaches the 9734 by any other route.
+if (!/zapRequestTags\(/.test(zapSrc)) {
+  fail('lib/v4v/zap.ts no longer builds the kind:9734 tags through zapRequestTags.');
 } else if (/clientTag\(/.test(zapSrc)) {
   fail('lib/v4v/zap.ts calls clientTag — the recipient’s LNURL server reads the 9734 before any relay.');
 } else {
-  ok('lib/v4v/zap.ts signs the pinned tag list and carries the caller’s refs');
+  ok('lib/v4v/zap.ts signs the pinned tag list');
+}
+// 3b. The summary receipt is the one 9734 that names a show and item, so it
+//     must build its tags through the same builder WITH the caller's refs —
+//     both on the self-signed path and in the spec the site path hands the
+//     oracle. Without them the receipt parses as no show and no episode.
+{
+  const summarySrc = readFileSync('lib/nostr/zap-summary-receipt.ts', 'utf8');
+  if (!/zapRequestTags\(\{[^}]*refs:\s*args\.refs/.test(summarySrc)) {
+    fail('lib/nostr/zap-summary-receipt.ts no longer builds its 9734 through zapRequestTags with args.refs.');
+  } else if (!/spec:\s*\{[^}]*refs:\s*args\.refs/.test(summarySrc)) {
+    fail('lib/nostr/zap-summary-receipt.ts no longer hands args.refs to the site-signed spec.');
+  } else {
+    ok('the summary receipt names the show and item on both signing paths');
+  }
 }
 // 4. A boost payment is NEVER a zap — value-block legs and live streams alike.
 //    It is a Podcasting 2.0 payment and carries PC 2.0 metadata: the boostagram

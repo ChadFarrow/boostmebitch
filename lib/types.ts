@@ -1,9 +1,5 @@
 // Podcasting 2.0 value block types — mirrors the spec, not Podcast Index's exact JSON shape
 
-// Type-only, so nothing here gains a runtime import: this file stays the pure-type
-// leaf every check script reaches through lib/util.ts.
-import type { PendingZapReceipt, QuotedZapReceipt } from './nostr/zap-receipt-wait';
-
 export interface ValueRecipient {
   name?: string;
   type: 'node' | 'lnaddress' | string;
@@ -388,20 +384,6 @@ export interface BoostResult {
   // public landing page; the id is the last path segment.
   boostboxUrl?: string;
   boostboxId?: string;
-  /**
-   * Set on a leg paid as a real NIP-57 zap: how to recognise the kind:9735 the
-   * recipient's LNURL server is about to publish. The receipt does not exist
-   * when the leg settles, so this is a promise of one, not a result.
-   */
-  zapPending?: PendingZapReceipt;
-  /**
-   * The receipt, once it arrived and passed `zapReceiptAccepts`. The boost note
-   * quotes these, which is what makes Fountain render the sat amount — it reads
-   * the quoted receipt, not our `amount` tag.
-   *
-   * Absent means no receipt landed inside the wait, NEVER that the leg failed.
-   */
-  zapReceipt?: QuotedZapReceipt;
 }
 
 /**
