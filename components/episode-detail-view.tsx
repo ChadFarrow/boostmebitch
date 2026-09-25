@@ -102,7 +102,12 @@ export function EpisodeDetailView() {
   const togglePlay = useApp((s) => s.togglePlay);
   const current = useApp((s) => s.current);
   const isPlaying = useApp((s) => s.isPlaying);
-  const positionSec = useApp((s) => s.positionSec);
+  // Read ONLY while this page's episode is the one playing — every use below is
+  // gated on `isThisPlaying`, so an ungated selector re-rendered the whole view
+  // (show notes, contents, transcript) once a second for audio it never shows.
+  const positionSec = useApp((s) =>
+    s.current && s.selectedEpisode && s.current.episode.id === s.selectedEpisode.id ? s.positionSec : 0,
+  );
   const openDiscussion = useApp((s) => s.openDiscussion);
 
   const [boostFor, setBoostFor] = useState<Episode | null>(null);
