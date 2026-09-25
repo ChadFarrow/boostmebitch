@@ -36,7 +36,6 @@ export async function proxyFeedDocument(
   return withErrorHandling(async () => {
     const res = await safeFetch(url, {
       headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
-      next: { revalidate: 300 },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) {

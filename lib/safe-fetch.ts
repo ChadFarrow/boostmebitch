@@ -187,13 +187,23 @@ const MAX_REDIRECTS = 5;
  * resolution guard. The second one has to run per hop for the same reason the
  * first does — a public host redirecting to `http://127.0.0.1.nip.io/` is the
  * same bypass as one redirecting to `http://127.0.0.1/`, just spelled in DNS.
+ *
+ * **Never through Next's data cache.** Any `next` option is dropped and
+ * `cache: 'no-store'` forced. On a cacheable fetch Next tees the response and
+ * reads one copy with `arrayBuffer()` to store it — the WHOLE body, outside
+ * every `readCappedText` cap — and a stale entry's background refetch runs with
+ * no abort signal at all. The URLs here are attacker-chosen, so that turned the
+ * 8 MB cap into "whatever the server can hold". The in-memory bounded caches
+ * and the CDN `s-maxage` still cache these responses.
  */
 export async function safeFetch(rawUrl: string, init?: RequestInit): Promise<Response> {
+  const base: RequestInit & { next?: unknown } = { ...init };
+  delete base.next;
   let url = rawUrl;
   for (let hop = 0; ; hop++) {
     assertSafeFetchUrl(url);
     await assertResolvedHostSafe(new URL(url).hostname.toLowerCase().replace(/\.+$/, ''));
-    const res = await fetch(url, { ...init, redirect: 'manual' });
+    const res = await fetch(url, { ...base, cache: 'no-store', redirect: 'manual' });
     if (res.status < 300 || res.status >= 400) return res;
     const loc = res.headers.get('location');
     if (!loc) return res; // 3xx without a target — hand it back as-is

@@ -78,8 +78,11 @@ export { PiHttpError } from './pi-error';
 async function pi<T>(path: string, maxBytes?: number): Promise<T> {
   const res = await fetch(BASE + path, {
     headers: authHeaders(),
-    // Podcast Index data is fairly cacheable; 60s is sane for search.
-    next: { revalidate: 60 },
+    // NOT Next's data cache. Its key includes every request header, and
+    // `authHeaders()` changes `X-Auth-Date` and `Authorization` each second, so
+    // a `revalidate` here only ever WROTE entries nobody would read again.
+    // Caching happens at the route (`Cache-Control`) and in the client.
+    cache: 'no-store',
     // See PI_TIMEOUT_MS. This caps how LONG the call runs; `readCappedText`
     // below caps how MANY BYTES it returns. Neither substitutes for the other.
     signal: AbortSignal.timeout(PI_TIMEOUT_MS),
@@ -664,9 +667,8 @@ export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> 
  * these rows a live item rather than an ordinary episode, so they are added
  * here — in the one place that parses this payload.
  *
- * Shares the `pi()` helper's `next: { revalidate: 60 }` entry, so a show page
- * and the live page hitting this within a minute of each other cost one
- * upstream call between them.
+ * Each call is one upstream request: `pi()` does not use Next's data cache
+ * (see the note there). The routes' `Cache-Control` is what collapses repeats.
  */
 export async function getGlobalLiveItems(): Promise<Episode[]> {
   return (await getGlobalLiveItemsDetailed()).items;
@@ -765,8 +767,8 @@ export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
 // feed across page loads.
 //
 // Two-tier freshness:
-//   - within FRESH window: serve cached XML without refetching (matches the
-//     `next: { revalidate: 60 }` below, so this and Next's data cache align).
+//   - within FRESH window: serve cached XML without refetching. This cache is
+//     the only server-side copy: `safeFetch` never uses Next's data cache.
 //   - past FRESH but within STALE: refetch; if the refetch FAILS, serve the
 //     last-known-good copy rather than blanking the feed's live items /
 //     enrichment on a transient publisher outage (stale-while-error).
@@ -837,7 +839,6 @@ async function fetchFeedXml(
   try {
     const res = await safeFetch(rssUrl, {
       headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
-      next: { revalidate: Math.max(1, Math.floor(freshMs / 1000)) },
       signal: AbortSignal.timeout(8000),
     });
     // Capped: `rssUrl` is feed-supplied and the result is RETAINED below, so an
