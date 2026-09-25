@@ -47,6 +47,24 @@ import {
   nip46RequestBytes,
   NIP46_MAX_REQUEST_BYTES,
 } from './nip46-errors';
+import { httpUrl } from '../util';
+
+// A NIP-46 `auth_url` is the raw `error` string of a kind:24133 reply, so the
+// REMOTE SIGNER chooses it — and the sign-in modal renders it as the "Approve
+// in signer" href. React does not block a `javascript:` href, and this origin
+// holds the NWC credential and any local nsec, so a hostile bunker (a pasted
+// `bunker://`, or a NIP-05 whose nostr.json names one) could run script here.
+// Guard it once, at the parse boundary, so every surface that shows it inherits
+// the check (CLAUDE.md: "a feed-supplied URL rendered as an href goes through
+// `httpUrl` at the PARSE boundary").
+function safeAuthUrl(cb?: (url: string) => void): ((url: string) => void) | undefined {
+  if (!cb) return undefined;
+  return (url: string) => {
+    const safe = httpUrl(url);
+    if (safe) cb(safe);
+    else console.warn('[bunker] refused a non-http(s) auth_url from the remote signer');
+  };
+}
 
 // Relays for the GENERATE flow's nostrconnect:// URI — TWO, and the count is a
 // decision rather than what was left over.
@@ -1181,7 +1199,7 @@ export async function connectBunkerFromUri(
   // needed, which presents as the reconnect simply not working.
   async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string; pool: SimplePool }> {
     const pool = newPool();
-    const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl, pool });
+    const s = BunkerSigner.fromBunker(sk, bp, { onauth: safeAuthUrl(onAuthUrl), pool });
     try {
       // `connect` GOES THROUGH THE APPROVAL WAIT TOO, and leaving it out is the
       // same omission this file has now made twice — see the `get_public_key`
@@ -1456,7 +1474,7 @@ export function startNostrConnect(
       signer = await BunkerSigner.fromURI(
         clientSk,
         memoUri,
-        { onauth: onAuthUrl, pool },
+        { onauth: safeAuthUrl(onAuthUrl), pool },
         NOSTRCONNECT_TIMEOUT_MS,
       );
     } catch (e) {
