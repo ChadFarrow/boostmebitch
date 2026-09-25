@@ -1796,10 +1796,16 @@ export function splitSats(total: number, recipients: ValueRecipient[]): number[]
   // Clamp weights at 0: a malformed feed with a negative `split` would
   // otherwise poison totalWeight (even flip it negative) and produce nonsensical
   // — including negative — allocations.
+  //
   // Non-finite too: `Number("1e400")` is Infinity, which made totalWeight
   // Infinity and that recipient's share NaN — and `payOne`'s `sats <= 0` is
-  // false for NaN, so a NaN leg was attempted rather than skipped.
-  const w = (r: ValueRecipient) => (Number.isFinite(r.split) && r.split > 0 ? r.split : 0);
+  // false for NaN, so a NaN leg was attempted rather than skipped. `Number()`
+  // keeps the coercion the old `Math.max` did, because a digit-STRING weight
+  // reaches here from stored data and must keep paying (`check:playlistdb`).
+  const w = (r: ValueRecipient) => {
+    const n = Math.max(0, Number(r.split) || 0);
+    return Number.isFinite(n) ? n : 0;
+  };
   const totalWeight = recipients.reduce((s, r) => s + w(r), 0);
   if (totalWeight === 0) return recipients.map(() => 0);
   const exact = recipients.map((r) => (total * w(r)) / totalWeight);
