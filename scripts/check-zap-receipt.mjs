@@ -775,7 +775,7 @@ if (!/zapRequestTags\(/.test(zapSrc) || !/refs:\s*args\.refs/.test(zapSrc)) {
 } else {
   ok('lib/v4v/zap.ts signs the pinned tag list and carries the caller’s refs');
 }
-// 4. A value-block leg is NEVER a zap. It is a Podcasting 2.0 payment and
+// 4. A boost payment is NEVER a zap — value-block legs and live streams alike. It is a Podcasting 2.0 payment and
 //    carries PC 2.0 metadata: the boostagram in TLV 7629169 on a keysend, the
 //    BoostBox descriptor in the LUD-21 comment on LNURL. #402 paid qualifying
 //    legs as NIP-57 zaps — a BOLT11 with neither — and a recipient's Helipad
@@ -787,8 +787,13 @@ for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal
   const src = readFileSync(f, 'utf8');
   if (/^\s*zap(Refs)?\s*:/m.test(src)) {
     fail(`${f}: a sendBoost call passes \`zap:\`/\`zapRefs:\` — value-block legs must pay by keysend or LNURL.`);
+  } else if (/from\s+['"]@\/lib\/v4v\/zap['"]|import\(\s*['"]@\/lib\/v4v\/zap['"]/.test(src)) {
+    // The live-stream boost was a zap to the host until 2026-09-25; it pays
+    // through sendBoost now. A boost surface importing the zap module is how
+    // that path would come back.
+    fail(`${f}: imports @/lib/v4v/zap — no boost payment may be a zap, live streams included.`);
   } else {
-    ok(`${f}: no sendBoost call routes a leg as a zap`);
+    ok(`${f}: no boost payment is routed as a zap`);
   }
 }
 {

@@ -1322,7 +1322,7 @@ It subscribes to **kind:[1311, 9735]** — chat messages and zap receipts tagged
 
 **Text and mentions restore together after a failed send, and that is a notification rule.** `<LiveChat>`'s composer clears optimistically and puts the message back when the publish throws, but only over an untouched box — and it restores `mentions` in the same branch or not at all. A mention whose `@name` is absent from the body is APPENDED as a trailing `nostr:npub…` and still gets its `p` tag, so carrying the old picks onto a message the sender has since retyped would ring the phones of people that message never names. The live draft is mirrored in a ref because the `draft` inside the catch is the value from the render the send began in — always the text just cleared — and a functional `setDraft` can see the current value but cannot decide for `mentions` at the same time.
 
-**Boosting a live stream goes out as a real NIP-57 zap** so the receipt shows up in Fountain / tunestr / zap.stream and in BMB's chat — see Boost flow invariant 0 in [`../CLAUDE.md`](../CLAUDE.md) for the qualifying conditions and the fallback. Interop is the shared NIP-53 standard, not per-platform code; the only variable is relay coverage.
+**Boosting a live stream is an ordinary boost payment, never a zap** (keysend or LNURL with Podcasting 2.0 metadata, since 2026-09-25), plus a kind:1311 chat line when the user shares under their own key — see Boost flow invariant 0 in [`../CLAUDE.md`](../CLAUDE.md). Interop is the shared NIP-53 standard, not per-platform code; the only variable is relay coverage.
 
 
 ## Episode discussion (`podcast:socialInteract`, Nostr)

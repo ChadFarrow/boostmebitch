@@ -20,7 +20,6 @@ import { pickRail, type Rail } from './boost';
 import { storeBoostMetadata } from './boostbox';
 import { bolt11AmountMsat } from './bolt11';
 import { lnurlFetch } from './lnurl-fetch';
-import { createBoundedCache } from '@/lib/bounded-cache';
 import { zapRequestTags, type Nip73Refs } from '@/lib/nostr/zap-request';
 import { NwcIndeterminateError } from './nwc-errors';
 import { activeNostr } from '@/lib/nostr/signer';
@@ -119,8 +118,7 @@ function lnAddressToUrl(addr: string): string {
 async function fetchPayMetadata(url: string): Promise<LnurlPayMetadata> {
   // Through `lnurlFetch`, never a bare fetch — the same reason `lnaddr.ts` does.
   // A provider that sends no CORS header on this document is unreadable from
-  // the page, and here that also decides `lnaddrZapSupport`, i.e. whether a
-  // boost leg takes the zap path at all.
+  // the page, and a zap needs this document before it can ask for an invoice.
   const r = await lnurlFetch(url);
   if (!r.ok) throw new Error(`LNURL lookup failed (${r.status})`);
   let data: LnurlPayMetadata & { tag?: string };
@@ -432,71 +430,4 @@ async function prepareZap(
       relays: receiptRelays,
     },
   };
-}
-
-export interface ZapSupport {
-  nostrPubkey: string;
-  meta: LnurlPayMetadata;
-}
-
-/**
- * Cached, because this is asked per RECIPIENT and the recipients repeat.
- *
- * A boost modal asks for every lnaddress in the value block the moment it
- * opens, and a boost-all walks twenty tracks that routinely share one artist
- * address — so the uncached version is a burst of payRequest fetches at a
- * third-party host on every open. Short by the standards of
- * lib/v4v/keysend-lookup.ts's six hours: the document carries `callback`,
- * `minSendable` and `commentAllowed`, which the money path then uses, so this
- * is sized to cover the open-then-send window and little more.
- */
-const ZAP_SUPPORT_TTL_MS = 30 * 60 * 1000;
-/** A provider that has just turned zaps on should not wait out the hit TTL. */
-const ZAP_SUPPORT_MISS_TTL_MS = 5 * 60 * 1000;
-/**
- * Byte bound, because an entry cap is not a memory bound (lib/bounded-cache.ts).
- * The value is a whole payRequest document, keyed by a feed-supplied address,
- * and LUD-06 `metadata` may legitimately embed a base64 image: `lnurlFetch`
- * reads up to 256 KB per document, so 200 entries with no byte ceiling is
- * ~51 MB retained for half an hour, on a key space a playlist chooses.
- */
-const ZAP_SUPPORT_MAX_BYTES = 2 * 1024 * 1024;
-const zapSupportCache = createBoundedCache<ZapSupport | null>({
-  maxAgeMs: ZAP_SUPPORT_TTL_MS,
-  maxEntries: 200,
-  maxBytes: ZAP_SUPPORT_MAX_BYTES,
-  // The document's one variable-size field, plus a flat allowance for the rest.
-  sizeOf: (v) => (v?.meta.metadata?.length ?? 0) + 256,
-});
-
-/**
- * Is this address zappable, and by whose key?
- *
- * Answered BEFORE any payment, so a leg is never sent down the zap path and then
- * re-paid when it turns out the provider cannot publish a receipt.
- *
- * It returns the `nostrPubkey` and the whole document rather than a boolean, and
- * both halves earn their place: the pubkey is what the receipt is checked
- * against later, and the document is what stops `sendZap` fetching the same URL
- * a second time on the money path.
- */
-export async function lnaddrZapSupport(
-  lud16: string,
-): Promise<ZapSupport | null> {
-  const key = lud16.trim().toLowerCase();
-  const now = Date.now();
-  const hit = zapSupportCache.get(key, now);
-  if (hit && !(hit.value === null && hit.ageMs >= ZAP_SUPPORT_MISS_TTL_MS)) return hit.value;
-
-  let answer: ZapSupport | null = null;
-  try {
-    const meta = await fetchPayMetadata(lnAddressToUrl(lud16));
-    if (meta.allowsNostr && meta.nostrPubkey) {
-      answer = { nostrPubkey: meta.nostrPubkey, meta };
-    }
-  } catch {
-    answer = null;
-  }
-  zapSupportCache.set(key, answer, now);
-  return answer;
 }

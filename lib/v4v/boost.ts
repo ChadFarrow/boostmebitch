@@ -475,37 +475,6 @@ export function paidAny(results: BoostResult[]): boolean {
   return results.some((r) => r.ok && r.sats > 0);
 }
 
-/**
- * Fill in each zap leg's receipt, once the provider has published it.
- *
- * Call this between `sendBoost` and the note: the receipts are what the note
- * quotes, and they do not exist at the moment the invoices settle. It waits
- * once for the whole boost, never rejects, and leaves a leg untouched when no
- * receipt arrives — a missing receipt costs the quote, never the payment.
- *
- * Here rather than in the modals because both of them need it and neither
- * should reach past `lib/v4v/boost.ts` to get it; the relay machinery is loaded
- * on demand for the same reason the NWC engine is.
- */
-export async function collectZapReceipts(
-  results: BoostResult[],
-): Promise<BoostResult[]> {
-  const pending = results.flatMap((r) => (r.zapPending ? [r.zapPending] : []));
-  if (pending.length === 0) return results;
-  try {
-    const { awaitZapReceipts } = await import('@/lib/nostr/zap-receipt-wait');
-    const found = await awaitZapReceipts(pending);
-    return results.map((r) => {
-      const receipt = r.zapPending ? found.get(r.zapPending.requestId) : undefined;
-      return receipt ? { ...r, zapReceipt: receipt } : r;
-    });
-  } catch {
-    // The note still publishes, just without the quote. Nothing here is worth
-    // failing a boost that has already paid.
-    return results;
-  }
-}
-
 export async function sendBoost(args: {
   value: ValueBlock;
   totalSats: number;

@@ -16,9 +16,9 @@ interface PublishArgs {
   relays?: string[];
   /**
    * The ONE receipt this note quotes: the site-signed summary for the sats the
-   * boost actually paid (`mintSummaryReceipt`), or on a live-stream zap the
-   * host provider's own receipt for the whole. Per-leg receipts are never
-   * quoted — Fountain renders the FIRST quote and nothing else, and a leg's
+   * boost actually paid (`mintSummaryReceipt`). No boost payment is a zap, so
+   * there is no provider receipt to quote instead, and a leg's would never be
+   * quoted anyway — Fountain renders the FIRST quote and nothing else, and a leg's
    * figure under a note stating the total reads as a contradiction.
    */
   summaryReceipt?: QuotedZapReceipt;
@@ -442,8 +442,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // The `q` tag half of the quote; `withZapReceipts` below writes the body
   // half, which is the one Fountain's badge reads. Same shape
   // `publishQuoteRepost` writes (./interactions.ts): id, relay hint, author —
-  // the author is the site for a summary receipt, the host's LNURL server for a
-  // live-stream zap. `parseQuoteRefs` (./discover.ts) reads either form, so the
+  // the author is the site, which signs the summary receipt. `parseQuoteRefs` (./discover.ts) reads either form, so the
   // explorer's wrapper-vs-receipt dedupe holds.
   //
   // `amount` above stays `value_msat_total`, the whole boost as INTENDED; the

@@ -4,9 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, pickRail, paidAny, collectZapReceipts, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
-import { sendZap, lnaddrZapSupport } from '@/lib/v4v/zap';
+import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
 import { getErrorMessage, payableLeg, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId } from '@/lib/util';
@@ -286,19 +285,14 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // above the minimum, so every other gate reads as ready.
   const nothingPayable = !primaryLeg.payable && !showsHostLeg;
 
-  // MAY a Nostr LIVE-STREAM boost go out as a zap (and post its kind:1311 chat
-  // line)? Value-block legs never do — they pay by keysend or LNURL with PC 2.0
-  // metadata; see `payOne`. Two separate questions, and testing only the first
-  // is the privacy inversion `streamingMayPublish()` exists to name.
-  //
-  // A zap request is signed by the user's key, and the receipt the provider
-  // publishes carries it — so the zap path attributes the payment on public
-  // relays, permanently. "Anonymous" (shareAs === 'site') must therefore not
-  // take it. Neither may "Don't post": that writes `shareNostr = false` and
-  // leaves `shareAs` alone, so a gate written as `!anonymous` would publish a
-  // signed, timestamped record naming the user who had just chosen to publish
-  // less. `activeNostr()` is checked at the send site — it is not reactive.
-  const mayZap = !!identity && shareNostr && shareAs === 'self';
+  // MAY this boost publish something signed by the USER's key outside the
+  // note — today, a live stream's kind:1311 chat line? Two separate questions,
+  // and testing only the first is the privacy inversion `streamingMayPublish()`
+  // exists to name. "Anonymous" (shareAs === 'site') must not. Neither may
+  // "Don't post": that writes `shareNostr = false` and leaves `shareAs` alone,
+  // so a gate written as `!anonymous` would publish a signed, timestamped record
+  // naming the user who had just chosen to publish less.
+  const maySignAsSelf = !!identity && shareNostr && shareAs === 'self';
 
 
   // A window covers this second but we don't yet know whose block it points at.
@@ -449,30 +443,15 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setResults(new Array(primaryLeg.recipients.length));
     setHostResults(showsHostLeg ? new Array(hostLeg!.recipients.length) : []);
 
-    // ── Live-stream zap path ────────────────────────────────────────────────
-    // Boosting a Nostr live stream while signed in, when the host's Lightning
-    // address supports NIP-57 zaps, sends a REAL zap: the recipient's LN service
-    // publishes a kind:9735 receipt tagged to the stream, so the boost shows up
-    // *as a boost* in Fountain / tunestr / zap.stream (and BMB). Pre-check zap
-    // support BEFORE paying so we never double-pay; on a real zap we skip the
-    // kind:1311 text line (the receipt already renders as a boost).
+    // A Nostr live stream pays like every other boost: sendBoost below, by
+    // keysend (TLV 7629169) or LNURL (BoostBox descriptor). It was a NIP-57 zap
+    // to the host whenever the host's address supported one; payments do not
+    // zap any more (docs/money-boosts.md, "The zap rail").
     const liveStreamId = isLiveStreamId(episode?.guid) ? episode!.guid! : null;
-    // `primaryValue`, the block the FEED wrote — never `value`, which is trimmed
-    // to the payees this leg can reach. The question here is "does this block
-    // name a single lnaddress", and asking it of the trimmed list lets a
-    // two-recipient live block whose second payee is listed at 0% measure as
-    // one: the boost would silently leave sendBoost for sendZap, a different
-    // code path with a different comment, receipt and StoredBoost shape.
-    const hostLnaddr =
-      primaryValue.recipients.length === 1 && primaryValue.recipients[0].type === 'lnaddress'
-        ? primaryValue.recipients[0].address
-        : null;
     const hasSigner = !!activeNostr();
 
-    // Which show and item each zap request names, as NIP-73 `k`/`i` pairs the
-    // recipient's server mirrors onto the receipt — see lib/nostr/zap-request.ts.
-    // The show and item the live-stream zap and the summary receipt name. A
-    // live stream's `episode.guid` is a Nostr stream id, not an item guid, so it
+    // The show and item the summary receipt names, as NIP-73 `k`/`i` pairs —
+    // see lib/nostr/zap-request.ts. A live stream's `episode.guid` is a Nostr stream id, not an item guid, so it
     // names only the show there. The URL hints are this site's restorable deep
     // links.
     const showGuid = episode?.podcastGuid ?? podcast.podcastGuid;
@@ -483,75 +462,6 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       podcastUrl: showShareUrl(showGuid) ?? undefined,
       episodeUrl: showShareUrl(showGuid, itemGuid) ?? undefined,
     };
-    // `mayZap` is new here and it is a FIX, not a tightening. This branch used
-    // to ask only whether the user was signed in with a signer, so an Anonymous
-    // live-stream boost still signed a kind:9734 with their key — and the
-    // receipt the host's LN service publishes carries that pubkey as the payer,
-    // on public relays, for good. Anonymity applies to the payment, not just to
-    // the note. A boost that fails this falls through to the ordinary
-    // boostagram path below, which is what an anonymous one always wanted.
-    const liveZap =
-      liveStreamId && identity && hasSigner && mayZap && hostLnaddr
-        ? await lnaddrZapSupport(hostLnaddr)
-        : null;
-    if (liveZap && liveStreamId && hostLnaddr) {
-      let sent;
-      try {
-        sent = await sendZap({
-          recipientPubkey: parseStreamId(liveStreamId)!.pubkey,
-          recipientLud16: hostLnaddr,
-          amountSats: sats,
-          comment: msg || undefined,
-          aTag: streamChatAddr(liveStreamId),
-          relays: LIVE_STREAM_RELAYS,
-          rail: rail ?? undefined,
-          // Already fetched by the support check above; handing it back keeps
-          // the money path from asking the same host for the same document
-          // twice.
-          meta: liveZap.meta,
-          refs: hostRefs,
-          // So the LUD-21 comment carries the rss::payment descriptor, exactly
-          // as an ordinary LNURL leg does. A single-recipient live block, so
-          // the whole amount is this leg.
-          metadata: {
-            boostagram,
-            recipient: primaryValue.recipients[0],
-            legMsat: sats * 1000,
-          },
-        });
-      } catch (e) {
-        setSendErr(getErrorMessage(e, 'zap failed'));
-        setRunning(false);
-        return;
-      }
-      fireConfetti();
-      playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
-      setPaymentDone(true);
-      setRunning(false);
-      if (rail) recordLastRail(rail, identity);
-      // One BoostResult rather than a hand-built leg: `storedBoostLegs` is the
-      // one place that maps a result to a stored row, and this path is exactly
-      // the third hand-rolled copy CLAUDE.md names. It also carries the leg into
-      // the note, which is what lets this branch quote its own receipt.
-      // `primaryValue`, the feed's block, for the same reason the gate above
-      // reads it: `value` is trimmed by `payableLeg`.
-      const legs: BoostResult[] = [{
-        recipient: primaryValue.recipients[0],
-        sats,
-        ok: true,
-        preimage: sent.preimage,
-        boostboxUrl: sent.boostboxUrl,
-        zapPending: sent.pending,
-      }];
-      logStoredBoost(boostagram, storedBoostLegs(legs));
-      setTimeout(() => onClose(), 1500);
-      // A live-stream zap is ONE payment for the whole boost, so the host
-      // provider's own receipt is the total — quote that, no summary needed.
-      const [withReceipt] = await collectZapReceipts(legs);
-      await maybePublishNote(boostagram, legs, withReceipt?.zapReceipt);
-      return;
-    }
-
     let collected: BoostResult[] = [];
     // `payable`, not `primarySats > 0`. A redirect with remotePercentage="0"
     // leaves this leg 0 sats, and `payableSplit`'s no-one-can-be-paid arm hands
@@ -665,20 +575,17 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // failed boost leaves the modal open so the user sees the error.
     if (anyPaid) setTimeout(() => onClose(), 1500);
 
-    // Fallback (non-zap) path only reaches here. A live-stream boost that
-    // didn't go out as a real zap (host doesn't support NIP-57, or the user
-    // may not zap) posts into the stream's chat (kind:1311) so other viewers
-    // still see it. Non-fatal so a relay hiccup can't fail the boost.
+    // A live-stream boost posts into the stream's chat (kind:1311) so other
+    // viewers see it. Non-fatal so a relay hiccup can't fail the boost.
     //
-    // Gated on `mayZap`, the same `shareNostr && shareAs === 'self'` the zap
-    // path takes — NOT merely on being signed in, which is what this said
-    // before. A kind:1311 is signed by the user's key and carries their prose,
+    // Gated on `maySignAsSelf` (`shareNostr && shareAs === 'self'`) — NOT
+    // merely on being signed in, which is what this said before. A kind:1311 is signed by the user's key and carries their prose,
     // so an Anonymous or "Don't post" boost that fell through here published
     // a signed, timestamped attribution on LIVE_STREAM_RELAYS: the zap gate had
     // relocated the leak rather than closed it. Same inversion
     // `streamingMayPublish()` names — a user who chose to publish LESS must
     // not end up publishing under their own key by a different door.
-    if (anyPaid && mayZap && liveStreamId) {
+    if (anyPaid && maySignAsSelf && liveStreamId) {
       const chatMsg = `⚡ Boosted ${sats.toLocaleString()} sats${msg ? `: ${msg}` : ''}`;
       publishLiveChat(liveStreamId, chatMsg).catch(() => { /* non-fatal */ });
     }
