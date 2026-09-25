@@ -76,8 +76,7 @@ export {
 
 export { parseZapReceipt, zapSats, type ZapReceipt } from './zap-receipt';
 export type { Nip73Refs } from './zap-request';
-export { mintSummaryReceipt } from './zap-summary-receipt';
-export type { QuotedZapReceipt } from './zap-receipt-wait';
+export { mintSummaryReceipt, type QuotedZapReceipt } from './zap-summary-receipt';
 
 export { useNostrFeed, useVisibleNotes } from './use-feed';
 

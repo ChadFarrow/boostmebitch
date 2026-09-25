@@ -2,7 +2,7 @@ import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult, ValueTimeSplit } from '../types';
 import { boostNoteTrack, httpUrl, type BoostNoteTrack } from '../util';
-import type { QuotedZapReceipt } from './zap-receipt-wait';
+import type { QuotedZapReceipt } from './zap-summary-receipt';
 import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
@@ -261,7 +261,7 @@ function quotedReceipts(args: PublishArgs): QuotedZapReceipt[] {
  *
  * Placed below the artwork and above the mention run, for the reason `withArt`
  * gives: the trailing `nostr:npub…` run is what a compose box writes last. The
- * relay hints are `receiptRelayHints`' — relays known to hold the receipt.
+ * relay hints are the relays that accepted the receipt (`mintSummaryReceipt`).
  */
 function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
   if (receipts.length === 0) return content;
