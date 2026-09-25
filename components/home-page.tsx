@@ -171,6 +171,11 @@ export function HomePage() {
     typeof window === 'undefined' ? '' : window.location.search,
   );
 
+  // Which publisher load is current. Opening B, or leaving the publisher view,
+  // retires A's still-running `loadCollection`, or A's albums land late under
+  // B's header and A's `finally` clears B's spinner.
+  const publisherGen = useRef(0);
+
   // Mount-time hydration: restore the detail / episode / discussion view from
   // the URL. Podcast resolves by ?podcast=<guid> (resolvePodcastByGuid, with its
   // own caches + PI breaker) or falls back to ?feed=<id> for shows that have no
@@ -395,15 +400,17 @@ export function HomePage() {
       return;
     }
     setPublisherLoading(true);
+    const gen = ++publisherGen.current;
     (async () => {
       try {
         const collection = await loadCollection(feedUrl);
+        if (gen !== publisherGen.current) return;
         if (!collection) { setPublisherError(true); setPublisherAlbums([]); return; }
         setPublisherAlbums(collection.feeds);
         setPublisherListed(collection.listed);
         setPublisherNoPi(collection.couldNotAskPi);
-      } catch { setPublisherError(true); setPublisherAlbums([]); }
-      finally { setPublisherLoading(false); }
+      } catch { if (gen === publisherGen.current) { setPublisherError(true); setPublisherAlbums([]); } }
+      finally { if (gen === publisherGen.current) setPublisherLoading(false); }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -425,6 +432,7 @@ export function HomePage() {
         : 'feeds';
 
   function clearPublisher() {
+    publisherGen.current++;
     setPublisherSource(null);
     setPublisherAlbums(null);
     setPublisherLoading(false);
@@ -499,18 +507,21 @@ export function HomePage() {
       setPublisherListed(0);
       setPublisherNoPi(false);
       setPublisherLoading(true);
+      const gen = ++publisherGen.current;
       try {
         if (!p.url) { setPublisherAlbums([]); return; }
         const collection = await loadCollection(p.url);
+        if (gen !== publisherGen.current) return;
         if (!collection) { setPublisherError(true); setPublisherAlbums([]); return; }
         setPublisherAlbums(collection.feeds);
         setPublisherListed(collection.listed);
         setPublisherNoPi(collection.couldNotAskPi);
       } catch {
+        if (gen !== publisherGen.current) return;
         setPublisherError(true);
         setPublisherAlbums([]);
       } finally {
-        setPublisherLoading(false);
+        if (gen === publisherGen.current) setPublisherLoading(false);
       }
     } else {
       setSelected(p);

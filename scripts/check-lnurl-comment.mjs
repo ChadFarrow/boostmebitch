@@ -36,6 +36,7 @@
 
 import {
   buildLnurlComment,
+  explainPaymentError,
   lnurlCallbackRefused,
   lnurlCommentRetry,
   lnurlErrorReason,
@@ -504,6 +505,59 @@ console.log('\n(naive) the leg that simply failed');
     naive() !== lnurlCommentRetry({ desc: DESC_91 }, 'Length 91 exceeds limit 90', SENT_91),
     true,
   );
+}
+
+// ── explainPaymentError: the failed-leg text a user reads ──────────────────
+// Lives here because its most common input is this file's subject: an LNURL
+// refusal. `nothingSent` is a MONEY claim ("you still have these sats"), so it
+// is pinned in both directions: true for the throws that precede any payment
+// request, and FALSE for every error that proves nothing — a false "nothing
+// was sent" is what talks someone into paying twice.
+console.log('\nexplainPaymentError');
+{
+  // Every string below is the shipping throw site's own wording, several of
+  // them verbatim from a real boost screen (2026-09-25).
+  const PROVEN = [
+    ['Failed to connect to wss://relay.getalby.com', 'yours', /relay\.getalby\.com/],
+    ['zap via nwc wallet did not complete: Failed to connect to wss://relay.getalby.com/v1', 'yours', /relay\.getalby\.com\)/],
+    ['LNURL callback failed (400): Recipient wallet error. Please contact the recipient.', 'recipient', /Recipient wallet error/],
+    ['LNURL service: Amount out of range', 'recipient', /Amount out of range/],
+    ['LNURL lookup failed for x@example.com', 'recipient', /did not answer/],
+    ['LNURL server for x@example.com returned an amountless invoice', 'recipient', /wrong amount/],
+    ['Zap invoice amount mismatch: requested 1000 msat, invoice is for 2000', 'recipient', /wrong amount/],
+    ['Spark rail does not support keysend (node-pubkey recipient)', 'yours', /keysend/],
+    ['No payment provider available (connect NWC, Spark, or WebLN)', 'yours', /No wallet/],
+    ['payment engine failed to load — nothing was sent (x)', 'unknown', /did not load/],
+    // A keysend that provably sent nothing, retried over LNURL: the retry decides.
+    ['keysend: no route found; LNURL retry: LNURL callback failed (503): down for maintenance', 'recipient', /maintenance/],
+  ];
+  for (const [raw, whose, text] of PROVEN) {
+    const x = explainPaymentError(raw);
+    check(`"${raw.slice(0, 60)}" → nothing sent, ${whose}`, [x.nothingSent, x.whose, text.test(x.cause)], [true, whose, true]);
+  }
+  // A bare status is not quoted as though it were a reason.
+  check('a bare status is not quoted', explainPaymentError('LNURL callback failed: 500').cause.includes('"'), false);
+
+  // THE SAFETY HALF. None of these proves the sats stayed in the wallet.
+  const UNPROVEN = [
+    'PAYMENT_FAILED: payment failed',
+    'keysend: PAYMENT_FAILED: Failed to connect to peer',
+    'insufficient balance',
+    'QUOTA_EXCEEDED: budget exceeded',
+    'User rejected the request',
+    'RESTRICTED: not allowed',
+    'no route found',
+    'publish timed out',
+    'Something nobody has seen before',
+    '',
+  ];
+  for (const raw of UNPROVEN) {
+    check(`"${raw}" never claims nothing was sent`, explainPaymentError(raw).nothingSent, false);
+  }
+  // `naive()`: "the leg failed, so nothing moved". It fails the safety half.
+  const naive = () => ({ nothingSent: true });
+  check('(naive) "failed means unpaid" claims nothing was sent for PAYMENT_FAILED',
+    naive().nothingSent !== explainPaymentError('PAYMENT_FAILED: payment failed').nothingSent, true);
 }
 
 if (failures) {

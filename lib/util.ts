@@ -1515,6 +1515,155 @@ export function lnurlErrorReason(body: string): string | undefined {
 }
 
 /**
+ * A failed boost leg, explained for the person who pressed BOOST.
+ *
+ * The raw `BoostResult.error` is a library string — "Failed to connect to
+ * wss://relay.getalby.com", "LNURL callback failed (400): …" — that names the
+ * mechanism and not the three things a user needs: WHOSE side the fault is on,
+ * WHAT to do next, and whether any sats left. The raw text is still shown
+ * beside this, never replaced, because it is what a bug report needs.
+ *
+ * **`nothingSent` is a money claim, so it is an ALLOWLIST.** It is true only
+ * for failures thrown BEFORE a payment request can exist: the wallet's relay
+ * never connected (the SDK throws in `_checkConnected`, ahead of any publish),
+ * no wallet was ready, the recipient's LNURL service never produced a usable
+ * invoice, or the app refused an invoice for the wrong amount. Everything else
+ * — `PAYMENT_FAILED`, a timeout, anything unrecognised — says nothing about
+ * whether sats moved, because "you still have your sats" is the claim that
+ * talks someone into paying twice. An unanswered wallet never reaches here at
+ * all: it is `indeterminate` and renders `?`.
+ *
+ * A keysend leg retried over LNURL carries `keysend: …; LNURL retry: …`. The
+ * RETRY is the attempt that decided the leg (the keysend was retried only
+ * because it provably sent nothing), so it is the half explained.
+ */
+export interface PaymentErrorExplanation {
+  /** One sentence: what went wrong, in the user's terms. */
+  cause: string;
+  /** What the user can do, when there is something. */
+  action?: string;
+  /** Whose side the fault is on. */
+  whose: 'yours' | 'recipient' | 'unknown';
+  /** True only when no payment request can have reached a wallet. */
+  nothingSent: boolean;
+}
+
+export function explainPaymentError(raw: string | undefined): PaymentErrorExplanation {
+  const full = (raw ?? '').trim();
+  const retryAt = full.lastIndexOf('LNURL retry: ');
+  const msg = retryAt >= 0 ? full.slice(retryAt + 'LNURL retry: '.length) : full;
+  const has = (re: RegExp) => re.test(msg);
+
+  if (has(/payment engine failed to load/i)) {
+    return {
+      cause: 'The payment code did not load.',
+      action: 'Reload the page, then boost again.',
+      whose: 'unknown',
+      nothingSent: true,
+    };
+  }
+  if (has(/no payment provider available|no nwc uri configured|webln provider not found|spark wallet not initialized/i)) {
+    return {
+      cause: 'No wallet was ready to pay.',
+      action: 'Connect a wallet, then boost again.',
+      whose: 'yours',
+      nothingSent: true,
+    };
+  }
+  const relay = msg.match(/failed to connect to\s+(wss?:\/\/[^\s/;,)]+)/i);
+  if (relay) {
+    const host = relay[1]!.replace(/^wss?:\/\//i, '');
+    return {
+      cause: `Could not reach your wallet's relay (${host}).`,
+      action: 'Check that your wallet is online and your network allows it, reload the page, then boost again.',
+      whose: 'yours',
+      nothingSent: true,
+    };
+  }
+  if (has(/does not support keysend/i)) {
+    return {
+      cause: 'This recipient is a Lightning node, and your Spark wallet cannot pay a node directly (keysend).',
+      action: 'Pick a different wallet for this boost.',
+      whose: 'yours',
+      nothingSent: true,
+    };
+  }
+  if (has(/amountless invoice|amount mismatch/i)) {
+    return {
+      cause: "The recipient's Lightning service sent an invoice for the wrong amount, so the app refused to pay it.",
+      action: 'Only the recipient can fix this.',
+      whose: 'recipient',
+      nothingSent: true,
+    };
+  }
+  const refusal = msg.match(/LNURL callback failed(?: \(\d+\))?:?\s*(.*)$|LNURL service:\s*(.*)$/i);
+  if (refusal) {
+    const reason = (refusal[1] ?? refusal[2] ?? '').trim();
+    // A bare status ("LNURL callback failed: 500") is not a reason worth quoting.
+    const quoted = reason && !/^\d+$/.test(reason) ? ` ("${reason.slice(0, 160)}")` : '';
+    return {
+      cause: `The recipient's Lightning service would not create an invoice${quoted}.`,
+      action: 'Only the recipient can fix this.',
+      whose: 'recipient',
+      nothingSent: true,
+    };
+  }
+  if (has(/LNURL lookup|did not return JSON|not a payRequest|invalid lightning address|no invoice returned|returned no invoice|lnurl url must be https/i)) {
+    return {
+      cause: "The recipient's Lightning address did not answer correctly.",
+      action: 'Only the recipient can fix this.',
+      whose: 'recipient',
+      nothingSent: true,
+    };
+  }
+  // From here on, nothing proves the sats stayed put.
+  if (has(/insufficient|not enough (?:balance|funds)/i)) {
+    return {
+      cause: 'Your wallet does not have enough sats for this payment.',
+      action: 'Add sats to your wallet, or boost a smaller amount.',
+      whose: 'yours',
+      nothingSent: false,
+    };
+  }
+  if (has(/quota|budget/i)) {
+    return {
+      cause: "Your wallet connection's spending budget is used up.",
+      action: 'Raise the budget in your wallet, or wait for it to renew.',
+      whose: 'yours',
+      nothingSent: false,
+    };
+  }
+  if (has(/user (?:rejected|denied|cancell?ed)|rejected by (?:the )?user|cancell?ed by (?:the )?user/i)) {
+    return { cause: 'The payment was cancelled in your wallet.', whose: 'yours', nothingSent: false };
+  }
+  if (has(/unauthori[sz]ed|restricted|not implemented|not supported/i)) {
+    return {
+      cause: 'Your wallet connection is not allowed to make this kind of payment.',
+      action: "Check the connection's permissions in your wallet.",
+      whose: 'yours',
+      nothingSent: false,
+    };
+  }
+  if (has(/no route|route not found|unable to find a (?:path|route)|could not find a route/i)) {
+    return {
+      cause: 'Your wallet could not find a payment route to this recipient.',
+      action: 'Try again later, or boost a smaller amount.',
+      whose: 'unknown',
+      nothingSent: false,
+    };
+  }
+  if (has(/timed? ?out/i)) {
+    return {
+      cause: 'Your wallet or its relay did not respond in time.',
+      action: 'Check your wallet before you boost again.',
+      whose: 'yours',
+      nothingSent: false,
+    };
+  }
+  return { cause: 'The payment did not go through.', whose: 'unknown', nothingSent: false };
+}
+
+/**
  * Did an LNURL-pay callback REFUSE, whatever status it chose to say so with?
  *
  * LUD-06 specifies the BODY, not the status, so a refusal arrives as a 200
@@ -1796,7 +1945,16 @@ export function splitSats(total: number, recipients: ValueRecipient[]): number[]
   // Clamp weights at 0: a malformed feed with a negative `split` would
   // otherwise poison totalWeight (even flip it negative) and produce nonsensical
   // — including negative — allocations.
-  const w = (r: ValueRecipient) => Math.max(0, r.split || 0);
+  //
+  // Non-finite too: `Number("1e400")` is Infinity, which made totalWeight
+  // Infinity and that recipient's share NaN — and `payOne`'s `sats <= 0` is
+  // false for NaN, so a NaN leg was attempted rather than skipped. `Number()`
+  // keeps the coercion the old `Math.max` did, because a digit-STRING weight
+  // reaches here from stored data and must keep paying (`check:playlistdb`).
+  const w = (r: ValueRecipient) => {
+    const n = Math.max(0, Number(r.split) || 0);
+    return Number.isFinite(n) ? n : 0;
+  };
   const totalWeight = recipients.reduce((s, r) => s + w(r), 0);
   if (totalWeight === 0) return recipients.map(() => 0);
   const exact = recipients.map((r) => (total * w(r)) / totalWeight);
@@ -3377,7 +3535,10 @@ export function parseNwcBudget(res: unknown): NwcBudget | null {
   return {
     usedSats,
     totalSats,
-    remainingSats: Math.max(0, totalSats - usedSats),
+    // From the msat difference, NOT `totalSats - usedSats`: flooring the
+    // subtrahend separately overstates by a sat (10500 − 600 msat is 9 sats,
+    // not 10 − 0).
+    remainingSats: Math.max(0, Math.floor((total - used) / 1000)),
     renewsAt: Number.isFinite(renewsAt) && renewsAt > 0 ? renewsAt : undefined,
     renewalPeriod: typeof r.renewal_period === 'string' ? r.renewal_period : undefined,
   };

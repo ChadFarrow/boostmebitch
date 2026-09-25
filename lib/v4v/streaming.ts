@@ -242,6 +242,12 @@ async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>
   }
   try {
     const res = await fetch(`/api/value-splits?feedId=${episode.feedId}&episodeId=${episode.id}`);
+    // A 429 or 500 still carries a JSON `{ error }` body, which parsed to "no
+    // splits" and was CACHED as a miss for the hour — every song window in the
+    // episode then streamed to the host. A non-2xx is a failure to ask, not an
+    // answer, so it goes to the uncached branch below. A 404 ("episode not
+    // found") IS an answer and stays a cached miss.
+    if (!res.ok && res.status !== 404) throw new Error(`value-splits ${res.status}`);
     const data = await res.json();
     const map = new Map<string, ValueTimeSplit>();
     for (const s of (data.splits as ValueTimeSplit[]) ?? []) {

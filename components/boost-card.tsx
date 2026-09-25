@@ -3,7 +3,7 @@ import type { StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { shortNpub } from '@/lib/nostr';
 import { linkify, timeAgo } from '@/lib/format';
-import { elideAddress } from '@/lib/util';
+import { elideAddress, explainPaymentError } from '@/lib/util';
 import { Avatar } from './avatar';
 import { LegStatusGlyph } from './leg-status-glyph';
 import { PodcastCover } from './podcast-cover';
@@ -103,9 +103,10 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
               {leg.error && !leg.ok && (
                 <span
                   className={leg.indeterminate ? 'text-muted' : 'text-red-400/80'}
+                  // The raw error stays on hover; the line says what it MEANS.
                   title={leg.error}
                 >
-                  · {leg.indeterminate ? 'unconfirmed — may have been sent' : leg.error}
+                  · {leg.indeterminate ? 'unconfirmed — may have been sent' : explainPaymentError(leg.error).cause}
                 </span>
               )}
             </li>

@@ -234,6 +234,11 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
     const byPress = lastTypeRef.current !== type;
     lastTypeRef.current = type;
     if (!q.trim() || secretHit || type === 'npub') {
+      // Retire any search still in flight, or its answer lands AFTER this reset
+      // and paints the old query's results under an empty box. The bump also
+      // stops that request's `finally` clearing the spinner, so clear it here.
+      genRef.current++;
+      onLoading(false);
       onResults([], '', { type, total: 0 });
       return;
     }

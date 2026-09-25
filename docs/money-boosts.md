@@ -392,6 +392,12 @@ Three things not to get wrong:
 
 **Not pinned by a check script.** `lib/v4v/nwc.ts` imports `../storage`, which touches `localStorage`, so it can't be loaded under `node --experimental-strip-types` the way the other `check:*` targets are. The mapping is three `instanceof` arms; if it grows conditions, extracting them into a pure helper in `lib/util.ts` would make it pinnable.
 
+### The failed leg a user reads (`explainPaymentError`)
+
+A ✗ leg's `error` is a library string, and one unreachable wallet relay fails every NWC leg with the SAME one — a real screen printed `Failed to connect to wss://relay.getalby.com` eight times and buried the single different cause (a recipient's LNURL service refusing) between them, while the zap wrapper told the user their wallet had "rejected" an invoice it never received. `<LightningStatus>` now groups the ✗ legs by `explainPaymentError(error)` (`lib/util.ts`): a cause in the user's terms, whose side it is on, and what to do. The raw text stays under "technical details", and `<BoostCard>` keeps it on hover — it is what a bug report needs.
+
+**`nothingSent` is a money claim and it is an ALLOWLIST.** "Nothing was sent" is true only for a throw that precedes any payment request: the wallet relay never connected (the SDK throws in `_checkConnected`, before it publishes), no wallet was ready, the recipient's LNURL service produced no usable invoice, or the app refused an invoice for the wrong amount. `PAYMENT_FAILED`, a timeout and anything unrecognised say nothing about whether sats moved, because "you still have these sats" is the sentence that talks someone into paying twice. Add a new arm to the true side only with the throw site that proves it. A leg retried as `keysend: …; LNURL retry: …` is explained by the RETRY — the keysend was retried only because it provably sent nothing. Pinned, both directions, by `check:lnurl`.
+
 ### Serving our own lightning address
 
 The mirror image of the above: `chadf@boostmebitch.com` is a recipient other apps pay, assembled from two pieces on this domain plus an LNbits instance behind `pay.boostmebitch.com` fronting Chad's LND node.
