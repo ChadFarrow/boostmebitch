@@ -451,9 +451,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     const hasSigner = !!activeNostr();
 
     // The show and item the summary receipt names, as NIP-73 `k`/`i` pairs —
-    // see lib/nostr/zap-request.ts. A live stream's `episode.guid` is a Nostr stream id, not an item guid, so it
-    // names only the show there. The URL hints are this site's restorable deep
-    // links.
+    // see lib/nostr/zap-request.ts. A live stream's `episode.guid` is a Nostr
+    // stream id, not an item guid, so it names only the show there. The URL
+    // hints are this site's restorable deep links.
     const showGuid = episode?.podcastGuid ?? podcast.podcastGuid;
     const itemGuid = liveStreamId ? undefined : episode?.guid;
     const hostRefs: Nip73Refs = {
@@ -579,9 +579,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // viewers see it. Non-fatal so a relay hiccup can't fail the boost.
     //
     // Gated on `maySignAsSelf` (`shareNostr && shareAs === 'self'`) — NOT
-    // merely on being signed in, which is what this said before. A kind:1311 is signed by the user's key and carries their prose,
-    // so an Anonymous or "Don't post" boost that fell through here published
-    // a signed, timestamped attribution on LIVE_STREAM_RELAYS: the zap gate had
+    // merely on being signed in, which is what this said before. A kind:1311
+    // is signed by the user's key and carries their prose, so an Anonymous or
+    // "Don't post" boost that reached here published a signed, timestamped
+    // attribution on LIVE_STREAM_RELAYS: the old live-stream zap gate had
     // relocated the leak rather than closed it. Same inversion
     // `streamingMayPublish()` names — a user who chose to publish LESS must
     // not end up publishing under their own key by a different door.
@@ -613,20 +614,14 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       // `boostagram.value_msat_total` is the full amount the user chose, so the
       // note reads "Boosted 100 sats" rather than naming one leg's share —
       // invariant 7, note amount is intent, not actual.
-      // Wait briefly for the kind:9735 each zap leg earned, THEN publish. The
-      // receipts do not exist when the invoices settle, and the note quotes
-      // them — that quote is what makes Fountain render the sat amount. The
-      // user is already past the confetti and the modal is already closing, so
-      // this wait is invisible; a receipt that never lands costs the quote and
-      // nothing else.
+      //
       // The site-signed summary receipt for the sats that actually settled —
       // both groups, ok legs only — is the one thing the note quotes. For EVERY
       // boost that posts ("Don't post" is the only thing that skips it): the
       // user signs its request when their key publishes the note, the site
       // does when the note is site-published, so an Anonymous boost's receipt
       // names the site and not the user. Never throws; null quotes nothing.
-      // The per-leg receipts are not waited for: they are not quoted, and they
-      // reach the artist's feed on their own.
+      // No leg is a zap, so there is no provider receipt to wait for.
       const allLegs = [...collected, ...hostCollected];
       const paidSats = allLegs.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);
       const summaryReceipt = shareNostr

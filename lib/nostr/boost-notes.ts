@@ -442,8 +442,9 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // The `q` tag half of the quote; `withZapReceipts` below writes the body
   // half, which is the one Fountain's badge reads. Same shape
   // `publishQuoteRepost` writes (./interactions.ts): id, relay hint, author —
-  // the author is the site, which signs the summary receipt. `parseQuoteRefs` (./discover.ts) reads either form, so the
-  // explorer's wrapper-vs-receipt dedupe holds.
+  // the author is the site, which signs the summary receipt. `parseQuoteRefs`
+  // (./discover.ts) reads either form, so the explorer's wrapper-vs-receipt
+  // dedupe holds.
   //
   // `amount` above stays `value_msat_total`, the whole boost as INTENDED; the
   // summary receipt carries the sats actually PAID. They differ only when a

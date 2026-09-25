@@ -775,9 +775,10 @@ if (!/zapRequestTags\(/.test(zapSrc) || !/refs:\s*args\.refs/.test(zapSrc)) {
 } else {
   ok('lib/v4v/zap.ts signs the pinned tag list and carries the caller’s refs');
 }
-// 4. A boost payment is NEVER a zap — value-block legs and live streams alike. It is a Podcasting 2.0 payment and
-//    carries PC 2.0 metadata: the boostagram in TLV 7629169 on a keysend, the
-//    BoostBox descriptor in the LUD-21 comment on LNURL. #402 paid qualifying
+// 4. A boost payment is NEVER a zap — value-block legs and live streams alike.
+//    It is a Podcasting 2.0 payment and carries PC 2.0 metadata: the boostagram
+//    in TLV 7629169 on a keysend, the BoostBox descriptor in the LUD-21 comment
+//    on LNURL. #402 paid qualifying
 //    legs as NIP-57 zaps — a BOLT11 with neither — and a recipient's Helipad
 //    showed "33 sats from Lightning Invoice" and nothing else (2026-09-25). The
 //    note's ⚡ figure is the site-signed summary receipt, which needs no zap
