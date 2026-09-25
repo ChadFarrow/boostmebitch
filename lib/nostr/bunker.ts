@@ -74,8 +74,19 @@ function safeAuthUrl(cb?: (url: string) => void): ((url: string) => void) | unde
 // ~2.17, and CLAUDE.md pins us to exactly 2.19.4 — "cannot successfully
 // complete nostrconnect pairing unless the URI already embeds
 // wss://relay.powr.build". It is also the persistent proxy that fires the APNs
-// wake, which is how a closed Clave answers at all. relay.nsec.app is the
-// second because nsec.app and Amber-as-bunker both reach it.
+// wake, which is how a closed Clave answers at all.
+//
+// THE SECOND RELAY MUST BE UP, because Clave waits for it. Clave's pairing
+// (Clave/AppState+NostrConnect.swift, `RelayUtils.connectToRelays`) connects to
+// EVERY relay in the URI with a 10 s timeout and publishes its connect ack only
+// once the whole group has settled. So a dead relay here delays the ack by the
+// full 10 s, and an iPhone user who goes back to this app sooner gets Clave
+// suspended before the ack is sent: the sign-in hangs. relay.nsec.app did
+// exactly that — it refused connections from 2026-09-25 — and was replaced by
+// relay.nostrconnect.com, a relay run for NIP-46 pairing. Measured that day
+// with a kind:24133 round trip (subscribe, publish from a second socket):
+// connect 822 ms, live delivery 210 ms. The "costs nothing" argument below is
+// about THIS side's wait, not the signer's.
 //
 // THIS SET USED TO CARRY damus, primal AND nos.lol, and removing them is the
 // fix rather than a tidy-up. The reasoning for a wide set was ack redundancy
@@ -85,7 +96,7 @@ function safeAuthUrl(cb?: (url: string) => void): ((url: string) => void) | unde
 // baseline. All three of those share a host with DEFAULT_RELAYS, so the bunker's
 // own SimplePool opens the SECOND socket to each and they may never connect —
 // three relays in the URI that the signer can reach and this page cannot.
-// relay.nsec.app and relay.powr.build are the two nothing else in the app
+// relay.nostrconnect.com and relay.powr.build are the two nothing else in the app
 // connects to, which is exactly why they are the pair left standing.
 //
 // Conduit reach the same number from the other side: `pairRemoteSignerFromNostrConnect`
@@ -99,7 +110,7 @@ function safeAuthUrl(cb?: (url: string) => void): ((url: string) => void) | unde
 // resolves on the first matching kind:24133 response, so a slow or silent relay
 // here costs nothing. The cost here is the socket, not the wait.
 const NOSTRCONNECT_RELAYS = [
-  'wss://relay.nsec.app',
+  'wss://relay.nostrconnect.com',
   CLAVE_RELAY,
 ];
 
