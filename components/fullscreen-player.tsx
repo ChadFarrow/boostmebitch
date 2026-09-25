@@ -63,7 +63,7 @@ const LivePlayedTracks = dynamic(
 import type { Episode, Podcast, ValueTimeSplit } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
-import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
+import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon, ShareIcon } from './icons';
 import {
   episodeContentsLabel,
   hasValueRecipients,
@@ -200,7 +200,8 @@ import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
-import { SpeedButton, FastSpeedButton } from './player/speed-button';
+import { SpeedButton, FastSpeedButton, SpeedMenuTile } from './player/speed-button';
+import { TileMenu } from './player/tile-menu';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
@@ -434,6 +435,40 @@ function ShareTargets({ podcast, episode }: { podcast: Podcast; episode: Episode
         className="tile"
       />
     </>
+  );
+}
+
+/**
+ * The two SHAREs as ONE tile that opens a two-item list, for the desktop row.
+ * It is still two controls — each item names its target and copies its own
+ * link, for every reason <ShareTargets> gives — only the pair costs one tile
+ * rather than two. The menu stays open after a copy, so the item's COPIED
+ * flash is the answer. With no episode guid there is one link, and the tile
+ * is that one link directly: a menu of one choice is a press for nothing.
+ */
+function ShareMenuTile({ podcast, episode }: { podcast: Podcast; episode: Episode }) {
+  const showWord = targetWord('feed', podcast);
+  const itemWord = targetWord('item', podcast);
+  const showUrl = showShareUrl(podcast.podcastGuid);
+  // Never `showShareUrl(guid, undefined)` for the episode: see <ShareTargets>.
+  const episodeUrl = episode.guid ? showShareUrl(podcast.podcastGuid, episode.guid) : null;
+  if (!episodeUrl) {
+    return <CopyLinkButton url={showUrl} title={`Copy link to this ${showWord.toLowerCase()}`} word={showWord} className="tile" />;
+  }
+  const item = 'btn-mini w-full justify-start py-2 text-xs';
+  return (
+    <TileMenu
+      label="Share a link"
+      menuWidth={208}
+      trigger={<><ShareIcon /> SHARE</>}
+    >
+      {() => (
+        <>
+          <CopyLinkButton url={showUrl} title={`Copy link to this ${showWord.toLowerCase()}`} word={`${showWord} LINK`} className={item} />
+          <CopyLinkButton url={episodeUrl} title={`Copy link to this ${itemWord.toLowerCase()}`} word={`${itemWord} LINK`} className={item} />
+        </>
+      )}
+    </TileMenu>
   );
 }
 
@@ -754,6 +789,35 @@ export function FullscreenPlayer({
   // jumps to the previous one.
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekTo);
 
+  // The ⋯ menu's tiles (below lg:). From lg: the same actions are a shorter
+  // row under BOOST — see the row itself for what it merges and why.
+  const secondaryTiles = (
+    <>
+      <FavHeart podcast={podcast} size="tile" nameTarget />
+      <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+      {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
+          longer shows: ↓, a progress fill, ✓ when the episode is on the
+          device. It was a chip in the bar for one afternoon; six tiles fill
+          the menu's two rows exactly, and the bar keeps ⋯, the account
+          control and ✕. It renders nothing for a live item or an HLS
+          stream, and then the menu is five. */}
+      <DownloadButton episode={episode} podcast={podcast} size="tile" />
+      <ShareTargets podcast={podcast} episode={episode} />
+      {streamButton && cloneElement(
+        streamButton,
+        { className: 'tile' },
+        <span aria-hidden className="text-lg leading-none">≋</span>,
+        'STREAM',
+      )}
+      {/* SPEED, then 3.5× and 5×, fill a third row of three. Last because
+          they are about playback, not about this show or episode. No speed
+          on a live item: <Player> holds it at 1×, since there is nothing
+          ahead of the live edge to play into. */}
+      {!isLive && <SpeedButton />}
+      {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+    </>
+  );
+
   return (
     <div
       // Height is the *dynamic* viewport (100dvh), not inset-0 / 100vh: on iOS
@@ -842,7 +906,8 @@ export function FullscreenPlayer({
             // bar. It was 36 x 38 beside them at 30, which read as one control
             // shouting. 30 x 26 still clears WCAG 2.5.8's 24px floor, and the
             // bar's height — what the cover measures against — is unchanged.
-            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 ${
+            // lg:hidden — from lg: the tiles are a row under BOOST instead.
+            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 lg:hidden ${
               tiles.open ? 'border-bone bg-bone/5 text-bone' : ''
             }`}
             aria-haspopup="menu"
@@ -911,31 +976,10 @@ export function FullscreenPlayer({
           // STREAM alone on a second row beside three empty cells. 3 + 2 reads
           // as a block. 224px is the width `useAnchoredMenu` is told about, so
           // the panel cannot hang off the left of the screen.
-          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2"
+          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2 lg:hidden"
           style={{ top: tiles.at.top, bottom: tiles.at.bottom, right: tiles.at.right }}
         >
-          <FavHeart podcast={podcast} size="tile" nameTarget />
-          <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
-          {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
-              longer shows: ↓, a progress fill, ✓ when the episode is on the
-              device. It was a chip in the bar for one afternoon; six tiles fill
-              the menu's two rows exactly, and the bar keeps ⋯, the account
-              control and ✕. It renders nothing for a live item or an HLS
-              stream, and then the menu is five. */}
-          <DownloadButton episode={episode} podcast={podcast} size="tile" />
-          <ShareTargets podcast={podcast} episode={episode} />
-          {streamButton && cloneElement(
-            streamButton,
-            { className: 'tile' },
-            <span aria-hidden className="text-lg leading-none">≋</span>,
-            'STREAM',
-          )}
-          {/* SPEED, then 3.5× and 5×, fill a third row of three. Last because
-              they are about playback, not about this show or episode. No speed
-              on a live item: <Player> holds it at 1×, since there is nothing
-              ahead of the live edge to play into. */}
-          {!isLive && <SpeedButton />}
-          {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+          {secondaryTiles}
         </div>,
         document.body,
       )}
@@ -1334,6 +1378,27 @@ export function FullscreenPlayer({
                 >
                   <BoltIcon /> BOOST
                 </button>
+              </div>
+              {/* THE ⋯ MENU'S ACTIONS, ON THE SCREEN FROM lg:. The reason they
+                  left the screen — a long title pushing them off the bottom of
+                  a phone — does not hold beside a side-by-side cover, where
+                  this pane has the height. Fewer tiles than the menu: the two
+                  SHAREs are one tile with a list (<ShareMenuTile>), and SPEED,
+                  3.5× and 5× are one tile with a list (<SpeedMenuTile>) — as
+                  eight tiles on the screen they read as a lot of buttons for
+                  two settings. One flex row, each tile an equal share. */}
+              <div role="group" aria-label="Actions for this episode" className="hidden lg:flex gap-2 mt-1 [&>*]:flex-1 [&>*]:min-w-0">
+                <FavHeart podcast={podcast} size="tile" nameTarget />
+                <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+                <DownloadButton episode={episode} podcast={podcast} size="tile" />
+                <ShareMenuTile podcast={podcast} episode={episode} />
+                {streamButton && cloneElement(
+                  streamButton,
+                  { className: 'tile' },
+                  <span aria-hidden className="text-lg leading-none">≋</span>,
+                  'STREAM',
+                )}
+                {!isLive && <SpeedMenuTile />}
               </div>
             </div>
 

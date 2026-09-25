@@ -104,7 +104,7 @@ export function DownloadsPage() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="headline text-2xl">Downloads</h1>
+          <h1 className="headline text-2xl sm:text-5xl">Downloads</h1>
           <p className="mt-1 font-mono text-xs text-muted">
             {/* AN EMPTY LIBRARY IS A CLAIM, and it may only be made once the read
                 has answered. <FavoritesPage> shipped saying "Nothing saved yet."
@@ -153,7 +153,9 @@ export function DownloadsPage() {
         </p>
       )}
 
-      <ul className="space-y-2">
+      {/* Two columns from lg:, `items-start` so an opened <ShowGroup> grows
+          alone instead of stretching the card beside it. */}
+      <ul className="space-y-2 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3 lg:items-start">
         {groupDownloads(rows).map((item) =>
           item.kind === 'one' ? (
             <DownloadRow
@@ -218,7 +220,7 @@ function DownloadRow({
       className={
         nested
           ? `flex items-center gap-3 py-2 pl-2 border-l-2 ${isCurrent ? 'border-bolt' : 'border-transparent'}`
-          : `card flex items-center gap-3 p-3 ${isCurrent ? 'border-bolt/60' : ''}`
+          : `card flex items-center gap-3 p-3 lg:p-4 ${isCurrent ? 'border-bolt/60' : ''}`
       }
     >
       <button
@@ -239,12 +241,12 @@ function DownloadRow({
           artwork={cover ? undefined : r.feedImage}
           title={r.title}
           seed={r.key}
-          className={`${nested ? 'w-10 h-10' : 'w-12 h-12'} flex-shrink-0`}
+          className={`${nested ? 'w-10 h-10 sm:w-12 sm:h-12' : 'w-12 h-12 sm:w-14 sm:h-14'} flex-shrink-0`}
           w={160}
         />
         <span className="min-w-0">
-          <span className="block truncate text-sm">{r.title}</span>
-          <span className="block truncate font-mono text-[11px] text-muted">
+          <span className="block truncate text-sm sm:text-base">{r.title}</span>
+          <span className="block truncate font-mono text-[11px] sm:text-xs text-muted">
             {[nested ? null : r.feedTitle, fmtBytes(r.sizeBytes), r.duration ? fmt(r.duration) : null, timeAgo(r.createdAt / 1000)]
               .filter(Boolean)
               .join(' · ')}
@@ -253,7 +255,7 @@ function DownloadRow({
       </button>
       <div className="flex flex-shrink-0 items-center gap-2">
         {!nested && r.feedGuid && (
-          <button type="button" onClick={() => onShow(r)} className="btn-ghost text-[11px]">
+          <button type="button" onClick={() => onShow(r)} className="btn-ghost text-[11px] sm:text-xs">
             SHOW
           </button>
         )}
@@ -265,7 +267,7 @@ function DownloadRow({
         <button
           type="button"
           onClick={() => void downloadManager.remove(r.key)}
-          className="btn-ghost text-[11px]"
+          className="btn-ghost text-[11px] sm:text-xs"
           aria-label={`Delete the download of ${r.title}`}
         >
           DELETE
@@ -318,7 +320,7 @@ function ShowGroup({
   const cover = records.map((r) => covers[r.key]).find(Boolean);
 
   return (
-    <li className={`card p-3 ${holdsCurrent ? 'border-bolt/60' : ''}`}>
+    <li className={`card p-3 lg:p-4 ${holdsCurrent ? 'border-bolt/60' : ''}`}>
       <div className="flex items-center gap-3">
         <button
           type="button"
@@ -332,21 +334,21 @@ function ShowGroup({
             artwork={cover ? undefined : first.image}
             title={name}
             seed={first.feedGuid ?? first.key}
-            className="w-12 h-12 flex-shrink-0"
+            className="w-12 h-12 sm:w-14 sm:h-14 flex-shrink-0"
             w={160}
           />
           <span className="min-w-0">
             {/* The disclosure arrow LEADS the name, the way a <details> summary
                 draws it. At the end of the line it took a column of its own out
                 of ~115px, and the size below was what paid for it. */}
-            <span className="flex min-w-0 items-baseline gap-1.5 text-sm">
+            <span className="flex min-w-0 items-baseline gap-1.5 text-sm sm:text-base">
               <span aria-hidden className="flex-shrink-0 font-mono text-muted">{open ? '▾' : '▸'}</span>
               <span className="truncate">{name}</span>
             </span>
             {/* WRAPS, NOT TRUNCATES — the episode row's rule, for its reason: a
                 truncate here ate "17 MB" at 390px, and the size is the number
                 someone reads before pressing DELETE on a whole album. */}
-            <span className="flex flex-wrap gap-x-2 font-mono text-[11px] text-muted">
+            <span className="flex flex-wrap gap-x-2 font-mono text-[11px] sm:text-xs text-muted">
               <span className="whitespace-nowrap">{count}</span>
               {size && <span className="whitespace-nowrap">{size}</span>}
             </span>
@@ -354,14 +356,14 @@ function ShowGroup({
         </button>
         <div className="flex flex-shrink-0 items-center gap-2">
           {first.feedGuid && (
-            <button type="button" onClick={() => onShow(first)} className="btn-ghost text-[11px]">
+            <button type="button" onClick={() => onShow(first)} className="btn-ghost text-[11px] sm:text-xs">
               SHOW
             </button>
           )}
           <button
             type="button"
             onClick={() => setAsking(true)}
-            className="btn-ghost text-[11px]"
+            className="btn-ghost text-[11px] sm:text-xs"
             aria-label={`Delete all ${records.length} downloads of ${name}`}
           >
             DELETE
