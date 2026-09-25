@@ -1,6 +1,6 @@
 'use client';
 import type { ValueRecipient, BoostResult } from '@/lib/types';
-import { feeNote, recipientAddress, recipientOrder } from '@/lib/util';
+import { explainPaymentError, feeNote, recipientAddress, recipientOrder, type PaymentErrorExplanation } from '@/lib/util';
 import { LegStatusGlyph } from '../leg-status-glyph';
 
 // Format a weight as a percentage of the total weight. Integer when it rounds
@@ -140,16 +140,61 @@ export function LightningStatus({
           </ul>
         </div>
       )}
-      {errors.length > 0 && (
-        <details className="mt-1">
-          <summary className="text-nostr cursor-pointer">errors</summary>
-          <ul className="mt-1 space-y-0.5">
-            {errors.map((r, i) => (
-              <li key={i}>{r.recipient.name || 'recipient'}: {r.error}</li>
-            ))}
-          </ul>
-        </details>
-      )}
+      {errors.length > 0 && <FailedLegs errors={errors} />}
     </div>
+  );
+}
+
+/**
+ * The failed legs, grouped by what went WRONG rather than listed per payee.
+ *
+ * One unreachable wallet relay fails every NWC leg with the same library
+ * string, so a per-leg list printed "Failed to connect to wss://…" eight times
+ * and buried the one different line (a recipient's own service refusing) in
+ * the middle. Grouped, it reads as two causes. Open by default: the user just
+ * watched the boost fail, and "why" is the question on screen.
+ *
+ * "Nothing was sent" is printed only where `explainPaymentError` PROVES it —
+ * see its note. The raw library text stays one tap away for a bug report.
+ */
+function FailedLegs({ errors }: { errors: BoostResult[] }) {
+  const groups = new Map<string, { x: PaymentErrorExplanation; legs: BoostResult[] }>();
+  for (const r of errors) {
+    const x = explainPaymentError(r.error);
+    const key = `${x.cause}|${x.action ?? ''}|${x.nothingSent}`;
+    const g = groups.get(key);
+    if (g) g.legs.push(r);
+    else groups.set(key, { x, legs: [r] });
+  }
+  return (
+    <details className="mt-1" open>
+      <summary className="text-nostr cursor-pointer">
+        {errors.length} failed — why
+      </summary>
+      <ul className="mt-1 space-y-2">
+        {[...groups.values()].map(({ x, legs }) => (
+          <li key={`${x.cause}|${x.action ?? ''}|${x.nothingSent}`} className="leading-snug">
+            <span className="text-bone">{x.cause}</span>
+            {x.nothingSent && (
+              <span> Nothing was sent to {legs.length === 1 ? 'this recipient' : 'these recipients'}.</span>
+            )}
+            {x.action && <span> {x.action}</span>}
+            <div className="text-[11px] text-muted/80">
+              {/* ` · `, not a comma: payee names carry commas of their own
+                  ("Mutton, Mead & Music"), so a comma list reads as more payees. */}
+              {legs.map((r) => r.recipient.name || 'recipient').join(' · ')}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <details className="mt-2">
+        <summary className="cursor-pointer text-[11px]">technical details</summary>
+        <ul className="mt-1 space-y-0.5 text-[11px] break-words">
+          {errors.map((r, i) => (
+            <li key={i}>{r.recipient.name || 'recipient'}: {r.error}</li>
+          ))}
+        </ul>
+      </details>
+    </details>
   );
 }
