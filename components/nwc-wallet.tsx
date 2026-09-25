@@ -21,6 +21,7 @@ import {
   getNip44, isAmberActive, subscribeSigner,
   readNwcBackupHead, backupIsAnotherDevices, type NwcBackupHead,
 } from '@/lib/nostr';
+import { activeNostr } from '@/lib/nostr/signer';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 
@@ -237,10 +238,13 @@ interface Props {
 // Module-scope (not nested in NwcWallet) so it keeps a stable identity across
 // the parent's busy/state re-renders — a nested component would remount the
 // <input> on every render.
-function BackupToggle({ checked, disabled, canBackup, signedIn, signerPending, amber, onToggle }: {
+function BackupToggle({ checked, disabled, canBackup, canRemove, signedIn, signerPending, amber, onToggle }: {
   checked: boolean;
   disabled: boolean;
   canBackup: boolean;
+  /** A checked box can be turned OFF — the removal only signs, so it needs a
+   *  signer, not NIP-44. See `canRemoveBackup` in <NwcWallet>. */
+  canRemove: boolean;
   signedIn: boolean;
   /** Signed in with a remote signer whose adapter has not installed yet — a
    *  signer that is still reconnecting, NOT one without NIP-44. */
@@ -250,7 +254,7 @@ function BackupToggle({ checked, disabled, canBackup, signedIn, signerPending, a
   onToggle: (next: boolean) => void;
 }) {
   return (
-    <label className={`flex items-start gap-2 text-[11px] ${canBackup ? 'text-bone/80 cursor-pointer' : 'text-muted'}`}>
+    <label className={`flex items-start gap-2 text-[11px] ${canBackup || (checked && canRemove) ? 'text-bone/80 cursor-pointer' : 'text-muted'}`}>
       <input
         type="checkbox"
         className="mt-[2px]"
@@ -278,6 +282,7 @@ function BackupToggle({ checked, disabled, canBackup, signedIn, signerPending, a
               : signerPending
                 ? 'Waiting for your signer to connect.'
                 : 'Your signer doesn’t support NIP-44 encryption.'}
+            {checked && canRemove && ' You can still turn it off.'}
           </span>
         )}
       </span>
@@ -308,7 +313,10 @@ function BackupStatus({ head, written, canRepair }: {
   let text: string | null = null;
   let ok = false;
   if (head.state === 'none') {
-    text = `There is no backup on Nostr now. It was removed, possibly from another device.${canRepair ? ' Tap Back up again to save this connection.' : ''}`;
+    // Not "it was removed": the same-tab fast path in `doLoadProfile` sets the
+    // flag from a sessionStorage stash that never reached a relay, so a checked
+    // box over an empty coordinate is as often "never there" as "taken down".
+    text = `There is no backup on Nostr now.${canRepair ? ' Tap Back up again to save this connection.' : ''}`;
   } else if (head.state === 'present') {
     if (written && head.id === written.id) {
       text = '✓ The backup on Nostr is this connection.';
@@ -358,6 +366,13 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   // first used to say the signer had no NIP-44 for as long as it stayed open.
   const canBackup = !!identity && getNip44() !== null;
   const signerPending = !!identity && !canBackup && storage.signer.get() === 'bunker';
+  // Removing the backup is a SIGNATURE, not an encryption: `deleteEncryptedNwc`
+  // publishes an empty tombstone. Gating it on `canBackup` (NIP-44) meant a
+  // checked box could not be unticked, and Disconnect SKIPPED the tombstone,
+  // whenever NIP-44 was missing — a NIP-46 signer before its adapter installs
+  // (Clave on an iPhone), or a NIP-07 extension without NIP-44. The second left
+  // the connection string on the relays for the next sign-in to restore.
+  const canRemoveBackup = !!identity && !!activeNostr();
 
   function bump() { setTick((t) => t + 1); }
 
@@ -619,7 +634,20 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     // and the next login (no local URI) would auto-restore the very connection
     // the user just disconnected. On failure we keep the local connection so
     // the user can retry rather than silently resurrecting it later.
-    if (identity && storage.nwcBackup.get(identity.npub) && getNip44()) {
+    if (identity && storage.nwcBackup.get(identity.npub)) {
+      // No signer at all — a bunker still connecting, most often — means the
+      // tombstone cannot be signed. Keep the connection and say so, exactly as
+      // a failed tombstone does below: clearing it here would leave the
+      // encrypted connection on the relays to be restored at the next sign-in.
+      if (!canRemoveBackup) {
+        setNote(null);
+        setErr(
+          signerPending
+            ? 'Your signer is still connecting, so the backup on Nostr can’t be removed yet. Tap Disconnect again once it connects.'
+            : 'No signer is available to remove the backup on Nostr, so this connection stays. Sign in again, then tap Disconnect.',
+        );
+        return;
+      }
       setBusy(true);
       setErr(null);
       setNote(null);
@@ -679,7 +707,8 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   }
 
   async function toggleBackup(next: boolean) {
-    if (!canBackup || !identity || busy) return;
+    if (!identity || busy) return;
+    if (next ? !canBackup : !canRemoveBackup) return;
     const uri = loadNwcUri();
     if (next && !uri) return;
     setBusy(true);
@@ -751,8 +780,9 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         )}
         <BackupToggle
           checked={cardBackup}
-          disabled={!canBackup || busy}
+          disabled={busy || (cardBackup ? !canRemoveBackup : !canBackup)}
           canBackup={canBackup}
+          canRemove={canRemoveBackup}
           signedIn={!!identity}
           signerPending={signerPending}
           amber={isAmberActive()}
@@ -827,6 +857,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         checked={formBackup}
         disabled={!canBackup || busy}
         canBackup={canBackup}
+        canRemove={canBackup}
         signedIn={!!identity}
         signerPending={signerPending}
         amber={isAmberActive()}
