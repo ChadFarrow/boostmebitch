@@ -5,6 +5,7 @@ import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, Valu
 import {
   readAttr,
   decodeXmlText,
+  decodeXmlEntities,
   channelSlice,
   parseFeedNpubs,
   parsePlaylistRemoteItems,
@@ -163,7 +164,8 @@ function normalizeValue(v: any): ValueBlock | null {
   if (Array.isArray(v?.recipients)) return v as ValueBlock;
   if (!v?.model || !v?.destinations?.length) return null;
   const recipients: ValueRecipient[] = v.destinations.map((d: any) => ({
-    name: d.name,
+    // PI mirrors the feed's attribute string verbatim, entities included.
+    name: typeof d.name === 'string' ? decodeXmlEntities(d.name) : d.name,
     type: d.type ?? 'node',
     address: d.address,
     customKey: d.customKey ? String(d.customKey) : undefined,
@@ -1024,7 +1026,8 @@ function parseValueBlock(xml: string): ValueBlock | null | undefined {
     const address = readAttr(ra, 'address');
     if (!address) continue;
     recipients.push({
-      name: readAttr(ra, 'name'),
+      // Display only — decoded so `&amp;` shows as `&`. Never the address.
+      name: nameAttr(readAttr(ra, 'name')),
       type: readAttr(ra, 'type') ?? 'node',
       address,
       customKey: readAttr(ra, 'customKey'),
@@ -1150,6 +1153,10 @@ function looksEscapedHtml(s: string): boolean {
 
 // Decode the markup entities (not display entities like &mdash; — the browser
 // handles those). &amp; is decoded LAST so it can't re-form the others.
+function nameAttr(raw: string | undefined): string | undefined {
+  return raw === undefined ? undefined : decodeXmlEntities(raw);
+}
+
 function decodeMarkupEntities(s: string): string {
   return s
     .replace(/&lt;/g, '<')
