@@ -220,8 +220,13 @@ export async function sendZap(args: {
     // zap leg on a wallet that never answered showed ✗, and a ✗ is what talks
     // the user into boosting again and paying twice. Same rule, same shape, as
     // the keysend→LNURL wrapper in boost.ts.
+    //
+    // The wording claims nothing about WHY. It said "wallet rejected the zap
+    // invoice", which is false for the commonest cause: the wallet's relay
+    // could not be reached at all ("Failed to connect to wss://…"), so no
+    // wallet saw the invoice. `msg` carries the actual reason.
     const msg = e instanceof Error ? e.message : String(e);
-    const wrapped = `${prepared.rail} wallet rejected the zap invoice: ${msg}`;
+    const wrapped = `zap via ${prepared.rail} wallet did not complete: ${msg}`;
     throw e instanceof NwcIndeterminateError
       ? new NwcIndeterminateError(wrapped)
       : new Error(wrapped);
