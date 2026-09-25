@@ -162,7 +162,7 @@ const nextConfig = {
           // and nothing here uses — grep confirmed before each was added.
           {
             key: 'Permissions-Policy',
-            value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), midi=()',
+            value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), midi=(), hid=()',
           },
           // Deliberately NOT a script-src CSP. Two hard blockers, both
           // structural rather than laziness:
