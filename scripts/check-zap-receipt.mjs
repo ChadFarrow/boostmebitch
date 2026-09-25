@@ -1,25 +1,18 @@
-// Pins `zapReceiptAccepts` (lib/nostr/zap-receipt-match.ts) — which kind:9735 a
-// boost note is allowed to quote as the receipt for the zap it just paid.
+// Pins `zapRequestTags` (lib/nostr/zap-request.ts) — the kind:9734 tag list the
+// recipient's server mirrors onto a receipt — and the SUMMARY RECEIPT: the one
+// kind:9735 a boost note quotes, which the site signs for the sats that settled
+// (`validateSummaryRequest`, `summaryReceiptTemplate`, the oracle and the note).
 //
-// WHAT BREAKS IF THIS IS WRONG. A boost note quotes the receipt this function
-// picks, in a kind:1 signed by the user, which no client can edit afterwards.
-// Quote the wrong 9735 and the note publishes a stranger's payment as if it
-// were this boost — permanently, under the user's own key, with the amount that
-// stranger paid rendered by every client that reads the quote. The whole reason
-// this app quotes a provider's receipt instead of minting its own is that the
-// claim then belongs to the provider; a loose match gives that back.
+// WHAT BREAKS IF THIS IS WRONG. The summary receipt is quoted by a kind:1 that
+// no client can edit afterwards, and the site's key signs it. A loose oracle
+// makes the site attest a payment from someone else's key, or sign whatever tags
+// a caller sent; a note that quotes anything else publishes a stranger's claim
+// under the user's key.
 //
-// THE OBVIOUS VERSION IS WRONG, AND IT LOOKS RIGHT. A zap receipt names its
-// recipient with a `p` tag, so "the kind:9735 that p-tags the payee" reads like
-// the answer. It is `naive()` below. It matches every receipt that provider
-// issued to that person — a zap from somebody else a second earlier included —
-// and a busy artist on Fountain has many. It also accepts a receipt ANYONE
-// published, because a `p` tag is not a signature over anything.
-//
-// The plausible half-fix is `zapperOnly()`: add the Appendix F pubkey test and
-// stop. That closes the forgery and leaves the collision wide open, which is the
-// worse of the two — the receipt is real, correctly signed, and about the wrong
-// payment, so nothing downstream can tell.
+// It used to pin `zapReceiptAccepts` too — which PROVIDER receipt a boost note
+// could quote for a zap leg. No boost payment is a zap since 2026-09-25 (#444),
+// so nothing waited for a provider receipt any more, and the matcher went with
+// the waiter.
 //
 // FIXTURE PROVENANCE. BOTH RECEIPTS ARE REAL, CAPTURED WHOLE.
 //
@@ -33,28 +26,15 @@
 //              boost note 57b63ba5…d942 ("Tangerine Dream", 123 sats), from a
 //              DIFFERENT sender, and signed by the SAME zapper.
 //
-// That second one is the collision this file exists for, and it is no longer
-// constructed: a real receipt, correctly signed by the real provider, about
-// somebody else's payment. Both carry `P` (the sender), `preimage`, and the
+// Both carry `P` (the sender), `preimage`, and the
 // NIP-73 `i`/`k` pairs mirrored off the request; neither carries an `amount`
-// tag — asserted at load, so the "Fountain ships no amount tag" vector stays
-// an observation and not a memory. The embedded kind:9734 of each is the real
+// tag — asserted at load, so that stays an observation and not a memory.
+// The embedded kind:9734 of each is the real
 // zap request, and `zapRequestTags` is checked by rebuilding those two tag
 // lists from the identifiers they carry.
 //
-// Three keys are still constructed, and only ever as NEGATIVES: `STRANGER`
-// (an unrelated pubkey), and the `withTag` spoilers that replace one real
-// field at a time. Nothing positive here is invented.
-//
-// An earlier version of this file carried a CONSTRUCTED receipt around a real
-// zapper key and receipt id (044da649…c59d, off note f0416267…50e0), because
-// the sandbox it was written in had no relay egress. Its own header said to
-// replace it the moment the event could be fetched. This is that replacement.
-//
-// The vectors are adversarial by construction: each false case is a receipt that
-// differs from the true one in exactly one field, which is what gives them teeth
-// a round-trip fixture would not have.
-import { zapReceiptAccepts, requestIdInDescription, receiptRelayHints } from '../lib/nostr/zap-receipt-match.ts';
+// One key is constructed, `STRANGER` (an unrelated pubkey), and only ever as a
+// NEGATIVE. Nothing positive here is invented.
 import {
   zapRequestTags, nip73Tags, validateSummaryRequest, summaryReceiptTemplate,
   summaryRequestTemplateFromSpec, SUMMARY_MAX_MSAT,
@@ -66,28 +46,8 @@ let failures = 0;
 const fail = (m) => { console.error('  ✗ ' + m); failures++; };
 const ok = (m) => console.log('  ok    ' + m);
 
-// ── Wrong version 1: a kind:9735 that p-tags the payee ────────────────────
-function naive(receipt, expect) {
-  return (
-    receipt.kind === 9735 &&
-    (Array.isArray(receipt.tags) ? receipt.tags : []).some(
-      (t) => Array.isArray(t) && t[0] === 'p' && t[1] === expect.recipientPubkey,
-    )
-  );
-}
-
-// ── Wrong version 2: Appendix F's pubkey test, and nothing correlating ─────
-function zapperOnly(receipt, expect) {
-  return receipt.pubkey === expect.zapperPubkey && naive(receipt, expect);
-}
-
-const WRONG = [
-  { fn: naive, mark: 'alsoNaive', label: 'naive()' },
-  { fn: zapperOnly, mark: 'alsoZapperOnly', label: 'zapperOnly()' },
-];
-
 // ── The two real receipts ─────────────────────────────────────────────────
-// Verbatim. Do not edit a field here to make a vector pass — if one fails, the
+// Verbatim. Do not edit a field here to make a check pass — if one fails, the
 // code is wrong, not the wire.
 const RECEIPT_1 = {
   "content": "",
@@ -194,18 +154,12 @@ const requestOf = (ev) => JSON.parse(tagOf(ev, 'description')[1]);
 const ZAPPER = RECEIPT_1.pubkey;                       // b866ce76… Fountain's zapper key
 const RECEIPT_ID = RECEIPT_1.id;
 // Fountain writes its OWN zapper key as the zap request's `p` — the payee and
-// the signer are the same pubkey on both receipts, from two senders. That is
-// the shape a zap takes when NIP-05 names nobody and the provider's
-// nostrPubkey stands in, and this is what pins that the matcher accepts it.
+// the signer are the same pubkey on both receipts, from two senders.
 const PAYEE = tagOf(RECEIPT_1, 'p')[1];
 const REAL_REQUEST = requestOf(RECEIPT_1);
-const REQ_ID = REAL_REQUEST.id;                        // 29e8d034…
 const SENDER = REAL_REQUEST.pubkey;                    // f7922a0a… the note author
-const BOLT11 = tagOf(RECEIPT_1, 'bolt11')[1];          // lnbc1u1… = 100 sats
 const AMOUNT_MSAT = Number(tagOf(REAL_REQUEST, 'amount')[1]);
 const OTHER_REQUEST = requestOf(RECEIPT_2);
-const OTHER_REQ_ID = OTHER_REQUEST.id;                 // ca6c7813…
-const OTHER_BOLT11 = tagOf(RECEIPT_2, 'bolt11')[1];    // lnbc1230n1… = 123 sats
 const OTHER_AMOUNT_MSAT = Number(tagOf(OTHER_REQUEST, 'amount')[1]);
 // The one constructed key. Unrelated to everything above; only ever a negative.
 const STRANGER = 'e88a691e98d9987c964521dff60025f60700378a4879180dcbbb4a5027850411';
@@ -228,264 +182,10 @@ if (PAYEE !== ZAPPER || RECEIPT_2.pubkey !== ZAPPER || tagOf(RECEIPT_2, 'p')[1] 
   fail('the two captured receipts no longer share one zapper/payee key — re-read the header');
 }
 if (tagOf(RECEIPT_1, 'amount') || tagOf(RECEIPT_2, 'amount')) {
-  fail('a captured Fountain receipt carries an `amount` tag; the "ships no amount tag" vector is stale');
+  fail('a captured Fountain receipt carries an `amount` tag; the header is stale');
 }
 if (AMOUNT_MSAT !== 100_000 || OTHER_AMOUNT_MSAT !== 123_000) {
   fail(`captured amounts read ${AMOUNT_MSAT} / ${OTHER_AMOUNT_MSAT} msat; expected 100000 / 123000`);
-}
-
-const EXPECT = {
-  zapperPubkey: ZAPPER,
-  recipientPubkey: PAYEE,
-  requestId: REQ_ID,
-  bolt11: BOLT11,
-  amountMsat: AMOUNT_MSAT,
-};
-const EXPECT_2 = {
-  zapperPubkey: ZAPPER,
-  recipientPubkey: PAYEE,
-  requestId: OTHER_REQ_ID,
-  bolt11: OTHER_BOLT11,
-  amountMsat: OTHER_AMOUNT_MSAT,
-};
-
-/** The real kind:9734, re-serialized with one field overridden. */
-const request = (id, over = {}) => JSON.stringify({ ...REAL_REQUEST, id, ...over });
-
-/** The real receipt, with optional extra tags and one-field overrides. */
-const receipt = ({ extraTags = [], ...over } = {}) => ({
-  ...RECEIPT_1,
-  tags: [...RECEIPT_1.tags, ...extraTags],
-  // `extraTags` is destructured out above, so it can never land on the event as
-  // a stray property — which is exactly how three vectors here first tested a
-  // tag that was not in `tags` at all, and passed.
-  ...over,
-});
-
-/** Rebuild the tag list with one tag replaced or removed. */
-const withTag = (name, value) => {
-  const base = receipt().tags.filter((t) => t[0] !== name);
-  return value === null ? base : [...base, [name, value]];
-};
-
-const VECTORS = [
-  {
-    name: 'the receipt for OUR zap: right zapper, right payee, our request, our invoice',
-    args: [receipt(), EXPECT],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'THE COLLISION: a REAL second receipt — same provider, same payee, somebody else’s zap',
-    // The failure both wrong versions ship, and it is no longer constructed:
-    // RECEIPT_2 is a real event, correctly signed by the real provider, about a
-    // different sender's payment eight hours later.
-    args: [RECEIPT_2, EXPECT],
-    expect: false,
-  },
-  {
-    name: 'THE COLLISION, mirrored: the first receipt against the second zap’s expectation',
-    args: [RECEIPT_1, EXPECT_2],
-    expect: false,
-  },
-  {
-    name: 'MUST STILL WORK: the second real receipt is accepted for its own zap',
-    args: [RECEIPT_2, EXPECT_2],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'MUST STILL WORK: the payee IS the zapper (Fountain writes its own key as `p`)',
-    // The shape a zap takes when NIP-05 names nobody and the provider's
-    // nostrPubkey stands in. Real on both receipts.
-    args: [receipt(), { ...EXPECT, recipientPubkey: ZAPPER }],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'our request id, but the invoice is not the one we paid',
-    args: [{ ...receipt(), tags: withTag('bolt11', OTHER_BOLT11) }, EXPECT],
-    expect: false,
-  },
-  {
-    name: 'our invoice, but the description echoes a different request',
-    args: [{ ...receipt(), tags: withTag('description', request(OTHER_REQ_ID)) }, EXPECT],
-    expect: false,
-  },
-  {
-    name: 'THE FORGERY: anybody may publish a kind:9735 — this one is not the provider’s',
-    args: [{ ...receipt(), pubkey: STRANGER }, EXPECT],
-    expect: false,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'a receipt that p-tags somebody other than the payee',
-    args: [{ ...receipt(), tags: withTag('p', STRANGER) }, EXPECT],
-    expect: false,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'NOTHING CORRELATES IT: no description and no bolt11',
-    // Appendix E makes both mandatory, so this is malformed — but it is also
-    // exactly what an attacker publishes, because those two fields are the only
-    // ones they cannot fake past the pubkey test.
-    args: [{ ...receipt(), tags: [['p', PAYEE]] }, EXPECT],
-    expect: false,
-  },
-  {
-    name: 'a description that is not JSON is a contradiction, not a missing field',
-    args: [{ ...receipt(), tags: withTag('description', 'not json at all') }, EXPECT],
-    expect: false,
-  },
-  {
-    name: 'a description holding a kind:1 rather than the zap request',
-    args: [
-      { ...receipt(), tags: withTag('description', request(REQ_ID, { kind: 1 })) },
-      EXPECT,
-    ],
-    expect: false,
-  },
-  {
-    name: 'a description whose id is not a 64-hex event id',
-    args: [
-      { ...receipt(), tags: withTag('description', request('abc')) },
-      EXPECT,
-    ],
-    expect: false,
-  },
-  {
-    name: 'a description that is a JSON array, not an object',
-    args: [{ ...receipt(), tags: withTag('description', '[1,2,3]') }, EXPECT],
-    expect: false,
-  },
-  {
-    name: 'an `amount` tag that disagrees with what this leg asked for',
-    args: [receipt({ extraTags: [['amount', String(AMOUNT_MSAT * 2)]] }), EXPECT],
-    expect: false,
-  },
-  {
-    name: 'MUST STILL WORK: Fountain ships no `amount` tag at all (asserted on both captures above)',
-    args: [receipt(), EXPECT],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'MUST STILL WORK: an `amount` tag that agrees',
-    args: [receipt({ extraTags: [['amount', String(AMOUNT_MSAT)]] }), EXPECT],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'MUST STILL WORK: BOLT11 is bech32, so an UPPERCASE invoice is the same invoice',
-    args: [{ ...receipt(), tags: withTag('bolt11', BOLT11.toUpperCase()) }, EXPECT],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'MUST STILL WORK: description correlates it, bolt11 absent',
-    args: [{ ...receipt(), tags: withTag('bolt11', null) }, EXPECT],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'MUST STILL WORK: bolt11 correlates it, description absent',
-    args: [{ ...receipt(), tags: withTag('description', null) }, EXPECT],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'MUST STILL WORK: an `e` tag rides along (the real receipt already carries P, preimage, i, k)',
-    args: [
-      receipt({
-        extraTags: [
-          ['e', '2c2f6a1d7b3e9c5a0d8f4b6e2a0c8d4f6b2e0a8c4d6f2b0e8a6c4d2f0b8e6a4c'],
-        ],
-      }),
-      EXPECT,
-    ],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'MUST STILL WORK: a provider that re-serializes the request keeps its id',
-    args: [
-      {
-        ...receipt(),
-        tags: withTag('description', JSON.stringify(JSON.parse(request(REQ_ID)), Object.keys(JSON.parse(request(REQ_ID))).sort())),
-      },
-      EXPECT,
-    ],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'a kind that is not 9735 is not a receipt',
-    args: [{ ...receipt(), kind: 1 }, EXPECT],
-    expect: false,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'HOSTILE SHAPE: tags is not an array',
-    args: [{ ...receipt(), tags: 'nope' }, EXPECT],
-    expect: false,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'HOSTILE SHAPE: a tag that is not an array sits beside the real ones',
-    args: [{ ...receipt(), tags: [null, 42, ['p', PAYEE], ['description', request(REQ_ID)]] }, EXPECT],
-    expect: true,
-    alsoNaive: true,
-    alsoZapperOnly: true,
-  },
-  {
-    name: 'HOSTILE SHAPE: pubkey is absent',
-    args: [{ ...receipt(), pubkey: undefined }, EXPECT],
-    expect: false,
-    alsoZapperOnly: true,
-  },
-];
-
-for (const v of VECTORS) {
-  let got;
-  try {
-    got = zapReceiptAccepts(...v.args);
-  } catch (e) {
-    fail(`${v.name} — THREW (${e?.message ?? e}). Every input here reaches us off a relay.`);
-    continue;
-  }
-  if (got !== v.expect) { fail(`${v.name} — expected ${v.expect}, got ${got}`); continue; }
-  const beaten = [];
-  let marksOk = true;
-  for (const w of WRONG) {
-    let agrees;
-    try { agrees = w.fn(...v.args) === v.expect; } catch { agrees = false; }
-    if (agrees && !v[w.mark]) {
-      fail(`${v.name} — ${w.label} passes it too, so this vector proves nothing\n`
-        + `          against it. Mark it { ${w.mark}: true } or change the vector.`);
-      marksOk = false;
-    } else if (!agrees && v[w.mark]) {
-      fail(`${v.name} — marked ${w.mark} but ${w.label} FAILS it. The mark is wrong.`);
-      marksOk = false;
-    } else if (!agrees) {
-      beaten.push(w.label);
-    }
-  }
-  if (marksOk) {
-    ok(v.name + (beaten.length ? `  (beats ${beaten.join(', ')})` : '  (must-still-work)'));
-  }
 }
 
 // ── zapRequestTags: the kind:9734 tag list, against both real requests ───────
@@ -570,46 +270,6 @@ const naiveTagsCaught = [
 for (const [name, caught] of naiveTagsCaught) {
   if (caught) ok('rejected: ' + name);
   else fail('a wrong builder survives: ' + name);
-}
-
-// ── receiptRelayHints: the hint names a relay that HOLDS the receipt ───────
-// The first production boost (note 0be1c9a5…, 2026-09-16) asked its provider
-// for seven relays, the user's own write relay first; Alby's receipt landed on
-// four of them and not the first, and the `q` tag's hint named the first. These
-// are those seven, and the four measured to hold the receipt.
-console.log('\nreceiptRelayHints — deliver before request, three at most');
-const ASKED = ['wss://podtards.com', 'wss://chadf.nostr1.com', 'wss://relay.damus.io', 'wss://hist.nostr.land', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.fountain.fm'];
-const HELD = ['wss://relay.fountain.fm', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://chadf.nostr1.com'];
-eq('the production case: the delivering relays lead, the asked-for tail follows',
-  receiptRelayHints(HELD.slice(0, 1), ASKED), ['wss://relay.fountain.fm', 'wss://podtards.com', 'wss://chadf.nostr1.com']);
-eq('every delivering relay outranks every merely-asked one',
-  receiptRelayHints(HELD, ASKED), HELD.slice(0, 3));
-eq('nothing delivered yet → the request’s own order, so a hint still exists',
-  receiptRelayHints([], ASKED), ASKED.slice(0, 3));
-eq('a relay seen in both lists is written once', receiptRelayHints(['wss://nos.lol'], ['wss://nos.lol', 'wss://a.example']), ['wss://nos.lol', 'wss://a.example']);
-eq('non-wss and non-string entries are dropped',
-  receiptRelayHints([null, 'ws://plain.example', 42], ['https://not-a-relay.example', 'wss://ok.example']), ['wss://ok.example']);
-eq('empty in, empty out', receiptRelayHints([], []), []);
-// The dedupe bug the first test note showed (b88137ca…): nostr-tools spells the
-// delivering relay with a trailing slash, the request without, and a string
-// compare wrote the same relay twice with podtards.com back in slot two.
-eq('a delivering relay spelled with a trailing slash is the SAME relay as the request’s',
-  receiptRelayHints(['wss://chadf.nostr1.com/'], ASKED),
-  ['wss://chadf.nostr1.com', 'wss://podtards.com', 'wss://relay.damus.io']);
-eq('hints are written without the trailing slash, however they arrived',
-  receiptRelayHints(['wss://relay.primal.net/'], []), ['wss://relay.primal.net']);
-eq('case and surrounding whitespace do not make a second relay',
-  receiptRelayHints([' wss://NOS.lol/ '], ['wss://nos.lol']), ['wss://nos.lol']);
-eq('a bare scheme is not a relay', receiptRelayHints(['wss://', 'wss:///'], []), []);
-if (receiptRelayHints(['wss://chadf.nostr1.com/'], ASKED).filter((r) => r.includes('chadf')).length !== 1) {
-  fail('receiptRelayHints still writes a relay twice when the two lists spell it differently');
-} else {
-  ok('rejected: exact-string dedupe (the same relay twice, from note b88137ca…)');
-}
-if (JSON.stringify(ASKED.slice(0, 3)) === JSON.stringify(receiptRelayHints(HELD.slice(0, 1), ASKED))) {
-  fail('receiptRelayHints is `requested.slice(0, 3)` — the hint points at a relay without the receipt');
-} else {
-  ok('rejected: `request.relays.slice(0, 3)` (the hint that pointed at podtards.com)');
 }
 
 // ── The summary receipt: validateSummaryRequest / summaryReceiptTemplate ──
@@ -705,24 +365,9 @@ if (naiveOracle([['p', STRANGER], ['P', STRANGER], ['amount', '999999999999']]).
   fail('the naive comparison is broken');
 }
 
-// `requestIdInDescription` has THREE answers and the middle one is the whole
-// point: an unreadable description is a contradiction, not a missing field. A
-// refactor that collapses null into undefined turns every vector above that
-// spoils the description into an accept, and does it silently.
-const DESC_STATES = [
-  { name: 'no description tag at all is `undefined` (the correlator does not apply)', tags: [['p', PAYEE]], expect: undefined },
-  { name: 'an unreadable description is `null` (a contradiction)', tags: [['description', '{[']], expect: null },
-  { name: 'a readable request yields its id', tags: [['description', request(REQ_ID)]], expect: REQ_ID },
-];
-for (const d of DESC_STATES) {
-  const got = requestIdInDescription(d.tags);
-  if (got === d.expect) ok(d.name);
-  else fail(`${d.name} — expected ${String(d.expect)}, got ${String(got)}`);
-}
-
 // The module must stay loadable by this script under plain Node, or the next
 // person to touch it copies the function in here and the check guards nothing.
-for (const leaf of ['lib/nostr/zap-receipt-match.ts', 'lib/nostr/zap-request.ts']) {
+for (const leaf of ['lib/nostr/zap-request.ts']) {
   const problems = importFreeProblems(leaf);
   if (problems.length) {
     fail(`${leaf} is no longer import-free:\n          ` + problems.join('\n          '));
@@ -732,40 +377,11 @@ for (const leaf of ['lib/nostr/zap-receipt-match.ts', 'lib/nostr/zap-request.ts'
 }
 
 // ── The wiring no vector can see ──────────────────────────────────────────
-// A pure-function pin sees this function and nothing around it. Three call
-// sites have to keep holding for it to mean anything, and each fails silently.
+// A pure-function pin sees the builder and nothing around it. These call sites
+// have to keep holding for it to mean anything, and each fails silently.
 
-// 1. The provider's nostrPubkey is the Appendix F test. lib/v4v/zap.ts read it
-//    and threw it away for the life of the live-stream zap path; without it
-//    every receipt this function judges is judged on attacker-written data.
 const zapSrc = readFileSync('lib/v4v/zap.ts', 'utf8');
-if (!/zapperPubkey\s*[:=]\s*meta\.nostrPubkey/.test(zapSrc) || !/zapperPubkey,/.test(zapSrc)) {
-  fail('lib/v4v/zap.ts no longer reports the provider’s `nostrPubkey` as `zapperPubkey`.\n'
-    + '          The receipt matcher then has nothing to test authorship against and\n'
-    + '          any forged kind:9735 that p-tags the payee is quotable.');
-} else {
-  ok('lib/v4v/zap.ts carries the provider’s nostrPubkey through to the matcher');
-}
-
-// 2. The waiter is the only caller. A subscription that stops asking this
-//    question quotes the first 9735 it sees.
-const waitSrc = readFileSync('lib/nostr/zap-receipt-wait.ts', 'utf8');
-if (!/zapReceiptAccepts\(/.test(waitSrc)) {
-  fail('lib/nostr/zap-receipt-wait.ts no longer calls zapReceiptAccepts.');
-} else {
-  ok('the receipt waiter still runs every candidate through the matcher');
-}
-
-// 2b. The waiter names the DELIVERING relay. Without `trackRelays` the pool
-//     records nothing in `seenOn`, and the helper silently degrades to the
-//     request's order — the shipped bug, with a green build.
-if (!/trackRelays\s*=\s*true/.test(waitSrc) || !/receiptRelayHints\(/.test(waitSrc) || !/seenOn\.get\(/.test(waitSrc)) {
-  fail('lib/nostr/zap-receipt-wait.ts no longer tracks which relay delivered the receipt (trackRelays + seenOn → receiptRelayHints).');
-} else {
-  ok('the receipt waiter records the delivering relay and hints with it');
-}
-
-// 3. The tag list `sendZap` signs is the pinned builder — not a hand-written
+// 1. The tag list `sendZap` signs is the pinned builder — not a hand-written
 //    array beside it. And no `client` tag reaches the 9734 by any other route.
 if (!/zapRequestTags\(/.test(zapSrc)) {
   fail('lib/v4v/zap.ts no longer builds the kind:9734 tags through zapRequestTags.');
@@ -774,7 +390,7 @@ if (!/zapRequestTags\(/.test(zapSrc)) {
 } else {
   ok('lib/v4v/zap.ts signs the pinned tag list');
 }
-// 3b. The summary receipt is the one 9734 that names a show and item, so it
+// 1b. The summary receipt is the one 9734 that names a show and item, so it
 //     must build its tags through the same builder WITH the caller's refs —
 //     both on the self-signed path and in the spec the site path hands the
 //     oracle. Without them the receipt parses as no show and no episode.
@@ -788,7 +404,7 @@ if (!/zapRequestTags\(/.test(zapSrc)) {
     ok('the summary receipt names the show and item on both signing paths');
   }
 }
-// 4. A boost payment is NEVER a zap — value-block legs and live streams alike.
+// 2. A boost payment is NEVER a zap — value-block legs and live streams alike.
 //    It is a Podcasting 2.0 payment and carries PC 2.0 metadata: the boostagram
 //    in TLV 7629169 on a keysend, the BoostBox descriptor in the LUD-21 comment
 //    on LNURL. #402 paid qualifying
@@ -819,7 +435,7 @@ for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal
   }
 }
 
-// 4b. The oracle derives the receipt; it never signs caller-supplied tags. And
+// 2b. The oracle derives the receipt; it never signs caller-supplied tags. And
 //     site-sign lets a site-published note quote ONE event, only if the site
 //     authored it — the `q` rule that keeps that oracle from becoming an `e`.
 const oracleSrc = readFileSync('app/api/nostr/zap-receipt-sign/route.ts', 'utf8');
@@ -851,7 +467,7 @@ for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal
   } else ok(`${f} mints the summary receipt, self or site, by the note's signer`);
 }
 
-// 5. The note is why any of this exists, and the quote is BOTH forms of ONE receipt.
+// 3. The note is why any of this exists, and the quote is BOTH forms of ONE receipt.
 //    A `q` tag that stops being emitted is invisible from the app — the boost
 //    still pays and the note still posts. And a `nostr:nevent…` line that
 //    comes BACK is the regression the first production boost showed: every

@@ -21,7 +21,6 @@ import { lnurlFetch } from './lnurl-fetch';
 import { zapRequestTags } from '@/lib/nostr/zap-request';
 import { NwcIndeterminateError } from './nwc-errors';
 import { activeNostr } from '@/lib/nostr/signer';
-import type { PendingZapReceipt } from '@/lib/nostr/zap-receipt-wait';
 
 /** A provider's LUD-06 payRequest document, plus the two NIP-57 fields. */
 interface LnurlPayMetadata {
@@ -49,21 +48,14 @@ export class ZapNotAttemptedError extends Error {
   }
 }
 
-/** What `sendZap` hands back: the payment, and how to find its receipt. */
+/** What `sendZap` hands back: the payment's preimage. */
 export interface SendZapResult {
   preimage: string;
-  /**
-   * Everything needed to recognise this zap's kind:9735 once the provider
-   * publishes it. The receipt does not exist yet — see
-   * lib/nostr/zap-receipt-wait.ts.
-   */
-  pending: PendingZapReceipt;
 }
 
 interface PreparedZap {
   invoice: string;
   rail: Rail;
-  pending: PendingZapReceipt;
 }
 
 function lud06ToUrl(lud06: string): string {
@@ -157,7 +149,7 @@ export async function sendZap(args: {
       ? new NwcIndeterminateError(wrapped)
       : new Error(wrapped);
   }
-  return { preimage, pending: prepared.pending };
+  return { preimage };
 }
 
 /**
@@ -189,12 +181,6 @@ async function prepareZap(args: Parameters<typeof sendZap>[0]): Promise<Prepared
   if (!meta.allowsNostr || !meta.nostrPubkey) {
     throw new Error("Recipient's Lightning provider does not support Nostr zaps");
   }
-  // Kept, not just tested. This is the key NIP-57 Appendix F makes a client
-  // check the receipt's author against, so discarding it (which this function
-  // did for the life of the live-stream zap path) leaves nothing to tell a real
-  // receipt from one anybody published. See lib/nostr/zap-receipt-match.ts.
-  const zapperPubkey = meta.nostrPubkey;
-
   const amountMsat = args.amountSats * 1000;
   if (amountMsat < meta.minSendable || amountMsat > meta.maxSendable) {
     throw new Error(
@@ -289,16 +275,5 @@ async function prepareZap(args: Parameters<typeof sendZap>[0]): Promise<Prepared
     );
   }
 
-  return {
-    invoice,
-    rail,
-    pending: {
-      zapperPubkey,
-      recipientPubkey: args.recipientPubkey,
-      requestId: signed.id,
-      bolt11: invoice,
-      amountMsat,
-      relays: receiptRelays,
-    },
-  };
+  return { invoice, rail };
 }
