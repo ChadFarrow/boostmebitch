@@ -753,3 +753,120 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
   }
   return out;
 }
+
+// ── OPML ────────────────────────────────────────────────────────────────────
+//
+// The subscription list other podcast apps read and write: one
+// `<outline type="rss" xmlUrl="…"/>` per show. It lives HERE, not in a module
+// of its own, because the reader must walk the document with `findTags` (a
+// regex walk is O(n²) on a hostile file — see the scanner header) and a
+// separate module importing this one would need an extensionless relative
+// specifier, which `node --experimental-strip-types` cannot load. That is what
+// lets `npm run check:opml` pin the shipping reader and writer.
+//
+// Only SHOW favorites travel as OPML. The format has no standard way to name
+// one episode or track, so episode favorites stay on the Nostr list.
+
+/** A file bigger than this is refused before it is read. Real lists are ~100 KB. */
+export const MAX_OPML_BYTES = 2 * 1024 * 1024;
+/** The walk stops after this many outlines. */
+export const MAX_OPML_OUTLINES = 5000;
+const MAX_OPML_TITLE_LEN = 300;
+const MAX_OPML_URL_LEN = 2048;
+
+export interface OpmlFeed {
+  url: string;
+  title?: string;
+}
+
+export type OpmlParse =
+  | { ok: true; feeds: OpmlFeed[]; skipped: number }
+  | { ok: false; error: string };
+
+/**
+ * An http(s) URL that `new URL` accepts, or undefined. A feed URL is later
+ * sent to Podcast Index and rendered, so anything else — `javascript:`,
+ * `file:`, a relative path — is dropped here, at the parse boundary.
+ */
+function opmlFeedUrl(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const s = decodeXmlText(raw);
+  if (!s || s.length > MAX_OPML_URL_LEN) return undefined;
+  try {
+    const u = new URL(s);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read the feeds out of an OPML document. Category outlines (no `xmlUrl`) are
+ * skipped silently, so a nested list flattens. An outline that HAS an
+ * `xmlUrl` which is not a usable http(s) URL is counted in `skipped`, so the
+ * screen can say so rather than drop it unseen. The first copy of a URL wins.
+ */
+export function parseOpml(text: string): OpmlParse {
+  if (text.length > MAX_OPML_BYTES) {
+    return { ok: false, error: 'this file is too large to be a subscription list' };
+  }
+  if (!firstTag(text, 'opml')) {
+    return { ok: false, error: 'this file is not an OPML subscription list' };
+  }
+  const feeds: OpmlFeed[] = [];
+  const seen = new Set<string>();
+  let skipped = 0;
+  for (const hit of findTags(text, 'outline', { max: MAX_OPML_OUTLINES })) {
+    const raw = readAttr(hit.attrs, 'xmlUrl');
+    if (raw === undefined) continue;
+    const url = opmlFeedUrl(raw);
+    if (!url) {
+      skipped++;
+      continue;
+    }
+    if (seen.has(url)) continue;
+    seen.add(url);
+    const titleRaw = readAttr(hit.attrs, 'title') ?? readAttr(hit.attrs, 'text');
+    const title = titleRaw ? decodeXmlText(titleRaw).slice(0, MAX_OPML_TITLE_LEN) : '';
+    feeds.push(title ? { url, title } : { url });
+  }
+  return { ok: true, feeds, skipped };
+}
+
+function escapeXmlAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+    // A raw newline in an attribute is normalized to a space by every XML
+    // reader; say so rather than let the reader decide.
+    .replace(/[\r\n\t]/g, ' ');
+}
+
+/** An OPML 2.0 document listing `feeds`, in the order given. */
+export function buildOpml(feeds: OpmlFeed[], meta: { title: string; dateCreated: Date }): string {
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<opml version="2.0">',
+    '  <head>',
+    `    <title>${escapeXmlAttr(meta.title)}</title>`,
+    `    <dateCreated>${meta.dateCreated.toUTCString()}</dateCreated>`,
+    '  </head>',
+    '  <body>',
+  ];
+  for (const f of feeds) {
+    const t = escapeXmlAttr(f.title || f.url);
+    lines.push(`    <outline type="rss" text="${t}" title="${t}" xmlUrl="${escapeXmlAttr(f.url)}"/>`);
+  }
+  lines.push('  </body>', '</opml>', '');
+  return lines.join('\n');
+}
+
+/** `<site>-subscriptions-YYYY-MM-DD.opml`. The caller passes `BRAND.domain`. */
+export function opmlFilename(domain: string, date: Date): string {
+  const site = domain.split('.')[0];
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${site}-subscriptions-${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}.opml`;
+}
