@@ -51,7 +51,7 @@ export function QueueList() {
   const currentKey = current ? epKey(current.episode) : null;
 
   return (
-    <div className="border-t border-bone/10 pt-5 lg:border-t-0 lg:pt-0">
+    <div className="border-t border-bone/10 pt-5">
       <div className="flex items-center justify-between gap-2 mb-2">
         <p className="text-[11px] uppercase tracking-widest text-muted">
           Up Next · {queue.length}

@@ -754,6 +754,39 @@ export function FullscreenPlayer({
   // jumps to the previous one.
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekTo);
 
+  // The secondary tiles, defined ONCE and rendered in two places: inside the ⋯
+  // menu below lg:, and as a row under BOOST from lg:, where the right pane has
+  // the room and a 224px popover in the corner of a 1440px screen read as an
+  // afterthought. Each tile is the shared control, so two mounts share state
+  // through the store; only one is ever displayed (the other is `display:
+  // none`, which also takes it out of the accessibility tree).
+  const secondaryTiles = (
+    <>
+      <FavHeart podcast={podcast} size="tile" nameTarget />
+      <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+      {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
+          longer shows: ↓, a progress fill, ✓ when the episode is on the
+          device. It was a chip in the bar for one afternoon; six tiles fill
+          the menu's two rows exactly, and the bar keeps ⋯, the account
+          control and ✕. It renders nothing for a live item or an HLS
+          stream, and then the menu is five. */}
+      <DownloadButton episode={episode} podcast={podcast} size="tile" />
+      <ShareTargets podcast={podcast} episode={episode} />
+      {streamButton && cloneElement(
+        streamButton,
+        { className: 'tile' },
+        <span aria-hidden className="text-lg leading-none">≋</span>,
+        'STREAM',
+      )}
+      {/* SPEED, then 3.5× and 5×, fill a third row of three. Last because
+          they are about playback, not about this show or episode. No speed
+          on a live item: <Player> holds it at 1×, since there is nothing
+          ahead of the live edge to play into. */}
+      {!isLive && <SpeedButton />}
+      {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+    </>
+  );
+
   return (
     <div
       // Height is the *dynamic* viewport (100dvh), not inset-0 / 100vh: on iOS
@@ -842,7 +875,8 @@ export function FullscreenPlayer({
             // bar. It was 36 x 38 beside them at 30, which read as one control
             // shouting. 30 x 26 still clears WCAG 2.5.8's 24px floor, and the
             // bar's height — what the cover measures against — is unchanged.
-            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 ${
+            // lg:hidden — from lg: the tiles are a row under BOOST instead.
+            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 lg:hidden ${
               tiles.open ? 'border-bone bg-bone/5 text-bone' : ''
             }`}
             aria-haspopup="menu"
@@ -911,31 +945,10 @@ export function FullscreenPlayer({
           // STREAM alone on a second row beside three empty cells. 3 + 2 reads
           // as a block. 224px is the width `useAnchoredMenu` is told about, so
           // the panel cannot hang off the left of the screen.
-          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2"
+          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2 lg:hidden"
           style={{ top: tiles.at.top, bottom: tiles.at.bottom, right: tiles.at.right }}
         >
-          <FavHeart podcast={podcast} size="tile" nameTarget />
-          <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
-          {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
-              longer shows: ↓, a progress fill, ✓ when the episode is on the
-              device. It was a chip in the bar for one afternoon; six tiles fill
-              the menu's two rows exactly, and the bar keeps ⋯, the account
-              control and ✕. It renders nothing for a live item or an HLS
-              stream, and then the menu is five. */}
-          <DownloadButton episode={episode} podcast={podcast} size="tile" />
-          <ShareTargets podcast={podcast} episode={episode} />
-          {streamButton && cloneElement(
-            streamButton,
-            { className: 'tile' },
-            <span aria-hidden className="text-lg leading-none">≋</span>,
-            'STREAM',
-          )}
-          {/* SPEED, then 3.5× and 5×, fill a third row of three. Last because
-              they are about playback, not about this show or episode. No speed
-              on a live item: <Player> holds it at 1×, since there is nothing
-              ahead of the live edge to play into. */}
-          {!isLive && <SpeedButton />}
-          {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+          {secondaryTiles}
         </div>,
         document.body,
       )}
@@ -1334,6 +1347,14 @@ export function FullscreenPlayer({
                 >
                   <BoltIcon /> BOOST
                 </button>
+              </div>
+              {/* THE ⋯ MENU'S TILES, ON THE SCREEN FROM lg:. The reason they
+                  left the screen — a long title pushing them off the bottom of
+                  a phone — does not hold beside a side-by-side cover, where
+                  this pane has the height. Four across, so the eight tiles are
+                  two even rows and each tile has room for its word. */}
+              <div role="group" aria-label="Actions for this episode" className="hidden lg:grid grid-cols-4 gap-2 mt-1">
+                {secondaryTiles}
               </div>
             </div>
 
