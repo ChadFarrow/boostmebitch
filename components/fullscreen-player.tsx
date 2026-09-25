@@ -63,7 +63,7 @@ const LivePlayedTracks = dynamic(
 import type { Episode, Podcast, ValueTimeSplit } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
-import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
+import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon, ShareIcon } from './icons';
 import {
   episodeContentsLabel,
   hasValueRecipients,
@@ -200,7 +200,8 @@ import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
-import { SpeedButton, FastSpeedButton } from './player/speed-button';
+import { SpeedButton, FastSpeedButton, SpeedMenuTile } from './player/speed-button';
+import { TileMenu } from './player/tile-menu';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
@@ -434,6 +435,40 @@ function ShareTargets({ podcast, episode }: { podcast: Podcast; episode: Episode
         className="tile"
       />
     </>
+  );
+}
+
+/**
+ * The two SHAREs as ONE tile that opens a two-item list, for the desktop row.
+ * It is still two controls — each item names its target and copies its own
+ * link, for every reason <ShareTargets> gives — only the pair costs one tile
+ * rather than two. The menu stays open after a copy, so the item's COPIED
+ * flash is the answer. With no episode guid there is one link, and the tile
+ * is that one link directly: a menu of one choice is a press for nothing.
+ */
+function ShareMenuTile({ podcast, episode }: { podcast: Podcast; episode: Episode }) {
+  const showWord = targetWord('feed', podcast);
+  const itemWord = targetWord('item', podcast);
+  const showUrl = showShareUrl(podcast.podcastGuid);
+  // Never `showShareUrl(guid, undefined)` for the episode: see <ShareTargets>.
+  const episodeUrl = episode.guid ? showShareUrl(podcast.podcastGuid, episode.guid) : null;
+  if (!episodeUrl) {
+    return <CopyLinkButton url={showUrl} title={`Copy link to this ${showWord.toLowerCase()}`} word={showWord} className="tile" />;
+  }
+  const item = 'btn-mini w-full justify-start py-2 text-xs';
+  return (
+    <TileMenu
+      label="Share a link"
+      menuWidth={208}
+      trigger={<><ShareIcon /> SHARE</>}
+    >
+      {() => (
+        <>
+          <CopyLinkButton url={showUrl} title={`Copy link to this ${showWord.toLowerCase()}`} word={`${showWord} LINK`} className={item} />
+          <CopyLinkButton url={episodeUrl} title={`Copy link to this ${itemWord.toLowerCase()}`} word={`${itemWord} LINK`} className={item} />
+        </>
+      )}
+    </TileMenu>
   );
 }
 
@@ -754,12 +789,8 @@ export function FullscreenPlayer({
   // jumps to the previous one.
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekTo);
 
-  // The secondary tiles, defined ONCE and rendered in two places: inside the ⋯
-  // menu below lg:, and as a row under BOOST from lg:, where the right pane has
-  // the room and a 224px popover in the corner of a 1440px screen read as an
-  // afterthought. Each tile is the shared control, so two mounts share state
-  // through the store; only one is ever displayed (the other is `display:
-  // none`, which also takes it out of the accessibility tree).
+  // The ⋯ menu's tiles (below lg:). From lg: the same actions are a shorter
+  // row under BOOST — see the row itself for what it merges and why.
   const secondaryTiles = (
     <>
       <FavHeart podcast={podcast} size="tile" nameTarget />
@@ -1348,13 +1379,26 @@ export function FullscreenPlayer({
                   <BoltIcon /> BOOST
                 </button>
               </div>
-              {/* THE ⋯ MENU'S TILES, ON THE SCREEN FROM lg:. The reason they
+              {/* THE ⋯ MENU'S ACTIONS, ON THE SCREEN FROM lg:. The reason they
                   left the screen — a long title pushing them off the bottom of
                   a phone — does not hold beside a side-by-side cover, where
-                  this pane has the height. Four across, so the eight tiles are
-                  two even rows and each tile has room for its word. */}
-              <div role="group" aria-label="Actions for this episode" className="hidden lg:grid grid-cols-4 gap-2 mt-1">
-                {secondaryTiles}
+                  this pane has the height. Fewer tiles than the menu: the two
+                  SHAREs are one tile with a list (<ShareMenuTile>), and SPEED,
+                  3.5× and 5× are one tile with a list (<SpeedMenuTile>) — as
+                  eight tiles on the screen they read as a lot of buttons for
+                  two settings. One flex row, each tile an equal share. */}
+              <div role="group" aria-label="Actions for this episode" className="hidden lg:flex gap-2 mt-1 [&>*]:flex-1 [&>*]:min-w-0">
+                <FavHeart podcast={podcast} size="tile" nameTarget />
+                <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+                <DownloadButton episode={episode} podcast={podcast} size="tile" />
+                <ShareMenuTile podcast={podcast} episode={episode} />
+                {streamButton && cloneElement(
+                  streamButton,
+                  { className: 'tile' },
+                  <span aria-hidden className="text-lg leading-none">≋</span>,
+                  'STREAM',
+                )}
+                {!isLive && <SpeedMenuTile />}
               </div>
             </div>
 

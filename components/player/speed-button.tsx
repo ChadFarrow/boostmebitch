@@ -1,6 +1,7 @@
 'use client';
 import { useApp } from '@/lib/store';
-import { SPEED_CYCLE_RATES, nextPlaybackRate } from '@/lib/util';
+import { PLAYBACK_RATES, SPEED_CYCLE_RATES, nextPlaybackRate } from '@/lib/util';
+import { TileMenu } from './tile-menu';
 
 /**
  * The SPEED tile in the fullscreen player's ⋯ menu: each press steps through
@@ -83,5 +84,50 @@ export function FastSpeedButton({ rate: target }: { rate: number }) {
       <span aria-hidden className="text-base leading-none tabular-nums normal-case">{target}×</span>
       {FAST_WORD[target] ? <span className="tracking-normal">{FAST_WORD[target]}</span> : 'SPEED'}
     </button>
+  );
+}
+
+/**
+ * SPEED as ONE tile that opens a list of every rate, for the now-playing
+ * screen's desktop row — where SPEED, 3.5× and 5× as three tiles read as a
+ * lot of buttons for one setting. The phone's ⋯ menu keeps the three tiles.
+ *
+ * Every rate is one press away, which is the property the fast tiles were
+ * split out for (5× used to cost six presses of the cycle). The list is
+ * `PLAYBACK_RATES`, the same allowlist the storage accessor reads, so it can
+ * offer nothing the player would refuse. The face names the speed playing and
+ * is lit whenever that is not 1×. Hidden on a live item, like the tiles.
+ */
+export function SpeedMenuTile() {
+  const rate = useApp((s) => s.playbackRate);
+  const setRate = useApp((s) => s.setPlaybackRate);
+  return (
+    <TileMenu
+      label={`Playback speed ${rate}×, change`}
+      lit={rate !== 1}
+      menuWidth={232}
+      columns={4}
+      trigger={
+        <>
+          <span aria-hidden className="text-base leading-none tabular-nums normal-case">{rate}×</span>
+          SPEED
+        </>
+      }
+    >
+      {(close) =>
+        PLAYBACK_RATES.map((r) => (
+          <button
+            key={r}
+            type="button"
+            role="menuitemradio"
+            aria-checked={r === rate}
+            onClick={() => { setRate(r); close(); }}
+            className={`btn-mini justify-center px-0 py-2 text-xs tabular-nums normal-case ${r === rate ? 'border-bolt text-bolt' : ''} ${FAST_WORD[r] ? 'col-span-2' : ''}`}
+          >
+            {r}×{FAST_WORD[r] ? <span className="uppercase tracking-normal">{FAST_WORD[r]}</span> : null}
+          </button>
+        ))
+      }
+    </TileMenu>
   );
 }
