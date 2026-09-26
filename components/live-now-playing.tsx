@@ -23,7 +23,7 @@ import type { Episode, ValueBlock } from '@/lib/types';
  * component: `setTarget` dedupes on identity, so Split Kit's ~5 s heartbeat
  * produces one notify per block, not twelve a minute.
  */
-function useLiveTarget(episodeGuid?: string) {
+export function useLiveTarget(episodeGuid?: string) {
   const [target, setTarget] = useState(liveTargetSnapshot);
   useEffect(() => subscribeLiveTarget(() => setTarget(liveTargetSnapshot())), []);
   if (!episodeGuid || target?.guid !== episodeGuid) return null;

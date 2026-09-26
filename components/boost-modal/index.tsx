@@ -8,7 +8,7 @@ import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, payableLeg, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -22,9 +22,9 @@ import { SenderName } from './sender-name';
 import { useReplyAddress } from './use-reply-address';
 import { SplitsPreview, LightningStatus } from './splits-preview';
 import { DroppedPayees } from './dropped-payees';
-import { LiveNowPlaying, NowPayingRow, splitTargetLabel } from '../live-now-playing';
+import { LiveNowPlaying, NowPayingRow, splitTargetLabel, useLiveTarget } from '../live-now-playing';
 import { useActiveSplit } from './use-active-split';
-import { liveTargetSnapshot, type LiveTarget } from '@/lib/v4v/live-value';
+import type { LiveTarget } from '@/lib/v4v/live-value';
 import { fetchRemoteItemParent, isNotPlayed, livePlayedKey, livePlayedSnapshot } from '@/lib/live-played';
 import { PublishStatus, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
@@ -221,17 +221,32 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // gates on the same call, so the non-null assertion holds exactly as before.
   const hostValue = payableValue(episode, podcast)!;
 
+  // A live show's on-air block, read from the watcher HERE — never trusted to
+  // arrive through `episode.value`. `live-value.ts` swaps the block into the
+  // store's `current.episode`, and only <Player> hands this modal that object:
+  // <EpisodeDetailView> and the list rows hand it their own copy of the
+  // episode, which still carries the show's block. So the modal named the
+  // track ("● LIVE paying Cringe · 7 recipients") while the rows under it, and
+  // the legs, were the show's three. Subscribed, not snapshotted, so the rows
+  // follow the target the same way the "● LIVE" row above them does; `go()`
+  // pays and labels from this same rendered value.
+  const liveTarget = useLiveTarget(episode?.guid);
+  const liveValue = liveTarget && hasValueRecipients(liveTarget.split?.value)
+    ? liveTarget.split!.value!
+    : null;
+
   // A <podcast:valueTimeSplit> covering the position this modal opened at
   // redirects the boost to the track playing, exactly as a live show's block
   // does. Frozen at open and gated on the episode actually playing — see
   // useActiveSplit. Null on every other path, so an ordinary boost's wire bytes
-  // and UI are unchanged.
+  // and UI are unchanged. Ignored while a live block is on air: a live item has
+  // no timeline, and the detail view passes a real position for one.
   const active = useActiveSplit(episode, positionSec);
-  const redirect = active.state === 'ready' ? active.split : null;
+  const redirect = !liveValue && active.state === 'ready' ? active.split : null;
 
   // The block the primary preview and the primary leg use: the artist's when
-  // redirected, the show's otherwise.
-  const primaryValue = redirect?.value ?? hostValue;
+  // redirected or on air, the show's otherwise.
+  const primaryValue = redirect?.value ?? liveValue ?? hostValue;
 
   // Both legs, resolved once: the sats, the payees each one reaches, and who it
   // does not. `redirectLegs` (lib/util.ts) is `splitTrackAndHost` composed with
@@ -299,7 +314,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // Blocking the button is the point: the window is known synchronously and the
   // target is not, so a tap landing here would pay the show while the modal was
   // a moment away from promising the artist.
-  const resolvingSplit = active.state === 'loading';
+  const resolvingSplit = !liveValue && active.state === 'loading';
 
   // Persist the boost to the local sent-boost log (the only thing that differs
   // between the zap and boostagram paths is the `legs`).
@@ -372,9 +387,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // here, not forgetting what they typed.
     if (name) storage.senderName.set(identity?.npub, name);
 
-    // The live target, read ONCE: the boostagram's remote guids and the note's
-    // track line both come from this snapshot, so they name the same song.
-    const liveTarget = liveTargetSnapshot();
+    // The live target is the RENDERED one (`useLiveTarget` above), not a fresh
+    // snapshot: the legs pay `value`, which was built from it, so the
+    // boostagram's remote guids and the note's track line must name the same
+    // block the rows on screen — and the legs — are paying.
     // The track the note may name: the frozen window on a recorded episode,
     // the on-air block on a live one. Its artist is looked up now, while the
     // wallet pays, and only when there will be a note to put it in.
@@ -766,7 +782,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           {/* An unresolvable remote item is ordinary, not an error: Podcast
               Index hasn't crawled every album feed. Say that the show is being
               paid rather than leaving the user to assume the artist was. */}
-          {active.state === 'unresolved' && (
+          {!liveValue && active.state === 'unresolved' && (
             <div className="text-[11px] text-muted">
               ♪ Couldn&rsquo;t look up the track playing here — boosting {podcast.title} instead.
             </div>
@@ -783,7 +799,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               splits={splits}
               results={results}
               listed={primaryValue.recipients}
-              title={redirect ? splitTargetLabel(redirect) : 'Recipients'}
+              title={redirect ? splitTargetLabel(redirect) : liveValue ? splitTargetLabel(liveTarget!.split!) : 'Recipients'}
             />
           )}
           {/* The same component as the show's share below. It earned a sentence
