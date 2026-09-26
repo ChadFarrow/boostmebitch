@@ -599,20 +599,32 @@ export function FullscreenPlayer({
   // opened from a feed row showed its notes in the same build.
   //
   // THE FETCH IS HERE rather than in the four store paths: this is the one
-  // surface that renders notes for whatever is playing, and `loadFeed`
-  // (`lib/podcast-meta.ts`) coalesces a request already in flight and caches
-  // the answer, so a step through a queue of one show costs one request. It
-  // runs ONLY when the episode carries neither field — an episode opened from a
-  // list already has them — and the result is keyed by episode id, so a step to
-  // the next item cannot paint the previous one's notes.
+  // surface that renders notes for whatever is playing. `loadFeed`
+  // (`lib/podcast-meta.ts`) coalesces a request already in flight and keeps
+  // nothing once it settles. It runs ONLY when the episode carries neither
+  // field — an episode opened from a list already has them — and the result is
+  // keyed by episode id, so a step to the next item cannot paint the previous
+  // one's notes.
+  //
+  // KEYED ON PRIMITIVES, NEVER ON THE EPISODE OBJECT. `refreshCurrentValue`
+  // below replaces `current.episode` whenever the value block differs by
+  // reference, and a fresh parse of the feed never equals the last one — so
+  // with the object as a dep, the refresh re-ran this effect, which fetched and
+  // refreshed again, for as long as the episode sat in the player: 984 feed
+  // reads in 15 s on a PAUSED queue head, each a full JSON parse the 60 s
+  // browser cache answered. The live watcher's `syncCurrentValue` replaces the
+  // same object on every poll. Nothing here needs to re-run for either.
   const [queuedNotes, setQueuedNotes] = useState<{ id: number; description: string } | null>(null);
   const notesEpisode = current?.episode;
+  const notesId = notesEpisode?.id;
+  const notesGuid = notesEpisode?.guid;
+  const notesMissing = !!notesEpisode && !notesEpisode.description && !notesEpisode.contentEncoded;
+  const notesLive = !!notesEpisode?.liveStatus;
   const notesFeedId = current?.podcast?.id ?? current?.episode?.feedId;
   useEffect(() => {
-    if (!notesEpisode || notesEpisode.description || notesEpisode.contentEncoded) return;
-    const guid = notesEpisode.guid;
-    if (!guid || !notesFeedId) return;
-    const id = notesEpisode.id;
+    if (!notesMissing || notesId === undefined || !notesGuid || !notesFeedId) return;
+    const guid = notesGuid;
+    const id = notesId;
     let cancelled = false;
     void loadEpisodeFromFeed(notesFeedId, guid).then((r) => {
       if (cancelled || !r?.episode) return;
@@ -621,6 +633,14 @@ export function FullscreenPlayer({
       // The queued copy's value block may be stale (same fix as the download
       // path in <Player>). `loadFeed` coalesces, so this read is free when
       // <Player> fires the same one.
+      //
+      // NOT FOR A LIVE ITEM. There `episode.value` belongs to the live-value
+      // watcher, which swaps the on-air track's block in (`syncCurrentValue`,
+      // docs/streaming.md); the feed's copy is the SHOW's block, so writing it
+      // here repaints the track's share as the show's until the next poll. A
+      // live item is never queued — `enqueueEpisode` refuses one — but it
+      // reaches this effect from `/live` when its roster entry has no notes.
+      if (notesLive) return;
       useApp.getState().refreshCurrentValue(
         guid,
         r.episode.value ?? null,
@@ -634,7 +654,7 @@ export function FullscreenPlayer({
       // cannot reach.
     });
     return () => { cancelled = true; };
-  }, [notesEpisode, notesFeedId]);
+  }, [notesMissing, notesId, notesGuid, notesLive, notesFeedId]);
 
   // THE COVER TAKES THE ROOM THAT IS LEFT, and below sm: only JS can know how
   // much that is. The `max-w` on the box carries a measured CONSTANT (30rem) for
