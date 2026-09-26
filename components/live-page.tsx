@@ -119,6 +119,11 @@ interface LiveShowsResponse {
   rosterKept?: number;
   /** Distinct feeds those kept rows named — the global roster's real size. */
   rosterFeeds?: number;
+  /** Whether the podping live list answered (`lib/podping-live.ts`). `'off'`
+   *  when the deploy has no `PODPING_VIEWER_URL`. */
+  podping?: 'ok' | 'off' | 'failed';
+  /** Feeds that list added beyond Podcast Index's roster. Diagnostic only. */
+  podpingFeeds?: number;
 }
 
 export function LivePage() {
@@ -385,7 +390,11 @@ export function LivePage() {
    * `?? 0` there would make every one of those responses claim blindness — so
    * the test is an explicit `=== 0`, and an absent field keeps the old wording.
    */
-  const rosterBlind = data?.rosterFeeds === 0;
+  //
+  // The podping list is a second global list. When it answered, the page is
+  // not blind even if Podcast Index named nobody: a show that went live sent
+  // a podping, and that list would hold it.
+  const rosterBlind = data?.rosterFeeds === 0 && data?.podping !== 'ok';
 
   /**
    * Land on content, without hiding the state.
