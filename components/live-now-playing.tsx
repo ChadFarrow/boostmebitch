@@ -3,18 +3,8 @@
 import { useEffect, useState } from 'react';
 import { PodcastCover } from './podcast-cover';
 import { liveTargetSnapshot, subscribeLiveTarget } from '@/lib/v4v/live-value';
-import type { Episode, ValueBlock } from '@/lib/types';
+import type { ValueBlock } from '@/lib/types';
 
-/**
- * Who a live show's payments are going to right now.
- *
- * A live boost that silently pays someone other than the artist on screen is
- * the failure this whole feature exists to prevent, and a modal is the last
- * place to catch it — so the target is named wherever money is about to move.
- *
- * Subscribes to the watcher itself rather than taking a prop, so nothing above
- * it re-renders on a track change (the same discipline <StreamPulse> follows).
- */
 /**
  * The live target for an episode, or null.
  *
@@ -23,7 +13,7 @@ import type { Episode, ValueBlock } from '@/lib/types';
  * component: `setTarget` dedupes on identity, so Split Kit's ~5 s heartbeat
  * produces one notify per block, not twelve a minute.
  */
-function useLiveTarget(episodeGuid?: string) {
+export function useLiveTarget(episodeGuid?: string) {
   const [target, setTarget] = useState(liveTargetSnapshot);
   useEffect(() => subscribeLiveTarget(() => setTarget(liveTargetSnapshot())), []);
   if (!episodeGuid || target?.guid !== episodeGuid) return null;
@@ -104,25 +94,5 @@ export function NowPayingRow({
         {detail ? ` · ${detail}` : ''}
       </span>
     </div>
-  );
-}
-
-export function LiveNowPlaying({ episode, className }: { episode?: Episode; className?: string }) {
-  const [target, setTarget] = useState(liveTargetSnapshot);
-  useEffect(() => subscribeLiveTarget(() => setTarget(liveTargetSnapshot())), []);
-
-  if (!episode?.guid || target?.guid !== episode.guid) return null;
-  const split = target.split;
-  if (!split?.value?.recipients?.length) return null;
-
-  const n = split.value.recipients.length;
-  return (
-    <NowPayingRow
-      badge="● LIVE"
-      image={split.image}
-      label={splitTargetLabel(split)}
-      detail={n > 1 ? `${n} recipients` : undefined}
-      className={className}
-    />
   );
 }
