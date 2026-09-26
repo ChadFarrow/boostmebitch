@@ -362,6 +362,51 @@ section('7. A queued episode resumes where it was left, and finishing it forgets
   await q2.close();
 }
 
+// ---------------------------------------------------------------------------
+section('8. A queued episode\'s show notes cost ONE feed read, not a loop');
+// ---------------------------------------------------------------------------
+{
+  // `<FullscreenPlayer>` fetches the notes `trimForQueue` deleted, then hands the
+  // feed's value block to `refreshCurrentValue`. That replaces `current.episode`,
+  // and the effect was keyed on that OBJECT — so the refresh re-ran the fetch,
+  // whose fresh parse was never `===` the last one, for as long as the episode
+  // played. The browser answered from its 60 s HTTP cache, then the server
+  // answered 429 to every `/api/feed` from the IP. `<FullscreenPlayer>` is
+  // mounted under `<Player>` whether or not it is open, so nothing had to be
+  // pressed. Counted at `fetch`, which sees a cache hit the network log hides.
+  const { page: q3 } = await launchChrome({ name: 'queue-notes', args: ['--disable-gpu', '--window-size=1200,900'] });
+  const js3 = q3.jsOrThrow;
+  await q3.send('Page.enable'); await q3.send('Runtime.enable');
+  await q3.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__feedReads = 0;
+    const f = window.fetch;
+    window.fetch = function (input, init) {
+      const u = typeof input === 'string' ? input : input && input.url;
+      if (u && u.includes('/api/feed?')) window.__feedReads++;
+      return f.call(this, input, init);
+    };
+  ` });
+  await q3.send('Page.navigate', { url: `${APP}/?podcast=${PC20}` }); await wait(14000);
+  const pressed = await js3(`(() => { const b = document.querySelector('button[aria-label^="Add "]'); b && b.click(); return !!b; })()`);
+  await wait(1500);
+  const trimmed = await js3(`(() => {
+    const q = JSON.parse(localStorage.getItem('bmb:listen_queue:guest') || '[]');
+    const e = q[0] && q[0].episode;
+    return !!e && !e.description && !e.contentEncoded && !!(e.value || e.valueTimeSplits);
+  })()`);
+  check('one talk episode queued, trimmed, carrying a value block', { pressed, trimmed }, { pressed: true, trimmed: true });
+
+  // `revealQueue` puts the head in the player: the path the loop ran on.
+  await q3.send('Page.navigate', { url: `${APP}/queue` });
+  const revealed = await q3.until(`(() => { const a = document.querySelector('audio'); return !!a && !!a.src; })()`, 30000);
+  await wait(15000);
+  const reads = await js3('window.__feedReads');
+  check('the queue head reached the player', revealed, true);
+  check('its notes were fetched, once — at least one read and no loop', { fetched: reads >= 1, bounded: reads <= 2 }, { fetched: true, bounded: true });
+  if (reads > 2) console.log(`    /api/feed reads in 15 s: ${reads}`);
+  await q3.close();
+}
+
 if (t.fails) {
   console.error(`\nQUEUE E2E FAILED (${t.fails})`);
   await exit(1);
