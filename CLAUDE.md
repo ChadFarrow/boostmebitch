@@ -68,7 +68,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias `@/*` → repo root.
 
-**Forty-three `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Forty-four `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -114,6 +114,7 @@ npm run dev / build / start / lint
 | `check:downloads` | `downloadKey`, `isDownloadable`, `roomVerdict`, `downloadFailureMessage`, `proxiedAudioUrl`, `albumPlan`/`groupDownloads` | a download nothing can find; a working host blamed for a refusal it did not make |
 | `check:queue` | `epKey`, `trimForQueue` (a denylist), `queueShowFor`, `nextPlayableIndexBy` | the listen queue removes the wrong episode, or credits the curator for a track |
 | `check:favnew` | `sinceForBatch`, `selectNewEpisodes`, `advanceMarks`, `pruneMarks`, `mergeNewEpisodeRows`, `pruneNewRows` | a new episode nobody sees, or a year of back catalogue |
+| `check:opml` | `parseOpml`, `buildOpml` | an imported feed silently lost |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 

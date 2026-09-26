@@ -29,6 +29,7 @@ import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { FavoritesNewEpisodes } from '@/components/favorites-new-episodes';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
+import { OpmlTools } from '@/components/opml-tools';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import {
@@ -471,6 +472,13 @@ export function FavoritesPage() {
           undo that (see its comment: deleted as clutter once, restored the same
           night). */}
       <FavoritesPrivacyControl trailing={<RelayTools />} />
+      {/* Signed out the privacy row above renders nothing, so the OPML tools
+          get a row of their own; signed in they ride in <RelayTools>. */}
+      {!identity && (
+        <div className="flex flex-wrap items-start gap-2">
+          <OpmlTools />
+        </div>
+      )}
 
       {/* BELOW the sync notices and ABOVE the loading/empty/rows split.
           Not above the notices: those explain why the library is short, and
@@ -656,6 +664,7 @@ function RelayTools() {
       <DownloadFavorites />
       <PrivateFavoritesTool />
       <RestoreBackup />
+      <OpmlTools />
     </>
   );
 }
