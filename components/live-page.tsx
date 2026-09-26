@@ -119,6 +119,11 @@ interface LiveShowsResponse {
   rosterKept?: number;
   /** Distinct feeds those kept rows named — the global roster's real size. */
   rosterFeeds?: number;
+  /** Whether the podping live list answered (`lib/podping-live.ts`). `'off'`
+   *  when the deploy has no `PODPING_VIEWER_URL`. */
+  podping?: 'ok' | 'off' | 'failed';
+  /** Feeds that list added beyond Podcast Index's roster. Diagnostic only. */
+  podpingFeeds?: number;
 }
 
 export function LivePage() {
@@ -261,16 +266,41 @@ export function LivePage() {
   const favPoolRef = useRef(favPool);
   favPoolRef.current = favPool;
 
+  /**
+   * Pool feeds the LAST response found on air, re-asked on every poll.
+   *
+   * The rotation alone made a live favorite blink. Live is taken fresh from
+   * each response (see `upcomingSeen`), and a response only describes the
+   * slice it asked for — so with a pool of three windows, a show broadcasting
+   * the whole time was on the page for one poll in three. Reported as
+   * *"Homegrown Hits isn't showing up in the live tab but it's live when I
+   * search for it"*: the show page reads the feed directly, this page reads it
+   * one minute in N.
+   *
+   * Pinning keeps "live is only what the latest response said" true, because a
+   * pinned feed IS in the latest response. It leaves the moment a response
+   * that asked about it carries no live row for it, so a finished broadcast
+   * costs one extra read, never a stale row.
+   */
+  const liveFavRef = useRef<Set<string>>(new Set());
+
   const load = useCallback(async () => {
     lastLoadRef.current = Date.now();
     const all = favPoolRef.current ? favPoolRef.current.split(',') : [];
+    // A pinned feed that left the pool (un-favorited) is not asked about.
+    const inPool = new Set(all);
+    const pinned = [...liveFavRef.current]
+      .filter((id) => inPool.has(id))
+      .slice(0, MAX_FAVORITE_FEEDS);
+    const pinnedSet = new Set(pinned);
+    const rest = all.filter((id) => !pinnedSet.has(id));
+    const slots = MAX_FAVORITE_FEEDS - pinned.length;
     // Wrapped so the window is contiguous around the end of the list.
-    const favIds =
-      all.length <= MAX_FAVORITE_FEEDS
-        ? all.join(',')
-        : [...all, ...all]
-            .slice(cursorRef.current % all.length, (cursorRef.current % all.length) + MAX_FAVORITE_FEEDS)
-            .join(',');
+    const rotating =
+      rest.length <= slots
+        ? rest
+        : [...rest, ...rest].slice(cursorRef.current % rest.length, (cursorRef.current % rest.length) + slots);
+    const favIds = [...pinned, ...rotating].join(',');
     const askedIds = favIds ? favIds.split(',').map(Number) : [];
     try {
       const res = await fetch(`/api/live-shows${favIds ? `?feeds=${favIds}` : ''}`);
@@ -291,9 +321,18 @@ export function LivePage() {
         }
         return next;
       });
+      // Re-pin from what this response said about the feeds it was asked.
+      const liveNow = new Set(
+        json.items.filter((s) => s.liveStatus === 'live').map((s) => String(s.feedId)),
+      );
+      for (const id of askedIds) {
+        if (liveNow.has(String(id))) liveFavRef.current.add(String(id));
+        else liveFavRef.current.delete(String(id));
+      }
       setState('ok');
-      // Advance to the next window for the poll after this one.
-      cursorRef.current += MAX_FAVORITE_FEEDS;
+      // Advance to the next window for the poll after this one — by the
+      // rotating slots actually used, so pinned feeds do not skip anybody.
+      cursorRef.current += rotating.length;
     } catch {
       if (!mountedRef.current) return;
       // Keep whatever we already painted. A retry that fails must not empty a
@@ -351,7 +390,11 @@ export function LivePage() {
    * `?? 0` there would make every one of those responses claim blindness — so
    * the test is an explicit `=== 0`, and an absent field keeps the old wording.
    */
-  const rosterBlind = data?.rosterFeeds === 0;
+  //
+  // The podping list is a second global list. When it answered, the page is
+  // not blind even if Podcast Index named nobody: a show that went live sent
+  // a podping, and that list would hold it.
+  const rosterBlind = data?.rosterFeeds === 0 && data?.podping !== 'ok';
 
   /**
    * Land on content, without hiding the state.
