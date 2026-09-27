@@ -77,7 +77,7 @@ npm run dev / build / start / lint
 | `check:ssrf` | `assertSafeFetchUrl` | feed data aims the server at cloud metadata |
 | `check:liveblock` | `parseLiveBlock` — Split Kit live-value → value block | a live show pays the wrong node, or drops an artist |
 | `check:keysend` | `lib/v4v/keysend-lookup.ts` — which of two payment rails each lnaddress leg leaves on | the wrong rail: the boostagram is lost while the sats land, or a lookalike domain diverts the payee |
-| `check:lnurl` | `buildLnurlComment` — descriptor + message inside `commentAllowed` — plus `lnurlErrorReason`/`lnurlCommentRetry` | the leg's only metadata channel becomes a dead link, or a refused comment loses the leg |
+| `check:lnurl` | `buildLnurlComment` — descriptor + message inside `commentAllowed` — plus `lnurlErrorReason`/`lnurlCommentRetry`, and `retryableLegs` | the leg's only metadata channel becomes a dead link, a refused comment loses the leg, or a retry pays a leg twice |
 | `check:npub` | `parseFeedNpubs` — feed npubs → `p`-tags | a note `p`-tags a stranger under the site's identity, permanently |
 | `check:mentions` | `noteMentionTags` + `mentionParts` (`lib/nostr/mention-tags.ts`) — which of the TWO `p`-tag sources may notify | one unauthenticated POST notifies strangers from a verified identity |
 | `check:stream` | `lib/v4v/stream-ledger.ts` — accrual, settlement and the money constants | streaming drains a wallet, pays nothing, or pays twice |

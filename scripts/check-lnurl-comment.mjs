@@ -40,6 +40,7 @@ import {
   lnurlCallbackRefused,
   lnurlCommentRetry,
   lnurlErrorReason,
+  retryableLegs,
   unreachableWalletRelay,
 } from '../lib/util.ts';
 
@@ -593,6 +594,39 @@ console.log('\nunreachableWalletRelay');
   const naive = (raw) => (/not connected|connection|websocket|socket closed/i.test(raw) ? 'offline' : null);
   check('(naive) the socket heuristic calls a permission refusal "offline"',
     naive('RESTRICTED: websocket connection permission denied') !== unreachableWalletRelay('RESTRICTED: websocket connection permission denied'), true);
+}
+
+// ── retryableLegs: which legs the "Retry failed" button may pay again ─────
+// A money decision in the other direction from `nothingSent`: a leg on this
+// list is PAID AGAIN. So every leg that may already have paid must stay off it,
+// and the order must be the one `sendBoost` pays in (biggest share first).
+console.log('\nretryableLegs');
+{
+  const R = { name: 'x', address: 'x@example.com', type: 'lnaddress', split: 1 };
+  const leg = (sats, extra) => ({ recipient: R, sats, ok: false, ...extra });
+  const RELAY = 'Failed to connect to wss://relay.getalby.com';
+  const results = [
+    leg(10, { error: RELAY }),                                   // 0 retry
+    leg(70, { error: RELAY }),                                   // 1 retry, biggest
+    leg(50, { ok: true, preimage: 'p' }),                         // 2 paid
+    leg(40, { indeterminate: true, error: RELAY }),              // 3 may have paid — text is NOT read
+    leg(30, { error: 'PAYMENT_FAILED: payment failed' }),        // 4 no proof
+    undefined,                                                    // 5 never settled
+    leg(0, { error: RELAY }),                                    // 6 zero-sat
+    leg(20, { error: 'LNURL callback failed (400): Recipient wallet error.' }), // 7 retry
+    leg(25, { error: 'keysend: no route found; LNURL retry: ' + RELAY }),         // 8 retry: the retry half decides
+    leg(35, { error: 'publish timed out' }),                     // 9 no proof
+    leg(15, { error: 'Wallet did not answer in time — this payment may still have been sent.' }), // 10 no proof
+  ];
+  check('only proven-unsent legs, biggest share first', retryableLegs(results), [1, 8, 7, 0]);
+  check('nothing to retry after a clean boost', retryableLegs([leg(5, { ok: true }), leg(3, { ok: true })]), []);
+  check('an empty result list', retryableLegs([]), []);
+
+  // `naive()`: "retry whatever did not succeed". It re-pays the unanswered
+  // wallet and the bare PAYMENT_FAILED — the double-pay invariant 11 forbids.
+  const naive = (rs) => rs.map((r, i) => (r && !r.ok ? i : -1)).filter((i) => i >= 0);
+  check('(naive) re-pays an indeterminate leg', naive(results).includes(3) && !retryableLegs(results).includes(3), true);
+  check('(naive) re-pays PAYMENT_FAILED', naive(results).includes(4) && !retryableLegs(results).includes(4), true);
 }
 
 if (failures) {

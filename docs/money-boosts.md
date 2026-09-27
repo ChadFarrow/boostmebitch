@@ -394,6 +394,17 @@ A ✗ leg's `error` is a library string, and one unreachable wallet relay fails 
 
 **`nothingSent` is a money claim and it is an ALLOWLIST.** "Nothing was sent" is true only for a throw that precedes any payment request: the wallet relay never connected (the SDK throws in `_checkConnected`, before it publishes), no wallet was ready, the recipient's LNURL service produced no usable invoice, or the app refused an invoice for the wrong amount. `PAYMENT_FAILED`, a timeout and anything unrecognised say nothing about whether sats moved, because "you still have these sats" is the sentence that talks someone into paying twice. Add a new arm to the true side only with the throw site that proves it. A leg retried as `keysend: …; LNURL retry: …` is explained by the RETRY — the keysend was retried only because it provably sent nothing. Pinned, both directions, by `check:lnurl`.
 
+### Retrying failed legs (`retryableLegs`)
+
+A boost with failed legs used to leave one way forward: press BOOST again — which pays **every** recipient again, including the ones already paid. The single boost modal now shows **Retry N failed** after a send, and pays only the legs `retryableLegs` (`lib/util.ts`, pinned by `check:lnurl`) returns. Four rules:
+
+- **It retries only what `explainPaymentError` PROVES sent nothing** (`nothingSent`). `indeterminate` is tested first, ahead of any message; `ok`, holes, zero-sat legs and every unproven failure (`PAYMENT_FAILED`, a publish timeout, anything unrecognised) stay out. A publish timeout is not proof either: the relay sent no `OK`, which does not mean it forwarded nothing.
+- **Each leg is re-sent ALONE, for its allocated sats, under the boostagram and uuid it first went out with.** `sendBoost` re-splits whatever block it is handed, so a block of the failed legs would share the boost among them. The uuid is the same because it is the same boost and the first attempt never arrived.
+- **Everything comes from the `SentBoost` snapshot taken in `go()`, never the render** — the modal stays editable after a send. The first time anything pays, `finishBoost` logs the `StoredBoost` and posts the note; after that a retry only updates the logged legs. The note is not republished (a kind:1 cannot be edited); its amount is intent (invariant 7), so only its summary receipt undercounts.
+- **The retry stops at the first leg whose wallet relay still cannot be reached**, because each leg is its own `sendBoost` and each is a fresh dial against the Cloudflare upgrade limit. A boost with legs left to retry does not auto-close.
+
+Not covered: a host leg whose `sendBoost` THREW (no results to judge), and `<BoostAllModal>`.
+
 ### Serving our own lightning address
 
 The mirror image of the above: `chadf@boostmebitch.com` is a recipient other apps pay, assembled from two pieces on this domain plus an LNbits instance behind `pay.boostmebitch.com` fronting Chad's LND node.
