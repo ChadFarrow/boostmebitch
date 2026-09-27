@@ -13,7 +13,7 @@ import { nwc } from '@getalby/sdk';
 // The budget arithmetic lives in `lib/util.ts` so `npm run check:nwcbudget`
 // can load the shipping functions under plain Node — this module imports the
 // SDK (and, through nwc-state, `../storage`) and cannot be loaded that way.
-import { parseNwcBudget, spendableSats, type NwcBudget } from '../util';
+import { parseNwcBudget, spendableSats, unreachableWalletRelay, type NwcBudget } from '../util';
 import { createLeasePool, type Lease } from './lease';
 import {
   hasNwc,
@@ -321,13 +321,40 @@ export async function nwcGetBudget(): Promise<NwcBudget | null> {
  * socket the lease already holds, so asking for both costs no extra dial.
  */
 export async function nwcGetSpendable(): Promise<NwcSpendable | null> {
+  return (await nwcReadSpendable()).spendable;
+}
+
+/**
+ * `nwcGetSpendable`, plus WHY a null came back when the answer is "the wallet's
+ * relay never connected".
+ *
+ * This is the pre-boost connectivity check, and it is deliberately not a probe
+ * of its own: the boost modal already reads the balance on open, over the one
+ * shared lease, and that read is the check. A separate dial per modal open
+ * would count against the same Cloudflare upgrade limit that produces the
+ * `429` + `Retry-After: 600` block this is meant to warn about (see the pool
+ * comment above), so probing would help cause the fault it reports.
+ *
+ * `unreachableRelay` is set ONLY for a socket that never opened
+ * (`unreachableWalletRelay`). A wallet refusing `get_balance` on this
+ * connection, or answering late, leaves it null: those wallets can still pay,
+ * and calling them offline would talk someone out of a boost that works.
+ */
+export async function nwcReadSpendable(): Promise<{
+  spendable: NwcSpendable | null;
+  unreachableRelay: string | null;
+}> {
+  let unreachableRelay: string | null = null;
   const [balanceSats, budget] = await Promise.all([
-    nwcGetBalance(),
+    readBalanceSats().catch((e: unknown) => {
+      unreachableRelay = unreachableWalletRelay(e instanceof Error ? e.message : String(e));
+      return null;
+    }),
     nwcGetBudget().catch(() => null),
   ]);
-  if (balanceSats === null) return null;
+  if (balanceSats === null) return { spendable: null, unreachableRelay };
   const { sats, budgetLimited } = spendableSats(balanceSats, budget);
-  return { sats, budgetLimited, balanceSats, budget };
+  return { spendable: { sats, budgetLimited, balanceSats, budget }, unreachableRelay: null };
 }
 
 /**
@@ -342,18 +369,23 @@ export async function nwcGetSpendable(): Promise<NwcSpendable | null> {
  */
 export async function nwcGetBalance(): Promise<number | null> {
   try {
-    // The most frequently called of the lot — `useWalletBalance` refreshes on
-    // every `payment_sent` push and the hook is mounted twice during a boost —
-    // and so the one that used to dial the most sockets. It now rides whichever
-    // client the notification subscription is already holding open. A read, so
-    // a retry is safe.
-    const res = await withNwcClient((c) => c.getBalance(), { retry: true });
-    const msat = Number(res?.balance ?? 0);
-    if (!Number.isFinite(msat) || msat < 0) return null;
-    return Math.floor(msat / 1000);
+    return await readBalanceSats();
   } catch {
     return null;
   }
+}
+
+/** `nwcGetBalance` without the catch, so `nwcReadSpendable` can see the cause. */
+async function readBalanceSats(): Promise<number | null> {
+  // The most frequently called of the lot — `useWalletBalance` refreshes on
+  // every `payment_sent` push and the hook is mounted twice during a boost —
+  // and so the one that used to dial the most sockets. It now rides whichever
+  // client the notification subscription is already holding open. A read, so
+  // a retry is safe.
+  const res = await withNwcClient((c) => c.getBalance(), { retry: true });
+  const msat = Number(res?.balance ?? 0);
+  if (!Number.isFinite(msat) || msat < 0) return null;
+  return Math.floor(msat / 1000);
 }
 
 /**

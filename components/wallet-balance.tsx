@@ -23,7 +23,7 @@
 // balance there advertised nine million spendable sats over a budget that
 // would refuse the next boost.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Rail } from '@/lib/v4v/boost';
 import {
   hasSpark,
@@ -72,16 +72,35 @@ const PLACEHOLDER_BUDGET: NwcBudget = { usedSats: 0, totalSats: 0, remainingSats
  * only when that budget is the BINDING limit, so a surface can say why the
  * number is smaller than the wallet holds; it is always null on Spark and
  * WebLN, neither of which has such a grant.
+ *
+ * `unreachable` is the NWC wallet relay's host when the last balance read
+ * failed because that relay's socket never opened, else null — the pre-boost
+ * connectivity check, riding the read this hook makes anyway (see
+ * `nwcReadSpendable`). `recheck` runs the read again. The cached balance still
+ * comes back beside it; a surface that shows `unreachable` shows it INSTEAD of
+ * that number, which otherwise reads as a live, working wallet.
  */
 export function useWalletBalance(
   railOverride?: Rail | null,
-): { balance: number | null; rail: Rail | null; budget: NwcBudget | null } {
+): {
+  balance: number | null;
+  rail: Rail | null;
+  budget: NwcBudget | null;
+  unreachable: string | null;
+  recheck: () => void;
+} {
   const npub = useApp((s) => s.identity?.npub) ?? null;
   const [sparkReady, setSparkReady] = useState(hasSpark());
   const [nwcReady, setNwcReady] = useState(hasNwc());
   const [weblnReady, setWeblnReady] = useState(isWeblnEnabled());
   const [balance, setBalance] = useState<number | null>(null);
   const [budget, setBudget] = useState<NwcBudget | null>(null);
+  const [unreachable, setUnreachable] = useState<string | null>(null);
+  // Bumped by `recheck`. It re-runs the whole effect, notification lease
+  // included, because a relay that failed to connect leaves the subscription
+  // holding a discarded client; a fresh one is what can recover.
+  const [checkTick, setCheckTick] = useState(0);
+  const recheck = useCallback(() => setCheckTick((t) => t + 1), []);
 
   const [, setPrefTick] = useState(0);
 
@@ -120,6 +139,7 @@ export function useWalletBalance(
   useEffect(() => {
     setBalance(null);
     setBudget(null);
+    setUnreachable(null);
     if (rail === null) return;
     let cancelled = false;
     const cleanups: Array<() => void> = [];
@@ -133,8 +153,14 @@ export function useWalletBalance(
         // The SDK half, loaded on first use: this chip is in the header of
         // every route, and a static import put the NIP-47 client in the first
         // load for visitors with no wallet. See lib/v4v/nwc-state.ts.
-        const spendable = await (await import('@/lib/v4v/nwc')).nwcGetSpendable();
-        if (!cancelled && spendable !== null) {
+        const { spendable, unreachableRelay } = await (await import('@/lib/v4v/nwc')).nwcReadSpendable();
+        if (cancelled) return;
+        // Set on a failed connect, cleared by any read that answered. A read
+        // that failed for another reason leaves the last verdict alone: it
+        // says nothing about the relay either way.
+        if (unreachableRelay !== null) setUnreachable(unreachableRelay);
+        if (spendable !== null) {
+          setUnreachable(null);
           setBalance(spendable.sats);
           // Only when the BUDGET is what caps the number. A connection with a
           // 100k budget over a 5k wallet is showing 5k for the ordinary
@@ -228,7 +254,7 @@ export function useWalletBalance(
       cancelled = true;
       cleanups.forEach((fn) => fn());
     };
-  }, [rail]);
+  }, [rail, checkTick]);
 
   // Cache successful fetches per-npub so the next page load can paint the
   // chip instantly while the SDK / NWC client reconnects in the background.
@@ -282,7 +308,13 @@ export function useWalletBalance(
       ? PLACEHOLDER_BUDGET
       : null);
 
-  return { balance: displayBalance, rail: displayRail, budget: displayBudget };
+  return {
+    balance: displayBalance,
+    rail: displayRail,
+    budget: displayBudget,
+    unreachable: rail === 'nwc' ? unreachable : null,
+    recheck,
+  };
 }
 
 
@@ -374,22 +406,31 @@ export function WalletBalanceBox({ className = '' }: { className?: string }) {
   );
 }
 
+/** What `useWalletBalance` returns — handed to the two boost-modal surfaces below. */
+export type WalletBalanceState = ReturnType<typeof useWalletBalance>;
+
 /**
  * Balance display for the boost modal footer. Shows the user-selected rail's
  * balance (so it tracks the boost-modal picker, not the global priority
  * order), switching to nostr-magenta when `amountSats > balance`. Hidden when
  * no rail is connected (the modal already surfaces a "no wallet connected"
  * hint elsewhere).
+ *
+ * It takes the hook's result rather than calling it, because the modal also
+ * renders `<WalletRelayNotice>` from the SAME read: a second mount would be a
+ * second balance read on every `payment_sent`, the burst this file already
+ * debounces. Hidden while the relay is unreachable — the number would be the
+ * cached one, and a balance on screen reads as a wallet that works.
  */
 export function BoostModalBalance({
   amountSats,
-  rail: railOverride,
+  wallet,
 }: {
   amountSats: number;
-  rail: Rail | null;
+  wallet: WalletBalanceState;
 }) {
-  const { balance, rail, budget } = useWalletBalance(railOverride);
-  if (rail === null || balance === null) return null;
+  const { balance, rail, budget, unreachable } = wallet;
+  if (rail === null || balance === null || unreachable) return null;
   // The insufficient test runs against the SPENDABLE number, so a boost the
   // connection's budget would refuse is flagged here rather than at the
   // wallet — the point of reading the budget at all.
@@ -410,5 +451,34 @@ export function BoostModalBalance({
           the chip's `≤` — a symbol beside a spelt-out caveat is noise. */}
       {budget && <span className="ml-1 text-muted/70">budget</span>}
     </span>
+  );
+}
+
+/**
+ * The pre-boost connectivity check, said BEFORE the user pays rather than as
+ * four identical ✗ after. NWC only: it renders when the balance read the modal
+ * already makes could not open the wallet relay's socket.
+ *
+ * A warning, never a gate — the send button stays live. The read is one
+ * moment's answer and the network may be back by the tap; a false "offline"
+ * that also disabled BOOST would stop a working wallet with no way round it.
+ * The boost path keeps its own honest failure text either way.
+ *
+ * "Wait a few minutes" is there on purpose. The measured repeat cause is
+ * Cloudflare answering the upgrade with `429` + `Retry-After: 600` (see
+ * `lib/v4v/nwc.ts`), which a reload does not clear — so "reload the page"
+ * alone reads as advice that did not work.
+ */
+export function WalletRelayNotice({ wallet }: { wallet: WalletBalanceState }) {
+  if (!wallet.unreachable) return null;
+  return (
+    <p className="text-xs text-nostr/80" role="status">
+      Cannot reach your wallet&rsquo;s relay ({wallet.unreachable}). A boost sent now will
+      probably fail, and nothing will be sent. Check your network, or wait a few
+      minutes if it keeps failing.{' '}
+      <button type="button" onClick={wallet.recheck} className="btn-inline text-bone">
+        Check again
+      </button>
+    </p>
   );
 }

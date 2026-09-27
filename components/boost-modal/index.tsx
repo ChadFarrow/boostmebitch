@@ -12,7 +12,7 @@ import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, redirect
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
-import { BoostModalBalance } from '../wallet-balance';
+import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from '../wallet-balance';
 import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from '../message-input';
@@ -131,6 +131,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [name, setName] = useState('');
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   const [rail, setRail] = useState<Rail | null>(null);
+  // ONE balance read for the whole modal, feeding both the footer balance and
+  // the relay notice under the picker — see <BoostModalBalance>.
+  const wallet = useWalletBalance(rail);
 
   // Sparse while a send is in flight — legs settle biggest-share-first, not in
   // array order, so a hole is "this recipient hasn't been paid yet". The
@@ -756,6 +759,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               the sticky-footer balance is reporting on, so it has to be
               answerable before the user reads that number. */}
           <RailPicker rail={rail} onChange={setRail} />
+          {/* Before the tap only: once a send has run, its own per-leg result
+              is the answer, and this would repeat it. */}
+          {!paymentDone && !running && <WalletRelayNotice wallet={wallet} />}
           {/* Locked while a send is in flight: `value`, `splits` and both legs
               are derived from `sats` at render time, while go() pays from the
               closure it captured at the tap — so an edit mid-send repaints the
@@ -878,7 +884,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         <div className="flex justify-between items-center gap-3 p-5 border-t border-bone/15 sticky bottom-0 bg-ink">
           <button onClick={onClose} className="btn-ghost">{paymentDone ? 'Close' : 'Cancel'}</button>
           <div className="flex items-center gap-3">
-            {!paymentDone && rail && <BoostModalBalance amountSats={sats} rail={rail} />}
+            {!paymentDone && rail && <BoostModalBalance amountSats={sats} wallet={wallet} />}
             {!paymentDone && sats < MIN_BOOST_SATS && (
               <span className="text-[11px] text-muted">min {MIN_BOOST_SATS} sats</span>
             )}

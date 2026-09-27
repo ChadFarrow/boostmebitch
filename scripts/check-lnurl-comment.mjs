@@ -40,6 +40,7 @@ import {
   lnurlCallbackRefused,
   lnurlCommentRetry,
   lnurlErrorReason,
+  unreachableWalletRelay,
 } from '../lib/util.ts';
 
 let failures = 0;
@@ -558,6 +559,40 @@ console.log('\nexplainPaymentError');
   const naive = () => ({ nothingSent: true });
   check('(naive) "failed means unpaid" claims nothing was sent for PAYMENT_FAILED',
     naive().nothingSent !== explainPaymentError('PAYMENT_FAILED: payment failed').nothingSent, true);
+}
+
+// ── unreachableWalletRelay: the pre-boost "cannot reach your relay" notice ──
+// The boost modal prints it over the balance before the user pays, so a match
+// on a wallet that is merely REFUSING something tells a working wallet it is
+// offline. The first two strings are the Alby SDK's own throw
+// (`"Failed to connect to " + relayUrl`, in `_checkConnected`).
+console.log('\nunreachableWalletRelay');
+{
+  const HOSTS = [
+    ['Failed to connect to wss://relay.getalby.com', 'relay.getalby.com'],
+    ['Failed to connect to wss://relay.getalby.com/v1', 'relay.getalby.com'],
+    ['zap via nwc wallet did not complete: Failed to connect to wss://relay.getalby.com/v1', 'relay.getalby.com'],
+  ];
+  for (const [raw, host] of HOSTS) check(`"${raw.slice(0, 60)}" → ${host}`, unreachableWalletRelay(raw), host);
+
+  // Must still work: none of these says OUR relay never opened.
+  const NOT = [
+    'keysend: PAYMENT_FAILED: Failed to connect to peer',
+    'UNAUTHORIZED: this connection is not allowed to get_balance',
+    'RESTRICTED: websocket connection permission denied',
+    'reply timeout: event abc',
+    'publish timed out',
+    '',
+    undefined,
+  ];
+  for (const raw of NOT) check(`${JSON.stringify(raw)} → null`, unreachableWalletRelay(raw), null);
+
+  // `naive()`: the socket heuristic the lease uses to discard a client
+  // (`isSocketSuspect`) — right for "dial fresh next time", wrong for telling
+  // the user their wallet is offline. It flags the refusal above.
+  const naive = (raw) => (/not connected|connection|websocket|socket closed/i.test(raw) ? 'offline' : null);
+  check('(naive) the socket heuristic calls a permission refusal "offline"',
+    naive('RESTRICTED: websocket connection permission denied') !== unreachableWalletRelay('RESTRICTED: websocket connection permission denied'), true);
 }
 
 if (failures) {
