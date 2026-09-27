@@ -1682,6 +1682,37 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
 }
 
 /**
+ * Which legs of a finished boost may be paid AGAIN — indices into `results`,
+ * biggest share first (the order `sendBoost` pays in).
+ *
+ * The boost modal's "Retry failed" button pays exactly these and nothing else.
+ * A leg qualifies only when `explainPaymentError` PROVES nothing left the
+ * wallet (`nothingSent`, itself an allowlist): the wallet relay never
+ * connected, no wallet was ready, the recipient's LNURL service produced no
+ * usable invoice, or the app refused an invoice for the wrong amount. Every
+ * other failure stays out, because paying it again may pay it twice:
+ *
+ *   - `ok` — paid.
+ *   - `indeterminate` — the wallet was asked and never answered; it may have
+ *     paid (invariant 11). Tested FIRST, ahead of any message, so a timeout
+ *     whose text happens to read like a proven failure is still never retried —
+ *     the same order `routingFailureProvesUnpaid` keeps.
+ *   - `PAYMENT_FAILED`, a publish timeout, anything unrecognised — no proof.
+ *   - a hole — the leg never settled, so there is nothing to judge.
+ *   - `sats <= 0` — `payOne` reports that as ok without contacting anyone.
+ */
+export function retryableLegs(results: readonly (BoostResult | undefined)[]): number[] {
+  const out: number[] = [];
+  results.forEach((r, i) => {
+    if (!r || r.ok || r.indeterminate || !(r.sats > 0)) return;
+    if (explainPaymentError(r.error).nothingSent) out.push(i);
+  });
+  // Stable, biggest share first — `recipientOrder`'s rule, applied to the legs'
+  // own sats because a retried leg's amount is fixed; it is not re-split.
+  return out.sort((a, b) => results[b]!.sats - results[a]!.sats);
+}
+
+/**
  * Did an LNURL-pay callback REFUSE, whatever status it chose to say so with?
  *
  * LUD-06 specifies the BODY, not the status, so a refusal arrives as a 200

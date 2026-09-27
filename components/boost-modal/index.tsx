@@ -1,14 +1,14 @@
 'use client';
 import { useWalletChange } from '@/lib/use-wallet-change';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ModalShell } from '../modal-shell';
-import type { Episode, Podcast, Boostagram, StoredBoost, ValueRecipient, ValueTimeSplit } from '@/lib/types';
+import type { Episode, Podcast, Boostagram, StoredBoost, ValueBlock, ValueRecipient, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -101,6 +101,39 @@ const NOTE_ARTIST_WAIT_MS = 2000;
 /** A stable empty list, so a show with no block does not re-run the leg memo every render. */
 const NO_RECIPIENTS: ValueRecipient[] = [];
 
+/**
+ * One pressed boost, as it was SENT — what `retryFailed` pays again and what
+ * `finishBoost` logs and posts. Snapshotted in `go()` because the modal stays
+ * editable after a send: re-reading the amount, the message or the share
+ * choice from the render would retry, log or announce a different boost from
+ * the one whose legs went out.
+ */
+interface SentBoost {
+  /** The base boostagram: the whole amount, the uuid the log and note use. */
+  boostagram: Boostagram;
+  sats: number;
+  msg: string;
+  senderName: string;
+  shareNostr: boolean;
+  shareAs: 'self' | 'site';
+  mentions: MentionNpub[];
+  maySignAsSelf: boolean;
+  liveStreamId: string | null;
+  hostRefs: Nip73Refs;
+  noteSplit: ValueTimeSplit | null;
+  noteArtist: Promise<string | undefined>;
+  /** The trimmed block and per-group boostagram each leg group went out with. */
+  primaryValue: ValueBlock;
+  primaryBoostagram: Boostagram;
+  hostValue: ValueBlock | null;
+  hostBoostagram: Boostagram | null;
+  /** Every leg's latest result, updated in place by a retry. */
+  collected: BoostResult[];
+  hostCollected: BoostResult[];
+  /** Whether the StoredBoost and the note already exist. */
+  logged: boolean;
+}
+
 interface Props {
   podcast: Podcast;
   episode?: Episode;       // omit for show-level boosts
@@ -158,6 +191,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [sendErr, setSendErr] = useState<string | null>(null);
   const [hostErr, setHostErr] = useState<string | null>(null);
   const [paymentDone, setPaymentDone] = useState(false);
+  // The boost as sent — see SentBoost. A ref, not state: nothing renders from
+  // it, and the retry mutates its results in place between awaits.
+  const sentRef = useRef<SentBoost | null>(null);
 
   // Share picker + the `anonymous` flag derived from it. Shared with
   // <BoostAllModal> via the hook rather than restated here — see
@@ -342,11 +378,19 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // a moment away from promising the artist.
   const resolvingSplit = !liveSplit && active.state === 'loading';
 
-  // Persist the boost to the local sent-boost log (the only thing that differs
-  // between the zap and boostagram paths is the `legs`).
-  function logStoredBoost(boostagram: Boostagram, legs: StoredBoost['legs']) {
+  // Legs the Retry button may pay again. Read off the rendered results, which
+  // mirror `sentRef.current` after every settle; `retryableLegs` is the one
+  // rule, and `retryFailed` asks it again against the ref before it pays.
+  const retryCount = paymentDone
+    ? retryableLegs(results).length + retryableLegs(hostResults).length
+    : 0;
+
+  // Persist the boost to the local sent-boost log. Every field comes from the
+  // SNAPSHOT, not the render: a retry can run after the user has edited the
+  // amount or the message, and the log must describe the boost that was sent.
+  function logStoredBoost(sent: SentBoost, legs: StoredBoost['legs']) {
     const stored: StoredBoost = {
-      uuid: boostagram.uuid!,
+      uuid: sent.boostagram.uuid!,
       ts: Date.now(),
       podcastTitle: podcast.title,
       podcastId: podcast.id,
@@ -354,9 +398,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       podcastImage: episode?.image ?? podcast.image,
       episodeTitle: episode?.title,
       episodeGuid: episode?.guid,
-      sats,
-      message: msg || undefined,
-      senderName,
+      sats: sent.sats,
+      message: sent.msg || undefined,
+      senderName: sent.senderName,
       legs,
     };
     storage.boosts.add(identity?.npub, stored);
@@ -367,9 +411,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // with the note id. Signed by the user's own key when they're signed in AND
   // picked "Post to my Nostr feed"; otherwise by the site's Nostr identity
   // server-side (publishBoostNoteViaSite) — the signed-out path and the
-  // signed-in "Post via boostmebitch.com" choice. Shared by both payment paths.
+  // signed-in "Post via boostmebitch.com" choice. The share choice and the
+  // mentions are the SNAPSHOT's, for the reason logStoredBoost gives.
   async function maybePublishNote(
-    boostagram: Boostagram,
+    sent: SentBoost,
     results: BoostResult[],
     // The one receipt the note quotes — see PublishArgs.summaryReceipt. Both
     // paths carry it: a self-signed note's request was signed by the user, a
@@ -379,10 +424,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // PublishArgs.track. The note names it only if one of those legs settled.
     track?: { split: ValueTimeSplit; results: BoostResult[] },
   ) {
-    if (!shareNostr) return;
+    if (!sent.shareNostr) return;
+    const { boostagram, mentions } = sent;
     setPubState({ kind: 'publishing' });
     try {
-      const note = identity && shareAs === 'self'
+      const note = identity && sent.shareAs === 'self'
         ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt, track })
         // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
         // what each may do with them — the body always, the `p` tags only when
@@ -478,19 +524,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       ...(redirect?.remoteItem?.itemGuid ? { remote_item_guid: redirect.remoteItem.itemGuid } : {}),
     };
 
-    setRunning(true);
-    // Pre-sized so an out-of-order leg can be written at its own index without
-    // leaving a length gap — sendBoost pays biggest share first, so the first
-    // leg to settle is rarely recipients[0].
-    setResults(new Array(primaryLeg.recipients.length));
-    setHostResults(showsHostLeg ? new Array(hostLeg!.recipients.length) : []);
-
     // A Nostr live stream pays like every other boost: sendBoost below, by
     // keysend (TLV 7629169) or LNURL (BoostBox descriptor). It was a NIP-57 zap
     // to the host whenever the host's address supported one; payments do not
     // zap any more (docs/money-boosts.md, "The zap rail").
     const liveStreamId = isLiveStreamId(episode?.guid) ? episode!.guid! : null;
-    const hasSigner = !!activeNostr();
 
     // The show and item the summary receipt names, as NIP-73 `k`/`i` pairs —
     // see lib/nostr/zap-request.ts. A live stream's `episode.guid` is a Nostr
@@ -498,13 +536,65 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // hints are this site's restorable deep links.
     const showGuid = episode?.podcastGuid ?? podcast.podcastGuid;
     const itemGuid = liveStreamId ? undefined : episode?.guid;
-    const hostRefs: Nip73Refs = {
-      podcastGuid: showGuid,
-      episodeGuid: itemGuid,
-      podcastUrl: showShareUrl(showGuid) ?? undefined,
-      episodeUrl: showShareUrl(showGuid, itemGuid) ?? undefined,
+
+    // Everything a RETRY needs to finish this boost exactly as pressed: the
+    // blocks and boostagrams the legs went out with, and every choice the
+    // finish reads. Taken once, here — a retry must never re-derive a leg from
+    // the render, where an edited amount would re-split it.
+    const sent: SentBoost = {
+      boostagram,
+      sats,
+      msg,
+      senderName,
+      shareNostr,
+      shareAs,
+      mentions,
+      maySignAsSelf,
+      liveStreamId,
+      hostRefs: {
+        podcastGuid: showGuid,
+        episodeGuid: itemGuid,
+        podcastUrl: showShareUrl(showGuid) ?? undefined,
+        episodeUrl: showShareUrl(showGuid, itemGuid) ?? undefined,
+      },
+      noteSplit,
+      noteArtist,
+      primaryValue: value,
+      // Per LEG GROUP, not per boost. `boostagram` carries the whole typed
+      // amount, because that is what the NOTE must say (invariant 7: note
+      // amount is intent, not actual) — but a redirect pays this leg only
+      // `primarySats`, and the show's leg already overrides its own total to
+      // `hostSats`. Passing the base object here left the two groups
+      // advertising `sats + hostSats` for a boost of `sats`, so anything
+      // reading TLV 7629169 saw a total larger than what arrived. <BoostAllModal>
+      // has always done this per group; this is the modal that did not.
+      primaryBoostagram: trackSplit
+        ? { ...boostagram, value_msat_total: primaryLeg.sats * 1000 }
+        : boostagram,
+      // The trimmed block the preview rendered, NOT hostValue — sending the
+      // full one would re-split inside sendBoost and could pay a recipient
+      // zero, which reports as a ✓. Same object, so the rows the user
+      // approved are exactly the legs that go out.
+      hostValue: showsHostLeg ? { ...hostValue!, recipients: hostLeg!.recipients } : null,
+      // Its own uuid — it's a distinct payment and a recipient aggregator
+      // dedupes on that field — but the same remote_* guids as the track
+      // leg, which is what lets the host see which song earned their share.
+      hostBoostagram: showsHostLeg
+        ? { ...boostagram, uuid: randomId(), value_msat_total: hostLeg!.sats * 1000 }
+        : null,
+      collected: [],
+      hostCollected: [],
+      logged: false,
     };
-    let collected: BoostResult[] = [];
+    sentRef.current = sent;
+
+    setRunning(true);
+    // Pre-sized so an out-of-order leg can be written at its own index without
+    // leaving a length gap — sendBoost pays biggest share first, so the first
+    // leg to settle is rarely recipients[0].
+    setResults(new Array(primaryLeg.recipients.length));
+    setHostResults(showsHostLeg ? new Array(hostLeg!.recipients.length) : []);
+
     // `payable`, not `primarySats > 0`. A redirect with remotePercentage="0"
     // leaves this leg 0 sats, and `payableSplit`'s no-one-can-be-paid arm hands
     // back EVERY artist with an all-zero split — so sending it would put a ✓ and
@@ -513,23 +603,13 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // percentage; the user never sees it.
     if (primaryLeg.payable) {
       try {
-        collected = await sendBoost({
-          value,
-          // The artist's share when a valueTimeSplit is in force, the whole boost
-          // otherwise. `value` is the track's block in the first case, so this
-          // pairing is the one thing that must stay together.
+        sent.collected = await sendBoost({
+          value: sent.primaryValue,
+          // The artist's share when a valueTimeSplit is in force, the whole
+          // boost otherwise. `primaryValue` is the track's block in the first
+          // case, so this pairing is the one thing that must stay together.
           totalSats: primaryLeg.sats,
-          // Per LEG GROUP, not per boost. `boostagram` carries the whole typed
-          // amount, because that is what the NOTE must say (invariant 7: note
-          // amount is intent, not actual) — but a redirect pays this leg only
-          // `primarySats`, and the show's leg below already overrides its own
-          // total to `hostSats`. Passing the base object here left the two groups
-          // advertising `sats + hostSats` for a boost of `sats`, so anything
-          // reading TLV 7629169 saw a total larger than what arrived. <BoostAllModal>
-          // has always done this per group; this is the modal that did not.
-          boostagram: trackSplit
-            ? { ...boostagram, value_msat_total: primaryLeg.sats * 1000 }
-            : boostagram,
+          boostagram: sent.primaryBoostagram,
           rail,
           // By index, never appended: legs settle biggest-share-first, so append
           // order is not recipient order and every ✓/✗ would land on the wrong
@@ -541,7 +621,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               return next;
             }),
         });
-        setResults(collected);
+        setResults(sent.collected);
       } catch (e) {
         setSendErr(getErrorMessage(e, 'boost failed'));
         setRunning(false);
@@ -559,20 +639,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // Non-fatal, and it must stay that way: the artist's leg has already been
     // paid by the time this runs, so throwing here would report a boost that
     // partly succeeded as a total failure and talk the user into paying twice.
-    let hostCollected: BoostResult[] = [];
-    if (showsHostLeg) {
+    if (sent.hostValue && sent.hostBoostagram) {
       try {
-        hostCollected = await sendBoost({
-          // The trimmed block the preview rendered, NOT hostValue — sending the
-          // full one would re-split inside sendBoost and could pay a recipient
-          // zero, which reports as a ✓. Same object, so the rows the user
-          // approved are exactly the legs that go out.
-          value: { ...hostValue!, recipients: hostLeg!.recipients },
+        sent.hostCollected = await sendBoost({
+          value: sent.hostValue,
           totalSats: hostLeg!.sats,
-          // Its own uuid — it's a distinct payment and a recipient aggregator
-          // dedupes on that field — but the same remote_* guids as the track
-          // leg, which is what lets the host see which song earned their share.
-          boostagram: { ...boostagram, uuid: randomId(), value_msat_total: hostLeg!.sats * 1000 },
+          boostagram: sent.hostBoostagram,
           rail,
           onProgress: (res, index) =>
             setHostResults((prev) => {
@@ -581,7 +653,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               return next;
             }),
         });
-        setHostResults(hostCollected);
+        setHostResults(sent.hostCollected);
       } catch (e) {
         // Non-fatal, per the note above — but NOT silent. CLAUDE.md: "A guard
         // that silently withholds must say so." With the artist's leg already
@@ -596,8 +668,84 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
     setPaymentDone(true);
     setRunning(false);
+    await finishBoost(sent, { celebrate: paidAny(sent.collected) || paidAny(sent.hostCollected), rail });
+  }
 
+  // Pay again ONLY the legs `retryableLegs` proves sent nothing — never the
+  // whole boost. A second press of BOOST after a partial failure pays every
+  // recipient that already received their share a second time; this is the
+  // way to finish the boost without that.
+  //
+  // Each leg is re-sent ALONE, for the amount it was allocated, under the SAME
+  // boostagram (and uuid) it first went out with. Alone, because `sendBoost`
+  // re-splits whatever block it is handed: a block of the failed legs only
+  // would share the boost among them. The same uuid, because this is the same
+  // boost — the first attempt never reached the recipient, and an aggregator
+  // dedupes on that field. Sequential, biggest share first, like every leg.
+  //
+  // The rail is the CURRENT one: a relay that cannot be reached is exactly the
+  // case where picking another wallet is the fix, and a leg that sent nothing
+  // is safe to pay from any of them.
+  async function retryFailed() {
+    const sent = sentRef.current;
+    if (!sent || !rail || running) return;
+    const primaryIdx = retryableLegs(sent.collected);
+    const hostIdx = sent.hostValue ? retryableLegs(sent.hostCollected) : [];
+    if (primaryIdx.length === 0 && hostIdx.length === 0) return;
+    primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
+    setSendErr(null);
+    setRunning(true);
+    const retried: BoostResult[] = [];
+    // Stop at the first leg whose wallet relay still cannot be reached. Every
+    // leg after it would fail the same way, and each one is a separate
+    // `sendBoost` — a capability probe and a payment, each a fresh dial against
+    // the Cloudflare upgrade limit (see lib/v4v/nwc.ts). The legs not reached
+    // keep their old result, so they are still offered next time.
+    const relayDown = (r: BoostResult) => !r.ok && unreachableWalletRelay(r.error) !== null;
+    const resend = async (prev: BoostResult, block: SentBoost['primaryValue'], boostagram: Boostagram) => {
+      const [r] = await sendBoost({
+        value: { ...block, recipients: [prev.recipient] },
+        totalSats: prev.sats,
+        boostagram,
+        rail,
+      });
+      retried.push(r);
+      return r;
+    };
+    try {
+      for (const i of primaryIdx) {
+        const r = await resend(sent.collected[i], sent.primaryValue, sent.primaryBoostagram);
+        sent.collected = sent.collected.map((old, k) => (k === i ? r : old));
+        setResults(sent.collected);
+        if (relayDown(r)) break;
+      }
+      for (const i of retried.some(relayDown) ? [] : hostIdx) {
+        const r = await resend(sent.hostCollected[i], sent.hostValue!, sent.hostBoostagram!);
+        sent.hostCollected = sent.hostCollected.map((old, k) => (k === i ? r : old));
+        setHostResults(sent.hostCollected);
+        if (relayDown(r)) break;
+      }
+    } catch (e) {
+      // `sendBoost` throws only BEFORE its first leg (the engine failed to load,
+      // or no wallet is connected), so the leg it was asked for sent nothing
+      // and keeps its old result, still retryable.
+      setSendErr(getErrorMessage(e, 'retry failed'));
+    }
+    setRunning(false);
+    await finishBoost(sent, { celebrate: paidAny(retried), rail });
+  }
+
+  // What happens once legs have settled — after the first send, and again
+  // after each retry. The first time anything is paid it logs the boost and
+  // posts the note; after that a retry only updates the logged legs. The
+  // note is NOT republished: a kind:1 cannot be edited, and a second note
+  // would announce one boost twice. Its amount is the boost's intent
+  // (invariant 7), so it stays true; only its summary receipt, minted from
+  // the legs that had settled at the time, undercounts.
+  async function finishBoost(sent: SentBoost, opts: { celebrate: boolean; rail: Rail }) {
+    const { collected, hostCollected } = sent;
     const anyPaid = paidAny(collected) || paidAny(hostCollected);
+    const retryLeft = retryableLegs(collected).length + retryableLegs(hostCollected).length > 0;
 
     // Celebrate ONCE, after every leg of every block has settled — not inside
     // the first sendBoost. A redirected boost sends the track's block and then
@@ -606,7 +754,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // still read "sending…". A success chime mid-payment is worse than a late
     // one: it says "done" over money that is still moving, which is the same
     // wrong claim a ✗ on an unanswered wallet makes, pointed the other way.
-    if (anyPaid) {
+    if (opts.celebrate) {
       fireConfetti();
       playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
     }
@@ -615,7 +763,19 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // state register). The Nostr note + chat publishes below continue in the
     // background; their post-close setState is a no-op in React 18. A fully
     // failed boost leaves the modal open so the user sees the error.
-    if (anyPaid) setTimeout(() => onClose(), 1500);
+    // A boost with legs left to retry also stays open: closing would take the
+    // Retry button away while those recipients are still unpaid.
+    if (anyPaid && !retryLeft) setTimeout(() => onClose(), 1500);
+
+    if (!anyPaid) return;
+    if (sent.logged) {
+      storage.boosts.update(identity?.npub, sent.boostagram.uuid!, {
+        legs: [...storedBoostLegs(collected), ...storedBoostLegs(hostCollected)],
+      });
+      bumpBoosts();
+      return;
+    }
+    sent.logged = true;
 
     // A live-stream boost posts into the stream's chat (kind:1311) so other
     // viewers see it. Non-fatal so a relay hiccup can't fail the boost.
@@ -628,66 +788,68 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // relocated the leak rather than closed it. Same inversion
     // `streamingMayPublish()` names — a user who chose to publish LESS must
     // not end up publishing under their own key by a different door.
-    if (anyPaid && maySignAsSelf && liveStreamId) {
-      const chatMsg = `⚡ Boosted ${sats.toLocaleString()} sats${msg ? `: ${msg}` : ''}`;
-      publishLiveChat(liveStreamId, chatMsg).catch(() => { /* non-fatal */ });
+    if (sent.maySignAsSelf && sent.liveStreamId) {
+      const chatMsg = `⚡ Boosted ${sent.sats.toLocaleString()} sats${sent.msg ? `: ${sent.msg}` : ''}`;
+      publishLiveChat(sent.liveStreamId, chatMsg).catch(() => { /* non-fatal */ });
     }
 
     // Remember the rail that actually paid as the user's preference (local +
     // synced to Nostr) so it's preselected here and on their other devices.
-    if (anyPaid && rail) recordLastRail(rail, identity);
+    recordLastRail(opts.rail, identity);
 
     // Persist the boost locally so the user's "view" surface (the global feed)
     // can render it. Logged regardless of rail; maybePublishNote patches in
     // `noteId` for dedupe against the relay-discovered version. Publish is gated
     // on at least one successful leg — failed-only boosts shouldn't pollute the
     // network.
-    if (anyPaid) {
       // Each group ordered biggest-share-first WITHIN itself, track group
       // first — not one merged sort. The two blocks have different weight
       // denominators, so a merged sort would compare a host payee's raw weight
       // against an artist's and could list a 3-sat leg above the 97-sat one.
       // This also keeps the history card in the same order as the modal that
       // sent it, which is the whole reason storedBoostLegs sorts at all.
-      logStoredBoost(boostagram, [
-        ...storedBoostLegs(collected),
-        ...storedBoostLegs(hostCollected),
-      ]);
-      // `boostagram.value_msat_total` is the full amount the user chose, so the
-      // note reads "Boosted 100 sats" rather than naming one leg's share —
-      // invariant 7, note amount is intent, not actual.
-      //
-      // The site-signed summary receipt for the sats that actually settled —
-      // both groups, ok legs only — is the one thing the note quotes. For EVERY
-      // boost that posts ("Don't post" is the only thing that skips it): the
-      // user signs its request when their key publishes the note, the site
-      // does when the note is site-published, so an Anonymous boost's receipt
-      // names the site and not the user. Never throws; null quotes nothing.
-      // No leg is a zap, so there is no provider receipt to wait for.
-      const allLegs = [...collected, ...hostCollected];
-      const paidSats = allLegs.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);
-      const summaryReceipt = shareNostr
-        ? await mintSummaryReceipt({
-            paidSats, refs: hostRefs, relays,
-            as: identity && shareAs === 'self' && hasSigner ? 'self' : 'site',
-          })
-        : null;
-      // `collected` is the TRACK's legs whenever there is a track to name: a
-      // redirect sends the primary leg to the window's block, and a live show
-      // sends it to the on-air block (the show's share, if any, is
-      // `hostCollected`). `boostNoteTrack` names nothing
-      // unless one of them settled.
-      const artist = noteSplit
-        ? await Promise.race([
-            noteArtist,
-            new Promise<undefined>((r) => setTimeout(() => r(undefined), NOTE_ARTIST_WAIT_MS)),
-          ])
-        : undefined;
-      const track = noteSplit
-        ? { split: artist ? { ...noteSplit, artist } : noteSplit, results: collected }
-        : undefined;
-      await maybePublishNote(boostagram, allLegs, summaryReceipt ?? undefined, track);
-    }
+    logStoredBoost(sent, [
+      ...storedBoostLegs(collected),
+      ...storedBoostLegs(hostCollected),
+    ]);
+    // `boostagram.value_msat_total` is the full amount the user chose, so the
+    // note reads "Boosted 100 sats" rather than naming one leg's share —
+    // invariant 7, note amount is intent, not actual.
+    //
+    // The site-signed summary receipt for the sats that actually settled —
+    // both groups, ok legs only — is the one thing the note quotes. For EVERY
+    // boost that posts ("Don't post" is the only thing that skips it): the
+    // user signs its request when their key publishes the note, the site
+    // does when the note is site-published, so an Anonymous boost's receipt
+    // names the site and not the user. Never throws; null quotes nothing.
+    // No leg is a zap, so there is no provider receipt to wait for.
+    const allLegs = [...collected, ...hostCollected];
+    const paidSats = allLegs.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);
+    const { shareAs } = sent;
+    // Asked NOW, not at the tap: after a retry the receipt is signed now, by
+    // whatever signer is present now.
+    const hasSigner = !!activeNostr();
+    const summaryReceipt = sent.shareNostr
+      ? await mintSummaryReceipt({
+          paidSats, refs: sent.hostRefs, relays,
+          as: identity && shareAs === 'self' && hasSigner ? 'self' : 'site',
+        })
+      : null;
+    // `collected` is the TRACK's legs whenever there is a track to name: a
+    // redirect sends the primary leg to the window's block, and a live show
+    // sends it to the on-air block (the show's share, if any, is
+    // `hostCollected`). `boostNoteTrack` names nothing
+    // unless one of them settled.
+    const artist = sent.noteSplit
+      ? await Promise.race([
+          sent.noteArtist,
+          new Promise<undefined>((r) => setTimeout(() => r(undefined), NOTE_ARTIST_WAIT_MS)),
+        ])
+      : undefined;
+    const track = sent.noteSplit
+      ? { split: artist ? { ...sent.noteSplit, artist } : sent.noteSplit, results: collected }
+      : undefined;
+    await maybePublishNote(sent, allLegs, summaryReceipt ?? undefined, track);
   }
 
   return (
@@ -759,9 +921,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               the sticky-footer balance is reporting on, so it has to be
               answerable before the user reads that number. */}
           <RailPicker rail={rail} onChange={setRail} />
-          {/* Before the tap only: once a send has run, its own per-leg result
-              is the answer, and this would repeat it. */}
-          {!paymentDone && !running && <WalletRelayNotice wallet={wallet} />}
+          {/* Not while legs are moving: the per-leg results are the answer
+              then. After a failed send it stays, because a Retry is the next
+              decision and the relay state is what it depends on. */}
+          {!running && <WalletRelayNotice wallet={wallet} />}
           {/* Locked while a send is in flight: `value`, `splits` and both legs
               are derived from `sats` at render time, while go() pays from the
               closure it captured at the tap — so an edit mid-send repaints the
@@ -903,6 +1066,16 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               >
                 <BoltIcon />
                 {running ? 'sending…' : `Send ${sats} sat`}
+              </button>
+            )}
+            {paymentDone && retryCount > 0 && (
+              <button
+                onClick={retryFailed}
+                disabled={running || !rail}
+                className="btn-bolt disabled:opacity-40"
+              >
+                <BoltIcon />
+                {running ? 'retrying…' : `Retry ${retryCount} failed`}
               </button>
             )}
           </div>
