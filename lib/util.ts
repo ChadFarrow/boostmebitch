@@ -1548,6 +1548,25 @@ export interface PaymentErrorExplanation {
   nothingSent: boolean;
 }
 
+/**
+ * The wallet relay a failure says could not be reached, as a bare host — or
+ * null when the failure is anything else.
+ *
+ * Deliberately NARROW: it matches the one message a WebSocket that never
+ * opened produces ("Failed to connect to wss://…", thrown in the SDK's
+ * `_checkConnected` ahead of any publish), and nothing merely mentioning a
+ * connection. Two readers depend on that: `explainPaymentError` turns a match
+ * into "nothing was sent", a money claim; and the boost modal turns one into
+ * "cannot reach your wallet's relay" over the balance, so a match on a wallet
+ * REFUSAL ("UNAUTHORIZED: connection not allowed to …") would tell someone
+ * with a working wallet that it is offline. `…to connect to peer` is a
+ * Lightning routing failure, not our relay, and must not match either.
+ */
+export function unreachableWalletRelay(raw: string | undefined): string | null {
+  const m = (raw ?? '').match(/failed to connect to\s+(wss?:\/\/[^\s/;,)]+)/i);
+  return m ? m[1]!.replace(/^wss?:\/\//i, '') : null;
+}
+
 export function explainPaymentError(raw: string | undefined): PaymentErrorExplanation {
   const full = (raw ?? '').trim();
   const retryAt = full.lastIndexOf('LNURL retry: ');
@@ -1570,9 +1589,8 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
       nothingSent: true,
     };
   }
-  const relay = msg.match(/failed to connect to\s+(wss?:\/\/[^\s/;,)]+)/i);
-  if (relay) {
-    const host = relay[1]!.replace(/^wss?:\/\//i, '');
+  const host = unreachableWalletRelay(msg);
+  if (host) {
     return {
       cause: `Could not reach your wallet's relay (${host}).`,
       action: 'Check that your wallet is online and your network allows it, reload the page, then boost again.',

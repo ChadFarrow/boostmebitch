@@ -24,7 +24,7 @@ import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
 import { RailPicker } from './rail-picker';
 import { DroppedPayees } from './boost-modal/dropped-payees';
-import { BoostModalBalance } from './wallet-balance';
+import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from './wallet-balance';
 import { LegStatusGlyph } from './leg-status-glyph';
 
 interface Props {
@@ -66,6 +66,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [mentions, setMentions] = useState<MentionNpub[]>([]);
   const [name, setName] = useState('');
   const [rail, setRail] = useState<Rail | null>(null);
+  // ONE balance read for the whole modal, feeding both the footer balance and
+  // the relay notice under the picker — see <BoostModalBalance>.
+  const wallet = useWalletBalance(rail);
 
   const [splits, setSplits] = useState<ValueTimeSplit[]>([]);
   const [totalSplits, setTotalSplits] = useState(0);
@@ -521,6 +524,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           )}
 
           <RailPicker rail={rail} onChange={setRail} />
+          {/* Before the tap only: once a send has run, its own per-leg result
+              is the answer, and this would repeat it. */}
+          {!done && !running && <WalletRelayNotice wallet={wallet} />}
 
           {/* "per track", not the single modal's "Amount to send". This is the
               one surface that MULTIPLIES the typed number by the track count,
@@ -712,7 +718,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                     spend is that number times the track count, so a chip on
                     `sats` would clear a boost the wallet goes on to refuse
                     part-way through — after some artists are already paid. */}
-                {rail && <BoostModalBalance amountSats={total} rail={rail} />}
+                {rail && <BoostModalBalance amountSats={total} wallet={wallet} />}
                 {sats < MIN_BOOST_SATS && (
                   <span className="text-[11px] text-muted">min {MIN_BOOST_SATS} sats</span>
                 )}
