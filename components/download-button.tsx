@@ -241,6 +241,16 @@ function present(
   }
 }
 
+/**
+ * DOWNLOADED IS A FILL, NOT A BRIGHTER BORDER. A bone border over the idle
+ * bone/40 one was too faint to read at a glance, so a saved episode looked
+ * like one that was not. Inverted rather than a new hue: magenta is the
+ * heart's ON colour in the same cluster and yellow means BOOST, so either
+ * would say something false — and `bone`/`ink` swap with the theme, so the
+ * inversion holds in light mode too. A background changes no box size.
+ */
+const DONE = 'border-bone bg-bone text-ink hover:border-bone hover:bg-bone/85';
+
 function classesFor(size: Size, tone: Tone): string {
   if (size === 'tile') {
     // `.tile` already carries the idle border and text colour, so only the
@@ -249,18 +259,22 @@ function classesFor(size: Size, tone: Tone): string {
     const tile =
       tone === 'error'
         ? 'border-red-400/60 text-red-400 hover:border-red-400 hover:bg-red-400/10'
-        : tone === 'done' || tone === 'busy'
-          ? 'border-bone text-bone hover:border-bone hover:bg-bone/10'
-          : '';
+        : tone === 'done'
+          ? DONE
+          : tone === 'busy'
+            ? 'border-bone text-bone hover:border-bone hover:bg-bone/10'
+            : '';
     return `tile ${tile}`;
   }
 
   const colour =
     tone === 'error'
       ? 'border-red-400/60 text-red-400 hover:bg-red-400/10'
-      : tone === 'done' || tone === 'busy'
-        ? 'border-bone text-bone hover:bg-bone/10'
-        : 'border-bone/40 text-bone/70 hover:border-bone hover:text-bone';
+      : tone === 'done'
+        ? DONE
+        : tone === 'busy'
+          ? 'border-bone text-bone hover:bg-bone/10'
+          : 'border-bone/40 text-bone/70 hover:border-bone hover:text-bone';
 
   // Touch target comes from min-h/min-w rather than padding, so the desktop chip
   // stays slim while the mobile one clears WCAG 2.5.8's 24px floor with room to
