@@ -259,6 +259,14 @@ characters, so reserving the width once means no state change can move anything.
 `.tile` is excluded — 52 px cannot hold a third line — and keeps the size in its
 accessible name only.
 
+**A saved episode is a FILLED control** (`bg-bone text-ink`), at every size. The
+first version marked it with a brighter border and ✓ only, which next to the idle
+`bone/40` border read as the same control — a listener could not tell at a glance
+what was on the device. It is an inversion, not a hue: magenta is the heart's ON
+colour in the same cluster and yellow is BOOST, and `bone`/`ink` swap with the
+theme. Queued and downloading stay outlined, because the progress fill draws
+`bg-bone/20` inside the box and would vanish on a filled one.
+
 **The slot is `5.5ch`, and that does NOT hold six tracked characters** — so on
 `'sm'` and `'md'` a size such as "267 MB" wraps onto two lines. On the desktop
 list chip that is load-bearing rather than cosmetic: `'sm'` has no `py`, so the
