@@ -9,6 +9,7 @@ import { MutedAccountsSection } from './muted-accounts';
 import { ExportKeySection } from './export-key';
 import { ProfileEditor } from '../profile-editor';
 import { ThemeMenuLink } from '../theme-toggle';
+import { openBugReport } from '@/lib/bug-report';
 import { BunkerApprovalNotice } from '../bunker-approval-notice';
 import { BunkerRestoreNotice } from '../bunker-restore-notice';
 import { Avatar } from '../avatar';
@@ -382,14 +383,25 @@ export function AccountMenu({
               the menu: flipping the palette is something you want to see land,
               and closing the thing you are looking at to show you the result
               hides half of it. "sign out" closes because it has to. */}
-          <div className="border-t border-bone/15 mt-4 pt-3 flex items-center justify-between gap-3">
+          <div className="border-t border-bone/15 mt-4 pt-3 flex flex-wrap items-center justify-between gap-3">
             <button
               onClick={() => { onSignOut(); setOpen(false); }}
               className="btn-mini"
             >
               sign out
             </button>
-            <ThemeMenuLink />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {/* Opens a pre-filled GitHub issue; see lib/bug-report.ts for
+                  what the public body may carry. */}
+              <button
+                type="button"
+                onClick={() => { setOpen(false); openBugReport(); }}
+                className="btn-mini"
+              >
+                report a bug
+              </button>
+              <ThemeMenuLink />
+            </div>
           </div>
         </div>
       )}
