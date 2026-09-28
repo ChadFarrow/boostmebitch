@@ -80,9 +80,19 @@ provider directly and falls back to `/api/lnurl` only when the browser *throws* 
 on the money path, with CLAUDE.md's blessing. `downloadBytes` now does exactly that
 with `/api/audio`, and the direct `mode: 'cors'` fetch is untouched.
 
-**Only a host that ANSWERED may be retried through us.** An offline device would
-otherwise send every failed download at our server for a second failure, and the
-message it has already earned — "No connection" — is the correct one.
+**Every direct failure is retried through us, and the probe is NOT a gate.** The
+first version retried only a host whose `no-cors` HEAD resolved, to keep an
+offline device off our server. That protected nothing — an offline device cannot
+reach our server either, so its retry fails locally for free — and it cost real
+downloads. Reported 2026-09-28 from Android: *"No connection — this device could
+not reach dts.podtrac.com."* on LINUX Unplugged, over a transport playing that
+episode, and "a lot". The HEAD rejects on hosts that are up: one that refuses HEAD
+(`op3.dev` does), a redirect hop to `http:` (a blocked mixed-content fetch, while
+`<audio>` is auto-upgraded), a redirect chain slower than the probe's 6 s. Each
+was a download the proxy would have saved, refused with a sentence that sent the
+listener to check a signal that was fine. The probe now runs only after
+`/api/audio` ALSO throws, and only to choose between "No connection" and "Could
+not reach this app's server".
 
 ### Why not the service worker
 
@@ -582,10 +592,11 @@ indistinguishable from a broken one — the rule `<FavoritesSyncNotice>` exists 
 | Cause | What the listener reads |
 | --- | --- |
 | The host sends no CORS header, and `/api/audio` got it | *nothing — the download succeeds* |
-| The host sends no CORS header, and `/api/audio` could not read it either | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
-| The device could not reach the host at all | "No connection — this device could not reach `<host>`." |
+| The host sends no CORS header, and `/api/audio` could not read it either, while the HEAD probe resolves | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
+| Neither the host nor our route could be fetched, and the HEAD probe rejects — or the route answered 502 and the probe rejects (a host that is down) | "No connection — this device could not reach `<host>`." |
 | Our own route is unreachable while the host is up | "Could not reach this app's server to fetch the episode." |
 | The host no longer has the file (route answered 404) | "`<host>` no longer has this episode." |
+| The route's own 6/min limit (route answered 429) — an album from a no-CORS host reaches it | "Too many downloads through this app in one minute — wait a minute, then retry." |
 | `roomVerdict` said `'no'` | "Not enough space — remove a download to make room." |
 | HLS, a live item, or no URL | The button does not render at all. |
 | Anything else | The thrown message, or "Download failed — tap to retry." |
@@ -596,8 +607,9 @@ described wrongly. `mmmusic.show` was up, serving the same 90 MB file to the `<a
 element two inches below the message.
 
 `downloadFailureMessage` (`download-rules.ts`, pinned by `check:downloads`) picks
-between them, and `hostAnswers` supplies the discriminator: a **`no-cors` HEAD** to
-the same URL, which the browser resolves for *any* reply the server made — 200, 405,
+between them, and `hostAnswers` supplies the discriminator — **after** `/api/audio`
+has also thrown, never before it (see "Every direct failure is retried through
+us" above): a **`no-cors` HEAD** to the same URL, which the browser resolves for *any* reply the server made — 200, 405,
 500 — and rejects only when the request never completed. Driven in a real browser on
 2026-09-20, 5/5:
 
