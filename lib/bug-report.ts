@@ -140,7 +140,7 @@ export function bugReportBody(answers: BugReportAnswers, info: AppInfo): string 
     fenced(answers.steps),
     '',
     '### App snapshot',
-    fenced(infoLines),
+    infoLines ? fenced(infoLines) : '_The reporter chose not to send app info._',
     '',
     '_Sent from the in-app bug report._',
   ].join('\n');

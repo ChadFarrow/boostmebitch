@@ -75,6 +75,9 @@ type Status =
 export function BugReportModal({ onClose }: { onClose: () => void }) {
   const [answers, setAnswers] = useState<BugReportAnswers>({ happened: '', expected: '', steps: '' });
   const [info] = useState<AppInfo>(takeSnapshot);
+  // On by default, because it is what makes most reports fixable; the user
+  // can still send the text alone. Off sends NO snapshot at all.
+  const [includeInfo, setIncludeInfo] = useState(true);
   const [status, setStatus] = useState<Status>({ kind: 'editing' });
 
   // The refusal is RENDERED, never silent: a user told nothing retypes the key.
@@ -93,7 +96,7 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
       const res = await fetch('/api/bug-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answers, info }),
+        body: JSON.stringify({ answers, info: includeInfo ? info : {} }),
       });
       const data = (await res.json().catch(() => ({}))) as { number?: number | null; error?: string };
       if (!res.ok) {
@@ -159,8 +162,27 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
         ))}
       </div>
 
-      <details className="mt-3 text-xs">
-        <summary className="btn-inline text-muted cursor-pointer">App info sent with it</summary>
+      <label className="mt-4 flex items-start gap-2 text-sm cursor-pointer min-h-6">
+        <input
+          type="checkbox"
+          className="mt-1 accent-bolt"
+          checked={includeInfo}
+          disabled={sending}
+          onChange={(e) => setIncludeInfo(e.target.checked)}
+        />
+        <span>
+          Include app info
+          <span className="block text-[11px] text-muted">
+            Super helpful: it shows us your device, sign-in and wallet type, and what was playing.
+            No keys, wallet strings or balances.
+          </span>
+        </span>
+      </label>
+
+      <details className={`mt-2 text-xs ${includeInfo ? '' : 'opacity-40'}`}>
+        <summary className="btn-inline text-muted cursor-pointer">
+          {includeInfo ? 'See the app info we send' : 'App info (not sent)'}
+        </summary>
         <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11px]">
           {APP_INFO_KEYS.filter(([k]) => info[k]).map(([k, label]) => (
             <div key={k} className="contents">
