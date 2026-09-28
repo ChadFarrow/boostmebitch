@@ -232,6 +232,10 @@ export function proxiedAudioUrl(sourceUrl: string): string {
  * `downloads-cache.ts` claiming five-of-five hosts send it was a sample that
  * happened to miss self-hosted shows**, which V4V podcasts often are.
  *
+ * `reachable: false` is said only when `/api/audio` ALSO threw — the HEAD
+ * probe words a failure and never gates the retry through us, because it
+ * rejects on some hosts that are up (docs/downloads.md, 2026-09-28).
+ *
  * `reachable` comes from a `no-cors` HEAD to the same URL, which is the exact
  * discriminator and costs one round trip: an opaque response RESOLVES whenever
  * the server answered at all — any status, 405 included — and rejects only when

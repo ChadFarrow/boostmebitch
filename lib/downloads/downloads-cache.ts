@@ -12,6 +12,12 @@ import { MAX_DOWNLOAD_BYTES, roomVerdict, downloadFailureMessage, proxiedAudioUr
  * that reports whether an interface exists, so it is `true` on a captive
  * portal and on wifi with no route out.
  *
+ * **It WORDS a failure and never GATES a retry.** It runs only after the
+ * direct fetch AND `/api/audio` both threw. It rejects on some hosts that are
+ * up — one that refuses HEAD, a redirect to `http:`, a chain slower than the
+ * timeout below — so as a gate in front of the proxy it reported "No
+ * connection" over a playing episode (dts.podtrac.com, 2026-09-28).
+ *
  * HEAD, not GET: `no-cors` permits it, and a GET here would start pulling the
  * whole enclosure again to answer a yes/no question.
  *
@@ -198,21 +204,31 @@ export async function downloadBytes(
   } catch (e) {
     // An abort is the user cancelling and must stay distinguishable.
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
-    // A CORS refusal and an offline device are the same TypeError here, so ASK
-    // rather than guess: a `no-cors` HEAD resolves whenever the server answered
-    // at all and rejects only when the device could not get there.
+    // A CORS refusal and an offline device are the same TypeError here. Retry
+    // through us EITHER WAY, and ask which it was only if that throws too.
     //
-    // ONLY A HOST THAT ANSWERED MAY BE RETRIED THROUGH US. An offline device
-    // would otherwise send every failed download at our server for a second
-    // failure, and the message it earns ("No connection") is already correct.
-    if (!(await hostAnswers(sourceUrl, signal))) {
-      throw new Error(downloadFailureMessage(hostOf(sourceUrl), false));
-    }
+    // THE PROBE IS NOT A GATE. It used to be — "only a host that answered may be
+    // retried through us" — and it failed on hosts that were up: reported
+    // 2026-09-28 as "No connection — this device could not reach
+    // dts.podtrac.com." above a transport playing that very episode. A
+    // `no-cors` HEAD rejects for more than a dead network: a host that refuses
+    // HEAD (op3.dev does), a redirect hop to `http:` (blocked as mixed content,
+    // while `<audio>` is auto-upgraded), a redirect chain slower than the
+    // probe's own timeout. Every one of those denied the proxy to a download it
+    // would have saved. And the gate protected nothing: an offline device cannot
+    // reach our server either, so its retry fails locally, costing us nothing.
     try {
       res = await fetch(proxiedAudioUrl(sourceUrl), { signal, credentials: 'omit' });
       proxied = true;
     } catch (e2) {
       if (e2 instanceof DOMException && e2.name === 'AbortError') throw e2;
+      // Neither the host nor our route could be fetched. NOW ask: a `no-cors`
+      // HEAD resolves whenever the host answered at all, so it tells an offline
+      // device from an outage of ours. It fails towards "No connection", the
+      // harmless wrong answer.
+      if (!(await hostAnswers(sourceUrl, signal))) {
+        throw new Error(downloadFailureMessage(hostOf(sourceUrl), false));
+      }
       // Our own route is unreachable while the host is not. Say what is true
       // rather than blaming the host, whose only sin is a missing header.
       throw new Error('Could not reach this app’s server to fetch the episode.');
@@ -223,6 +239,13 @@ export async function downloadBytes(
       if (res.status === 404) throw new Error(`${hostOf(sourceUrl)} no longer has this episode.`);
       if (res.status === 413) {
         throw new DownloadRefused('This episode is too large to download.');
+      }
+      // Our own per-client limit, not the host's policy. DOWNLOAD ALBUM queues
+      // one track after another, so a short album from a host that sends no
+      // CORS header passes the route's 6/min, and blaming the host for that is
+      // a claim about a server that did nothing wrong.
+      if (res.status === 429) {
+        throw new Error('Too many downloads through this app in one minute — wait a minute, then retry.');
       }
       // We reached our own server and IT could not read the host — so the host
       // is still the subject, and this is where `reachable: true` earns its
