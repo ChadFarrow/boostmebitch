@@ -8,7 +8,7 @@ import { isLikelyAndroid, isLikelyIOS } from '@/lib/nostr';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletBalanceChip } from './wallet-balance';
 import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
-import { openBugReport } from '@/lib/bug-report';
+import { BugReportModal } from './bug-report-modal';
 
 // The header auth control — one entry point for two independent logins.
 // Lightning (wallet) and Nostr are separate: a wallet connects without any
@@ -44,6 +44,8 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
   const walletRestoring = useApp((s) => s.walletRestoring);
   const [, setTick] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Outside the menu's lifetime: the modal must survive the menu closing.
+  const [reporting, setReporting] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   // Wallet state is read from localStorage (hasAnyWallet), which the server
   // can't see — so gate it behind mount. Without this, SSR renders the
@@ -277,13 +279,13 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
                   <button
                     role="menuitem"
                     type="button"
-                    onClick={() => { setMenuOpen(false); openBugReport(); }}
+                    onClick={() => { setMenuOpen(false); setReporting(true); }}
                     className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-start gap-2 text-sm"
                   >
                     <span className="text-bone w-4 shrink-0 text-center leading-5">✎</span>
                     <span className="flex flex-col">
                       <span>Report a bug</span>
-                      <span className="text-[11px] text-muted">Opens a public GitHub issue</span>
+                      <span className="text-[11px] text-muted">Tell us what went wrong</span>
                     </span>
                   </button>
                 </div>
@@ -334,6 +336,10 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
           {!overlay && <ThemeToggle />}
         </>
       )}
+
+      {/* Outside the menu's `menuOpen &&` block, like <AccountMenu>'s profile
+          editor: it portals to <body> and must survive the menu closing. */}
+      {reporting && <BugReportModal onClose={() => setReporting(false)} />}
     </div>
   );
 }

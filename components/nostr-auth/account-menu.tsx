@@ -9,7 +9,7 @@ import { MutedAccountsSection } from './muted-accounts';
 import { ExportKeySection } from './export-key';
 import { ProfileEditor } from '../profile-editor';
 import { ThemeMenuLink } from '../theme-toggle';
-import { openBugReport } from '@/lib/bug-report';
+import { BugReportModal } from '../bug-report-modal';
 import { BunkerApprovalNotice } from '../bunker-approval-notice';
 import { BunkerRestoreNotice } from '../bunker-restore-notice';
 import { Avatar } from '../avatar';
@@ -198,6 +198,7 @@ export function AccountMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [reporting, setReporting] = useState(false);
   const [signerStale, setSignerStale] = useState(false);
   // Subscribed ONCE here and passed down, like `signerStale` and for the same
   // reason: the banner's disabled Reconnect and the notice's sentence are two
@@ -391,11 +392,11 @@ export function AccountMenu({
               sign out
             </button>
             <div className="flex flex-wrap items-center justify-end gap-2">
-              {/* Opens a pre-filled GitHub issue; see lib/bug-report.ts for
-                  what the public body may carry. */}
+              {/* Opens <BugReportModal>, which asks first and then opens a
+                  pre-filled GitHub issue; see lib/bug-report.ts. */}
               <button
                 type="button"
-                onClick={() => { setOpen(false); openBugReport(); }}
+                onClick={() => { setOpen(false); setReporting(true); }}
                 className="btn-mini"
               >
                 report a bug
@@ -409,6 +410,7 @@ export function AccountMenu({
       {/* Outside the `open &&` block: the editor portals to <body> and must
           survive the menu closing behind it. */}
       {editing && <ProfileEditor identity={identity} onClose={() => setEditing(false)} />}
+      {reporting && <BugReportModal onClose={() => setReporting(false)} />}
     </div>
   );
 }
