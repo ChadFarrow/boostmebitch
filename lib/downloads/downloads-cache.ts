@@ -13,10 +13,10 @@ import { MAX_DOWNLOAD_BYTES, roomVerdict, downloadFailureMessage, proxiedAudioUr
  * portal and on wifi with no route out.
  *
  * **It WORDS a failure and never GATES a retry.** It runs only after the
- * direct fetch AND `/api/audio` both threw. It rejects on some hosts that are
- * up — one that refuses HEAD, a redirect to `http:`, a chain slower than the
- * timeout below — so as a gate in front of the proxy it reported "No
- * connection" over a playing episode (dts.podtrac.com, 2026-09-28).
+ * direct fetch failed AND `/api/audio` threw or answered 502. It rejects on
+ * some hosts that are up — one that refuses HEAD, a redirect to `http:`, a
+ * chain slower than the timeout below — so as a gate in front of the proxy it
+ * reported "No connection" over a playing episode (dts.podtrac.com, 2026-09-28).
  *
  * HEAD, not GET: `no-cors` permits it, and a GET here would start pulling the
  * whole enclosure again to answer a yes/no question.
@@ -248,9 +248,14 @@ export async function downloadBytes(
         throw new Error('Too many downloads through this app in one minute — wait a minute, then retry.');
       }
       // We reached our own server and IT could not read the host — so the host
-      // is still the subject, and this is where `reachable: true` earns its
-      // keep: some hosts refuse a datacentre IP as readily as a browser.
-      throw new Error(downloadFailureMessage(hostOf(sourceUrl), true));
+      // is still the subject. But a 502 is also what the route answers for a
+      // host that is DOWN (DNS failure, refused, timed out), and "does not let
+      // other apps save its audio" is then a claim about a policy the host
+      // never stated. The direct fetch no longer asks first, so ask now: a host
+      // that answers us refused a datacentre IP; one that does not is down, or
+      // this device is off the network — "No connection" either way.
+      const reachable = res.status === 502 ? await hostAnswers(sourceUrl, signal) : true;
+      throw new Error(downloadFailureMessage(hostOf(sourceUrl), reachable));
     }
   }
   if (!res.ok) throw new Error(`${hostOf(sourceUrl)} answered ${res.status}.`);

@@ -592,8 +592,8 @@ indistinguishable from a broken one — the rule `<FavoritesSyncNotice>` exists 
 | Cause | What the listener reads |
 | --- | --- |
 | The host sends no CORS header, and `/api/audio` got it | *nothing — the download succeeds* |
-| The host sends no CORS header, and `/api/audio` could not read it either | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
-| Neither the host nor our route could be fetched, and the HEAD probe rejects | "No connection — this device could not reach `<host>`." |
+| The host sends no CORS header, and `/api/audio` could not read it either, while the HEAD probe resolves | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
+| Neither the host nor our route could be fetched, and the HEAD probe rejects — or the route answered 502 and the probe rejects (a host that is down) | "No connection — this device could not reach `<host>`." |
 | Our own route is unreachable while the host is up | "Could not reach this app's server to fetch the episode." |
 | The host no longer has the file (route answered 404) | "`<host>` no longer has this episode." |
 | The route's own 6/min limit (route answered 429) — an album from a no-CORS host reaches it | "Too many downloads through this app in one minute — wait a minute, then retry." |
