@@ -18,7 +18,7 @@
 // assertion in it is the status code: this route must answer 200 with an empty
 // envelope for a query it cannot use, NEVER a 4xx. askIndex returns null for
 // any !res.ok, the proxy turns that into 503, and ask() in index-client.ts
-// latches indexOffForTab for the whole tab — so one 400 here switches the index
+// latches indexOffUntil for the whole tab — so one 400 here switches the index
 // off for the global feed, every podcast feed, live streams and zaps until the
 // page reloads.
 //
@@ -259,7 +259,7 @@ const names = (body) => body.profiles.map((p) => JSON.parse(p.content).name ?? J
 }
 {
   // THE one that matters most. A 4xx here becomes a proxy 503, and ask() latches
-  // indexOffForTab for the whole tab — killing the index for the global feed,
+  // indexOffUntil for the whole tab — killing the index for the global feed,
   // podcast feeds, live streams and zaps until reload.
   for (const url of ['/profiles/search?q=a', '/profiles/search?q=', '/profiles/search']) {
     const r = await get(url);

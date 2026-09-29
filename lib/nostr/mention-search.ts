@@ -48,18 +48,24 @@ function displayName(p: ProfileMetadata | null | undefined): string {
 }
 
 /**
- * Does this profile answer to `q`? A prefix of either name, or of any WORD in
- * it — "TJ" finds "Sir TJ The Wrathful". The index only does the whole-name
- * prefix; the local tier can afford more because it is the people you know.
+ * A name as a handle: lowercased with every space removed, so "@sirtj" and
+ * "@sir tj" both answer to "Sir TJ The Wrathful". A handle has no spaces, and
+ * people type the name that way.
+ */
+function compact(s: string): string {
+  return s.replace(/\s+/g, '').toLowerCase();
+}
+
+/**
+ * Does this profile answer to `q`? A prefix of either name, spaces ignored.
+ * Deliberately NOT a match on a later word: "@tj" offering every "… TJ …" is
+ * noise in a picker whose job is naming one person.
  */
 function matches(p: ProfileMetadata | null | undefined, q: string): boolean {
-  const lower = q.toLowerCase();
+  const needle = compact(q);
+  if (!needle) return false;
   for (const field of [p?.display_name, p?.name]) {
-    const name = field?.trim().toLowerCase();
-    if (!name) continue;
-    for (let i = 0; i < name.length; i++) {
-      if ((i === 0 || /\s/.test(name[i - 1])) && name.startsWith(lower, i)) return true;
-    }
+    if (field && compact(field).startsWith(needle)) return true;
   }
   return false;
 }
@@ -199,14 +205,10 @@ export function mergeMentionCandidates(
  * the cursor.
  */
 function sortCandidates(list: MentionCandidate[], q: string): MentionCandidate[] {
-  const lower = q.toLowerCase();
-  // A whole-name prefix outranks a match on a later word, so "Sir" lists
-  // "Sir Libre" above "Mister Sirloin".
-  const lead = (c: MentionCandidate) => Number(c.name.toLowerCase().startsWith(lower));
+  const needle = compact(q);
   return [...list].sort((a, b) =>
     SOURCE_RANK[a.source] - SOURCE_RANK[b.source] ||
-    Number(b.name.toLowerCase() === lower) - Number(a.name.toLowerCase() === lower) ||
-    lead(b) - lead(a) ||
+    Number(compact(b.name) === needle) - Number(compact(a.name) === needle) ||
     a.name.length - b.name.length ||
     (a.pubkey < b.pubkey ? -1 : a.pubkey > b.pubkey ? 1 : 0));
 }
