@@ -47,11 +47,19 @@ function displayName(p: ProfileMetadata | null | undefined): string {
   return p?.display_name?.trim() || p?.name?.trim() || '';
 }
 
-/** Does this profile answer to `q`? Prefix on either name, as the index does. */
+/**
+ * Does this profile answer to `q`? A prefix of either name, or of any WORD in
+ * it — "TJ" finds "Sir TJ The Wrathful". The index only does the whole-name
+ * prefix; the local tier can afford more because it is the people you know.
+ */
 function matches(p: ProfileMetadata | null | undefined, q: string): boolean {
   const lower = q.toLowerCase();
   for (const field of [p?.display_name, p?.name]) {
-    if (field?.trim().toLowerCase().startsWith(lower)) return true;
+    const name = field?.trim().toLowerCase();
+    if (!name) continue;
+    for (let i = 0; i < name.length; i++) {
+      if ((i === 0 || /\s/.test(name[i - 1])) && name.startsWith(lower, i)) return true;
+    }
   }
   return false;
 }
@@ -150,7 +158,9 @@ export async function indexMentionCandidates(q: string): Promise<MentionCandidat
   // A response for a prefix the user has since typed past is not an answer
   // about what is on screen now. Cheaper than threading an AbortSignal, and it
   // is why the service echoes the query back.
-  if (res.query.toLowerCase() !== q.toLowerCase()) return null;
+  // Trimmed, because the service trims: "@Sir " is answered as "Sir", and an
+  // untrimmed compare would file that answer as the index being unreachable.
+  if (res.query.toLowerCase() !== q.trim().toLowerCase()) return null;
   const out: MentionCandidate[] = [];
   for (const e of res.matches) {
     const c = candidate(e.pubkey, storage.profile.get(e.pubkey), 'index');
@@ -190,9 +200,13 @@ export function mergeMentionCandidates(
  */
 function sortCandidates(list: MentionCandidate[], q: string): MentionCandidate[] {
   const lower = q.toLowerCase();
+  // A whole-name prefix outranks a match on a later word, so "Sir" lists
+  // "Sir Libre" above "Mister Sirloin".
+  const lead = (c: MentionCandidate) => Number(c.name.toLowerCase().startsWith(lower));
   return [...list].sort((a, b) =>
     SOURCE_RANK[a.source] - SOURCE_RANK[b.source] ||
     Number(b.name.toLowerCase() === lower) - Number(a.name.toLowerCase() === lower) ||
+    lead(b) - lead(a) ||
     a.name.length - b.name.length ||
     (a.pubkey < b.pubkey ? -1 : a.pubkey > b.pubkey ? 1 : 0));
 }
