@@ -47,11 +47,25 @@ function displayName(p: ProfileMetadata | null | undefined): string {
   return p?.display_name?.trim() || p?.name?.trim() || '';
 }
 
-/** Does this profile answer to `q`? Prefix on either name, as the index does. */
+/**
+ * A name as a handle: lowercased with every space removed, so "@sirtj" and
+ * "@sir tj" both answer to "Sir TJ The Wrathful". A handle has no spaces, and
+ * people type the name that way.
+ */
+function compact(s: string): string {
+  return s.replace(/\s+/g, '').toLowerCase();
+}
+
+/**
+ * Does this profile answer to `q`? A prefix of either name, spaces ignored.
+ * Deliberately NOT a match on a later word: "@tj" offering every "… TJ …" is
+ * noise in a picker whose job is naming one person.
+ */
 function matches(p: ProfileMetadata | null | undefined, q: string): boolean {
-  const lower = q.toLowerCase();
+  const needle = compact(q);
+  if (!needle) return false;
   for (const field of [p?.display_name, p?.name]) {
-    if (field?.trim().toLowerCase().startsWith(lower)) return true;
+    if (field && compact(field).startsWith(needle)) return true;
   }
   return false;
 }
@@ -150,7 +164,9 @@ export async function indexMentionCandidates(q: string): Promise<MentionCandidat
   // A response for a prefix the user has since typed past is not an answer
   // about what is on screen now. Cheaper than threading an AbortSignal, and it
   // is why the service echoes the query back.
-  if (res.query.toLowerCase() !== q.toLowerCase()) return null;
+  // Trimmed, because the service trims: "@Sir " is answered as "Sir", and an
+  // untrimmed compare would file that answer as the index being unreachable.
+  if (res.query.toLowerCase() !== q.trim().toLowerCase()) return null;
   const out: MentionCandidate[] = [];
   for (const e of res.matches) {
     const c = candidate(e.pubkey, storage.profile.get(e.pubkey), 'index');
@@ -189,10 +205,10 @@ export function mergeMentionCandidates(
  * the cursor.
  */
 function sortCandidates(list: MentionCandidate[], q: string): MentionCandidate[] {
-  const lower = q.toLowerCase();
+  const needle = compact(q);
   return [...list].sort((a, b) =>
     SOURCE_RANK[a.source] - SOURCE_RANK[b.source] ||
-    Number(b.name.toLowerCase() === lower) - Number(a.name.toLowerCase() === lower) ||
+    Number(compact(b.name) === needle) - Number(compact(a.name) === needle) ||
     a.name.length - b.name.length ||
     (a.pubkey < b.pubkey ? -1 : a.pubkey > b.pubkey ? 1 : 0));
 }

@@ -108,7 +108,7 @@ database is what let this service sit stalled for hours reporting `{ok:true}`.
   with `toString()`, and JavaScript switches to exponential notation at 1e21, so
   `?until=1e21` reached the driver as `"1e+21"` and `$2::bigint` rejected it. The
   route answered 500, `askIndex` turned that into `null`, the proxy into 503, and
-  `index-client.ts` set `indexOffForTab` — **one crafted URL switched the read
+  `index-client.ts` set `indexOffUntil` — **one crafted URL switched the read
   index off for that visitor's whole tab.** Clamping rather than refusing is
   deliberate: every route taking `until` is one whose 4xx the client reads as
   "the index is unavailable".

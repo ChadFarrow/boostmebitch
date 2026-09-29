@@ -86,14 +86,45 @@ const MAX_TEXTAREA_H = 240;
  */
 const NO_FEED_NPUBS: readonly MentionNpub[] = [];
 
-/** The `@…` immediately before the caret, if the caret is inside one. */
-function activeMention(value: string, caret: number): { q: string; start: number } | null {
+/** Longest `@…` run the picker still treats as a name being typed. */
+const MAX_MENTION_QUERY_CHARS = 40;
+/** Most spaces a name being typed may contain — "Sir TJ The Wrathful" is 3. */
+const MAX_MENTION_QUERY_SPACES = 3;
+
+/**
+ * The `@…` immediately before the caret, if the caret is inside one.
+ *
+ * A SPACE DOES NOT END THE QUERY. Display names have spaces, and a query that
+ * stopped at the first one meant "@Sir" was as far as anybody could narrow:
+ * with a dozen follows called "Sir …", the one you wanted sorted below the
+ * eight-row cap or under the keyboard, and typing "@Sir T" closed the list.
+ * Bounded by characters and spaces instead, and `open` shows a spaced query
+ * only when it has rows, so prose typed after an `@` closes the list rather
+ * than announcing "Nobody here".
+ *
+ * `picked` are the names already attached. `pick` writes `@name ` into the
+ * text, so without this every word typed after a picked mention would re-open
+ * the picker on "name great show".
+ */
+function activeMention(
+  value: string,
+  caret: number,
+  picked: readonly string[],
+): { q: string; start: number } | null {
   const upto = value.slice(0, caret);
   // An '@' only opens a mention at the start of the text or after whitespace,
   // so an email address and a nip05 in prose do not turn into a picker.
-  const m = /(?:^|\s)@([^\s@]*)$/.exec(upto);
+  const m = /(?:^|\s)@([^\s@][^\n@]*|)$/.exec(upto);
   if (!m) return null;
-  return { q: m[1], start: caret - m[1].length - 1 };
+  const q = m[1];
+  if (q.length > MAX_MENTION_QUERY_CHARS) return null;
+  if ((q.match(/ /g)?.length ?? 0) > MAX_MENTION_QUERY_SPACES) return null;
+  const lower = q.toLowerCase();
+  for (const name of picked) {
+    const n = name.toLowerCase();
+    if (lower.length > n.length && lower.startsWith(n)) return null;
+  }
+  return { q, start: caret - q.length - 1 };
 }
 
 /** Whether the index answered at all — the two empties are not the same. */
@@ -178,9 +209,13 @@ export function MessageInput({
   const [dismissed, setDismissed] = useState(false);
   const pickable = !!onMentionsChange;
 
+  const pickedNames = useMemo(
+    () => mentions.flatMap((m) => (m.name ? [m.name] : [])),
+    [mentions],
+  );
   const trigger = useMemo(
-    () => (pickable ? activeMention(value, caret) : null),
-    [pickable, value, caret],
+    () => (pickable ? activeMention(value, caret, pickedNames) : null),
+    [pickable, value, caret, pickedNames],
   );
   const q = trigger?.q ?? '';
 
@@ -367,8 +402,11 @@ export function MessageInput({
   }
 
   const pastedNpub = pickable && !secretHit && !full ? parseNpubInput(q) : null;
+  // A query with a space in it is as likely to be prose as a name, so it keeps
+  // the list open only while somebody matches — no "Searching…", no "Nobody".
+  const spaced = q.includes(' ');
   const open = pickable && !secretHit && !!trigger && q.length >= MIN_MENTION_QUERY &&
-    (rows.length > 0 || !!pastedNpub || indexState !== 'idle');
+    (rows.length > 0 || (!spaced && (!!pastedNpub || indexState !== 'idle')));
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (!open) {
