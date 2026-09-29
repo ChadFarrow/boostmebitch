@@ -19,16 +19,21 @@ export function SpeedButton() {
   const setRate = useApp((s) => s.setPlaybackRate);
   const inCycle = (SPEED_CYCLE_RATES as readonly number[]).includes(rate);
   const label = `${inCycle ? rate : 1}×`;
+  const next = `${nextPlaybackRate(inCycle ? rate : 1)}×`;
   return (
     <button
       type="button"
       onClick={() => setRate(nextPlaybackRate(rate))}
       className={`tile ${inCycle && rate !== 1 ? 'border-bolt text-bolt' : ''}`}
-      title="Playback speed"
-      aria-label={`Playback speed ${label}, change`}
+      title={`Playback speed — tap for ${next}`}
+      aria-label={`Playback speed ${label}, change to ${next}`}
     >
+      {/* The ↻ says the tile CYCLES. Beside 3.5× and 5×, which are on/off
+          tiles, a bare "1×" read as one more fixed speed, not the way to
+          1.25×–2×. On the word's line, not the number's: "1.75× ↻" at
+          text-base is wider than the ~56px a menu tile has inside. */}
       <span aria-hidden className="text-base leading-none tabular-nums normal-case">{label}</span>
-      SPEED
+      <span>SPEED <span aria-hidden>↻</span></span>
     </button>
   );
 }
