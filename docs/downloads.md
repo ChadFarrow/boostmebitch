@@ -277,6 +277,19 @@ afternoon while DOWNLOAD was a chip in the fullscreen player's top bar; it took 
 player's `⋯` menu now (`docs/ui.md`), so the size is gone — but the `5.5ch`
 measurement above is why it existed, and a new inline size will meet it again.
 
+**`'icon'` is the glyph alone in a 36 px square**, for the favorites page's
+new-episodes row, where the title needs the width (reported from an iPhone: the
+row showed a third of each title). The size and the meaning stay in the
+accessible name, as on `'tile'`.
+
+**A surface holding Podcast Index's record passes `resolve`, and the press
+downloads what it returns.** A download keeps the `Episode` it was handed, and
+PI's record has no value block and is not listed under the feed's `id` — the
+same reason `<NoteQueueButton>` round-trips through `loadEpisodeFromFeed`. The
+state is still read from the record, which is safe because the key is the
+enclosure URL. While the feed loads the control shows `⋯`; a failed load shows
+`!` with its own message, and a press tries again.
+
 ## `roomVerdict` has a blast radius outside this feature
 
 The obvious version — `usage + bytes <= quota` — is wrong twice, and both are

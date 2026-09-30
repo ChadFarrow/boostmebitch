@@ -12,8 +12,10 @@ import { readCappedJson } from '@/lib/capped-body';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { PodcastCover } from './podcast-cover';
 import { NoteQueueButton } from './note-queue-button';
+import { DownloadButton } from './download-button';
+import { PlayedMark } from './lists/played-mark';
 import { CollapsibleHeading, useCollapsedGroups } from './lists/grouping';
-import type { Episode, NewEpisodeMarks } from '@/lib/types';
+import type { Episode, FavoritePodcast, NewEpisodeMarks } from '@/lib/types';
 
 /**
  * "New episodes" — what came out on your favorites since you last looked.
@@ -229,6 +231,17 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     return m;
   }, [favorites]);
   const showTitle = (e: Episode) => e.feedTitle || feedTitles.get(e.feedId ?? 0);
+  /**
+   * The row's feed as the favorites store knows it, for the PLAYED mark. The
+   * mark's key is the feed guid, and these records often carry none — without
+   * the favorite's guid the key falls back to `feed:<id>` and never matches
+   * the one the player wrote from the feed's own episode.
+   */
+  const feedsById = useMemo(() => {
+    const m = new Map<number, FavoritePodcast>();
+    for (const f of Object.values(favorites)) if (f.id > 0) m.set(f.id, f);
+    return m;
+  }, [favorites]);
   // Joined from the parts that EXIST, so a missing one never leaves a dangling
   // separator at either end.
   const metaLine = (e: Episode) =>
@@ -683,7 +696,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                   // That is a React duplicate key: wrong row reused, wrong row
                   // dropped by SHOW MORE. `epKey` exists for this and three other
                   // queue surfaces already import it.
-                  <li key={epKey(e)} className="card flex items-center gap-3 p-3">
+                  <li key={epKey(e)} className="card flex items-center gap-2 p-3">
                     {/* BOTH SLOTS, never one `||` over the two. `<PodcastCover>`'s
                         `onError` ladder is four rungs and it can only fall
                         through to a source it was handed, so collapsing them
@@ -721,8 +734,13 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                           className="w-12 h-12 flex-shrink-0"
                         />
                         <span className="min-w-0 flex-1 block">
-                          <span className="block text-sm font-display leading-tight truncate">{e.title}</span>
-                          <span className="block text-[11px] text-muted truncate">{metaLine(e)}</span>
+                          <span className="block text-sm font-display leading-tight line-clamp-2 break-words">{e.title}</span>
+                          <span className="block text-[11px] text-muted truncate">
+                            {metaLine(e)}{' '}
+                            {feedsById.get(e.feedId ?? 0) && (
+                              <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
+                            )}
+                          </span>
                         </span>
                       </button>
                     ) : (
@@ -735,8 +753,13 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                           className="w-12 h-12 flex-shrink-0"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-display leading-tight truncate">{e.title}</div>
-                          <div className="text-[11px] text-muted truncate">{metaLine(e)}</div>
+                          <div className="text-sm font-display leading-tight line-clamp-2 break-words">{e.title}</div>
+                          <div className="text-[11px] text-muted truncate">
+                            {metaLine(e)}{' '}
+                            {feedsById.get(e.feedId ?? 0) && (
+                              <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
@@ -760,6 +783,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                     {e.guid ? (
                       <NoteQueueButton
                         episode={e}
+                        compact
                         onQueue={async () => {
                           const loaded = await loadEpisodeFromFeed(e.feedId, e.guid!);
                           if (!loaded?.episode) return false;
@@ -767,8 +791,22 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                         }}
                       />
                     ) : null}
+                    {/* DOWNLOAD goes through the same round trip as QUEUE, for
+                        the same reason: a download keeps the episode it was
+                        handed, and PI's record would later play without its
+                        value block. Same guid rule too. */}
+                    {e.guid ? (
+                      <DownloadButton
+                        episode={e}
+                        size="icon"
+                        resolve={async () => {
+                          const loaded = await loadEpisodeFromFeed(e.feedId, e.guid!);
+                          return loaded?.episode ? { episode: loaded.episode, podcast: loaded.podcast } : null;
+                        }}
+                      />
+                    ) : null}
                     {/* ✕ removes this row and nothing else — `dismissRow`.
-                        Last in the row, after QUEUE, so a thumb reaching for
+                        Last in the row, after QUEUE and DOWNLOAD, so a thumb reaching for
                         QUEUE does not land on it. 36px square: past WCAG
                         2.5.8's 24px floor, and the title keeps the width. The
                         label names the episode, because a screen reader hears

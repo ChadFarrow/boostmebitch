@@ -28,6 +28,7 @@ import { useApp } from '@/lib/store';
 import { epKey } from '@/lib/util';
 import { fmtDuration } from '@/lib/format';
 import { PodcastCover } from '../podcast-cover';
+import { PlayedMark } from './played-mark';
 
 export function QueueList() {
   const queue = useApp((s) => s.listenQueue);
@@ -131,7 +132,10 @@ export function QueueList() {
                   <span className="block truncate leading-tight">{item.episode.title}</span>
                   {/* The show, on every row. The queue mixes them, so a title
                       alone does not say what you are about to hear. */}
-                  <span className="block truncate text-xs text-muted">{item.podcast.title}</span>
+                  <span className="block truncate text-xs text-muted">
+                    {item.podcast.title}{' '}
+                    <PlayedMark episode={item.episode} podcast={item.podcast} />
+                  </span>
                 </span>
                 {item.episode.duration ? (
                   <span className="text-muted tabular-nums text-xs flex-shrink-0">

@@ -35,6 +35,7 @@ import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import { useStreamPanel } from './streaming-settings';
 import { UnderlineTabs, tabPanelProps } from './underline-tabs';
+import { PlayedMark } from './lists/played-mark';
 import type { Episode, ValueBlock } from '@/lib/types';
 
 function ValueSplitSection({ value }: { value: ValueBlock }) {
@@ -271,6 +272,7 @@ export function EpisodeDetailView() {
               {episode.duration ? <span>{fmtDuration(episode.duration)}</span> : null}
               {episode.episode ? <span>Episode {episode.episode}</span> : null}
               {episode.season ? <span>Season {episode.season}</span> : null}
+              <PlayedMark episode={episode} podcast={podcast} bare />
             </div>
           </div>
         </div>

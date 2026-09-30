@@ -2813,6 +2813,29 @@ export function isHlsUrl(url: string | undefined | null): boolean {
   return !!url && /\.m3u8(\?|#|$)/i.test(url);
 }
 
+/**
+ * Whether this browser plays HLS natively on a plain `<audio>` — Safari, which
+ * on an iPhone is every browser, and any other browser whose `canPlayType`
+ * says so. That is where a live stream is sent to the
+ * `<audio>` rather than the `<video>` until the listener asks for the picture
+ * (`<Player>`'s `hlsOnAudio`): iOS pauses a backgrounded `<video>` that has a
+ * video track, so a live show on the video element stopped when the screen
+ * turned off, while the `<audio>` keeps playing. Asked once; false on the
+ * server.
+ */
+let nativeHlsAudio: boolean | null = null;
+export function canPlayNativeHlsAudio(): boolean {
+  if (typeof document === 'undefined') return false;
+  if (nativeHlsAudio === null) {
+    try {
+      nativeHlsAudio = document.createElement('audio').canPlayType('application/vnd.apple.mpegurl') !== '';
+    } catch {
+      nativeHlsAudio = false;
+    }
+  }
+  return nativeHlsAudio;
+}
+
 // Whether an alternate enclosure is a video rendition. Covers progressive video
 // (`video/mp4`, `video/webm`), HLS delivered with an mpegurl content type
 // (`application/x-mpegurl` / `application/vnd.apple.mpegurl` — Fountain uses this

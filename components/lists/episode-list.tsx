@@ -39,6 +39,7 @@ import { QueueButton } from '../queue-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
+import { PlayedMark } from './played-mark';
 import { EpisodeRowMarks, EpisodeRowMenu } from './episode-row-menu';
 
 /**
@@ -996,6 +997,7 @@ export function EpisodeList({
                   )}
                   {e.duration && <span className="whitespace-nowrap">· {fmtDuration(e.duration)}</span>}
                   {data.podcast && <ResumeLeft episode={e} podcast={data.podcast} />}
+                  {data.podcast && <PlayedMark episode={e} podcast={data.podcast} />}
                   {e.value && <span className="text-bolt whitespace-nowrap">· ⚡ V4V</span>}
                   {/* Below lg: the state of what the `⋯` menu holds. From lg:
                       the controls are on the row and say it themselves. */}

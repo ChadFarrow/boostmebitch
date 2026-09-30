@@ -20,7 +20,8 @@
 //   in one update. Step 3 moves the head less than the periodic-write distance
 //   first, so only that flush can account for the value it reads.
 // - `ended` deletes the entry through the pause flush, with no code in
-//   `onEnded` — nothing but a real element reaching its end proves that.
+//   `onEnded` — nothing but a real element reaching its end proves that. The
+//   same flush writes `bmb:played`, which the PLAYED mark reads.
 //
 // It also pins the two things the feature must NOT do: an explicit start (a
 // chapter tap) outranks the saved point, and a music track saves nothing.
@@ -181,7 +182,7 @@ await wait(4000);
 const a4 = await audioState();
 check('playback started at the chapter, not at ~605', a4 && Math.abs(a4.t - CHAPTER_START) < 20, JSON.stringify(a4));
 
-console.log('\n6. Play to the end — the entry is deleted');
+console.log('\n6. Play to the end — the entry is deleted, and the finish recorded');
 const d = (await audioState())?.d;
 await setTime(d - 4);
 const ended = await until(`document.querySelector('audio')?.ended`, 20000);
@@ -189,6 +190,12 @@ check('the element reached its end', ended, JSON.stringify(await audioState()));
 await wait(800);
 e = await entry();
 check('bmb:resume no longer holds the episode', e === null, JSON.stringify(e));
+// The same flush records the finish, so the finished episode does not read as
+// one never started.
+const played = await js(`(() => { const m = JSON.parse(localStorage.getItem('bmb:played') || '{}');
+  return Object.keys(m).some(k => k.endsWith(${JSON.stringify(EP_KEY)})); })()`);
+check('bmb:played records the finish', played, await js(`localStorage.getItem('bmb:played')`));
+check('the episode page shows ✓ PLAYED', await until(`document.body.textContent.includes('✓ PLAYED')`, 3000), 'no mark');
 
 console.log('\n7. An element that lost its buffer is put back, and the place survives');
 // Reported twice from an iPhone, the second time WITH THE DOWNLOAD STILL

@@ -127,6 +127,7 @@ const KEYS = {
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
   streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
   resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
+  played: 'bmb:played',               // Record<resumeKey, epoch ms> — podcast episodes this device played to the end, capped at PLAYED_CAP newest. DEVICE-wide like bmb:resume, and for the same reason not a cache.
 } as const;
 
 /** An Amber request we dispatched and are waiting on across a page load.
@@ -270,6 +271,7 @@ function coerceStoredBoost(b: StoredBoost): StoredBoost {
   };
 }
 const RESUME_CAP = 200;
+const PLAYED_CAP = 1000;
 
 /** Where one episode was left. `t` and `d` are seconds, `at` is epoch ms. `d`
  *  is 0 when neither the media element nor the feed gave a duration. The rules
@@ -1737,6 +1739,42 @@ export const storage = {
         ? entries.sort((a, b) => b[1].at - a[1].at).slice(0, RESUME_CAP)
         : entries;
       return safeSet(KEYS.resume, JSON.stringify(Object.fromEntries(kept)));
+    },
+  },
+
+  /**
+   * Podcast episodes this device played to the end: `resumeKey` → epoch ms of
+   * the finish. Written by lib/resume-position.ts when it drops a finished
+   * episode's resume entry, and read only to draw a PLAYED mark.
+   *
+   * **Device-wide and not evictable**, for the reasons `resumePositions` gives:
+   * no request can rebuild it. About 80 bytes an entry, so the cap keeps it
+   * near 80 KB. A malformed entry is dropped on read, not the map.
+   */
+  playedEpisodes: {
+    get: (): Record<string, number> => {
+      const raw = safeGet(KEYS.played);
+      if (!raw) return {};
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        const out: Record<string, number> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    },
+    /** Keeps the PLAYED_CAP most recent finishes. Returns whether the value
+     *  reached disk. */
+    set: (map: Record<string, number>): boolean => {
+      const entries = Object.entries(map);
+      const kept = entries.length > PLAYED_CAP
+        ? entries.sort((a, b) => b[1] - a[1]).slice(0, PLAYED_CAP)
+        : entries;
+      return safeSet(KEYS.played, JSON.stringify(Object.fromEntries(kept)));
     },
   },
 

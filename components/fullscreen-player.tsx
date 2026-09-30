@@ -80,6 +80,7 @@ import {
   toggleFullscreen,
   exitFullscreen,
   FAST_PLAYBACK_RATES,
+  isHlsUrl,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -735,10 +736,12 @@ export function FullscreenPlayer({
   const resumeTo =
     savedPos && !isLive && savedPos.t - positionSec > RESUME_GAP_SEC ? savedPos.t : null;
   // A Nostr live stream's NIP-33 id is `<64-hex pubkey>:<dTag>`, carried as the
-  // episode guid. When present (and it's an HLS video stream) the right pane
-  // becomes the kind:1311 live chat instead of the usual episode info.
+  // episode guid. When present (and it's an HLS stream) the right pane becomes
+  // the kind:1311 live chat instead of the usual episode info. The HLS test,
+  // NOT `isVideo`: on Safari a stream plays on the <audio> until the listener
+  // picks 📺 Video, and the chat belongs to the stream, not to its picture.
   const liveStreamId =
-    isVideo && isLiveStreamId(episode.guid) ? episode.guid! : null;
+    isHlsUrl(episode.enclosureUrl) && isLiveStreamId(episode.guid) ? episode.guid! : null;
   // Video mode hands the left column more of the screen at lg+ (60/40); audio
   // mode keeps the square-artwork 50/50. Both panes carry EXPLICIT complementary
   // widths: the media column is flex-shrink-0, so leaving the info pane at
