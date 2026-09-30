@@ -21,9 +21,16 @@ import { PlayedButton } from './played-mark';
  * `<FavEpisodeHeart>` carries the container-is-not-the-parent rule and the
  * favorites sync; `<DownloadButton>` the five states and the error sentence;
  * `<QueueButton>` the cap. A second copy of any of them in menu-item form is
- * exactly where those would drift. The menu stays open after a press, so the
- * tile's own state change — heart filled, ✓ QUEUE, the progress fill — is the
- * confirmation.
+ * exactly where those would drift.
+ *
+ * IT CLOSES AFTER A PRESS. It used to stay open so the tile's own state change
+ * was the confirmation; the row's date line now says every one of them
+ * (`<EpisodeRowMarks>`, `<PlayedMark>`), so an open menu only covered the
+ * answer. The close is a CAPTURE listener because every tile stops its own
+ * click's propagation, and it skips a disabled tile — QUEUE at the cap fires no
+ * click and keeps the menu open over the reason. The work a tile starts lives
+ * outside it (download manager, store, favorites sync), so unmounting it
+ * cancels nothing.
  *
  * ITS CLICKS STOP AT THE MENU. React propagates a synthetic event through a
  * PORTAL to the component that rendered it, so a press on the menu's padding
@@ -40,7 +47,7 @@ export function EpisodeRowMenu({
   /** On the trigger — the row hides it from lg:, where the controls are inline. */
   className?: string;
 }) {
-  const { open, setOpen, triggerRef, menuRef, at } = useAnchoredMenu();
+  const { open, setOpen, close, triggerRef, menuRef, at } = useAnchoredMenu();
   // NO TRIGGER WHEN THE MENU WOULD BE EMPTY — a `⋯` that opens onto nothing is
   // a dead control. Asked through each control's own refusal, never a copy of
   // it: an unresolved playlist row has no enclosure, so QUEUE and DOWNLOAD
@@ -78,6 +85,9 @@ export function EpisodeRowMenu({
           role="menu"
           aria-label={`Actions for ${episode.title}`}
           onClick={(ev) => ev.stopPropagation()}
+          onClickCapture={(ev) => {
+            if ((ev.target as HTMLElement).closest('button:not(:disabled)')) close();
+          }}
           // TWO COLUMNS: four tiles in a row leave each ~50px of the 224px
           // inside, and DOWNLOAD's word needs ~53px. 2 × 2 reads as a block.
           className="fixed w-60 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-40 shadow-xl grid grid-cols-2 gap-2"
