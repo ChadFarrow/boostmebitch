@@ -6,9 +6,11 @@ import { useAnchoredMenu } from '../use-anchored-menu';
 import { FavEpisodeHeart, canFavoriteEpisode, useEpisodeFavorited } from '../fav-heart';
 import { DownloadButton, DownloadMark } from '../download-button';
 import { QueueButton, canQueueEpisode, useEpisodeQueued } from '../queue-button';
+import { canResume } from '@/lib/resume-position';
+import { PlayedButton } from './played-mark';
 
 /**
- * The episode row's `⋯` below lg: — QUEUE, FAV and DOWNLOAD, as the same
+ * The episode row's `⋯` below lg: — QUEUE, FAV, DOWNLOAD and PLAYED, as the same
  * `.tile`s the episode page's action row draws, in a menu.
  *
  * WHY A MENU. On one line the title column paid for every button: ⚡,
@@ -46,7 +48,8 @@ export function EpisodeRowMenu({
   if (
     !canQueueEpisode(episode, podcast) &&
     !canFavoriteEpisode(episode, podcast) &&
-    !downloadManager.canDownload(episode)
+    !downloadManager.canDownload(episode) &&
+    !(podcast && canResume(episode, podcast))
   ) return null;
   return (
     <>
@@ -75,13 +78,16 @@ export function EpisodeRowMenu({
           role="menu"
           aria-label={`Actions for ${episode.title}`}
           onClick={(ev) => ev.stopPropagation()}
-          className="fixed w-60 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-40 shadow-xl grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2"
+          // TWO COLUMNS: four tiles in a row leave each ~50px of the 224px
+          // inside, and DOWNLOAD's word needs ~53px. 2 × 2 reads as a block.
+          className="fixed w-60 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-40 shadow-xl grid grid-cols-2 gap-2"
           style={{ top: at.top, bottom: at.bottom, right: at.right }}
         >
           {/* The episode page's order: QUEUE first, beside what plays. */}
           <QueueButton episode={episode} podcast={podcast} size="tile" />
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
+          <PlayedButton episode={episode} podcast={podcast} />
         </div>,
         document.body,
       )}

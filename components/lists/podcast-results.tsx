@@ -82,7 +82,7 @@ export function PodcastRow({
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
+            <span className="font-display text-base leading-tight line-clamp-2 break-words min-w-0">{podcast.title}</span>
             {podcast.isPreview && !piUnasked && (
               <span className="stamp text-muted border-muted/40">NOT IN PI</span>
             )}

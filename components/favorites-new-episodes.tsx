@@ -244,9 +244,11 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
   }, [favorites]);
   // Joined from the parts that EXIST, so a missing one never leaves a dangling
   // separator at either end.
-  const metaLine = (e: Episode) =>
+  //
+  // The show gets a line of its own: sharing one `truncate` line with the date
+  // and duration cut "Millennial Media Offensive" to "Millennial Media Of…".
+  const dateLine = (e: Episode) =>
     [
-      showTitle(e),
       e.datePublished ? fmtDate(e.datePublished) : null,
       e.duration ? fmtDuration(e.duration) : null,
     ].filter(Boolean).join(' · ');
@@ -735,8 +737,11 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                         />
                         <span className="min-w-0 flex-1 block">
                           <span className="block text-sm font-display leading-tight line-clamp-2 break-words">{e.title}</span>
+                          {showTitle(e) && (
+                            <span className="block text-[11px] text-muted line-clamp-2 break-words">{showTitle(e)}</span>
+                          )}
                           <span className="block text-[11px] text-muted truncate">
-                            {metaLine(e)}{' '}
+                            {dateLine(e)}{' '}
                             {feedsById.get(e.feedId ?? 0) && (
                               <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
                             )}
@@ -754,8 +759,11 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                         />
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-display leading-tight line-clamp-2 break-words">{e.title}</div>
+                          {showTitle(e) && (
+                            <div className="text-[11px] text-muted line-clamp-2 break-words">{showTitle(e)}</div>
+                          )}
                           <div className="text-[11px] text-muted truncate">
-                            {metaLine(e)}{' '}
+                            {dateLine(e)}{' '}
                             {feedsById.get(e.feedId ?? 0) && (
                               <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
                             )}

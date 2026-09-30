@@ -261,6 +261,28 @@ function markPlayed(key: string): void {
   playedChanges.notify();
 }
 
+/**
+ * The PLAYED tile: mark or unmark an episode by hand. Marking takes the same
+ * path as a real finish, so the saved place goes too — `<PlayedMark>` hides
+ * while one exists, and "played" with "2 h left" beside it says nothing.
+ * Unmarking does NOT bring that place back; nothing kept it.
+ */
+export function setPlayed(episode: ResumeEpisode, podcast: ResumePodcast, played: boolean): void {
+  if (typeof window === 'undefined') return;
+  if (!canResume(episode, podcast)) return;
+  if (played) {
+    forgetPosition(episode, podcast);
+    return;
+  }
+  const key = resumeKey(episode, podcast);
+  const map = storage.playedEpisodes.get();
+  if (!(key in map)) return;
+  delete map[key];
+  storage.playedEpisodes.set(map);
+  playedCache = storage.playedEpisodes.get();
+  playedChanges.notify();
+}
+
 /** Whether this device played the episode to the end. */
 export function wasPlayed(episode: ResumeEpisode, podcast: ResumePodcast): boolean {
   if (!canResume(episode, podcast)) return false;
