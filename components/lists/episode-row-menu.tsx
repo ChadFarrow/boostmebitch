@@ -28,7 +28,14 @@ import { PlayedButton } from './played-mark';
  * (`<EpisodeRowMarks>`, `<PlayedMark>`), so an open menu only covered the
  * answer. The close is a CAPTURE listener because every tile stops its own
  * click's propagation, and it skips a disabled tile — QUEUE at the cap fires no
- * click and keeps the menu open over the reason. The work a tile starts lives
+ * click and keeps the menu open over the reason. **The close is DEFERRED to a
+ * task, never called in place**: React 19 flushes a click's update in a
+ * microtask, and on a real tap the stack empties between the capture and
+ * bubble listeners — so an immediate close unmounted the tile before its own
+ * onClick ran, and every tile closed the menu having done nothing. A microtask
+ * is too early for the same reason. A script-dispatched click does not show
+ * it (the stack never empties), which is why it passed a jsdom test and
+ * failed on the phone. The work a tile starts lives
  * outside it (download manager, store, favorites sync), so unmounting it
  * cancels nothing.
  *
@@ -86,7 +93,7 @@ export function EpisodeRowMenu({
           aria-label={`Actions for ${episode.title}`}
           onClick={(ev) => ev.stopPropagation()}
           onClickCapture={(ev) => {
-            if ((ev.target as HTMLElement).closest('button:not(:disabled)')) close();
+            if ((ev.target as HTMLElement).closest('button:not(:disabled)')) setTimeout(close, 0);
           }}
           // TWO COLUMNS: four tiles in a row leave each ~50px of the 224px
           // inside, and DOWNLOAD's word needs ~53px. 2 × 2 reads as a block.
