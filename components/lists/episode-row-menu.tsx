@@ -10,12 +10,13 @@ import { canResume } from '@/lib/resume-position';
 import { PlayedButton } from './played-mark';
 
 /**
- * The episode row's `⋯` below lg: — QUEUE, FAV, DOWNLOAD and PLAYED, as the same
+ * The episode row's `⋯`, at every width — QUEUE, FAV, DOWNLOAD and PLAYED, as the same
  * `.tile`s the episode page's action row draws, in a menu.
  *
  * WHY A MENU. On one line the title column paid for every button: ⚡,
  * DOWNLOAD and ♡ at 44px each left it 108px at 390px ("Episode 459 ..."), and
- * from sm: the words took it to 2px at 640. Only BOOST stays on the row.
+ * from sm: the words took it to 2px at 640. Only BOOST stays on the row —
+ * on desktop too, where the row is the phone's by request (docs/ui.md).
  *
  * THE TILES ARE THE SHARED CONTROLS, not menu items that re-implement them.
  * `<FavEpisodeHeart>` carries the container-is-not-the-parent rule and the
@@ -51,7 +52,7 @@ export function EpisodeRowMenu({
 }: {
   episode: Episode;
   podcast?: Podcast | null;
-  /** On the trigger — the row hides it from lg:, where the controls are inline. */
+  /** On the trigger. */
   className?: string;
 }) {
   const { open, setOpen, close, triggerRef, menuRef, at } = useAnchoredMenu();
