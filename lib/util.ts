@@ -2775,6 +2775,23 @@ export function downloadEpisodeId(r: {
 }
 
 /**
+ * May "delete after playing" remove this download when it plays to the end?
+ * Takes the record's `feedMedium`: the parent feed's medium as it was known
+ * when the download was saved, `''` when that feed declared none.
+ *
+ * **ABSENT IS NOT "A PODCAST".** A record written before the field existed, or
+ * saved from a container that is not its parent (a `musicL` playlist's track),
+ * names no medium — and `/downloads` rebuilds the show from the record, so the
+ * player has no medium either. Reading that as the spec's default `podcast`
+ * deletes an album track by track as it plays. Unknown keeps the file: a missed
+ * delete costs one DELETE press; a wrong one costs the data the download saved.
+ */
+export function deletesAfterPlay(feedMedium: string | null | undefined): boolean {
+  if (typeof feedMedium !== 'string') return false;
+  return !playsAsTracks({ medium: feedMedium || undefined });
+}
+
+/**
  * The playback speeds the SPEED control cycles through, in order. An ALLOWLIST,
  * not a range: `storage.playbackRate` reads anything else back as 1, so a
  * corrupt or hand-edited value plays at normal speed rather than at whatever

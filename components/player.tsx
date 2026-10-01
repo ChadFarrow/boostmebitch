@@ -1399,9 +1399,25 @@ export function Player() {
           // queued TALK show advance, which `playsAsTracks` would refuse: that
           // gate decides whether a FEED plays as tracks, and a queue is not a
           // feed.
+          //
+          // DELETE AFTER PLAYING (`storage.deleteAfterPlay`, off by default) runs
+          // here, BEFORE `handlePlaybackEnded` moves `current` on, and only here:
+          // `ended` is the one signal that the episode was heard to the end. A
+          // skip out of the outro does not count — the safe direction, since a
+          // wrong delete costs the listener the data they downloaded to save.
+          // Podcast episodes only: an album is downloaded to be played again.
+          // The RECORD decides that (`deletableAfterPlay`), because a row
+          // played from /downloads carries a show rebuilt with no medium.
+          // The element keeps its blob URL until the next source revokes it, so
+          // a replay of this one still plays (measured in Chromium; see
+          // docs/downloads.md for what is not yet measured on iOS).
           onEnded={() => {
             if (pendingLocalSrc.current) return;
             forgetRestoreBaseline();
+            if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
+              const key = downloadManager.deletableAfterPlay(current.episode);
+              if (key) void downloadManager.remove(key);
+            }
             if (handlePlaybackEnded()) return;
             if (current && playsAsTracks(current.podcast) && playNext()) return;
             setPlaying(false);

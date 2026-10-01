@@ -126,6 +126,7 @@ const KEYS = {
   streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
   streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
+  deleteAfterPlay: 'bmb:dl_delete_played', // '1' when a podcast episode's download is deleted once it plays to the end; absent = keep (the default). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
   played: 'bmb:played',               // Record<resumeKey, epoch ms> — podcast episodes this device played to the end, capped at PLAYED_CAP newest. DEVICE-wide like bmb:resume, and for the same reason not a cache.
 } as const;
@@ -1212,6 +1213,19 @@ export const storage = {
   streamSummaries: {
     get: (): boolean => safeGet(KEYS.streamSummaries) === '1',
     set: (v: boolean): boolean => safeSet(KEYS.streamSummaries, v ? '1' : '0'),
+  },
+
+  /** Delete a podcast episode's download when it plays to the end. Absent =
+   *  OFF: a download is something the listener chose to keep, so only they may
+   *  turn this on (docs/downloads.md). Off removes the key, one sentinel for
+   *  the default. Returns whether the value reached disk, for the control. */
+  deleteAfterPlay: {
+    get: (): boolean => safeGet(KEYS.deleteAfterPlay) === '1',
+    set: (v: boolean): boolean => {
+      if (v) return safeSet(KEYS.deleteAfterPlay, '1');
+      safeRemove(KEYS.deleteAfterPlay);
+      return true;
+    },
   },
 
   /**

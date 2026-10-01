@@ -53,7 +53,7 @@
 // signature.
 
 import { albumPlan, groupDownloads, chaptersRequestUrl, downloadFailureMessage, downloadKey, isDownloadable, proxiedAudioUrl, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
-import { downloadEpisodeId, isHlsUrl } from '../lib/util.ts';
+import { deletesAfterPlay, downloadEpisodeId, isHlsUrl } from '../lib/util.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -413,6 +413,28 @@ section('A download plays back under the id it was LISTED under — a money fact
 }
 
 // ---------------------------------------------------------------------------
+section('Delete after playing keeps a file whose medium is not known');
+// ---------------------------------------------------------------------------
+{
+  // Asked for in issue #460. The record's `feedMedium` is the only witness:
+  // `/downloads` rebuilds the show from the record with no medium, so a
+  // missing value read as the spec's default `podcast` deletes a downloaded
+  // album one track at a time as it plays. Unknown must KEEP.
+  const check = (label, medium, expected, opts = {}) => {
+    compare(label, deletesAfterPlay(medium), expected);
+    vectors.push({ label, kind: 'delAfter', args: [medium], alsoNaive: !!opts.alsoNaive });
+  };
+  check('a record from before feedMedium existed is kept', undefined, false);
+  check('a null medium is kept', null, false);
+  // The must-still-work half: a known medium decides it either way.
+  check("a feed that declared no medium ('') is a podcast, and goes", '', true, { alsoNaive: true });
+  check("'podcast' goes", 'podcast', true, { alsoNaive: true });
+  check("an album ('music') is kept", 'music', false, { alsoNaive: true });
+  check("a playlist ('musicL') is kept", 'musicL', false, { alsoNaive: true });
+  check("'Music', any case, is kept", 'Music', false, { alsoNaive: true });
+}
+
+// ---------------------------------------------------------------------------
 section('The proxy URL survives an enclosure that has its own query string');
 // ---------------------------------------------------------------------------
 {
@@ -621,6 +643,9 @@ section('Every vector above is replayed against the obvious wrong version');
   // What `dbRowToEpisode` shipped with in #389: "nothing keys off `id` except
   // React", so the feed id will do.
   const naiveEpisodeId = (r) => r.feedId ?? 0;
+  // What someone writes when "podcast episodes only" looks like a medium test:
+  // anything that is not music goes — including a medium nobody recorded.
+  const naiveDelAfter = (m) => !['music', 'musicl'].includes(String(m ?? '').toLowerCase());
   // The wording that shipped: ONE sentence for both causes, blaming the network
   // for a host that was up and serving the same file to <audio>.
   const naiveMsg = (host) => `Could not reach ${host} to download this episode.`;
@@ -655,6 +680,7 @@ section('Every vector above is replayed against the obvious wrong version');
         case 'chapters': return JSON.stringify(real ? chaptersRequestUrl(...v.args) : naiveDoc(...v.args));
         case 'transcript': return JSON.stringify(real ? transcriptRequestUrl(...v.args) : naiveDoc(...v.args));
         case 'episodeId': return JSON.stringify(real ? downloadEpisodeId(...v.args) : naiveEpisodeId(...v.args));
+        case 'delAfter': return JSON.stringify(real ? deletesAfterPlay(...v.args) : naiveDelAfter(...v.args));
         case 'msg': return JSON.stringify(real ? downloadFailureMessage(...v.args) : naiveMsg(...v.args));
         case 'proxy': return JSON.stringify(real ? proxiedAudioUrl(...v.args) : naiveProxy(...v.args));
         case 'album': return JSON.stringify(real ? albumPlan(...v.args) : naiveAlbum(...v.args));

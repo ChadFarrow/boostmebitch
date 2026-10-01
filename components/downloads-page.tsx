@@ -10,6 +10,7 @@ import { dbRowToEpisode, dbRowToPodcast, type DownloadRecord } from '@/lib/downl
 import { estimateUsage } from '@/lib/downloads/downloads-cache';
 import { groupDownloads } from '@/lib/downloads/download-rules';
 import { PodcastCover } from '@/components/podcast-cover';
+import { storage } from '@/lib/storage';
 
 /**
  * The download library at `/downloads`.
@@ -55,6 +56,16 @@ export function DownloadsPage() {
   useEffect(refreshQuota, [refreshQuota, rows.length]);
 
   const [confirmClear, setConfirmClear] = useState(false);
+
+  // Read after mount: storage is browser-only and the server render must not
+  // claim a state. The control renders what READS BACK, never what was asked
+  // for — a write that did not reach disk must not show as ON.
+  const [deleteAfterPlay, setDeleteAfterPlay] = useState<boolean | null>(null);
+  useEffect(() => { setDeleteAfterPlay(storage.deleteAfterPlay.get()); }, []);
+  function toggleDeleteAfterPlay() {
+    storage.deleteAfterPlay.set(!deleteAfterPlay);
+    setDeleteAfterPlay(storage.deleteAfterPlay.get());
+  }
 
   /**
    * Covers rendered from the bytes stored with each download.
@@ -143,6 +154,26 @@ export function DownloadsPage() {
         <p className="font-mono text-[11px] text-muted">
           {fmtBytes(quota.usage) ?? '0 B'} of {fmtBytes(quota.quota) ?? '—'} used on this device
         </p>
+      )}
+
+      {/* Off by default: a download is something the listener chose to keep,
+          so deleting one is only ever their decision (docs/downloads.md,
+          "Delete after playing"). */}
+      {deleteAfterPlay !== null && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={deleteAfterPlay}
+            onClick={toggleDeleteAfterPlay}
+            className={`btn-ghost text-xs ${deleteAfterPlay ? 'bg-bone text-ink' : ''}`}
+          >
+            DELETE AFTER PLAYING: {deleteAfterPlay ? 'ON' : 'OFF'}
+          </button>
+          <span className="font-mono text-[11px] text-muted">
+            A podcast episode&apos;s download is removed when it plays to the end. Album tracks stay, and so do downloads saved before this setting existed.
+          </span>
+        </div>
       )}
 
       {ready && rows.length === 0 && (

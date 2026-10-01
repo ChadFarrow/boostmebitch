@@ -1114,6 +1114,106 @@ console.log(`\n14. THE PLAYER OFFERS A WAY BACK WHEN THE ELEMENT HAS LOST THE PL
   check('no uncaught exceptions in the resume browser', ex4, []);
 }
 
+// ---------------------------------------------------------------------------
+console.log(`\n15. DELETE AFTER PLAYING: OFF BY DEFAULT, PODCASTS ONLY, UNKNOWN KEPT`);
+// ---------------------------------------------------------------------------
+// Issue #460: "a setting that deletes a download after i finish playing it".
+// docs/downloads.md, "Delete after playing is the listener's rule, never ours".
+// Three 3-second WAVs, seeded where download-manager would put them: a podcast
+// episode, an album track, and a record from before `feedMedium` existed. All
+// three are played FROM /downloads, where the player's show is rebuilt with no
+// medium — the case where only the record can tell an album from a podcast.
+{
+  const { page: p5 } = await launchChrome({ name: 'downloads-delafter', autoplay: true, args: ['--window-size=1200,900'] });
+  const ex5 = [];
+  p5.on((m) => { if (m.method === 'Runtime.exceptionThrown') ex5.push(m.params.exceptionDetails?.exception?.description ?? ''); });
+  await p5.send('Page.enable'); await p5.send('Runtime.enable');
+  await p5.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(4000);
+  const POD = { url: 'https://example.invalid/del-pod.wav', guid: 'e2e-del-pod', title: 'Del Pod', feed: 'e2e-del-pod-feed', medium: '' };
+  const ALB = { url: 'https://example.invalid/del-alb.wav', guid: 'e2e-del-alb', title: 'Del Album Track', feed: 'e2e-del-alb-feed', medium: 'music' };
+  const OLD = { url: 'https://example.invalid/del-old.wav', guid: 'e2e-del-old', title: 'Del Old', feed: 'e2e-del-old-feed' };
+  await p5.js(`
+    (async () => {
+      const wav = (sec, rate = 8000) => {
+        const n = sec * rate, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+        v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+        v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true);
+        v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+        return new Blob([buf], { type: 'audio/wav' });
+      };
+      const cache = await caches.open('bmb-downloads-v1');
+      const db = await new Promise((res, rej) => { const r = indexedDB.open('BmbDownloadsDB'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+      let t = 1;
+      for (const e of [${JSON.stringify(POD)}, ${JSON.stringify(ALB)}, ${JSON.stringify(OLD)}]) {
+        const blob = wav(3);
+        await cache.put(e.url, new Response(blob, { headers: { 'content-type': 'audio/wav' } }));
+        const rec = {
+          key: e.url, enclosureUrl: e.url, enclosureType: 'audio/wav', sizeBytes: blob.size,
+          createdAt: t++, itemGuid: e.guid, feedGuid: e.feed, feedId: 424200 + t,
+          episodeId: 920000000 + t, title: e.title, feedTitle: e.title + ' Show', duration: 3,
+        };
+        if ('medium' in e) rec.feedMedium = e.medium;
+        await new Promise((res, rej) => {
+          const tx = db.transaction('downloads', 'readwrite');
+          tx.objectStore('downloads').put(rec);
+          tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+        });
+      }
+      return true;
+    })()
+  `);
+  await p5.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(4000);
+
+  const sw = () => p5.js(`(() => { const b = document.querySelector('button[role="switch"]'); return b ? { on: b.getAttribute('aria-checked'), text: b.textContent.trim(), h: b.getBoundingClientRect().height } : null; })()`);
+  const stored = (url) => p5.js(`(async () => {
+    const c = await caches.open('bmb-downloads-v1');
+    const bytes = !!(await c.match(${JSON.stringify(url)}));
+    const db = await new Promise((res, rej) => { const r = indexedDB.open('BmbDownloadsDB'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    const rec = await new Promise((res) => { const q = db.transaction('downloads').objectStore('downloads').get(${JSON.stringify(url)}); q.onsuccess = () => res(!!q.result); q.onerror = () => res(null); });
+    return { bytes, rec };
+  })()`);
+  const playToEnd = async (title) => {
+    const pressed = await p5.js(`(() => { const b = document.querySelector('button[aria-label="Play ${title}"]'); b && b.click(); return !!b; })()`);
+    if (!pressed) return false;
+    await p5.until(`(() => { const a = document.querySelector('audio'); return a && a.src.startsWith('blob:') && !a.paused; })()`, 10000);
+    const ended = await p5.until(`(() => { const a = document.querySelector('audio'); return a && a.ended; })()`, 15000);
+    await wait(1500);
+    return ended;
+  };
+
+  const s0 = await sw();
+  check('the switch renders, OFF by default', s0 && s0.on, 'false');
+  check('...and clears the 24px floor', !!s0 && s0.h >= 24, true);
+  check('switch OFF: a podcast episode plays to the end', await playToEnd(POD.title), true);
+  check('...and its download is kept', await stored(POD.url), { bytes: true, rec: true });
+
+  await p5.js(`(() => { document.querySelector('button[role="switch"]').click(); return true; })()`);
+  await wait(300);
+  check('pressing it turns it ON', (await sw())?.on, 'true');
+  check('...and it reaches disk', await p5.js(`localStorage.getItem('bmb:dl_delete_played')`), '1');
+
+  check('switch ON: the podcast episode plays to the end', await playToEnd(POD.title), true);
+  check('...and its download is deleted, bytes and record', await stored(POD.url), { bytes: false, rec: false });
+  check('...and its row leaves /downloads', await p5.js(`!document.querySelector('button[aria-label="Play ${POD.title}"]')`), true);
+  check('the album track plays to the end', await playToEnd(ALB.title), true);
+  check('...and is kept (its record says music)', await stored(ALB.url), { bytes: true, rec: true });
+  check('the pre-feedMedium record plays to the end', await playToEnd(OLD.title), true);
+  check('...and is kept (medium unknown)', await stored(OLD.url), { bytes: true, rec: true });
+
+  await p5.send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(3000);
+  check('the setting survives a reload', (await sw())?.on, 'true');
+  await p5.js(`(() => { document.querySelector('button[role="switch"]').click(); return true; })()`);
+  await wait(300);
+  check('turning it OFF removes the key', await p5.js(`localStorage.getItem('bmb:dl_delete_played')`), null);
+  check('no uncaught exceptions in the delete-after-playing browser', ex5, []);
+  await p5.close();
+}
+
 check('no uncaught exceptions overall', exceptions, []);
 console.log(t.fails ? `\nDOWNLOADS E2E FAILED (${t.fails})` : '\nDOWNLOADS E2E OK');
 await exit(t.fails ? 1 : 0);

@@ -314,6 +314,42 @@ answer instead.
 chose to keep. Deleting one to make room for another is a decision they did not ask
 for, and they may be about to get on a plane.
 
+### Delete after playing is the listener's rule, never ours
+
+Asked for in issue #460 by a listener who downloads everything in their queue:
+*"can you add a setting that deletes a download after i finish playing it"*.
+`storage.deleteAfterPlay` (`bmb:dl_delete_played`), a switch on `/downloads`,
+**off by default**. It does not contradict the rule above: that rule forbids the
+APP from deciding to delete; this is the listener deciding, once, in advance.
+
+- **The trigger is the `<audio>` element's `ended`, and nothing else.** It is
+  the one signal that the episode was heard to the end. A skip out of the
+  outro (which the resume writer already counts as finished) does NOT delete:
+  a wrong delete costs the data the download was made to save, and a missed
+  one costs a DELETE press. The check runs before `handlePlaybackEnded`,
+  because that moves `current` to the next item.
+- **Podcast episodes only, and the RECORD says which.** An album is
+  downloaded to be played again; deleting each track as it ends would empty
+  a DOWNLOAD ALBUM in one listen. The player's own show cannot answer this:
+  `/downloads` rebuilds it with `dbRowToPodcast`, which has no medium, so an
+  album track played from there looks like a podcast episode. So the record
+  carries `feedMedium` — the parent feed's medium at save time, `''` when it
+  declared none — and `deletesAfterPlay` (`lib/util.ts`, pinned by
+  `check:downloads`) **keeps a file whose medium is absent**: every record
+  written before the field, and a playlist track whose container is not its
+  parent (the container's medium is not the track's, the rule `parentFeed`
+  is under). `downloadManager.deletableAfterPlay` asks it; `<Player>` also
+  skips anything `playsAsTracks` while it is playing.
+- **The bytes go; the playing element does not notice.** `<Player>` holds a
+  blob URL for the file and revokes it only when the next source attaches, so
+  a replay of the episode that just ended still plays. Measured in Chromium
+  2026-10-01: after `cache.delete`, the same element replays to `ended`, a new
+  element loads the URL, and a `fetch` of it returns every byte. **Not yet
+  measured on iOS Safari** — if a replay there fails, the player shows its
+  ordinary audio error, and the next play of the episode streams.
+- It goes through `downloadManager.remove(key)`, the same path as a row's
+  DELETE, so the record, the cover and the cached documents go with it.
+
 ---
 
 ## The container feed is not the item's parent
