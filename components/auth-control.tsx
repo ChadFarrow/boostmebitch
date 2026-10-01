@@ -91,7 +91,9 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
   // `px-2 py-1` with a 16px line box — and a 38px SIGN IN among them read as a
   // different control rather than a peer. `text-xs`'s line-height is 1rem, so
   // 16 + 8 + 2 = 26, the same arithmetic ← BACK does.
-  const trigger = `btn-ghost flex items-center ${overlay ? 'px-2 py-1 text-xs' : ''}`;
+  // The overlay's lg: half is the fullscreen player's BAR_CHIP_LG, written out
+  // here because that file imports this one.
+  const trigger = `btn-ghost flex items-center ${overlay ? 'px-2 py-1 text-xs lg:h-[38px] lg:px-3 lg:text-sm' : ''}`;
 
 
   const walletConnected = mounted && hasAnyWallet();

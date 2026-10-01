@@ -211,6 +211,16 @@ import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 import { LiveBadge } from './live-badge';
 
+// THE TOP BAR'S CONTROLS FROM lg:, all five — ← BACK, ⋯, the balance box, the
+// identity chip and ✕ — plus <AuthControl overlay>'s SIGN IN, which carries the
+// same literal because it cannot import this file. Below lg: they stay 26px,
+// the phone bar's size and the cover's reserve (docs/ui.md). From lg: the
+// cover is capped by `lg:max-w-xl`, not by the bar, so the bar can match
+// <AppHeader>'s 38px .btn-ghost and the two screens' top-right clusters read
+// as one set. `h-`, not `py-`: the glyphs' line boxes differ (⋯ at text-xl,
+// ← BACK at text-sm), and a fixed box keeps all six the same height.
+const BAR_CHIP_LG = 'lg:h-[38px] lg:px-3';
+
 // About-this-episode text + the episode's tracks + Podcasting 2.0 chapters +
 // transcript, toggled by a tab strip. Tabs show only for sections with real
 // content (2+); a lone section renders under a plain label. A still-loading
@@ -846,7 +856,7 @@ export function FullscreenPlayer({
       {everOpened && (<>
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
         <div className="flex items-center gap-3">
-          <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs flex-shrink-0" aria-label="Back">
+          <button onClick={onClose} className={`btn-ghost px-2 py-1 text-xs lg:text-sm flex-shrink-0 ${BAR_CHIP_LG}`} aria-label="Back">
             ← back
           </button>
           {/* HIDDEN BELOW sm:, because the bar's right-hand cluster is now four
@@ -855,7 +865,7 @@ export function FullscreenPlayer({
               overlapped the ⋯ rather than folding. The screen it labels is a
               full-screen cover with the show's title under it, so the label is
               the one thing on this bar that says what is already obvious. */}
-          <span className="hidden sm:inline text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
+          <span className="hidden sm:inline text-[11px] lg:text-xs text-muted uppercase tracking-widest">Now Playing</span>
         </div>
         {/* `flex-shrink-0`, here and on ← BACK, because neither may grow
             taller. Signed out below ~400px this cluster holds ↓, SIGN IN ▾ and
@@ -864,7 +874,7 @@ export function FullscreenPlayer({
             PLAYING instead, which folds onto two 16px lines and so stays inside
             the 38px the chips already set. Not `whitespace-nowrap`: that is
             inherited, and the SIGN IN menu opens inside this cluster. */}
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 lg:gap-3 flex-shrink-0">
           {/* THE HEADER'S OWN AUTH CONTROL, not a second copy of it. This was a
               bare "◆ Sign in" button, and it offered exactly one of the app's
               two logins: the Nostr one, opened with no intent, so its modal
@@ -896,7 +906,7 @@ export function FullscreenPlayer({
             // bar's height — what the cover measures against — is unchanged.
             // At EVERY width: desktop uses the phone's menu too, by request,
             // instead of the row of five tiles it had from lg: (docs/ui.md).
-            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 ${
+            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 ${BAR_CHIP_LG} ${
               tiles.open ? 'border-bone bg-bone/5 text-bone' : ''
             }`}
             aria-haspopup="menu"
@@ -905,8 +915,9 @@ export function FullscreenPlayer({
             title="More actions"
           >
             {/* text-base, the ✕'s own size: at text-lg the glyph's line box
-                made this button 28px beside a 26px ✕. */}
-            <span aria-hidden className="text-base leading-none">⋯</span>
+                made this button 28px beside a 26px ✕. From lg: the box is a
+                fixed 38px, so the glyph can grow without moving it. */}
+            <span aria-hidden className="text-base lg:text-xl leading-none">⋯</span>
           </button>
           {/* THE BALANCE, WITHOUT A WALLET BUTTON UNDER IT. The bar dropped both
               wallet chips when the boost modal became the route to that modal,
@@ -915,16 +926,16 @@ export function FullscreenPlayer({
               this overlay stays mounted for the session once it has been
               opened, and a mounted `useWalletBalance` is a NIP-47 read on
               every `payment_sent` — see <WalletBalanceBox>. */}
-          {open && <WalletBalanceBox />}
+          {open && <WalletBalanceBox className={BAR_CHIP_LG} />}
           {/* WHO SIGNS THE NOTE, beside what pays for it. `<AuthControl
               overlay>` below offers the two logins while signed OUT and
               renders nothing once signed in — the account menu belongs to
               <NostrAuth>, which these routes mount hidden — so this bar showed
               no Nostr at all to the one user whose boost note it would sign.
               A readout, like the balance: the menu is one ← BACK away. */}
-          <NostrIdentityChip />
+          <NostrIdentityChip className={BAR_CHIP_LG} />
           <AuthControl overlay />
-          <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
+          <button onClick={onClose} className={`btn-ghost px-2 py-1 text-base lg:text-lg leading-none ${BAR_CHIP_LG}`} aria-label="Close fullscreen player">
             ✕
           </button>
         </div>
@@ -991,8 +1002,8 @@ export function FullscreenPlayer({
             // The width cap is bounded by the AVAILABLE HEIGHT, not by a max-h:
             // the box is aspect-video, so height derives from width, and clamping
             // the height while w-full held the width would break the 16:9 frame.
-            // 13rem is what the screen spends around it — the header (~3.5rem,
-            // more when signed out), lg:p-10 top+bottom, the gap-4, and the
+            // 13rem is what the screen spends around it — the header (63px,
+            // ~4rem, from lg: — BAR_CHIP_LG), lg:p-10 top+bottom, the gap-4, and the
             // AUDIO/VIDEO pill — rounded UP deliberately: this column has no
             // overflow of its own, so anything it can't fit becomes a scrollbar
             // on the row. `video-stage` sheds all of this in the browser's top

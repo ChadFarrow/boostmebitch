@@ -38,7 +38,10 @@ export function NostrIdentityChip({ className = '' }: { className?: string }) {
   const pic = identity.profile?.picture;
   return (
     <span
-      className={`inline-flex items-center gap-1.5 border border-bone/40 px-2 py-1 text-base leading-none max-w-[8rem] ${className}`}
+      // From lg: the caller makes the box 38px, so the picture and the name
+      // grow with it, and the cap widens: at 8rem "ChadF and 33…" was cut on a
+      // 1920px bar with most of the bar empty.
+      className={`inline-flex items-center gap-1.5 lg:gap-2 border border-bone/40 px-2 py-1 text-base leading-none max-w-[8rem] lg:max-w-[14rem] ${className}`}
       title={`Signed in as ${name || shortNpub(identity.npub, 8)}`}
     >
       {pic ? (
@@ -46,13 +49,13 @@ export function NostrIdentityChip({ className = '' }: { className?: string }) {
           pubkey={identity.pubkey}
           picture={pic}
           name={name}
-          className="w-4 h-4 rounded-full border border-nostr/40 flex-shrink-0"
+          className="w-4 h-4 lg:w-5 lg:h-5 rounded-full border border-nostr/40 flex-shrink-0"
         />
       ) : (
-        <span aria-hidden className="text-nostr text-xs">◆</span>
+        <span aria-hidden className="text-nostr text-xs lg:text-sm">◆</span>
       )}
       <span className="sr-only">Signed in as </span>
-      <span className="hidden sm:inline text-[11px] text-bone/80 truncate">
+      <span className="hidden sm:inline text-[11px] lg:text-sm text-bone/80 truncate">
         {name || shortNpub(identity.npub, 6)}
       </span>
     </span>
