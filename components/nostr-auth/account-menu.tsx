@@ -9,6 +9,7 @@ import { MutedAccountsSection } from './muted-accounts';
 import { ExportKeySection } from './export-key';
 import { ProfileEditor } from '../profile-editor';
 import { ThemeMenuLink } from '../theme-toggle';
+import { BugReportModal } from '../bug-report-modal';
 import { BunkerApprovalNotice } from '../bunker-approval-notice';
 import { BunkerRestoreNotice } from '../bunker-restore-notice';
 import { Avatar } from '../avatar';
@@ -197,6 +198,7 @@ export function AccountMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [reporting, setReporting] = useState(false);
   const [signerStale, setSignerStale] = useState(false);
   // Subscribed ONCE here and passed down, like `signerStale` and for the same
   // reason: the banner's disabled Reconnect and the notice's sentence are two
@@ -382,14 +384,25 @@ export function AccountMenu({
               the menu: flipping the palette is something you want to see land,
               and closing the thing you are looking at to show you the result
               hides half of it. "sign out" closes because it has to. */}
-          <div className="border-t border-bone/15 mt-4 pt-3 flex items-center justify-between gap-3">
+          <div className="border-t border-bone/15 mt-4 pt-3 flex flex-wrap items-center justify-between gap-3">
             <button
               onClick={() => { onSignOut(); setOpen(false); }}
               className="btn-mini"
             >
               sign out
             </button>
-            <ThemeMenuLink />
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {/* Opens <BugReportModal>, which asks first and then opens a
+                  pre-filled GitHub issue; see lib/bug-report.ts. */}
+              <button
+                type="button"
+                onClick={() => { setOpen(false); setReporting(true); }}
+                className="btn-mini"
+              >
+                report a bug
+              </button>
+              <ThemeMenuLink />
+            </div>
           </div>
         </div>
       )}
@@ -397,6 +410,7 @@ export function AccountMenu({
       {/* Outside the `open &&` block: the editor portals to <body> and must
           survive the menu closing behind it. */}
       {editing && <ProfileEditor identity={identity} onClose={() => setEditing(false)} />}
+      {reporting && <BugReportModal onClose={() => setReporting(false)} />}
     </div>
   );
 }
