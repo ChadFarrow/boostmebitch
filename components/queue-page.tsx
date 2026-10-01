@@ -26,12 +26,17 @@ export function QueuePage() {
   useEffect(() => { setMounted(true); }, []);
 
   return (
-    <>
-      <h1 className="headline text-3xl sm:text-5xl">up next<span className="text-bolt">.</span></h1>
-      <p className="text-muted text-sm mt-2">
-        Episodes you lined up, in the order they will play. Kept on this device
-        {mounted && count > 0 ? ` · ${count} of ${LISTEN_QUEUE_CAP}` : ''}.
-      </p>
+    // The old `max-w-3xl` measure up to lg:; from lg: the page's full width,
+    // like every other route under this header. At 768px on a 1280px page the
+    // queue sat in the left half with the right half empty.
+    <div className="max-w-3xl lg:max-w-none">
+      <div>
+        <h1 className="headline text-3xl sm:text-5xl">up next<span className="text-bolt">.</span></h1>
+        <p className="text-muted text-sm mt-2">
+          Episodes you lined up, in the order they will play. Kept on this device
+          {mounted && count > 0 ? ` · ${count} of ${LISTEN_QUEUE_CAP}` : ''}.
+        </p>
+      </div>
 
       <div className="mt-6">
         {/* Before the first client tick the store's answer is the SERVER's, so
@@ -39,7 +44,7 @@ export function QueuePage() {
             holding a queue, and the empty state is a claim. */}
         {!mounted ? null : count > 0 ? <QueueList /> : <EmptyQueue />}
       </div>
-    </>
+    </div>
   );
 }
 

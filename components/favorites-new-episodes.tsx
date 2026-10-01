@@ -690,7 +690,8 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
             )}
 
             {rows.length > 0 && (
-              <ul className="space-y-2">
+              // A grid from md: — the rows are fixed-height cards, so they tile.
+              <ul className="space-y-2 md:space-y-0 md:grid md:grid-cols-2 md:gap-2">
                 {rows.slice(0, shown).map((e) => (
                   // `epKey`, NOT `guid ?? id`. A feed can publish `<guid></guid>`
                   // and `extractText` returns `''` for it, which `??` keeps — so
@@ -698,7 +699,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                   // That is a React duplicate key: wrong row reused, wrong row
                   // dropped by SHOW MORE. `epKey` exists for this and three other
                   // queue surfaces already import it.
-                  <li key={epKey(e)} className="card flex items-center gap-2 p-3">
+                  <li key={epKey(e)} className="card flex items-center gap-2 p-3 lg:p-4">
                     {/* BOTH SLOTS, never one `||` over the two. `<PodcastCover>`'s
                         `onError` ladder is four rungs and it can only fall
                         through to a source it was handed, so collapsing them
@@ -733,15 +734,19 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                           artwork={e.feedImage}
                           title={showTitle(e)}
                           seed={String(e.feedId)}
-                          className="w-12 h-12 flex-shrink-0"
+                          className="w-12 h-12 sm:w-14 sm:h-14 flex-shrink-0"
                         />
                         <span className="min-w-0 flex-1 block">
-                          <span className="block text-sm font-display leading-tight line-clamp-2 break-words">{e.title}</span>
+                          {/* No `block` beside `line-clamp-2`: Tailwind emits `block` after the
+                              clamp, so its display wins and the title ran to five lines. */}
+                          <span className="text-sm sm:text-base font-display leading-tight line-clamp-2 break-words">{e.title}</span>
                           {showTitle(e) && (
-                            <span className="block text-[11px] text-muted line-clamp-2 break-words">{showTitle(e)}</span>
+                            <span className="text-[11px] sm:text-xs text-muted line-clamp-2 break-words sm:mt-0.5">{showTitle(e)}</span>
                           )}
-                          <span className="block text-[11px] text-muted truncate">
-                            {dateLine(e)}{' '}
+                          <span className="flex min-w-0 items-baseline gap-1 text-[11px] sm:text-xs text-muted">
+                            {/* The date truncates and the mark does not: on a phone one
+                                truncating line cut "✓ PLAYED" off entirely. */}
+                            <span className="truncate">{dateLine(e)}</span>
                             {feedsById.get(e.feedId ?? 0) && (
                               <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
                             )}
@@ -755,15 +760,17 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                           artwork={e.feedImage}
                           title={showTitle(e)}
                           seed={String(e.feedId)}
-                          className="w-12 h-12 flex-shrink-0"
+                          className="w-12 h-12 sm:w-14 sm:h-14 flex-shrink-0"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-display leading-tight line-clamp-2 break-words">{e.title}</div>
+                          <div className="text-sm sm:text-base font-display leading-tight line-clamp-2 break-words">{e.title}</div>
                           {showTitle(e) && (
-                            <div className="text-[11px] text-muted line-clamp-2 break-words">{showTitle(e)}</div>
+                            <div className="text-[11px] sm:text-xs text-muted line-clamp-2 break-words sm:mt-0.5">{showTitle(e)}</div>
                           )}
-                          <div className="text-[11px] text-muted truncate">
-                            {dateLine(e)}{' '}
+                          <div className="flex min-w-0 items-baseline gap-1 text-[11px] sm:text-xs text-muted">
+                            {/* The date truncates and the mark does not: on a phone one
+                                truncating line cut "✓ PLAYED" off entirely. */}
+                            <span className="truncate">{dateLine(e)}</span>
                             {feedsById.get(e.feedId ?? 0) && (
                               <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
                             )}
@@ -843,7 +850,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                   <button
                     type="button"
                     onClick={() => setShown((n) => n + PAGE)}
-                    className="btn-ghost flex-1 text-xs"
+                    className="btn-ghost flex-1 md:flex-none md:px-8 text-xs"
                   >
                     SHOW MORE ({rows.length - shown})
                   </button>
@@ -851,7 +858,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                 <button
                   type="button"
                   onClick={clearRows}
-                  className={`btn-ghost text-xs ${rows.length > shown ? '' : 'w-full'}`}
+                  className={`btn-ghost text-xs ${rows.length > shown ? '' : 'w-full md:w-auto md:px-8'}`}
                 >
                   CLEAR
                 </button>

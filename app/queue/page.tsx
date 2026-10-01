@@ -25,9 +25,7 @@ export default function Page() {
       {/* The same `max-w-7xl px-4` measure every other route under this header
           uses, so the content's left edge does not move between them. */}
       <main className="max-w-7xl mx-auto px-4 pt-8">
-        <div className="max-w-3xl">
-          <QueuePage />
-        </div>
+        <QueuePage />
       </main>
     </>
   );
