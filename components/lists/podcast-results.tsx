@@ -163,7 +163,12 @@ export function PodcastResults({
     );
   }
   return (
-    <ul className="divide-y divide-bone/10">
+    // Two columns from lg:. A row is a cover, a title and a heart, and at
+    // 1440px one per line left ~900px of empty space between the two. The
+    // dividers become each row's own bottom border there, because `divide-y`
+    // draws a top border on every item after the first — in two columns that
+    // put a rule above the top-right row and none under the last pair.
+    <ul className="divide-y divide-bone/10 lg:grid lg:grid-cols-2 lg:gap-x-6 lg:divide-y-0 lg:[&>li]:border-b lg:[&>li]:border-bone/10">
       {feeds.map((p) => (
         <PodcastRow
           key={p.id}

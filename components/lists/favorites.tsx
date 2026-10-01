@@ -197,7 +197,8 @@ function PagedList<T>({
   const sentinel = useAutoReveal(hidden ? 0 : remaining, more);
   return (
     <>
-      <ul id={id} className="divide-y divide-bone/10" hidden={hidden}>
+      {/* Two columns from lg:, as <PodcastResults> — see the note there. */}
+      <ul id={id} className="divide-y divide-bone/10 lg:grid lg:grid-cols-2 lg:gap-x-6 lg:divide-y-0 lg:[&>li]:border-b lg:[&>li]:border-bone/10" hidden={hidden}>
         {hidden ? null : visible.map(render)}
       </ul>
       {/* Suppressed while folded, or a closed section still offers to reveal

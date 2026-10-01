@@ -495,11 +495,11 @@ export function EpisodeDetailView() {
                 {episode.contentEncoded ? (
                   <div
                     ref={notesFollowRef}
-                    className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-clip"
+                    className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-clip lg:max-w-[80ch]"
                     dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
                   />
                 ) : description ? (
-                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words overflow-x-clip">
+                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words overflow-x-clip lg:max-w-[80ch]">
                     <LinkedText text={description} />
                   </div>
                 ) : null}
