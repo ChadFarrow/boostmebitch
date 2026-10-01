@@ -507,6 +507,17 @@ Four things the menu does that are each a way to get it wrong:
 
 **The menu's portal, placement and dismissal are `useAnchoredMenu` (`components/use-anchored-menu.ts`)**, shared with the episode page's `⋯ MORE`; the reasons (the `relative z-0` stacking context, the `?.` outside-click test) are in its header.
 
+### Desktop from `lg:`: the phone's design, laid out for the width
+
+Asked for on 2026-10-01: keep the mobile design on desktop (the `⋯` menus above), and use the extra width only where it fits the app's look — the same cards, tiles, chips and type, never a second visual language. Each rule below is `lg:`-only, so 390px is unchanged.
+
+- **A drilled-in view hides the headline from sight, not from the outline** (`<HomePage>`, `drilledIn`). On a show, episode or discussion the three words and their margin cost ~180px at 1440px; the `<h1>` stays as `lg:sr-only`, because it is the page's one level-1 heading, and the search box moves up, because it is still in use there.
+- **The show header puts its actions BESIDE the title** (`lg:basis-[26rem]`, cover 112px). The header is sticky from `sm:`, so its height is screen the tracklist cannot use; stacked it was ~200px, side by side it is about the cover's height. All five actions stay, per the section above.
+- **Search results, playlists and the favorites library are two columns** (`<PodcastResults>`, and `PagedList` in `components/lists/favorites.tsx`, which both favorites sections render). The divider becomes each row's own bottom border: `divide-y` draws a TOP border on every item after the first, which in two columns rules over the top-right row and leaves the last pair open. **`divide-y` is `max-lg:`, never undone with `lg:divide-y-0`** — that utility's `> * ~ *` selector outranks `[&>li]:border-b` and zeroed every row's border but the first's, seen on the preview.
+- **Show notes stop at 80ch.** Mono text across 1200px is a line the eye cannot track back from.
+
+`/live` already lays out three columns from `xl:` (`LIVE_GRID`); a two-card screen is two live shows, not a layout fault.
+
 ## Players (mini + fullscreen)
 
 Two surfaces share one `<audio>` and the store's playback state: the always-mounted mini-player (`components/player.tsx`) and the `<FullscreenPlayer>` it opens. **`<Player>` is mounted in `app/layout.tsx`**, not any page, so playback and the overlay survive route changes (browse ↔ `/stream/<naddr>`).

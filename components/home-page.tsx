@@ -615,6 +615,7 @@ export function HomePage() {
   const showOrigin = useApp((s) => s.showOrigin);
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
   const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
+  const drilledIn = inDetailView || inEpisodeDetail || inDiscussion;
 
   return (
     // NO min-h-screen AND NO BOTTOM PADDING. `<body>` already carries
@@ -627,13 +628,16 @@ export function HomePage() {
           `--app-header-h`. */}
       <AppHeader onHome={goHome} />
 
-      {/* Hero */}
-      <section className="max-w-7xl mx-auto px-4 pt-10 pb-6">
+      {/* Hero. From lg: a drilled-in view (show, episode, discussion) drops
+          the headline from SIGHT and keeps it for screen readers: at 1440px
+          the three words and their margin cost ~180px above every show and
+          episode, and the search box below is the part still in use there. */}
+      <section className={`max-w-7xl mx-auto px-4 pt-10 pb-6 ${drilledIn ? 'lg:pt-6' : ''}`}>
         {/* An <h1>: this is the home page's one top-level heading, and every
             other route has one. The document outline started at level 2 here
             (with the wordmark a <button>), so a screen reader's heading list
             had no level-1 entry on `/`. `.headline` carries the styling. */}
-        <h1 className="headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
+        <h1 className={`headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)] ${drilledIn ? 'lg:sr-only' : ''}`}>
           search<span className="text-bolt">.</span>{' '}
           listen<span className="text-bolt">.</span>{' '}
           <span className="text-bolt animate-bolt">boost</span><span className="text-bone">.</span>
@@ -664,7 +668,7 @@ export function HomePage() {
             to creators — no account, no middleman.
           </p>
         )}
-        <div className="mt-8 max-w-xl">
+        <div className={`mt-8 max-w-xl ${drilledIn ? 'lg:mt-0' : ''}`}>
           <SearchBar
             key={searchKey}
             type={searchType}

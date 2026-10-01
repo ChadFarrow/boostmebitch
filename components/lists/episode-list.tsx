@@ -582,7 +582,7 @@ export function EpisodeList({
               if (showIsCurrent) togglePlay();
               else if (data.podcast) play(firstPlayable, data.podcast);
             }}
-            className="group relative w-20 h-20 flex-shrink-0"
+            className="group relative w-20 h-20 lg:w-28 lg:h-28 flex-shrink-0"
             title={showIsCurrent && isPlaying ? 'Pause' : 'Play album'}
             aria-label={showIsCurrent && isPlaying ? 'Pause' : 'Play album'}
           >
@@ -607,7 +607,7 @@ export function EpisodeList({
             artwork={data.podcast.artwork}
             title={data.podcast.title}
             seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
-            className="w-20 h-20 border border-bone/20 flex-shrink-0 text-3xl"
+            className="w-20 h-20 lg:w-28 lg:h-28 border border-bone/20 flex-shrink-0 text-3xl"
           />
         )}
         <div className="min-w-0 flex-1">
@@ -672,7 +672,12 @@ export function EpisodeList({
             there is no rare member of it to demote. The tiles are what makes
             that affordable — four equal cells scan as one row where four
             unequal chips scanned as a pile. */}
-        <div className="basis-full flex flex-col gap-2">
+        {/* From lg: the cluster stops being `basis-full` and sits BESIDE the
+            title, 26rem wide. The header is sticky from sm:, so its height is
+            screen the tracklist cannot use: stacked, it was an 80px cover plus
+            a full-width BOOST and a tile row (~200px) above every scroll. Side
+            by side it is about the height of the cover, even at 112px. */}
+        <div className="basis-full lg:basis-[26rem] lg:flex-none lg:self-center flex flex-col gap-2">
           {showHasValue && (
             <button
               onClick={() => setShowBoostOpen(true)}
