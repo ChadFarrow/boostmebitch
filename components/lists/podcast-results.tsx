@@ -168,6 +168,9 @@ export function PodcastResults({
     // dividers become each row's own bottom border there, because `divide-y`
     // draws a top border on every item after the first — in two columns that
     // put a rule above the top-right row and none under the last pair.
+    // `divide-y` is `max-lg:`, never undone with `lg:divide-y-0`: that rule's
+    // `> * ~ *` selector outranks `[&>li]:border-b` and zeroed the border on
+    // every row but the first.
     <ul className="max-lg:divide-y max-lg:divide-bone/10 lg:grid lg:grid-cols-2 lg:gap-x-6 lg:[&>li]:border-b lg:[&>li]:border-bone/10">
       {feeds.map((p) => (
         <PodcastRow
