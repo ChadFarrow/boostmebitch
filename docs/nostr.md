@@ -1668,9 +1668,10 @@ notes seconds later carrying neither. Replacing on id made that a downgrade the
 reader watches happen: an avatar and a thread that were on screen vanish, and
 only return when the last relay stage finishes. A kind:1 is immutable, so the
 copies differ only in how much enrichment ran; `richer` therefore keeps the
-newer copy but takes `author`, `replies`, `amountMsat` and `isBoost` from
-whichever copy actually has them. `isBoost` matters most — it gates
-`noteHasSubstance`, so losing it takes the whole note off the feed.
+newer copy but takes `author`, `replies`, `amountMsat`, `isBoost`, `mentioned`
+and `quotesResolved` from whichever copy actually has them. `isBoost` matters
+most — it gates `noteHasSubstance`, so losing it takes the whole note off the
+feed.
 
 ### Many authors is ONE query — `fetchProfilesFor`, never `fetchProfile` per pubkey
 
@@ -1755,6 +1756,8 @@ Two properties make the quiet timer safe, and both matter:
 **Album-page track union.** `fetchPodcastNotes(podcastGuid, opts, episodeGuids?)` widens its `#i` filter to `podcast:guid:<guid>` **plus** `podcast:item:guid:<g>` per entry (OR semantics in one filter). `PodcastNostrFeed` passes every track guid **only for music feeds** (keyed into the fetch deps via a joined `guidsKey`) — music tracks have no per-track pages, so this is what surfaces boosts that tagged only a track's item guid. Regular podcasts have per-episode pages, so they don't pass the union (avoids duplication).
 
 **Substance filter (`noteHasSubstance`, `lib/nostr/discover.ts`).** The feeds are a firehose of *every* kind:1 tagged with NIP-73 `podcast:guid`/`podcast:item:guid`. Some clients (notably **Amplify**) publish an empty kind:1 per listen — `content: ""` plus the podcast tags — which renders as a bare podcast chip; at ~1/3 of all podcast-tagged traffic these drowned out real posts. `noteHasSubstance` keeps boosts always (`isBoost`), otherwise strips `nostr:` refs + image URLs the way `<NoteCard>` does and requires non-empty body text or an image. **Filter on content, not the `client` tag** — real human comments made *via* those same clients survive, and Fountain notes (no `client` tag at all) are unaffected. Applied at render time beside the `mutedPubkeys` filter, so it doesn't touch the `bmb:feed:*` cache and a stale paint can briefly flash filtered cards.
+
+**Boost or comment (`isPodcastComment`, `lib/nostr/discover.ts`).** A NIP-73 note WITH a payment is a boost and gets `⚡ N SATS`; the same note WITHOUT one is a comment and gets `💬 COMMENT` — Fountain publishes both, and before the stamp a comment carried no mark at all. **The test is not `!isBoost`, and the obvious version is wrong for most of the feed.** A Fountain boost is a kind:1 wrapper with no `amount` tag whose payment is the kind:9735 it quotes in a `nostr:nevent1…` body line — 132 of the 200 notes in the global index on 2026-10-02 — and `isBoost` is only adopted off that receipt in the quoted-event stage. The relay pass paints its roots BEFORE that stage (`paintRoots` → `noteFromEvent`, empty quoted map), so `!isBoost` stamps every Fountain boost "comment" for seconds on a relay-only load, then flips it. `buildNote` therefore records `quotesResolved` — every quoted id is in the map, vacuously true when there are none — and the stamp waits on it; `richer` ORs it like `isBoost`. Three consequences, each deliberate: a wrapper whose receipt no relay returns stays **unstamped for good** (it may be a boost, so "comment" would be a claim we can't back); a note from a `bmb:feed:*` cache older than the field reads `undefined`, which is not `true`; and only a **top-level** note is stamped, because `publishReply` copies the parent's NIP-73 tags onto every reply.
 
 
 

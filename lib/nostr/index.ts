@@ -70,6 +70,7 @@ export {
   quotedEventIds,
   noteFromEvent,
   noteHasSubstance,
+  isPodcastComment,
   type DiscoveredNote,
   type ReceivedZap,
 } from './discover';

@@ -1256,7 +1256,7 @@ whichever episode the list hands it, including the thousandth.
 
 ### Episode detail view
 
-**Tabs.** Show notes / Chapters / Transcript / Boosts collapse into one tab strip (`components/episode-detail-view.tsx`), mirroring the fullscreen `EpisodeInfoPanel`. Only sections with content get a tab; the **Boosts** tab lazy-mounts `<EpisodeNostrFeed>` (no relay fetch until opened) inside a `min-h-[70vh]` so its short loading frame can't collapse the page and yank the scroll.
+**Tabs.** Show notes / Chapters / Transcript / Boosts & comments collapse into one tab strip (`components/episode-detail-view.tsx`), mirroring the fullscreen `EpisodeInfoPanel`. Only sections with content get a tab; the **Boosts & comments** tab (id `boosts`) lazy-mounts `<EpisodeNostrFeed>` (no relay fetch until opened) inside a `min-h-[70vh]` so its short loading frame can't collapse the page and yank the scroll.
 
 **There is no floating BOOST FAB, and there must not be one again.** There was: a `fixed right-4 z-40 rounded-full ⚡ BOOST`, gated on `hasValue && !playerVisible` because the mini-bar carries its own BOOST and the two would overlap. BOOST is a full-width primary at the top of the page now, so the FAB was a third copy of one action. It is also no longer BUILDABLE the way it was — anything `fixed` and bottom-anchored on this page has to clear `--dock-b` (the tab bar), and `z-40` inside the layout's `relative z-0` wrapper cannot rise above the dock at all.
 

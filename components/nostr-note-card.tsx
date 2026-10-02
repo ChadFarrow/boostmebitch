@@ -4,6 +4,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { ModalShell } from './modal-shell';
 import { useConfirm } from './confirm-dialog';
 import {
+  isPodcastComment,
   resolvePublishRelays,
   shortNpub,
   type DiscoveredNote,
@@ -429,6 +430,12 @@ function NoteCardImpl({
           )}
           {note.isBoost && sats === null && (
             <span className="stamp text-bolt border-bolt/60">⚡ boost</span>
+          )}
+          {/* The same note without a payment. Not simply `!note.isBoost`: a
+              Fountain boost reads as unpaid until its quoted receipt lands —
+              see isPodcastComment. */}
+          {isPodcastComment(note) && (
+            <span className="stamp text-nostr border-nostr/60">💬 comment</span>
           )}
           {note.client && <span className="text-muted">via {note.client}</span>}
         </div>
