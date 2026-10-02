@@ -121,7 +121,11 @@ export function QueueList() {
                   className="w-9 h-9 sm:w-14 sm:h-14 border border-bone/20 flex-shrink-0 text-xs"
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate leading-tight sm:font-display sm:text-base">{item.episode.title}</span>
+                  {/* TWO LINES, the episode rows' rule (`line-clamp-2 break-words`): one
+                      line cut "#217 - Lee Cronin - AI Will N…" on a phone, and the
+                      title is how you tell which episode to boost or play. No
+                      `block` beside the clamp — it overrides the clamp's display. */}
+                  <span className="line-clamp-2 break-words leading-tight sm:font-display sm:text-base">{item.episode.title}</span>
                   {/* The show, on every row. The queue mixes them, so a title
                       alone does not say what you are about to hear. */}
                   {/* The show truncates and the PLAYED mark does not, or a long
