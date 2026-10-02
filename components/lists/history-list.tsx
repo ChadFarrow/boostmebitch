@@ -84,15 +84,18 @@ export function HistoryList() {
           const active = currentKey === key;
           const boosted = boostedOnDevice(boosts, item.episode, item.podcast);
           return (
-            <li key={key} className="flex items-center gap-1 sm:gap-2">
+            // The ACTIVE tint is on the <li>, not the tap target: BOOST and ✕ are
+            // siblings of that button, so a tint on it stopped short of them.
+            // `-mx-2 pr-2` keeps the content where the button's `-mx-2` held it.
+            <li key={key} className={`flex items-center gap-1 sm:gap-2 -mx-2 pr-2 transition ${active ? 'bg-bolt/10' : ''}`}>
               <button
                 type="button"
                 // The active row TOGGLES, as in <QueueList>: re-selecting the
                 // current item would write `isPlaying: true` over `true` and do
                 // nothing at all.
                 onClick={() => (active ? togglePlay() : play(item.episode, item.podcast))}
-                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 sm:py-2.5 ${
-                  active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 sm:py-2.5 ${
+                  active ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
                 }`}
                 aria-label={
                   active && isPlaying ? `Pause ${item.episode.title}`
