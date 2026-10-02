@@ -1624,11 +1624,33 @@ with nothing in flight as owed a read, however young.
 through `assertPublished`, because the store records the returned event as the
 viewer's like (`mine`, kept apart from the read so a read that started before
 the press cannot take it back off the tile). A refusal leaves the tile as it
-was, red, with the reason in its title — never a silent no-op. **The failure is
-keyed to what the press was about** (`${itemGuid}:${liked}`): the ⋯ menu stays
+was, red, and never a silent no-op. **The failure is keyed to what the press
+was about** (`${itemGuid}:${liked}`): the ⋯ menu stays
 open across a track change, and a later read can turn a like whose ack timed
 out into a standing one, so a bare error string left RETRY over a press that
 had become an unlike, or a like of the next track.
+
+**The reason is TEXT under the tile, not a `title`** — a phone shows no
+`title`, so a phone user saw a red RETRY and nothing else, and a signer that
+said no, a signer that never answered, and relays that took nothing each need
+something different from them. `likeFailureText` words the three; the line is a
+`role="alert"` sibling of the button, `col-span-full order-last`, so in either
+tile grid it takes its own row at the end instead of resizing a tile — the
+`<DownloadButton>` rule, written under the control.
+
+**A signer that never answers is said, and can be walked away from.** A NIP-07
+extension that goes away does not reject, it HANGS (the same iOS Safari fault
+`withDecryptTimeout` caps for decrypts), and the tile sat dimmed and disabled
+until a reload. After `SIGNER_WAIT_MS` (5 s) it reads WAITING and is pressable
+again; that press fires the `AbortSignal` the like passes to `signAndPublish`,
+which rejects with `SignStoppedError` and DROPS a signature that arrives later —
+nothing is published. **Not a timeout, on purpose:** a remote signer waiting on
+a tap on another device is slow, not dead, and one that answered late used to
+publish correctly; only the listener can tell which, so nothing fires on its
+own. The signal gates the signature only — once the publish has begun it
+changes nothing, so a press that comes too late is a no-op, never a false
+"nothing was published". It is opt-in: every other caller of `signAndPublish`
+waits as it always did.
 
 **Not done, deliberately.** The read index (`services/nostr-index`) does not
 store kind:17, so the count is relay-only; adding it is a Railway deploy of its

@@ -6,7 +6,9 @@ import { createBoundedCache } from './bounded-cache';
 import type { NostrIdentity } from './nostr/auth';
 import { tallyLikes, type LikeTally } from './nostr/like-tally';
 import { fetchEpisodeLikes, publishEpisodeLike, publishEpisodeUnlike } from './nostr/likes';
+import { NoRelayAcceptedError, SignStoppedError } from './nostr/publish';
 import { resolvePublishRelays } from './nostr/relays';
+import { getErrorMessage } from './util';
 import { useApp } from './store';
 
 /**
@@ -170,9 +172,10 @@ export async function likeEpisode(args: {
   itemGuid: string;
   feedGuid: string;
   identity: NostrIdentity;
+  signal?: AbortSignal;
 }): Promise<void> {
   const relays = resolvePublishRelays(args.identity);
-  const note = await publishEpisodeLike({ itemGuid: args.itemGuid, feedGuid: args.feedGuid, relays });
+  const note = await publishEpisodeLike({ itemGuid: args.itemGuid, feedGuid: args.feedGuid, relays, signal: args.signal });
   addMine(args.itemGuid, note.event, relays);
 }
 
@@ -181,8 +184,22 @@ export async function unlikeEpisode(args: {
   itemGuid: string;
   likeIds: readonly string[];
   identity: NostrIdentity;
+  signal?: AbortSignal;
 }): Promise<void> {
   const relays = resolvePublishRelays(args.identity);
-  const note = await publishEpisodeUnlike({ itemGuid: args.itemGuid, likeIds: args.likeIds, relays });
+  const note = await publishEpisodeUnlike({ itemGuid: args.itemGuid, likeIds: args.likeIds, relays, signal: args.signal });
   addMine(args.itemGuid, note.event, relays);
+}
+
+/**
+ * What a failed press says, as text under the tile. A phone shows no `title`,
+ * so this is the only place the reason can be read there — and the three
+ * causes need different things from the listener: a signer that refused, one
+ * that never answered, and relays that took nothing.
+ */
+export function likeFailureText(err: unknown, unlike: boolean): string {
+  const what = unlike ? 'unlike' : 'like';
+  if (err instanceof SignStoppedError) return 'Stopped waiting for the signer. Nothing was published.';
+  if (err instanceof NoRelayAcceptedError) return `No relay accepted the ${what}.`;
+  return `The ${what} failed: ${getErrorMessage(err, 'unknown error')}`;
 }

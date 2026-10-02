@@ -95,8 +95,10 @@ export async function publishEpisodeLike(args: {
   itemGuid: string;
   feedGuid: string;
   relays: string[];
+  /** Stops the wait for the signer; see `signAndPublish`. */
+  signal?: AbortSignal;
 }): Promise<PublishedNote> {
-  const { itemGuid, feedGuid, relays } = args;
+  const { itemGuid, feedGuid, relays, signal } = args;
   const template: EventTemplate = {
     kind: EXTERNAL_REACTION_KIND,
     created_at: Math.floor(Date.now() / 1000),
@@ -113,7 +115,7 @@ export async function publishEpisodeLike(args: {
       clientTag(),
     ],
   };
-  return assertPublished(await signAndPublish(template, relays), 'like');
+  return assertPublished(await signAndPublish(template, relays, { signal }), 'like');
 }
 
 /**
@@ -129,13 +131,15 @@ export async function publishEpisodeUnlike(args: {
   itemGuid: string;
   likeIds: readonly string[];
   relays: string[];
+  /** Stops the wait for the signer; see `signAndPublish`. */
+  signal?: AbortSignal;
 }): Promise<PublishedNote> {
-  const { itemGuid, likeIds, relays } = args;
+  const { itemGuid, likeIds, relays, signal } = args;
   const template: EventTemplate = {
     kind: DELETION_KIND,
     created_at: Math.floor(Date.now() / 1000),
     content: '',
     tags: [...unlikeTags(likeIds, itemGuid), clientTag()],
   };
-  return assertPublished(await signAndPublish(template, relays), 'unlike');
+  return assertPublished(await signAndPublish(template, relays, { signal }), 'unlike');
 }
