@@ -13,6 +13,13 @@
 // controls as SIBLINGS of the row's tap target (a button may not contain a
 // button). No index column — the order here is time, which the show line
 // already says, not a play order anybody chose.
+//
+// THE TAP OPENS THE NOW-PLAYING SCREEN, it does not toggle playback. Asked for
+// from the phone on 2026-10-02: an episode already heard is one you came back
+// to look at or boost. The current item just expands; any other is CUED —
+// loaded paused at its saved place — then expanded, so the press is never an
+// autoplay. <FullscreenPlayer> reloads the value block from the feed, so the
+// stored copy's block never pays.
 
 import { useMemo, useState } from 'react';
 import { useApp } from '@/lib/store';
@@ -28,10 +35,9 @@ import { HistoryBoostButton } from './history-boost-button';
 export function HistoryList() {
   const history = useApp((s) => s.playHistory);
   const current = useApp((s) => s.current);
-  const isPlaying = useApp((s) => s.isPlaying);
   const saved = useApp((s) => s.playHistorySaved);
-  const togglePlay = useApp((s) => s.togglePlay);
-  const play = useApp((s) => s.play);
+  const cue = useApp((s) => s.cue);
+  const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const removeFromHistory = useApp((s) => s.removeFromHistory);
   const clearHistory = useApp((s) => s.clearHistory);
   const identity = useApp((s) => s.identity);
@@ -84,21 +90,20 @@ export function HistoryList() {
           const active = currentKey === key;
           const boosted = boostedOnDevice(boosts, item.episode, item.podcast);
           return (
-            <li key={key} className="flex items-center gap-1 sm:gap-2">
+            // The ACTIVE tint is on the <li>, not the tap target: BOOST and ✕ are
+            // siblings of that button, so a tint on it stopped short of them.
+            // `-mx-2 pr-2` keeps the content where the button's `-mx-2` held it.
+            <li key={key} className={`flex items-center gap-1 sm:gap-2 -mx-2 pr-2 transition ${active ? 'bg-bolt/10' : ''}`}>
               <button
                 type="button"
-                // The active row TOGGLES, as in <QueueList>: re-selecting the
-                // current item would write `isPlaying: true` over `true` and do
-                // nothing at all.
-                onClick={() => (active ? togglePlay() : play(item.episode, item.podcast))}
-                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 sm:py-2.5 ${
-                  active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                onClick={() => {
+                  if (!active) cue(item.episode, item.podcast);
+                  setPlayerExpanded(true);
+                }}
+                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 sm:py-2.5 ${
+                  active ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
                 }`}
-                aria-label={
-                  active && isPlaying ? `Pause ${item.episode.title}`
-                    : active ? `Resume ${item.episode.title}`
-                      : `Play ${item.episode.title}`
-                }
+                aria-label={`Open ${item.episode.title}`}
               >
                 <PodcastCover
                   image={item.episode.image ?? item.podcast.image}

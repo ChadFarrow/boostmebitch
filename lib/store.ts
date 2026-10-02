@@ -36,6 +36,10 @@ interface AppState {
    *  if it never resumes — see lib/resume-position.ts). An explicit start, 0
    *  included, always wins: a chapter tap or a `?t=` link names its second. */
   play: (episode: Episode, podcast: Podcast, startSec?: number) => void;
+  /** `play` without starting playback — the item is loaded, paused, at its
+   *  saved place. For a surface that opens the now-playing screen on an item
+   *  (a HISTORY row) without making the press an autoplay. */
+  cue: (episode: Episode, podcast: Podcast) => void;
   togglePlay: () => void;
   setPlaying: (b: boolean) => void;
   setPosition: (s: number) => void;
@@ -717,6 +721,13 @@ export const useApp = create<AppState>((set, get) => ({
       current: { episode, podcast },
       isPlaying: true,
       positionSec: startSec ?? savedStartSec(episode, podcast),
+      videoMode: false,
+    }),
+  cue: (episode, podcast) =>
+    set({
+      current: { episode, podcast },
+      isPlaying: false,
+      positionSec: savedStartSec(episode, podcast),
       videoMode: false,
     }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),

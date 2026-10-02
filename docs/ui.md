@@ -956,6 +956,8 @@ On the note card the control is a **sibling of the heart**, on the heart's own `
 
 **"⚡ N boosted" counts the LEGS that paid, never `StoredBoost.sats`** (`boostedOnDevice`): the modal logs a boost "regardless of rail", so a boost whose every leg failed sits in the log at its full intent. **An unanswered leg adds `?`** — invariant 11: a wallet that never answered may have paid, and a mark reading "nothing sent" beside a BOOST button invites the second payment. It matches the show (guid, else feed id) as well as the item guid, because item guids repeat between feeds. It reads THIS identity's `bmb:boosts:*`, while the history is the device's.
 
+**A tap on the row OPENS the now-playing screen; it does not toggle playback** (asked for from the phone, 2026-10-02 — an episode already heard is one you came back to look at or boost). The current item just expands; any other is `cue`d — loaded PAUSED at its saved place, never an autoplay — then expanded. `<FullscreenPlayer>` reloads the value block from the feed (`refreshCurrentValue`), so the stored copy's block never pays. The UP NEXT row still plays.
+
 **The row is three lines, not the queue's two**: title, show, then the time and the marks, which WRAP. On one line, *"just now · 40 min left · ⚡ 2,100 boosted"* left a long show name 0 px and ran 66 px under BOOST at 390 px (measured under CDP).
 
 #### Two consequences worth knowing

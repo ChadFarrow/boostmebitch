@@ -80,7 +80,10 @@ export function QueueList() {
         {queue.map((item, i) => {
           const active = currentKey === epKey(item.episode);
           return (
-            <li key={epKey(item.episode)} className="flex items-center gap-1">
+            // The ACTIVE tint is on the <li>, not the tap target: the controls
+            // are siblings of that button, so a tint on it stopped short of them.
+            // `-mx-2 pr-2` keeps the content where the button's `-mx-2` held it.
+            <li key={epKey(item.episode)} className={`flex items-center gap-1 -mx-2 pr-2 transition ${active ? 'bg-bolt/10' : ''}`}>
               {/* The row's tap target is a real <button> and the three controls
                   are its SIBLINGS — a button may not contain a button, and a
                   row whose only handler sits on the <li> cannot be reached from
@@ -96,8 +99,8 @@ export function QueueList() {
                   if (active) togglePlay();
                   else playFromQueue(i);
                 }}
-                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 sm:py-2.5 ${
-                  active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 sm:py-2.5 ${
+                  active ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
                 }`}
                 // The name says what the press DOES, so it reads the same two
                 // facts as the glyph below. It read `active` alone, and a
