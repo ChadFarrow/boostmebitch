@@ -40,17 +40,57 @@ export function assertPublished(note: PublishedNote, what: string): PublishedNot
   return note;
 }
 
+/** Thrown by {@link signAndPublish} when its `signal` fires before the signer
+ *  answered. Nothing was published, and nothing will be: a signature that
+ *  arrives afterwards is dropped. */
+export class SignStoppedError extends Error {
+  constructor() {
+    super('stopped waiting for the signer; nothing was published');
+    this.name = 'SignStoppedError';
+  }
+}
+
+/**
+ * `p`, unless `signal` fires first. A NIP-07 extension that goes away does not
+ * reject, it HANGS — iOS Safari kills its background mid-request — so without
+ * this a caller has no way out but a reload. The late value is discarded.
+ */
+function unlessStopped<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) {
+    p.catch(() => {});
+    return Promise.reject(new SignStoppedError());
+  }
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(new SignStoppedError());
+    signal.addEventListener('abort', stop, { once: true });
+    p.then(
+      (v) => { signal.removeEventListener('abort', stop); resolve(v); },
+      (e) => { signal.removeEventListener('abort', stop); reject(e); },
+    );
+  });
+}
+
 // Sign + publish a single event template across the given relays. Used by
 // both publishBoostNote (kind:1) and the shared favorites list (kind:30078).
+//
+// `signal` is opt-in and gates the SIGNATURE only: fired before the signer
+// answers, it rejects with SignStoppedError and nothing is ever published —
+// a signature that arrives afterwards is dropped. Once the publish has begun
+// it changes nothing (relay publishes carry their own timeouts). Without it
+// the wait is unbounded, as it always was; the episode like passes one so a
+// hung extension has a way out short of a reload.
 export async function signAndPublish(
   template: EventTemplate,
   relays: string[],
+  opts: { signal?: AbortSignal } = {},
 ): Promise<PublishedNote> {
   const nostr = activeNostr();
   if (!nostr) {
     throw new Error('No Nostr signer available');
   }
-  const signed = await nostr.signEvent(template);
+  const signed = await unlessStopped(nostr.signEvent(template), opts.signal);
+  if (opts.signal?.aborted) throw new SignStoppedError();
   return publishSignedEvent(signed, relays);
 }
 

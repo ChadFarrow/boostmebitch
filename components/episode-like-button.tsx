@@ -1,14 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Episode, Podcast } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { getErrorMessage } from '@/lib/util';
-import { likeEpisode, unlikeEpisode, useEpisodeLikes } from '@/lib/use-episode-likes';
+import { likeEpisode, likeFailureText, unlikeEpisode, useEpisodeLikes } from '@/lib/use-episode-likes';
 import { canFavoriteEpisode } from './fav-heart';
 import { ThumbsUpIcon } from './icons';
 
 const compact = new Intl.NumberFormat('en', { notation: 'compact' });
+
+/** How long a signer may take before the tile says it is waiting for one. A
+ *  working extension answers in well under a second; a remote signer that
+ *  needs a tap on another device can take a few. */
+const SIGNER_WAIT_MS = 5_000;
 
 /**
  * 👍 LIKE — a NIP-25 kind:17 on the episode, in the shape Fountain publishes,
@@ -27,6 +31,17 @@ const compact = new Intl.NumberFormat('en', { notation: 'compact' });
  * **Signed in, it is disabled until the first read lands**, because until then
  * a press cannot know whether it is a like or an unlike.
  *
+ * **A signer that does not answer is SAID, and can be walked away from.** A
+ * NIP-07 extension that goes away does not reject, it hangs, and a dimmed tile
+ * reads as "nothing happened". After `SIGNER_WAIT_MS` the tile reads WAITING
+ * and is pressable again; that press stops the wait, and a signature arriving
+ * afterwards is dropped — never published (`signAndPublish`'s `signal`).
+ *
+ * **A failure is written UNDER the tile**, as `<DownloadButton>` does, because a
+ * phone shows no `title`. It is a sibling of the button, `col-span-full` and
+ * `order-last`, so in either tile grid it takes a row of its own at the end
+ * rather than resizing a tile.
+ *
  * The gate is `<FavEpisodeHeart>`'s: both guids or no tile. The feed guid is
  * the item's PARENT (`episode.podcastGuid` first), for the reason that
  * component gives — a playlist is not the show a track belongs to.
@@ -41,6 +56,8 @@ export function EpisodeLikeButton({ episode, podcast }: { episode: Episode; podc
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const { tally, complete } = useEpisodeLikes(likeable ? itemGuid : undefined, feedGuid);
   const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const stop = useRef<AbortController | null>(null);
   // Keyed by what the press was ABOUT. The ⋯ menu stays open across a track
   // change, and a later read can turn a failed like into a standing one; a bare
   // string would then leave RETRY over a press that now does something else —
@@ -63,29 +80,43 @@ export function EpisodeLikeButton({ episode, podcast }: { episode: Episode; podc
   async function onPress(e: React.MouseEvent) {
     e.stopPropagation();
     e.preventDefault();
+    // While WAITING, a press is the way out: it stops the wait for the signer.
+    if (busy && waiting) {
+      stop.current?.abort();
+      return;
+    }
     if (busy || reading) return;
     if (!identity) {
       setSignInOpen(true);
       return;
     }
     const key = `${itemGuid}:${liked}`;
+    const controller = new AbortController();
+    stop.current = controller;
     setBusy(true);
     setFailure(null);
+    const slow = setTimeout(() => setWaiting(true), SIGNER_WAIT_MS);
     try {
-      if (liked) await unlikeEpisode({ itemGuid: itemGuid!, likeIds: tally!.viewerLikeIds, identity });
-      else await likeEpisode({ itemGuid: itemGuid!, feedGuid: feedGuid!, identity });
+      const signal = controller.signal;
+      if (liked) await unlikeEpisode({ itemGuid: itemGuid!, likeIds: tally!.viewerLikeIds, identity, signal });
+      else await likeEpisode({ itemGuid: itemGuid!, feedGuid: feedGuid!, identity, signal });
     } catch (err) {
       // A guard that silently withholds must say so: the tile keeps its state,
-      // and says why on the tile itself rather than in the console.
-      setFailure({ key, msg: getErrorMessage(err, liked ? 'unlike failed' : 'like failed') });
+      // and says why under itself rather than in the console.
+      setFailure({ key, msg: likeFailureText(err, liked) });
     } finally {
+      clearTimeout(slow);
+      if (stop.current === controller) stop.current = null;
+      setWaiting(false);
       setBusy(false);
     }
   }
 
   const people = !countLabel ? '' : countLabel === '1' ? ' 1 person likes this.' : ` ${countLabel} people like this.`;
-  const title = error
-    ? `Failed: ${error}`
+  const title = waiting
+    ? 'Waiting for your signer to answer. Press to stop waiting.'
+    : error
+    ? error
     : !identity
       ? `Like on Nostr (sign in first).${people}`
       : reading
@@ -95,29 +126,38 @@ export function EpisodeLikeButton({ episode, podcast }: { episode: Episode; podc
           : `Like on Nostr.${people}`;
 
   return (
-    <button
-      type="button"
-      onClick={onPress}
-      disabled={busy || reading}
-      aria-pressed={liked}
-      aria-busy={busy || reading}
-      aria-label={`${liked ? 'Unlike' : 'Like'} episode${countLabel ? `, ${countLabel} ${countLabel === '1' ? 'like' : 'likes'}` : ''}`}
-      title={title}
-      className={`tile disabled:opacity-60 ${
-        error
-          ? 'border-red-400/60 text-red-400'
-          // Bone until liked, then `bolt` yellow with the thumb filled — the
-          // site's own accent, rather than the heart's Nostr magenta.
-          : liked
-            ? 'border-bolt text-bolt hover:border-bolt hover:bg-bolt/10'
-            : 'hover:border-bolt/70 hover:text-bolt'
-      }`}
-    >
-      <span className="flex items-center gap-1 leading-none">
-        <ThumbsUpIcon filled={liked} />
-        {countLabel && <span className="text-[11px] tabular-nums">{countLabel}</span>}
-      </span>
-      {error ? 'RETRY' : 'LIKE'}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={onPress}
+        disabled={(busy && !waiting) || reading}
+        aria-pressed={liked}
+        aria-busy={busy || reading}
+        aria-label={waiting
+          ? 'Waiting for your signer. Press to stop waiting'
+          : `${liked ? 'Unlike' : 'Like'} episode${countLabel ? `, ${countLabel} ${countLabel === '1' ? 'like' : 'likes'}` : ''}`}
+        title={title}
+        className={`tile disabled:opacity-60 ${
+          error
+            ? 'border-red-400/60 text-red-400'
+            // Bone until liked, then `bolt` yellow with the thumb filled — the
+            // site's own accent, rather than the heart's Nostr magenta.
+            : liked
+              ? 'border-bolt text-bolt hover:border-bolt hover:bg-bolt/10'
+              : 'hover:border-bolt/70 hover:text-bolt'
+        }`}
+      >
+        <span className="flex items-center gap-1 leading-none">
+          <ThumbsUpIcon filled={liked} />
+          {countLabel && <span className="text-[11px] tabular-nums">{countLabel}</span>}
+        </span>
+        {waiting ? 'WAITING' : error ? 'RETRY' : 'LIKE'}
+      </button>
+      {error && (
+        <p role="alert" className="col-span-full order-last basis-full text-[11px] leading-tight text-red-400">
+          {error}
+        </p>
+      )}
+    </>
   );
 }
