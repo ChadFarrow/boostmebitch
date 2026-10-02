@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { NO_STORE, withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { getEpisodesSinceForFeeds } from '@/lib/pi';
+import { getEpisodes, getEpisodesSinceForFeeds } from '@/lib/pi';
 import { isPiMiss } from '@/lib/pi-error';
-import { mapLimit, NEW_EPISODES_MAX_FEEDS, PI_FANOUT } from '@/lib/util';
+import { mapLimit, NEW_EPISODES_LATEST_MAX_FEEDS, NEW_EPISODES_MAX_FEEDS, PI_FANOUT, trimForQueue } from '@/lib/util';
 import type { Episode } from '@/lib/types';
 
 /**
@@ -49,6 +49,49 @@ import type { Episode } from '@/lib/types';
  * After a good probe the rest run bounded and are swallowed per chunk, as
  * before: one bad chunk after a good probe is not an outage.
  */
+/*
+ * **`latest=1` — a show's FIRST check, one Podcast Index call PER FEED.**
+ * Added 2026-10-01: a show the section has never checked shows its LATEST
+ * episode (if under 90 days old; `selectLatestEpisodes` decides), not just the
+ * last seven days. The batch call cannot answer that — `max` is global across
+ * the batch, so a daily show fills it — so this mode asks `/episodes/byfeedid`
+ * for one item per feed. Each show is asked ONCE per device (the caller records
+ * it in `seeded`), so the cost is one call per favorite, one time.
+ *
+ * The same guards as the batch mode, because the same list reaches it: the
+ * `MAX_FEEDS` cap on an attacker-controlled length, the probe that lets an
+ * outage throw while a MISS stays out of `covered`, and `mapLimit` at
+ * `PI_FANOUT` — a cap on the COUNT is not a cap on the fan-out (CLAUDE.md).
+ * Its own, smaller cap per request — `NEW_EPISODES_LATEST_MAX_FEEDS`, sized
+ * against the clock (see the constant). No `since`, so the 30-day lookback
+ * clamp below does not apply and is not loosened: `max=1` per feed is the bound. Show notes are stripped here
+ * (`trimForQueue`), because `getEpisodes` asks `fulltext` and the section
+ * renders none of it.
+ */
+async function latestPerFeed(feeds: number[]) {
+  const episodes: Episode[] = [];
+  const covered: number[] = [];
+  const ask = async (id: number) => {
+    const rows = await getEpisodes(id, 1);
+    episodes.push(...rows.map(trimForQueue));
+    covered.push(id);
+  };
+  const [probe, ...rest] = feeds;
+  try {
+    await ask(probe!);
+  } catch (e) {
+    if (!isPiMiss(e)) throw e;
+  }
+  await mapLimit(rest, PI_FANOUT, async (id) => {
+    try {
+      await ask(id);
+    } catch {
+      // Out of `covered`, so the caller asks this show again next pass.
+    }
+  });
+  return { episodes, covered };
+}
+
 const CHUNK = 50;
 /** A security cap, shared with the section that batches by it — see the constant. */
 const MAX_FEEDS = NEW_EPISODES_MAX_FEEDS;
@@ -76,6 +119,21 @@ export async function GET(req: Request) {
       .filter((n) => Number.isInteger(n) && n > 0),
   )).slice(0, MAX_FEEDS);
   if (!feeds.length) return NextResponse.json({ error: 'missing feeds' }, { status: 400 });
+
+  if (searchParams.get('latest') === '1') {
+    return withErrorHandling(async () => {
+      const ids = feeds.slice(0, NEW_EPISODES_LATEST_MAX_FEEDS);
+      const { episodes, covered } = await latestPerFeed(ids);
+      return NextResponse.json(
+        { episodes, covered, truncated: false },
+        {
+          headers: covered.length === ids.length
+            ? { 'Cache-Control': 'private, max-age=30' }
+            : NO_STORE,
+        },
+      );
+    }, 'new-episode lookup failed');
+  }
 
   const nowSec = Math.floor(Date.now() / 1000);
   const asked = strictInt(searchParams.get('since') ?? '');

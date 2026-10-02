@@ -515,8 +515,9 @@ export interface NewEpisodeMarks {
    * mark advances to the newest of ITS rows that survived into this array,
    * never to a row that was merely fetched (`mergeNewEpisodeRows` first, then
    * `advanceMarks` over the merged list). A row therefore leaves this list
-   * only by aging past `FAV_NEW_WINDOW_MS` or by an explicit clear — never
-   * because a pass happened while nobody was looking.
+   * only by an explicit clear (CLEAR, ✕), by its show being unfavorited, or by
+   * `FAV_NEW_CAP` pushing the oldest out — never by age (since 2026-10-01) and
+   * never because a pass happened while nobody was looking.
    *
    * Absent on a record written before this field existed, which reads as an
    * empty list: the first pass after an upgrade refills it.
@@ -532,8 +533,18 @@ export interface NewEpisodeMarks {
   failed?: boolean;
   /** Keys of rows the reader explicitly removed (✕ or CLEAR).  Persisted so
    *  that a truncated batch — whose marks cannot advance — does not re-offer
-   *  them on the next pass. Pruned alongside rows. */
+   *  them on the next pass. The NEWEST `FAV_NEW_CAP` are kept (`capDismissed`). */
   dismissed?: string[];
+  /**
+   * podcastGuid -> when this show's FIRST check (its latest episode,
+   * `selectLatestEpisodes`) was answered, unix seconds. A show missing here is
+   * asked `/api/new-episodes?latest=1` once, on top of the ordinary check —
+   * which is how a device that already had marks got the latest episodes once,
+   * by the owner's choice (2026-10-01). Only a COVERED show is recorded, so a
+   * failed ask is retried. Pruned to the favorites like `marks` (`pruneMarks`),
+   * so a re-favorited show is asked again. Absent reads as `{}`.
+   */
+  seeded?: Record<string, number>;
 }
 
 /**

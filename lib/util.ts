@@ -389,8 +389,24 @@ export function nextPlayableIndex(
  *  rather than an empty box, and stops short of a year of back catalogue. */
 export const FAV_NEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** The most rows the section will ever build, however many feeds moved. */
-export const FAV_NEW_CAP = 50;
+/**
+ * The most rows the section will ever hold, however many feeds moved.
+ *
+ * 250 since 2026-10-01, when a show's FIRST check began showing its latest
+ * episode (`selectLatestEpisodes`) and rows stopped aging out: the list has to
+ * hold one row per show for a real library (221 shows, the owner's), and it is
+ * now the bound that matters, since only CLEAR, ✕ and this cap retire a row.
+ * It is written to `bmb:newmarks:<npub>`, which is not evictable, through
+ * `trimForQueue` — so a row costs its record minus the show notes.
+ */
+export const FAV_NEW_CAP = 250;
+
+/**
+ * How old a show's latest episode may be and still appear on its first check.
+ * Ninety days, the owner's choice: a monthly show is not missing, and a show
+ * that stopped publishing does not put an old episode on the list.
+ */
+export const FAV_NEW_SEED_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 
 /**
  * Feeds one `/api/new-episodes` request may name — ONE number for both ends.
@@ -403,6 +419,19 @@ export const FAV_NEW_CAP = 50;
  * check" on every pass, for ever.
  */
 export const NEW_EPISODES_MAX_FEEDS = 100;
+
+/**
+ * Feeds one `/api/new-episodes?latest=1` request may name — again ONE number
+ * for both ends, for the reason `NEW_EPISODES_MAX_FEEDS` gives.
+ *
+ * Sized against the CLOCK. That mode makes one Podcast Index call PER FEED, at
+ * `PI_FANOUT` at a time behind a probe, and `PI_TIMEOUT_MS` is 8 s with no
+ * `maxDuration` set: at 24 the worst case is 1 + ceil(23 / 6) = 5 rounds, 40 s,
+ * inside what `/api/live-shows` already accepts. At 100 it was 18 rounds,
+ * 144 s. Measured 2026-10-01 on the dev server: 100 real feeds answered in
+ * 1.8–2.6 s, so the realistic cost of the smaller number is a few more requests.
+ */
+export const NEW_EPISODES_LATEST_MAX_FEEDS = 24;
 
 /**
  * PI's own ceiling on a comma-separated feed-id list, and the reason this
@@ -561,13 +590,19 @@ export function pruneMarks(
  * it, deleted it for good. That is also why this runs BEFORE `advanceMarks`
  * and feeds it: what survives here is what a mark is allowed to describe.
  *
- * Two rules do the work. A row past the seven-day horizon is dropped, which is
- * the only thing that retires a row nobody cleared — an unbounded list would
- * otherwise carry a show's whole back catalogue for as long as the reader
- * ignored it. And the union is keyed by `epKey`, with the NEW record winning,
- * so a re-fetched episode updates in place rather than appearing twice: PI
- * corrects a title or a duration after a crawl, and the stale copy is the one
- * worth losing.
+ * **NO ROW IS RETIRED BY AGE — since 2026-10-01, by the owner's decision.** It
+ * used to drop anything past the seven-day horizon; a show's first check now
+ * shows its latest episode, which is routinely weeks old, and the list works
+ * like an inbox: a row leaves when the reader clears it (CLEAR, ✕), when its
+ * show is unfavorited (`pruneNewRows`), or when this cap pushes it out — the
+ * OLDEST first. What can ENTER is still bounded upstream: `selectNewEpisodes`
+ * takes only rows past each feed's mark, and `selectLatestEpisodes` one row per
+ * show under 90 days.
+ *
+ * The union is keyed by `epKey`, with the NEW record winning, so a re-fetched
+ * episode updates in place rather than appearing twice: PI corrects a title or
+ * a duration after a crawl, and the stale copy is the one worth losing. An
+ * undated row is dropped, carried or found — nothing can order it.
  *
  * Newest-first, and capped at `FAV_NEW_CAP`. The cap keeps the persisted
  * record bounded — this list is written to `bmb:newmarks:<npub>`, which is not
@@ -576,19 +611,102 @@ export function pruneMarks(
 export function mergeNewEpisodeRows(
   prev: readonly Episode[],
   found: readonly Episode[],
-  nowMs: number,
   dismissed?: ReadonlySet<string>,
 ): Episode[] {
-  const horizon = Math.floor((nowMs - FAV_NEW_WINDOW_MS) / 1000);
   const byKey = new Map<string, Episode>();
   for (const e of prev) byKey.set(epKey(e), e);
   for (const e of found) byKey.set(epKey(e), e);
   return [...byKey.values()]
     .filter((e) =>
-      typeof e.datePublished === 'number' && e.datePublished > horizon &&
+      typeof e.datePublished === 'number' &&
       !(dismissed && dismissed.has(epKey(e))))
     .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0))
     .slice(0, FAV_NEW_CAP);
+}
+
+/**
+ * A show's FIRST check: its latest episode, one row per show.
+ *
+ * The owner's rule (2026-10-01). Before it, a show with no mark showed only
+ * what it published in the last seven days, so a monthly show was simply
+ * absent from the section the first time it was checked — on a new device that
+ * was most of the library. Now each show contributes its NEWEST dated,
+ * playable, non-live row, if that is under `FAV_NEW_SEED_WINDOW_MS` old.
+ *
+ * Per FEED, never "the newest N overall": `/api/new-episodes?latest=1` asks one
+ * row per feed precisely because PI's `max` is global across a batch, and a
+ * daily show would otherwise fill it. A row whose feed we did not ask about is
+ * dropped, as in `selectNewEpisodes`. It ignores the marks on purpose: on a
+ * device that already has them this runs once per show, by the owner's choice,
+ * and `mergeNewEpisodeRows` dedupes against what is already on the list.
+ */
+export function selectLatestEpisodes(
+  rows: readonly Episode[],
+  guidByFeedId: Record<number, string>,
+  nowMs: number,
+): Episode[] {
+  const floor = Math.floor((nowMs - FAV_NEW_SEED_WINDOW_MS) / 1000);
+  const newest = new Map<number, Episode>();
+  for (const e of rows) {
+    if (!guidByFeedId[e.feedId]) continue;
+    if (typeof e.datePublished !== 'number' || e.datePublished <= floor) continue;
+    if (!isPlayableRow(e) || e.liveStatus) continue;
+    const held = newest.get(e.feedId);
+    if (!held || e.datePublished > (held.datePublished ?? 0)) newest.set(e.feedId, e);
+  }
+  return [...newest.values()]
+    .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0))
+    .slice(0, FAV_NEW_CAP);
+}
+
+/**
+ * The marks after a show's FIRST check: a show with NO mark is marked at the
+ * newest date its feed answered with. A show that already has one is left
+ * exactly where it is.
+ *
+ * **Why a show with no mark gets ONLY the first check.** Measured 2026-10-01 in
+ * the browser on a new device: with the ordinary seven-day check also run for
+ * never-checked shows, daily news shows filled all 250 places and pushed every
+ * show's latest episode off the list, and that request was TRUNCATED — so no
+ * mark advanced and the next pass flooded again. So the first check is the
+ * whole of a new show's first pass, and its mark comes from it.
+ *
+ * **This breaks "a mark may only describe a row on the list" ON PURPOSE, and
+ * only here.** The first check is a statement about the FEED, not a fetch of
+ * new episodes: everything before the newest is, by the owner's rule, not
+ * shown, and a newest too old to show (past 90 days) is still the point after
+ * which episodes are new. **A show that already has a mark is never moved
+ * here**: its ordinary check moves it and honours truncation, and moving it
+ * from this answer would skip whatever lay between the mark and the latest.
+ */
+export function seedMarks(
+  marks: Record<string, number>,
+  rows: readonly Episode[],
+  coveredGuids: readonly string[],
+  guidByFeedId: Record<number, string>,
+): Record<string, number> {
+  const covered = new Set(coveredGuids);
+  const next = { ...marks };
+  for (const e of rows) {
+    const guid = guidByFeedId[e.feedId];
+    if (!guid || !covered.has(guid) || guid in marks) continue;
+    if (typeof e.datePublished !== 'number') continue;
+    if (e.datePublished > (next[guid] ?? 0)) next[guid] = e.datePublished;
+  }
+  return next;
+}
+
+/**
+ * The dismissed keys to keep: the NEWEST `FAV_NEW_CAP`.
+ *
+ * Keys are appended as the reader removes rows, so the end of the array is the
+ * most recent. The end of a pass and the storage read both used
+ * `slice(0, cap)`, which over the cap kept the OLDEST — so the row just removed
+ * was the one forgotten, and it came back on a truncated pass. One function,
+ * because there were four sites and two of them had it right.
+ */
+export function capDismissed(keys: readonly string[]): string[] {
+  return keys.slice(-FAV_NEW_CAP);
 }
 
 /**
