@@ -171,6 +171,27 @@ const MSP_ECHO_25 = {
   ],
 };
 
+// chadf_boostbot's own post of that same 333-sat boost, 3 s after ChadF's note.
+// It posts EVERY boost on purpose and must ALWAYS show (Chad, 2026-10-02). What
+// keeps it on screen is that it names nobody: no `sender`, no `amount` — its
+// 333 sats come from a kind:9735 the bot signed itself, adopted later.
+const CHADF_BOT_COPY = {
+  id: '4210020e7675be4a429b2e35353b4ea5e7711c174d236eb529d42af8a08ef539',
+  pubkey: 'f3bd42a91af5f3f1c40ca45ad2269464ab79996b32da78e8ed2ab91111b08e65',
+  created_at: 1790895849,
+  content: 'were LIT\n\n⚡ 333 sats\n📱 via BoostMeBitch\n\nhttps://podcastindex.org/podcast/6611624',
+  tags: [
+    ['p', '2dfbe5cb955e4018b76e6542a3b8782144dd5f5735914db9921fd24c3b3d106d', '', 'mention'],
+    ['p', 'e49744a8127cfaccab655be0791beee2667dc30fba74a17c1f78da5557c4e09c', '', 'mention'],
+    ['i', 'podcast:guid:ac746d09-7c3b-5bcd-b28a-f12d6456ca8f'],
+    ['k', 'podcast:guid'],
+    ['i', 'podcast:item:guid:homegrownhits-153'],
+    ['k', 'podcast:item:guid'],
+    ['t', 'boostagram'],
+    ['t', 'value4value'],
+  ],
+};
+
 // ── Building notes the way `buildNote` does, and editing one field ───────────
 
 function note(e, amountMsat) {
@@ -262,6 +283,10 @@ const vectors = [
     kind: 'hidden', args: [[note(CHADF_OWN_333), note(MSP_ECHO_25)]], expect: [],
   },
   {
+    label: 'chadf_boostbot ALWAYS shows beside ChadF’s own note — it names no sender',
+    kind: 'hidden', args: [[note(CHADF_OWN_333), note(CHADF_BOT_COPY, 333000)]], expect: [], alsoNaive: true,
+  },
+  {
     label: 'the sender’s note is about ANOTHER track',
     kind: 'hidden', args: [[MSP, QUINCY_OTHER_TRACK]], expect: [],
   },
@@ -341,6 +366,8 @@ console.log('\nProperties:');
 
   if (echoSender(MSP) !== QUINCY_OWN.pubkey) fail('echoSender does not decode the MSP 2.0 bot’s npub to Quincy’s pubkey');
   else ok('echoSender decodes the wire npub to the author of the sender’s note');
+  if (echoSender(note(CHADF_BOT_COPY, 333000)) !== null) fail('echoSender names a sender for chadf_boostbot, which must always show');
+  else ok('echoSender names nobody for chadf_boostbot, so nothing can absorb it');
   const nsec = nip19.nsecEncode(new Uint8Array(32).fill(7));
   if (echoSender(note(edit(MSP_ECHO, { tags: withTag(MSP_ECHO.tags, 'sender', nsec) }))) !== null) {
     fail('echoSender accepted an nsec as a sender');
