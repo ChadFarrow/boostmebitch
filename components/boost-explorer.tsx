@@ -5,7 +5,6 @@ import {
   fetchBoostsSentBy,
   fetchProfile,
   fetchZapsReceivedBy,
-  noteHasSubstance,
   quotedEventIds,
   shortNpub,
   useNostrFeed,
@@ -13,6 +12,7 @@ import {
   indexedBoostsReceivedBy,
   indexedZapsReceivedBy,
   useViewerReposts,
+  visibleNotes,
   zapSats,
   type DiscoveredNote,
   type ReceivedZap,
@@ -152,14 +152,12 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
   const subjectMuted = mutedPubkeys.has(pubkey);
 
   const sentVisible = useMemo(
-    () => (sent.notes ? sent.notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : null),
+    () => (sent.notes ? visibleNotes(sent.notes, mutedPubkeys) : null),
     [sent.notes, mutedPubkeys],
   );
 
   const receivedVisible = useMemo(
-    () => (received.notes
-      ? received.notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n))
-      : null),
+    () => (received.notes ? visibleNotes(received.notes, mutedPubkeys) : null),
     [received.notes, mutedPubkeys],
   );
 

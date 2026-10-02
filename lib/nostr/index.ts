@@ -69,7 +69,6 @@ export {
   fetchProfilesFor,
   quotedEventIds,
   noteFromEvent,
-  noteHasSubstance,
   type DiscoveredNote,
   type ReceivedZap,
 } from './discover';
@@ -78,7 +77,7 @@ export { parseZapReceipt, zapSats, type ZapReceipt } from './zap-receipt';
 export type { Nip73Refs } from './zap-request';
 export { mintSummaryReceipt, type QuotedZapReceipt } from './zap-summary-receipt';
 
-export { useNostrFeed, useVisibleNotes } from './use-feed';
+export { useNostrFeed, useVisibleNotes, visibleNotes } from './use-feed';
 
 // The read index (services/nostr-index). Every one of these returns null when
 // there is no index, it is unreachable, or it holds nothing — never an empty
