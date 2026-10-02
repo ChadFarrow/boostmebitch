@@ -53,10 +53,27 @@
 // are named one at a time with `alsoNaive: true` — the must-still-work half,
 // where over-blocking would be its own regression.
 
+//
+// THE PLAY HISTORY rides on the same module and the same reasons (2026-10-01).
+// `listenStep` decides what counts as a minute of listening, so a seek or a
+// resume deep into an episode cannot put a sampled episode in the history.
+// `addToHistory` is a LOG, the opposite of the queue: at the cap the OLDEST
+// entry goes, and a re-listen moves to the top. Its naive is the queue's own
+// rule copied across, which is the mistake the shared `epKey` invites.
+// `boostedOnDevice` draws "⚡ N boosted" beside a BOOST button, so it counts
+// only the sats that SETTLED — the boost log keeps a boost whose every leg
+// failed — and it reports an unanswered leg, because a mark that says
+// "nothing sent" over sats a wallet may have paid invites the double payment
+// invariant 11 exists to stop.
+
 import {
+  addToHistory,
+  boostedOnDevice,
   epKey,
   LISTEN_QUEUE_CAP,
+  listenStep,
   nextPlayableIndexBy,
+  PLAY_HISTORY_CAP,
   playsAsTracks,
   queueShowFor,
   trimForQueue,
@@ -113,6 +130,25 @@ function checkPlays(label, args, expected, { alsoNaive = false } = {}) {
 function checkWalk(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, nextPlayableIndexBy(...args), expected);
   vectors.push({ label, kind: 'walk', args, alsoNaive });
+}
+
+/** A listenStep vector: how many seconds one store tick counts as listened. */
+function checkStep(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, listenStep(...args), expected);
+  vectors.push({ label, kind: 'step', args, alsoNaive });
+}
+
+/** The history as `key@at`, newest first — the order IS what the page draws. */
+const historyShape = (list) => list.map((h) => `${epKey(h.episode)}@${h.at}`);
+function checkHistory(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, historyShape(addToHistory(...args)), expected);
+  vectors.push({ label, kind: 'history', args, alsoNaive });
+}
+
+/** A boostedOnDevice vector. */
+function checkBoosted(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, boostedOnDevice(...args), expected);
+  vectors.push({ label, kind: 'boosted', args, alsoNaive });
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +278,93 @@ checkWalk('a clean queue steps by one', [[Q[0], Q[3]], 0, 1, row], 1, { alsoNaiv
 checkWalk('an empty queue answers -1', [[], 0, 1, row], -1, { alsoNaive: true });
 
 // ---------------------------------------------------------------------------
+section('listenStep: a minute of LISTENING, not a minute of position');
+// ---------------------------------------------------------------------------
+// The store ticks `positionSec` about once a second, so one tick of ordinary
+// playback is ~1 s and one tick at 5× is ~5 s. Both count.
+checkStep('one ordinary tick counts', [120, 121], 1, { alsoNaive: true });
+checkStep('a 5× tick counts', [120, 125], 5, { alsoNaive: true });
+checkStep('exactly ten seconds still counts', [120, 130], 10, { alsoNaive: true });
+checkStep('a rewind counts nothing', [300, 285], 0, { alsoNaive: true });
+// THE ONES THIS EXISTS FOR. +30 is the skip button and +600 is a scrub: the
+// position moved, nobody listened to what it moved over.
+checkStep('the +30 skip is a seek, not listening', [120, 150], 0);
+checkStep('a scrub ten minutes on counts nothing', [60, 660], 0);
+checkStep('a non-number position counts nothing', [NaN, 5], 0);
+
+// ---------------------------------------------------------------------------
+section('addToHistory: a LOG — newest first, a re-listen moves up, the oldest goes');
+// ---------------------------------------------------------------------------
+const pod = { id: 41504, title: 'A Show' };
+const ep = (guid, id = 1) => ({ guid, id, feedId: 41504, title: guid, enclosureUrl: `https://x/${guid}.mp3` });
+const hist = (guid, at) => ({ episode: ep(guid), podcast: pod, at });
+
+checkHistory('the first listen is the whole history',
+  [[], { episode: ep('a'), podcast: pod }, 1000], ['a@1000'], { alsoNaive: true });
+checkHistory('a new listen goes on TOP',
+  [[hist('a', 1000)], { episode: ep('b'), podcast: pod }, 2000], ['b@2000', 'a@1000'], { alsoNaive: true });
+// The queue refuses a duplicate and keeps it where it was. A history that did
+// the same would bury the episode you just listened to again under newer ones.
+checkHistory('a re-listen MOVES to the top with the new time, and is not repeated',
+  [[hist('c', 3000), hist('b', 2000), hist('a', 1000)], { episode: ep('a'), podcast: pod }, 4000],
+  ['a@4000', 'c@3000', 'b@2000']);
+// Two episodes of one feed with an EMPTY guid are two entries: `epKey` falls
+// back to `feedId:id`, which is why this goes through it and not through `guid`.
+checkHistory('two empty-guid episodes stay two entries',
+  [[{ episode: ep('', 9), podcast: pod, at: 1000 }], { episode: ep('', 10), podcast: pod }, 2000],
+  ['41504:10@2000', '41504:9@1000'], { alsoNaive: true });
+{
+  const full = Array.from({ length: PLAY_HISTORY_CAP }, (_, i) => hist(`old${i}`, 1000 - i));
+  const shape = historyShape(full);
+  // At the cap the queue REFUSES. A log must drop its oldest instead, or the
+  // fifty-first episode you listen to never appears — the one you came to boost.
+  checkHistory('at the cap the NEWEST goes in and the OLDEST goes out',
+    [full, { episode: ep('new'), podcast: pod }, 5000],
+    ['new@5000', ...shape.slice(0, PLAY_HISTORY_CAP - 1)]);
+}
+compare('PLAY_HISTORY_CAP is the queue\'s 50', PLAY_HISTORY_CAP, 50);
+
+// ---------------------------------------------------------------------------
+section('boostedOnDevice: the sats that SETTLED for this episode, and any unanswered leg');
+// ---------------------------------------------------------------------------
+// Fixtures in the shape `logStoredBoost` writes (components/boost-modal/index.tsx).
+const SHOW = { id: 41504, podcastGuid: 'show-guid' };
+const EP = { guid: 'ep-guid' };
+const leg = (sats, ok, extra = {}) => ({ recipient: 'r@x.com', sats, ok, ...extra });
+const boost = (sats, legs, over = {}) => ({
+  uuid: `u${sats}`, ts: 1, podcastTitle: 'A Show', podcastId: 41504, podcastGuid: 'show-guid',
+  episodeTitle: 'Ep', episodeGuid: 'ep-guid', sats, legs, ...over,
+});
+
+checkBoosted('a boost whose legs all paid counts in full',
+  [[boost(100, [leg(95, true), leg(5, true)])], EP, SHOW], { sats: 100, unsure: false }, { alsoNaive: true });
+checkBoosted('two boosts add up',
+  [[boost(100, [leg(100, true)]), boost(50, [leg(50, true)])], EP, SHOW], { sats: 150, unsure: false },
+  { alsoNaive: true });
+checkBoosted('no boost for this episode is zero',
+  [[boost(100, [leg(100, true)], { episodeGuid: 'another-ep' })], EP, SHOW], { sats: 0, unsure: false },
+  { alsoNaive: true });
+// The log keeps a boost "regardless of rail" — every leg may have failed. The
+// intent total is not money sent.
+checkBoosted('a failed leg is not counted',
+  [[boost(100, [leg(95, true), leg(5, false)])], EP, SHOW], { sats: 95, unsure: false });
+checkBoosted('a boost whose every leg failed counts nothing',
+  [[boost(100, [leg(95, false), leg(5, false)])], EP, SHOW], { sats: 0, unsure: false });
+// Invariant 11: a wallet that never answered may have paid. The row must say so.
+checkBoosted('an unanswered leg makes the mark UNSURE',
+  [[boost(100, [leg(95, false, { indeterminate: true }), leg(5, true)])], EP, SHOW], { sats: 5, unsure: true });
+// Episode guids are not unique between shows ("1", "2", "ep-1"…).
+checkBoosted('the same episode guid on ANOTHER show is not this episode',
+  [[boost(100, [leg(100, true)], { podcastGuid: 'other-show', podcastId: 999 })], EP, SHOW],
+  { sats: 0, unsure: false });
+checkBoosted('a show with no guid matches on its feed id',
+  [[boost(100, [leg(100, true)], { podcastGuid: undefined })], EP, { id: 41504 }], { sats: 100, unsure: false },
+  { alsoNaive: true });
+// A show-level boost carries no episode guid, and an EMPTY guid is no identity.
+checkBoosted('an empty episode guid matches nothing',
+  [[boost(100, [leg(100, true)], { episodeGuid: '' })], { guid: '' }, SHOW], { sats: 0, unsure: false });
+
+// ---------------------------------------------------------------------------
 section('The cap is a number this repo states, not one a caller passes');
 // ---------------------------------------------------------------------------
 compare('LISTEN_QUEUE_CAP is 50', LISTEN_QUEUE_CAP, 50);
@@ -282,6 +405,23 @@ section('Every vector above is replayed against the obvious wrong version');
     return to >= 0 && to < queue.length ? to : -1;
   };
 
+  // What anybody writes first: forward movement is listening.
+  const naiveStep = (prev, next) => Math.max(0, next - prev);
+
+  // The queue's own rule copied across — refuse a duplicate where it stands,
+  // refuse at the cap. Right for a decision, wrong for a log.
+  const naiveHistory = (list, item, now) => {
+    if (list.length >= PLAY_HISTORY_CAP) return list;
+    if (list.some((h) => epKey(h.episode) === epKey(item.episode))) return list;
+    return [{ ...item, at: now }, ...list];
+  };
+
+  // The log's intent total, matched on the episode guid alone.
+  const naiveBoosted = (boosts, episode) => ({
+    sats: boosts.filter((b) => b.episodeGuid === episode.guid).reduce((s, b) => s + b.sats, 0),
+    unsure: false,
+  });
+
   const call = (impl, v) => {
     try {
       const real = impl === 'real';
@@ -300,6 +440,12 @@ section('Every vector above is replayed against the obvious wrong version');
           return JSON.stringify(real ? playsAsTracks(queueShowFor(...v.args)) : naivePlays(...v.args));
         case 'walk':
           return JSON.stringify(real ? nextPlayableIndexBy(...v.args) : naiveWalk(...v.args));
+        case 'step':
+          return JSON.stringify(real ? listenStep(...v.args) : naiveStep(...v.args));
+        case 'history':
+          return JSON.stringify(historyShape(real ? addToHistory(...v.args) : naiveHistory(...v.args)));
+        case 'boosted':
+          return JSON.stringify(real ? boostedOnDevice(...v.args) : naiveBoosted(...v.args));
         default: throw new Error(`unknown vector kind ${v.kind}`);
       }
       // A wrong implementation is allowed to throw where the real one returns.

@@ -1,4 +1,4 @@
-import { artCandidates } from '../util';
+import { artCandidates, deletesAfterPlay } from '../util';
 import type { Episode, Podcast } from '../types';
 import { albumPlan, chaptersRequestUrl, downloadKey, isDownloadable, transcriptRequestUrl } from './download-rules';
 import type { AlbumPlan, AlbumTrackState } from './download-rules';
@@ -367,6 +367,9 @@ export class DownloadManager {
       image: episode.image,
       feedImage: episode.feedImage
         ?? (containerIsParent ? podcast?.image ?? podcast?.artwork : undefined),
+      // Same rule: a playlist's medium is not its track's. Unknown stays
+      // absent, and "delete after playing" keeps an unknown file.
+      feedMedium: containerIsParent && podcast ? podcast.medium ?? '' : undefined,
       duration: episode.duration,
       datePublished: episode.datePublished,
       enclosureLength: episode.enclosureLength,
@@ -522,6 +525,18 @@ export class DownloadManager {
       this.backend.deleteDocs(docKeys).catch(() => {}),
     ]);
     this.bump();
+  }
+
+  /**
+   * The download "delete after playing" may remove once this episode ends, or
+   * null. Decided from the RECORD, never from the show the player holds:
+   * `/downloads` rebuilds that show with no medium, so it cannot tell an album
+   * track from a podcast episode. See `deletesAfterPlay`.
+   */
+  deletableAfterPlay(episode: Episode | null | undefined): string | null {
+    if (!episode || !this.hydrated) return null;
+    const record = this.recordFor(episode);
+    return record && deletesAfterPlay(record.feedMedium) ? record.key : null;
   }
 
   async clearAll(): Promise<void> {

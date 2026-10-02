@@ -6,22 +6,39 @@ import { useAnchoredMenu } from '../use-anchored-menu';
 import { FavEpisodeHeart, canFavoriteEpisode, useEpisodeFavorited } from '../fav-heart';
 import { DownloadButton, DownloadMark } from '../download-button';
 import { QueueButton, canQueueEpisode, useEpisodeQueued } from '../queue-button';
+import { canResume } from '@/lib/resume-position';
+import { PlayedButton } from './played-mark';
 
 /**
- * The episode row's `⋯` below lg: — QUEUE, FAV and DOWNLOAD, as the same
+ * The episode row's `⋯`, at every width — QUEUE, FAV, DOWNLOAD and PLAYED, as the same
  * `.tile`s the episode page's action row draws, in a menu.
  *
  * WHY A MENU. On one line the title column paid for every button: ⚡,
  * DOWNLOAD and ♡ at 44px each left it 108px at 390px ("Episode 459 ..."), and
- * from sm: the words took it to 2px at 640. Only BOOST stays on the row.
+ * from sm: the words took it to 2px at 640. Only BOOST stays on the row —
+ * on desktop too, where the row is the phone's by request (docs/ui.md).
  *
  * THE TILES ARE THE SHARED CONTROLS, not menu items that re-implement them.
  * `<FavEpisodeHeart>` carries the container-is-not-the-parent rule and the
  * favorites sync; `<DownloadButton>` the five states and the error sentence;
  * `<QueueButton>` the cap. A second copy of any of them in menu-item form is
- * exactly where those would drift. The menu stays open after a press, so the
- * tile's own state change — heart filled, ✓ QUEUE, the progress fill — is the
- * confirmation.
+ * exactly where those would drift.
+ *
+ * IT CLOSES AFTER A PRESS. It used to stay open so the tile's own state change
+ * was the confirmation; the row's date line now says every one of them
+ * (`<EpisodeRowMarks>`, `<PlayedMark>`), so an open menu only covered the
+ * answer. The close is a CAPTURE listener because every tile stops its own
+ * click's propagation, and it skips a disabled tile — QUEUE at the cap fires no
+ * click and keeps the menu open over the reason. **The close is DEFERRED to a
+ * task, never called in place**: React 19 flushes a click's update in a
+ * microtask, and on a real tap the stack empties between the capture and
+ * bubble listeners — so an immediate close unmounted the tile before its own
+ * onClick ran, and every tile closed the menu having done nothing. A microtask
+ * is too early for the same reason. A script-dispatched click does not show
+ * it (the stack never empties), which is why it passed a jsdom test and
+ * failed on the phone. The work a tile starts lives
+ * outside it (download manager, store, favorites sync), so unmounting it
+ * cancels nothing.
  *
  * ITS CLICKS STOP AT THE MENU. React propagates a synthetic event through a
  * PORTAL to the component that rendered it, so a press on the menu's padding
@@ -35,10 +52,10 @@ export function EpisodeRowMenu({
 }: {
   episode: Episode;
   podcast?: Podcast | null;
-  /** On the trigger — the row hides it from lg:, where the controls are inline. */
+  /** On the trigger. */
   className?: string;
 }) {
-  const { open, setOpen, triggerRef, menuRef, at } = useAnchoredMenu();
+  const { open, setOpen, close, triggerRef, menuRef, at } = useAnchoredMenu();
   // NO TRIGGER WHEN THE MENU WOULD BE EMPTY — a `⋯` that opens onto nothing is
   // a dead control. Asked through each control's own refusal, never a copy of
   // it: an unresolved playlist row has no enclosure, so QUEUE and DOWNLOAD
@@ -46,7 +63,8 @@ export function EpisodeRowMenu({
   if (
     !canQueueEpisode(episode, podcast) &&
     !canFavoriteEpisode(episode, podcast) &&
-    !downloadManager.canDownload(episode)
+    !downloadManager.canDownload(episode) &&
+    !(podcast && canResume(episode, podcast))
   ) return null;
   return (
     <>
@@ -75,13 +93,19 @@ export function EpisodeRowMenu({
           role="menu"
           aria-label={`Actions for ${episode.title}`}
           onClick={(ev) => ev.stopPropagation()}
-          className="fixed w-60 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-40 shadow-xl grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2"
+          onClickCapture={(ev) => {
+            if ((ev.target as HTMLElement).closest('button:not(:disabled)')) setTimeout(close, 0);
+          }}
+          // TWO COLUMNS: four tiles in a row leave each ~50px of the 224px
+          // inside, and DOWNLOAD's word needs ~53px. 2 × 2 reads as a block.
+          className="fixed w-60 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-40 shadow-xl grid grid-cols-2 gap-2"
           style={{ top: at.top, bottom: at.bottom, right: at.right }}
         >
           {/* The episode page's order: QUEUE first, beside what plays. */}
           <QueueButton episode={episode} podcast={podcast} size="tile" />
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
+          <PlayedButton episode={episode} podcast={podcast} />
         </div>,
         document.body,
       )}

@@ -63,6 +63,13 @@ export interface DownloadRecord {
   feedTitle?: string;
   image?: string;
   feedImage?: string;
+  /**
+   * The parent feed's `<podcast:medium>` when the download was saved, `''`
+   * when that feed declared none. ABSENT means unknown — a record from before
+   * the field, or one saved from a container that is not its parent — and
+   * `deletesAfterPlay` (lib/util.ts) keeps an unknown file.
+   */
+  feedMedium?: string;
   duration?: number;
   datePublished?: number;
 

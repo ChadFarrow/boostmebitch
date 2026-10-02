@@ -1,5 +1,5 @@
 'use client';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import type { Episode, Podcast } from '@/lib/types';
 import { fmtBytes } from '@/lib/format';
 import { downloadManager } from '@/lib/downloads/download-manager';
@@ -17,7 +17,8 @@ import { useDownloadsVersion } from '@/lib/downloads/use-downloads';
  *
  * SIZES MATCH `<FavHeart>` because they share a cluster: 'sm' is the slim list-row
  * chip whose word collapses below sm:, 'md' matches `.btn-ghost`, 'tile' is the
- * `.tile` grid shape the action rows are built from.
+ * `.tile` grid shape the action rows are built from. 'icon' is a glyph-only
+ * square at every width, for the favorites page's new-episodes row.
  *
  * THE WORD DOES NOT CHANGE WITH STATE. Same layout rule as the heart, and the
  * same reason: this control sits in right-aligned clusters, so a word that grows
@@ -29,16 +30,26 @@ import { useDownloadsVersion } from '@/lib/downloads/use-downloads';
  * → docs/downloads.md
  */
 
-type Size = 'sm' | 'md' | 'tile';
+type Size = 'sm' | 'md' | 'tile' | 'icon';
 
 export function DownloadButton({
   episode,
   podcast,
   size = 'sm',
+  resolve,
 }: {
   episode: Episode;
   podcast?: Podcast | null;
   size?: Size;
+  /**
+   * For a surface holding Podcast Index's record rather than the feed's: the
+   * press loads the real episode first and downloads THAT. The record carries
+   * no value block and not the `id` the feed lists it under, and a download
+   * keeps the episode it was given — so downloading the record would later
+   * play and stream-pay from the wrong one. The state is still read from
+   * `episode`, which is safe because the download key is the enclosure URL.
+   */
+  resolve?: () => Promise<{ episode: Episode; podcast: Podcast } | null>;
 }) {
   // The version is a re-render trigger; everything below is read fresh off the
   // manager, which is the source of truth for both memory and disk.
@@ -49,8 +60,18 @@ export function DownloadButton({
   // enriched in place with a new enclosure URL derives a different key from the
   // one its download is filed under, so the two would disagree and ✓ would
   // remove nothing.
-  const state = downloadManager.getEpisodeState(episode);
+  const managed = downloadManager.getEpisodeState(episode);
   const key = downloadManager.storedKeyFor(episode);
+  // `resolve`'s own two states. The manager has not heard of the episode yet
+  // while the feed loads, and a failed load is not a download failure it could
+  // record, so both live here and are shown through the same states.
+  const [resolving, setResolving] = useState(false);
+  const [resolveFailed, setResolveFailed] = useState(false);
+  const state =
+    managed.status === 'idle' && resolving ? { ...managed, status: 'queued' as const }
+      : managed.status === 'idle' && resolveFailed
+        ? { ...managed, status: 'error' as const, error: 'Could not load this episode. Press to try again.' }
+        : managed;
 
   const onClick = useCallback(
     (e: React.MouseEvent) => {
@@ -59,6 +80,8 @@ export function DownloadButton({
       e.stopPropagation();
       e.preventDefault();
       if (!key) return;
+      // Shown as queued, but there is nothing in the manager to cancel yet.
+      if (resolving) return;
       switch (state.status) {
         case 'queued':
         case 'downloading':
@@ -68,10 +91,22 @@ export function DownloadButton({
           void downloadManager.remove(key);
           return;
         default:
-          void downloadManager.download(episode, podcast);
+          if (!resolve) {
+            void downloadManager.download(episode, podcast);
+            return;
+          }
+          setResolving(true);
+          setResolveFailed(false);
+          void resolve()
+            .catch(() => null)
+            .then((real) => {
+              if (real) void downloadManager.download(real.episode, real.podcast);
+              else setResolveFailed(true);
+            })
+            .finally(() => setResolving(false));
       }
     },
-    [key, state.status, episode, podcast],
+    [key, state.status, episode, podcast, resolve, resolving],
   );
 
   // No URL, an HLS manifest, or a live item. `<FavEpisodeHeart>` is under the
@@ -131,7 +166,7 @@ export function DownloadButton({
             resizes the chip. */}
         <span
           className={`relative inline-block w-[0.9em] text-center leading-none ${
-            size === 'sm' ? 'text-base' : 'text-lg'
+            size === 'sm' || size === 'icon' ? 'text-base' : 'text-lg'
           } ${state.status === 'downloading' || state.status === 'queued' ? 'animate-bolt' : ''}`}
         >
           {glyph}
@@ -142,9 +177,11 @@ export function DownloadButton({
             but a list row on a phone has no width for the word, so the collapse
             stays for the next one. The aria-label above carries the full
             meaning, so nothing is lost. */}
-        <span className={`relative ${size === 'sm' ? 'hidden sm:inline' : undefined}`}>
-          DOWNLOAD
-        </span>
+        {size === 'icon' ? null : (
+          <span className={`relative ${size === 'sm' ? 'hidden sm:inline' : undefined}`}>
+            DOWNLOAD
+          </span>
+        )}
         {/* `.tile` is 52px tall and already stacks a glyph over a word, so the
             third line goes only on the inline sizes; at 'tile' the size stays in
             the accessible name. `tabular-nums` and a reserved width are what
@@ -152,7 +189,7 @@ export function DownloadButton({
             5.5ch DOES NOT HOLD SIX tracked characters, so on 'sm' and 'md' a
             size wraps to two lines — and on the desktop list chip that second
             line IS its height (26px, no `py`), which is why it stays. */}
-        {size !== 'tile' && meta && (
+        {size !== 'tile' && size !== 'icon' && meta && (
           <span
             aria-hidden
             className={`relative w-[5.5ch] text-right tabular-nums opacity-70 ${size === 'sm' ? 'hidden sm:inline-block' : 'inline-block'}`}
@@ -282,6 +319,10 @@ function classesFor(size: Size, tone: Tone): string {
   return `inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
     size === 'md'
       ? 'gap-1.5 px-2.5 py-2 text-sm sm:gap-2 sm:px-4'
-      : 'gap-1.5 px-3 text-xs leading-none min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0'
+      : size === 'icon'
+        // The glyph alone in a 36px square, the size of the ✕ it sits beside
+        // on the new-episodes row. The size and the meaning are in the label.
+        ? 'w-9 h-9 p-0'
+        : 'gap-1.5 px-3 text-xs leading-none min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0'
   } ${colour}`;
 }

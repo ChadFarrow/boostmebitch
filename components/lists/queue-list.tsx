@@ -1,33 +1,22 @@
-// "Up Next" — the user-assembled listen queue.
+// "Up Next" — the user-assembled listen queue, the first tab of /listen.
 //
-// TWO MOUNTS, ONE COMPONENT: the /queue route the dock points at, and
-// <FullscreenPlayer> (where you are while listening, beside the album
-// tracklist this is modelled on). That is not the drift this repo warns about
-// — two hand-rolled lists would be. Same arrangement <ValueSplitRows> has.
+// ONE MOUNT: `<ListenPage>`, the route the dock points at. It was also inside
+// <FullscreenPlayer> until 2026-09-19 ("I don't think the queue should be on
+// the now playing page") and on the home page before the dock tab existed;
+// docs/ui.md, "Where the panel lives", has both stories.
 //
-// IT WAS ON THE HOME PAGE TOO, AND THE DOCK TAB IS WHY IT IS NOT. That mount
-// existed because the queue had no destination of its own: the panel had to
-// sit where somebody would find it, including on a show page, which is why it
-// deliberately skipped `!inDetailView`. Once /queue became a dock tab the
-// queue was one press away from every route, and the home-page block was a
-// screen's worth of vertical space on a phone — measured against a 390px
-// screenshot, it pushed the global boost feed below the fold — spent on a
-// second way to reach something already one tap away.
-//
-// The /queue mount is the only one that has to say something when the queue is
-// EMPTY, and it does that in <QueuePage> rather than here: a panel under other
-// content is right to render nothing, and a page somebody navigated to is not.
-//
-// THE PLAYER MOUNT IS WHERE THE DRAIN IS OBSERVABLE: you watch the row you
-// just finished leave. It is also why `revealQueue` exists — <Player> renders
-// nothing without a `current`, and `current` is in-memory while the queue is
-// not, so every reload would otherwise hide this panel from that surface.
+// `<ListenPage>` says something when the queue is EMPTY, not this list: a list
+// under a heading is right to render nothing, and a page somebody navigated to
+// is not. Watching the drain — the row you just finished leaving — is this
+// tab's job now, and the drained episodes go to HISTORY (the second tab) once
+// they were heard for a minute, which is where they can be boosted.
 
 import { useState } from 'react';
 import { useApp } from '@/lib/store';
-import { epKey } from '@/lib/util';
+import { epKey, LISTEN_QUEUE_CAP } from '@/lib/util';
 import { fmtDuration } from '@/lib/format';
 import { PodcastCover } from '../podcast-cover';
+import { PlayedMark } from './played-mark';
 
 export function QueueList() {
   const queue = useApp((s) => s.listenQueue);
@@ -51,10 +40,11 @@ export function QueueList() {
   const currentKey = current ? epKey(current.episode) : null;
 
   return (
-    <div className="border-t border-bone/10 pt-5">
+    // No top rule: `<ListenPage>`'s tab strip draws the line and the count.
+    <div>
       <div className="flex items-center justify-between gap-2 mb-2">
         <p className="text-[11px] uppercase tracking-widest text-muted">
-          Up Next · {queue.length}
+          {queue.length} of {LISTEN_QUEUE_CAP} · in play order
         </p>
         {/* An inline two-press confirm, the same shape <DownloadsPage>'s DELETE
             ALL uses and for the same reasons: this is the one control here that
@@ -83,7 +73,10 @@ export function QueueList() {
         </p>
       )}
 
-      <ul className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+      {/* Not height-capped: this has ONE mount, the /listen route, so the page
+          scrolls — an inner 320px scroll box on a page of its own hid most of
+          the queue on desktop. */}
+      <ul className="space-y-1 text-sm sm:space-y-0.5">
         {queue.map((item, i) => {
           const active = currentKey === epKey(item.episode);
           return (
@@ -103,7 +96,7 @@ export function QueueList() {
                   if (active) togglePlay();
                   else playFromQueue(i);
                 }}
-                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
+                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 sm:py-2.5 ${
                   active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
                 }`}
                 // The name says what the press DOES, so it reads the same two
@@ -117,7 +110,7 @@ export function QueueList() {
                       : `Play ${item.episode.title}`
                 }
               >
-                <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
+                <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right sm:w-7 sm:text-base">
                   {active && isPlaying ? '❚❚' : i + 1}
                 </span>
                 <PodcastCover
@@ -125,16 +118,25 @@ export function QueueList() {
                   artwork={item.podcast.artwork}
                   title={item.podcast.title}
                   seed={item.podcast.podcastGuid ?? String(item.podcast.id)}
-                  className="w-9 h-9 border border-bone/20 flex-shrink-0 text-xs"
+                  className="w-9 h-9 sm:w-14 sm:h-14 border border-bone/20 flex-shrink-0 text-xs"
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate leading-tight">{item.episode.title}</span>
+                  {/* TWO LINES, the episode rows' rule (`line-clamp-2 break-words`): one
+                      line cut "#217 - Lee Cronin - AI Will N…" on a phone, and the
+                      title is how you tell which episode to boost or play. No
+                      `block` beside the clamp — it overrides the clamp's display. */}
+                  <span className="line-clamp-2 break-words leading-tight sm:font-display sm:text-base">{item.episode.title}</span>
                   {/* The show, on every row. The queue mixes them, so a title
                       alone does not say what you are about to hear. */}
-                  <span className="block truncate text-xs text-muted">{item.podcast.title}</span>
+                  {/* The show truncates and the PLAYED mark does not, or a long
+                      show name cuts the mark off on a phone. */}
+                  <span className="flex min-w-0 items-baseline gap-1 text-xs text-muted sm:text-sm sm:mt-0.5">
+                    <span className="truncate">{item.podcast.title}</span>
+                    <PlayedMark episode={item.episode} podcast={item.podcast} />
+                  </span>
                 </span>
                 {item.episode.duration ? (
-                  <span className="text-muted tabular-nums text-xs flex-shrink-0">
+                  <span className="text-muted tabular-nums text-xs flex-shrink-0 sm:text-sm">
                     {fmtDuration(item.episode.duration)}
                   </span>
                 ) : null}
@@ -148,7 +150,7 @@ export function QueueList() {
                   type="button"
                   onClick={() => moveQueueItem(i, -1)}
                   disabled={i === 0}
-                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone disabled:opacity-30 transition"
+                  className="min-h-[24px] min-w-[24px] sm:min-h-[36px] sm:min-w-[36px] inline-flex items-center justify-center text-xs sm:text-base text-muted hover:text-bone disabled:opacity-30 transition"
                   aria-label={`Move ${item.episode.title} up`}
                 >
                   ↑
@@ -157,7 +159,7 @@ export function QueueList() {
                   type="button"
                   onClick={() => moveQueueItem(i, 1)}
                   disabled={i === queue.length - 1}
-                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone disabled:opacity-30 transition"
+                  className="min-h-[24px] min-w-[24px] sm:min-h-[36px] sm:min-w-[36px] inline-flex items-center justify-center text-xs sm:text-base text-muted hover:text-bone disabled:opacity-30 transition"
                   aria-label={`Move ${item.episode.title} down`}
                 >
                   ↓
@@ -165,7 +167,7 @@ export function QueueList() {
                 <button
                   type="button"
                   onClick={() => removeFromQueue(epKey(item.episode))}
-                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone transition"
+                  className="min-h-[24px] min-w-[24px] sm:min-h-[36px] sm:min-w-[36px] inline-flex items-center justify-center text-xs sm:text-base text-muted hover:text-bone transition"
                   aria-label={`Remove ${item.episode.title} from the queue`}
                 >
                   ✕

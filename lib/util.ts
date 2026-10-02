@@ -1,6 +1,7 @@
 import type {
   Podcast, ValueBlock, ValueRecipient, Episode, AlternateEnclosure,
   BoostResult, StoredBoostLeg, ChapterEntry, ValueTimeSplit, LiveShow,
+  QueueItem, HistoryItem, StoredBoost,
 } from './types';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
@@ -232,6 +233,104 @@ export function trimForQueue(e: Episode): Episode {
   delete rest.description;
   delete rest.contentEncoded;
   return rest;
+}
+
+/**
+ * How many episodes the play history on the Listen tab holds.
+ *
+ * The queue's number, on purpose: a history entry is a queue item plus a time,
+ * so with the same cap the history can never weigh more on disk than the queue
+ * already may — and both are non-evictable, so neither may be the value that
+ * fills a store out from under the user's settings. Fifty is weeks of the
+ * "listen to a few, then go back and boost them" this list exists for.
+ */
+export const PLAY_HISTORY_CAP = 50;
+
+/** Seconds of LISTENING (see `listenStep`) before an episode enters the history. */
+export const PLAY_HISTORY_LISTEN_SEC = 60;
+
+/** The largest single move of `positionSec` that still counts as listening. */
+export const LISTEN_STEP_MAX_SEC = 10;
+
+/**
+ * How much of one store tick counts as listening, in seconds.
+ *
+ * `positionSec` moves about once a second while the element plays, so a tick
+ * is ~1 s at 1× and ~5 s at 5×, and both count. A bigger move is a SEEK — the
+ * +30 button, a scrub, a resume that lands at 40:00 — and the listener did not
+ * hear what it skipped, so it counts nothing; neither does a rewind. Without
+ * this, "a minute of play" would be "a position past a minute", and every
+ * episode sampled from a saved place would enter the history.
+ */
+export function listenStep(prevSec: number, nextSec: number): number {
+  const d = nextSec - prevSec;
+  return Number.isFinite(d) && d > 0 && d <= LISTEN_STEP_MAX_SEC ? d : 0;
+}
+
+/**
+ * The play history after one more listen: the entry on TOP with `at: now`,
+ * any earlier entry for the same episode (`epKey`) removed, the oldest dropped
+ * past `PLAY_HISTORY_CAP`.
+ *
+ * **A LOG, the opposite of the queue's rule, and both halves are deliberate.**
+ * The queue refuses a duplicate and refuses at its cap, because its HEAD is
+ * the valuable end. Here the newest entry is: the history exists so somebody
+ * can boost what they just heard, so a re-listen must come back to the top
+ * rather than stay buried, and a full history must shed its oldest rather than
+ * refuse the episode they came to boost. The same `epKey` as the queue, so an
+ * empty `<guid></guid>` cannot fold two episodes of one feed into one row.
+ *
+ * Expects the item already shaped for storage (`trimForQueue` and
+ * `queueShowFor`), as `enqueueEpisode` does; it does not reshape it.
+ */
+export function addToHistory(
+  list: readonly HistoryItem[],
+  item: QueueItem,
+  now: number,
+): HistoryItem[] {
+  const key = epKey(item.episode);
+  return [
+    { episode: item.episode, podcast: item.podcast, at: now },
+    ...list.filter((h) => epKey(h.episode) !== key),
+  ].slice(0, PLAY_HISTORY_CAP);
+}
+
+/**
+ * What this device's boost log says was boosted to one episode: the sats that
+ * SETTLED, and whether any leg is unanswered. Drawn as "⚡ N boosted" beside
+ * the history row's BOOST button.
+ *
+ * **Legs, never `StoredBoost.sats`.** The modal logs a boost "regardless of
+ * rail", so a boost whose every leg failed is in the log at its full intent
+ * total — counting that would tell somebody an episode they never paid was
+ * paid. **`unsure` is invariant 11 on this surface:** a leg whose wallet never
+ * answered (`indeterminate`) may have paid, and a mark reading as "nothing
+ * sent" beside a BOOST button invites the second payment.
+ *
+ * **The show must match as well as the episode guid** — the show's guid, or
+ * its feed id where the boost or the show has none. Item guids are not unique
+ * between feeds ("1", "ep-1"), and an empty guid is no identity at all.
+ */
+export function boostedOnDevice(
+  boosts: readonly Pick<StoredBoost, 'episodeGuid' | 'podcastGuid' | 'podcastId' | 'legs'>[],
+  episode: Pick<Episode, 'guid'>,
+  podcast: Pick<Podcast, 'podcastGuid' | 'id'>,
+): { sats: number; unsure: boolean } {
+  let sats = 0;
+  let unsure = false;
+  if (!episode.guid) return { sats, unsure };
+  for (const b of boosts) {
+    if (b.episodeGuid !== episode.guid) continue;
+    const sameShow = b.podcastGuid && podcast.podcastGuid
+      ? b.podcastGuid === podcast.podcastGuid
+      : b.podcastId === podcast.id;
+    if (!sameShow) continue;
+    for (const l of b.legs ?? []) {
+      if (l.ok) sats += l.sats;
+      else if (l.indeterminate) unsure = true;
+    }
+  }
+  return { sats, unsure };
 }
 
 /**
@@ -2775,6 +2874,23 @@ export function downloadEpisodeId(r: {
 }
 
 /**
+ * May "delete after playing" remove this download when it plays to the end?
+ * Takes the record's `feedMedium`: the parent feed's medium as it was known
+ * when the download was saved, `''` when that feed declared none.
+ *
+ * **ABSENT IS NOT "A PODCAST".** A record written before the field existed, or
+ * saved from a container that is not its parent (a `musicL` playlist's track),
+ * names no medium — and `/downloads` rebuilds the show from the record, so the
+ * player has no medium either. Reading that as the spec's default `podcast`
+ * deletes an album track by track as it plays. Unknown keeps the file: a missed
+ * delete costs one DELETE press; a wrong one costs the data the download saved.
+ */
+export function deletesAfterPlay(feedMedium: string | null | undefined): boolean {
+  if (typeof feedMedium !== 'string') return false;
+  return !playsAsTracks({ medium: feedMedium || undefined });
+}
+
+/**
  * The playback speeds the SPEED control cycles through, in order. An ALLOWLIST,
  * not a range: `storage.playbackRate` reads anything else back as 1, so a
  * corrupt or hand-edited value plays at normal speed rather than at whatever
@@ -2811,6 +2927,29 @@ export function nextPlaybackRate(rate: number): number {
 // URLs in their `streaming` tag.
 export function isHlsUrl(url: string | undefined | null): boolean {
   return !!url && /\.m3u8(\?|#|$)/i.test(url);
+}
+
+/**
+ * Whether this browser plays HLS natively on a plain `<audio>` — Safari, which
+ * on an iPhone is every browser, and any other browser whose `canPlayType`
+ * says so. That is where a live stream is sent to the
+ * `<audio>` rather than the `<video>` until the listener asks for the picture
+ * (`<Player>`'s `hlsOnAudio`): iOS pauses a backgrounded `<video>` that has a
+ * video track, so a live show on the video element stopped when the screen
+ * turned off, while the `<audio>` keeps playing. Asked once; false on the
+ * server.
+ */
+let nativeHlsAudio: boolean | null = null;
+export function canPlayNativeHlsAudio(): boolean {
+  if (typeof document === 'undefined') return false;
+  if (nativeHlsAudio === null) {
+    try {
+      nativeHlsAudio = document.createElement('audio').canPlayType('application/vnd.apple.mpegurl') !== '';
+    } catch {
+      nativeHlsAudio = false;
+    }
+  }
+  return nativeHlsAudio;
 }
 
 // Whether an alternate enclosure is a video rendition. Covers progressive video

@@ -12,8 +12,10 @@ import { readCappedJson } from '@/lib/capped-body';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { PodcastCover } from './podcast-cover';
 import { NoteQueueButton } from './note-queue-button';
+import { DownloadButton } from './download-button';
+import { PlayedMark } from './lists/played-mark';
 import { CollapsibleHeading, useCollapsedGroups } from './lists/grouping';
-import type { Episode, NewEpisodeMarks } from '@/lib/types';
+import type { Episode, FavoritePodcast, NewEpisodeMarks } from '@/lib/types';
 
 /**
  * "New episodes" — what came out on your favorites since you last looked.
@@ -229,11 +231,24 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     return m;
   }, [favorites]);
   const showTitle = (e: Episode) => e.feedTitle || feedTitles.get(e.feedId ?? 0);
+  /**
+   * The row's feed as the favorites store knows it, for the PLAYED mark. The
+   * mark's key is the feed guid, and these records often carry none — without
+   * the favorite's guid the key falls back to `feed:<id>` and never matches
+   * the one the player wrote from the feed's own episode.
+   */
+  const feedsById = useMemo(() => {
+    const m = new Map<number, FavoritePodcast>();
+    for (const f of Object.values(favorites)) if (f.id > 0) m.set(f.id, f);
+    return m;
+  }, [favorites]);
   // Joined from the parts that EXIST, so a missing one never leaves a dangling
   // separator at either end.
-  const metaLine = (e: Episode) =>
+  //
+  // The show gets a line of its own: sharing one `truncate` line with the date
+  // and duration cut "Millennial Media Offensive" to "Millennial Media Of…".
+  const dateLine = (e: Episode) =>
     [
-      showTitle(e),
       e.datePublished ? fmtDate(e.datePublished) : null,
       e.duration ? fmtDuration(e.duration) : null,
     ].filter(Boolean).join(' · ');
@@ -675,7 +690,8 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
             )}
 
             {rows.length > 0 && (
-              <ul className="space-y-2">
+              // A grid from md: — the rows are fixed-height cards, so they tile.
+              <ul className="space-y-2 md:space-y-0 md:grid md:grid-cols-2 md:gap-2">
                 {rows.slice(0, shown).map((e) => (
                   // `epKey`, NOT `guid ?? id`. A feed can publish `<guid></guid>`
                   // and `extractText` returns `''` for it, which `??` keeps — so
@@ -683,7 +699,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                   // That is a React duplicate key: wrong row reused, wrong row
                   // dropped by SHOW MORE. `epKey` exists for this and three other
                   // queue surfaces already import it.
-                  <li key={epKey(e)} className="card flex items-center gap-3 p-3">
+                  <li key={epKey(e)} className="card flex items-center gap-2 p-3 lg:p-4">
                     {/* BOTH SLOTS, never one `||` over the two. `<PodcastCover>`'s
                         `onError` ladder is four rungs and it can only fall
                         through to a source it was handed, so collapsing them
@@ -718,11 +734,23 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                           artwork={e.feedImage}
                           title={showTitle(e)}
                           seed={String(e.feedId)}
-                          className="w-12 h-12 flex-shrink-0"
+                          className="w-12 h-12 sm:w-14 sm:h-14 flex-shrink-0"
                         />
                         <span className="min-w-0 flex-1 block">
-                          <span className="block text-sm font-display leading-tight truncate">{e.title}</span>
-                          <span className="block text-[11px] text-muted truncate">{metaLine(e)}</span>
+                          {/* No `block` beside `line-clamp-2`: Tailwind emits `block` after the
+                              clamp, so its display wins and the title ran to five lines. */}
+                          <span className="text-sm sm:text-base font-display leading-tight line-clamp-2 break-words">{e.title}</span>
+                          {showTitle(e) && (
+                            <span className="text-[11px] sm:text-xs text-muted line-clamp-2 break-words sm:mt-0.5">{showTitle(e)}</span>
+                          )}
+                          <span className="flex min-w-0 items-baseline gap-1 text-[11px] sm:text-xs text-muted">
+                            {/* The date truncates and the mark does not: on a phone one
+                                truncating line cut "✓ PLAYED" off entirely. */}
+                            <span className="truncate">{dateLine(e)}</span>
+                            {feedsById.get(e.feedId ?? 0) && (
+                              <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
+                            )}
+                          </span>
                         </span>
                       </button>
                     ) : (
@@ -732,11 +760,21 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                           artwork={e.feedImage}
                           title={showTitle(e)}
                           seed={String(e.feedId)}
-                          className="w-12 h-12 flex-shrink-0"
+                          className="w-12 h-12 sm:w-14 sm:h-14 flex-shrink-0"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-display leading-tight truncate">{e.title}</div>
-                          <div className="text-[11px] text-muted truncate">{metaLine(e)}</div>
+                          <div className="text-sm sm:text-base font-display leading-tight line-clamp-2 break-words">{e.title}</div>
+                          {showTitle(e) && (
+                            <div className="text-[11px] sm:text-xs text-muted line-clamp-2 break-words sm:mt-0.5">{showTitle(e)}</div>
+                          )}
+                          <div className="flex min-w-0 items-baseline gap-1 text-[11px] sm:text-xs text-muted">
+                            {/* The date truncates and the mark does not: on a phone one
+                                truncating line cut "✓ PLAYED" off entirely. */}
+                            <span className="truncate">{dateLine(e)}</span>
+                            {feedsById.get(e.feedId ?? 0) && (
+                              <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
@@ -760,6 +798,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                     {e.guid ? (
                       <NoteQueueButton
                         episode={e}
+                        compact
                         onQueue={async () => {
                           const loaded = await loadEpisodeFromFeed(e.feedId, e.guid!);
                           if (!loaded?.episode) return false;
@@ -767,8 +806,22 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                         }}
                       />
                     ) : null}
+                    {/* DOWNLOAD goes through the same round trip as QUEUE, for
+                        the same reason: a download keeps the episode it was
+                        handed, and PI's record would later play without its
+                        value block. Same guid rule too. */}
+                    {e.guid ? (
+                      <DownloadButton
+                        episode={e}
+                        size="icon"
+                        resolve={async () => {
+                          const loaded = await loadEpisodeFromFeed(e.feedId, e.guid!);
+                          return loaded?.episode ? { episode: loaded.episode, podcast: loaded.podcast } : null;
+                        }}
+                      />
+                    ) : null}
                     {/* ✕ removes this row and nothing else — `dismissRow`.
-                        Last in the row, after QUEUE, so a thumb reaching for
+                        Last in the row, after QUEUE and DOWNLOAD, so a thumb reaching for
                         QUEUE does not land on it. 36px square: past WCAG
                         2.5.8's 24px floor, and the title keeps the width. The
                         label names the episode, because a screen reader hears
@@ -797,7 +850,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                   <button
                     type="button"
                     onClick={() => setShown((n) => n + PAGE)}
-                    className="btn-ghost flex-1 text-xs"
+                    className="btn-ghost flex-1 md:flex-none md:px-8 text-xs"
                   >
                     SHOW MORE ({rows.length - shown})
                   </button>
@@ -805,7 +858,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                 <button
                   type="button"
                   onClick={clearRows}
-                  className={`btn-ghost text-xs ${rows.length > shown ? '' : 'w-full'}`}
+                  className={`btn-ghost text-xs ${rows.length > shown ? '' : 'w-full md:w-auto md:px-8'}`}
                 >
                   CLEAR
                 </button>

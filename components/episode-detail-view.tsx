@@ -35,6 +35,7 @@ import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import { useStreamPanel } from './streaming-settings';
 import { UnderlineTabs, tabPanelProps } from './underline-tabs';
+import { PlayedButton, PlayedMark } from './lists/played-mark';
 import type { Episode, ValueBlock } from '@/lib/types';
 
 function ValueSplitSection({ value }: { value: ValueBlock }) {
@@ -271,6 +272,7 @@ export function EpisodeDetailView() {
               {episode.duration ? <span>{fmtDuration(episode.duration)}</span> : null}
               {episode.episode ? <span>Episode {episode.episode}</span> : null}
               {episode.season ? <span>Season {episode.season}</span> : null}
+              <PlayedMark episode={episode} podcast={podcast} bare />
             </div>
           </div>
         </div>
@@ -322,6 +324,7 @@ export function EpisodeDetailView() {
           <QueueButton episode={episode} podcast={podcast} size="tile" />
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
+          <PlayedButton episode={episode} podcast={podcast} />
           <EpisodeShareButton episode={episode} podcast={podcast} />
           {/* Streaming is a SHOW-scoped setting, so this edits the same keys as
               the show header's STREAM — it's here because this is the page a
@@ -492,11 +495,11 @@ export function EpisodeDetailView() {
                 {episode.contentEncoded ? (
                   <div
                     ref={notesFollowRef}
-                    className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-clip"
+                    className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-clip lg:max-w-[80ch]"
                     dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
                   />
                 ) : description ? (
-                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words overflow-x-clip">
+                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words overflow-x-clip lg:max-w-[80ch]">
                     <LinkedText text={description} />
                   </div>
                 ) : null}

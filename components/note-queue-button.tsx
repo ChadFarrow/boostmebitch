@@ -25,10 +25,14 @@ type State = 'idle' | 'busy' | 'failed';
 export function NoteQueueButton({
   episode,
   onQueue,
+  compact = false,
 }: {
   /** PI's record — used for its IDENTITY only. `onQueue` resolves the real one. */
   episode: Episode;
   onQueue: () => Promise<boolean>;
+  /** A 36px square with the glyph only, for a row that needs the width for
+   *  its title. The aria-label and title carry the word. */
+  compact?: boolean;
 }) {
   const key = epKey(episode);
   // A boolean, never the array: <NoteCard> is memoized and a feed renders
@@ -75,7 +79,9 @@ export function NoteQueueButton({
           : queued ? 'Remove from Up Next'
           : 'Play after what is queued'
       }
-      className={`inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 gap-1.5 px-2.5 py-2 text-sm sm:gap-2 sm:px-4 ${
+      className={`inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
+        compact ? 'w-9 h-9 p-0' : 'gap-1.5 px-2.5 py-2 text-sm sm:gap-2 sm:px-4'
+      } ${
         queued
           ? 'border-bolt text-bolt hover:bg-bolt/10'
           : 'border-bone/40 text-bone/70 hover:border-bolt/70 hover:text-bolt'
@@ -87,7 +93,7 @@ export function NoteQueueButton({
       <span className="inline-block w-[0.9em] text-center text-lg leading-none">{label}</span>
       {/* `size="md"`'s rule: this card's controls keep their word at every
           width, because a bare glyph is the whole action here. */}
-      <span>{word}</span>
+      {compact ? null : <span>{word}</span>}
     </button>
   );
 }

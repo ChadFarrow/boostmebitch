@@ -397,9 +397,10 @@ export function WalletBalanceBox({ className = '' }: { className?: string }) {
         ? `${formatted} sats spendable (${railName}) — ${budgetTitle(budget)}`
         : `${formatted} sats (${railName})`}
     >
-      <span aria-hidden className="text-bolt text-xs">⚡</span>
+      <span aria-hidden className="text-bolt text-xs lg:text-sm">⚡</span>
       <span className="sr-only">Wallet balance: </span>
-      <span className="text-bolt text-[11px] font-mono tabular-nums">
+      {/* lg:text-sm with the box at 38px from lg: (the caller's className). */}
+      <span className="text-bolt text-[11px] lg:text-sm font-mono tabular-nums">
         {budget ? '≤' : ''}{formatted}
       </span>
     </span>

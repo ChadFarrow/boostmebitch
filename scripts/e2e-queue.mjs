@@ -118,14 +118,33 @@ const queueOnDisk = (who) => js(`
   })()
 `);
 
-/** Press the first N queue controls on the page. Returns how many it pressed. */
-const pressQueue = (n) => js(`
-  (() => {
-    const b = [...document.querySelectorAll('button[aria-label^="Add "]')].slice(0, ${n});
-    b.forEach((x) => x.click());
-    return b.length;
+/**
+ * Queue the first N episode rows on the page, the way a listener does: open the
+ * row's ⋯ and press QUEUE in it. Since #462 (2026-10-01) QUEUE is in that menu
+ * at EVERY width — there is no inline control to press — and the menu closes
+ * itself after a tile press. Returns how many it queued.
+ */
+const pressQueueExpr = (n) => `
+  (async () => {
+    const tick = () => new Promise((r) => setTimeout(r, 350));
+    let pressed = 0;
+    // Row by row until N are queued. A row whose menu has NO queue tile is
+    // skipped and its menu closed: a live or upcoming item cannot be queued
+    // (\`canQueueEpisode\`), and Homegrown Hits lists its live episode at the top
+    // while it is on air (measured 2026-10-01: "● LIVE Episode 153").
+    for (const t of document.querySelectorAll('button[aria-label^="More actions for "]')) {
+      if (pressed >= ${n}) break;
+      t.click();
+      await tick();
+      const add = document.querySelector('[aria-label^="Actions for "] button[aria-label^="Add "]');
+      if (add) { add.click(); pressed++; }
+      else t.click();
+      await tick();
+    }
+    return pressed;
   })()
-`);
+`;
+const pressQueue = (n) => js(pressQueueExpr(n));
 
 const seedRelays = `localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});`;
 
@@ -175,13 +194,21 @@ const before = (await queueOnDisk('guest')).length;
 const toggled = await js(`
   (async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const removeFirst = () => document.querySelector('button[aria-label^="Remove "]');
-    const hadRemove = !!removeFirst();
-    removeFirst()?.click();
+    // The first row's ⋯ menu holds its QUEUE tile (#462: at every width).
+    const openFirstMenu = async () => {
+      document.querySelector('button[aria-label^="More actions for "]')?.click();
+      await sleep(350);
+      return document.querySelector('[aria-label^="Actions for "]');
+    };
+    const menu1 = await openFirstMenu();
+    const remove = menu1?.querySelector('button[aria-label^="Remove "]');
+    const hadRemove = !!remove;
+    remove?.click();
     await sleep(800);
     const afterRemove = JSON.parse(localStorage.getItem('bmb:listen_queue:guest') || '[]').length;
     // Re-add the same row: its control is an Add again.
-    document.querySelector('button[aria-label^="Add "]')?.click();
+    const menu2 = await openFirstMenu();
+    menu2?.querySelector('button[aria-label^="Add "]')?.click();
     await sleep(800);
     const afterReAdd = JSON.parse(localStorage.getItem('bmb:listen_queue:guest') || '[]').length;
     return { hadRemove, afterRemove, afterReAdd };
@@ -193,7 +220,7 @@ check('a queued row offers Remove, and the round trip returns to the same length
 // ---------------------------------------------------------------------------
 section('3. It survives a reload, and the player finds it without autoplaying');
 // ---------------------------------------------------------------------------
-await send('Page.navigate', { url: `${APP}/queue` }); await wait(8000);
+await send('Page.navigate', { url: `${APP}/listen` }); await wait(8000);
 const afterReload = await js(`
   (() => {
     const rows = document.querySelectorAll('li');
@@ -223,12 +250,12 @@ await js(`
     return 1;
   })()
 `);
-await send('Page.navigate', { url: `${APP}/queue` }); await wait(12000);
+await send('Page.navigate', { url: `${APP}/listen` }); await wait(12000);
 const asA = await js(`document.querySelectorAll('li').length`);
 check("account A sees A's three", { rows: asA }, { rows: 3 });
 
 await js(`(() => { localStorage.setItem('bmb:npub', ${JSON.stringify(npubB)}); return 1; })()`);
-await send('Page.navigate', { url: `${APP}/queue` }); await wait(12000);
+await send('Page.navigate', { url: `${APP}/listen` }); await wait(12000);
 const asB = await js(`
   (() => ({
     rows: document.querySelectorAll('li').length,
@@ -289,12 +316,12 @@ check('the guest queue is gone from DISK, not merely from memory',
   { gone: guestAfter.len === 'absent' || guestAfter.len === 0, saw: guestAfter.len },
   { gone: true, saw: guestAfter.len });
 
-await send('Page.navigate', { url: `${APP}/queue` }); await wait(8000);
+await send('Page.navigate', { url: `${APP}/listen` }); await wait(8000);
 const resurrect = await js(`document.querySelectorAll('li').length`);
 check('and it does not come back on the next load', { rows: resurrect }, { rows: 0 });
 
 // ---------------------------------------------------------------------------
-section('6. The dock reaches it, and Queue is second');
+section('6. The dock reaches it, Listen is second, and /queue still lands');
 // ---------------------------------------------------------------------------
 const dock = await js(`
   (() => {
@@ -306,8 +333,14 @@ const dock = await js(`
     };
   })()
 `);
-check('five tabs, Queue second, Wallet gone, and /queue is current',
-  dock, { labels: ['Home', 'Queue', 'Live', 'Favorites', 'Downloads'], current: 'Queue' });
+check('five tabs, Listen second, Wallet gone, and /listen is current',
+  dock, { labels: ['Home', 'Listen', 'Live', 'Favorites', 'Downloads'], current: 'Listen' });
+
+// The tab was `/queue` until 2026-10-01. A shared link, a bookmark and the
+// installed app's last route can still say so; it must land, not 404.
+await send('Page.navigate', { url: `${APP}/queue` }); await wait(6000);
+const landed = await js(`({ path: location.pathname, tab: document.querySelector('[role="tab"][aria-selected="true"]')?.textContent.trim().split(' ')[0] ?? null })`);
+check('/queue redirects to /listen, open on UP NEXT', landed, { path: '/listen', tab: 'Up' });
 
 // ---------------------------------------------------------------------------
 section('7. A queued episode resumes where it was left, and finishing it forgets the place');
@@ -326,7 +359,7 @@ section('7. A queued episode resumes where it was left, and finishing it forgets
   const js2 = q2.jsOrThrow;
   await q2.send('Page.enable'); await q2.send('Runtime.enable');
   await q2.send('Page.navigate', { url: `${APP}/?podcast=${PC20}` }); await wait(14000);
-  const pressed = await js2(`(() => { const b = document.querySelector('button[aria-label^="Add "]'); b && b.click(); return !!b; })()`);
+  const pressed = (await js2(pressQueueExpr(1))) === 1;
   await wait(1500);
   const item = await js2(`(() => { const q = JSON.parse(localStorage.getItem('bmb:listen_queue:guest') || '[]'); return q[0] ?? null; })()`);
   check('one talk episode queued', { pressed, queued: !!item?.episode?.enclosureUrl }, { pressed: true, queued: true });
@@ -336,7 +369,7 @@ section('7. A queued episode resumes where it was left, and finishing it forgets
 
   // Reload: `revealQueue` puts the head in the player without playing it, and
   // the source effect seeks to `positionSec` on `loadedmetadata`.
-  await q2.send('Page.navigate', { url: `${APP}/queue` });
+  await q2.send('Page.navigate', { url: `${APP}/listen` });
   const seeked = await q2.until(`(() => { const a = document.querySelector('audio'); return !!a && a.readyState >= 1 && a.currentTime >= 599; })()`, 30000);
   const at = await js2(`(() => { const a = document.querySelector('audio'); return a ? Math.round(a.currentTime) : null; })()`);
   check('the revealed queue head sits at its saved 10:00, not 0:00', { seeked, at: at >= 599 && at < 620 }, { seeked: true, at: true });
@@ -387,7 +420,7 @@ section('8. A queued episode\'s show notes cost ONE feed read, not a loop');
     };
   ` });
   await q3.send('Page.navigate', { url: `${APP}/?podcast=${PC20}` }); await wait(14000);
-  const pressed = await js3(`(() => { const b = document.querySelector('button[aria-label^="Add "]'); b && b.click(); return !!b; })()`);
+  const pressed = (await js3(pressQueueExpr(1))) === 1;
   await wait(1500);
   const trimmed = await js3(`(() => {
     const q = JSON.parse(localStorage.getItem('bmb:listen_queue:guest') || '[]');
@@ -397,7 +430,7 @@ section('8. A queued episode\'s show notes cost ONE feed read, not a loop');
   check('one talk episode queued, trimmed, carrying a value block', { pressed, trimmed }, { pressed: true, trimmed: true });
 
   // `revealQueue` puts the head in the player: the path the loop ran on.
-  await q3.send('Page.navigate', { url: `${APP}/queue` });
+  await q3.send('Page.navigate', { url: `${APP}/listen` });
   const revealed = await q3.until(`(() => { const a = document.querySelector('audio'); return !!a && !!a.src; })()`, 30000);
   await wait(15000);
   const reads = await js3('window.__feedReads');
@@ -405,6 +438,73 @@ section('8. A queued episode\'s show notes cost ONE feed read, not a loop');
   check('its notes were fetched, once — at least one read and no loop', { fetched: reads >= 1, bounded: reads <= 2 }, { fetched: true, bounded: true });
   if (reads > 2) console.log(`    /api/feed reads in 15 s: ${reads}`);
   await q3.close();
+}
+
+// ---------------------------------------------------------------------------
+section('9. The play history: a minute of LISTENING puts an episode there, and BOOST opens on it');
+// ---------------------------------------------------------------------------
+{
+  // Listeners queue several episodes, hear a few, and come back to boost them —
+  // and the queue drains each one as it ends. HISTORY keeps them. This drives
+  // the recording hook in the real player (`use-play-history.ts`), the store's
+  // write-through, the second tab, and BOOST's feed round trip; `check:queue`
+  // pins the arithmetic and sees none of the wiring.
+  //
+  // At 5×, so a minute of listening takes ~12 s. Signed out and with no wallet,
+  // so the BOOST modal can only open — nothing can be paid.
+  const { page: q4 } = await launchChrome({ name: 'queue-history', autoplay: true, args: ['--disable-gpu', '--window-size=1200,900'] });
+  const js4 = q4.jsOrThrow;
+  const history = () => js4(`JSON.parse(localStorage.getItem('bmb:play_history') || '[]')`);
+  await q4.send('Page.enable'); await q4.send('Runtime.enable');
+  await q4.send('Page.navigate', { url: `${APP}/privacy` }); await wait(2000);
+  await js4(`(() => { localStorage.clear(); localStorage.setItem('bmb:playback_rate', '5'); return 1; })()`);
+  await q4.send('Page.navigate', { url: `${APP}/?podcast=${PC20}` }); await wait(14000);
+  const started = await js4(`(() => { const b = document.querySelector('li button[aria-label="Play"]'); b && b.click(); return !!b; })()`);
+  const playing = await q4.until(`(() => { const a = document.querySelector('audio'); return !!a && a.readyState >= 1 && !a.paused && a.currentTime > 0; })()`, 30000);
+  check('a talk episode plays', { started, playing }, { started: true, playing: true });
+
+  // A SCRUB is not listening: two ten-minute jumps move the position twenty
+  // minutes, and the history must stay empty a few seconds later (5× for 3 s
+  // is ~15 s of listening, under the minute).
+  await js4(`(() => { const a = document.querySelector('audio'); a.currentTime += 600; return 1; })()`);
+  await wait(1200);
+  await js4(`(() => { const a = document.querySelector('audio'); a.currentTime += 600; return 1; })()`);
+  await wait(3000);
+  check('twenty minutes of scrubbing puts nothing in the history', (await history()).length, 0);
+
+  const recorded = await q4.until(`JSON.parse(localStorage.getItem('bmb:play_history') || '[]').length === 1`, 40000);
+  const entry = (await history())[0] ?? null;
+  check('a minute of listening records it, once', recorded, true);
+  check('...trimmed and shaped like a queue item, with a time',
+    entry && { trimmed: !entry.episode.description && !entry.episode.contentEncoded, show: typeof entry.podcast.id, at: Number.isFinite(entry.at) },
+    { trimmed: true, show: 'number', at: true });
+
+  // A boost already in this device's log for it — legs as `logStoredBoost`
+  // writes them, one paid and one failed — so the mark can be read.
+  await js4(`(() => {
+    const e = JSON.parse(localStorage.getItem('bmb:play_history'))[0];
+    localStorage.setItem('bmb:boosts:guest', JSON.stringify([{ uuid: 'e2e', ts: Date.now(), podcastTitle: e.podcast.title,
+      podcastId: e.podcast.id, podcastGuid: e.podcast.podcastGuid, episodeTitle: e.episode.title, episodeGuid: e.episode.guid,
+      sats: 100, legs: [{ recipient: 'a@x.com', sats: 90, ok: true }, { recipient: 'b@x.com', sats: 10, ok: false }] }]));
+    return 1;
+  })()`);
+
+  // A reload, then the second tab: the history is on disk, not in memory.
+  await q4.send('Page.navigate', { url: `${APP}/listen` }); await wait(6000);
+  const opened = await js4(`(() => { const t = [...document.querySelectorAll('[role="tab"]')].find((x) => x.textContent.startsWith('History')); t && t.click(); return t ? t.textContent.trim() : null; })()`);
+  await wait(800);
+  const row = await js4(`(() => {
+    const li = document.querySelector('[role="tabpanel"] li');
+    return li ? { boost: !!li.querySelector('button[aria-label^="Boost "]'), mark: (li.textContent.match(/⚡ ([\\d,?]+) boosted/) || [])[1] ?? null } : null;
+  })()`);
+  check('the HISTORY tab counts it', opened, 'History · 1');
+  check('its row has BOOST, and the mark counts only the leg that PAID', row, { boost: true, mark: '90' });
+
+  // BOOST loads the episode from its feed again, then opens the modal on it.
+  await js4(`document.querySelector('[role="tabpanel"] li button[aria-label^="Boost "]').click()`);
+  const modal = await q4.until(`!!document.querySelector('[role="dialog"]')`, 20000);
+  check('BOOST opens the boost modal (no wallet here, so nothing can be paid)', modal, true);
+  await q4.close();
 }
 
 if (t.fails) {
