@@ -166,7 +166,10 @@ export function DownloadsPage() {
             role="switch"
             aria-checked={deleteAfterPlay}
             onClick={toggleDeleteAfterPlay}
-            className={`btn-ghost text-xs ${deleteAfterPlay ? 'bg-bone text-ink' : ''}`}
+            // `hover:bg-bone` when ON: iOS keeps `:hover` after a tap, and
+            // .btn-ghost's `hover:bg-bone/5` then blanked the fill under
+            // `text-ink` — dark on dark until the next tap elsewhere.
+            className={`btn-ghost text-xs ${deleteAfterPlay ? 'bg-bone text-ink hover:bg-bone' : ''}`}
           >
             DELETE AFTER PLAYING: {deleteAfterPlay ? 'ON' : 'OFF'}
           </button>
