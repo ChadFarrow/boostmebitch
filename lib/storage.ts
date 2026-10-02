@@ -5,7 +5,7 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { Episode, NewEpisodeMarks, FavoriteEpisode, FavoritePodcast, Podcast, QueueItem, StoredBoost } from './types';
+import type { Episode, NewEpisodeMarks, FavoriteEpisode, FavoritePodcast, HistoryItem, Podcast, QueueItem, StoredBoost } from './types';
 import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState, ProfileMetadata } from './nostr';
 // Value import, so it must come from the import-free leaf rather than the
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAYBACK_RATES, trimForQueue } from './util';
+import { FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -129,6 +129,7 @@ const KEYS = {
   deleteAfterPlay: 'bmb:dl_delete_played', // '1' when a podcast episode's download is deleted once it plays to the end; absent = keep (the default). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
   played: 'bmb:played',               // Record<resumeKey, epoch ms> — podcast episodes this device played to the end, capped at PLAYED_CAP newest. DEVICE-wide like bmb:resume, and for the same reason not a cache.
+  playHistory: 'bmb:play_history',    // HistoryItem[] newest first — podcast episodes this device played for a minute, for the Listen tab's HISTORY (boost them later). A LOG capped at PLAY_HISTORY_CAP: the oldest goes. DEVICE-wide like bmb:resume, and not a cache: nothing on the network can rebuild what somebody listened to, so deliberately absent from EVICTABLE_PREFIXES.
 } as const;
 
 /** An Amber request we dispatched and are waiting on across a page load.
@@ -1850,6 +1851,47 @@ export const storage = {
      */
     clear: (npub: string | null | undefined) =>
       safeRemove(identityKey(KEYS.listenQueuePrefix, npub)),
+  },
+
+  /**
+   * The play history on the Listen tab: podcast episodes this device played for
+   * a minute, newest first (`addToHistory` in lib/util.ts owns the order, the
+   * dedupe and the cap; this only stores and validates).
+   *
+   * **DEVICE-wide, not per-npub**, for `bmb:resume`'s reason: it describes this
+   * device's player, and the use it exists for — listen to a few, then go back
+   * and boost them — includes listening signed out and signing in to boost.
+   * There is no `:guest` bucket to adopt and no account switch to get wrong.
+   *
+   * **Not a cache**, so not in `EVICTABLE_PREFIXES`: no request can rebuild
+   * what somebody listened to. The cap is the queue's, so this can never
+   * outweigh the queue on disk.
+   *
+   * The read refuses a row with no audio, no show or no time, for the queue's
+   * reason — the one input here that does not come from the app — and a row
+   * with a non-number `at` would sort and render as "NaN ago".
+   */
+  playHistory: {
+    get: (): HistoryItem[] => {
+      const raw = safeGet(KEYS.playHistory);
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return (parsed as HistoryItem[])
+          .filter((h) => !!h?.episode?.enclosureUrl
+            && typeof h?.podcast?.id === 'number'
+            && Number.isFinite(h?.at))
+          .slice(0, PLAY_HISTORY_CAP);
+      } catch {
+        return [];
+      }
+    },
+    /** Returns whether the value reached DISK; the store keeps that answer. */
+    set: (v: HistoryItem[]): boolean =>
+      safeSet(KEYS.playHistory, JSON.stringify(v.slice(0, PLAY_HISTORY_CAP))),
+    /** A REMOVAL, not a write of `[]` — `listenQueue.clear` says why. */
+    clear: () => safeRemove(KEYS.playHistory),
   },
 
   /**

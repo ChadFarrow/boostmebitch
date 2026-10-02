@@ -887,7 +887,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           {/* A CONTROL, not an instruction, and the instruction was WRONG.
               It read "connect one with ⚡ Connect wallet (top right)", which
               names a control in <AppHeader> — and <AppHeader> renders on `/`,
-              /live, /favorites, /playlists and /queue ONLY. On /stream/<naddr>,
+              /live, /favorites, /playlists and /listen ONLY. On /stream/<naddr>,
               /npub/<npub> and /live/<npub> there is nothing in the top right,
               and those are exactly the routes somebody arrives on from a shared
               link and presses BOOST. The message pointed at empty space.

@@ -13,6 +13,7 @@ import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
+import { usePlayHistory } from './player/use-play-history';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
 import { artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
@@ -1182,6 +1183,10 @@ export function Player() {
   // Saves where each episode was left, so the next play() of it resumes there.
   // See ./player/use-resume-position and lib/resume-position.ts.
   useResumePosition({ audio, video, isVideoRef, pendingLocalSrc });
+
+  // Puts an episode listened to for a minute into the Listen tab's HISTORY,
+  // so it can be boosted later. See ./player/use-play-history.
+  usePlayHistory();
 
   // **A queue that survived a reload has to be reachable.** `current` is
   // in-memory and the queue is not, so every page load lands with items on disk

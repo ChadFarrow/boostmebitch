@@ -1,31 +1,19 @@
-// "Up Next" — the user-assembled listen queue.
+// "Up Next" — the user-assembled listen queue, the first tab of /listen.
 //
-// TWO MOUNTS, ONE COMPONENT: the /queue route the dock points at, and
-// <FullscreenPlayer> (where you are while listening, beside the album
-// tracklist this is modelled on). That is not the drift this repo warns about
-// — two hand-rolled lists would be. Same arrangement <ValueSplitRows> has.
+// ONE MOUNT: `<ListenPage>`, the route the dock points at. It was also inside
+// <FullscreenPlayer> until 2026-09-19 ("I don't think the queue should be on
+// the now playing page") and on the home page before the dock tab existed;
+// docs/ui.md, "Where the panel lives", has both stories.
 //
-// IT WAS ON THE HOME PAGE TOO, AND THE DOCK TAB IS WHY IT IS NOT. That mount
-// existed because the queue had no destination of its own: the panel had to
-// sit where somebody would find it, including on a show page, which is why it
-// deliberately skipped `!inDetailView`. Once /queue became a dock tab the
-// queue was one press away from every route, and the home-page block was a
-// screen's worth of vertical space on a phone — measured against a 390px
-// screenshot, it pushed the global boost feed below the fold — spent on a
-// second way to reach something already one tap away.
-//
-// The /queue mount is the only one that has to say something when the queue is
-// EMPTY, and it does that in <QueuePage> rather than here: a panel under other
-// content is right to render nothing, and a page somebody navigated to is not.
-//
-// THE PLAYER MOUNT IS WHERE THE DRAIN IS OBSERVABLE: you watch the row you
-// just finished leave. It is also why `revealQueue` exists — <Player> renders
-// nothing without a `current`, and `current` is in-memory while the queue is
-// not, so every reload would otherwise hide this panel from that surface.
+// `<ListenPage>` says something when the queue is EMPTY, not this list: a list
+// under a heading is right to render nothing, and a page somebody navigated to
+// is not. Watching the drain — the row you just finished leaving — is this
+// tab's job now, and the drained episodes go to HISTORY (the second tab) once
+// they were heard for a minute, which is where they can be boosted.
 
 import { useState } from 'react';
 import { useApp } from '@/lib/store';
-import { epKey } from '@/lib/util';
+import { epKey, LISTEN_QUEUE_CAP } from '@/lib/util';
 import { fmtDuration } from '@/lib/format';
 import { PodcastCover } from '../podcast-cover';
 import { PlayedMark } from './played-mark';
@@ -52,10 +40,11 @@ export function QueueList() {
   const currentKey = current ? epKey(current.episode) : null;
 
   return (
-    <div className="border-t border-bone/10 pt-5">
+    // No top rule: `<ListenPage>`'s tab strip draws the line and the count.
+    <div>
       <div className="flex items-center justify-between gap-2 mb-2">
         <p className="text-[11px] uppercase tracking-widest text-muted">
-          Up Next · {queue.length}
+          {queue.length} of {LISTEN_QUEUE_CAP} · in play order
         </p>
         {/* An inline two-press confirm, the same shape <DownloadsPage>'s DELETE
             ALL uses and for the same reasons: this is the one control here that
@@ -84,7 +73,7 @@ export function QueueList() {
         </p>
       )}
 
-      {/* Not height-capped: this has ONE mount, the /queue route, so the page
+      {/* Not height-capped: this has ONE mount, the /listen route, so the page
           scrolls — an inner 320px scroll box on a page of its own hid most of
           the queue on desktop. */}
       <ul className="space-y-1 text-sm sm:space-y-0.5">
