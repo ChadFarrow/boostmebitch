@@ -52,6 +52,28 @@ export function ShareIcon({ className = 'w-4 h-4' }: { className?: string }) {
   );
 }
 
+// Thumbs-up for the episode LIKE tile. Not the 👍 emoji: that is a colour glyph,
+// yellow in BOTH states on every platform, so it was the one coloured icon in a
+// monochrome row and could not show whether you had liked anything. This one
+// takes `currentColor` — bone, then `bolt` once liked — and `filled` is the
+// liked state, as ♥ is to ♡.
+export function ThumbsUpIcon({ filled = false, className = 'w-4 h-4' }: { filled?: boolean; className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+    </svg>
+  );
+}
+
 // Coin with a "$" — the non-Lightning funding/support link (Patreon etc.),
 // distinct from ShareIcon so SUPPORT and SHARE don't look alike.
 export function CoinIcon({ className = 'w-4 h-4' }: { className?: string }) {

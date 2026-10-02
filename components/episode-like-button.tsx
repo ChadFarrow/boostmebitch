@@ -6,6 +6,7 @@ import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
 import { likeEpisode, unlikeEpisode, useEpisodeLikes } from '@/lib/use-episode-likes';
 import { canFavoriteEpisode } from './fav-heart';
+import { ThumbsUpIcon } from './icons';
 
 const compact = new Intl.NumberFormat('en', { notation: 'compact' });
 
@@ -87,13 +88,15 @@ export function EpisodeLikeButton({ episode, podcast }: { episode: Episode; podc
       className={`tile disabled:opacity-60 ${
         error
           ? 'border-red-400/60 text-red-400'
+          // Bone until liked, then `bolt` yellow with the thumb filled — the
+          // site's own accent, rather than the heart's Nostr magenta.
           : liked
-            ? 'border-nostr text-nostr hover:border-nostr hover:bg-nostr/10'
-            : 'hover:border-nostr/70 hover:text-nostr'
+            ? 'border-bolt text-bolt hover:border-bolt hover:bg-bolt/10'
+            : 'hover:border-bolt/70 hover:text-bolt'
       }`}
     >
       <span className="flex items-center gap-1 leading-none">
-        <span aria-hidden className="text-lg leading-none">👍</span>
+        <ThumbsUpIcon filled={liked} />
         {countLabel && <span className="text-[11px] tabular-nums">{countLabel}</span>}
       </span>
       {error ? 'RETRY' : 'LIKE'}
