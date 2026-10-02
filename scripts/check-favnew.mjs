@@ -46,7 +46,8 @@
 // the CHECK consumed the list rather than the reader: a pass advanced every
 // mark and the rows died with the component. The list is the persisted thing
 // now, and these two are what carry it — a pass ADDS to it, and a row leaves
-// only by aging past the window or by its show being unfavorited.
+// by its show being unfavorited, by CLEAR or ✕, or by the cap (no longer by age:
+// see the 2026-10-01 note below).
 //
 // The `merge → advance` pipeline is pinned as a vector of its own, because the
 // bug it fixes lives BETWEEN two functions that are each correct. Handing
@@ -60,17 +61,33 @@
 // lib/util.ts has one — `check:vts` and `check:queue` import it on the same
 // terms.
 //
+// THE 2026-10-01 CHANGE, which deliberately REVERSES two vectors below. The
+// owner chose: on a show's first check, show its LATEST episode (if it is under
+// 90 days old) instead of only what came out in the last seven days, and keep
+// every row until the reader clears it. So `selectLatestEpisodes` is new, and
+// `mergeNewEpisodeRows` no longer retires a row by age — the two "past the
+// horizon is retired" vectors now assert that it STAYS. That is a requirement
+// change, not a vector edited to match a bug. The list is bounded by
+// `FAV_NEW_CAP` (raised to 250, so a 221-show library fits) and by CLEAR / ✕.
+// `capDismissed` is the fix for the cap on the dismissed keys, which kept the
+// OLDEST and so let the row just removed come back.
+//
 // EVERY VECTOR IS A RECORDED CALL, replayed against the `naive*` versions at the
 // foot. Exemptions are named one at a time with `alsoNaive: true`.
 
 import {
   advanceMarks,
+  capDismissed,
   FAV_NEW_CAP,
+  FAV_NEW_SEED_WINDOW_MS,
   FAV_NEW_WINDOW_MS,
   mergeNewEpisodeRows,
+  NEW_EPISODES_LATEST_MAX_FEEDS,
   PI_FEED_IDS_MAX,
   pruneMarks,
   pruneNewRows,
+  seedMarks,
+  selectLatestEpisodes,
   selectNewEpisodes,
   sinceForBatch,
 } from '../lib/util.ts';
@@ -111,6 +128,19 @@ function checkMerge(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, mergeNewEpisodeRows(...args).map((e) => e.title), expected);
   vectors.push({ label, kind: 'merge', args, alsoNaive });
 }
+/** Titles, in order — the first-check list as the reader reads it. */
+function checkLatest(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, selectLatestEpisodes(...args).map((e) => e.title), expected);
+  vectors.push({ label, kind: 'latest', args, alsoNaive });
+}
+function checkSeedMarks(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, seedMarks(...args), expected);
+  vectors.push({ label, kind: 'seedMarks', args, alsoNaive });
+}
+function checkDismissed(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, capDismissed(...args), expected);
+  vectors.push({ label, kind: 'dismissed', args, alsoNaive });
+}
 function checkPruneRows(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, pruneNewRows(...args).map((e) => e.title), expected);
   vectors.push({ label, kind: 'pruneRows', args, alsoNaive });
@@ -119,8 +149,8 @@ function checkPruneRows(label, args, expected, { alsoNaive = false } = {}) {
  * The COMPOSITION, which is where the bug was: merge first, then let
  * `advanceMarks` see only what the merge kept.
  */
-const markPipeline = (prev, prevRows, found, covered, byId, nowMs) =>
-  advanceMarks(prev, mergeNewEpisodeRows(prevRows, found, nowMs), covered, byId, false);
+const markPipeline = (prev, prevRows, found, covered, byId) =>
+  advanceMarks(prev, mergeNewEpisodeRows(prevRows, found), covered, byId, false);
 function checkPipeline(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, markPipeline(...args), expected);
   vectors.push({ label, kind: 'pipeline', args, alsoNaive });
@@ -238,27 +268,30 @@ section('mergeNewEpisodeRows: a pass ADDS to the list, it does not replace it');
 // library can be larger, so a replace makes pass 2 delete what pass 1 found —
 // and the marks have already moved past it, so it is gone for good.
 checkMerge('a row from an earlier pass survives a pass that did not find it',
-  [[ep('carried', 1, NOW_S - 2 * DAY)], [ep('fresh', 2, NOW_S - 1 * DAY)], NOW_MS],
+  [[ep('carried', 1, NOW_S - 2 * DAY)], [ep('fresh', 2, NOW_S - 1 * DAY)]],
   ['fresh', 'carried']);
-// Age is the only thing that retires a row nobody cleared, so both halves are
-// asserted at once: the stale carried row goes and the fresh one stays.
-checkMerge('a carried row past the horizon is retired, a fresh one is carried',
-  [[ep('stale', 1, NOW_S - 9 * DAY), ep('carried', 1, NOW_S - 2 * DAY)], [], NOW_MS],
-  ['carried']);
-checkMerge('a FOUND row past the horizon goes too — the window is the window',
-  [[], [ep('stale', 1, NOW_S - 9 * DAY)], NOW_MS], []);
+// REVERSED on 2026-10-01, by the owner's decision (see the header): age no
+// longer retires a row. A show's latest episode is routinely older than seven
+// days, and the reader clears what they have seen.
+checkMerge('an OLD carried row stays until it is cleared',
+  [[ep('stale', 1, NOW_S - 9 * DAY), ep('carried', 1, NOW_S - 2 * DAY)], []],
+  ['carried', 'stale']);
+checkMerge('an old FOUND row stays too — a show\'s latest can be weeks old',
+  [[], [ep('stale', 1, NOW_S - 40 * DAY)]], ['stale'], { alsoNaive: true });
 checkMerge('a re-fetched episode updates in place rather than appearing twice',
-  [[ep('dup', 1, NOW_S - 1 * DAY)], [ep('dup', 1, NOW_S - 1 * DAY)], NOW_MS],
+  [[ep('dup', 1, NOW_S - 1 * DAY)], [ep('dup', 1, NOW_S - 1 * DAY)]],
   ['dup'], { alsoNaive: true });
 checkMerge('an undated row cannot ride in on the carry',
-  [[ep('undated', 1, undefined), ep('carried', 1, NOW_S - 2 * DAY)], [], NOW_MS],
+  [[ep('undated', 1, undefined), ep('carried', 1, NOW_S - 2 * DAY)], []],
   ['carried']);
 {
-  const carried = Array.from({ length: 40 }, (_, i) => ep(`c${i}`, 1, NOW_S - 100 - i));
+  // The CAP is now the only bound besides CLEAR and ✕, so it is asserted with
+  // a carry that is already full.
+  const carried = Array.from({ length: FAV_NEW_CAP }, (_, i) => ep(`c${i}`, 1, NOW_S - 100 - i));
   const found = Array.from({ length: 40 }, (_, i) => ep(`f${i}`, 2, NOW_S - i));
   const expected = [...found.map((e) => e.title), ...carried.map((e) => e.title)]
     .slice(0, FAV_NEW_CAP);
-  checkMerge('the cap holds across the carry, newest first', [carried, found, NOW_MS], expected);
+  checkMerge('the cap holds across the carry, newest first — the oldest go', [carried, found], expected);
 }
 
 // ---------------------------------------------------------------------------
@@ -268,17 +301,84 @@ section('mergeNewEpisodeRows: a dismissed row does not come back');
 // dismissed row from that batch reappears on the next pass unless the merge
 // itself filters it. The `dismissed` set is persisted exactly for this.
 checkMerge('a dismissed row is filtered out of the merge',
-  [[ep('kept', 1, NOW_S - 1 * DAY)], [ep('gone', 2, NOW_S - 2 * DAY)], NOW_MS, new Set(['gone'])],
+  [[ep('kept', 1, NOW_S - 1 * DAY)], [ep('gone', 2, NOW_S - 2 * DAY)], new Set(['gone'])],
   ['kept']);
 checkMerge('a dismissed row on the carry is filtered too',
-  [[ep('gone', 1, NOW_S - 1 * DAY), ep('kept', 2, NOW_S - 2 * DAY)], [], NOW_MS, new Set(['gone'])],
+  [[ep('gone', 1, NOW_S - 1 * DAY), ep('kept', 2, NOW_S - 2 * DAY)], [], new Set(['gone'])],
   ['kept']);
 checkMerge('an empty dismissed set changes nothing',
-  [[], [ep('a', 1, NOW_S), ep('b', 2, NOW_S - 1 * DAY)], NOW_MS, new Set()],
+  [[], [ep('a', 1, NOW_S), ep('b', 2, NOW_S - 1 * DAY)], new Set()],
   ['a', 'b'], { alsoNaive: true });
 checkMerge('undefined dismissed changes nothing',
-  [[], [ep('a', 1, NOW_S), ep('b', 2, NOW_S - 1 * DAY)], NOW_MS, undefined],
+  [[], [ep('a', 1, NOW_S), ep('b', 2, NOW_S - 1 * DAY)], undefined],
   ['a', 'b'], { alsoNaive: true });
+
+// ---------------------------------------------------------------------------
+section('capDismissed: over the cap, the NEWEST removals are the ones kept');
+// ---------------------------------------------------------------------------
+// THE ONE THIS EXISTS FOR. The end of a pass wrote `[...dismissed].slice(0,
+// cap)`, and the read did the same: over the cap that keeps the OLDEST keys, so
+// the row the reader had just removed was the one forgotten — and it came back.
+{
+  const keys = Array.from({ length: FAV_NEW_CAP + 5 }, (_, i) => `k${i}`);
+  checkDismissed('the row removed LAST is never the one forgotten', [keys], keys.slice(-FAV_NEW_CAP));
+}
+checkDismissed('under the cap nothing is dropped', [['a', 'b']], ['a', 'b'], { alsoNaive: true });
+
+// ---------------------------------------------------------------------------
+section('selectLatestEpisodes: a show\'s first check shows its LATEST episode');
+// ---------------------------------------------------------------------------
+// The owner's 2026-10-01 rule: one row per show, its newest, if that is under
+// 90 days old — so a monthly show is not missing, and a show that stopped
+// publishing does not put an old episode on the list.
+const D90 = Math.floor((NOW_MS - FAV_NEW_SEED_WINDOW_MS) / 1000);
+checkLatest('one row per show, and it is the NEWEST',
+  [[ep('a1', 1, NOW_S - 1 * DAY), ep('a2', 1, NOW_S - 3 * DAY), ep('b1', 2, NOW_S - 10 * DAY)], BY_ID, NOW_MS],
+  ['a1', 'b1']);
+checkLatest('a monthly show is NOT missing — 89 days old is shown',
+  [[ep('b89', 2, NOW_S - 89 * DAY)], BY_ID, NOW_MS], ['b89']);
+checkLatest('a latest older than 90 days is not shown',
+  [[ep('b-old', 2, D90 - 1)], BY_ID, NOW_MS], [], { alsoNaive: true });
+checkLatest('an unplayable newest row gives way to the next playable one',
+  [[ep('a-dead', 1, NOW_S - 1 * DAY, { enclosureUrl: '' }), ep('a-ok', 1, NOW_S - 20 * DAY)], BY_ID, NOW_MS],
+  ['a-ok']);
+checkLatest('a live broadcast is never a show\'s latest',
+  [[ep('onair', 1, NOW_S, { liveStatus: 'live' })], BY_ID, NOW_MS], [], { alsoNaive: true });
+checkLatest('an undated row is never a show\'s latest',
+  [[ep('undated', 1, undefined)], BY_ID, NOW_MS], [], { alsoNaive: true });
+checkLatest('a row for a feed we did not ask about is not ours to show',
+  [[ep('stranger', 9, NOW_S)], BY_ID, NOW_MS], [], { alsoNaive: true });
+// ---------------------------------------------------------------------------
+section('seedMarks: a first check marks a NEW show at its newest episode, and nothing else');
+// ---------------------------------------------------------------------------
+// Measured 2026-10-01 in the browser: with the ordinary 7-day check also run
+// for never-checked shows, daily news shows filled all 250 places, and that
+// request was TRUNCATED, so no mark advanced and the next pass flooded again.
+// So a show with no mark gets ONLY the first check, and its mark comes from
+// that answer: the newest date the feed has. Episodes before it are, by the
+// owner's rule, not shown.
+checkSeedMarks('a show with no mark is marked at its newest episode',
+  [{}, [ep('a2', 1, NOW_S - 3 * DAY), ep('a1', 1, NOW_S - 1 * DAY)], ['guid-a'], BY_ID],
+  { 'guid-a': NOW_S - 1 * DAY }, { alsoNaive: true });
+// A latest past 90 days is not SHOWN, but it is still the feed's newest — so the
+// mark moves past it, and only what comes after is new.
+checkSeedMarks('...even when that episode is too old to show',
+  [{}, [ep('old', 1, NOW_S - 200 * DAY)], ['guid-a'], BY_ID], { 'guid-a': NOW_S - 200 * DAY },
+  { alsoNaive: true });
+// THE ONE THE NAIVE VERSION BREAKS. A show that HAS a mark is moved only by its
+// ordinary check, which honours truncation. Moving it here would skip whatever
+// lies between its mark and its latest episode when that check was truncated.
+checkSeedMarks('a show that ALREADY has a mark is never moved by the first check',
+  [{ 'guid-a': NOW_S - 9 * DAY }, [ep('a1', 1, NOW_S - 1 * DAY)], ['guid-a'], BY_ID],
+  { 'guid-a': NOW_S - 9 * DAY });
+checkSeedMarks('a show the first check did not cover gets no mark',
+  [{}, [ep('b1', 2, NOW_S - 1 * DAY)], ['guid-a'], BY_ID], {}, { alsoNaive: true });
+checkSeedMarks('an undated row cannot become a mark',
+  [{}, [ep('undated', 1, undefined)], ['guid-a'], BY_ID], {}, { alsoNaive: true });
+
+checkLatest('newest first across shows',
+  [[ep('a', 1, NOW_S - 5 * DAY), ep('b', 2, NOW_S - 2 * DAY)], BY_ID, NOW_MS], ['b', 'a'],
+  { alsoNaive: true });
 
 // ---------------------------------------------------------------------------
 section('pruneNewRows: unfavoriting a show takes its rows off the list too');
@@ -319,7 +419,10 @@ checkPipeline('a carried row still above its mark settles it on a later pass',
 section('The constants this repo states rather than passes around');
 // ---------------------------------------------------------------------------
 compare('FAV_NEW_WINDOW_MS is seven days', FAV_NEW_WINDOW_MS, 7 * 24 * 60 * 60 * 1000);
-compare('FAV_NEW_CAP is 50', FAV_NEW_CAP, 50);
+compare('FAV_NEW_CAP is 250 — a 221-show library\'s latest episodes fit', FAV_NEW_CAP, 250);
+compare('FAV_NEW_SEED_WINDOW_MS is ninety days', FAV_NEW_SEED_WINDOW_MS, 90 * 24 * 60 * 60 * 1000);
+// Sized against the clock: one PI call per feed, 6 at a time, 8 s each at worst.
+compare('NEW_EPISODES_LATEST_MAX_FEEDS is 24 — five 8-second rounds at worst', NEW_EPISODES_LATEST_MAX_FEEDS, 24);
 // The measured ceiling. PI answers 200 OK and drops the rest in silence, so
 // nothing downstream can catch this being wrong.
 compare('PI_FEED_IDS_MAX is 200', PI_FEED_IDS_MAX, 200);
@@ -366,6 +469,17 @@ section('Every vector above is replayed against the obvious wrong version');
   // get rid of.
   const naivePruneRows = (rows) => [...rows];
 
+  // The obvious reuse: a first check is just the new-episodes rule with no
+  // marks — so the seven-day horizon, and every row inside it, not one per show.
+  const naiveLatest = (rows, byId, nowMs) => selectNewEpisodes(rows, {}, byId, nowMs);
+
+  // The obvious reuse: advance over the first-check answer like any other. It
+  // moves a mark that already exists, which a truncated ordinary check forbade.
+  const naiveSeedMarks = (prev, rows, covered, byId) => advanceMarks(prev, rows, covered, byId, false);
+
+  // What shipped: keep the FIRST `cap` keys.
+  const naiveDismissed = (keys) => keys.slice(0, FAV_NEW_CAP);
+
   // THE ORIGINAL BUG: advance over what was FETCHED rather than what was kept.
   const naivePipeline = (prev, _prevRows, found, covered, byId) =>
     advanceMarks(prev, found, covered, byId, false);
@@ -384,6 +498,12 @@ section('Every vector above is replayed against the obvious wrong version');
           return JSON.stringify(real ? pruneMarks(...v.args) : naivePrune(...v.args));
         case 'merge':
           return JSON.stringify((real ? mergeNewEpisodeRows(...v.args) : naiveMerge(...v.args)).map((e) => e.title));
+        case 'latest':
+          return JSON.stringify((real ? selectLatestEpisodes(...v.args) : naiveLatest(...v.args)).map((e) => e.title));
+        case 'seedMarks':
+          return JSON.stringify(real ? seedMarks(...v.args) : naiveSeedMarks(...v.args));
+        case 'dismissed':
+          return JSON.stringify(real ? capDismissed(...v.args) : naiveDismissed(...v.args));
         case 'pruneRows':
           return JSON.stringify((real ? pruneNewRows(...v.args) : naivePruneRows(...v.args)).map((e) => e.title));
         case 'pipeline':

@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue } from './util';
+import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -1917,6 +1917,12 @@ export const storage = {
         for (const [guid, v] of Object.entries(parsed.marks ?? {})) {
           if (typeof v === 'number' && Number.isFinite(v) && v > 0) marks[guid] = v;
         }
+        // Same per-entry rule as the marks. A bad entry is a show asked for
+        // its latest episode once more, which costs one request and nothing else.
+        const seeded: Record<string, number> = {};
+        for (const [guid, v] of Object.entries(parsed.seeded ?? {})) {
+          if (typeof v === 'number' && Number.isFinite(v) && v > 0) seeded[guid] = v;
+        }
         // Per ENTRY, like the marks above and for the same reason: refusing
         // the whole array over one bad row empties a list the reader has not
         // seen yet, and the next pass cannot rebuild it — the marks have
@@ -1946,9 +1952,12 @@ export const storage = {
           rows,
           uncovered: Number.isInteger(parsed.uncovered) && parsed.uncovered > 0 ? parsed.uncovered : 0,
           failed: parsed.failed === true,
+          // The NEWEST keys — `capDismissed` — or the row just removed is the one
+          // forgotten.
           dismissed: Array.isArray(parsed.dismissed)
-            ? parsed.dismissed.filter((k: unknown) => typeof k === 'string').slice(0, FAV_NEW_CAP)
+            ? capDismissed(parsed.dismissed.filter((k: unknown) => typeof k === 'string'))
             : undefined,
+          seeded,
         };
       } catch {
         return { checkedAt: 0, marks: {} };
