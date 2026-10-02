@@ -1532,7 +1532,10 @@ kind:17s, every one Fountain's, every one content `+` and the same four tags —
 reproduces that byte for byte (`check:likes` asserts it against the event Chad
 pasted), plus `client`. The hints are `siteLandingUrl` — `BRAND.origin`, never
 `window.location`, which is `localhost` on a dev server and would go into a
-signed event. The `podcast:guid` is the item's PARENT feed, by
+signed event. It encodes BOTH guids, because a feed guid is a feed-supplied
+string however often it is a UUID, and a `&` or `#` in it breaks a link no one
+can edit; for a UUID the encoding is the identity. A boost note's track hints
+call it too, so the two can no longer encode differently. The `podcast:guid` is the item's PARENT feed, by
 `<FavEpisodeHeart>`'s rule: a playlist that lists a track is not its show.
 
 **Count people, not events.** Fountain publishes each like TWICE, about two

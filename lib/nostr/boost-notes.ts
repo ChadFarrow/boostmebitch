@@ -110,8 +110,11 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  * Emitted alongside the listen-link (not as a replacement) so readers get both
  * affordances: listen elsewhere, or boost back here.
  *
- * The episode guid is encodeURIComponent'd — unlike the podcast guid (a UUID),
- * it's an arbitrary feed-chosen string and is routinely a URL.
+ * Both guids are encodeURIComponent'd. The episode guid is an arbitrary
+ * feed-chosen string and is routinely a URL. The podcast guid is MEANT to be a
+ * UUID, but it is still a feed-supplied string, and one carrying `&`, `#` or a
+ * space breaks a link that can never be edited. For a UUID the encoding is the
+ * identity, so every note already published reads the same.
  *
  * The `www` host is deliberate and must match app/layout.tsx's metadataBase:
  * the apex 307-redirects here, and this URL is written into a signed, immutable
@@ -125,12 +128,15 @@ function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
 
 /**
  * The same deep link from bare guids, for a publisher holding no `Podcast` —
- * the episode like (`likes.ts`) writes it as its NIP-73 `i` hints. Everything
- * said above holds: it goes into a signed event, so the host is `BRAND.origin`
- * and never `window.location`, which on a dev server is `localhost`.
+ * the episode like (`likes.ts`) writes it as its NIP-73 `i` hints, and a boost
+ * note's track hints use it too. Everything said above holds: it goes into a
+ * signed event, so the host is `BRAND.origin` and never `window.location`,
+ * which on a dev server is `localhost`. **One builder, so the encoding cannot
+ * differ between copies** — the track hints encoded the feed guid while this
+ * did not.
  */
 export function siteLandingUrl(feedGuid: string, itemGuid?: string): string {
-  const url = `${SITE_ORIGIN}/?podcast=${feedGuid}`;
+  const url = `${SITE_ORIGIN}/?podcast=${encodeURIComponent(feedGuid)}`;
   return itemGuid ? `${url}&episode=${encodeURIComponent(itemGuid)}` : url;
 }
 
@@ -398,13 +404,11 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     const out: string[][] = [];
     const feed = track.feedGuid ?? podcast.podcastGuid;
     if (track.feedGuid) {
-      const hint = withHints ? `${SITE_ORIGIN}/?podcast=${encodeURIComponent(track.feedGuid)}` : null;
+      const hint = withHints ? siteLandingUrl(track.feedGuid) : null;
       out.push(hint ? ['i', `podcast:guid:${track.feedGuid}`, hint] : ['i', `podcast:guid:${track.feedGuid}`]);
     }
     if (track.itemGuid) {
-      const hint = withHints && feed
-        ? `${SITE_ORIGIN}/?podcast=${encodeURIComponent(feed)}&episode=${encodeURIComponent(track.itemGuid)}`
-        : null;
+      const hint = withHints && feed ? siteLandingUrl(feed, track.itemGuid) : null;
       out.push(hint && hint.length <= 512
         ? ['i', `podcast:item:guid:${track.itemGuid}`, hint]
         : ['i', `podcast:item:guid:${track.itemGuid}`]);
