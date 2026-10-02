@@ -198,6 +198,7 @@ import { LinkedText } from './linked-text';
 import { UnderlineTabs, tabPanelProps } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
+import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
@@ -793,12 +794,16 @@ export function FullscreenPlayer({
     <>
       <FavHeart podcast={podcast} size="tile" nameTarget />
       <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+      {/* 👍 completes the first row of three: the two hearts and the like are
+          the three things said ABOUT this episode, so they read as one row. It
+          shares one store with the episode page's tile, so a like pressed in
+          either shows in both. */}
+      <EpisodeLikeButton episode={episode} podcast={podcast} />
       {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
           longer shows: ↓, a progress fill, ✓ when the episode is on the
-          device. It was a chip in the bar for one afternoon; six tiles fill
-          the menu's two rows exactly, and the bar keeps ⋯, the account
-          control and ✕. It renders nothing for a live item or an HLS
-          stream, and then the menu is five. */}
+          device. It was a chip in the bar for one afternoon, and the bar
+          keeps ⋯, the account control and ✕. It renders nothing for a live
+          item or an HLS stream. */}
       <DownloadButton episode={episode} podcast={podcast} size="tile" />
       <ShareTargets podcast={podcast} episode={episode} />
       {streamButton && cloneElement(

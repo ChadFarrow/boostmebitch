@@ -1515,6 +1515,66 @@ stops the next attempt retrying. Nothing is recorded here, so an event that
 reached no relay costs one missing receipt and nothing else. The accepted-relay
 count is logged instead, so "why are there no receipts?" stays answerable.
 
+## Episode likes (NIP-25 kind:17)
+
+The 👍 tile on the episode page and in the fullscreen player's ⋯ menu.
+`lib/nostr/like-tally.ts` holds the rules (import-free, pinned by
+`check:likes`), `lib/nostr/likes.ts` the read and the two publishers,
+`lib/use-episode-likes.ts` the one store both tiles share, and
+`components/episode-like-button.tsx` the tile.
+
+**Fountain's shape IS the format, because nobody else writes it.** NIP-25 says
+a reaction to something that is not a Nostr event MUST be kind:17 with NIP-73
+`k` + `i` tags. Measured 2026-10-02 on the four `DEFAULT_RELAYS`: 508 podcast
+kind:17s, every one Fountain's, every one content `+` and the same four tags —
+`k podcast:item:guid`, `i podcast:item:guid:<guid> <hint>`, `k podcast:guid`,
+`i podcast:guid:<guid> <hint>`. None was a like of a show alone. `likeTags`
+reproduces that byte for byte (`check:likes` asserts it against the event Chad
+pasted), plus `client`. The hints are `siteLandingUrl` — `BRAND.origin`, never
+`window.location`, which is `localhost` on a dev server and would go into a
+signed event. The `podcast:guid` is the item's PARENT feed, by
+`<FavEpisodeHeart>`'s rule: a playlist that lists a track is not its show.
+
+**Count people, not events.** Fountain publishes each like TWICE, about two
+seconds apart — one episode held 62 kind:17s from 49 people. The number is the
+distinct pubkeys with a standing `+` or `''`. A `-` is a dislike and an emoji a
+reaction; neither counts.
+
+**Where they are.** relay.fountain.fm held 62 events for that episode where
+damus, primal and nos.lol held one between them, so the read is
+`DEFAULT_RELAYS` and nothing wider. It returned exactly 500 to `limit: 2000`,
+which is why `LIKE_READ_LIMIT` is 500 and a read that fills it prints `500+`.
+
+**An unlike is a NIP-09 kind:5, and it carries the item `i` tag.** The read is
+ONE filter, `{kinds: [17, 5], '#i': [item]}`. A bare deletion (`e` + `k` only)
+never matches it, so on a relay that keeps deleted events the like reads back
+on the next load and the tile turns itself on again. The one real kind:17
+deletion on the default relays already carries `e`, `k:17` and `i` (another
+app's "vote retracted"), so this follows a convention rather than inventing
+one. The cost, stated: a deletion another app writes WITHOUT the `i` tag is
+invisible to this read. None exists today — **Fountain never deletes a like**,
+so whether Fountain's own app honors ours is not ours to decide.
+
+**A deletion counts only from the like's own author.** A relay that honors
+NIP-09 checks that; one that does not hands every reader every kind:5, and a
+tally that honors them blindly lets anyone un-like anyone. `check:likes`
+replays that wrong version (`anyDeleter`) as well as `naive()`.
+
+**The tile never prints a zero.** A count is a claim, and a read that has not
+answered, or answered from fewer relays than it asked, says nothing about zero.
+No likes and no answer both read plain LIKE. Muted pubkeys are counted: the
+tile shows a number, never a person, so there is nothing of theirs to hide.
+
+**The like is asserted.** `publishEpisodeLike` and `publishEpisodeUnlike` go
+through `assertPublished`, because the store records the returned event as the
+viewer's like (`mine`, kept apart from the read so a read that started before
+the press cannot take it back off the tile). A refusal leaves the tile as it
+was, red, with the reason in its title — never a silent no-op.
+
+**Not done, deliberately.** The read index (`services/nostr-index`) does not
+store kind:17, so the count is relay-only; adding it is a Railway deploy of its
+own. No count on list rows (one `#i` per row), and no list of who liked.
+
 ## Nostr publish shape
 
 `publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
