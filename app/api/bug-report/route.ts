@@ -49,6 +49,14 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         title: bugReportTitle(report.answers),
         body: bugReportBody(report.answers, report.info),
+        // `user-report` is how the owner tells a listener's report from the
+        // owner's own issues: both show the OWNER as the author, because the
+        // token is the owner's. `bug` sorts it with the other bugs. Fixed
+        // labels, never ones from the caller: the POST is unauthenticated.
+        // GitHub keeps a label only when the token's owner can push to the
+        // repo, and drops it SILENTLY otherwise — the issue is still filed,
+        // just untagged.
+        labels: ['bug', 'user-report'],
       }),
       signal: AbortSignal.timeout(15_000),
     });
