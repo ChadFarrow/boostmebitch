@@ -98,11 +98,19 @@ export interface LikeWireEvent {
   tags: string[][];
 }
 
+/** The like names a show, and not `show`. Naming none proves nothing. */
+function filedUnderAnotherShow(e: LikeWireEvent, show: string | null): boolean {
+  if (!show) return false;
+  const shows = e.tags.filter((t) => t[0] === 'i' && typeof t[1] === 'string' && t[1].startsWith(SHOW_PREFIX));
+  return shows.length > 0 && !shows.some((t) => t[1] === show);
+}
+
 export interface LikeTally {
   /** People, not events: Fountain publishes each like twice. */
   count: number;
-  /** The viewer's STANDING likes, in read order — every one, so an unlike
-   *  deletes a double publish whole. Empty when the viewer has none in hand. */
+  /** The viewer's STANDING likes of this episode ON THIS SHOW, in read order —
+   *  every one, so an unlike deletes a double publish whole. Empty when the
+   *  viewer has none in hand. */
   viewerLikeIds: string[];
   /** The read filled `limit`, so `count` is a lower bound. */
   capped: boolean;
@@ -118,14 +126,23 @@ export interface LikeTally {
  * - **The filter is a request.** A relay may send another episode's like, or a
  *   kind:7; each is checked here rather than trusted.
  * - A like is `+` or `''`.
+ * - **A like filed under ANOTHER show is not the viewer's to take back.** Item
+ *   guids are not unique across feeds (`1`, `ep-1`), so the `#i` read can hand
+ *   back the viewer's like of the same guid on a different show. Offering it
+ *   would light the tile on a show they never liked, and an unlike would delete
+ *   their like there. Given `feedGuid`, a like whose `podcast:guid:` tags name
+ *   only other feeds is left out of `viewerLikeIds`; one naming no show at all
+ *   stays in. The COUNT is not narrowed: it is filed the way Fountain files it.
  */
 export function tallyLikes(
   events: readonly LikeWireEvent[],
   itemGuid: string,
   viewer: string | null,
+  feedGuid: string | null = null,
   limit: number = LIKE_READ_LIMIT,
 ): LikeTally {
   const target = itemLikeTarget(itemGuid);
+  const show = feedGuid ? `${SHOW_PREFIX}${feedGuid}` : null;
   // `${pubkey}:${id}` — what an author may delete is their own event, so the
   // key carries both halves of that rule.
   const deleted = new Set<string>();
@@ -143,7 +160,7 @@ export function tallyLikes(
     if (!e.tags.some((t) => t[0] === 'i' && t[1] === target)) continue;
     if (deleted.has(`${e.pubkey}:${e.id}`)) continue;
     people.add(e.pubkey);
-    if (viewer !== null && e.pubkey === viewer) viewerLikeIds.push(e.id);
+    if (viewer !== null && e.pubkey === viewer && !filedUnderAnotherShow(e, show)) viewerLikeIds.push(e.id);
   }
   return { count: people.size, viewerLikeIds, capped: events.length >= limit };
 }

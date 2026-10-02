@@ -39,8 +39,18 @@
 // published for one episode on 2026-09-30, fetched from relay.fountain.fm.
 // DEL_WEB is the real deletion above. Signatures are dropped, because nothing
 // here verifies them — the relay pool does that before an event reaches the
-// tally (see the `SimplePool verifies events` note in the memory index). The
+// tally: `newPool()` (`lib/nostr/pool.ts`) builds nostr-tools' `SimplePool`
+// with its default `verifyEvent`, and each relay checks it on every event
+// before a subscription sees it (`abstract-relay.js` in the pinned 2.19.4). The
 // deletions OF these likes are synthetic, built in DEL_WEB's real shape.
+//
+// AND ONE WAY TO TAKE BACK THE WRONG LIKE. The read is filed under the ITEM
+// guid alone, and item guids are not unique across feeds — `1` and `ep-1` are
+// common — so a viewer's like of guid `1` on show B arrives in show A's read.
+// Offering it as the viewer's like on A makes the tile read liked on a show
+// they never liked, and an unlike there deletes their like of B. So a like
+// whose show `i` tag names ANOTHER feed is not the viewer's to take back here;
+// the COUNT is left alone, filed the way Fountain files it.
 import {
   EXTERNAL_REACTION_KIND,
   DELETION_KIND,
@@ -82,6 +92,7 @@ const pairTags = [
   ['k', 'podcast:guid'],
   ['i', 'podcast:guid:d5e73072-64a2-56a3-9dcd-4a00bfe561d5', 'https://fountain.fm/show/yqjEjw3AmDwhgc7dBsjX'],
 ];
+const PAIR_FEED = 'd5e73072-64a2-56a3-9dcd-4a00bfe561d5';
 const PAIR_A = {
   id: '701251a30394653b8917a13577a3675c58cb2219004e1c4337fc805af5396539',
   pubkey: PAIR_AUTHOR, created_at: 1790736186, kind: 17, content: '+', tags: pairTags,
@@ -111,6 +122,13 @@ const like = (id, pubkey, content = '+', tags = pairTags, kind = EXTERNAL_REACTI
   ({ id, pubkey, created_at: 1790736200, kind, content, tags });
 const deletion = (id, pubkey, targets, item = PAIR_ITEM) =>
   ({ id, pubkey, created_at: 1790736300, kind: DELETION_KIND, content: '', tags: unlikeTags(targets, item) });
+// The SAME item guid, filed under a different show — a collision, not a playlist.
+const otherShowTags = [
+  pairTags[0],
+  pairTags[1],
+  ['k', 'podcast:guid'],
+  ['i', 'podcast:guid:0f0f0f0f-0000-5000-8000-000000000000', 'https://fountain.fm/show/other'],
+];
 
 // ── Wrong version 1: count every `+` event ───────────────────────────────────
 function naiveTally(events, _item, viewer) {
@@ -134,13 +152,14 @@ function naiveUnlikeTags(ids) {
 }
 
 // ── Wrong version 2: right about everything but WHO may delete ───────────────
-function anyDeleterTally(events, itemGuid, viewer, limit = LIKE_READ_LIMIT) {
+function anyDeleterTally(events, itemGuid, viewer, feedGuid = null, limit = LIKE_READ_LIMIT) {
   const target = `podcast:item:guid:${itemGuid}`;
   const deleted = new Set();
   for (const e of events) {
     if (e.kind !== DELETION_KIND) continue;
     for (const t of e.tags) if (t[0] === 'e' && typeof t[1] === 'string') deleted.add(t[1]);
   }
+  const shows = (e) => e.tags.filter((t) => t[0] === 'i' && t[1]?.startsWith('podcast:guid:')).map((t) => t[1]);
   const authors = new Set();
   const viewerLikeIds = [];
   for (const e of events) {
@@ -149,7 +168,9 @@ function anyDeleterTally(events, itemGuid, viewer, limit = LIKE_READ_LIMIT) {
     if (!e.tags.some((t) => t[0] === 'i' && t[1] === target)) continue;
     if (deleted.has(e.id)) continue;
     authors.add(e.pubkey);
-    if (e.pubkey === viewer) viewerLikeIds.push(e.id);
+    const s = shows(e);
+    const otherShow = !!feedGuid && s.length > 0 && !s.includes(`podcast:guid:${feedGuid}`);
+    if (e.pubkey === viewer && !otherShow) viewerLikeIds.push(e.id);
   }
   return { count: authors.size, viewerLikeIds, capped: events.length >= limit };
 }
@@ -266,6 +287,28 @@ const VECTORS = [
     label: "a viewer's `-` is not a like to take back",
     kind: 'tally', args: [[like(hex('1'), VIEWER, '-')], PAIR_ITEM, VIEWER],
     expect: tally(0), alsoNaive: true, alsoAnyDeleter: true,
+  },
+  // tally — the show the like is filed under
+  {
+    label: "the viewer's like of the same item guid on ANOTHER show is counted, but not theirs to take back here",
+    kind: 'tally', args: [[like(hex('1'), VIEWER, '+', otherShowTags)], PAIR_ITEM, VIEWER, PAIR_FEED],
+    expect: tally(1), alsoAnyDeleter: true,
+  },
+  {
+    label: 'a viewer with a like on THIS show and on another deletes only this show\'s',
+    kind: 'tally',
+    args: [[like(hex('1'), VIEWER), like(hex('2'), VIEWER, '+', otherShowTags)], PAIR_ITEM, VIEWER, PAIR_FEED],
+    expect: tally(1, [hex('1')]), alsoAnyDeleter: true,
+  },
+  {
+    label: "the viewer's like on THIS show is still theirs",
+    kind: 'tally', args: [[like(hex('1'), VIEWER)], PAIR_ITEM, VIEWER, PAIR_FEED],
+    expect: tally(1, [hex('1')]), alsoNaive: true, alsoAnyDeleter: true,
+  },
+  {
+    label: 'a like naming no show at all is still the viewer\'s — nothing says it is another show\'s',
+    kind: 'tally', args: [[like(hex('1'), VIEWER, '+', [pairTags[0], pairTags[1]])], PAIR_ITEM, VIEWER, PAIR_FEED],
+    expect: tally(1, [hex('1')]), alsoNaive: true, alsoAnyDeleter: true,
   },
   // tally — the cap
   {

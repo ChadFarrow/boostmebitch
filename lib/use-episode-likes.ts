@@ -53,7 +53,9 @@ function put(itemGuid: string, entry: LikeEntry): void {
 
 function load(itemGuid: string, viewer: string | null): void {
   const hit = cache.get(itemGuid, Date.now());
-  if (inflight.has(itemGuid) || (hit && hit.ageMs < FRESH_MS)) return;
+  // A `loading` entry with nothing in flight is one `addMine` made with no read
+  // behind it — fresh by age, and still owed a read.
+  if (inflight.has(itemGuid) || (hit && !hit.value.loading && hit.ageMs < FRESH_MS)) return;
   inflight.add(itemGuid);
   if (!hit) put(itemGuid, { read: [], complete: false, loading: true, mine: [] });
   fetchEpisodeLikes(itemGuid, viewer)
@@ -68,8 +70,19 @@ function load(itemGuid: string, viewer: string | null): void {
     .finally(() => inflight.delete(itemGuid));
 }
 
+/**
+ * Record an event this tab published. **With no entry it starts a read rather
+ * than invent one.** The entry can be gone while a tile is mounted — the cache
+ * drops it at its horizon — and `{ read: [], loading: false }` would tally the
+ * viewer's own like as the only one: an episode 49 people liked reading "1".
+ */
 function addMine(itemGuid: string, e: Event): void {
-  const prev = entryFor(itemGuid) ?? { read: [], complete: false, loading: false, mine: [] };
+  const prev = entryFor(itemGuid);
+  if (!prev) {
+    put(itemGuid, { read: [], complete: false, loading: true, mine: [e] });
+    load(itemGuid, e.pubkey);
+    return;
+  }
   put(itemGuid, { ...prev, mine: [...prev.mine, e] });
 }
 
@@ -80,8 +93,12 @@ export interface EpisodeLikes {
   complete: boolean;
 }
 
-/** Read — and keep reading — one episode's likes. `undefined` reads nothing. */
-export function useEpisodeLikes(itemGuid: string | undefined): EpisodeLikes {
+/**
+ * Read — and keep reading — one episode's likes. `undefined` reads nothing.
+ * `feedGuid` is the item's parent feed, which decides which of the viewer's
+ * likes this tile may take back (`tallyLikes`).
+ */
+export function useEpisodeLikes(itemGuid: string | undefined, feedGuid?: string | null): EpisodeLikes {
   const viewer = useApp((s) => s.identity?.pubkey ?? null);
   const subscribe = useCallback(
     (cb: () => void) => {
@@ -101,15 +118,21 @@ export function useEpisodeLikes(itemGuid: string | undefined): EpisodeLikes {
     () => (itemGuid ? entryFor(itemGuid) : undefined),
     () => undefined,
   );
+  // `missing` is a dependency on purpose: the cache drops an entry at its
+  // horizon INSIDE `getSnapshot`, and the episode page renders on every playback
+  // tick, so 30 minutes into a long episode the entry vanishes under a mounted
+  // tile. Without this nothing reads again — the tile forgets the viewer's like,
+  // and their next press publishes a second one instead of taking it back.
+  const missing = entry === undefined;
   useEffect(() => {
     if (itemGuid) load(itemGuid, viewer);
-  }, [itemGuid, viewer]);
+  }, [itemGuid, viewer, missing]);
   const tally = useMemo(() => {
     if (!itemGuid || !entry || entry.loading) return null;
     const byId = new Map<string, Event>();
     for (const e of [...entry.read, ...entry.mine]) byId.set(e.id, e);
-    return tallyLikes([...byId.values()], itemGuid, viewer);
-  }, [entry, itemGuid, viewer]);
+    return tallyLikes([...byId.values()], itemGuid, viewer, feedGuid ?? null);
+  }, [entry, itemGuid, viewer, feedGuid]);
   return { tally, complete: entry?.complete ?? false };
 }
 

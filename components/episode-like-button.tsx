@@ -21,7 +21,11 @@ const compact = new Intl.NumberFormat('en', { notation: 'compact' });
  * **It never prints a zero.** A count is a CLAIM, and a read that has not
  * answered — or answered from fewer relays than it asked — says nothing about
  * zero. So no likes and no answer both read plain LIKE; a number appears only
- * when somebody has. A read that filled the relay cap prints `500+`.
+ * when somebody has. A read that filled the relay cap prints `500+`, and one
+ * that missed a relay prints `N+`: a lower bound, never an exact figure.
+ *
+ * **Signed in, it is disabled until the first read lands**, because until then
+ * a press cannot know whether it is a like or an unlike.
  *
  * The gate is `<FavEpisodeHeart>`'s: both guids or no tile. The feed guid is
  * the item's PARENT (`episode.podcastGuid` first), for the reason that
@@ -35,55 +39,69 @@ export function EpisodeLikeButton({ episode, podcast }: { episode: Episode; podc
   const likeable = canFavoriteEpisode(episode, podcast);
   const identity = useApp((s) => s.identity);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
-  const { tally } = useEpisodeLikes(likeable ? itemGuid : undefined);
+  const { tally, complete } = useEpisodeLikes(likeable ? itemGuid : undefined, feedGuid);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Keyed by what the press was ABOUT. The ⋯ menu stays open across a track
+  // change, and a later read can turn a failed like into a standing one; a bare
+  // string would then leave RETRY over a press that now does something else —
+  // an unlike, or a like of the next track.
+  const [failure, setFailure] = useState<{ key: string; msg: string } | null>(null);
 
   if (!likeable || !itemGuid || !feedGuid) return null;
 
   const liked = !!tally && tally.viewerLikeIds.length > 0;
+  // Until the first read lands, a press cannot know which way it goes: a viewer
+  // who already liked would publish a second like instead of an unlike, and the
+  // tile could not show it. Signed out, the press only opens sign-in.
+  const reading = !!identity && !tally;
+  const error = failure && failure.key === `${itemGuid}:${liked}` ? failure.msg : null;
   const count = tally?.count ?? 0;
-  const countLabel = count > 0 ? `${compact.format(count)}${tally?.capped ? '+' : ''}` : null;
+  // `+` for a capped read AND for one that missed a relay: both are lower
+  // bounds, and `N+` is still true of an exact N, so it cannot overstate.
+  const countLabel = count > 0 ? `${compact.format(count)}${tally?.capped || !complete ? '+' : ''}` : null;
 
   async function onPress(e: React.MouseEvent) {
     e.stopPropagation();
     e.preventDefault();
-    if (busy) return;
+    if (busy || reading) return;
     if (!identity) {
       setSignInOpen(true);
       return;
     }
+    const key = `${itemGuid}:${liked}`;
     setBusy(true);
-    setError(null);
+    setFailure(null);
     try {
       if (liked) await unlikeEpisode({ itemGuid: itemGuid!, likeIds: tally!.viewerLikeIds, identity });
       else await likeEpisode({ itemGuid: itemGuid!, feedGuid: feedGuid!, identity });
     } catch (err) {
       // A guard that silently withholds must say so: the tile keeps its state,
       // and says why on the tile itself rather than in the console.
-      setError(getErrorMessage(err, liked ? 'unlike failed' : 'like failed'));
+      setFailure({ key, msg: getErrorMessage(err, liked ? 'unlike failed' : 'like failed') });
     } finally {
       setBusy(false);
     }
   }
 
-  const people = !countLabel ? '' : count === 1 ? ' 1 person likes this.' : ` ${countLabel} people like this.`;
+  const people = !countLabel ? '' : countLabel === '1' ? ' 1 person likes this.' : ` ${countLabel} people like this.`;
   const title = error
     ? `Failed: ${error}`
     : !identity
       ? `Like on Nostr (sign in first).${people}`
-      : liked
-        ? `Unlike (publishes a Nostr deletion).${people}`
-        : `Like on Nostr.${people}`;
+      : reading
+        ? 'Reading likes from Nostr…'
+        : liked
+          ? `Unlike (publishes a Nostr deletion).${people}`
+          : `Like on Nostr.${people}`;
 
   return (
     <button
       type="button"
       onClick={onPress}
-      disabled={busy}
+      disabled={busy || reading}
       aria-pressed={liked}
-      aria-busy={busy}
-      aria-label={`${liked ? 'Unlike' : 'Like'} episode${countLabel ? `, ${countLabel} ${count === 1 ? 'like' : 'likes'}` : ''}`}
+      aria-busy={busy || reading}
+      aria-label={`${liked ? 'Unlike' : 'Like'} episode${countLabel ? `, ${countLabel} ${countLabel === '1' ? 'like' : 'likes'}` : ''}`}
       title={title}
       className={`tile disabled:opacity-60 ${
         error

@@ -1560,16 +1560,55 @@ NIP-09 checks that; one that does not hands every reader every kind:5, and a
 tally that honors them blindly lets anyone un-like anyone. `check:likes`
 replays that wrong version (`anyDeleter`) as well as `naive()`.
 
+**A like filed under ANOTHER show is not the viewer's to take back.** The read
+is filed under the item guid alone, and item guids are not unique across feeds
+(`1`, `ep-1`), so the viewer's like of guid `1` on show B arrives in show A's
+read. Offered as theirs, it lit A's tile for a show they never liked, and an
+unlike on A deleted their like of B. `tallyLikes` takes the parent `feedGuid`
+and leaves a like whose `podcast:guid:` tags name only OTHER feeds out of
+`viewerLikeIds`; a like naming no show at all stays in, because nothing says it
+is another show's. The COUNT is not narrowed — it is filed the way Fountain
+files it. Pinned by `check:likes`.
+
 **The tile never prints a zero.** A count is a claim, and a read that has not
 answered, or answered from fewer relays than it asked, says nothing about zero.
 No likes and no answer both read plain LIKE. Muted pubkeys are counted: the
 tile shows a number, never a person, so there is nothing of theirs to hide.
 
+**And a number from a partial read prints `N+`, never `N`.** `fetchEpisodeLikes`
+reports `complete` only when every relay it ASKED connected and answered —
+stricter than `collectEventsDetailed`'s own `complete`, which drops a relay that
+never connected from the denominator. That is right for "is this empty set
+real" and wrong for this count, whose data sits on ONE relay: with
+relay.fountain.fm unreachable, the other three answered, the read called itself
+complete, and an episode 49 people liked read as an exact 1. `N+` is true of an
+exact N too, so the `+` cannot overstate.
+
+**Signed in, the tile is disabled until the first read lands.** Until then a
+press cannot know whether it is a like or an unlike: a viewer who had already
+liked published a second like, the store kept the read `loading`, the tile did
+not move, and the next tap published a third.
+
+**The store must read again when its entry goes, and must never invent one.**
+`createBoundedCache` drops an entry at its 30-minute horizon inside `get` —
+which is `getSnapshot` — and the episode page renders on every playback tick, so
+half an hour into a long episode the entry vanished under a mounted tile. The
+effect depended only on `[itemGuid, viewer]`, so nothing read again: the tile
+forgot the viewer's like, their next press published a second one, and
+`addMine`, finding no entry, built `{ read: [], loading: false }` and showed
+"1". The effect now also depends on the entry being missing, and `addMine` with
+no entry puts a `loading` one and starts a read; `load` treats a `loading` entry
+with nothing in flight as owed a read, however young.
+
 **The like is asserted.** `publishEpisodeLike` and `publishEpisodeUnlike` go
 through `assertPublished`, because the store records the returned event as the
 viewer's like (`mine`, kept apart from the read so a read that started before
 the press cannot take it back off the tile). A refusal leaves the tile as it
-was, red, with the reason in its title — never a silent no-op.
+was, red, with the reason in its title — never a silent no-op. **The failure is
+keyed to what the press was about** (`${itemGuid}:${liked}`): the ⋯ menu stays
+open across a track change, and a later read can turn a like whose ack timed
+out into a standing one, so a bare error string left RETRY over a press that
+had become an unlike, or a like of the next track.
 
 **Not done, deliberately.** The read index (`services/nostr-index`) does not
 store kind:17, so the count is relay-only; adding it is a Railway deploy of its

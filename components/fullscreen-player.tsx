@@ -812,7 +812,8 @@ export function FullscreenPlayer({
         <span aria-hidden className="text-lg leading-none">≋</span>,
         'STREAM',
       )}
-      {/* SPEED, then 3.5× and 5×, fill a third row of three. Last because
+      {/* SPEED, then 3.5× and 5×. Without STREAM they are a third row of
+          three; with it, 5× sits alone in a fourth (docs/ui.md). Last because
           they are about playback, not about this show or episode. No speed
           on a live item: <Player> holds it at 1×, since there is nothing
           ahead of the live edge to play into. */}

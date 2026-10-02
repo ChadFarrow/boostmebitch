@@ -23,8 +23,17 @@ export interface EpisodeLikesRead {
   /** Every kind:17 AND kind:5 the read returned, deduped by id. The tally
    *  decides what counts — this does not filter. */
   events: Event[];
-  /** Every relay that connected answered. A count from an incomplete read is a
-   *  lower bound, which is why the tile never prints a zero. */
+  /**
+   * Every relay the read ASKED connected and answered. A count from an
+   * incomplete read is a lower bound, which is why the tile never prints a zero
+   * and prints `N+` for one.
+   *
+   * **Stricter than `collectEventsDetailed`'s `complete`**, which leaves a relay
+   * that never connected out of the denominator — right for "is this empty set
+   * real", wrong for a COUNT whose data sits almost entirely on ONE relay: with
+   * relay.fountain.fm unreachable the other three answer, that `complete` is
+   * true, and an episode 49 people liked reads as an exact 1.
+   */
   complete: boolean;
 }
 
@@ -60,7 +69,7 @@ export async function fetchEpisodeLikes(
     const mine = await collectEventsDetailed(relays, { kinds, authors: [viewer], '#i': [target] });
     for (const e of mine.events) byId.set(e.id, e);
   }
-  return { events: [...byId.values()], complete: all.complete };
+  return { events: [...byId.values()], complete: all.complete && all.reached === relays.length };
 }
 
 /**
