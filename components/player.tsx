@@ -1311,7 +1311,8 @@ export function Player() {
             }}
             // Progressive video (a podcast video rendition) just stops at the end;
             // live HLS never fires this. Music auto-advance stays on the <audio>.
-            onEnded={() => { forgetRestoreBaseline(); setPlaying(false); }}
+            // Collapse too, as the <audio> below does when nothing plays next.
+            onEnded={() => { forgetRestoreBaseline(); setPlaying(false); setPlayerExpanded(false); }}
             // THIS IS WHERE A LIVE-STREAM RECONNECT BECOMES VISIBLE, and the
             // ordinary rebuffer must stay distinguishable from it. `stalled`
             // alone is the mini-bar's "⋯ buffering — press play to retry"; only
@@ -1426,7 +1427,11 @@ export function Player() {
             }
             if (handlePlaybackEnded()) return;
             if (current && playsAsTracks(current.podcast) && playNext()) return;
+            // Nothing plays next, so the fullscreen player is a screen over a
+            // finished episode: collapse it to the mini-bar, which still carries
+            // BOOST. Only here — an advance above keeps it open on the next item.
             setPlaying(false);
+            setPlayerExpanded(false);
           }}
           // `waiting` fires the moment playback runs dry; `stalled` when the
           // browser has had no data for a while. Neither is an error and neither
