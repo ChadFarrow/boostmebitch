@@ -14,38 +14,30 @@
 // button). No index column — the order here is time, which the show line
 // already says, not a play order anybody chose.
 //
-// THE TAP OPENS THE EPISODE PAGE, it does not play. Asked for from the phone
-// on 2026-10-02: an episode already heard is one you came back to look at or
-// boost, and its page has the play control. The handoff is <FavoritesPage>'s
-// `openItem`: the show first, then the episode from a fresh feed read — never
-// the stored copy, which is trimmed and may carry a value block the feed has
-// since dropped (the reason <HistoryBoostButton> reloads too).
+// THE TAP OPENS THE NOW-PLAYING SCREEN, it does not toggle playback. Asked for
+// from the phone on 2026-10-02: an episode already heard is one you came back
+// to look at or boost. The current item just expands; any other is CUED —
+// loaded paused at its saved place — then expanded, so the press is never an
+// autoplay. <FullscreenPlayer> reloads the value block from the feed, so the
+// stored copy's block never pays.
 
 import { useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/store';
-import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { storage } from '@/lib/storage';
 import { boostedOnDevice, epKey, PLAY_HISTORY_CAP } from '@/lib/util';
 import { timeAgo } from '@/lib/format';
-import type { Podcast, Episode, StoredBoost } from '@/lib/types';
+import type { StoredBoost } from '@/lib/types';
 import { PodcastCover } from '../podcast-cover';
 import { PlayedMark } from './played-mark';
 import { ResumeLeft } from './resume-left';
 import { HistoryBoostButton } from './history-boost-button';
 
-/** Read by `<HomePage>`'s back control — see `showOrigin` in lib/store.ts. */
-const LISTEN_ORIGIN = { path: '/listen', label: 'listen' };
-
 export function HistoryList() {
-  const router = useRouter();
   const history = useApp((s) => s.playHistory);
   const current = useApp((s) => s.current);
   const saved = useApp((s) => s.playHistorySaved);
-  const selectPodcast = useApp((s) => s.selectPodcast);
-  const setShowOrigin = useApp((s) => s.setShowOrigin);
-  const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
-  const openEpisode = useApp((s) => s.openEpisode);
+  const cue = useApp((s) => s.cue);
+  const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const removeFromHistory = useApp((s) => s.removeFromHistory);
   const clearHistory = useApp((s) => s.clearHistory);
   const identity = useApp((s) => s.identity);
@@ -60,23 +52,6 @@ export function HistoryList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [identity?.npub, boostsTick],
   );
-
-  async function openItem(episode: Episode, podcast: Podcast) {
-    // The show FIRST and unconditionally — `openItem` in <FavoritesPage> gives
-    // the three reasons. `setShowOrigin` AFTER it, because it clears the field.
-    selectPodcast(podcast);
-    setShowOrigin(LISTEN_ORIGIN);
-    router.push('/');
-    if (!episode.guid) return;
-    const loaded = await loadEpisodeFromFeed(podcast.id, episode.guid);
-    if (!loaded) return;
-    // A second tap, or BACK, during the fetch wins.
-    const selected = useApp.getState().selectedPodcast;
-    if (!selected || selected.id !== podcast.id) return;
-    syncSelectedPodcast(loaded.podcast);
-    // No episode: the feed no longer lists it. The show page is on screen.
-    if (loaded.episode) openEpisode(loaded.episode);
-  }
 
   // The page draws the empty state; this list only ever draws rows.
   if (!history.length) return null;
@@ -121,7 +96,10 @@ export function HistoryList() {
             <li key={key} className={`flex items-center gap-1 sm:gap-2 -mx-2 pr-2 transition ${active ? 'bg-bolt/10' : ''}`}>
               <button
                 type="button"
-                onClick={() => { void openItem(item.episode, item.podcast); }}
+                onClick={() => {
+                  if (!active) cue(item.episode, item.podcast);
+                  setPlayerExpanded(true);
+                }}
                 className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 sm:py-2.5 ${
                   active ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
                 }`}
