@@ -32,6 +32,12 @@ interface LikeEntry {
    * the tally dedupes by id.
    */
   mine: Event[];
+  /**
+   * Whose likes the read looked for. The viewer's own read only runs for a
+   * signed-in viewer, so an entry read signed out — or as somebody else — says
+   * nothing about THIS viewer's like, however fresh it is.
+   */
+  viewer: string | null;
 }
 
 /** A read younger than this is reused, so reopening an episode costs nothing. */
@@ -51,20 +57,30 @@ function put(itemGuid: string, entry: LikeEntry): void {
   for (const l of listeners.get(itemGuid) ?? []) l();
 }
 
-function load(itemGuid: string, viewer: string | null): void {
+/**
+ * Read one episode's likes unless a fresh read is already in hand.
+ *
+ * Fresh means young, settled, and read FOR THIS VIEWER. Without the last test a
+ * sign-in within a minute of a signed-out read reused it — and that read never
+ * looked for the viewer's own like, so on a capped episode, or with a relay
+ * override, the tile read un-liked and the next press published a second like.
+ * Signing OUT reuses any read: the count does not depend on who asked.
+ */
+function load(itemGuid: string, viewer: string | null, ownRelays: readonly string[]): void {
   const hit = cache.get(itemGuid, Date.now());
   // A `loading` entry with nothing in flight is one `addMine` made with no read
   // behind it — fresh by age, and still owed a read.
-  if (inflight.has(itemGuid) || (hit && !hit.value.loading && hit.ageMs < FRESH_MS)) return;
+  const fresh = hit && !hit.value.loading && hit.ageMs < FRESH_MS && (viewer === null || hit.value.viewer === viewer);
+  if (inflight.has(itemGuid) || fresh) return;
   inflight.add(itemGuid);
-  if (!hit) put(itemGuid, { read: [], complete: false, loading: true, mine: [] });
-  fetchEpisodeLikes(itemGuid, viewer)
+  if (!hit) put(itemGuid, { read: [], complete: false, loading: true, mine: [], viewer });
+  fetchEpisodeLikes(itemGuid, viewer, ownRelays)
     .then(
-      (r) => put(itemGuid, { read: r.events, complete: r.complete, loading: false, mine: entryFor(itemGuid)?.mine ?? [] }),
+      (r) => put(itemGuid, { read: r.events, complete: r.complete, loading: false, mine: entryFor(itemGuid)?.mine ?? [], viewer }),
       // A failed read keeps what it had and claims nothing: `complete: false`.
       () => {
         const prev = entryFor(itemGuid);
-        put(itemGuid, { read: prev?.read ?? [], complete: false, loading: false, mine: prev?.mine ?? [] });
+        put(itemGuid, { read: prev?.read ?? [], complete: false, loading: false, mine: prev?.mine ?? [], viewer });
       },
     )
     .finally(() => inflight.delete(itemGuid));
@@ -76,11 +92,11 @@ function load(itemGuid: string, viewer: string | null): void {
  * drops it at its horizon — and `{ read: [], loading: false }` would tally the
  * viewer's own like as the only one: an episode 49 people liked reading "1".
  */
-function addMine(itemGuid: string, e: Event): void {
+function addMine(itemGuid: string, e: Event, ownRelays: readonly string[]): void {
   const prev = entryFor(itemGuid);
   if (!prev) {
-    put(itemGuid, { read: [], complete: false, loading: true, mine: [e] });
-    load(itemGuid, e.pubkey);
+    put(itemGuid, { read: [], complete: false, loading: true, mine: [e], viewer: e.pubkey });
+    load(itemGuid, e.pubkey, ownRelays);
     return;
   }
   put(itemGuid, { ...prev, mine: [...prev.mine, e] });
@@ -99,7 +115,8 @@ export interface EpisodeLikes {
  * likes this tile may take back (`tallyLikes`).
  */
 export function useEpisodeLikes(itemGuid: string | undefined, feedGuid?: string | null): EpisodeLikes {
-  const viewer = useApp((s) => s.identity?.pubkey ?? null);
+  const identity = useApp((s) => s.identity);
+  const viewer = identity?.pubkey ?? null;
   const subscribe = useCallback(
     (cb: () => void) => {
       if (!itemGuid) return () => {};
@@ -118,21 +135,31 @@ export function useEpisodeLikes(itemGuid: string | undefined, feedGuid?: string 
     () => (itemGuid ? entryFor(itemGuid) : undefined),
     () => undefined,
   );
-  // `missing` is a dependency on purpose: the cache drops an entry at its
-  // horizon INSIDE `getSnapshot`, and the episode page renders on every playback
-  // tick, so 30 minutes into a long episode the entry vanishes under a mounted
-  // tile. Without this nothing reads again — the tile forgets the viewer's like,
-  // and their next press publishes a second one instead of taking it back.
-  const missing = entry === undefined;
+  // A settled entry read for somebody else — signed out, or before a sign-in
+  // that landed while the read was in flight — never looked for THIS viewer's
+  // own like.
+  const otherViewer = !!entry && !entry.loading && viewer !== null && entry.viewer !== viewer;
+  // `owed` is a dependency on purpose. The cache drops an entry at its horizon
+  // INSIDE `getSnapshot`, and the episode page renders on every playback tick,
+  // so 30 minutes into a long episode the entry vanishes under a mounted tile;
+  // and a sign-in during a read leaves a settled entry read for nobody. Without
+  // this nothing reads again — the tile forgets or never finds the viewer's
+  // like, and their next press publishes a second one instead of taking it back.
+  const owed = entry === undefined || otherViewer;
   useEffect(() => {
-    if (itemGuid) load(itemGuid, viewer);
-  }, [itemGuid, viewer, missing]);
+    // Where the viewer PUBLISHES, so their own read can look there too when it
+    // is not where the count looks (`viewerLikeRelays`).
+    if (itemGuid) load(itemGuid, viewer, identity ? resolvePublishRelays(identity) : []);
+  }, [itemGuid, viewer, owed, identity]);
   const tally = useMemo(() => {
     if (!itemGuid || !entry || entry.loading) return null;
+    // Not a tally for this viewer yet: `null` keeps the tile disabled rather
+    // than offering LIKE to somebody whose like the read never looked for.
+    if (otherViewer) return null;
     const byId = new Map<string, Event>();
     for (const e of [...entry.read, ...entry.mine]) byId.set(e.id, e);
     return tallyLikes([...byId.values()], itemGuid, viewer, feedGuid ?? null);
-  }, [entry, itemGuid, viewer, feedGuid]);
+  }, [entry, itemGuid, viewer, feedGuid, otherViewer]);
   return { tally, complete: entry?.complete ?? false };
 }
 
@@ -144,12 +171,9 @@ export async function likeEpisode(args: {
   feedGuid: string;
   identity: NostrIdentity;
 }): Promise<void> {
-  const note = await publishEpisodeLike({
-    itemGuid: args.itemGuid,
-    feedGuid: args.feedGuid,
-    relays: resolvePublishRelays(args.identity),
-  });
-  addMine(args.itemGuid, note.event);
+  const relays = resolvePublishRelays(args.identity);
+  const note = await publishEpisodeLike({ itemGuid: args.itemGuid, feedGuid: args.feedGuid, relays });
+  addMine(args.itemGuid, note.event, relays);
 }
 
 /** Publish the deletion of `likeIds` and take the like off every tile. */
@@ -158,10 +182,7 @@ export async function unlikeEpisode(args: {
   likeIds: readonly string[];
   identity: NostrIdentity;
 }): Promise<void> {
-  const note = await publishEpisodeUnlike({
-    itemGuid: args.itemGuid,
-    likeIds: args.likeIds,
-    relays: resolvePublishRelays(args.identity),
-  });
-  addMine(args.itemGuid, note.event);
+  const relays = resolvePublishRelays(args.identity);
+  const note = await publishEpisodeUnlike({ itemGuid: args.itemGuid, likeIds: args.likeIds, relays });
+  addMine(args.itemGuid, note.event, relays);
 }

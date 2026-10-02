@@ -51,6 +51,15 @@
 // they never liked, and an unlike there deletes their like of B. So a like
 // whose show `i` tag names ANOTHER feed is not the viewer's to take back here;
 // the COUNT is left alone, filed the way Fountain files it.
+//
+// AND ONE WAY TO NOT SEE YOUR OWN UNLIKE. The count reads the four default
+// relays; the viewer's like and unlike go to their PUBLISH set. That set
+// normally contains every default, but a `bmb:relays` override or the 20-relay
+// cap can leave one out, and then the unlike sits where the count never looks
+// and the like turns itself back on. `viewerLikeRelays` adds the publish relays
+// to the viewer's own read in exactly that case — and only then, since every
+// relay a read asks is one it waits for. `naive()` is the read before the fix:
+// the defaults, always.
 import {
   EXTERNAL_REACTION_KIND,
   DELETION_KIND,
@@ -60,6 +69,7 @@ import {
   unlikeTags,
   tallyLikes,
   isLikeContent,
+  viewerLikeRelays,
 } from '../lib/nostr/like-tally.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -150,6 +160,10 @@ function naiveLikeTags(t) {
 function naiveUnlikeTags(ids) {
   return [...ids.map((id) => ['e', id]), ['k', '17']];
 }
+// The viewer's own read on the count's relays, whatever the publish set is.
+function naiveViewerLikeRelays(countRelays) {
+  return [...countRelays];
+}
 
 // ── Wrong version 2: right about everything but WHO may delete ───────────────
 function anyDeleterTally(events, itemGuid, viewer, feedGuid = null, limit = LIKE_READ_LIMIT) {
@@ -175,8 +189,8 @@ function anyDeleterTally(events, itemGuid, viewer, feedGuid = null, limit = LIKE
   return { count: authors.size, viewerLikeIds, capped: events.length >= limit };
 }
 
-const REAL = { tally: tallyLikes, likeTags, unlikeTags };
-const NAIVE = { tally: naiveTally, likeTags: naiveLikeTags, unlikeTags: naiveUnlikeTags };
+const REAL = { tally: tallyLikes, likeTags, unlikeTags, viewerLikeRelays };
+const NAIVE = { tally: naiveTally, likeTags: naiveLikeTags, unlikeTags: naiveUnlikeTags, viewerLikeRelays: naiveViewerLikeRelays };
 const ANY_DELETER = { ...REAL, tally: anyDeleterTally };
 
 function run(impl, v) {
@@ -195,6 +209,9 @@ const tally = (count, viewerLikeIds = [], capped = false) => ({ count, viewerLik
 // A distinct id and a distinct author per event. Pad with a fixed digit AFTER a
 // prefix, never with a hex digit alone: `'f'.padStart(64, 'f')` and
 // `'ff'.padStart(64, 'f')` are the same key, which undercounts by sixteen.
+// The four defaults as `lib/nostr/relays.ts` writes them, and a write set.
+const DEFAULTS = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.fountain.fm'];
+const WRITE = Array.from({ length: 19 }, (_, i) => `wss://write${i}.example`);
 const many = (n) => Array.from({ length: n }, (_, i) =>
   like(`a${i.toString(16).padStart(63, '0')}`, `b${i.toString(16).padStart(63, '0')}`));
 
@@ -369,6 +386,32 @@ const VECTORS = [
     label: 'an unlike naming nothing is refused — it would be a kind:5 deleting nothing',
     kind: 'unlikeTags', args: [[], PAIR_ITEM],
     expect: 'THROW',
+  },
+  // viewerLikeRelays — where the viewer's own like and unlike can be read
+  {
+    label: 'a publish set holding every default adds nothing — the count already reads them',
+    kind: 'viewerLikeRelays', args: [DEFAULTS, [...WRITE.slice(0, 3), ...DEFAULTS]],
+    expect: DEFAULTS, alsoNaive: true,
+  },
+  {
+    label: 'an override naming every default and more still adds nothing',
+    kind: 'viewerLikeRelays', args: [DEFAULTS, [...DEFAULTS, 'wss://mine.example']],
+    expect: DEFAULTS, alsoNaive: true,
+  },
+  {
+    label: 'an override with NO default: its relays are read too, or an unlike there is never seen',
+    kind: 'viewerLikeRelays', args: [DEFAULTS, ['ws://127.0.0.1:7447']],
+    expect: [...DEFAULTS, 'ws://127.0.0.1:7447'],
+  },
+  {
+    label: 'an override keeping one default: only its other relays are added',
+    kind: 'viewerLikeRelays', args: [DEFAULTS, ['wss://relay.damus.io', 'wss://mine.example']],
+    expect: [...DEFAULTS, 'wss://mine.example'],
+  },
+  {
+    label: 'the 20 cap cut a default: the write relays are read too',
+    kind: 'viewerLikeRelays', args: [DEFAULTS, [...WRITE, DEFAULTS[0]]],
+    expect: [...DEFAULTS, ...WRITE],
   },
 ];
 

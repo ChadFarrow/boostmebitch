@@ -89,6 +89,30 @@ export function unlikeTags(likeIds: readonly string[], itemGuid: string): string
   ];
 }
 
+/**
+ * Where to read the viewer's OWN likes and unlikes: every relay the count
+ * reads, plus — only when the viewer's publish set leaves one of those out —
+ * the publish relays the count never asks.
+ *
+ * The count reads `countRelays` (the defaults). The viewer's events go to their
+ * PUBLISH set, which normally contains every default, since
+ * `resolvePublishRelays` unions them in — so the count already holds them. A
+ * `bmb:relays` override, or the 20-relay cap, can leave a default out, and then
+ * a like or an unlike may sit only where the count never looks: the tile turns
+ * a like back on after the viewer took it back, or offers a second like. The
+ * extra relays are asked ONLY in that case, because a read waits for every
+ * relay it asks and a quiet one costs the whole ceiling.
+ *
+ * Both lists come through the same sanitizer (`sanitizeRelays`, which the
+ * defaults are already written in), so an exact comparison is the right one.
+ */
+export function viewerLikeRelays(countRelays: readonly string[], publishRelays: readonly string[]): string[] {
+  const publish = new Set(publishRelays);
+  if (countRelays.every((r) => publish.has(r))) return [...countRelays];
+  const asked = new Set(countRelays);
+  return [...countRelays, ...[...publish].filter((r) => !asked.has(r))];
+}
+
 /** The fields the tally reads — a nostr-tools `Event` satisfies it. */
 export interface LikeWireEvent {
   id: string;
