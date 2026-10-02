@@ -9,6 +9,7 @@ import {
   itemLikeTarget,
   likeTags,
   unlikeTags,
+  viewerLikeRelays,
 } from './like-tally';
 import { assertPublished, signAndPublish, type PublishedNote } from './publish';
 import { DEFAULT_RELAYS } from './relays';
@@ -43,32 +44,41 @@ export interface EpisodeLikesRead {
  * **One filter for both kinds**, which works only because `unlikeTags` puts
  * the item's `i` tag on the deletion. `DEFAULT_RELAYS` is where Fountain's
  * likes are — relay.fountain.fm held 62 events for one episode on 2026-10-02
- * where the other three held one between them — and it is normally part of
- * where this app's own go, since `resolvePublishRelays` unions it in. Its doc
- * names the four narrow cases where it is not; for a like the cost is a tile
- * that reads un-liked and a second like on the next press, never a lost one.
+ * where the other three held one between them — so the COUNT reads those and
+ * nothing wider.
  *
  * `collectEventsDetailed` and not the feed path, because this is a COUNT: it
  * waits for every relay instead of exiting on a quiet timer, which would
  * truncate the set.
  *
- * **The viewer's own likes get a second, narrow read when the first one
- * filled the cap.** Their like may sit past the 500th event, and without it in
- * hand the tile cannot offer to take it back.
+ * **The viewer's own likes get a second, narrow read, IN PARALLEL with the
+ * count**, for two reasons. The count stops at 500 events, and the viewer's
+ * like may sit past the 500th — without it in hand the tile cannot offer to
+ * take it back. And the viewer PUBLISHES to `ownRelays`, which a `bmb:relays`
+ * override or the 20-relay cap can leave short of a default, so their like or
+ * unlike may sit only where the count never looks (`viewerLikeRelays`). It used
+ * to run only after a capped count, in series: two full windows on the
+ * episodes that most need it, and no answer at all for an override.
  */
 export async function fetchEpisodeLikes(
   itemGuid: string,
   viewer: string | null,
-  relays: string[] = DEFAULT_RELAYS,
+  ownRelays: readonly string[] = [],
 ): Promise<EpisodeLikesRead> {
+  const relays = DEFAULT_RELAYS;
   const kinds = [EXTERNAL_REACTION_KIND, DELETION_KIND];
   const target = itemLikeTarget(itemGuid);
-  const all = await collectEventsDetailed(relays, { kinds, '#i': [target], limit: LIKE_READ_LIMIT });
+  const [all, mine] = await Promise.all([
+    collectEventsDetailed(relays, { kinds, '#i': [target], limit: LIKE_READ_LIMIT }),
+    // A failure here must not take the COUNT down with it: without the viewer's
+    // own events the tile can still show the number, as it did before.
+    viewer
+      ? collectEventsDetailed(viewerLikeRelays(relays, ownRelays), { kinds, authors: [viewer], '#i': [target] })
+        .catch(() => null)
+      : null,
+  ]);
   const byId = new Map(all.events.map((e) => [e.id, e]));
-  if (viewer && all.events.length >= LIKE_READ_LIMIT) {
-    const mine = await collectEventsDetailed(relays, { kinds, authors: [viewer], '#i': [target] });
-    for (const e of mine.events) byId.set(e.id, e);
-  }
+  for (const e of mine?.events ?? []) byId.set(e.id, e);
   return { events: [...byId.values()], complete: all.complete && all.reached === relays.length };
 }
 

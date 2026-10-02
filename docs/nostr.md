@@ -1541,9 +1541,26 @@ distinct pubkeys with a standing `+` or `''`. A `-` is a dislike and an emoji a
 reaction; neither counts.
 
 **Where they are.** relay.fountain.fm held 62 events for that episode where
-damus, primal and nos.lol held one between them, so the read is
+damus, primal and nos.lol held one between them, so the COUNT reads
 `DEFAULT_RELAYS` and nothing wider. It returned exactly 500 to `limit: 2000`,
 which is why `LIKE_READ_LIMIT` is 500 and a read that fills it prints `500+`.
+
+**The viewer's own likes are a second read, in parallel, and it can look
+wider.** Two things put the viewer's like where the count does not see it. The
+count stops at 500, and their like may be the 501st. And they PUBLISH to
+`resolvePublishRelays`, which normally holds every default but loses one under
+a `bmb:relays` override or the 20-relay cap — then an unlike lands only where
+the count never looks, and the like turns itself back on at the next load.
+`viewerLikeRelays` (pinned by `check:likes`) reads the defaults plus, ONLY in
+that case, the publish relays the count does not ask; every relay a read asks
+is one it waits for, so the common case asks nothing new. It used to run only
+after a capped count, in series — two full windows on the episodes that most
+need it — and never for an override. A failed viewer read never takes the count
+down with it. **The store keys freshness by viewer too**: a read made signed
+out never looked for anybody's like, so a sign-in within the minute reads again,
+and until it lands the tile has no tally and stays disabled. Partial acceptance
+(the defaults refused, only a write relay took the like) is still a cost: the
+read does not ask the write relays when the publish set holds every default.
 
 **An unlike is a NIP-09 kind:5, and it carries the item `i` tag.** The read is
 ONE filter, `{kinds: [17, 5], '#i': [item]}`. A bare deletion (`e` + `k` only)
