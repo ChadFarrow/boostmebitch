@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { storage } from '../storage';
 import { noteHasSubstance, type DiscoveredNote } from './discover';
+import { dropBoostEchoes } from './boost-echo';
 
 /**
  * Stale-while-revalidate hook for any DiscoveredNote[] surface.
@@ -205,20 +206,36 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
 }
 
 /**
- * The notes a feed actually renders: the muted authors dropped, and the
- * notes with nothing to show (`noteHasSubstance`) dropped.
+ * The notes a feed actually renders: the muted authors dropped, the notes with
+ * nothing to show (`noteHasSubstance`) dropped, and a bot's announcement of a
+ * boost dropped when the note the sender signed about it is on screen too
+ * (`dropBoostEchoes`, docs/nostr.md "Bot announcements of a boost").
  *
  * ONE definition, because the podcast feed and the episode feed each carried a
- * byte-identical copy of this `useMemo` — the shape that drifts. Memoised on
- * the two inputs, since a feed can hold hundreds of notes and `mutedPubkeys`
- * changes identity on every mute-list hydrate.
+ * byte-identical copy of this filter, and the global feed and the boost
+ * explorer carried two more — the shape that drifts. A surface that renders
+ * `<NoteCard>`s from a fetched list goes through this.
+ *
+ * The echo pass runs LAST, on what survived the other two, on purpose: it may
+ * only hide an announcement when the sender's own card is actually rendered.
+ * Run first, a muted sender or an empty-bodied note would take the bot's card
+ * with it and the boost would leave the feed altogether.
  */
+export function visibleNotes(
+  notes: readonly DiscoveredNote[],
+  mutedPubkeys: ReadonlySet<string>,
+): DiscoveredNote[] {
+  return dropBoostEchoes(notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)));
+}
+
+/** `visibleNotes`, memoised on its two inputs: a feed can hold hundreds of
+ *  notes and `mutedPubkeys` changes identity on every mute-list hydrate. */
 export function useVisibleNotes(
   notes: DiscoveredNote[] | null,
   mutedPubkeys: ReadonlySet<string>,
 ): DiscoveredNote[] | null {
   return useMemo(
-    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : notes),
+    () => (notes ? visibleNotes(notes, mutedPubkeys) : notes),
     [notes, mutedPubkeys],
   );
 }

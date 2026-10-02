@@ -2,8 +2,8 @@
 import { useMemo } from 'react';
 import {
   fetchAllPodcastNotes,
-  noteHasSubstance,
   useNostrFeed,
+  visibleNotes,
   indexedGlobalNotes,
   useViewerReposts,
   type DiscoveredNote,
@@ -65,9 +65,7 @@ export function GlobalNostrFeed() {
         boost: b,
       }));
     }
-    const items: FeedItem[] = notes
-      .filter((note) => !mutedPubkeys.has(note.pubkey))
-      .filter(noteHasSubstance)
+    const items: FeedItem[] = visibleNotes(notes, mutedPubkeys)
       .map((note) => ({
         kind: 'note' as const,
         ts: note.createdAt * 1000,
