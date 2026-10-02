@@ -13,25 +13,39 @@
 // controls as SIBLINGS of the row's tap target (a button may not contain a
 // button). No index column — the order here is time, which the show line
 // already says, not a play order anybody chose.
+//
+// THE TAP OPENS THE EPISODE PAGE, it does not play. Asked for from the phone
+// on 2026-10-02: an episode already heard is one you came back to look at or
+// boost, and its page has the play control. The handoff is <FavoritesPage>'s
+// `openItem`: the show first, then the episode from a fresh feed read — never
+// the stored copy, which is trimmed and may carry a value block the feed has
+// since dropped (the reason <HistoryBoostButton> reloads too).
 
 import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/store';
+import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { storage } from '@/lib/storage';
 import { boostedOnDevice, epKey, PLAY_HISTORY_CAP } from '@/lib/util';
 import { timeAgo } from '@/lib/format';
-import type { StoredBoost } from '@/lib/types';
+import type { Podcast, Episode, StoredBoost } from '@/lib/types';
 import { PodcastCover } from '../podcast-cover';
 import { PlayedMark } from './played-mark';
 import { ResumeLeft } from './resume-left';
 import { HistoryBoostButton } from './history-boost-button';
 
+/** Read by `<HomePage>`'s back control — see `showOrigin` in lib/store.ts. */
+const LISTEN_ORIGIN = { path: '/listen', label: 'listen' };
+
 export function HistoryList() {
+  const router = useRouter();
   const history = useApp((s) => s.playHistory);
   const current = useApp((s) => s.current);
-  const isPlaying = useApp((s) => s.isPlaying);
   const saved = useApp((s) => s.playHistorySaved);
-  const togglePlay = useApp((s) => s.togglePlay);
-  const play = useApp((s) => s.play);
+  const selectPodcast = useApp((s) => s.selectPodcast);
+  const setShowOrigin = useApp((s) => s.setShowOrigin);
+  const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
+  const openEpisode = useApp((s) => s.openEpisode);
   const removeFromHistory = useApp((s) => s.removeFromHistory);
   const clearHistory = useApp((s) => s.clearHistory);
   const identity = useApp((s) => s.identity);
@@ -46,6 +60,23 @@ export function HistoryList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [identity?.npub, boostsTick],
   );
+
+  async function openItem(episode: Episode, podcast: Podcast) {
+    // The show FIRST and unconditionally — `openItem` in <FavoritesPage> gives
+    // the three reasons. `setShowOrigin` AFTER it, because it clears the field.
+    selectPodcast(podcast);
+    setShowOrigin(LISTEN_ORIGIN);
+    router.push('/');
+    if (!episode.guid) return;
+    const loaded = await loadEpisodeFromFeed(podcast.id, episode.guid);
+    if (!loaded) return;
+    // A second tap, or BACK, during the fetch wins.
+    const selected = useApp.getState().selectedPodcast;
+    if (!selected || selected.id !== podcast.id) return;
+    syncSelectedPodcast(loaded.podcast);
+    // No episode: the feed no longer lists it. The show page is on screen.
+    if (loaded.episode) openEpisode(loaded.episode);
+  }
 
   // The page draws the empty state; this list only ever draws rows.
   if (!history.length) return null;
@@ -90,18 +121,11 @@ export function HistoryList() {
             <li key={key} className={`flex items-center gap-1 sm:gap-2 -mx-2 pr-2 transition ${active ? 'bg-bolt/10' : ''}`}>
               <button
                 type="button"
-                // The active row TOGGLES, as in <QueueList>: re-selecting the
-                // current item would write `isPlaying: true` over `true` and do
-                // nothing at all.
-                onClick={() => (active ? togglePlay() : play(item.episode, item.podcast))}
+                onClick={() => { void openItem(item.episode, item.podcast); }}
                 className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 sm:py-2.5 ${
                   active ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
                 }`}
-                aria-label={
-                  active && isPlaying ? `Pause ${item.episode.title}`
-                    : active ? `Resume ${item.episode.title}`
-                      : `Play ${item.episode.title}`
-                }
+                aria-label={`Open ${item.episode.title}`}
               >
                 <PodcastCover
                   image={item.episode.image ?? item.podcast.image}
