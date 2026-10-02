@@ -560,6 +560,21 @@ export interface QueueItem {
 }
 
 /**
+ * One entry in the play history on the Listen tab: a podcast episode this
+ * device played for at least a minute, and when (`at`, epoch ms of the listen).
+ *
+ * The queue's PAIR, for the queue's reason — a history row plays again and
+ * opens BOOST, so its show has to travel with it — plus a time. The episode is
+ * `trimForQueue`d and the show is `queueShowFor`'s, exactly as an enqueue
+ * stores them. BOOST does not pay from this copy: it loads the episode from its
+ * feed again first (`<HistoryBoostButton>`), because a stored value block can
+ * name a payee the feed has since dropped.
+ */
+export interface HistoryItem extends QueueItem {
+  at: number;
+}
+
+/**
  * A favorited episode. Keyed by `itemGuid` (NIP-73 `podcast:item:guid:`), with
  * `feedGuid` carried alongside because PI's /episodes/byguid wants
  * `podcastguid` — an item guid on its own is not enough to resolve one.
