@@ -120,8 +120,18 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  */
 function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   if (!podcast.podcastGuid) return null;
-  const url = `${SITE_ORIGIN}/?podcast=${podcast.podcastGuid}`;
-  return episode?.guid ? `${url}&episode=${encodeURIComponent(episode.guid)}` : url;
+  return siteLandingUrl(podcast.podcastGuid, episode?.guid);
+}
+
+/**
+ * The same deep link from bare guids, for a publisher holding no `Podcast` —
+ * the episode like (`likes.ts`) writes it as its NIP-73 `i` hints. Everything
+ * said above holds: it goes into a signed event, so the host is `BRAND.origin`
+ * and never `window.location`, which on a dev server is `localhost`.
+ */
+export function siteLandingUrl(feedGuid: string, itemGuid?: string): string {
+  const url = `${SITE_ORIGIN}/?podcast=${feedGuid}`;
+  return itemGuid ? `${url}&episode=${encodeURIComponent(itemGuid)}` : url;
 }
 
 /**

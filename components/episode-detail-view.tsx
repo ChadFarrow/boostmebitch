@@ -20,6 +20,7 @@ import { CopyLinkButton } from './copy-link-button';
 import { BoltIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart } from './fav-heart';
+import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
 import { QueueButton } from './queue-button';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
@@ -323,6 +324,9 @@ export function EpisodeDetailView() {
               rare actions live, and queueing is the feature. */}
           <QueueButton episode={episode} podcast={podcast} size="tile" />
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
+          {/* Beside the heart and never merged with it: ♡ is a FAVORITE in
+              this app's synced list, 👍 is a public kind:17 other apps count. */}
+          <EpisodeLikeButton episode={episode} podcast={podcast} />
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
           <PlayedButton episode={episode} podcast={podcast} />
           <EpisodeShareButton episode={episode} podcast={podcast} />
