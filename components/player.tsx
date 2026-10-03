@@ -498,16 +498,45 @@ export function Player() {
       // re-source would seek straight back to the stale offset it exists to
       // escape. Live means live — there is nothing else to resume to.
       const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
-      const seekOnLoad = () => { if (startAt > 0) el.currentTime = startAt; };
 
       // A plain progressive video (mp4/webm) — an alternateEnclosure rendition —
       // plays natively; only HLS needs hls.js. isHlsUrl(url) distinguishes them.
       if (!isHlsUrl(url)) {
+        // ONE SEEK AT `loadedmetadata` IS NOT ENOUGH ON iOS. Safari accepts the
+        // assignment there and can still start the picture at 0:00 — reported
+        // from an iPhone as "switching to video mid-episode starts it over".
+        // So the start position is re-checked at `canplay` and `playing` and
+        // re-applied while the element is still short of it. It stops for good
+        // once it has landed, after `playing` (the last chance before the
+        // listener sees the wrong place), or at the first seek it did not make
+        // — a scrub in that window is the listener's, and wins.
+        const SEEK_EVENTS = ['loadedmetadata', 'canplay', 'playing'] as const;
+        let landed = startAt <= 0;
+        let ours = false;
+        const seekToStart = (e: Event) => {
+          if (landed) return;
+          if (Math.abs(el.currentTime - startAt) < 2) return done();
+          ours = true;
+          el.currentTime = startAt;
+          if (e.type === 'playing') done();
+        };
+        const onSeeking = () => {
+          if (ours) { ours = false; return; }
+          done();
+        };
+        const done = () => {
+          landed = true;
+          for (const ev of SEEK_EVENTS) el.removeEventListener(ev, seekToStart);
+          el.removeEventListener('seeking', onSeeking);
+        };
         el.src = url;
-        el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
+        if (!landed) {
+          for (const ev of SEEK_EVENTS) el.addEventListener(ev, seekToStart);
+          el.addEventListener('seeking', onSeeking);
+        }
         if (isPlayingRef.current) playOrPark(el, () => setPlaying(false));
         return () => {
-          el.removeEventListener('loadedmetadata', seekOnLoad);
+          done();
           el.removeAttribute('src');
           el.load();
         };
