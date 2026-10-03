@@ -95,7 +95,7 @@ export function GlobalNostrFeed() {
     <FeedSection<FeedItem>
       heading={
         <h2 className="font-display text-2xl">
-          <span className="text-nostr">#</span> Global boost feed
+          <span className="text-nostr">#</span> Global boosts &amp; comments
         </h2>
       }
       notes={merged}

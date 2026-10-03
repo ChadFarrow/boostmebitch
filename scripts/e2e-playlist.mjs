@@ -374,7 +374,7 @@ const mounts = async (url, needle, what) => {
 // text is still proof the dynamic() import resolved.
 await mounts(`${APP}/live`, 'Live on Nostr', '<NostrLiveStreams>');
 // The home page's own Nostr section, below the hero. Same skeleton rule.
-await mounts(`${APP}/`, 'Global boost feed', '<GlobalNostrFeed>');
+await mounts(`${APP}/`, 'Global boosts & comments', '<GlobalNostrFeed>');
 
 await mounts(
   `${APP}/?podcast=${SHOW_GUID}&episode=${encodeURIComponent(EPISODE_GUID)}`,
