@@ -2,6 +2,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { storage } from '../storage';
 import { noteHasSubstance, type DiscoveredNote } from './discover';
+import { dropBoostEchoes } from './boost-echo';
+import { withoutDeleted } from './note-deletions';
 
 /**
  * Stale-while-revalidate hook for any DiscoveredNote[] surface.
@@ -31,9 +33,14 @@ import { noteHasSubstance, type DiscoveredNote } from './discover';
  * and the only shape that cannot lose one.
  *
  * A note the index holds and relays have dropped therefore survives. That is
- * the intended behaviour for a cache of public, immutable events; a note its
- * author actually deleted is tombstoned at ingest by the kind:5 handler, so it
- * never reaches a bundle in the first place.
+ * the intended behaviour for a cache of public, immutable events.
+ *
+ * THE ONE REMOVAL IS A NOTE ITS AUTHOR DELETED (NIP-09). That is positive,
+ * signed evidence, never an absence: the relay pass reads the kind:5 events and
+ * reports the ids through `onDeleted`, and they leave `shown`, the cache, and
+ * every later commit from any source. The index tombstones the same notes at
+ * ingest, but it can miss a kind:5 and a relay that ignores NIP-09 keeps
+ * serving the note, so the union alone would hold it on screen for good.
  */
 export function useNostrFeed({
   cacheKey,
@@ -49,6 +56,8 @@ export function useNostrFeed({
      *  boost-explorer fetchers must not implement it (see `FetchOpts.onRoots`),
      *  and a fetcher that ignores it simply commits once at the end. */
     onRoots?: (roots: DiscoveredNote[]) => void;
+    /** Ids whose own author published a kind:5 naming them. */
+    onDeleted?: (ids: string[]) => void;
   }) => Promise<DiscoveredNote[]>;
   /** Optional fast path. Returns null when there is no index, it is
    *  unreachable, or it has nothing — never an empty array meaning "none". */
@@ -73,10 +82,14 @@ export function useNostrFeed({
   // render state. The index and relay passes each merge into this rather than
   // replacing it.
   const shown = useRef<DiscoveredNote[]>([]);
+  // Notes their author deleted, kept for the life of the hook. Every commit
+  // filters by it, because the index pass, a later relay commit, or the cache
+  // on the next deps change can each bring one back.
+  const deleted = useRef<Set<string>>(new Set());
 
   function commit(incoming: DiscoveredNote[], myGen: number): void {
     if (myGen !== gen.current) return; // superseded
-    const merged = mergeNotes(shown.current, incoming);
+    const merged = withoutDeleted(mergeNotes(shown.current, incoming), deleted.current);
     shown.current = merged;
     setNotes(merged);
     // `loading` means "there is nothing to show yet", NOT "a fetch is running".
@@ -109,7 +122,15 @@ export function useNostrFeed({
       // Three commits on a cold relay-only load, not one: the roots as soon as
       // the kind:1 scan returns, then the assembled tree. `commit` unions by
       // id, so each can only add.
-      const result = await fetcher({ onRoots: (roots) => commit(roots, myGen) });
+      const result = await fetcher({
+        onRoots: (roots) => commit(roots, myGen),
+        onDeleted: (ids) => {
+          for (const id of ids) deleted.current.add(id);
+          // An empty commit: it re-filters what is on screen and rewrites the
+          // cache without the deleted notes.
+          commit([], myGen);
+        },
+      });
       if (myGen !== gen.current) return; // superseded
       commit(result, myGen);
     } catch (e) {
@@ -130,8 +151,8 @@ export function useNostrFeed({
     shown.current = [];
     const cached = storage.feedNotes.get(cacheKey);
     if (cached) {
-      shown.current = cached;
-      setNotes(cached);
+      shown.current = withoutDeleted(cached, deleted.current);
+      setNotes(shown.current);
     }
     refresh();
     // Bump the invalidation counter on cleanup so any in-flight fetch bails.
@@ -209,20 +230,36 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
 }
 
 /**
- * The notes a feed actually renders: the muted authors dropped, and the
- * notes with nothing to show (`noteHasSubstance`) dropped.
+ * The notes a feed actually renders: the muted authors dropped, the notes with
+ * nothing to show (`noteHasSubstance`) dropped, and a bot's announcement of a
+ * boost dropped when the note the sender signed about it is on screen too
+ * (`dropBoostEchoes`, docs/nostr.md "Bot announcements of a boost").
  *
  * ONE definition, because the podcast feed and the episode feed each carried a
- * byte-identical copy of this `useMemo` — the shape that drifts. Memoised on
- * the two inputs, since a feed can hold hundreds of notes and `mutedPubkeys`
- * changes identity on every mute-list hydrate.
+ * byte-identical copy of this filter, and the global feed and the boost
+ * explorer carried two more — the shape that drifts. A surface that renders
+ * `<NoteCard>`s from a fetched list goes through this.
+ *
+ * The echo pass runs LAST, on what survived the other two, on purpose: it may
+ * only hide an announcement when the sender's own card is actually rendered.
+ * Run first, a muted sender or an empty-bodied note would take the bot's card
+ * with it and the boost would leave the feed altogether.
  */
+export function visibleNotes(
+  notes: readonly DiscoveredNote[],
+  mutedPubkeys: ReadonlySet<string>,
+): DiscoveredNote[] {
+  return dropBoostEchoes(notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)));
+}
+
+/** `visibleNotes`, memoised on its two inputs: a feed can hold hundreds of
+ *  notes and `mutedPubkeys` changes identity on every mute-list hydrate. */
 export function useVisibleNotes(
   notes: DiscoveredNote[] | null,
   mutedPubkeys: ReadonlySet<string>,
 ): DiscoveredNote[] | null {
   return useMemo(
-    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : notes),
+    () => (notes ? visibleNotes(notes, mutedPubkeys) : notes),
     [notes, mutedPubkeys],
   );
 }

@@ -30,7 +30,7 @@ async function waitFor(fn, what, timeoutMs = 8000) {
 
 const db = getPool(DATABASE_URL);
 await migrate(DATABASE_URL);
-await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state cascade');
+await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state, deletion_requests cascade');
 
 const SK = generateSecretKey();
 const PK = getPublicKey(SK);
@@ -174,6 +174,51 @@ await waitFor(
   async () => (await count('select count(*)::int as n from events where id = $1 and deleted_at is not null', [live.id])) === 1,
   'a kind:5 arriving later tombstones a note already stored',
 );
+
+// --- deletion arriving BEFORE the note --------------------------------------
+//
+// Relays serve history out of order, and the kind:5 reaches this index through
+// the tracked group while its note may still be a backfill page away. The
+// kind:5 used to be applied to the rows that existed and then forgotten, so the
+// note landed live afterwards. Driven through `ingestEvent` directly, because
+// the arrival ORDER is the whole case and a relay round trip cannot pin it.
+{
+  const { ingestEvent, emptyStats } = await import('../src/store.ts');
+  const early = sign({
+    kind: 1, created_at: NOW - 5000, content: 'deleted before we saw it',
+    tags: [['k', 'podcast:guid'], ['i', `podcast:guid:${FEED}`]],
+  });
+  const earlyDeletion = sign({ kind: 5, created_at: NOW - 4000, tags: [['e', early.id]] });
+  await ingestEvent(db, earlyDeletion, emptyStats());
+  await ingestEvent(db, early, emptyStats());
+  ok((await count('select count(*)::int as n from events where id = $1 and deleted_at is not null', [early.id])) === 1,
+     'a note arriving AFTER its own kind:5 is stored tombstoned');
+
+  // The must-still-work half: a request from someone else is remembered under
+  // THEIR pubkey and must never match this author's note.
+  const other = sign({
+    kind: 1, created_at: NOW - 5001, content: 'a stranger asked to delete this',
+    tags: [['k', 'podcast:guid'], ['i', `podcast:guid:${FEED}`]],
+  });
+  await ingestEvent(db, finalizeEvent({ kind: 5, created_at: NOW - 4000, content: '', tags: [['e', other.id]] }, generateSecretKey()), emptyStats());
+  await ingestEvent(db, other, emptyStats());
+  ok((await count('select count(*)::int as n from events where id = $1 and deleted_at is null', [other.id])) === 1,
+     'a kind:5 from a DIFFERENT author that arrived first does not tombstone the note');
+
+  // Concurrent arrival: the indexer's `take` is fire-and-forget, so the two
+  // reach the store at once. Run many pairs in parallel; the advisory lock is
+  // what keeps every one of them tombstoned.
+  const pairs = Array.from({ length: 40 }, (_, i) => {
+    const n = sign({ kind: 1, created_at: NOW - 6000 - i, content: `race ${i}`, tags: [['k', 'podcast:guid']] });
+    return [n, sign({ kind: 5, created_at: NOW - 3000, tags: [['e', n.id]] })];
+  });
+  await Promise.all(pairs.flatMap(([n, d], i) =>
+    i % 2 ? [ingestEvent(db, d, emptyStats()), ingestEvent(db, n, emptyStats())]
+          : [ingestEvent(db, n, emptyStats()), ingestEvent(db, d, emptyStats())]));
+  const raced = await count('select count(*)::int as n from events where id = any($1::text[]) and deleted_at is not null',
+    [pairs.map(([n]) => n.id)]);
+  ok(raced === pairs.length, `every note raced against its own kind:5 ends tombstoned (${raced}/${pairs.length})`);
+}
 
 // --- a deletion naming someone else own note --------------------------------
 const stranger = generateSecretKey();

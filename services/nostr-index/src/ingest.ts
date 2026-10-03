@@ -36,7 +36,9 @@ export const STORABLE_KINDS = new Set([0, 1, 6, 9735, 30311]);
  *  is published by the streamer and only ever read here. */
 export const LIVE_STREAM_KIND = 30311;
 
-/** kind:5 is consumed at ingest (it tombstones rows) and never stored. */
+/** kind:5 is consumed at ingest and never stored as an event: it tombstones
+ *  rows, and its targets go into `deletion_requests` so a note arriving after
+ *  it is stored tombstoned (005_deletion_requests.sql). */
 export const DELETION_KIND = 5;
 
 export const FORBIDDEN_KINDS = new Set([3, 4, 1059, 10000, 10002, 10333, 30078]);

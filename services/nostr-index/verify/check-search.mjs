@@ -167,7 +167,7 @@ const db = getPool(DATABASE_URL);
 await migrate(DATABASE_URL);
 // Fresh every run: a check that depends on leftovers from the last one is not
 // a check.
-await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state cascade');
+await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state, deletion_requests cascade');
 
 const NOW = 1_750_000_000;
 const keys = {};

@@ -1515,6 +1515,161 @@ stops the next attempt retrying. Nothing is recorded here, so an event that
 reached no relay costs one missing receipt and nothing else. The accepted-relay
 count is logged instead, so "why are there no receipts?" stays answerable.
 
+## Episode likes (NIP-25 kind:17)
+
+The 👍 tile on the episode page and in the fullscreen player's ⋯ menu.
+`lib/nostr/like-tally.ts` holds the rules (import-free, pinned by
+`check:likes`), `lib/nostr/likes.ts` the read and the two publishers,
+`lib/use-episode-likes.ts` the one store both tiles share, and
+`components/episode-like-button.tsx` the tile.
+
+**Fountain's shape IS the format, because nobody else writes it.** NIP-25 says
+a reaction to something that is not a Nostr event MUST be kind:17 with NIP-73
+`k` + `i` tags. Measured 2026-10-02 on the four `DEFAULT_RELAYS`: 508 podcast
+kind:17s, every one Fountain's, every one content `+` and the same four tags —
+`k podcast:item:guid`, `i podcast:item:guid:<guid> <hint>`, `k podcast:guid`,
+`i podcast:guid:<guid> <hint>`. None was a like of a show alone. `likeTags`
+reproduces that byte for byte (`check:likes` asserts it against the event Chad
+pasted), plus `client`. The hints are `siteLandingUrl` — `BRAND.origin`, never
+`window.location`, which is `localhost` on a dev server and would go into a
+signed event. It encodes BOTH guids, because a feed guid is a feed-supplied
+string however often it is a UUID, and a `&` or `#` in it breaks a link no one
+can edit; for a UUID the encoding is the identity. A boost note's track hints
+call it too, so the two can no longer encode differently. The `podcast:guid` is the item's PARENT feed, by
+`<FavEpisodeHeart>`'s rule: a playlist that lists a track is not its show.
+
+**Count people, not events.** Fountain publishes each like TWICE, about two
+seconds apart — one episode held 62 kind:17s from 49 people. The number is the
+distinct pubkeys with a standing `+` or `''`. A `-` is a dislike and an emoji a
+reaction; neither counts.
+
+**Where they are.** relay.fountain.fm held 62 events for that episode where
+damus, primal and nos.lol held one between them, so the COUNT reads
+`DEFAULT_RELAYS` and nothing wider. It returned exactly 500 to `limit: 2000`,
+which is why `LIKE_READ_LIMIT` is 500 and a read that fills it prints `500+`.
+
+**The viewer's own likes are a second read, in parallel, and it can look
+wider.** Two things put the viewer's like where the count does not see it. The
+count stops at 500, and their like may be the 501st. And they PUBLISH to
+`resolvePublishRelays`, which normally holds every default but loses one under
+a `bmb:relays` override or the 20-relay cap — then an unlike lands only where
+the count never looks, and the like turns itself back on at the next load.
+`viewerLikeRelays` (pinned by `check:likes`) reads the defaults plus, ONLY in
+that case, the publish relays the count does not ask; every relay a read asks
+is one it waits for, so the common case asks nothing new. It used to run only
+after a capped count, in series — two full windows on the episodes that most
+need it — and never for an override. A failed viewer read never takes the count
+down with it. **The store keys freshness by viewer too**: a read made signed
+out never looked for anybody's like, so a sign-in within the minute reads again,
+and until it lands the tile has no tally and stays disabled. Partial acceptance
+(the defaults refused, only a write relay took the like) is still a cost: the
+read does not ask the write relays when the publish set holds every default.
+
+**An unlike is a NIP-09 kind:5, and it carries the item `i` tag.** The read is
+ONE filter, `{kinds: [17, 5], '#i': [item]}`. A bare deletion (`e` + `k` only)
+never matches it, so on a relay that keeps deleted events the like reads back
+on the next load and the tile turns itself on again. The one real kind:17
+deletion on the default relays already carries `e`, `k:17` and `i` (another
+app's "vote retracted"), so this follows a convention rather than inventing
+one. The cost, stated: a deletion another app writes WITHOUT the `i` tag is
+invisible to this read. None exists today — **Fountain never deletes a like**,
+so whether Fountain's own app honors ours is not ours to decide.
+
+**A deletion counts only from the like's own author.** A relay that honors
+NIP-09 checks that; one that does not hands every reader every kind:5, and a
+tally that honors them blindly lets anyone un-like anyone. `check:likes`
+replays that wrong version (`anyDeleter`) as well as `naive()`.
+
+**A like filed under ANOTHER show is not the viewer's to take back.** The read
+is filed under the item guid alone, and item guids are not unique across feeds
+(`1`, `ep-1`), so the viewer's like of guid `1` on show B arrives in show A's
+read. Offered as theirs, it lit A's tile for a show they never liked, and an
+unlike on A deleted their like of B. `tallyLikes` takes the parent `feedGuid`
+and leaves a like whose `podcast:guid:` tags name only OTHER feeds out of
+`viewerLikeIds`; a like naming no show at all stays in, because nothing says it
+is another show's. The COUNT is not narrowed — it is filed the way Fountain
+files it. Pinned by `check:likes`.
+
+**The tile never prints a zero.** A count is a claim, and a read that has not
+answered, or answered from fewer relays than it asked, says nothing about zero.
+No likes and no answer both read plain LIKE. Muted pubkeys are counted: the
+tile shows a number, never a person, so there is nothing of theirs to hide.
+
+**And a number from a partial read prints `N+`, never `N`.** `fetchEpisodeLikes`
+reports `complete` only when every relay it ASKED connected and answered —
+stricter than `collectEventsDetailed`'s own `complete`, which drops a relay that
+never connected from the denominator. That is right for "is this empty set
+real" and wrong for this count, whose data sits on ONE relay: with
+relay.fountain.fm unreachable, the other three answered, the read called itself
+complete, and an episode 49 people liked read as an exact 1. `N+` is true of an
+exact N too, so the `+` cannot overstate.
+
+**Signed in, the tile is disabled until the first read lands.** Until then a
+press cannot know whether it is a like or an unlike: a viewer who had already
+liked published a second like, the store kept the read `loading`, the tile did
+not move, and the next tap published a third.
+
+**The store must read again when its entry goes, and must never invent one.**
+`createBoundedCache` drops an entry at its 30-minute horizon inside `get` —
+which is `getSnapshot` — and the episode page renders on every playback tick, so
+half an hour into a long episode the entry vanished under a mounted tile. The
+effect depended only on `[itemGuid, viewer]`, so nothing read again: the tile
+forgot the viewer's like, their next press published a second one, and
+`addMine`, finding no entry, built `{ read: [], loading: false }` and showed
+"1". The effect now also depends on the entry being missing, and `addMine` with
+no entry puts a `loading` one and starts a read; `load` treats a `loading` entry
+with nothing in flight as owed a read, however young.
+
+**The like is asserted.** `publishEpisodeLike` and `publishEpisodeUnlike` go
+through `assertPublished`, because the store records the returned event as the
+viewer's like (`mine`, kept apart from the read so a read that started before
+the press cannot take it back off the tile). A refusal leaves the tile as it
+was, red, and never a silent no-op. **The failure is keyed to what the press
+was about** (`${itemGuid}:${liked}`): the ⋯ menu stays
+open across a track change, and a later read can turn a like whose ack timed
+out into a standing one, so a bare error string left RETRY over a press that
+had become an unlike, or a like of the next track.
+
+**The reason is TEXT under the tile, not a `title`** — a phone shows no
+`title`, so a phone user saw a red RETRY and nothing else, and a signer that
+said no, a signer that never answered, and relays that took nothing each need
+something different from them. `likeFailureText` words the three; the line is a
+`role="alert"` sibling of the button, `col-span-full order-last`, so in either
+tile grid it takes its own row at the end instead of resizing a tile — the
+`<DownloadButton>` rule, written under the control.
+
+**A signer that never answers is said, and can be walked away from.** A NIP-07
+extension that goes away does not reject, it HANGS (the same iOS Safari fault
+`withDecryptTimeout` caps for decrypts), and the tile sat dimmed and disabled
+until a reload. After `SIGNER_WAIT_MS` (5 s) it reads WAITING and is pressable
+again; that press fires the `AbortSignal` the like passes to `signAndPublish`,
+which rejects with `SignStoppedError` and DROPS a signature that arrives later —
+nothing is published. **Not a timeout, on purpose:** a remote signer waiting on
+a tap on another device is slow, not dead, and one that answered late used to
+publish correctly; only the listener can tell which, so nothing fires on its
+own. The signal gates the signature only — once the publish has begun it
+changes nothing, so a press that comes too late is a no-op, never a false
+"nothing was published". It is opt-in: every other caller of `signAndPublish`
+waits as it always did.
+
+**WAITING ends when the SIGNER answers, and the publish ends on the FIRST relay
+that accepts.** Reported from an iPhone with Clave on full approval: every like
+took a few seconds and showed WAITING. The timer ran across the signature AND
+`publishSignedEvent`'s `Promise.allSettled` over the whole publish set — up to
+20 relays, each with nostr-tools' 4.4 s publish timeout — so the slowest relay
+set the pace and the label blamed the signer for it. `signAndPublish` now takes
+`onSigned`, which the tile uses to clear the timer, and the like path passes
+`settle: 'first'` (`likePublishOpts`), which resolves on the first acceptance
+while the other publishes finish on the shared pool. One acceptance is all
+`assertPublished` asks, and the store records only `note.event`, so nothing
+reads the partial `acceptedRelays`. **Opt-in, not the default**: a caller that
+reports where an event landed, or builds an `nevent` hint list from it, still
+waits for every relay.
+
+**Not done, deliberately.** The read index (`services/nostr-index`) does not
+store kind:17, so the count is relay-only; adding it is a Railway deploy of its
+own. No count on list rows (one `#i` per row), and no list of who liked.
+
 ## Nostr publish shape
 
 `publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
@@ -1755,7 +1910,44 @@ Two properties make the quiet timer safe, and both matter:
 
 **Album-page track union.** `fetchPodcastNotes(podcastGuid, opts, episodeGuids?)` widens its `#i` filter to `podcast:guid:<guid>` **plus** `podcast:item:guid:<g>` per entry (OR semantics in one filter). `PodcastNostrFeed` passes every track guid **only for music feeds** (keyed into the fetch deps via a joined `guidsKey`) — music tracks have no per-track pages, so this is what surfaces boosts that tagged only a track's item guid. Regular podcasts have per-episode pages, so they don't pass the union (avoids duplication).
 
-**Substance filter (`noteHasSubstance`, `lib/nostr/discover.ts`).** The feeds are a firehose of *every* kind:1 tagged with NIP-73 `podcast:guid`/`podcast:item:guid`. Some clients (notably **Amplify**) publish an empty kind:1 per listen — `content: ""` plus the podcast tags — which renders as a bare podcast chip; at ~1/3 of all podcast-tagged traffic these drowned out real posts. `noteHasSubstance` keeps boosts always (`isBoost`), otherwise strips `nostr:` refs + image URLs the way `<NoteCard>` does and requires non-empty body text or an image. **Filter on content, not the `client` tag** — real human comments made *via* those same clients survive, and Fountain notes (no `client` tag at all) are unaffected. Applied at render time beside the `mutedPubkeys` filter, so it doesn't touch the `bmb:feed:*` cache and a stale paint can briefly flash filtered cards.
+**Substance filter (`noteHasSubstance`, `lib/nostr/discover.ts`).** The feeds are a firehose of *every* kind:1 tagged with NIP-73 `podcast:guid`/`podcast:item:guid`. Some clients (notably **Amplify**) publish an empty kind:1 per listen — `content: ""` plus the podcast tags — which renders as a bare podcast chip; at ~1/3 of all podcast-tagged traffic these drowned out real posts. `noteHasSubstance` keeps boosts always (`isBoost`), otherwise strips `nostr:` refs + image URLs the way `<NoteCard>` does and requires non-empty body text or an image. **Filter on content, not the `client` tag** — real human comments made *via* those same clients survive, and Fountain notes (no `client` tag at all) are unaffected. Applied at render time beside the `mutedPubkeys` filter, so it doesn't touch the `bmb:feed:*` cache and a stale paint can briefly flash filtered cards. Both live in **`visibleNotes`** (`lib/nostr/use-feed.ts`) with the echo pass below; every surface that renders `<NoteCard>`s from a fetched list calls it — the global feed, the podcast and episode feeds (through `useVisibleNotes`), and both boost-explorer lists. The global feed and the explorer each carried their own copy of the filter until the echo pass needed to reach all four.
+
+### A note its author deleted leaves the feed (NIP-09)
+
+**The union in `useNostrFeed` has exactly one removal: a note whose author published a kind:5 naming it.** Before this the feed read no kind:5 at all. A relay that honors NIP-09 stops serving the note, but many do not, and the index pass, the `bmb:feed:*` cache and `mergeNotes` each hold a note once it has painted — so a deleted boost stayed on screen for good. Measured on 2026-10-03: the authors of 300 recent `podcast:item:guid` notes had 52 kind:5 events on three default relays, among them a boost bot deleting 40 of its own boost notes in one event.
+
+How it runs, and why each part is shaped the way it is:
+
+- **`assembleNotes` reads the kind:5 events in its LAST stage, beside the profile and quote reads**, so it adds no round trip. The filter is `{kinds:[5], authors, '#e': ids}` over the whole tree, roots first, in at most four chunks of 250 — the per-connection subscription cap again. It leaves the deleted notes, and the replies under them, out of what it returns.
+- **It reports the ids through `FetchOpts.onDeleted`, and the hook keeps them for its lifetime.** Every commit and the cache paint filter by that set, because the index pass, a later relay commit or the cache can each bring the note back. Unlike `onRoots`, every fetcher passes it: it can only remove.
+- **A deletion counts only from the note's own author** (`deletedNoteIds`, `lib/nostr/note-deletions.ts`, pinned by `check:deletions`). Anyone can sign a kind:5 naming any id, and a relay that ignores NIP-09 hands it to every reader. The `authors` filter narrows the read; the predicate is the rule. Same rule as `tallyLikes` and the index's `deletion_requests`.
+- **A failed or empty read changes nothing.** The note stays, which is the behaviour before this existed. It is a removal on positive, signed evidence, never on an absence, so `read-trust.ts` has no part in it.
+
+**What it does not do.** A deleted note can still paint for a moment on load — from the cache before the relay pass, or from a relay that ignores NIP-09 — until the last stage reports it. The set is per hook instance and is not persisted. The read covers the first 1,000 events of the tree; a deleted reply past that stays.
+
+### Bot announcements of a boost — one card per payment
+
+**Some accounts re-announce boosts they see, and each announcement is a NEW signed kind:1 by the bot.** MSP 2.0's bot announces every boost its artists receive; Boostr_Bot every boost its podcasts receive. The sender's own app usually posts its own note about the same payment seconds apart, both carry the same NIP-73 tags, so every feed showed one boost as two cards (reported 2026-10-02 off the global feed: Quincy Simon's Fountain note and MSP 2.0's announcement, 3 s apart). **The id dedupe cannot see it** — the read index keys `events` on `id`, `mergeNotes` and `splitTopLevel` merge on `id`, and these are two genuine events by two keys. So nothing is dropped from the index, which stores signed events and decides nothing; `dropBoostEchoes` (`lib/nostr/boost-echo.ts`) decides which ONE a feed renders, and **the note the sender signed stays** — it holds their own words, their replies, and it is the card a zap or repost should reach.
+
+What was measured on the relays that day, over six days of podcast-tagged kind:1:
+
+- **Two authors write a `sender` tag** — MSP 2.0's bot (`ffff6a7a…`, `client` `MSP 2.0`) and Boostr_Bot (`adab4ccd…`) — always as an **npub**, always with an `amount` tag (msat) and a `podcast:item:guid` `i` tag. Their partner notes sat 2–80 s away.
+- **`sender` is the only machine-readable link.** The bot quotes nothing. Fountain's note quotes a kind:9735 whose `P` is the payer, but the bot's one payment reference — Fountain's `?payment=` id in its `r` tag — appears nowhere in that receipt.
+- **The bot can post BEFORE the sender's note** (MSP 2.0, by 3 s), so the window is two-sided.
+
+An announcement is absorbed only when ALL of these hold, and each was a way to hide a second, real boost (`check:echo` replays every one against the sender-only `naive()`):
+
+- **Its `sender` names the author of a note in the same list, and that note names no other sender itself.** A `sender` naming the note's OWN author is not an echo, and an announcement is never the anchor for another announcement.
+- **They share a `podcast:item:guid`.** An announcement with none is never hidden.
+- **They are within `ECHO_WINDOW_SEC` (600 s) of each other, in either order.**
+- **Their amounts do not DISAGREE — "unknown" is not disagreement.** A Fountain note has no `amount` tag and adopts one from its quoted kind:9735 only at the quoted-event stage, so at the first paint it is `null`; requiring equality there would show the bot's card until the enrichment pass removed it. Two KNOWN, different amounts are two payments: measured, ChadF's 333-sat note on Homegrown Hits 153 and an MSP 2.0 announcement naming ChadF for 25 sats on the same episode 349 s later.
+- **One sender note absorbs at most ONE announcement per bot, the nearest in time.** Somebody who boosts a track twice in ten minutes from an app that posts no note the second time gets two announcements and one note; absorbing both takes a payment off the feed. Two DIFFERENT bots announcing the one boost are both absorbed.
+
+**It runs LAST inside `visibleNotes`, on what the mute and substance filters kept** — it may only hide an announcement when the sender's own card is actually rendered. Run first, muting the sender (or the sender's note having no substance) would take the bot's card with it and the boost would leave the feed. The pass is order-independent (pairs sort by gap, then id), so the answer does not move as `mergeNotes` re-sorts.
+
+**A card can still change once on load, by design.** If the bot's note arrives in an earlier commit than the sender's — the index pass and the relay pass hold different sets — the announcement paints and is replaced when the sender's note lands. The reverse also holds: a Fountain note that later turns out to carry a DIFFERENT amount releases the announcement it had absorbed. Both directions converge on one card per payment.
+
+**An announcement that names nobody ALWAYS shows — and `chadf_boostbot` is meant to.** `chadf_boostbot` (`f3bd42a9…`) posts every boost ChadF sends through this app ("⚡ 333 sats 📱 via BoostMeBitch"), with no `sender` tag and no `amount` tag, and quotes a kind:9735 **it signed itself** (`P` = the bot). It posts every boost on purpose, and its notes must show beside ChadF's own (Chad, 2026-10-02); `check:echo` pins its real note beside ChadF's. Two things would break that, and both look like tidying: **adding a `sender` tag to that bot**, which this pass would then absorb, and **a text match here**, which would also hide a second payment, because the same message boosted twice is two boosts.
 
 **Boost or comment (`isPodcastComment`, `lib/nostr/discover.ts`).** A NIP-73 note WITH a payment is a boost and gets `⚡ N SATS`; the same note WITHOUT one is a comment and gets `💬 COMMENT` — Fountain publishes both, and before the stamp a comment carried no mark at all. **The test is not `!isBoost`, and the obvious version is wrong for most of the feed.** A Fountain boost is a kind:1 wrapper with no `amount` tag whose payment is the kind:9735 it quotes in a `nostr:nevent1…` body line — 132 of the 200 notes in the global index on 2026-10-02 — and `isBoost` is only adopted off that receipt in the quoted-event stage. The relay pass paints its roots BEFORE that stage (`paintRoots` → `noteFromEvent`, empty quoted map), so `!isBoost` stamps every Fountain boost "comment" for seconds on a relay-only load, then flips it. `buildNote` therefore records `quotesResolved` — every quoted id is in the map, vacuously true when there are none — and the stamp waits on it; `richer` ORs it like `isBoost`. Three consequences, each deliberate: a wrapper whose receipt no relay returns stays **unstamped for good** (it may be a boost, so "comment" would be a claim we can't back); a note from a `bmb:feed:*` cache older than the field reads `undefined`, which is not `true`; and only a **top-level** note is stamped, because `publishReply` copies the parent's NIP-73 tags onto every reply.
 
@@ -2150,6 +2342,15 @@ of kind:10333 satisfies `mergeFavoritesList`'s removal test and deletes entries
 another app wrote, on someone else's device, with no undo.** The favorites
 speed-up comes entirely from the Podcast Index tables — the kind:10333 read
 itself keeps coming from relays, always.
+
+**A kind:5 is remembered, not only applied** (`deletion_requests`,
+`005_deletion_requests.sql`). Relays serve history out of order and the kind:5
+and its note reach the index through different subscriptions, so a deletion can
+arrive first; it used to update the rows that existed and be forgotten, and the
+note then landed live. The insert now reads the table, and an advisory lock per
+event id serializes the two, because `take` is fire-and-forget and they can
+commit at once — `check-indexer.mjs` races 40 pairs, and without the lock most
+of them land live.
 
 **No degraded-read decision is ever downstream of the index.**
 `lib/nostr/read-trust.ts` stays the only authority, and the index never feeds it.
