@@ -1,5 +1,5 @@
-// Pins the OPML reader and writer in `lib/feed-xml.ts` — `parseOpml`,
-// `buildOpml`, `opmlFilename` — the favorites page's import and export.
+// Pins the OPML reader in `lib/feed-xml.ts` — `parseOpml` — the favorites
+// page's import.
 //
 // What breaks silently without it:
 //
@@ -9,29 +9,23 @@
 //   show lands in "not found" while the user is told their list imported.
 // - An import that lets a `javascript:` or relative `xmlUrl` through. The URL
 //   is sent to Podcast Index and stored as the favorite's `url`, which renders.
-// - An EXPORT another app cannot read. A title with `&` or `"` written raw is a
-//   malformed document, and the other app's importer rejects the whole file.
 //
 // Vectors are literal OPML as other apps write it (Overcast, AntennaPod, Pocket
 // Casts shapes: nested category outlines, mixed `xmlUrl` casing, single
-// quotes), never built from our own structs — except the round trip, which is
-// the one place the writer's output IS the wire.
+// quotes), never built from our own structs.
 //
 // Every vector is replayed against `naive()` (scripts/replay-vectors.mjs): a
-// regex reader that neither decodes entities, filters schemes nor dedupes, and
-// a writer that does not escape. A vector naive() also passes is marked
+// regex reader that neither decodes entities, filters schemes nor dedupes. A vector naive() also passes is marked
 // `{ alsoNaive: true }` — a must-still-work input — and that claim is asserted.
 //
 // Imports the REAL shipping module. Like check:feedxml it does NOT run the
 // import-free scan: `lib/feed-xml.ts` carries a type-only relative import (see
 // that script's header for why that is survivable).
-import { parseOpml, buildOpml, opmlFilename, MAX_OPML_BYTES } from '../lib/feed-xml.ts';
+import { parseOpml, MAX_OPML_BYTES } from '../lib/feed-xml.ts';
 import { replayVectors } from './replay-vectors.mjs';
 
 let failed = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failed++; };
-
-const DATE = new Date(Date.UTC(2026, 8, 25, 12, 0, 0));
 
 // The obvious wrong implementation.
 function naiveParse(text) {
@@ -45,13 +39,6 @@ function naiveParse(text) {
   }
   return { ok: true, feeds, skipped: 0 };
 }
-function naiveBuild(feeds, meta) {
-  return '<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0"><head><title>' + meta.title
-    + '</title></head><body>'
-    + feeds.map((f) => `<outline type="rss" text="${f.title || f.url}" title="${f.title || f.url}" xmlUrl="${f.url}"/>`).join('')
-    + '</body></opml>';
-}
-
 const doc = (body) => `<?xml version="1.0" encoding="utf-8"?>\n<opml version="1.0">\n<head><title>Subs</title></head>\n<body>\n${body}\n</body>\n</opml>`;
 
 const VECTORS = [
@@ -126,35 +113,13 @@ const VECTORS = [
     args: [doc('<outline type="rss" xmlUrl="https://a.example/f"/>') + ' '.repeat(MAX_OPML_BYTES)],
     expect: { ok: false, error: 'this file is too large to be a subscription list' },
   },
-  {
-    label: 'export round-trips titles and URLs with & < > " \'',
-    kind: 'roundtrip',
-    args: [[
-      { url: 'https://feeds.example.com/rss?id=7&fmt=mp3', title: 'Rock & Roll <Live> "Hour" \'n\' more' },
-      { url: 'https://plain.example/feed' },
-    ]],
-    expect: { ok: true, feeds: [
-      { url: 'https://feeds.example.com/rss?id=7&fmt=mp3', title: 'Rock & Roll <Live> "Hour" \'n\' more' },
-      { url: 'https://plain.example/feed', title: 'https://plain.example/feed' },
-    ], skipped: 0 },
-  },
-  {
-    label: 'filename is <site>-subscriptions-YYYY-MM-DD.opml',
-    kind: 'filename',
-    args: ['boostmebuddy.com', new Date(2026, 0, 5)],
-    expect: 'boostmebuddy-subscriptions-2026-01-05.opml',
-    alsoNaive: true,
-  },
 ];
 
 function run(which, v) {
   const parse = which === 'real' ? parseOpml : naiveParse;
-  const build = which === 'real' ? buildOpml : naiveBuild;
   try {
     switch (v.kind) {
       case 'parse': return JSON.stringify(parse(...v.args));
-      case 'roundtrip': return JSON.stringify(parse(build(v.args[0], { title: 'Subs', dateCreated: DATE })));
-      case 'filename': return opmlFilename(...v.args);
       default: throw new Error('unknown kind ' + v.kind);
     }
   } catch (e) {
@@ -162,7 +127,7 @@ function run(which, v) {
   }
 }
 
-console.log('parseOpml / buildOpml / opmlFilename — expected answers:');
+console.log('parseOpml — expected answers:');
 for (const v of VECTORS) {
   const want = typeof v.expect === 'string' ? v.expect : JSON.stringify(v.expect);
   const got = run('real', v);

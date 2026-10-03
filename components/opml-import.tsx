@@ -1,24 +1,23 @@
 'use client';
 import { useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
-import { BRAND } from '@/lib/brand';
 import { requestFavoritesSync } from '@/lib/nostr';
-import { buildOpml, MAX_OPML_BYTES, opmlFilename, parseOpml, type OpmlFeed } from '@/lib/feed-xml';
+import { MAX_OPML_BYTES, parseOpml, type OpmlFeed } from '@/lib/feed-xml';
 import {
-  podcastLookupAnswered, resetPiBreaker, resolvePodcastByFeedUrl, resolvePodcastByGuid, warmPodcastCache,
+  podcastLookupAnswered, resetPiBreaker, resolvePodcastByFeedUrl, warmPodcastCache,
 } from '@/lib/podcast-meta';
 import { getErrorMessage, mapLimit } from '@/lib/util';
 import { favoriteFromPodcast } from '@/components/fav-heart';
 import type { FavoritePodcast } from '@/lib/types';
 
 /**
- * OPML import and export of SHOW favorites — the subscription list every other
- * podcast app reads and writes. Episode and track favorites do not travel:
- * OPML has no standard way to name one.
+ * OPML import of SHOW favorites — the subscription list every other podcast
+ * app writes. Episode and track favorites do not travel: OPML has no standard
+ * way to name one. (Export is a separate, later change.)
  *
  * Works signed in and signed out; the store has a guest bucket.
  *
- * Three rules the import keeps, each because the store is what gets published
+ * Four rules the import keeps, each because the store is what gets published
  * to the shared kind:10333 event:
  *
  *  - **Preview, then write.** Nothing reaches the store until the user presses
@@ -34,95 +33,8 @@ import type { FavoritePodcast } from '@/lib/types';
  *    separates those, so an outage is reported as one and can be retried
  *    rather than reading as a file full of unindexed feeds.
  */
-export function OpmlTools() {
-  return (
-    <>
-      <ExportOpml />
-      <ImportOpml />
-    </>
-  );
-}
-
 /** Podcast Index lookups in flight at once. The warm pass does the bulk. */
 const RESOLVE_FANOUT = 4;
-
-function ExportOpml() {
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ tone: 'ok' | 'no'; text: string } | null>(null);
-
-  async function download() {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const favs = Object.values(useApp.getState().favorites);
-      // An unresolved row has no feed URL yet; ask Podcast Index for it rather
-      // than leave the show out of the file.
-      const missing = favs.filter((f) => !f.url).map((f) => f.podcastGuid);
-      if (missing.length) await warmPodcastCache(missing);
-      let unreachable = 0;
-      const rows = await mapLimit(favs, RESOLVE_FANOUT, async (f) => {
-        if (f.url) return { url: f.url, title: f.title };
-        const p = await resolvePodcastByGuid(f.podcastGuid).catch(() => null);
-        if (p?.url) return { url: p.url, title: f.title ?? p.title };
-        if (!podcastLookupAnswered({ guid: f.podcastGuid })) unreachable++;
-        return null;
-      });
-      const feeds = rows
-        .filter((r): r is { url: string; title: string | undefined } => !!r)
-        .sort((a, b) => (a.title ?? a.url).localeCompare(b.title ?? b.url));
-      const noUrl = favs.length - feeds.length - unreachable;
-      const lostText = [
-        noUrl ? `${noUrl} had no feed URL` : '',
-        unreachable ? `${unreachable} could not be looked up (Podcast Index did not answer — try again later)` : '',
-      ].filter(Boolean).join('; ');
-      if (!feeds.length) {
-        setMsg({ tone: 'no', text: favs.length ? lostText : 'no saved shows' });
-        return;
-      }
-      const now = new Date();
-      const xml = buildOpml(feeds, { title: `${BRAND.displayName} favorites`, dateCreated: now });
-      const blob = new Blob([xml], { type: 'text/x-opml' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = opmlFilename(BRAND.domain, now);
-      // Attached before the click: Firefox ignores a click on a detached anchor.
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
-      setMsg({
-        tone: 'ok',
-        text: `exported ${feeds.length} show${feeds.length === 1 ? '' : 's'}`
-          + (lostText ? `; left out: ${lostText}` : '')
-          + '. Episode favorites are not part of OPML.',
-      });
-    } catch (e) {
-      setMsg({ tone: 'no', text: getErrorMessage(e, 'the export failed') });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <span className="flex flex-col items-start gap-1">
-      <button
-        type="button"
-        onClick={download}
-        disabled={busy}
-        className="btn-mini disabled:opacity-50"
-        title="Save your favorite shows as an OPML file other podcast apps can import."
-      >
-        {busy ? 'building file…' : '⇩ OPML'}
-      </button>
-      {msg && (
-        <span className={`text-[11px] ${msg.tone === 'ok' ? 'text-muted' : 'text-bone'}`}>
-          {msg.tone === 'ok' ? msg.text : `no file written — ${msg.text}`}
-        </span>
-      )}
-    </span>
-  );
-}
 
 interface ImportPlan {
   add: FavoritePodcast[];
@@ -166,7 +78,7 @@ async function planImport(feeds: OpmlFeed[], skipped: number): Promise<ImportPla
   return next;
 }
 
-function ImportOpml() {
+export function OpmlImport() {
   const identity = useApp((s) => s.identity);
   // Signed in, the account's list must have landed first (see the header).
   const waiting = useApp((s) => !!s.identity && (s.favoritesSync === 'idle' || s.favoritesSync === 'loading'));
