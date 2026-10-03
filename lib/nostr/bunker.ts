@@ -404,7 +404,10 @@ export function subscribeBunkerRestore(fn: (s: BunkerRestoreStage) => void): () 
  */
 export type BunkerApprovalStage = {
   waiting: boolean;
-  /** The NIP-46 method being waited on, e.g. 'sign_event'. Null when idle. */
+  /** The NIP-46 method being waited on, e.g. 'get_public_key', or
+   *  'sign_event kind:10333' — a signature carries its event kind, because
+   *  "signing" alone cannot tell the user (or a bug report) which of a dozen
+   *  publishers is being refused. Display text only. Null when idle. */
   label: string | null;
   /** Which re-issue we are on, 1-based. 0 when idle. */
   attempt: number;
@@ -1105,7 +1108,7 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
     // is of the real payload rather than of a shape that resembles it.
     signEvent: (template: EventTemplate): Promise<Event> =>
       sizedBy('sign_event', [JSON.stringify(template)], () =>
-        withApprovalWait(() => signer.signEvent(template), 'sign_event', { probe })) as Promise<Event>,
+        withApprovalWait(() => signer.signEvent(template), `sign_event kind:${template.kind}`, { probe })) as Promise<Event>,
     nip04: {
       encrypt: (peerPubkey, plaintext) =>
         sizedBy('nip04_encrypt', [peerPubkey, plaintext], () =>

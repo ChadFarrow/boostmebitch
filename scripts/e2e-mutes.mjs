@@ -743,6 +743,11 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
     /waiting for you to approve/i.test(await accountMenuText() ?? '');
   check('the account menu opened', await openAccountMenu(), true);
   check('the waiting notice reaches it', await noticeShowing(), true);
+  // It names WHICH request, carrying the event kind from the adapter's label.
+  // Without it a user whose signer is set to approve everything cannot tell
+  // what is being refused, and neither can their bug report.
+  check('...and names the request it is waiting on',
+    /request: signing a note \(kind 1\)/i.test(await accountMenuText() ?? ''), true);
   // Stall the NEXT answer so the press below lands while it is on the wire.
   // Set now, before the 2.5 s gap elapses and the second ask goes out.
   replyDelayMs = 1500;
