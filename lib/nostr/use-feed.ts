@@ -68,6 +68,7 @@ export function useNostrFeed({
   loading: boolean;
   err: string | null;
   refresh: () => Promise<void>;
+  addLocal: (note: DiscoveredNote) => void;
 } {
   const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -163,7 +164,16 @@ export function useNostrFeed({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
-  return { notes, loading, err, refresh };
+  /**
+   * Put a note this device just published on screen without waiting for a
+   * relay to echo it. Same union as every other commit, so the relay copy that
+   * arrives later merges into it rather than doubling it.
+   */
+  function addLocal(note: DiscoveredNote): void {
+    commit([note], gen.current);
+  }
+
+  return { notes, loading, err, refresh, addLocal };
 }
 
 /**

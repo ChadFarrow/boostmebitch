@@ -563,7 +563,7 @@ export function EpisodeDetailView() {
                 height and yank the scroll position up when you open this tab. */}
             {activeInfo === 'boosts' && episode.guid && (
               <div className="min-h-[70vh]">
-                <EpisodeNostrFeed episodeGuid={episode.guid} episodeTitle={episode.title} />
+                <EpisodeNostrFeed episode={episode} episodeGuid={episode.guid} podcast={podcast} />
               </div>
             )}
             </div>
