@@ -80,10 +80,17 @@ function unlessStopped<T>(p: Promise<T>, signal: AbortSignal | undefined): Promi
 // it changes nothing (relay publishes carry their own timeouts). Without it
 // the wait is unbounded, as it always was; the episode like passes one so a
 // hung extension has a way out short of a reload.
+//
+// `onSigned` fires once the signer has answered and before any relay is
+// contacted, so a caller can tell "waiting on the signer" from "waiting on the
+// relays" — the episode like's WAITING label blamed the signer for both.
+//
+// `settle: 'first'` resolves on the FIRST relay that accepts — see
+// `publishSignedEvent`. Opt-in; every other caller waits for all relays.
 export async function signAndPublish(
   template: EventTemplate,
   relays: string[],
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; onSigned?: () => void; settle?: PublishSettle } = {},
 ): Promise<PublishedNote> {
   const nostr = activeNostr();
   if (!nostr) {
@@ -91,33 +98,59 @@ export async function signAndPublish(
   }
   const signed = await unlessStopped(nostr.signEvent(template), opts.signal);
   if (opts.signal?.aborted) throw new SignStoppedError();
-  return publishSignedEvent(signed, relays);
+  opts.onSigned?.();
+  return publishSignedEvent(signed, relays, opts.settle);
 }
+
+/**
+ * When `publishSignedEvent` resolves. `'all'` waits for every relay to accept,
+ * refuse or time out; `'first'` resolves on the first acceptance, or once every
+ * relay has settled when none accepts.
+ */
+export type PublishSettle = 'all' | 'first';
 
 // Publish an already-signed event across the given relays. Split out of
 // signAndPublish so callers that obtain a signature elsewhere — e.g. the
 // site-key path, which signs server-side (app/api/nostr/site-sign) — can reuse
 // the identical relay-fan-out + PublishedNote assembly.
+//
+// WITH `settle: 'first'`, THE SLOWEST RELAY NO LONGER SETS THE PACE. The default
+// waits on every relay in the publish set — up to 20, each with nostr-tools'
+// own 4.4 s publish timeout on top of its connect — so one slow relay held an
+// episode like on screen for seconds after another relay had already stored it.
+// The remaining publishes keep running on the shared pool, which is never
+// closed; only the wait for them ends. `acceptedRelays` is then a LOWER BOUND
+// (the relays that had accepted when it resolved), which is all
+// `assertPublished` reads — not for a caller that reports where the event
+// landed.
 export async function publishSignedEvent(
   signed: Event,
   relays: string[],
+  settle: PublishSettle = 'all',
 ): Promise<PublishedNote> {
   return withPool(relays, async (pool) => {
     const accepted: string[] = [];
     const failed: string[] = [];
+    // The first ACCEPTANCE, never the first settle: a fast refusal must not end
+    // the wait while a slower relay is still about to store the event. Resolved
+    // after the push, so the snapshot below always holds the relay that ended it.
+    let firstAccepted!: () => void;
+    const first = new Promise<void>((resolve) => { firstAccepted = resolve; });
     const publishes = pool.publish(relays, signed);
-    await Promise.allSettled(
+    const all = Promise.allSettled(
       publishes.map((p, i) =>
         p
-          .then(() => accepted.push(relays[i]))
-          .catch(() => failed.push(relays[i])),
+          .then(() => { accepted.push(relays[i]); firstAccepted(); })
+          .catch(() => { failed.push(relays[i]); }),
       ),
     );
+    await (settle === 'first' ? Promise.race([first, all]) : all);
     return {
       id: signed.id,
       nevent: nip19.neventEncode({ id: signed.id, relays: accepted.slice(0, 3) }),
-      acceptedRelays: accepted,
-      failedRelays: failed,
+      // Copies: under 'first' the background publishes keep pushing into these.
+      acceptedRelays: [...accepted],
+      failedRelays: [...failed],
       event: signed,
     };
   });

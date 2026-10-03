@@ -1652,6 +1652,20 @@ changes nothing, so a press that comes too late is a no-op, never a false
 "nothing was published". It is opt-in: every other caller of `signAndPublish`
 waits as it always did.
 
+**WAITING ends when the SIGNER answers, and the publish ends on the FIRST relay
+that accepts.** Reported from an iPhone with Clave on full approval: every like
+took a few seconds and showed WAITING. The timer ran across the signature AND
+`publishSignedEvent`'s `Promise.allSettled` over the whole publish set — up to
+20 relays, each with nostr-tools' 4.4 s publish timeout — so the slowest relay
+set the pace and the label blamed the signer for it. `signAndPublish` now takes
+`onSigned`, which the tile uses to clear the timer, and the like path passes
+`settle: 'first'` (`likePublishOpts`), which resolves on the first acceptance
+while the other publishes finish on the shared pool. One acceptance is all
+`assertPublished` asks, and the store records only `note.event`, so nothing
+reads the partial `acceptedRelays`. **Opt-in, not the default**: a caller that
+reports where an event landed, or builds an `nevent` hint list from it, still
+waits for every relay.
+
 **Not done, deliberately.** The read index (`services/nostr-index`) does not
 store kind:17, so the count is relay-only; adding it is a Railway deploy of its
 own. No count on list rows (one `#i` per row), and no list of who liked.
