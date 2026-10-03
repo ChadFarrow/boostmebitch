@@ -312,9 +312,15 @@ export function AccountMenu({
 
           It contributes NO layout: the wrapper is absolute, and
           <BunkerApprovalNotice> renders null unless a wait is live, which
-          leaves a zero-height box nothing can be clicked through. */}
+          leaves a zero-height box nothing can be clicked through.
+
+          `bg-ink` because both notices tint with `bg-nostr/10`, which is
+          translucent: floating over the page, the search box and the episode
+          title read straight through the sentence. Inside the menu the card
+          is already opaque. A zero-height box paints nothing, so the fill
+          costs nothing while idle. */}
       {!open && (
-        <div className="absolute right-0 top-full mt-2 w-[min(360px,calc(100vw-2rem))] z-30 flex flex-col gap-2">
+        <div className="absolute right-0 top-full mt-2 w-[min(360px,calc(100vw-2rem))] z-30 flex flex-col gap-2 bg-ink">
           <BunkerApprovalNotice />
           {/* The restore's own window, which the two signals above cannot
               describe: the approval notice needs the signer to have ANSWERED,
