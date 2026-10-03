@@ -185,7 +185,11 @@ export function OpmlImport({ standalone = false }: { standalone?: boolean }) {
       <input
         ref={fileRef}
         type="file"
-        accept=".opml,.xml,text/x-opml,text/xml,application/xml"
+        // NO `accept`. iOS greys out any file whose type it cannot match to
+        // the list, and `.opml` has no system type there — a podcast app that
+        // claims the extension owns it — so a real Fountain export could not be
+        // chosen at all. `parseOpml` checks the bytes and says why it refuses,
+        // which is the actual boundary; a filter was only ever a convenience.
         className="hidden"
         onChange={(e) => chosen(e.target.files?.[0])}
       />
