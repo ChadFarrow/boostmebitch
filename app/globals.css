@@ -226,7 +226,14 @@ body::before {
     @apply flex flex-col items-center justify-center gap-1 h-[52px] w-full px-1
            text-[10px] font-mono uppercase tracking-wider leading-none
            border border-bone/40 text-bone transition
-           hover:border-bone hover:bg-bone/5 active:translate-y-px;
+           active:translate-y-px;
+  }
+  /* Hover only where a pointer can hover. iOS keeps :hover on the last tile
+     tapped until something else is tapped, so an unconditional hover border
+     left a tile just switched OFF (3.5×, 5×) drawn brighter than its peers —
+     reading as still selected while the audio was back at 1×. */
+  @media (hover: hover) {
+    .tile:hover { @apply border-bone bg-bone/5; }
   }
   .tile svg { @apply w-[18px] h-[18px]; }
   /* Inline follow toggle injected after an npub in show notes (components/notes-follows.ts). */
