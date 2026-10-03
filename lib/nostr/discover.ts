@@ -8,6 +8,7 @@ import { warmRelays } from './relay-health';
 import { parseZapReceipt, zapReceiptAmountMsat, type ZapReceipt } from './zap-receipt';
 import { nip73GuidsFromTags } from './zap-request';
 import { stripNostrUris, extractImages, mentionedPubkeys } from '../format';
+import { deletedNoteIds, withoutDeleted, NOTE_DELETION_KIND } from './note-deletions';
 
 export interface DiscoveredNote {
   id: string;
@@ -91,6 +92,12 @@ interface FetchOpts {
    *  Emitting there would publish notes the final answer excludes — and since
    *  `mergeNotes` unions and never removes, they would stay on screen for good. */
   onRoots?: (roots: DiscoveredNote[]) => void;
+  /** Ids of notes whose own author published a NIP-09 kind:5 naming them.
+   *  `assembleNotes` already leaves them out of what it returns; this exists
+   *  because `useNostrFeed` UNIONS, so a note already on screen — from the
+   *  cache, the index, or the `onRoots` paint — would otherwise stay there.
+   *  Safe for every fetcher, unlike `onRoots`: it only ever removes. */
+  onDeleted?: (ids: string[]) => void;
 }
 
 // Pull every event id this note quote-references, plus relay hints. Sources:
@@ -297,7 +304,7 @@ export async function fetchPodcastNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events, opts.onRoots);
+    return await assembleNotes(pool, live, events, opts.onRoots, opts.onDeleted);
   });
 }
 
@@ -325,7 +332,7 @@ export async function fetchEpisodeNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events, opts.onRoots);
+    return await assembleNotes(pool, live, events, opts.onRoots, opts.onDeleted);
   });
 }
 
@@ -399,7 +406,7 @@ export async function fetchSocialInteractThread(
         const r = rootEvents[0];
         opts.onRoot(noteFromEvent(r, allRelays, storage.profile.get(r.pubkey) ?? null));
       }
-      return assembleNotes(pool, allRelays, rootEvents);
+      return assembleNotes(pool, allRelays, rootEvents, undefined, opts.onDeleted);
     });
   });
 }
@@ -429,7 +436,7 @@ export async function fetchAllPodcastNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events, opts.onRoots);
+    return await assembleNotes(pool, live, events, opts.onRoots, opts.onDeleted);
   });
 }
 
@@ -504,7 +511,7 @@ export async function fetchBoostsSentBy(
     } catch {
       return [];
     }
-    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
+    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost), undefined, opts.onDeleted);
     return notes.filter((n) => n.isBoost);
   });
 }
@@ -562,7 +569,7 @@ export async function fetchBoostsReceivedBy(
     // assembleNotes dedupes by id, so the overlap between the two filters —
     // which is most of a BoostMeBitch note, carrying both `k` and `t` tags —
     // costs nothing here.
-    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
+    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost), undefined, opts.onDeleted);
     return notes.filter((n) => n.isBoost);
   });
 }
@@ -665,6 +672,7 @@ async function assembleNotes(
   relays: string[],
   events: Event[],
   onRoots?: (roots: DiscoveredNote[]) => void,
+  onDeleted?: (ids: string[]) => void,
 ): Promise<DiscoveredNote[]> {
   if (!events.length) return [];
 
@@ -775,13 +783,62 @@ async function assembleNotes(
     ...allTreeEvents.map((e) => e.pubkey),
     ...allTreeEvents.flatMap((e) => mentionedPubkeys(e.content)),
   ]));
-  const [replyMap, quoted] = await Promise.all([
+  // The kind:5 read rides the last stage BESIDE the profile and quote reads, so
+  // it adds no round trip of its own.
+  const [replyMap, quoted, deletions] = await Promise.all([
     fetchProfiles(pool, relays, authors),
     fetchQuotedEvents(pool, relays, allTreeEvents),
+    fetchDeletionRequests(pool, relays, allTreeEvents),
   ]);
   const profiles = new Map([...rootMap, ...replyMap]);
 
-  return buildTree(topLevelEvents, childrenByParent, profiles, quoted, relays);
+  const deleted = deletedNoteIds(deletions, allTreeEvents);
+  if (deleted.size) onDeleted?.([...deleted]);
+  return withoutDeleted(buildTree(topLevelEvents, childrenByParent, profiles, quoted, relays), deleted);
+}
+
+/** Ids per kind:5 query, and how many such queries one assembly may open. The
+ *  roots come first in `events`, so a capped read still covers every top-level
+ *  note; only the tail of a very large reply forest goes unchecked. Four, not
+ *  one per chunk: relays keep about 20 subscriptions live per connection and
+ *  drop the overflow in silence (docs/nostr.md). */
+const DELETION_ID_CHUNK = 250;
+const MAX_DELETION_CHUNKS = 4;
+
+/**
+ * The NIP-09 kind:5 events the authors of `events` published naming them.
+ *
+ * Many relays do not honor NIP-09, so a deleted note is still served; reading
+ * the deletion ourselves is what takes it off the feed. `authors` narrows the
+ * read to deletions that CAN count — `deletedNoteIds` ignores any other author
+ * anyway — so a relay spends no bandwidth on a stranger's kind:5.
+ *
+ * A failed or empty read returns `[]`, which leaves every note on screen: the
+ * safe direction, and the behaviour before this read existed. Nothing here
+ * records an absence.
+ */
+async function fetchDeletionRequests(
+  pool: import('nostr-tools').SimplePool,
+  relays: string[],
+  events: Event[],
+): Promise<Event[]> {
+  const chunks: Event[][] = [];
+  for (let i = 0; i < events.length && chunks.length < MAX_DELETION_CHUNKS; i += DELETION_ID_CHUNK) {
+    chunks.push(events.slice(i, i + DELETION_ID_CHUNK));
+  }
+  const results = await Promise.all(chunks.map(async (chunk) => {
+    try {
+      const { events: found } = await collectEventsByAuthors(pool, relays, {
+        kinds: [NOTE_DELETION_KIND],
+        authors: Array.from(new Set(chunk.map((e) => e.pubkey))),
+        '#e': chunk.map((e) => e.id),
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS);
+      return found;
+    } catch {
+      return [];
+    }
+  }));
+  return results.flat();
 }
 
 /**

@@ -1897,6 +1897,19 @@ Two properties make the quiet timer safe, and both matter:
 
 **Substance filter (`noteHasSubstance`, `lib/nostr/discover.ts`).** The feeds are a firehose of *every* kind:1 tagged with NIP-73 `podcast:guid`/`podcast:item:guid`. Some clients (notably **Amplify**) publish an empty kind:1 per listen — `content: ""` plus the podcast tags — which renders as a bare podcast chip; at ~1/3 of all podcast-tagged traffic these drowned out real posts. `noteHasSubstance` keeps boosts always (`isBoost`), otherwise strips `nostr:` refs + image URLs the way `<NoteCard>` does and requires non-empty body text or an image. **Filter on content, not the `client` tag** — real human comments made *via* those same clients survive, and Fountain notes (no `client` tag at all) are unaffected. Applied at render time beside the `mutedPubkeys` filter, so it doesn't touch the `bmb:feed:*` cache and a stale paint can briefly flash filtered cards. Both live in **`visibleNotes`** (`lib/nostr/use-feed.ts`) with the echo pass below; every surface that renders `<NoteCard>`s from a fetched list calls it — the global feed, the podcast and episode feeds (through `useVisibleNotes`), and both boost-explorer lists. The global feed and the explorer each carried their own copy of the filter until the echo pass needed to reach all four.
 
+### A note its author deleted leaves the feed (NIP-09)
+
+**The union in `useNostrFeed` has exactly one removal: a note whose author published a kind:5 naming it.** Before this the feed read no kind:5 at all. A relay that honors NIP-09 stops serving the note, but many do not, and the index pass, the `bmb:feed:*` cache and `mergeNotes` each hold a note once it has painted — so a deleted boost stayed on screen for good. Measured on 2026-10-03: the authors of 300 recent `podcast:item:guid` notes had 52 kind:5 events on three default relays, among them a boost bot deleting 40 of its own boost notes in one event.
+
+How it runs, and why each part is shaped the way it is:
+
+- **`assembleNotes` reads the kind:5 events in its LAST stage, beside the profile and quote reads**, so it adds no round trip. The filter is `{kinds:[5], authors, '#e': ids}` over the whole tree, roots first, in at most four chunks of 250 — the per-connection subscription cap again. It leaves the deleted notes, and the replies under them, out of what it returns.
+- **It reports the ids through `FetchOpts.onDeleted`, and the hook keeps them for its lifetime.** Every commit and the cache paint filter by that set, because the index pass, a later relay commit or the cache can each bring the note back. Unlike `onRoots`, every fetcher passes it: it can only remove.
+- **A deletion counts only from the note's own author** (`deletedNoteIds`, `lib/nostr/note-deletions.ts`, pinned by `check:deletions`). Anyone can sign a kind:5 naming any id, and a relay that ignores NIP-09 hands it to every reader. The `authors` filter narrows the read; the predicate is the rule. Same rule as `tallyLikes` and the index's `deletion_requests`.
+- **A failed or empty read changes nothing.** The note stays, which is the behaviour before this existed. It is a removal on positive, signed evidence, never on an absence, so `read-trust.ts` has no part in it.
+
+**What it does not do.** A deleted note can still paint for a moment on load — from the cache before the relay pass, or from a relay that ignores NIP-09 — until the last stage reports it. The set is per hook instance and is not persisted. The read covers the first 1,000 events of the tree; a deleted reply past that stays.
+
 ### Bot announcements of a boost — one card per payment
 
 **Some accounts re-announce boosts they see, and each announcement is a NEW signed kind:1 by the bot.** MSP 2.0's bot announces every boost its artists receive; Boostr_Bot every boost its podcasts receive. The sender's own app usually posts its own note about the same payment seconds apart, both carry the same NIP-73 tags, so every feed showed one boost as two cards (reported 2026-10-02 off the global feed: Quincy Simon's Fountain note and MSP 2.0's announcement, 3 s apart). **The id dedupe cannot see it** — the read index keys `events` on `id`, `mergeNotes` and `splitTopLevel` merge on `id`, and these are two genuine events by two keys. So nothing is dropped from the index, which stores signed events and decides nothing; `dropBoostEchoes` (`lib/nostr/boost-echo.ts`) decides which ONE a feed renders, and **the note the sender signed stays** — it holds their own words, their replies, and it is the card a zap or repost should reach.
@@ -2312,6 +2325,15 @@ of kind:10333 satisfies `mergeFavoritesList`'s removal test and deletes entries
 another app wrote, on someone else's device, with no undo.** The favorites
 speed-up comes entirely from the Podcast Index tables — the kind:10333 read
 itself keeps coming from relays, always.
+
+**A kind:5 is remembered, not only applied** (`deletion_requests`,
+`005_deletion_requests.sql`). Relays serve history out of order and the kind:5
+and its note reach the index through different subscriptions, so a deletion can
+arrive first; it used to update the rows that existed and be forgotten, and the
+note then landed live. The insert now reads the table, and an advisory lock per
+event id serializes the two, because `take` is fire-and-forget and they can
+commit at once — `check-indexer.mjs` races 40 pairs, and without the lock most
+of them land live.
 
 **No degraded-read decision is ever downstream of the index.**
 `lib/nostr/read-trust.ts` stays the only authority, and the index never feeds it.
