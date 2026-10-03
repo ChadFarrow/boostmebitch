@@ -209,6 +209,9 @@ function mergeNotes(existing: DiscoveredNote[], incoming: DiscoveredNote[]): Dis
  *  - `amountMsat` / `isBoost` — adopted from a quoted kind:9735 for a Fountain
  *    wrapper note, which needs the quoted-event stage. `isBoost` also gates
  *    `noteHasSubstance`, so losing it takes the whole note off the feed.
+ *  - `quotesResolved` — the same stage. The relay pass's root paint arrives
+ *    after an index copy that already resolved the quotes, so replacing it
+ *    would take a COMMENT stamp back off the card until the last stage lands.
  */
 function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredNote {
   return {
@@ -217,6 +220,7 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
     replies: incoming.replies.length ? incoming.replies : existing.replies,
     amountMsat: incoming.amountMsat ?? existing.amountMsat,
     isBoost: incoming.isBoost || existing.isBoost,
+    quotesResolved: incoming.quotesResolved || existing.quotesResolved,
     // Same field-by-field rule as `author`. The index pass and the relay pass
     // carry different profile sets, so one can resolve a mention the other
     // could not; replacing on id would let the later, thinner copy take a

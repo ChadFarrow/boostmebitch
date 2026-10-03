@@ -220,7 +220,7 @@ export function EpisodeDetailView() {
   const infoLabel = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
-    : t === 'boosts' ? 'Boosts'
+    : t === 'boosts' ? 'Boosts & comments'
     : 'Show notes';
 
   const transcriptActiveIdx = isThisPlaying ? transcriptIndexAt(transcriptCues, positionSec) : -1;

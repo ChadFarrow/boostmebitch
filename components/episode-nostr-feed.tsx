@@ -37,14 +37,14 @@ export function EpisodeNostrFeed({
     <FeedSection
       heading={
         <h3 className="font-display text-lg">
-          <span className="text-nostr">#</span> Boosts &amp; chatter on Nostr
+          <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
           {episodeTitle ? <span className="text-muted text-sm"> · {episodeTitle}</span> : null}
         </h3>
       }
       notes={visibleNotes}
       loading={loading}
       err={err}
-      emptyMessage="no nostr boosts for this episode yet — be the first."
+      emptyMessage="no boosts or comments for this episode on nostr yet — be the first."
       onRefresh={refresh}
       renderNote={(n: DiscoveredNote) => (
         <NoteCard key={n.id} note={n} repostedIds={repostedIds} />

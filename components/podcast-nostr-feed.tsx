@@ -15,7 +15,7 @@ import { NoteCard } from './nostr-note-card';
  * Per-podcast Nostr stream — same card UI as <GlobalNostrFeed>, but the relay
  * query is scoped to a single show via NIP-73 `#i: podcast:guid:<guid>`. Used
  * inside <EpisodeList> so selecting a podcast surfaces just that show's
- * boosts and chatter.
+ * boosts and comments.
  */
 export function PodcastNostrFeed({
   podcastGuid,
@@ -44,7 +44,7 @@ export function PodcastNostrFeed({
       className="mt-8"
       heading={
         <h3 className="font-display text-lg">
-          <span className="text-nostr">#</span> Boosts &amp; chatter on Nostr
+          <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
           {podcastTitle ? <span className="text-muted text-sm"> · {podcastTitle}</span> : null}
         </h3>
       }

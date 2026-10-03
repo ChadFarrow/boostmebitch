@@ -1823,9 +1823,10 @@ notes seconds later carrying neither. Replacing on id made that a downgrade the
 reader watches happen: an avatar and a thread that were on screen vanish, and
 only return when the last relay stage finishes. A kind:1 is immutable, so the
 copies differ only in how much enrichment ran; `richer` therefore keeps the
-newer copy but takes `author`, `replies`, `amountMsat` and `isBoost` from
-whichever copy actually has them. `isBoost` matters most — it gates
-`noteHasSubstance`, so losing it takes the whole note off the feed.
+newer copy but takes `author`, `replies`, `amountMsat`, `isBoost`, `mentioned`
+and `quotesResolved` from whichever copy actually has them. `isBoost` matters
+most — it gates `noteHasSubstance`, so losing it takes the whole note off the
+feed.
 
 ### Many authors is ONE query — `fetchProfilesFor`, never `fetchProfile` per pubkey
 
@@ -1947,6 +1948,8 @@ An announcement is absorbed only when ALL of these hold, and each was a way to h
 **A card can still change once on load, by design.** If the bot's note arrives in an earlier commit than the sender's — the index pass and the relay pass hold different sets — the announcement paints and is replaced when the sender's note lands. The reverse also holds: a Fountain note that later turns out to carry a DIFFERENT amount releases the announcement it had absorbed. Both directions converge on one card per payment.
 
 **An announcement that names nobody ALWAYS shows — and `chadf_boostbot` is meant to.** `chadf_boostbot` (`f3bd42a9…`) posts every boost ChadF sends through this app ("⚡ 333 sats 📱 via BoostMeBitch"), with no `sender` tag and no `amount` tag, and quotes a kind:9735 **it signed itself** (`P` = the bot). It posts every boost on purpose, and its notes must show beside ChadF's own (Chad, 2026-10-02); `check:echo` pins its real note beside ChadF's. Two things would break that, and both look like tidying: **adding a `sender` tag to that bot**, which this pass would then absorb, and **a text match here**, which would also hide a second payment, because the same message boosted twice is two boosts.
+
+**Boost or comment (`isPodcastComment`, `lib/nostr/discover.ts`).** A NIP-73 note WITH a payment is a boost and gets `⚡ N SATS`; the same note WITHOUT one is a comment and gets `💬 COMMENT` — Fountain publishes both, and before the stamp a comment carried no mark at all. **The test is not `!isBoost`, and the obvious version is wrong for most of the feed.** A Fountain boost is a kind:1 wrapper with no `amount` tag whose payment is the kind:9735 it quotes in a `nostr:nevent1…` body line — 132 of the 200 notes in the global index on 2026-10-02 — and `isBoost` is only adopted off that receipt in the quoted-event stage. The relay pass paints its roots BEFORE that stage (`paintRoots` → `noteFromEvent`, empty quoted map), so `!isBoost` stamps every Fountain boost "comment" for seconds on a relay-only load, then flips it. `buildNote` therefore records `quotesResolved` — every quoted id is in the map, vacuously true when there are none — and the stamp waits on it; `richer` ORs it like `isBoost`. Three consequences, each deliberate: a wrapper whose receipt no relay returns stays **unstamped for good** (it may be a boost, so "comment" would be a claim we can't back); a note from a `bmb:feed:*` cache older than the field reads `undefined`, which is not `true`; and only a **top-level** note is stamped, because `publishReply` copies the parent's NIP-73 tags onto every reply.
 
 
 

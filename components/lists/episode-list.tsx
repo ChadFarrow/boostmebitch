@@ -1115,7 +1115,7 @@ export function EpisodeList({
         <DeferredOnScroll
           placeholder={
             <h3 className="font-display text-lg mt-8 text-muted">
-              <span className="text-nostr">#</span> Boosts &amp; chatter on Nostr
+              <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
               {data.podcast.title ? (
                 <span className="text-muted text-sm"> · {data.podcast.title}</span>
               ) : null}

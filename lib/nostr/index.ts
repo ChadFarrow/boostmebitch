@@ -69,6 +69,7 @@ export {
   fetchProfilesFor,
   quotedEventIds,
   noteFromEvent,
+  isPodcastComment,
   type DiscoveredNote,
   type ReceivedZap,
 } from './discover';
