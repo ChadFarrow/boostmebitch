@@ -195,16 +195,22 @@ function buildNote(
   // a separate kind:1 narrative note that quote-references the receipt. The
   // wrapper note carries the NIP-73 podcast tags but no amount of its own,
   // so we resolve the first quoted zap receipt and adopt its amount.
+  //
+  // A quoted receipt is a payment even when none of its three amount sources
+  // can be read: the note is still a boost (the card's amountless `⚡ boost`
+  // stamp), and `isPodcastComment` would otherwise call it a COMMENT — over a
+  // receipt that is in hand. The loop goes on looking for one that does state
+  // an amount.
   const { ids: quotedIds } = parseQuoteRefs(e);
   let viaZapReceipt = false;
   if (amountMsat === null) {
     for (const id of quotedIds) {
       const q = quoted.get(id);
-      if (!q) continue;
+      if (q?.kind !== 9735) continue;
+      viaZapReceipt = true;
       const m = zapReceiptAmountMsat(q);
       if (m !== null) {
         amountMsat = m;
-        viaZapReceipt = true;
         break;
       }
     }
