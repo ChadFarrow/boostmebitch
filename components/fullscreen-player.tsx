@@ -80,6 +80,7 @@ import {
   toggleFullscreen,
   exitFullscreen,
   FAST_PLAYBACK_RATES,
+  isHlsUrl,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -197,6 +198,7 @@ import { LinkedText } from './linked-text';
 import { UnderlineTabs, tabPanelProps } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
+import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
@@ -209,6 +211,16 @@ import { NostrIdentityChip } from './nostr-auth/identity-chip';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 import { LiveBadge } from './live-badge';
+
+// THE TOP BAR'S CONTROLS FROM lg:, all five — ← BACK, ⋯, the balance box, the
+// identity chip and ✕ — plus <AuthControl overlay>'s SIGN IN, which carries the
+// same literal because it cannot import this file. Below lg: they stay 26px,
+// the phone bar's size and the cover's reserve (docs/ui.md). From lg: the
+// cover is capped by `lg:max-w-xl`, not by the bar, so the bar can match
+// <AppHeader>'s 38px .btn-ghost and the two screens' top-right clusters read
+// as one set. `h-`, not `py-`: the glyphs' line boxes differ (⋯ at text-xl,
+// ← BACK at text-sm), and a fixed box keeps all six the same height.
+const BAR_CHIP_LG = 'lg:h-[38px] lg:px-3';
 
 // About-this-episode text + the episode's tracks + Podcasting 2.0 chapters +
 // transcript, toggled by a tab strip. Tabs show only for sections with real
@@ -599,20 +611,32 @@ export function FullscreenPlayer({
   // opened from a feed row showed its notes in the same build.
   //
   // THE FETCH IS HERE rather than in the four store paths: this is the one
-  // surface that renders notes for whatever is playing, and `loadFeed`
-  // (`lib/podcast-meta.ts`) coalesces a request already in flight and caches
-  // the answer, so a step through a queue of one show costs one request. It
-  // runs ONLY when the episode carries neither field — an episode opened from a
-  // list already has them — and the result is keyed by episode id, so a step to
-  // the next item cannot paint the previous one's notes.
+  // surface that renders notes for whatever is playing. `loadFeed`
+  // (`lib/podcast-meta.ts`) coalesces a request already in flight and keeps
+  // nothing once it settles. It runs ONLY when the episode carries neither
+  // field — an episode opened from a list already has them — and the result is
+  // keyed by episode id, so a step to the next item cannot paint the previous
+  // one's notes.
+  //
+  // KEYED ON PRIMITIVES, NEVER ON THE EPISODE OBJECT. `refreshCurrentValue`
+  // below replaces `current.episode` whenever the value block differs by
+  // reference, and a fresh parse of the feed never equals the last one — so
+  // with the object as a dep, the refresh re-ran this effect, which fetched and
+  // refreshed again, for as long as the episode sat in the player: 984 feed
+  // reads in 15 s on a PAUSED queue head, each a full JSON parse the 60 s
+  // browser cache answered. The live watcher's `syncCurrentValue` replaces the
+  // same object on every poll. Nothing here needs to re-run for either.
   const [queuedNotes, setQueuedNotes] = useState<{ id: number; description: string } | null>(null);
   const notesEpisode = current?.episode;
+  const notesId = notesEpisode?.id;
+  const notesGuid = notesEpisode?.guid;
+  const notesMissing = !!notesEpisode && !notesEpisode.description && !notesEpisode.contentEncoded;
+  const notesLive = !!notesEpisode?.liveStatus;
   const notesFeedId = current?.podcast?.id ?? current?.episode?.feedId;
   useEffect(() => {
-    if (!notesEpisode || notesEpisode.description || notesEpisode.contentEncoded) return;
-    const guid = notesEpisode.guid;
-    if (!guid || !notesFeedId) return;
-    const id = notesEpisode.id;
+    if (!notesMissing || notesId === undefined || !notesGuid || !notesFeedId) return;
+    const guid = notesGuid;
+    const id = notesId;
     let cancelled = false;
     void loadEpisodeFromFeed(notesFeedId, guid).then((r) => {
       if (cancelled || !r?.episode) return;
@@ -621,6 +645,14 @@ export function FullscreenPlayer({
       // The queued copy's value block may be stale (same fix as the download
       // path in <Player>). `loadFeed` coalesces, so this read is free when
       // <Player> fires the same one.
+      //
+      // NOT FOR A LIVE ITEM. There `episode.value` belongs to the live-value
+      // watcher, which swaps the on-air track's block in (`syncCurrentValue`,
+      // docs/streaming.md); the feed's copy is the SHOW's block, so writing it
+      // here repaints the track's share as the show's until the next poll. A
+      // live item is never queued — `enqueueEpisode` refuses one — but it
+      // reaches this effect from `/live` when its roster entry has no notes.
+      if (notesLive) return;
       useApp.getState().refreshCurrentValue(
         guid,
         r.episode.value ?? null,
@@ -634,7 +666,7 @@ export function FullscreenPlayer({
       // cannot reach.
     });
     return () => { cancelled = true; };
-  }, [notesEpisode, notesFeedId]);
+  }, [notesMissing, notesId, notesGuid, notesLive, notesFeedId]);
 
   // THE COVER TAKES THE ROOM THAT IS LEFT, and below sm: only JS can know how
   // much that is. The `max-w` on the box carries a measured CONSTANT (30rem) for
@@ -698,7 +730,13 @@ export function FullscreenPlayer({
     // episode decides which branch renders (a Nostr live stream has no cover at
     // all). Everything else that moves — a longer title, a chapter label
     // appearing — is the ResizeObserver's job.
-  }, [everOpened, open, current?.episode?.id, current?.episode?.guid]);
+    //
+    // `isVideo` too, because the cover box and the video stage are both a
+    // <div> in the same slot: without their `key`s React kept ONE node, and
+    // the cover's inline cap stayed on it as the video's width — reported
+    // from an iPhone as a video at ~57% of the screen. The keys stop the
+    // node being shared; this dep re-measures the cover on the way back.
+  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo]);
 
   // ABOVE the early return: a hook may not be called conditionally, and
   // `useSavedPosition` takes null precisely so a surface can call it over its
@@ -715,10 +753,12 @@ export function FullscreenPlayer({
   const resumeTo =
     savedPos && !isLive && savedPos.t - positionSec > RESUME_GAP_SEC ? savedPos.t : null;
   // A Nostr live stream's NIP-33 id is `<64-hex pubkey>:<dTag>`, carried as the
-  // episode guid. When present (and it's an HLS video stream) the right pane
-  // becomes the kind:1311 live chat instead of the usual episode info.
+  // episode guid. When present (and it's an HLS stream) the right pane becomes
+  // the kind:1311 live chat instead of the usual episode info. The HLS test,
+  // NOT `isVideo`: on Safari a stream plays on the <audio> until the listener
+  // picks 📺 Video, and the chat belongs to the stream, not to its picture.
   const liveStreamId =
-    isVideo && isLiveStreamId(episode.guid) ? episode.guid! : null;
+    isHlsUrl(episode.enclosureUrl) && isLiveStreamId(episode.guid) ? episode.guid! : null;
   // Video mode hands the left column more of the screen at lg+ (60/40); audio
   // mode keeps the square-artwork 50/50. Both panes carry EXPLICIT complementary
   // widths: the media column is flex-shrink-0, so leaving the info pane at
@@ -753,6 +793,40 @@ export function FullscreenPlayer({
   // upstream in <Player>). Prev restarts the current chapter if >3s in, else
   // jumps to the previous one.
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekTo);
+
+  // The ⋯ menu's tiles (below lg:). From lg: the same actions are a shorter
+  // row under BOOST — see the row itself for what it merges and why.
+  const secondaryTiles = (
+    <>
+      <FavHeart podcast={podcast} size="tile" nameTarget />
+      <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+      {/* 👍 completes the first row of three: the two hearts and the like are
+          the three things said ABOUT this episode, so they read as one row. It
+          shares one store with the episode page's tile, so a like pressed in
+          either shows in both. */}
+      <EpisodeLikeButton episode={episode} podcast={podcast} />
+      {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
+          longer shows: ↓, a progress fill, ✓ when the episode is on the
+          device. It was a chip in the bar for one afternoon, and the bar
+          keeps ⋯, the account control and ✕. It renders nothing for a live
+          item or an HLS stream. */}
+      <DownloadButton episode={episode} podcast={podcast} size="tile" />
+      <ShareTargets podcast={podcast} episode={episode} />
+      {streamButton && cloneElement(
+        streamButton,
+        { className: 'tile' },
+        <span aria-hidden className="text-lg leading-none">≋</span>,
+        'STREAM',
+      )}
+      {/* SPEED, then 3.5× and 5×. Without STREAM they are a third row of
+          three; with it, 5× sits alone in a fourth (docs/ui.md). Last because
+          they are about playback, not about this show or episode. No speed
+          on a live item: <Player> holds it at 1×, since there is nothing
+          ahead of the live edge to play into. */}
+      {!isLive && <SpeedButton />}
+      {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+    </>
+  );
 
   return (
     <div
@@ -794,7 +868,7 @@ export function FullscreenPlayer({
       {everOpened && (<>
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
         <div className="flex items-center gap-3">
-          <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs flex-shrink-0" aria-label="Back">
+          <button onClick={onClose} className={`btn-ghost px-2 py-1 text-xs lg:text-sm flex-shrink-0 ${BAR_CHIP_LG}`} aria-label="Back">
             ← back
           </button>
           {/* HIDDEN BELOW sm:, because the bar's right-hand cluster is now four
@@ -803,7 +877,7 @@ export function FullscreenPlayer({
               overlapped the ⋯ rather than folding. The screen it labels is a
               full-screen cover with the show's title under it, so the label is
               the one thing on this bar that says what is already obvious. */}
-          <span className="hidden sm:inline text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
+          <span className="hidden sm:inline text-[11px] lg:text-xs text-muted uppercase tracking-widest">Now Playing</span>
         </div>
         {/* `flex-shrink-0`, here and on ← BACK, because neither may grow
             taller. Signed out below ~400px this cluster holds ↓, SIGN IN ▾ and
@@ -812,7 +886,7 @@ export function FullscreenPlayer({
             PLAYING instead, which folds onto two 16px lines and so stays inside
             the 38px the chips already set. Not `whitespace-nowrap`: that is
             inherited, and the SIGN IN menu opens inside this cluster. */}
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 lg:gap-3 flex-shrink-0">
           {/* THE HEADER'S OWN AUTH CONTROL, not a second copy of it. This was a
               bare "◆ Sign in" button, and it offered exactly one of the app's
               two logins: the Nostr one, opened with no intent, so its modal
@@ -842,7 +916,9 @@ export function FullscreenPlayer({
             // bar. It was 36 x 38 beside them at 30, which read as one control
             // shouting. 30 x 26 still clears WCAG 2.5.8's 24px floor, and the
             // bar's height — what the cover measures against — is unchanged.
-            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 ${
+            // At EVERY width: desktop uses the phone's menu too, by request,
+            // instead of the row of five tiles it had from lg: (docs/ui.md).
+            className={`btn-ghost px-2 py-1 text-base leading-none flex-shrink-0 ${BAR_CHIP_LG} ${
               tiles.open ? 'border-bone bg-bone/5 text-bone' : ''
             }`}
             aria-haspopup="menu"
@@ -851,8 +927,9 @@ export function FullscreenPlayer({
             title="More actions"
           >
             {/* text-base, the ✕'s own size: at text-lg the glyph's line box
-                made this button 28px beside a 26px ✕. */}
-            <span aria-hidden className="text-base leading-none">⋯</span>
+                made this button 28px beside a 26px ✕. From lg: the box is a
+                fixed 38px, so the glyph can grow without moving it. */}
+            <span aria-hidden className="text-base lg:text-xl leading-none">⋯</span>
           </button>
           {/* THE BALANCE, WITHOUT A WALLET BUTTON UNDER IT. The bar dropped both
               wallet chips when the boost modal became the route to that modal,
@@ -861,16 +938,16 @@ export function FullscreenPlayer({
               this overlay stays mounted for the session once it has been
               opened, and a mounted `useWalletBalance` is a NIP-47 read on
               every `payment_sent` — see <WalletBalanceBox>. */}
-          {open && <WalletBalanceBox />}
+          {open && <WalletBalanceBox className={BAR_CHIP_LG} />}
           {/* WHO SIGNS THE NOTE, beside what pays for it. `<AuthControl
               overlay>` below offers the two logins while signed OUT and
               renders nothing once signed in — the account menu belongs to
               <NostrAuth>, which these routes mount hidden — so this bar showed
               no Nostr at all to the one user whose boost note it would sign.
               A readout, like the balance: the menu is one ← BACK away. */}
-          <NostrIdentityChip />
+          <NostrIdentityChip className={BAR_CHIP_LG} />
           <AuthControl overlay />
-          <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
+          <button onClick={onClose} className={`btn-ghost px-2 py-1 text-base lg:text-lg leading-none ${BAR_CHIP_LG}`} aria-label="Close fullscreen player">
             ✕
           </button>
         </div>
@@ -914,28 +991,7 @@ export function FullscreenPlayer({
           className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2"
           style={{ top: tiles.at.top, bottom: tiles.at.bottom, right: tiles.at.right }}
         >
-          <FavHeart podcast={podcast} size="tile" nameTarget />
-          <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
-          {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
-              longer shows: ↓, a progress fill, ✓ when the episode is on the
-              device. It was a chip in the bar for one afternoon; six tiles fill
-              the menu's two rows exactly, and the bar keeps ⋯, the account
-              control and ✕. It renders nothing for a live item or an HLS
-              stream, and then the menu is five. */}
-          <DownloadButton episode={episode} podcast={podcast} size="tile" />
-          <ShareTargets podcast={podcast} episode={episode} />
-          {streamButton && cloneElement(
-            streamButton,
-            { className: 'tile' },
-            <span aria-hidden className="text-lg leading-none">≋</span>,
-            'STREAM',
-          )}
-          {/* SPEED, then 3.5× and 5×, fill a third row of three. Last because
-              they are about playback, not about this show or episode. No speed
-              on a live item: <Player> holds it at 1×, since there is nothing
-              ahead of the live edge to play into. */}
-          {!isLive && <SpeedButton />}
-          {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+          {secondaryTiles}
         </div>,
         document.body,
       )}
@@ -958,13 +1014,14 @@ export function FullscreenPlayer({
             // The width cap is bounded by the AVAILABLE HEIGHT, not by a max-h:
             // the box is aspect-video, so height derives from width, and clamping
             // the height while w-full held the width would break the 16:9 frame.
-            // 13rem is what the screen spends around it — the header (~3.5rem,
-            // more when signed out), lg:p-10 top+bottom, the gap-4, and the
+            // 13rem is what the screen spends around it — the header (63px,
+            // ~4rem, from lg: — BAR_CHIP_LG), lg:p-10 top+bottom, the gap-4, and the
             // AUDIO/VIDEO pill — rounded UP deliberately: this column has no
             // overflow of its own, so anything it can't fit becomes a scrollbar
             // on the row. `video-stage` sheds all of this in the browser's top
             // layer (see app/globals.css).
             <div
+              key="video-stage"
               ref={stageRef}
               className="video-stage relative w-full max-w-md sm:max-w-lg lg:max-w-[min(64rem,calc((100dvh-13rem)*16/9))] aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black"
             >
@@ -1080,7 +1137,7 @@ export function FullscreenPlayer({
             // fit and a vanishing cover helps no one. From sm: up
             // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
             // info column, so its height is not the constraint.
-            <div ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
+            <div key="cover" ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Whatever is playing at this second, via `nowPlayingArt`: the
                   LIVE BLOCK's art first — on a Split Kit show that's the cover
                   of the record actually playing, and it's the one thing on

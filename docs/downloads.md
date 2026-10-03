@@ -80,9 +80,19 @@ provider directly and falls back to `/api/lnurl` only when the browser *throws* 
 on the money path, with CLAUDE.md's blessing. `downloadBytes` now does exactly that
 with `/api/audio`, and the direct `mode: 'cors'` fetch is untouched.
 
-**Only a host that ANSWERED may be retried through us.** An offline device would
-otherwise send every failed download at our server for a second failure, and the
-message it has already earned — "No connection" — is the correct one.
+**Every direct failure is retried through us, and the probe is NOT a gate.** The
+first version retried only a host whose `no-cors` HEAD resolved, to keep an
+offline device off our server. That protected nothing — an offline device cannot
+reach our server either, so its retry fails locally for free — and it cost real
+downloads. Reported 2026-09-28 from Android: *"No connection — this device could
+not reach dts.podtrac.com."* on LINUX Unplugged, over a transport playing that
+episode, and "a lot". The HEAD rejects on hosts that are up: one that refuses HEAD
+(`op3.dev` does), a redirect hop to `http:` (a blocked mixed-content fetch, while
+`<audio>` is auto-upgraded), a redirect chain slower than the probe's 6 s. Each
+was a download the proxy would have saved, refused with a sentence that sent the
+listener to check a signal that was fine. The probe now runs only after
+`/api/audio` ALSO throws, and only to choose between "No connection" and "Could
+not reach this app's server".
 
 ### Why not the service worker
 
@@ -249,6 +259,14 @@ characters, so reserving the width once means no state change can move anything.
 `.tile` is excluded — 52 px cannot hold a third line — and keeps the size in its
 accessible name only.
 
+**A saved episode is a FILLED control** (`bg-bone text-ink`), at every size. The
+first version marked it with a brighter border and ✓ only, which next to the idle
+`bone/40` border read as the same control — a listener could not tell at a glance
+what was on the device. It is an inversion, not a hue: magenta is the heart's ON
+colour in the same cluster and yellow is BOOST, and `bone`/`ink` swap with the
+theme. Queued and downloading stay outlined, because the progress fill draws
+`bg-bone/20` inside the box and would vanish on a filled one.
+
 **The slot is `5.5ch`, and that does NOT hold six tracked characters** — so on
 `'sm'` and `'md'` a size such as "267 MB" wraps onto two lines. On the desktop
 list chip that is load-bearing rather than cosmetic: `'sm'` has no `py`, so the
@@ -258,6 +276,19 @@ afternoon while DOWNLOAD was a chip in the fullscreen player's top bar; it took 
 `6.5ch` slot to hold six characters on one line. DOWNLOAD is a `'tile'` in that
 player's `⋯` menu now (`docs/ui.md`), so the size is gone — but the `5.5ch`
 measurement above is why it existed, and a new inline size will meet it again.
+
+**`'icon'` is the glyph alone in a 36 px square**, for the favorites page's
+new-episodes row, where the title needs the width (reported from an iPhone: the
+row showed a third of each title). The size and the meaning stay in the
+accessible name, as on `'tile'`.
+
+**A surface holding Podcast Index's record passes `resolve`, and the press
+downloads what it returns.** A download keeps the `Episode` it was handed, and
+PI's record has no value block and is not listed under the feed's `id` — the
+same reason `<NoteQueueButton>` round-trips through `loadEpisodeFromFeed`. The
+state is still read from the record, which is safe because the key is the
+enclosure URL. While the feed loads the control shows `⋯`; a failed load shows
+`!` with its own message, and a press tries again.
 
 ## `roomVerdict` has a blast radius outside this feature
 
@@ -282,6 +313,42 @@ answer instead.
 **`'no'` is never an instruction to evict.** A download is something the listener
 chose to keep. Deleting one to make room for another is a decision they did not ask
 for, and they may be about to get on a plane.
+
+### Delete after playing is the listener's rule, never ours
+
+Asked for in issue #460 by a listener who downloads everything in their queue:
+*"can you add a setting that deletes a download after i finish playing it"*.
+`storage.deleteAfterPlay` (`bmb:dl_delete_played`), a switch on `/downloads`,
+**off by default**. It does not contradict the rule above: that rule forbids the
+APP from deciding to delete; this is the listener deciding, once, in advance.
+
+- **The trigger is the `<audio>` element's `ended`, and nothing else.** It is
+  the one signal that the episode was heard to the end. A skip out of the
+  outro (which the resume writer already counts as finished) does NOT delete:
+  a wrong delete costs the data the download was made to save, and a missed
+  one costs a DELETE press. The check runs before `handlePlaybackEnded`,
+  because that moves `current` to the next item.
+- **Podcast episodes only, and the RECORD says which.** An album is
+  downloaded to be played again; deleting each track as it ends would empty
+  a DOWNLOAD ALBUM in one listen. The player's own show cannot answer this:
+  `/downloads` rebuilds it with `dbRowToPodcast`, which has no medium, so an
+  album track played from there looks like a podcast episode. So the record
+  carries `feedMedium` — the parent feed's medium at save time, `''` when it
+  declared none — and `deletesAfterPlay` (`lib/util.ts`, pinned by
+  `check:downloads`) **keeps a file whose medium is absent**: every record
+  written before the field, and a playlist track whose container is not its
+  parent (the container's medium is not the track's, the rule `parentFeed`
+  is under). `downloadManager.deletableAfterPlay` asks it; `<Player>` also
+  skips anything `playsAsTracks` while it is playing.
+- **The bytes go; the playing element does not notice.** `<Player>` holds a
+  blob URL for the file and revokes it only when the next source attaches, so
+  a replay of the episode that just ended still plays. Measured in Chromium
+  2026-10-01: after `cache.delete`, the same element replays to `ended`, a new
+  element loads the URL, and a `fetch` of it returns every byte. **Not yet
+  measured on iOS Safari** — if a replay there fails, the player shows its
+  ordinary audio error, and the next play of the episode streams.
+- It goes through `downloadManager.remove(key)`, the same path as a row's
+  DELETE, so the record, the cover and the cached documents go with it.
 
 ---
 
@@ -582,10 +649,11 @@ indistinguishable from a broken one — the rule `<FavoritesSyncNotice>` exists 
 | Cause | What the listener reads |
 | --- | --- |
 | The host sends no CORS header, and `/api/audio` got it | *nothing — the download succeeds* |
-| The host sends no CORS header, and `/api/audio` could not read it either | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
-| The device could not reach the host at all | "No connection — this device could not reach `<host>`." |
+| The host sends no CORS header, and `/api/audio` could not read it either, while the HEAD probe resolves | "`<host>` does not let other apps save its audio. You can still play and boost this episode." |
+| Neither the host nor our route could be fetched, and the HEAD probe rejects — or the route answered 502 and the probe rejects (a host that is down) | "No connection — this device could not reach `<host>`." |
 | Our own route is unreachable while the host is up | "Could not reach this app's server to fetch the episode." |
 | The host no longer has the file (route answered 404) | "`<host>` no longer has this episode." |
+| The route's own 6/min limit (route answered 429) — an album from a no-CORS host reaches it | "Too many downloads through this app in one minute — wait a minute, then retry." |
 | `roomVerdict` said `'no'` | "Not enough space — remove a download to make room." |
 | HLS, a live item, or no URL | The button does not render at all. |
 | Anything else | The thrown message, or "Download failed — tap to retry." |
@@ -596,8 +664,9 @@ described wrongly. `mmmusic.show` was up, serving the same 90 MB file to the `<a
 element two inches below the message.
 
 `downloadFailureMessage` (`download-rules.ts`, pinned by `check:downloads`) picks
-between them, and `hostAnswers` supplies the discriminator: a **`no-cors` HEAD** to
-the same URL, which the browser resolves for *any* reply the server made — 200, 405,
+between them, and `hostAnswers` supplies the discriminator — **after** `/api/audio`
+has also thrown, never before it (see "Every direct failure is retried through
+us" above): a **`no-cors` HEAD** to the same URL, which the browser resolves for *any* reply the server made — 200, 405,
 500 — and rejects only when the request never completed. Driven in a real browser on
 2026-09-20, 5/5:
 

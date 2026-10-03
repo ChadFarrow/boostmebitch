@@ -8,6 +8,7 @@ import {
   LIVE_XML_MAX_AGE_MS,
 } from '@/lib/pi';
 import { createBoundedCache } from '@/lib/bounded-cache';
+import { fetchPodpingLiveFeeds, podpingConfigured } from '@/lib/podping-live';
 import { piCouldNotAskStatus } from '@/lib/pi-error';
 import {
   compareLiveShows, liveRosterFeedOrder, mapLimit, mergeLiveOverPi, FEED_FANOUT, PI_FANOUT,
@@ -110,6 +111,17 @@ const MAX_FAVORITE_FEEDS = 20;
  */
 const MAX_REMEMBERED_FEEDS = 10;
 
+/**
+ * How many feeds the podping list may add (`lib/podping-live.ts`).
+ *
+ * A PUBLIC roster, like Podcast Index's: every feed on it sent a `live`
+ * podping to Hive, so it does not make the answer personal. Bounded because
+ * each entry costs a Podcast Index lookup (for the `podcastGuid` the page's
+ * heart and share need) and an RSS read, inside the same time budget as the
+ * caps above. Newest podping first, so a cap drops the oldest claims.
+ */
+const MAX_PODPING_FEEDS = 12;
+
 /** How long a feed stays worth re-reading after it was last seen live. */
 const SEEN_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -189,11 +201,21 @@ export async function GET(req: Request) {
     // limiting, `withErrorHandling` turns that into 429/408/500 — never an
     // empty 200, which would tell the page nobody is broadcasting. An empty
     // list is a CLAIM, and this is the layer that must not make it falsely.
-    const {
-      items: roster,
-      rawRows: rosterRows,
-      statusRows: rosterStatus,
-    } = await getGlobalLiveItemsDetailed();
+    //
+    // The podping list is asked IN PARALLEL and never throws: `null` means the
+    // viewer is unconfigured or did not answer, which costs this request its
+    // podping rows and nothing else.
+    const [
+      {
+        items: roster,
+        rawRows: rosterRows,
+        statusRows: rosterStatus,
+      },
+      podpingLive,
+    ] = await Promise.all([getGlobalLiveItemsDetailed(), fetchPodpingLiveFeeds()]);
+    const podping: 'ok' | 'off' | 'failed' = podpingLive
+      ? 'ok'
+      : podpingConfigured() ? 'failed' : 'off';
 
     /**
      * WHY THREE ROSTER COUNTS ARE IN THE RESPONSE.
@@ -284,6 +306,19 @@ export async function GET(req: Request) {
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isInteger(n) && n > 0);
     const seen = new Set(fromRoster);
+    // Feeds that sent a `live` podping. Read after PI's roster and before the
+    // caller's favorites, because it is public and global like the roster —
+    // and it is the source that finds a show PI has not noticed is on air.
+    // The pinged URL is a fallback for a feed PI cannot name a URL for.
+    const podpingUrl = new Map<number, string>();
+    const fromPodping: number[] = [];
+    for (const f of podpingLive ?? []) {
+      if (seen.has(f.feedId)) continue;
+      seen.add(f.feedId);
+      fromPodping.push(f.feedId);
+      podpingUrl.set(f.feedId, f.url);
+      if (fromPodping.length >= MAX_PODPING_FEEDS) break;
+    }
     const fromFavorites: number[] = [];
     for (const id of requested) {
       if (seen.has(id)) continue;
@@ -301,7 +336,7 @@ export async function GET(req: Request) {
     for (const f of remembered) seen.add(f.id);
 
     const knownUrl = new Map(remembered.map((f) => [f.id, f]));
-    const feedIds = [...fromRoster, ...fromFavorites, ...remembered.map((f) => f.id)];
+    const feedIds = [...fromRoster, ...fromPodping, ...fromFavorites, ...remembered.map((f) => f.id)];
     // Personal the moment one favorited feed was read — see PERSONAL_CACHE.
     // The remembered set is server state, identical for every caller, so it
     // does NOT make the answer personal.
@@ -312,8 +347,8 @@ export async function GET(req: Request) {
       // feeds of their own. That IS an answer, so it is cacheable — unlike
       // every branch where we could not ask.
       return NextResponse.json(
-        { items: [], unverifiedFeeds: 0, truncated: false, rosterRows, rosterStatus, rosterKept: roster.length, rosterFeeds: 0 },
-        { headers: LIVE_SHOWS_CACHE },
+        { items: [], unverifiedFeeds: 0, truncated: false, rosterRows, rosterStatus, rosterKept: roster.length, rosterFeeds: 0, podping, podpingFeeds: 0 },
+        { headers: podping === 'failed' ? NO_STORE : LIVE_SHOWS_CACHE },
       );
     }
 
@@ -347,7 +382,7 @@ export async function GET(req: Request) {
       .map((id) => {
         const known = knownUrl.get(id);
         const pi = piByFeed.get(id);
-        const url = known?.url ?? pi?.url;
+        const url = known?.url ?? pi?.url ?? podpingUrl.get(id);
         return url ? { id, url, podcastGuid: known?.podcastGuid ?? pi?.podcastGuid } : null;
       })
       .filter((f): f is { id: number; url: string; podcastGuid: string | undefined } => f !== null);
@@ -393,7 +428,9 @@ export async function GET(req: Request) {
         // favorites would let one person's private list change another
         // person's page, which is an inference about that list however weak.
         // PI's roster is a public answer, so anything derived from it is too.
-        if (e.liveStatus === 'live' && url && piRows.length && !wentLive.some((f) => f.id === id)) {
+        // The podping list is public too, so a feed it named may seed the memory.
+        const publicSource = piRows.length > 0 || podpingUrl.has(id);
+        if (e.liveStatus === 'live' && url && publicSource && !wentLive.some((f) => f.id === id)) {
           wentLive.push({ id, url, podcastGuid: e.podcastGuid ?? podcast?.podcastGuid, lastSeen: now });
         }
         items.push({
@@ -420,8 +457,13 @@ export async function GET(req: Request) {
     rememberLiveFeeds(wentLive, now);
 
     return NextResponse.json(
-      { items, unverifiedFeeds, truncated, rosterRows, rosterStatus, rosterKept: roster.length, rosterFeeds: rosterIds.length },
-      { headers: couldNotAskPi ? NO_STORE : personal ? PERSONAL_CACHE : LIVE_SHOWS_CACHE },
+      {
+        items, unverifiedFeeds, truncated, rosterRows, rosterStatus, rosterKept: roster.length,
+        rosterFeeds: rosterIds.length, podping, podpingFeeds: fromPodping.length,
+      },
+      // A podping list that was configured and did not answer is a thinner
+      // answer than the next request may get — never cached, like a PI 429.
+      { headers: couldNotAskPi || podping === 'failed' ? NO_STORE : personal ? PERSONAL_CACHE : LIVE_SHOWS_CACHE },
     );
   }, 'live-shows fetch failed');
 }

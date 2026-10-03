@@ -108,7 +108,7 @@ database is what let this service sit stalled for hours reporting `{ok:true}`.
   with `toString()`, and JavaScript switches to exponential notation at 1e21, so
   `?until=1e21` reached the driver as `"1e+21"` and `$2::bigint` rejected it. The
   route answered 500, `askIndex` turned that into `null`, the proxy into 503, and
-  `index-client.ts` set `indexOffForTab` — **one crafted URL switched the read
+  `index-client.ts` set `indexOffUntil` — **one crafted URL switched the read
   index off for that visitor's whole tab.** Clamping rather than refusing is
   deliberate: every route taking `until` is one whose 4xx the client reads as
   "the index is unavailable".
@@ -187,6 +187,23 @@ tracked REQ is 100,590 bytes, under `MAX_REQ_BYTES`. So raising `PUBKEY_CHUNK`,
 axes. `check-indexer.mjs` drives a full-size index against a mock relay that
 enforces both limits (`startMockRelay(…, { maxSubsPerConnection,
 maxMessageBytes })`); the previous code fails it with 35 refusals.
+
+## A deletion can arrive before its note
+
+A kind:5 is not stored as an event, but its targets are, in `deletion_requests`
+keyed `(event_id, pubkey)`, and the kind:1 insert sets `deleted_at` when a
+matching row exists. Before this a kind:5 updated only the rows already present
+and was forgotten — and a deletion arriving first is ordinary here, because it
+comes through the authors-scoped tracked group while its note may still be a
+backfill page away. Both statements match on the pubkey: a deletion only ever
+applies to its own author's events.
+
+**The advisory lock in `store.ts` is not decoration.** `take` ingests
+fire-and-forget, so a note and its deletion commit concurrently; without the
+lock the deletion's UPDATE cannot see the uncommitted note and the insert has
+already read no request. `check-indexer.mjs` races 40 pairs: with the lock
+removed, 1 to 3 of 40 ended tombstoned. → [`nostr.md`](nostr.md) for the
+browser half.
 
 ## The forbidden kinds are enforced in code, not in a filter
 

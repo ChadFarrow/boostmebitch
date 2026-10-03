@@ -1,6 +1,7 @@
 import type {
   Podcast, ValueBlock, ValueRecipient, Episode, AlternateEnclosure,
   BoostResult, StoredBoostLeg, ChapterEntry, ValueTimeSplit, LiveShow,
+  QueueItem, HistoryItem, StoredBoost,
 } from './types';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
@@ -235,6 +236,104 @@ export function trimForQueue(e: Episode): Episode {
 }
 
 /**
+ * How many episodes the play history on the Listen tab holds.
+ *
+ * The queue's number, on purpose: a history entry is a queue item plus a time,
+ * so with the same cap the history can never weigh more on disk than the queue
+ * already may — and both are non-evictable, so neither may be the value that
+ * fills a store out from under the user's settings. Fifty is weeks of the
+ * "listen to a few, then go back and boost them" this list exists for.
+ */
+export const PLAY_HISTORY_CAP = 50;
+
+/** Seconds of LISTENING (see `listenStep`) before an episode enters the history. */
+export const PLAY_HISTORY_LISTEN_SEC = 60;
+
+/** The largest single move of `positionSec` that still counts as listening. */
+export const LISTEN_STEP_MAX_SEC = 10;
+
+/**
+ * How much of one store tick counts as listening, in seconds.
+ *
+ * `positionSec` moves about once a second while the element plays, so a tick
+ * is ~1 s at 1× and ~5 s at 5×, and both count. A bigger move is a SEEK — the
+ * +30 button, a scrub, a resume that lands at 40:00 — and the listener did not
+ * hear what it skipped, so it counts nothing; neither does a rewind. Without
+ * this, "a minute of play" would be "a position past a minute", and every
+ * episode sampled from a saved place would enter the history.
+ */
+export function listenStep(prevSec: number, nextSec: number): number {
+  const d = nextSec - prevSec;
+  return Number.isFinite(d) && d > 0 && d <= LISTEN_STEP_MAX_SEC ? d : 0;
+}
+
+/**
+ * The play history after one more listen: the entry on TOP with `at: now`,
+ * any earlier entry for the same episode (`epKey`) removed, the oldest dropped
+ * past `PLAY_HISTORY_CAP`.
+ *
+ * **A LOG, the opposite of the queue's rule, and both halves are deliberate.**
+ * The queue refuses a duplicate and refuses at its cap, because its HEAD is
+ * the valuable end. Here the newest entry is: the history exists so somebody
+ * can boost what they just heard, so a re-listen must come back to the top
+ * rather than stay buried, and a full history must shed its oldest rather than
+ * refuse the episode they came to boost. The same `epKey` as the queue, so an
+ * empty `<guid></guid>` cannot fold two episodes of one feed into one row.
+ *
+ * Expects the item already shaped for storage (`trimForQueue` and
+ * `queueShowFor`), as `enqueueEpisode` does; it does not reshape it.
+ */
+export function addToHistory(
+  list: readonly HistoryItem[],
+  item: QueueItem,
+  now: number,
+): HistoryItem[] {
+  const key = epKey(item.episode);
+  return [
+    { episode: item.episode, podcast: item.podcast, at: now },
+    ...list.filter((h) => epKey(h.episode) !== key),
+  ].slice(0, PLAY_HISTORY_CAP);
+}
+
+/**
+ * What this device's boost log says was boosted to one episode: the sats that
+ * SETTLED, and whether any leg is unanswered. Drawn as "⚡ N boosted" beside
+ * the history row's BOOST button.
+ *
+ * **Legs, never `StoredBoost.sats`.** The modal logs a boost "regardless of
+ * rail", so a boost whose every leg failed is in the log at its full intent
+ * total — counting that would tell somebody an episode they never paid was
+ * paid. **`unsure` is invariant 11 on this surface:** a leg whose wallet never
+ * answered (`indeterminate`) may have paid, and a mark reading as "nothing
+ * sent" beside a BOOST button invites the second payment.
+ *
+ * **The show must match as well as the episode guid** — the show's guid, or
+ * its feed id where the boost or the show has none. Item guids are not unique
+ * between feeds ("1", "ep-1"), and an empty guid is no identity at all.
+ */
+export function boostedOnDevice(
+  boosts: readonly Pick<StoredBoost, 'episodeGuid' | 'podcastGuid' | 'podcastId' | 'legs'>[],
+  episode: Pick<Episode, 'guid'>,
+  podcast: Pick<Podcast, 'podcastGuid' | 'id'>,
+): { sats: number; unsure: boolean } {
+  let sats = 0;
+  let unsure = false;
+  if (!episode.guid) return { sats, unsure };
+  for (const b of boosts) {
+    if (b.episodeGuid !== episode.guid) continue;
+    const sameShow = b.podcastGuid && podcast.podcastGuid
+      ? b.podcastGuid === podcast.podcastGuid
+      : b.podcastId === podcast.id;
+    if (!sameShow) continue;
+    for (const l of b.legs ?? []) {
+      if (l.ok) sats += l.sats;
+      else if (l.indeterminate) unsure = true;
+    }
+  }
+  return { sats, unsure };
+}
+
+/**
  * The index of the next row that can actually be played, walking `step` from
  * `from`, or `-1` when there is none.
  *
@@ -290,8 +389,24 @@ export function nextPlayableIndex(
  *  rather than an empty box, and stops short of a year of back catalogue. */
 export const FAV_NEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** The most rows the section will ever build, however many feeds moved. */
-export const FAV_NEW_CAP = 50;
+/**
+ * The most rows the section will ever hold, however many feeds moved.
+ *
+ * 250 since 2026-10-01, when a show's FIRST check began showing its latest
+ * episode (`selectLatestEpisodes`) and rows stopped aging out: the list has to
+ * hold one row per show for a real library (221 shows, the owner's), and it is
+ * now the bound that matters, since only CLEAR, ✕ and this cap retire a row.
+ * It is written to `bmb:newmarks:<npub>`, which is not evictable, through
+ * `trimForQueue` — so a row costs its record minus the show notes.
+ */
+export const FAV_NEW_CAP = 250;
+
+/**
+ * How old a show's latest episode may be and still appear on its first check.
+ * Ninety days, the owner's choice: a monthly show is not missing, and a show
+ * that stopped publishing does not put an old episode on the list.
+ */
+export const FAV_NEW_SEED_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 
 /**
  * Feeds one `/api/new-episodes` request may name — ONE number for both ends.
@@ -304,6 +419,19 @@ export const FAV_NEW_CAP = 50;
  * check" on every pass, for ever.
  */
 export const NEW_EPISODES_MAX_FEEDS = 100;
+
+/**
+ * Feeds one `/api/new-episodes?latest=1` request may name — again ONE number
+ * for both ends, for the reason `NEW_EPISODES_MAX_FEEDS` gives.
+ *
+ * Sized against the CLOCK. That mode makes one Podcast Index call PER FEED, at
+ * `PI_FANOUT` at a time behind a probe, and `PI_TIMEOUT_MS` is 8 s with no
+ * `maxDuration` set: at 24 the worst case is 1 + ceil(23 / 6) = 5 rounds, 40 s,
+ * inside what `/api/live-shows` already accepts. At 100 it was 18 rounds,
+ * 144 s. Measured 2026-10-01 on the dev server: 100 real feeds answered in
+ * 1.8–2.6 s, so the realistic cost of the smaller number is a few more requests.
+ */
+export const NEW_EPISODES_LATEST_MAX_FEEDS = 24;
 
 /**
  * PI's own ceiling on a comma-separated feed-id list, and the reason this
@@ -462,13 +590,19 @@ export function pruneMarks(
  * it, deleted it for good. That is also why this runs BEFORE `advanceMarks`
  * and feeds it: what survives here is what a mark is allowed to describe.
  *
- * Two rules do the work. A row past the seven-day horizon is dropped, which is
- * the only thing that retires a row nobody cleared — an unbounded list would
- * otherwise carry a show's whole back catalogue for as long as the reader
- * ignored it. And the union is keyed by `epKey`, with the NEW record winning,
- * so a re-fetched episode updates in place rather than appearing twice: PI
- * corrects a title or a duration after a crawl, and the stale copy is the one
- * worth losing.
+ * **NO ROW IS RETIRED BY AGE — since 2026-10-01, by the owner's decision.** It
+ * used to drop anything past the seven-day horizon; a show's first check now
+ * shows its latest episode, which is routinely weeks old, and the list works
+ * like an inbox: a row leaves when the reader clears it (CLEAR, ✕), when its
+ * show is unfavorited (`pruneNewRows`), or when this cap pushes it out — the
+ * OLDEST first. What can ENTER is still bounded upstream: `selectNewEpisodes`
+ * takes only rows past each feed's mark, and `selectLatestEpisodes` one row per
+ * show under 90 days.
+ *
+ * The union is keyed by `epKey`, with the NEW record winning, so a re-fetched
+ * episode updates in place rather than appearing twice: PI corrects a title or
+ * a duration after a crawl, and the stale copy is the one worth losing. An
+ * undated row is dropped, carried or found — nothing can order it.
  *
  * Newest-first, and capped at `FAV_NEW_CAP`. The cap keeps the persisted
  * record bounded — this list is written to `bmb:newmarks:<npub>`, which is not
@@ -477,19 +611,102 @@ export function pruneMarks(
 export function mergeNewEpisodeRows(
   prev: readonly Episode[],
   found: readonly Episode[],
-  nowMs: number,
   dismissed?: ReadonlySet<string>,
 ): Episode[] {
-  const horizon = Math.floor((nowMs - FAV_NEW_WINDOW_MS) / 1000);
   const byKey = new Map<string, Episode>();
   for (const e of prev) byKey.set(epKey(e), e);
   for (const e of found) byKey.set(epKey(e), e);
   return [...byKey.values()]
     .filter((e) =>
-      typeof e.datePublished === 'number' && e.datePublished > horizon &&
+      typeof e.datePublished === 'number' &&
       !(dismissed && dismissed.has(epKey(e))))
     .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0))
     .slice(0, FAV_NEW_CAP);
+}
+
+/**
+ * A show's FIRST check: its latest episode, one row per show.
+ *
+ * The owner's rule (2026-10-01). Before it, a show with no mark showed only
+ * what it published in the last seven days, so a monthly show was simply
+ * absent from the section the first time it was checked — on a new device that
+ * was most of the library. Now each show contributes its NEWEST dated,
+ * playable, non-live row, if that is under `FAV_NEW_SEED_WINDOW_MS` old.
+ *
+ * Per FEED, never "the newest N overall": `/api/new-episodes?latest=1` asks one
+ * row per feed precisely because PI's `max` is global across a batch, and a
+ * daily show would otherwise fill it. A row whose feed we did not ask about is
+ * dropped, as in `selectNewEpisodes`. It ignores the marks on purpose: on a
+ * device that already has them this runs once per show, by the owner's choice,
+ * and `mergeNewEpisodeRows` dedupes against what is already on the list.
+ */
+export function selectLatestEpisodes(
+  rows: readonly Episode[],
+  guidByFeedId: Record<number, string>,
+  nowMs: number,
+): Episode[] {
+  const floor = Math.floor((nowMs - FAV_NEW_SEED_WINDOW_MS) / 1000);
+  const newest = new Map<number, Episode>();
+  for (const e of rows) {
+    if (!guidByFeedId[e.feedId]) continue;
+    if (typeof e.datePublished !== 'number' || e.datePublished <= floor) continue;
+    if (!isPlayableRow(e) || e.liveStatus) continue;
+    const held = newest.get(e.feedId);
+    if (!held || e.datePublished > (held.datePublished ?? 0)) newest.set(e.feedId, e);
+  }
+  return [...newest.values()]
+    .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0))
+    .slice(0, FAV_NEW_CAP);
+}
+
+/**
+ * The marks after a show's FIRST check: a show with NO mark is marked at the
+ * newest date its feed answered with. A show that already has one is left
+ * exactly where it is.
+ *
+ * **Why a show with no mark gets ONLY the first check.** Measured 2026-10-01 in
+ * the browser on a new device: with the ordinary seven-day check also run for
+ * never-checked shows, daily news shows filled all 250 places and pushed every
+ * show's latest episode off the list, and that request was TRUNCATED — so no
+ * mark advanced and the next pass flooded again. So the first check is the
+ * whole of a new show's first pass, and its mark comes from it.
+ *
+ * **This breaks "a mark may only describe a row on the list" ON PURPOSE, and
+ * only here.** The first check is a statement about the FEED, not a fetch of
+ * new episodes: everything before the newest is, by the owner's rule, not
+ * shown, and a newest too old to show (past 90 days) is still the point after
+ * which episodes are new. **A show that already has a mark is never moved
+ * here**: its ordinary check moves it and honours truncation, and moving it
+ * from this answer would skip whatever lay between the mark and the latest.
+ */
+export function seedMarks(
+  marks: Record<string, number>,
+  rows: readonly Episode[],
+  coveredGuids: readonly string[],
+  guidByFeedId: Record<number, string>,
+): Record<string, number> {
+  const covered = new Set(coveredGuids);
+  const next = { ...marks };
+  for (const e of rows) {
+    const guid = guidByFeedId[e.feedId];
+    if (!guid || !covered.has(guid) || guid in marks) continue;
+    if (typeof e.datePublished !== 'number') continue;
+    if (e.datePublished > (next[guid] ?? 0)) next[guid] = e.datePublished;
+  }
+  return next;
+}
+
+/**
+ * The dismissed keys to keep: the NEWEST `FAV_NEW_CAP`.
+ *
+ * Keys are appended as the reader removes rows, so the end of the array is the
+ * most recent. The end of a pass and the storage read both used
+ * `slice(0, cap)`, which over the cap kept the OLDEST — so the row just removed
+ * was the one forgotten, and it came back on a truncated pass. One function,
+ * because there were four sites and two of them had it right.
+ */
+export function capDismissed(keys: readonly string[]): string[] {
+  return keys.slice(-FAV_NEW_CAP);
 }
 
 /**
@@ -1515,6 +1732,204 @@ export function lnurlErrorReason(body: string): string | undefined {
 }
 
 /**
+ * A failed boost leg, explained for the person who pressed BOOST.
+ *
+ * The raw `BoostResult.error` is a library string — "Failed to connect to
+ * wss://relay.getalby.com", "LNURL callback failed (400): …" — that names the
+ * mechanism and not the three things a user needs: WHOSE side the fault is on,
+ * WHAT to do next, and whether any sats left. The raw text is still shown
+ * beside this, never replaced, because it is what a bug report needs.
+ *
+ * **`nothingSent` is a money claim, so it is an ALLOWLIST.** It is true only
+ * for failures thrown BEFORE a payment request can exist: the wallet's relay
+ * never connected (the SDK throws in `_checkConnected`, ahead of any publish),
+ * no wallet was ready, the recipient's LNURL service never produced a usable
+ * invoice, or the app refused an invoice for the wrong amount. Everything else
+ * — `PAYMENT_FAILED`, a timeout, anything unrecognised — says nothing about
+ * whether sats moved, because "you still have your sats" is the claim that
+ * talks someone into paying twice. An unanswered wallet never reaches here at
+ * all: it is `indeterminate` and renders `?`.
+ *
+ * A keysend leg retried over LNURL carries `keysend: …; LNURL retry: …`. The
+ * RETRY is the attempt that decided the leg (the keysend was retried only
+ * because it provably sent nothing), so it is the half explained.
+ */
+export interface PaymentErrorExplanation {
+  /** One sentence: what went wrong, in the user's terms. */
+  cause: string;
+  /** What the user can do, when there is something. */
+  action?: string;
+  /** Whose side the fault is on. */
+  whose: 'yours' | 'recipient' | 'unknown';
+  /** True only when no payment request can have reached a wallet. */
+  nothingSent: boolean;
+}
+
+/**
+ * The wallet relay a failure says could not be reached, as a bare host — or
+ * null when the failure is anything else.
+ *
+ * Deliberately NARROW: it matches the one message a WebSocket that never
+ * opened produces ("Failed to connect to wss://…", thrown in the SDK's
+ * `_checkConnected` ahead of any publish), and nothing merely mentioning a
+ * connection. Two readers depend on that: `explainPaymentError` turns a match
+ * into "nothing was sent", a money claim; and the boost modal turns one into
+ * "cannot reach your wallet's relay" over the balance, so a match on a wallet
+ * REFUSAL ("UNAUTHORIZED: connection not allowed to …") would tell someone
+ * with a working wallet that it is offline. `…to connect to peer` is a
+ * Lightning routing failure, not our relay, and must not match either.
+ */
+export function unreachableWalletRelay(raw: string | undefined): string | null {
+  const m = (raw ?? '').match(/failed to connect to\s+(wss?:\/\/[^\s/;,)]+)/i);
+  return m ? m[1]!.replace(/^wss?:\/\//i, '') : null;
+}
+
+export function explainPaymentError(raw: string | undefined): PaymentErrorExplanation {
+  const full = (raw ?? '').trim();
+  const retryAt = full.lastIndexOf('LNURL retry: ');
+  const msg = retryAt >= 0 ? full.slice(retryAt + 'LNURL retry: '.length) : full;
+  const has = (re: RegExp) => re.test(msg);
+
+  if (has(/payment engine failed to load/i)) {
+    return {
+      cause: 'The payment code did not load.',
+      action: 'Reload the page, then boost again.',
+      whose: 'unknown',
+      nothingSent: true,
+    };
+  }
+  if (has(/no payment provider available|no nwc uri configured|webln provider not found|spark wallet not initialized/i)) {
+    return {
+      cause: 'No wallet was ready to pay.',
+      action: 'Connect a wallet, then boost again.',
+      whose: 'yours',
+      nothingSent: true,
+    };
+  }
+  const host = unreachableWalletRelay(msg);
+  if (host) {
+    return {
+      cause: `Could not reach your wallet's relay (${host}).`,
+      action: 'Check that your wallet is online and your network allows it, reload the page, then boost again.',
+      whose: 'yours',
+      nothingSent: true,
+    };
+  }
+  if (has(/does not support keysend/i)) {
+    return {
+      cause: 'This recipient is a Lightning node, and your Spark wallet cannot pay a node directly (keysend).',
+      action: 'Pick a different wallet for this boost.',
+      whose: 'yours',
+      nothingSent: true,
+    };
+  }
+  if (has(/amountless invoice|amount mismatch/i)) {
+    return {
+      cause: "The recipient's Lightning service sent an invoice for the wrong amount, so the app refused to pay it.",
+      action: 'Only the recipient can fix this.',
+      whose: 'recipient',
+      nothingSent: true,
+    };
+  }
+  const refusal = msg.match(/LNURL callback failed(?: \(\d+\))?:?\s*(.*)$|LNURL service:\s*(.*)$/i);
+  if (refusal) {
+    const reason = (refusal[1] ?? refusal[2] ?? '').trim();
+    // A bare status ("LNURL callback failed: 500") is not a reason worth quoting.
+    const quoted = reason && !/^\d+$/.test(reason) ? ` ("${reason.slice(0, 160)}")` : '';
+    return {
+      cause: `The recipient's Lightning service would not create an invoice${quoted}.`,
+      action: 'Only the recipient can fix this.',
+      whose: 'recipient',
+      nothingSent: true,
+    };
+  }
+  if (has(/LNURL lookup|did not return JSON|not a payRequest|invalid lightning address|no invoice returned|returned no invoice|lnurl url must be https/i)) {
+    return {
+      cause: "The recipient's Lightning address did not answer correctly.",
+      action: 'Only the recipient can fix this.',
+      whose: 'recipient',
+      nothingSent: true,
+    };
+  }
+  // From here on, nothing proves the sats stayed put.
+  if (has(/insufficient|not enough (?:balance|funds)/i)) {
+    return {
+      cause: 'Your wallet does not have enough sats for this payment.',
+      action: 'Add sats to your wallet, or boost a smaller amount.',
+      whose: 'yours',
+      nothingSent: false,
+    };
+  }
+  if (has(/quota|budget/i)) {
+    return {
+      cause: "Your wallet connection's spending budget is used up.",
+      action: 'Raise the budget in your wallet, or wait for it to renew.',
+      whose: 'yours',
+      nothingSent: false,
+    };
+  }
+  if (has(/user (?:rejected|denied|cancell?ed)|rejected by (?:the )?user|cancell?ed by (?:the )?user/i)) {
+    return { cause: 'The payment was cancelled in your wallet.', whose: 'yours', nothingSent: false };
+  }
+  if (has(/unauthori[sz]ed|restricted|not implemented|not supported/i)) {
+    return {
+      cause: 'Your wallet connection is not allowed to make this kind of payment.',
+      action: "Check the connection's permissions in your wallet.",
+      whose: 'yours',
+      nothingSent: false,
+    };
+  }
+  if (has(/no route|route not found|unable to find a (?:path|route)|could not find a route/i)) {
+    return {
+      cause: 'Your wallet could not find a payment route to this recipient.',
+      action: 'Try again later, or boost a smaller amount.',
+      whose: 'unknown',
+      nothingSent: false,
+    };
+  }
+  if (has(/timed? ?out/i)) {
+    return {
+      cause: 'Your wallet or its relay did not respond in time.',
+      action: 'Check your wallet before you boost again.',
+      whose: 'yours',
+      nothingSent: false,
+    };
+  }
+  return { cause: 'The payment did not go through.', whose: 'unknown', nothingSent: false };
+}
+
+/**
+ * Which legs of a finished boost may be paid AGAIN — indices into `results`,
+ * biggest share first (the order `sendBoost` pays in).
+ *
+ * The boost modal's "Retry failed" button pays exactly these and nothing else.
+ * A leg qualifies only when `explainPaymentError` PROVES nothing left the
+ * wallet (`nothingSent`, itself an allowlist): the wallet relay never
+ * connected, no wallet was ready, the recipient's LNURL service produced no
+ * usable invoice, or the app refused an invoice for the wrong amount. Every
+ * other failure stays out, because paying it again may pay it twice:
+ *
+ *   - `ok` — paid.
+ *   - `indeterminate` — the wallet was asked and never answered; it may have
+ *     paid (invariant 11). Tested FIRST, ahead of any message, so a timeout
+ *     whose text happens to read like a proven failure is still never retried —
+ *     the same order `routingFailureProvesUnpaid` keeps.
+ *   - `PAYMENT_FAILED`, a publish timeout, anything unrecognised — no proof.
+ *   - a hole — the leg never settled, so there is nothing to judge.
+ *   - `sats <= 0` — `payOne` reports that as ok without contacting anyone.
+ */
+export function retryableLegs(results: readonly (BoostResult | undefined)[]): number[] {
+  const out: number[] = [];
+  results.forEach((r, i) => {
+    if (!r || r.ok || r.indeterminate || !(r.sats > 0)) return;
+    if (explainPaymentError(r.error).nothingSent) out.push(i);
+  });
+  // Stable, biggest share first — `recipientOrder`'s rule, applied to the legs'
+  // own sats because a retried leg's amount is fixed; it is not re-split.
+  return out.sort((a, b) => results[b]!.sats - results[a]!.sats);
+}
+
+/**
  * Did an LNURL-pay callback REFUSE, whatever status it chose to say so with?
  *
  * LUD-06 specifies the BODY, not the status, so a refusal arrives as a 200
@@ -1746,7 +2161,7 @@ export function compareEpisodeOrder(
 /**
  * A sent boost's per-recipient legs for the local log, biggest share first.
  *
- * Ordered rather than feed-ordered because `<BoostCard>` renders `legs`
+ * Ordered rather than feed-ordered because a reader of `legs` gets them
  * verbatim and a stored leg carries no `split` weight — whatever order is
  * written here is the order that boost is remembered in, permanently, with no
  * way to re-sort at render time. Feed order meant the history card listed a
@@ -1796,7 +2211,16 @@ export function splitSats(total: number, recipients: ValueRecipient[]): number[]
   // Clamp weights at 0: a malformed feed with a negative `split` would
   // otherwise poison totalWeight (even flip it negative) and produce nonsensical
   // — including negative — allocations.
-  const w = (r: ValueRecipient) => Math.max(0, r.split || 0);
+  //
+  // Non-finite too: `Number("1e400")` is Infinity, which made totalWeight
+  // Infinity and that recipient's share NaN — and `payOne`'s `sats <= 0` is
+  // false for NaN, so a NaN leg was attempted rather than skipped. `Number()`
+  // keeps the coercion the old `Math.max` did, because a digit-STRING weight
+  // reaches here from stored data and must keep paying (`check:playlistdb`).
+  const w = (r: ValueRecipient) => {
+    const n = Math.max(0, Number(r.split) || 0);
+    return Number.isFinite(n) ? n : 0;
+  };
   const totalWeight = recipients.reduce((s, r) => s + w(r), 0);
   if (totalWeight === 0) return recipients.map(() => 0);
   const exact = recipients.map((r) => (total * w(r)) / totalWeight);
@@ -2568,6 +2992,23 @@ export function downloadEpisodeId(r: {
 }
 
 /**
+ * May "delete after playing" remove this download when it plays to the end?
+ * Takes the record's `feedMedium`: the parent feed's medium as it was known
+ * when the download was saved, `''` when that feed declared none.
+ *
+ * **ABSENT IS NOT "A PODCAST".** A record written before the field existed, or
+ * saved from a container that is not its parent (a `musicL` playlist's track),
+ * names no medium — and `/downloads` rebuilds the show from the record, so the
+ * player has no medium either. Reading that as the spec's default `podcast`
+ * deletes an album track by track as it plays. Unknown keeps the file: a missed
+ * delete costs one DELETE press; a wrong one costs the data the download saved.
+ */
+export function deletesAfterPlay(feedMedium: string | null | undefined): boolean {
+  if (typeof feedMedium !== 'string') return false;
+  return !playsAsTracks({ medium: feedMedium || undefined });
+}
+
+/**
  * The playback speeds the SPEED control cycles through, in order. An ALLOWLIST,
  * not a range: `storage.playbackRate` reads anything else back as 1, so a
  * corrupt or hand-edited value plays at normal speed rather than at whatever
@@ -2604,6 +3045,29 @@ export function nextPlaybackRate(rate: number): number {
 // URLs in their `streaming` tag.
 export function isHlsUrl(url: string | undefined | null): boolean {
   return !!url && /\.m3u8(\?|#|$)/i.test(url);
+}
+
+/**
+ * Whether this browser plays HLS natively on a plain `<audio>` — Safari, which
+ * on an iPhone is every browser, and any other browser whose `canPlayType`
+ * says so. That is where a live stream is sent to the
+ * `<audio>` rather than the `<video>` until the listener asks for the picture
+ * (`<Player>`'s `hlsOnAudio`): iOS pauses a backgrounded `<video>` that has a
+ * video track, so a live show on the video element stopped when the screen
+ * turned off, while the `<audio>` keeps playing. Asked once; false on the
+ * server.
+ */
+let nativeHlsAudio: boolean | null = null;
+export function canPlayNativeHlsAudio(): boolean {
+  if (typeof document === 'undefined') return false;
+  if (nativeHlsAudio === null) {
+    try {
+      nativeHlsAudio = document.createElement('audio').canPlayType('application/vnd.apple.mpegurl') !== '';
+    } catch {
+      nativeHlsAudio = false;
+    }
+  }
+  return nativeHlsAudio;
 }
 
 // Whether an alternate enclosure is a video rendition. Covers progressive video
@@ -3377,7 +3841,10 @@ export function parseNwcBudget(res: unknown): NwcBudget | null {
   return {
     usedSats,
     totalSats,
-    remainingSats: Math.max(0, totalSats - usedSats),
+    // From the msat difference, NOT `totalSats - usedSats`: flooring the
+    // subtrahend separately overstates by a sat (10500 − 600 msat is 9 sats,
+    // not 10 − 0).
+    remainingSats: Math.max(0, Math.floor((total - used) / 1000)),
     renewsAt: Number.isFinite(renewsAt) && renewsAt > 0 ? renewsAt : undefined,
     renewalPeriod: typeof r.renewal_period === 'string' ? r.renewal_period : undefined,
   };

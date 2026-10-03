@@ -18,7 +18,7 @@
 // assertion in it is the status code: this route must answer 200 with an empty
 // envelope for a query it cannot use, NEVER a 4xx. askIndex returns null for
 // any !res.ok, the proxy turns that into 503, and ask() in index-client.ts
-// latches indexOffForTab for the whole tab — so one 400 here switches the index
+// latches indexOffUntil for the whole tab — so one 400 here switches the index
 // off for the global feed, every podcast feed, live streams and zaps until the
 // page reloads.
 //
@@ -167,7 +167,7 @@ const db = getPool(DATABASE_URL);
 await migrate(DATABASE_URL);
 // Fresh every run: a check that depends on leftovers from the last one is not
 // a check.
-await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state cascade');
+await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state, deletion_requests cascade');
 
 const NOW = 1_750_000_000;
 const keys = {};
@@ -259,7 +259,7 @@ const names = (body) => body.profiles.map((p) => JSON.parse(p.content).name ?? J
 }
 {
   // THE one that matters most. A 4xx here becomes a proxy 503, and ask() latches
-  // indexOffForTab for the whole tab — killing the index for the global feed,
+  // indexOffUntil for the whole tab — killing the index for the global feed,
   // podcast feeds, live streams and zaps until reload.
   for (const url of ['/profiles/search?q=a', '/profiles/search?q=', '/profiles/search']) {
     const r = await get(url);

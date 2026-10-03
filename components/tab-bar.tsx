@@ -88,7 +88,7 @@ import { KbDebug } from './kb-debug';
 // is gone — see the Queue entry below for why that swap needed the boost
 // modal's own connect control to land first.
 type Tab = {
-  href: '/' | '/queue' | '/live' | '/favorites' | '/downloads';
+  href: '/' | '/listen' | '/live' | '/favorites' | '/downloads';
   label: string;
   icon: React.ReactNode;
   /** Whether `pathname` belongs to this tab. `/` is exact; the rest are prefixes. */
@@ -122,9 +122,13 @@ const TABS: Tab[] = [
     // <FullscreenPlayer> also carries an `overlay` <AuthControl>. What is left
     // without a trigger is /npub/<npub> and /privacy with nothing playing and no
     // boost open — accepted, and recorded in docs/ui.md.
-    href: '/queue',
-    label: 'Queue',
-    match: (p) => p.startsWith('/queue'),
+    //
+    // LISTEN, not Queue, since 2026-10-01: the tab holds Up Next AND the play
+    // history (the episodes the queue drained, kept so they can be boosted).
+    // `/queue` redirects to `/listen`, so an old link still lands here.
+    href: '/listen',
+    label: 'Listen',
+    match: (p) => p.startsWith('/listen'),
     icon: (
       // A stack of rows with a play glyph at the head: a list that plays,
       // rather than a bare list (which reads as another favorites) or a bare

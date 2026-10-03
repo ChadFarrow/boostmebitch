@@ -1,9 +1,5 @@
 // Podcasting 2.0 value block types — mirrors the spec, not Podcast Index's exact JSON shape
 
-// Type-only, so nothing here gains a runtime import: this file stays the pure-type
-// leaf every check script reaches through lib/util.ts.
-import type { PendingZapReceipt, QuotedZapReceipt } from './nostr/zap-receipt-wait';
-
 export interface ValueRecipient {
   name?: string;
   type: 'node' | 'lnaddress' | string;
@@ -388,20 +384,6 @@ export interface BoostResult {
   // public landing page; the id is the last path segment.
   boostboxUrl?: string;
   boostboxId?: string;
-  /**
-   * Set on a leg paid as a real NIP-57 zap: how to recognise the kind:9735 the
-   * recipient's LNURL server is about to publish. The receipt does not exist
-   * when the leg settles, so this is a promise of one, not a result.
-   */
-  zapPending?: PendingZapReceipt;
-  /**
-   * The receipt, once it arrived and passed `zapReceiptAccepts`. The boost note
-   * quotes these, which is what makes Fountain render the sat amount — it reads
-   * the quoted receipt, not our `amount` tag.
-   *
-   * Absent means no receipt landed inside the wait, NEVER that the leg failed.
-   */
-  zapReceipt?: QuotedZapReceipt;
 }
 
 /**
@@ -533,8 +515,9 @@ export interface NewEpisodeMarks {
    * mark advances to the newest of ITS rows that survived into this array,
    * never to a row that was merely fetched (`mergeNewEpisodeRows` first, then
    * `advanceMarks` over the merged list). A row therefore leaves this list
-   * only by aging past `FAV_NEW_WINDOW_MS` or by an explicit clear — never
-   * because a pass happened while nobody was looking.
+   * only by an explicit clear (CLEAR, ✕), by its show being unfavorited, or by
+   * `FAV_NEW_CAP` pushing the oldest out — never by age (since 2026-10-01) and
+   * never because a pass happened while nobody was looking.
    *
    * Absent on a record written before this field existed, which reads as an
    * empty list: the first pass after an upgrade refills it.
@@ -550,8 +533,18 @@ export interface NewEpisodeMarks {
   failed?: boolean;
   /** Keys of rows the reader explicitly removed (✕ or CLEAR).  Persisted so
    *  that a truncated batch — whose marks cannot advance — does not re-offer
-   *  them on the next pass. Pruned alongside rows. */
+   *  them on the next pass. The NEWEST `FAV_NEW_CAP` are kept (`capDismissed`). */
   dismissed?: string[];
+  /**
+   * podcastGuid -> when this show's FIRST check (its latest episode,
+   * `selectLatestEpisodes`) was answered, unix seconds. A show missing here is
+   * asked `/api/new-episodes?latest=1` once, on top of the ordinary check —
+   * which is how a device that already had marks got the latest episodes once,
+   * by the owner's choice (2026-10-01). Only a COVERED show is recorded, so a
+   * failed ask is retried. Pruned to the favorites like `marks` (`pruneMarks`),
+   * so a re-favorited show is asked again. Absent reads as `{}`.
+   */
+  seeded?: Record<string, number>;
 }
 
 /**
@@ -575,6 +568,21 @@ export interface NewEpisodeMarks {
 export interface QueueItem {
   episode: Episode;
   podcast: Podcast;
+}
+
+/**
+ * One entry in the play history on the Listen tab: a podcast episode this
+ * device played for at least a minute, and when (`at`, epoch ms of the listen).
+ *
+ * The queue's PAIR, for the queue's reason — a history row plays again and
+ * opens BOOST, so its show has to travel with it — plus a time. The episode is
+ * `trimForQueue`d and the show is `queueShowFor`'s, exactly as an enqueue
+ * stores them. BOOST does not pay from this copy: it loads the episode from its
+ * feed again first (`<HistoryBoostButton>`), because a stored value block can
+ * name a payee the feed has since dropped.
+ */
+export interface HistoryItem extends QueueItem {
+  at: number;
 }
 
 /**

@@ -171,6 +171,11 @@ export function HomePage() {
     typeof window === 'undefined' ? '' : window.location.search,
   );
 
+  // Which publisher load is current. Opening B, or leaving the publisher view,
+  // retires A's still-running `loadCollection`, or A's albums land late under
+  // B's header and A's `finally` clears B's spinner.
+  const publisherGen = useRef(0);
+
   // Mount-time hydration: restore the detail / episode / discussion view from
   // the URL. Podcast resolves by ?podcast=<guid> (resolvePodcastByGuid, with its
   // own caches + PI breaker) or falls back to ?feed=<id> for shows that have no
@@ -395,15 +400,17 @@ export function HomePage() {
       return;
     }
     setPublisherLoading(true);
+    const gen = ++publisherGen.current;
     (async () => {
       try {
         const collection = await loadCollection(feedUrl);
+        if (gen !== publisherGen.current) return;
         if (!collection) { setPublisherError(true); setPublisherAlbums([]); return; }
         setPublisherAlbums(collection.feeds);
         setPublisherListed(collection.listed);
         setPublisherNoPi(collection.couldNotAskPi);
-      } catch { setPublisherError(true); setPublisherAlbums([]); }
-      finally { setPublisherLoading(false); }
+      } catch { if (gen === publisherGen.current) { setPublisherError(true); setPublisherAlbums([]); } }
+      finally { if (gen === publisherGen.current) setPublisherLoading(false); }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -425,6 +432,7 @@ export function HomePage() {
         : 'feeds';
 
   function clearPublisher() {
+    publisherGen.current++;
     setPublisherSource(null);
     setPublisherAlbums(null);
     setPublisherLoading(false);
@@ -499,18 +507,21 @@ export function HomePage() {
       setPublisherListed(0);
       setPublisherNoPi(false);
       setPublisherLoading(true);
+      const gen = ++publisherGen.current;
       try {
         if (!p.url) { setPublisherAlbums([]); return; }
         const collection = await loadCollection(p.url);
+        if (gen !== publisherGen.current) return;
         if (!collection) { setPublisherError(true); setPublisherAlbums([]); return; }
         setPublisherAlbums(collection.feeds);
         setPublisherListed(collection.listed);
         setPublisherNoPi(collection.couldNotAskPi);
       } catch {
+        if (gen !== publisherGen.current) return;
         setPublisherError(true);
         setPublisherAlbums([]);
       } finally {
-        setPublisherLoading(false);
+        if (gen === publisherGen.current) setPublisherLoading(false);
       }
     } else {
       setSelected(p);
@@ -604,6 +615,7 @@ export function HomePage() {
   const showOrigin = useApp((s) => s.showOrigin);
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
   const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
+  const drilledIn = inDetailView || inEpisodeDetail || inDiscussion;
 
   return (
     // NO min-h-screen AND NO BOTTOM PADDING. `<body>` already carries
@@ -616,13 +628,16 @@ export function HomePage() {
           `--app-header-h`. */}
       <AppHeader onHome={goHome} />
 
-      {/* Hero */}
-      <section className="max-w-7xl mx-auto px-4 pt-10 pb-6">
+      {/* Hero. From lg: a drilled-in view (show, episode, discussion) drops
+          the headline from SIGHT and keeps it for screen readers: at 1440px
+          the three words and their margin cost ~180px above every show and
+          episode, and the search box below is the part still in use there. */}
+      <section className={`max-w-7xl mx-auto px-4 pt-10 pb-6 ${drilledIn ? 'lg:pt-6' : ''}`}>
         {/* An <h1>: this is the home page's one top-level heading, and every
             other route has one. The document outline started at level 2 here
             (with the wordmark a <button>), so a screen reader's heading list
             had no level-1 entry on `/`. `.headline` carries the styling. */}
-        <h1 className="headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
+        <h1 className={`headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)] ${drilledIn ? 'lg:sr-only' : ''}`}>
           search<span className="text-bolt">.</span>{' '}
           listen<span className="text-bolt">.</span>{' '}
           <span className="text-bolt animate-bolt">boost</span><span className="text-bone">.</span>
@@ -653,7 +668,7 @@ export function HomePage() {
             to creators — no account, no middleman.
           </p>
         )}
-        <div className="mt-8 max-w-xl">
+        <div className={`mt-8 max-w-xl ${drilledIn ? 'lg:mt-0' : ''}`}>
           <SearchBar
             key={searchKey}
             type={searchType}

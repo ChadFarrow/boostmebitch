@@ -15,9 +15,8 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'missing or invalid feedId / episodeId' }, { status: 400 });
   }
   return withErrorHandling(async () => {
-    // Same `max` as /api/feed on purpose, twice over: an episode the list can
-    // show must be one this route can find its tracks for, and an identical PI
-    // URL shares that route's fetch cache entry instead of opening a second.
+    // Same `max` as /api/feed on purpose: an episode the list can show must be
+    // one this route can find its tracks for.
     const episodes = await getEpisodes(feedId, PI_EPISODE_MAX);
     const episode = episodes.find((e) => e.id === episodeId);
     // A NEGATIVE id PI does not hold is an item /api/feed read from the RSS

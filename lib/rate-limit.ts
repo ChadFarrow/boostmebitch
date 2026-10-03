@@ -99,7 +99,10 @@ export function rateLimit(req: Request, route: string, limit: number): NextRespo
   const ipHits = liveHits(buckets, key, now);
   const routeHits = liveHits(routeBuckets, route, now);
   if (ipHits.length >= limit || routeHits.length >= limit * GLOBAL_MULTIPLIER) {
-    buckets.set(key, ipHits);
+    // Only refresh a bucket that already exists. Creating one here bypassed the
+    // MAX_BUCKETS eviction below, so once the route bucket was full every
+    // request from a rotated IP grew the map until the next sweep.
+    if (buckets.has(key)) buckets.set(key, ipHits);
     routeBuckets.set(route, routeHits);
     return NextResponse.json(
       { error: 'rate limited — try again in a minute' },

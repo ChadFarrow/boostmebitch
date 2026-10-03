@@ -84,6 +84,9 @@
     "check:downloads": "node --experimental-strip-types scripts/check-downloads.mjs",
     "check:queue": "node --experimental-strip-types scripts/check-queue.mjs",
     "check:favnew": "node --experimental-strip-types scripts/check-favnew.mjs",
+    "check:likes": "node --experimental-strip-types scripts/check-likes.mjs",
+    "check:echo": "node --experimental-strip-types scripts/check-boost-echo.mjs",
+    "check:deletions": "node --experimental-strip-types scripts/check-note-deletions.mjs",
     "check:opml": "node --experimental-strip-types scripts/check-opml.mjs"
   },
   "dependencies": {

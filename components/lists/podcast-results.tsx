@@ -82,7 +82,7 @@ export function PodcastRow({
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
+            <span className="font-display text-base leading-tight line-clamp-2 break-words min-w-0">{podcast.title}</span>
             {podcast.isPreview && !piUnasked && (
               <span className="stamp text-muted border-muted/40">NOT IN PI</span>
             )}
@@ -163,7 +163,15 @@ export function PodcastResults({
     );
   }
   return (
-    <ul className="divide-y divide-bone/10">
+    // Two columns from lg:. A row is a cover, a title and a heart, and at
+    // 1440px one per line left ~900px of empty space between the two. The
+    // dividers become each row's own bottom border there, because `divide-y`
+    // draws a top border on every item after the first — in two columns that
+    // put a rule above the top-right row and none under the last pair.
+    // `divide-y` is `max-lg:`, never undone with `lg:divide-y-0`: that rule's
+    // `> * ~ *` selector outranks `[&>li]:border-b` and zeroed the border on
+    // every row but the first.
+    <ul className="max-lg:divide-y max-lg:divide-bone/10 lg:grid lg:grid-cols-2 lg:gap-x-6 lg:[&>li]:border-b lg:[&>li]:border-bone/10">
       {feeds.map((p) => (
         <PodcastRow
           key={p.id}

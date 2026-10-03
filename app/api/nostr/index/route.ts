@@ -93,6 +93,13 @@ export async function GET(req: Request) {
   const path = searchParams.get('path')?.trim() ?? '';
   const match = ALLOWED.find((a) => a.pattern.test(path));
   if (!match) return NextResponse.json({ error: 'unknown index path' }, { status: 400 });
+  // The free-text segments accept `\` and `..`, and the URL parser upstream
+  // turns `\` into `/` and removes dot segments — so `/feed/podcast/..\..\x`
+  // matched the allowlist and reached `/x` on the service, with our API key.
+  // A path that the parser would rewrite is not the path we allowed.
+  if (new URL(path, 'http://x').pathname !== path) {
+    return NextResponse.json({ error: 'unknown index path' }, { status: 400 });
+  }
 
   // Absent config is not an error: it is the feature being off. The client
   // treats 503 the same way it treats a timeout — run the relay path.

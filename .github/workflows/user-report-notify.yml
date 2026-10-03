@@ -1,0 +1,47 @@
+# Notifies the owner when a listener sends a bug report from the app.
+#
+# WHY THIS EXISTS. `/api/bug-report` files the issue with the OWNER's token
+# (`GITHUB_BUG_TOKEN`), so GitHub counts it as the owner's own action — and
+# GitHub never notifies anybody of their own actions. A listener's report
+# therefore arrived with no notification at all; it was found only by looking.
+# A comment that @mentions the owner from `github-actions[bot]` is not the
+# owner's action, so it notifies them (web, email or the mobile app, per their
+# GitHub settings).
+#
+# WHICH ISSUES. Only one OPENED with the `user-report` label, which the route
+# sets on every report and which is how the owner tells a listener's report
+# from their own feature issues (docs/ui.md, "Report a bug"). A label can only
+# be set at creation by someone who can push to the repo, so a stranger opening
+# an issue by hand cannot trigger this.
+#
+# NOTHING FROM THE ISSUE REACHES THE SHELL. The title and body are the
+# listener's text, and interpolating `${{ github.event.issue.title }}` into a
+# `run:` line is a script injection. Only the issue NUMBER (an integer GitHub
+# sets) and the repository owner are used.
+#
+# An `issues` workflow runs from the DEFAULT branch's copy of this file, so it
+# does nothing until it is on `main`.
+
+name: Notify on a user bug report
+
+on:
+  issues:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: contains(github.event.issue.labels.*.name, 'user-report')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Mention the owner on the new report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          gh issue comment "$ISSUE" --body "@$OWNER — a listener sent this from the in-app bug report."

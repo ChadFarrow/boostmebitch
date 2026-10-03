@@ -8,6 +8,7 @@ import { warmRelays } from './relay-health';
 import { parseZapReceipt, zapReceiptAmountMsat, type ZapReceipt } from './zap-receipt';
 import { nip73GuidsFromTags } from './zap-request';
 import { stripNostrUris, extractImages, mentionedPubkeys } from '../format';
+import { deletedNoteIds, withoutDeleted, NOTE_DELETION_KIND } from './note-deletions';
 
 export interface DiscoveredNote {
   id: string;
@@ -19,6 +20,17 @@ export interface DiscoveredNote {
   amountMsat: number | null;
   client: string | null;
   isBoost: boolean;        // `t:boostagram` tag OR a positive `amount` tag
+  /**
+   * Every event this note quotes was in hand when it was built — vacuously
+   * true when it quotes none.
+   *
+   * Until it is, `isBoost` is not an answer: a Fountain wrapper's payment IS
+   * the kind:9735 it quotes, so a root paint (built before the quoted-event
+   * stage) reads it as unpaid. `isPodcastComment` waits on this for that
+   * reason. Optional only because a note cached before the field existed has
+   * none, and absent must read as "not known".
+   */
+  quotesResolved?: boolean;
   podcastGuid: string | null; // first podcast:guid: ref on the note (the show)
   episodeGuids: string[];  // any podcast:item:guid: refs on the note
   author: ProfileMetadata | null;
@@ -91,6 +103,12 @@ interface FetchOpts {
    *  Emitting there would publish notes the final answer excludes — and since
    *  `mergeNotes` unions and never removes, they would stay on screen for good. */
   onRoots?: (roots: DiscoveredNote[]) => void;
+  /** Ids of notes whose own author published a NIP-09 kind:5 naming them.
+   *  `assembleNotes` already leaves them out of what it returns; this exists
+   *  because `useNostrFeed` UNIONS, so a note already on screen — from the
+   *  cache, the index, or the `onRoots` paint — would otherwise stay there.
+   *  Safe for every fetcher, unlike `onRoots`: it only ever removes. */
+  onDeleted?: (ids: string[]) => void;
 }
 
 // Pull every event id this note quote-references, plus relay hints. Sources:
@@ -177,16 +195,22 @@ function buildNote(
   // a separate kind:1 narrative note that quote-references the receipt. The
   // wrapper note carries the NIP-73 podcast tags but no amount of its own,
   // so we resolve the first quoted zap receipt and adopt its amount.
+  //
+  // A quoted receipt is a payment even when none of its three amount sources
+  // can be read: the note is still a boost (the card's amountless `⚡ boost`
+  // stamp), and `isPodcastComment` would otherwise call it a COMMENT — over a
+  // receipt that is in hand. The loop goes on looking for one that does state
+  // an amount.
+  const { ids: quotedIds } = parseQuoteRefs(e);
   let viaZapReceipt = false;
   if (amountMsat === null) {
-    const { ids } = parseQuoteRefs(e);
-    for (const id of ids) {
+    for (const id of quotedIds) {
       const q = quoted.get(id);
-      if (!q) continue;
+      if (q?.kind !== 9735) continue;
+      viaZapReceipt = true;
       const m = zapReceiptAmountMsat(q);
       if (m !== null) {
         amountMsat = m;
-        viaZapReceipt = true;
         break;
       }
     }
@@ -216,6 +240,7 @@ function buildNote(
     amountMsat,
     client,
     isBoost,
+    quotesResolved: quotedIds.every((id) => quoted.has(id)),
     podcastGuid,
     episodeGuids,
     author: profile,
@@ -243,6 +268,31 @@ export function noteHasSubstance(note: DiscoveredNote): boolean {
   if (note.isBoost) return true;
   const { body, images } = extractImages(stripNostrUris(note.content));
   return body.length > 0 || images.length > 0;
+}
+
+/**
+ * A podcast COMMENT: a top-level note carrying a NIP-73 podcast tag and no
+ * payment. The same note with a payment is a boost, and the card stamps each.
+ *
+ * **It waits on `quotesResolved`, and `!isBoost` alone is the trap.** A
+ * Fountain boost is a kind:1 wrapper with no `amount` tag whose payment is the
+ * kind:9735 it quotes in a `nostr:nevent1…` body line — 132 of the 200 notes in
+ * the global index on 2026-10-02. The relay pass paints its roots BEFORE the
+ * quoted-event stage, so every one of those would read "comment" for seconds
+ * and then turn into a boost. A wrapper whose receipt no relay returns stays
+ * unlabelled for good, which is the honest answer: it may well be a boost.
+ *
+ * Top-level only, because `publishReply` copies the parent's NIP-73 tags onto
+ * every reply — without the parent test each reply in a thread is stamped.
+ */
+export function isPodcastComment(note: DiscoveredNote): boolean {
+  return (
+    !note.isBoost &&
+    note.quotesResolved === true &&
+    (note.podcastGuid !== null || note.episodeGuids.length > 0) &&
+    !!note.rawEvent &&
+    getParentEventId(note.rawEvent) === null
+  );
 }
 
 /**
@@ -297,7 +347,7 @@ export async function fetchPodcastNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events, opts.onRoots);
+    return await assembleNotes(pool, live, events, opts.onRoots, opts.onDeleted);
   });
 }
 
@@ -325,7 +375,7 @@ export async function fetchEpisodeNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events, opts.onRoots);
+    return await assembleNotes(pool, live, events, opts.onRoots, opts.onDeleted);
   });
 }
 
@@ -399,7 +449,7 @@ export async function fetchSocialInteractThread(
         const r = rootEvents[0];
         opts.onRoot(noteFromEvent(r, allRelays, storage.profile.get(r.pubkey) ?? null));
       }
-      return assembleNotes(pool, allRelays, rootEvents);
+      return assembleNotes(pool, allRelays, rootEvents, undefined, opts.onDeleted);
     });
   });
 }
@@ -429,7 +479,7 @@ export async function fetchAllPodcastNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events, opts.onRoots);
+    return await assembleNotes(pool, live, events, opts.onRoots, opts.onDeleted);
   });
 }
 
@@ -504,7 +554,7 @@ export async function fetchBoostsSentBy(
     } catch {
       return [];
     }
-    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
+    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost), undefined, opts.onDeleted);
     return notes.filter((n) => n.isBoost);
   });
 }
@@ -562,7 +612,7 @@ export async function fetchBoostsReceivedBy(
     // assembleNotes dedupes by id, so the overlap between the two filters —
     // which is most of a BoostMeBitch note, carrying both `k` and `t` tags —
     // costs nothing here.
-    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
+    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost), undefined, opts.onDeleted);
     return notes.filter((n) => n.isBoost);
   });
 }
@@ -665,6 +715,7 @@ async function assembleNotes(
   relays: string[],
   events: Event[],
   onRoots?: (roots: DiscoveredNote[]) => void,
+  onDeleted?: (ids: string[]) => void,
 ): Promise<DiscoveredNote[]> {
   if (!events.length) return [];
 
@@ -775,13 +826,62 @@ async function assembleNotes(
     ...allTreeEvents.map((e) => e.pubkey),
     ...allTreeEvents.flatMap((e) => mentionedPubkeys(e.content)),
   ]));
-  const [replyMap, quoted] = await Promise.all([
+  // The kind:5 read rides the last stage BESIDE the profile and quote reads, so
+  // it adds no round trip of its own.
+  const [replyMap, quoted, deletions] = await Promise.all([
     fetchProfiles(pool, relays, authors),
     fetchQuotedEvents(pool, relays, allTreeEvents),
+    fetchDeletionRequests(pool, relays, allTreeEvents),
   ]);
   const profiles = new Map([...rootMap, ...replyMap]);
 
-  return buildTree(topLevelEvents, childrenByParent, profiles, quoted, relays);
+  const deleted = deletedNoteIds(deletions, allTreeEvents);
+  if (deleted.size) onDeleted?.([...deleted]);
+  return withoutDeleted(buildTree(topLevelEvents, childrenByParent, profiles, quoted, relays), deleted);
+}
+
+/** Ids per kind:5 query, and how many such queries one assembly may open. The
+ *  roots come first in `events`, so a capped read still covers every top-level
+ *  note; only the tail of a very large reply forest goes unchecked. Four, not
+ *  one per chunk: relays keep about 20 subscriptions live per connection and
+ *  drop the overflow in silence (docs/nostr.md). */
+const DELETION_ID_CHUNK = 250;
+const MAX_DELETION_CHUNKS = 4;
+
+/**
+ * The NIP-09 kind:5 events the authors of `events` published naming them.
+ *
+ * Many relays do not honor NIP-09, so a deleted note is still served; reading
+ * the deletion ourselves is what takes it off the feed. `authors` narrows the
+ * read to deletions that CAN count — `deletedNoteIds` ignores any other author
+ * anyway — so a relay spends no bandwidth on a stranger's kind:5.
+ *
+ * A failed or empty read returns `[]`, which leaves every note on screen: the
+ * safe direction, and the behaviour before this read existed. Nothing here
+ * records an absence.
+ */
+async function fetchDeletionRequests(
+  pool: import('nostr-tools').SimplePool,
+  relays: string[],
+  events: Event[],
+): Promise<Event[]> {
+  const chunks: Event[][] = [];
+  for (let i = 0; i < events.length && chunks.length < MAX_DELETION_CHUNKS; i += DELETION_ID_CHUNK) {
+    chunks.push(events.slice(i, i + DELETION_ID_CHUNK));
+  }
+  const results = await Promise.all(chunks.map(async (chunk) => {
+    try {
+      const { events: found } = await collectEventsByAuthors(pool, relays, {
+        kinds: [NOTE_DELETION_KIND],
+        authors: Array.from(new Set(chunk.map((e) => e.pubkey))),
+        '#e': chunk.map((e) => e.id),
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS);
+      return found;
+    } catch {
+      return [];
+    }
+  }));
+  return results.flat();
 }
 
 /**

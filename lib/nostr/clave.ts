@@ -68,7 +68,7 @@ export const CLAVE_RELAY = 'wss://relay.powr.build';
 // socket to that host and may never connect. NOSTRCONNECT_RELAYS used to carry
 // three of them — damus, primal, nos.lol — and that is why they are gone: they
 // were reachable by the signer and not by this page, which reads as a pairing
-// that is merely slow. relay.nsec.app and this one are the two nothing else in
+// that is merely slow. relay.nostrconnect.com and this one are the two nothing else in
 // the app connects to, which is what makes them the pair the handshake can rely
 // on. Do not add a relay here that DEFAULT_RELAYS already holds; the overlap is
 // the hazard, and the redundancy it looks like is imaginary.

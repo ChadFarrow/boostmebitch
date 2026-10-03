@@ -47,6 +47,24 @@ import {
   nip46RequestBytes,
   NIP46_MAX_REQUEST_BYTES,
 } from './nip46-errors';
+import { httpUrl } from '../util';
+
+// A NIP-46 `auth_url` is the raw `error` string of a kind:24133 reply, so the
+// REMOTE SIGNER chooses it — and the sign-in modal renders it as the "Approve
+// in signer" href. React does not block a `javascript:` href, and this origin
+// holds the NWC credential and any local nsec, so a hostile bunker (a pasted
+// `bunker://`, or a NIP-05 whose nostr.json names one) could run script here.
+// Guard it once, at the parse boundary, so every surface that shows it inherits
+// the check (CLAUDE.md: "a feed-supplied URL rendered as an href goes through
+// `httpUrl` at the PARSE boundary").
+function safeAuthUrl(cb?: (url: string) => void): ((url: string) => void) | undefined {
+  if (!cb) return undefined;
+  return (url: string) => {
+    const safe = httpUrl(url);
+    if (safe) cb(safe);
+    else console.warn('[bunker] refused a non-http(s) auth_url from the remote signer');
+  };
+}
 
 // Relays for the GENERATE flow's nostrconnect:// URI — TWO, and the count is a
 // decision rather than what was left over.
@@ -56,8 +74,19 @@ import {
 // ~2.17, and CLAUDE.md pins us to exactly 2.19.4 — "cannot successfully
 // complete nostrconnect pairing unless the URI already embeds
 // wss://relay.powr.build". It is also the persistent proxy that fires the APNs
-// wake, which is how a closed Clave answers at all. relay.nsec.app is the
-// second because nsec.app and Amber-as-bunker both reach it.
+// wake, which is how a closed Clave answers at all.
+//
+// THE SECOND RELAY MUST BE UP, because Clave waits for it. Clave's pairing
+// (Clave/AppState+NostrConnect.swift, `RelayUtils.connectToRelays`) connects to
+// EVERY relay in the URI with a 10 s timeout and publishes its connect ack only
+// once the whole group has settled. So a dead relay here delays the ack by the
+// full 10 s, and an iPhone user who goes back to this app sooner gets Clave
+// suspended before the ack is sent: the sign-in hangs. relay.nsec.app did
+// exactly that — it refused connections from 2026-09-25 — and was replaced by
+// relay.nostrconnect.com, a relay run for NIP-46 pairing. Measured that day
+// with a kind:24133 round trip (subscribe, publish from a second socket):
+// connect 822 ms, live delivery 210 ms. The "costs nothing" argument below is
+// about THIS side's wait, not the signer's.
 //
 // THIS SET USED TO CARRY damus, primal AND nos.lol, and removing them is the
 // fix rather than a tidy-up. The reasoning for a wide set was ack redundancy
@@ -67,7 +96,7 @@ import {
 // baseline. All three of those share a host with DEFAULT_RELAYS, so the bunker's
 // own SimplePool opens the SECOND socket to each and they may never connect —
 // three relays in the URI that the signer can reach and this page cannot.
-// relay.nsec.app and relay.powr.build are the two nothing else in the app
+// relay.nostrconnect.com and relay.powr.build are the two nothing else in the app
 // connects to, which is exactly why they are the pair left standing.
 //
 // Conduit reach the same number from the other side: `pairRemoteSignerFromNostrConnect`
@@ -81,7 +110,7 @@ import {
 // resolves on the first matching kind:24133 response, so a slow or silent relay
 // here costs nothing. The cost here is the socket, not the wait.
 const NOSTRCONNECT_RELAYS = [
-  'wss://relay.nsec.app',
+  'wss://relay.nostrconnect.com',
   CLAVE_RELAY,
 ];
 
@@ -375,7 +404,10 @@ export function subscribeBunkerRestore(fn: (s: BunkerRestoreStage) => void): () 
  */
 export type BunkerApprovalStage = {
   waiting: boolean;
-  /** The NIP-46 method being waited on, e.g. 'sign_event'. Null when idle. */
+  /** The NIP-46 method being waited on, e.g. 'get_public_key', or
+   *  'sign_event kind:10333' — a signature carries its event kind, because
+   *  "signing" alone cannot tell the user (or a bug report) which of a dozen
+   *  publishers is being refused. Display text only. Null when idle. */
   label: string | null;
   /** Which re-issue we are on, 1-based. 0 when idle. */
   attempt: number;
@@ -1076,7 +1108,7 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
     // is of the real payload rather than of a shape that resembles it.
     signEvent: (template: EventTemplate): Promise<Event> =>
       sizedBy('sign_event', [JSON.stringify(template)], () =>
-        withApprovalWait(() => signer.signEvent(template), 'sign_event', { probe })) as Promise<Event>,
+        withApprovalWait(() => signer.signEvent(template), `sign_event kind:${template.kind}`, { probe })) as Promise<Event>,
     nip04: {
       encrypt: (peerPubkey, plaintext) =>
         sizedBy('nip04_encrypt', [peerPubkey, plaintext], () =>
@@ -1181,7 +1213,7 @@ export async function connectBunkerFromUri(
   // needed, which presents as the reconnect simply not working.
   async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string; pool: SimplePool }> {
     const pool = newPool();
-    const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl, pool });
+    const s = BunkerSigner.fromBunker(sk, bp, { onauth: safeAuthUrl(onAuthUrl), pool });
     try {
       // `connect` GOES THROUGH THE APPROVAL WAIT TOO, and leaving it out is the
       // same omission this file has now made twice — see the `get_public_key`
@@ -1456,7 +1488,7 @@ export function startNostrConnect(
       signer = await BunkerSigner.fromURI(
         clientSk,
         memoUri,
-        { onauth: onAuthUrl, pool },
+        { onauth: safeAuthUrl(onAuthUrl), pool },
         NOSTRCONNECT_TIMEOUT_MS,
       );
     } catch (e) {

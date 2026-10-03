@@ -283,7 +283,7 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
   // THIS ROUTE MUST NEVER ANSWER 4xx, and that is not a style preference.
   // askIndex (lib/nostr-index-server.ts) returns null for any !res.ok, the
   // proxy cannot tell that from "could not ask" and answers 503, and ask() in
-  // index-client.ts latches indexOffForTab = true for the WHOLE TAB on a 503.
+  // index-client.ts latches indexOffUntil for five minutes, the WHOLE TAB, on a 503.
   // So a 400 here — on a one-character query, say — would switch the index off
   // for the global feed, every podcast feed, live streams and zaps until the
   // page is reloaded. The other routes get away with 400s because the proxy's
@@ -400,7 +400,7 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
  * serializes a parameter with `toString()`, so `until=1e21` reached the driver
  * as the string `"1e+21"`, which `$2::bigint` rejects. The route then answered
  * 500, `askIndex` turned that into `null`, the proxy into 503, and
- * `index-client.ts` set `indexOffForTab` — so one crafted URL switched the read
+ * `index-client.ts` set `indexOffUntil` — so one crafted URL switched the read
  * index off for that visitor's entire tab.
  */
 const MAX_UNTIL = 4_294_967_295;

@@ -364,7 +364,7 @@ console.log(`    empty one 98px. The footer is the ONE clearance; this is what s
   // Real insets: the footer's padding reads env(safe-area-inset-bottom), so at
   // 0 this measures a phone nobody has.
   await send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, left: 0, bottom: 34, right: 0 } });
-  for (const path of ['/downloads', '/favorites', '/queue', '/no-such-route-here']) {
+  for (const path of ['/downloads', '/favorites', '/listen', '/no-such-route-here']) {
     await send('Page.navigate', { url: `${APP}${path}` });
     await wait(4000);
     // The faked visual viewport is re-installed by every navigation at the

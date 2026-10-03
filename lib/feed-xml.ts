@@ -52,16 +52,33 @@ export function readAttr(attrs: string, name: string): string | undefined {
 // Decode the handful of XML entities that show up in short text nodes
 // (funding labels). Mirrors the entity pass inside extractText.
 export function decodeXmlText(raw: string): string {
+  return decodeXmlEntities(
+    raw.replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1').trim(),
+  );
+}
+
+/**
+ * The XML entity pass alone, for an ATTRIBUTE value — `readAttr` returns the
+ * raw bytes, so `name="Mutton, Mead &amp; Music"` reached the splits list
+ * as "&amp;". For DISPLAY fields only (a recipient's `name`); never run it on
+ * an `address` or a custom record, whose bytes are what gets paid.
+ *
+ * `&amp;` is decoded LAST, so `&amp;lt;` stays the literal text `&lt;` rather
+ * than being decoded twice into `<`. Numeric references go through
+ * `fromCodePoint` (an emoji is above U+FFFF, where `fromCharCode` truncates)
+ * and an out-of-range one is left as written rather than throwing.
+ */
+export function decodeXmlEntities(raw: string): string {
+  const cp = (n: number, whole: string) =>
+    Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole;
   return raw
-    .replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1')
-    .trim()
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
+    .replace(/&#x([0-9a-f]+);/gi, (whole, h) => cp(parseInt(h, 16), whole))
+    .replace(/&#(\d+);/g, (whole, d) => cp(Number(d), whole))
+    .replace(/&amp;/g, '&');
 }
 
 // ── Linear tag / block scanner ──────────────────────────────────────────────

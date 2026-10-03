@@ -1,6 +1,6 @@
 'use client';
 import { create } from 'zustand';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, QueueItem, ValueBlock, ValueTimeSplit } from './types';
+import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, HistoryItem, QueueItem, ValueBlock, ValueTimeSplit } from './types';
 import type { NostrIdentity, PublishReason } from './nostr';
 
 /** Why `favoritesSync` is 'degraded' — see the field for the extra value. */
@@ -9,7 +9,7 @@ import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
-  epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
+  addToHistory, epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
   queueShowFor, trimForQueue,
 } from './util';
 import { savedStartSec } from './resume-position';
@@ -36,6 +36,10 @@ interface AppState {
    *  if it never resumes — see lib/resume-position.ts). An explicit start, 0
    *  included, always wins: a chapter tap or a `?t=` link names its second. */
   play: (episode: Episode, podcast: Podcast, startSec?: number) => void;
+  /** `play` without starting playback — the item is loaded, paused, at its
+   *  saved place. For a surface that opens the now-playing screen on an item
+   *  (a HISTORY row) without making the press an autoplay. */
+  cue: (episode: Episode, podcast: Podcast) => void;
   togglePlay: () => void;
   setPlaying: (b: boolean) => void;
   setPosition: (s: number) => void;
@@ -130,6 +134,14 @@ interface AppState {
    * true over an element that never started — the ❚❚-over-silence lie again.
    */
   revealQueue: () => void;
+  /**
+   * Point the player at the episode that was in it when the app was last
+   * open (`bmb:now_playing`), paused, at its saved place — `revealQueue`'s
+   * rules, and asked BEFORE it. Without this a reload always landed on the
+   * queue's head, which is not what somebody was listening to when they
+   * played a feed row or a later queue row.
+   */
+  revealNowPlaying: () => void;
   setListenQueue: (items: QueueItem[]) => void;
   /**
    * Carry a signed-out queue onto an account that has none, at sign-in.
@@ -149,6 +161,25 @@ interface AppState {
    * gate there to decide exactly as it did before.
    */
   handlePlaybackEnded: () => boolean;
+
+  /**
+   * The play history on the Listen tab: podcast episodes this device played
+   * for a minute, newest first, so somebody who queued several and listened to
+   * a few can go back and BOOST them — the queue drains each one as it ends.
+   * Device-wide (`bmb:play_history`); `addToHistory` owns the order and cap.
+   */
+  playHistory: HistoryItem[];
+  /** False when the last history write did not reach DISK — `listenQueueSaved`'s reason. */
+  playHistorySaved: boolean;
+  /**
+   * Record one listen. `use-play-history.ts` is the one caller, and decides
+   * WHEN (a minute of listening, podcasts only); this shapes the item exactly
+   * as an enqueue does — `trimForQueue`, and `queueShowFor` so a playlist row
+   * records its own show, never the curator's.
+   */
+  recordListen: (episode: Episode, podcast: Podcast) => void;
+  removeFromHistory: (key: string) => void;
+  clearHistory: () => void;
 
   // Whether the fullscreen "Now Playing" player is expanded. Lifted into the
   // store so surfaces outside <Player> (e.g. a live-stream card) can open it.
@@ -634,6 +665,18 @@ function queueStepTo(s: AppState, qIdx: number, step: 1 | -1): Partial<AppState>
   };
 }
 
+/** The history's write-through, on `persistQueue`'s terms. */
+function persistHistory(items: HistoryItem[]): boolean {
+  const landed = storage.playHistory.set(items);
+  if (!landed) {
+    console.warn(
+      '[history] the play history did not reach disk — it holds for this session only. '
+      + 'The store is full or blocked.',
+    );
+  }
+  return landed;
+}
+
 /**
  * Write the queue through to disk, and do not drop `safeSet`'s answer.
  *
@@ -686,6 +729,13 @@ export const useApp = create<AppState>((set, get) => ({
       current: { episode, podcast },
       isPlaying: true,
       positionSec: startSec ?? savedStartSec(episode, podcast),
+      videoMode: false,
+    }),
+  cue: (episode, podcast) =>
+    set({
+      current: { episode, podcast },
+      isPlaying: false,
+      positionSec: savedStartSec(episode, podcast),
       videoMode: false,
     }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
@@ -799,6 +849,17 @@ export const useApp = create<AppState>((set, get) => ({
         videoMode: false,
       };
     }),
+  revealNowPlaying: () =>
+    set((s) => {
+      if (s.current) return {};
+      const last = storage.nowPlaying.get();
+      if (!last || !isPlayableRow(last.episode) || last.episode.liveStatus) return {};
+      return {
+        current: { episode: last.episode, podcast: last.podcast },
+        positionSec: savedStartSec(last.episode, last.podcast),
+        videoMode: false,
+      };
+    }),
   // Replaces, never unions. An order nobody chose is worse than either order,
   // so a queue arriving from another account's cache does not get merged into
   // the one on screen.
@@ -845,6 +906,32 @@ export const useApp = create<AppState>((set, get) => ({
     });
     return true;
   },
+
+  playHistory: storage.playHistory.get(),
+  playHistorySaved: true,
+  recordListen: (episode, podcast) =>
+    set((s) => {
+      const next = addToHistory(
+        s.playHistory,
+        { episode: trimForQueue(episode), podcast: queueShowFor(episode, podcast) },
+        Date.now(),
+      );
+      return { playHistory: next, playHistorySaved: persistHistory(next) };
+    }),
+  removeFromHistory: (key) =>
+    set((s) => {
+      const next = s.playHistory.filter((h) => epKey(h.episode) !== key);
+      if (next.length === s.playHistory.length) return {};
+      return { playHistory: next, playHistorySaved: persistHistory(next) };
+    }),
+  // A REMOVAL rather than a write of `[]`, for the reason `listenQueue.clear`
+  // gives: a write a full store refuses leaves the old bytes on disk.
+  clearHistory: () =>
+    set((s) => {
+      if (!s.playHistory.length) return {};
+      storage.playHistory.clear();
+      return { playHistory: [], playHistorySaved: true };
+    }),
 
   playerExpanded: false,
   setPlayerExpanded: (b) => set({ playerExpanded: b }),

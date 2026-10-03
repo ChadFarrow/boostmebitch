@@ -3,9 +3,7 @@ import type { StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { shortNpub } from '@/lib/nostr';
 import { linkify, timeAgo } from '@/lib/format';
-import { elideAddress } from '@/lib/util';
 import { Avatar } from './avatar';
-import { LegStatusGlyph } from './leg-status-glyph';
 import { PodcastCover } from './podcast-cover';
 
 /**
@@ -13,6 +11,12 @@ import { PodcastCover } from './podcast-cover';
  * NoteCard so the global feed reads as a single boost stream when these are
  * intermixed. Author identity comes from the active session's profile —
  * the StoredBoost itself only carries a senderName fallback.
+ *
+ * **No per-recipient legs.** The card used to list every leg with ✓/?/✗ and
+ * its sats, which put a payment receipt in the middle of a social feed — and
+ * only on the sender's own boosts, and only until the note published and the
+ * card was swapped for the Nostr one. The per-leg status is shown where it is
+ * acted on, in the boost modal that sent it. `legs` is still stored.
  */
 export function BoostCard({ boost }: { boost: StoredBoost }) {
   const identity = useApp((s) => s.identity);
@@ -79,38 +83,6 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
           </p>
         )}
 
-        <ul className="mt-2 space-y-0.5 text-[11px] text-muted">
-          {boost.legs.map((leg, i) => (
-            <li key={i} className="flex items-center gap-2 flex-wrap">
-              {/* An unanswered wallet is neither ✓ nor ✗. The log is permanent
-                  and is what someone reads weeks later deciding whether a
-                  recipient was ever paid — recording a guess as a fact is the
-                  one thing it must not do. */}
-              <LegStatusGlyph ok={leg.ok} indeterminate={leg.indeterminate} />
-              <span className="text-bone">{leg.recipientName || elideAddress(leg.recipient)}</span>
-              <span>· {leg.sats} sats</span>
-              {leg.boostboxUrl && (
-                <a
-                  href={leg.boostboxUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn-inline text-bolt"
-                  title="View metadata on BoostBox"
-                >
-                  📦 boostbox
-                </a>
-              )}
-              {leg.error && !leg.ok && (
-                <span
-                  className={leg.indeterminate ? 'text-muted' : 'text-red-400/80'}
-                  title={leg.error}
-                >
-                  · {leg.indeterminate ? 'unconfirmed — may have been sent' : leg.error}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
       </div>
     </article>
   );

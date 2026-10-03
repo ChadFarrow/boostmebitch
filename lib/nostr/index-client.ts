@@ -40,18 +40,24 @@ export const INDEX_FEED_LIMIT = 50;
  * is the normal case, not an edge one. Deliberately NOT persisted: a redeploy
  * that turns the index on must take effect on the next page load, not after
  * someone clears their storage.
+ *
+ * It EXPIRES. An installed PWA keeps one tab alive for days, so a latch held
+ * until reload turned one transient 503 into an @-mention picker that said
+ * "Can't reach the directory" for the rest of the week while the index was
+ * answering. Five minutes still spares a preview deploy almost every round trip.
  */
-let indexOffForTab = false;
+const INDEX_OFF_MS = 5 * 60_000;
+let indexOffUntil = 0;
 
 async function ask<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-  if (indexOffForTab) return null;
+  if (Date.now() < indexOffUntil) return null;
   const qs = new URLSearchParams({ path, ...(params ?? {}) });
   try {
     const res = await fetch(`/api/nostr/index?${qs}`, {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (res.status === 503) {
-      indexOffForTab = true;
+      indexOffUntil = Date.now() + INDEX_OFF_MS;
       return null;
     }
     if (!res.ok) return null;
@@ -140,7 +146,7 @@ export function indexGlobalFeed(limit = INDEX_FEED_LIMIT): Promise<IndexBundle |
  * right now: served stale it puts a finished broadcast on air, which is worse
  * than answering nothing, because the relay fallback would have been correct.
  *
- * `ask` already latches `indexOffForTab` on a 503, which is the right response
+ * `ask` already latches `indexOffUntil` (five minutes) on a 503, which is the right response
  * to "not configured" and the wrong one to "temporarily behind" — but the two
  * are indistinguishable from here, and erring toward the relay path is the
  * direction that cannot be wrong.

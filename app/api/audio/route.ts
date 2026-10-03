@@ -66,7 +66,9 @@ export async function GET(req: Request) {
   const raw = new URL(req.url).searchParams.get('url');
   // `httpUrl` at the PARSE boundary, the same guard a feed-supplied href gets:
   // it rejects every scheme but http/https before the string reaches safeFetch.
-  const url = httpUrl(raw ?? undefined);
+  // Length-capped like /api/chapters, with more slack: enclosure URLs carry
+  // tracking-prefix chains.
+  const url = raw && raw.length <= 4096 ? httpUrl(raw) : null;
   if (!url) return NextResponse.json({ error: 'bad url' }, { status: 400 });
 
   try {
@@ -76,12 +78,20 @@ export async function GET(req: Request) {
     // No `redirect` option: safeFetch sets `manual` itself and walks each hop,
     // re-validating the URL and re-resolving the hostname every time. Passing
     // `follow` here would be overridden and would read as if it were not.
+    //
+    // The 30 s bound is on the HEADERS only. An abort signal that fires after
+    // they arrive also kills the body stream, so `AbortSignal.timeout(30_000)`
+    // cut every download longer than 30 s off mid-file — the exact failure
+    // `maxDuration = 300` above exists to prevent. The body is bounded by
+    // `maxDuration` and `capBytes`.
+    const headersDeadline = new AbortController();
+    const timer = setTimeout(() => headersDeadline.abort(), 30_000);
     const upstream = await safeFetch(url, {
       // Never forward credentials or the caller's headers: this request is ours,
       // not theirs, and an enclosure needs neither.
       headers: { Accept: '*/*' },
-      signal: AbortSignal.timeout(30_000),
-    });
+      signal: headersDeadline.signal,
+    }).finally(() => clearTimeout(timer));
 
     if (!upstream.ok) {
       // Release the socket: an unread body holds the connection open.

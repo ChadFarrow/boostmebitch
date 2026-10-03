@@ -5,7 +5,7 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { Episode, NewEpisodeMarks, FavoriteEpisode, FavoritePodcast, Podcast, QueueItem, StoredBoost } from './types';
+import type { Episode, NewEpisodeMarks, FavoriteEpisode, FavoritePodcast, HistoryItem, Podcast, QueueItem, StoredBoost } from './types';
 import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState, ProfileMetadata } from './nostr';
 // Value import, so it must come from the import-free leaf rather than the
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAYBACK_RATES, trimForQueue } from './util';
+import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -126,7 +126,11 @@ const KEYS = {
   streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
   streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
+  deleteAfterPlay: 'bmb:dl_delete_played', // '1' when a podcast episode's download is deleted once it plays to the end; absent = keep (the default). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
+  played: 'bmb:played',               // Record<resumeKey, epoch ms> — podcast episodes this device played to the end, capped at PLAYED_CAP newest. DEVICE-wide like bmb:resume, and for the same reason not a cache.
+  nowPlaying: 'bmb:now_playing',      // QueueItem — the episode last in the player, so a reload reopens IT (paused) rather than the queue's head. DEVICE-wide like bmb:resume; the place inside it is bmb:resume's job. Not a cache: nothing can rebuild what was in the player, so deliberately absent from EVICTABLE_PREFIXES.
+  playHistory: 'bmb:play_history',    // HistoryItem[] newest first — podcast episodes this device played for a minute, for the Listen tab's HISTORY (boost them later). A LOG capped at PLAY_HISTORY_CAP: the oldest goes. DEVICE-wide like bmb:resume, and not a cache: nothing on the network can rebuild what somebody listened to, so deliberately absent from EVICTABLE_PREFIXES.
 } as const;
 
 /** An Amber request we dispatched and are waiting on across a page load.
@@ -270,6 +274,7 @@ function coerceStoredBoost(b: StoredBoost): StoredBoost {
   };
 }
 const RESUME_CAP = 200;
+const PLAYED_CAP = 1000;
 
 /** Where one episode was left. `t` and `d` are seconds, `at` is epoch ms. `d`
  *  is 0 when neither the media element nor the feed gave a duration. The rules
@@ -353,9 +358,15 @@ function writeThrough(key: string, value: string): boolean {
 
 function safeGet(key: string): string | null {
   if (!isBrowser()) return null;
-  let v: string | null = null;
-  try { v = localStorage.getItem(key); } catch { /* blocked — fall through */ }
-  return v ?? memoryMirror.get(key) ?? null;
+  // Mirror FIRST. It holds a value only when the write to disk failed, and a
+  // quota failure does not delete the key, so disk still has the OLD value —
+  // reading disk first let that stale value win and froze the control the
+  // mirror exists to keep working. `safeSet` clears the mirror on every write
+  // that lands and `safeRemove` clears it first, so it can never shadow newer
+  // data on disk.
+  const held = memoryMirror.get(key);
+  if (held !== undefined) return held;
+  try { return localStorage.getItem(key); } catch { return null; }
 }
 
 /**
@@ -1206,6 +1217,19 @@ export const storage = {
     set: (v: boolean): boolean => safeSet(KEYS.streamSummaries, v ? '1' : '0'),
   },
 
+  /** Delete a podcast episode's download when it plays to the end. Absent =
+   *  OFF: a download is something the listener chose to keep, so only they may
+   *  turn this on (docs/downloads.md). Off removes the key, one sentinel for
+   *  the default. Returns whether the value reached disk, for the control. */
+  deleteAfterPlay: {
+    get: (): boolean => safeGet(KEYS.deleteAfterPlay) === '1',
+    set: (v: boolean): boolean => {
+      if (v) return safeSet(KEYS.deleteAfterPlay, '1');
+      safeRemove(KEYS.deleteAfterPlay);
+      return true;
+    },
+  },
+
   /**
    * /api/by-guid resolutions, persisted across sessions. 7-day TTL — show
    * titles + artwork barely change so a longer window is fine, and the
@@ -1735,6 +1759,42 @@ export const storage = {
   },
 
   /**
+   * Podcast episodes this device played to the end: `resumeKey` → epoch ms of
+   * the finish. Written by lib/resume-position.ts when it drops a finished
+   * episode's resume entry, and read only to draw a PLAYED mark.
+   *
+   * **Device-wide and not evictable**, for the reasons `resumePositions` gives:
+   * no request can rebuild it. About 80 bytes an entry, so the cap keeps it
+   * near 80 KB. A malformed entry is dropped on read, not the map.
+   */
+  playedEpisodes: {
+    get: (): Record<string, number> => {
+      const raw = safeGet(KEYS.played);
+      if (!raw) return {};
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        const out: Record<string, number> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    },
+    /** Keeps the PLAYED_CAP most recent finishes. Returns whether the value
+     *  reached disk. */
+    set: (map: Record<string, number>): boolean => {
+      const entries = Object.entries(map);
+      const kept = entries.length > PLAYED_CAP
+        ? entries.sort((a, b) => b[1] - a[1]).slice(0, PLAYED_CAP)
+        : entries;
+      return safeSet(KEYS.played, JSON.stringify(Object.fromEntries(kept)));
+    },
+  },
+
+  /**
    * The "Up Next" listen queue, per npub (`:guest` signed out).
    *
    * **An ARRAY, not a `Record`, because the order is the data.** Every other
@@ -1795,6 +1855,72 @@ export const storage = {
   },
 
   /**
+   * The play history on the Listen tab: podcast episodes this device played for
+   * a minute, newest first (`addToHistory` in lib/util.ts owns the order, the
+   * dedupe and the cap; this only stores and validates).
+   *
+   * **DEVICE-wide, not per-npub**, for `bmb:resume`'s reason: it describes this
+   * device's player, and the use it exists for — listen to a few, then go back
+   * and boost them — includes listening signed out and signing in to boost.
+   * There is no `:guest` bucket to adopt and no account switch to get wrong.
+   *
+   * **Not a cache**, so not in `EVICTABLE_PREFIXES`: no request can rebuild
+   * what somebody listened to. The cap is the queue's, so this can never
+   * outweigh the queue on disk.
+   *
+   * The read refuses a row with no audio, no show or no time, for the queue's
+   * reason — the one input here that does not come from the app — and a row
+   * with a non-number `at` would sort and render as "NaN ago".
+   */
+  playHistory: {
+    get: (): HistoryItem[] => {
+      const raw = safeGet(KEYS.playHistory);
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return (parsed as HistoryItem[])
+          .filter((h) => !!h?.episode?.enclosureUrl
+            && typeof h?.podcast?.id === 'number'
+            && Number.isFinite(h?.at))
+          .slice(0, PLAY_HISTORY_CAP);
+      } catch {
+        return [];
+      }
+    },
+    /** Returns whether the value reached DISK; the store keeps that answer. */
+    set: (v: HistoryItem[]): boolean =>
+      safeSet(KEYS.playHistory, JSON.stringify(v.slice(0, PLAY_HISTORY_CAP))),
+    /** A REMOVAL, not a write of `[]` — `listenQueue.clear` says why. */
+    clear: () => safeRemove(KEYS.playHistory),
+  },
+
+  /**
+   * The episode last in the player — `revealNowPlaying` puts it back, paused,
+   * on the next load. Without it a reload landed on the listen queue's HEAD
+   * (`revealQueue`), which is not what somebody who tapped a feed row, or a
+   * later queue row, was listening to.
+   *
+   * Stored as a queue item is (`trimForQueue`), and validated on read for the
+   * queue's reason: it is the one input here that does not come from the app.
+   */
+  nowPlaying: {
+    get: (): QueueItem | null => {
+      const raw = safeGet(KEYS.nowPlaying);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw) as QueueItem;
+        return parsed?.episode?.enclosureUrl && typeof parsed?.podcast?.id === 'number'
+          ? parsed
+          : null;
+      } catch {
+        return null;
+      }
+    },
+    set: (v: QueueItem): boolean => safeSet(KEYS.nowPlaying, JSON.stringify(v)),
+  },
+
+  /**
    * What this device has already shown you, per favorited show.
    *
    * The read is TOLERANT per entry and the write is not: a malformed or
@@ -1816,6 +1942,12 @@ export const storage = {
         const marks: Record<string, number> = {};
         for (const [guid, v] of Object.entries(parsed.marks ?? {})) {
           if (typeof v === 'number' && Number.isFinite(v) && v > 0) marks[guid] = v;
+        }
+        // Same per-entry rule as the marks. A bad entry is a show asked for
+        // its latest episode once more, which costs one request and nothing else.
+        const seeded: Record<string, number> = {};
+        for (const [guid, v] of Object.entries(parsed.seeded ?? {})) {
+          if (typeof v === 'number' && Number.isFinite(v) && v > 0) seeded[guid] = v;
         }
         // Per ENTRY, like the marks above and for the same reason: refusing
         // the whole array over one bad row empties a list the reader has not
@@ -1846,9 +1978,12 @@ export const storage = {
           rows,
           uncovered: Number.isInteger(parsed.uncovered) && parsed.uncovered > 0 ? parsed.uncovered : 0,
           failed: parsed.failed === true,
+          // The NEWEST keys — `capDismissed` — or the row just removed is the one
+          // forgotten.
           dismissed: Array.isArray(parsed.dismissed)
-            ? parsed.dismissed.filter((k: unknown) => typeof k === 'string').slice(0, FAV_NEW_CAP)
+            ? capDismissed(parsed.dismissed.filter((k: unknown) => typeof k === 'string'))
             : undefined,
+          seeded,
         };
       } catch {
         return { checkedAt: 0, marks: {} };

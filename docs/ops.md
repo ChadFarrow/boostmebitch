@@ -456,7 +456,7 @@ environment, and neither can a diff.
 **The same trap applies to every server-only variable in `.env.example`**, and
 the list is not short: `PODCAST_INDEX_KEY`/`SECRET`, `SITE_NOSTR_SK` (a
 *different* key per deploy, see `lib/brand.ts`), `NOSTR_INDEX_URL`/`KEY`,
-`PLAYLIST_DB_URL`/`CA`, and `NEXT_PUBLIC_BRAND=buddy` itself. A variable added
+`PLAYLIST_DB_URL`/`CA`, `GITHUB_BUG_TOKEN` (the in-app bug report — unset, the modal answers *"bug reports are not set up on this site"*), and `NEXT_PUBLIC_BRAND=buddy` itself. A variable added
 for a feature is set on the project the person is looking at; the other project
 gets it when someone notices the feature is missing there. Treat "set the
 variable" as a two-project step, and `.env.example`'s warning about the

@@ -5,15 +5,18 @@ import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import {
-  advanceMarks, epKey, FAV_NEW_CAP, mergeNewEpisodeRows, NEW_EPISODES_MAX_FEEDS, pruneMarks,
-  pruneNewRows, selectNewEpisodes, sinceForBatch,
+  advanceMarks, capDismissed, epKey, mergeNewEpisodeRows, NEW_EPISODES_LATEST_MAX_FEEDS,
+  NEW_EPISODES_MAX_FEEDS, pruneMarks,
+  pruneNewRows, seedMarks, selectLatestEpisodes, selectNewEpisodes, sinceForBatch,
 } from '@/lib/util';
 import { readCappedJson } from '@/lib/capped-body';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { PodcastCover } from './podcast-cover';
 import { NoteQueueButton } from './note-queue-button';
+import { DownloadButton } from './download-button';
+import { PlayedMark } from './lists/played-mark';
 import { CollapsibleHeading, useCollapsedGroups } from './lists/grouping';
-import type { Episode, NewEpisodeMarks } from '@/lib/types';
+import type { Episode, FavoritePodcast, NewEpisodeMarks } from '@/lib/types';
 
 /**
  * "New episodes" — what came out on your favorites since you last looked.
@@ -59,9 +62,27 @@ import type { Episode, NewEpisodeMarks } from '@/lib/types';
  *
  * The rows now round-trip through `storage.newEpisodeMarks`, a pass MERGES into
  * that list rather than replacing it, and a mark may only describe a row the
- * merge kept. A row leaves by aging past the seven-day horizon, by its show
- * being unfavorited, or by the reader pressing CLEAR or a row's ✕. Nothing
- * else retires one.
+ * merge kept. A row leaves by its show being unfavorited, by the reader
+ * pressing CLEAR or a row's ✕, or by `FAV_NEW_CAP` pushing the oldest out.
+ * NOT by age, since 2026-10-01 — see "A SHOW'S FIRST CHECK" below.
+ *
+ * **A SHOW'S FIRST CHECK SHOWS ITS LATEST EPISODE** (the owner's choice,
+ * 2026-10-01). Before, a show with no mark showed only its last seven days, so
+ * a monthly show was missing the first time — on a new device, most of the
+ * library. Now every show not yet in `seeded` is asked once with
+ * `/api/new-episodes?latest=1` (one row per feed); `selectLatestEpisodes` keeps
+ * the newest row per show under 90 days.
+ *
+ * - A show with NO mark gets that first check ALONE, and `seedMarks` marks it
+ *   at the newest date its feed has. Run together with the seven-day ask, a new
+ *   device's daily shows filled the list and the ask came back truncated, so no
+ *   mark moved and every pass flooded (measured 2026-10-01).
+ * - A show that HAS a mark gets it ON TOP of its ordinary check — that is how a
+ *   device with marks got the latest episodes once, by the owner's choice — and
+ *   only the ordinary check moves its mark, because only that one honours
+ *   truncation.
+ *
+ * Only a covered show is recorded in `seeded`, so a failed ask is retried.
  *
  * **THE TWO RULES MEET AT THE ORDER OF THE MARK UPDATE**, which is the one
  * thing neither feature can decide alone. Requests are independent, so marks
@@ -97,6 +118,14 @@ const MAX_FEEDS = NEW_EPISODES_MAX_FEEDS;
  * next pass cover the part this one did not.
  */
 const MAX_BATCHES = 5;
+/**
+ * First-check requests (`?latest=1`) one pass may issue, in the same series.
+ * Each names `NEW_EPISODES_LATEST_MAX_FEEDS` shows, so ten cover 240 — a
+ * 221-show library in one pass — and a pass stays at 15 requests at most
+ * against the route's 30 a minute. A larger library is seeded over the next
+ * passes; nothing is lost, only later.
+ */
+const MAX_SEED_BATCHES = 10;
 /**
  * How long the ask set must hold still before the first check.
  *
@@ -229,11 +258,24 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     return m;
   }, [favorites]);
   const showTitle = (e: Episode) => e.feedTitle || feedTitles.get(e.feedId ?? 0);
+  /**
+   * The row's feed as the favorites store knows it, for the PLAYED mark. The
+   * mark's key is the feed guid, and these records often carry none — without
+   * the favorite's guid the key falls back to `feed:<id>` and never matches
+   * the one the player wrote from the feed's own episode.
+   */
+  const feedsById = useMemo(() => {
+    const m = new Map<number, FavoritePodcast>();
+    for (const f of Object.values(favorites)) if (f.id > 0) m.set(f.id, f);
+    return m;
+  }, [favorites]);
   // Joined from the parts that EXIST, so a missing one never leaves a dangling
   // separator at either end.
-  const metaLine = (e: Episode) =>
+  //
+  // The show gets a line of its own: sharing one `truncate` line with the date
+  // and duration cut "Millennial Media Offensive" to "Millennial Media Of…".
+  const dateLine = (e: Episode) =>
     [
-      showTitle(e),
       e.datePublished ? fmtDate(e.datePublished) : null,
       e.duration ? fmtDuration(e.duration) : null,
     ].filter(Boolean).join(' · ');
@@ -305,8 +347,24 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     };
     const keep = (list: Episode[]) =>
       dismissed.current.size ? list.filter((e) => !dismissed.current.has(epKey(e))) : list;
+    // Shows never asked for their latest episode — see "A SHOW'S FIRST CHECK".
+    // Within `asked`, so the pass ceiling bounds these requests too.
+    const seededBefore = stored.seeded ?? {};
+    const toSeed = asked
+      .filter((f) => !(f.podcastGuid in seededBefore))
+      .slice(0, NEW_EPISODES_LATEST_MAX_FEEDS * MAX_SEED_BATCHES);
+    /**
+     * THE ORDINARY CHECK IS ONLY FOR SHOWS WITH A MARK (or already seeded). A
+     * show with neither gets the first check ALONE: run together, the
+     * seven-day ask for a new device's daily news shows filled every place on
+     * the list and came back truncated, so no mark moved and the next pass
+     * flooded again (measured 2026-10-01). `seedMarks` gives it a mark instead.
+     */
+    const ordinary = asked.filter(
+      (f) => f.podcastGuid in stored.marks || f.podcastGuid in seededBefore,
+    );
     setPhase('checking');
-    setProgress({ done: 0, total: asked.length });
+    setProgress({ done: 0, total: ordinary.length + toSeed.length });
 
     const guidByFeedId: Record<number, string> = {};
     for (const f of asked) guidByFeedId[f.id] = f.podcastGuid;
@@ -321,7 +379,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
      * already a bounded fan-out of its own upstream.
      */
     const batches: (typeof asked)[] = [];
-    for (let i = 0; i < asked.length; i += MAX_FEEDS) batches.push(asked.slice(i, i + MAX_FEEDS));
+    for (let i = 0; i < ordinary.length; i += MAX_FEEDS) batches.push(ordinary.slice(i, i + MAX_FEEDS));
 
     /**
      * THE LIST, accumulated across every request of the pass.
@@ -380,11 +438,9 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
           // matter: selecting against a running `marks` would empty the list as
           // it filled, and replacing rather than merging would make request 3
           // delete what request 1 found.
-          const now = Date.now();
           merged = mergeNewEpisodeRows(
             merged,
-            selectNewEpisodes(episodes, stored.marks, guidByFeedId, now),
-            now,
+            selectNewEpisodes(episodes, stored.marks, guidByFeedId, Date.now()),
             dismissedSet(),
           );
           // Paint what the pass holds so far, before the next request goes out.
@@ -397,11 +453,65 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
         if (onScreen()) setProgress((p) => ({ done: p.done + batch.length, total: p.total }));
       }
 
+      /**
+       * A SHOW'S FIRST CHECK — its latest episode, once per show per device.
+       *
+       * After the ordinary requests, so their rows paint first, and in the same
+       * series (the route's 30-a-minute allowance). It ADDS to the list and
+       * never moves a mark: the marks below still advance only for feeds an
+       * ordinary request covered. A request that fails leaves its shows out of
+       * `seeded`, so the next pass asks them again.
+       */
+      const seeded = { ...seededBefore };
+      // The raw answers, for `seedMarks` — the newest date a feed has, whether
+      // or not its row is shown.
+      const seedEpisodes: Episode[] = [];
+      const seedCovered: string[] = [];
+      for (let i = 0; i < toSeed.length; i += NEW_EPISODES_LATEST_MAX_FEEDS) {
+        const batch = toSeed.slice(i, i + NEW_EPISODES_LATEST_MAX_FEEDS);
+        try {
+          const res = await fetch(`/api/new-episodes?feeds=${batch.map((f) => f.id).join(',')}&latest=1`);
+          if (!res.ok) throw new Error(String(res.status));
+          const data = (await readCappedJson(res)) as { episodes?: unknown; covered?: unknown };
+          const episodes: Episode[] = Array.isArray(data.episodes) ? data.episodes : [];
+          const covered: number[] = Array.isArray(data.covered) ? data.covered : [];
+          const nowSec = Math.floor(Date.now() / 1000);
+          answered = true;
+          seedEpisodes.push(...episodes);
+          for (const id of covered) {
+            const g = guidByFeedId[id];
+            if (!g) continue;
+            seeded[g] = nowSec;
+            seedCovered.push(g);
+          }
+          merged = mergeNewEpisodeRows(
+            merged,
+            selectLatestEpisodes(episodes, guidByFeedId, Date.now()),
+            dismissedSet(),
+          );
+          if (onScreen()) setRows(keep(merged));
+        } catch {
+          // Not recorded in `seeded`: asked again next pass. A show that was
+          // ONLY in this request counts as uncovered below.
+        }
+        if (onScreen()) setProgress((p) => ({ done: p.done + batch.length, total: p.total }));
+      }
+
       // Against the feeds ASKED ABOUT. The library's tail beyond the pass
       // ceiling is `deferred`, counted above — folding the two together was how
       // a 227-favorite library got told "Nothing new" about 127 shows no
       // request was ever made for.
-      const uncoveredCount = asked.length - coveredIds.length;
+      // A show is covered by the request that was ITS check: the ordinary one
+      // when it had a mark, the first check when that was all it got. Counting
+      // a first-check answer for a show whose ordinary check failed would let
+      // "Nothing new" be said about it.
+      const ordinaryCovered = new Set(coveredIds.map((id) => guidByFeedId[id]));
+      const firstCovered = new Set(seedCovered);
+      const isOrdinary = new Set(ordinary.map((f) => f.podcastGuid));
+      const uncoveredCount = asked.filter((f) =>
+        isOrdinary.has(f.podcastGuid)
+          ? !ordinaryCovered.has(f.podcastGuid)
+          : !firstCovered.has(f.podcastGuid)).length;
       if (onScreen()) setUncovered(uncoveredCount);
 
       /**
@@ -415,6 +525,10 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
        * is still honoured per request, through `advanceable`.
        */
       let marks = advanceMarks(stored.marks, merged, advanceable, guidByFeedId, false);
+      // Then a show the first check covered and that had NO mark gets one: the
+      // newest date its feed has. A show with a mark is untouched — see seedMarks.
+      marks = seedMarks(marks, seedEpisodes, seedCovered, guidByFeedId);
+      let nextSeeded = seeded;
 
       // The marks above see the UNFILTERED list, and that is deliberate: a row
       // the reader dismissed was shown to them, so its mark must move past it or
@@ -438,6 +552,8 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
         const sync = useApp.getState().favoritesSync;
         if (!npub || sync === 'ok' || sync === 'off') {
           marks = pruneMarks(marks, Object.keys(favs));
+          // Same gate, same reason: a re-favorited show is asked again.
+          nextSeeded = pruneMarks(nextSeeded, Object.keys(favs));
           // The rows get the same gate for the same reason, and they need it
           // MORE than the marks do: a stale mark is dead weight the cap bounds,
           // while a row for an unfavorited show is a row on screen that the
@@ -464,7 +580,8 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
       const next = {
         checkedAt: Date.now(), marks, rows: nextRows,
         uncovered: uncoveredCount, failed: !answered,
-        dismissed: allDismissed?.size ? [...allDismissed].slice(0, FAV_NEW_CAP) : undefined,
+        dismissed: allDismissed?.size ? capDismissed([...allDismissed]) : undefined,
+        seeded: nextSeeded,
       };
       const saved = storage.newEpisodeMarks.set(npub, next);
       if (onScreen()) {
@@ -491,10 +608,10 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
    * the whole seven-day window on the next check, which is the opposite of what
    * the press asked for.
    *
-   * The section needs it because nothing else retires a row now except age (and
-   * `dismissRow`, the same press for one row). A
-   * list that only drains after seven days is the mirror of the bug this fixes,
-   * and the reader would have no way to say "done".
+   * The section needs it more since 2026-10-01: rows no longer age out, so
+   * this, `dismissRow` (the same press for one row), an unfavorite and the cap
+   * are the only things that retire one. Without it the reader would have no
+   * way to say "done".
    */
   const clearRows = useCallback(() => {
     // Everything on screen, for a pass that is still running. See `dismissed`.
@@ -502,7 +619,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     const stored = storage.newEpisodeMarks.get(npub);
     const keys = rows.map((e) => epKey(e));
     const prev = stored.dismissed ?? [];
-    const next = { ...stored, rows: [], dismissed: [...prev, ...keys].slice(-FAV_NEW_CAP) };
+    const next = { ...stored, rows: [], dismissed: capDismissed([...prev, ...keys]) };
     setMarksSaved(storage.newEpisodeMarks.set(npub, next));
     setRecord(next);
     setRows([]);
@@ -525,7 +642,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
     const next = {
       ...stored,
       rows: (stored.rows ?? []).filter((r) => epKey(r) !== k),
-      dismissed: [...prev, k].slice(-FAV_NEW_CAP),
+      dismissed: capDismissed([...prev, k]),
     };
     setMarksSaved(storage.newEpisodeMarks.set(npub, next));
     setRecord(next);
@@ -675,7 +792,8 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
             )}
 
             {rows.length > 0 && (
-              <ul className="space-y-2">
+              // A grid from md: — the rows are fixed-height cards, so they tile.
+              <ul className="space-y-2 md:space-y-0 md:grid md:grid-cols-2 md:gap-2">
                 {rows.slice(0, shown).map((e) => (
                   // `epKey`, NOT `guid ?? id`. A feed can publish `<guid></guid>`
                   // and `extractText` returns `''` for it, which `??` keeps — so
@@ -683,7 +801,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                   // That is a React duplicate key: wrong row reused, wrong row
                   // dropped by SHOW MORE. `epKey` exists for this and three other
                   // queue surfaces already import it.
-                  <li key={epKey(e)} className="card flex items-center gap-3 p-3">
+                  <li key={epKey(e)} className="card flex items-center gap-2 p-3 lg:p-4">
                     {/* BOTH SLOTS, never one `||` over the two. `<PodcastCover>`'s
                         `onError` ladder is four rungs and it can only fall
                         through to a source it was handed, so collapsing them
@@ -718,11 +836,23 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                           artwork={e.feedImage}
                           title={showTitle(e)}
                           seed={String(e.feedId)}
-                          className="w-12 h-12 flex-shrink-0"
+                          className="w-12 h-12 sm:w-14 sm:h-14 flex-shrink-0"
                         />
                         <span className="min-w-0 flex-1 block">
-                          <span className="block text-sm font-display leading-tight truncate">{e.title}</span>
-                          <span className="block text-[11px] text-muted truncate">{metaLine(e)}</span>
+                          {/* No `block` beside `line-clamp-2`: Tailwind emits `block` after the
+                              clamp, so its display wins and the title ran to five lines. */}
+                          <span className="text-sm sm:text-base font-display leading-tight line-clamp-2 break-words">{e.title}</span>
+                          {showTitle(e) && (
+                            <span className="text-[11px] sm:text-xs text-muted line-clamp-2 break-words sm:mt-0.5">{showTitle(e)}</span>
+                          )}
+                          <span className="flex min-w-0 items-baseline gap-1 text-[11px] sm:text-xs text-muted">
+                            {/* The date truncates and the mark does not: on a phone one
+                                truncating line cut "✓ PLAYED" off entirely. */}
+                            <span className="truncate">{dateLine(e)}</span>
+                            {feedsById.get(e.feedId ?? 0) && (
+                              <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
+                            )}
+                          </span>
                         </span>
                       </button>
                     ) : (
@@ -732,11 +862,21 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                           artwork={e.feedImage}
                           title={showTitle(e)}
                           seed={String(e.feedId)}
-                          className="w-12 h-12 flex-shrink-0"
+                          className="w-12 h-12 sm:w-14 sm:h-14 flex-shrink-0"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-display leading-tight truncate">{e.title}</div>
-                          <div className="text-[11px] text-muted truncate">{metaLine(e)}</div>
+                          <div className="text-sm sm:text-base font-display leading-tight line-clamp-2 break-words">{e.title}</div>
+                          {showTitle(e) && (
+                            <div className="text-[11px] sm:text-xs text-muted line-clamp-2 break-words sm:mt-0.5">{showTitle(e)}</div>
+                          )}
+                          <div className="flex min-w-0 items-baseline gap-1 text-[11px] sm:text-xs text-muted">
+                            {/* The date truncates and the mark does not: on a phone one
+                                truncating line cut "✓ PLAYED" off entirely. */}
+                            <span className="truncate">{dateLine(e)}</span>
+                            {feedsById.get(e.feedId ?? 0) && (
+                              <PlayedMark episode={e} podcast={feedsById.get(e.feedId ?? 0)!} />
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
@@ -760,6 +900,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                     {e.guid ? (
                       <NoteQueueButton
                         episode={e}
+                        compact
                         onQueue={async () => {
                           const loaded = await loadEpisodeFromFeed(e.feedId, e.guid!);
                           if (!loaded?.episode) return false;
@@ -767,8 +908,22 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                         }}
                       />
                     ) : null}
+                    {/* DOWNLOAD goes through the same round trip as QUEUE, for
+                        the same reason: a download keeps the episode it was
+                        handed, and PI's record would later play without its
+                        value block. Same guid rule too. */}
+                    {e.guid ? (
+                      <DownloadButton
+                        episode={e}
+                        size="icon"
+                        resolve={async () => {
+                          const loaded = await loadEpisodeFromFeed(e.feedId, e.guid!);
+                          return loaded?.episode ? { episode: loaded.episode, podcast: loaded.podcast } : null;
+                        }}
+                      />
+                    ) : null}
                     {/* ✕ removes this row and nothing else — `dismissRow`.
-                        Last in the row, after QUEUE, so a thumb reaching for
+                        Last in the row, after QUEUE and DOWNLOAD, so a thumb reaching for
                         QUEUE does not land on it. 36px square: past WCAG
                         2.5.8's 24px floor, and the title keeps the width. The
                         label names the episode, because a screen reader hears
@@ -797,7 +952,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                   <button
                     type="button"
                     onClick={() => setShown((n) => n + PAGE)}
-                    className="btn-ghost flex-1 text-xs"
+                    className="btn-ghost flex-1 md:flex-none md:px-8 text-xs"
                   >
                     SHOW MORE ({rows.length - shown})
                   </button>
@@ -805,7 +960,7 @@ export function FavoritesNewEpisodes({ onOpen }: { onOpen?: (e: Episode) => void
                 <button
                   type="button"
                   onClick={clearRows}
-                  className={`btn-ghost text-xs ${rows.length > shown ? '' : 'w-full'}`}
+                  className={`btn-ghost text-xs ${rows.length > shown ? '' : 'w-full md:w-auto md:px-8'}`}
                 >
                   CLEAR
                 </button>

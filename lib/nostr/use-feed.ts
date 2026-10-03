@@ -1,7 +1,9 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { storage } from '../storage';
 import { noteHasSubstance, type DiscoveredNote } from './discover';
+import { dropBoostEchoes } from './boost-echo';
+import { withoutDeleted } from './note-deletions';
 
 /**
  * Stale-while-revalidate hook for any DiscoveredNote[] surface.
@@ -31,9 +33,14 @@ import { noteHasSubstance, type DiscoveredNote } from './discover';
  * and the only shape that cannot lose one.
  *
  * A note the index holds and relays have dropped therefore survives. That is
- * the intended behaviour for a cache of public, immutable events; a note its
- * author actually deleted is tombstoned at ingest by the kind:5 handler, so it
- * never reaches a bundle in the first place.
+ * the intended behaviour for a cache of public, immutable events.
+ *
+ * THE ONE REMOVAL IS A NOTE ITS AUTHOR DELETED (NIP-09). That is positive,
+ * signed evidence, never an absence: the relay pass reads the kind:5 events and
+ * reports the ids through `onDeleted`, and they leave `shown`, the cache, and
+ * every later commit from any source. The index tombstones the same notes at
+ * ingest, but it can miss a kind:5 and a relay that ignores NIP-09 keeps
+ * serving the note, so the union alone would hold it on screen for good.
  */
 export function useNostrFeed({
   cacheKey,
@@ -49,6 +56,8 @@ export function useNostrFeed({
      *  boost-explorer fetchers must not implement it (see `FetchOpts.onRoots`),
      *  and a fetcher that ignores it simply commits once at the end. */
     onRoots?: (roots: DiscoveredNote[]) => void;
+    /** Ids whose own author published a kind:5 naming them. */
+    onDeleted?: (ids: string[]) => void;
   }) => Promise<DiscoveredNote[]>;
   /** Optional fast path. Returns null when there is no index, it is
    *  unreachable, or it has nothing — never an empty array meaning "none". */
@@ -59,6 +68,7 @@ export function useNostrFeed({
   loading: boolean;
   err: string | null;
   refresh: () => Promise<void>;
+  addLocal: AddLocalNote;
 } {
   const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -73,10 +83,26 @@ export function useNostrFeed({
   // render state. The index and relay passes each merge into this rather than
   // replacing it.
   const shown = useRef<DiscoveredNote[]>([]);
+  // Notes their author deleted, kept for the life of the hook. Every commit
+  // filters by it, because the index pass, a later relay commit, or the cache
+  // on the next deps change can each bring one back.
+  const deleted = useRef<Set<string>>(new Set());
+  // Replies this device published, re-attached under their parent on EVERY
+  // commit. One insert is not enough: `richer` takes the incoming copy's
+  // `replies` whenever it has any, so a relay pass that answers before the
+  // reply has reached it would carry the parent back without it.
+  const pendingReplies = useRef<PendingReply[]>([]);
 
-  function commit(incoming: DiscoveredNote[], myGen: number): void {
+  // Memoised, and so is `addLocal` below: `addLocal` is the value of
+  // `LocalNoteSink`, and a new function per render would re-render every
+  // `<NoteCard>` in the feed past its `memo`. Everything it reads is a ref, a
+  // state setter or `cacheKey`.
+  const commit = useCallback((incoming: DiscoveredNote[], myGen: number): void => {
     if (myGen !== gen.current) return; // superseded
-    const merged = mergeNotes(shown.current, incoming);
+    const merged = withPendingReplies(
+      withoutDeleted(mergeNotes(shown.current, incoming), deleted.current),
+      pendingReplies.current,
+    );
     shown.current = merged;
     setNotes(merged);
     // `loading` means "there is nothing to show yet", NOT "a fetch is running".
@@ -89,7 +115,7 @@ export function useNostrFeed({
     // screen, never take it away, which is what makes an early clear safe.
     setLoading(false);
     storage.feedNotes.set(cacheKey, merged);
-  }
+  }, [cacheKey]);
 
   async function refresh() {
     const myGen = ++gen.current;
@@ -109,7 +135,15 @@ export function useNostrFeed({
       // Three commits on a cold relay-only load, not one: the roots as soon as
       // the kind:1 scan returns, then the assembled tree. `commit` unions by
       // id, so each can only add.
-      const result = await fetcher({ onRoots: (roots) => commit(roots, myGen) });
+      const result = await fetcher({
+        onRoots: (roots) => commit(roots, myGen),
+        onDeleted: (ids) => {
+          for (const id of ids) deleted.current.add(id);
+          // An empty commit: it re-filters what is on screen and rewrites the
+          // cache without the deleted notes.
+          commit([], myGen);
+        },
+      });
       if (myGen !== gen.current) return; // superseded
       commit(result, myGen);
     } catch (e) {
@@ -128,10 +162,11 @@ export function useNostrFeed({
 
   useEffect(() => {
     shown.current = [];
+    pendingReplies.current = [];
     const cached = storage.feedNotes.get(cacheKey);
     if (cached) {
-      shown.current = cached;
-      setNotes(cached);
+      shown.current = withoutDeleted(cached, deleted.current);
+      setNotes(shown.current);
     }
     refresh();
     // Bump the invalidation counter on cleanup so any in-flight fetch bails.
@@ -142,7 +177,72 @@ export function useNostrFeed({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
-  return { notes, loading, err, refresh };
+  /**
+   * Put a note this device just published on screen without waiting for a
+   * relay to echo it. Same union as every other commit, so the relay copy that
+   * arrives later merges into it rather than doubling it. With `parentId` it is
+   * a reply, nested under that note wherever it sits in the tree.
+   */
+  const addLocal = useCallback((note: DiscoveredNote, parentId?: string): void => {
+    if (parentId) {
+      pendingReplies.current = [...pendingReplies.current, { parentId, note }];
+      commit([], gen.current);
+    } else {
+      commit([note], gen.current);
+    }
+  }, [commit]);
+
+  return { notes, loading, err, refresh, addLocal };
+}
+
+export type AddLocalNote = (note: DiscoveredNote, parentId?: string) => void;
+
+/**
+ * The feed a `<NoteCard>` sits in, so the card's reply and quote composers can
+ * put what they publish on screen. Without it a reply appeared only after a
+ * manual refresh — the card published it and closed, and nothing told the list.
+ *
+ * Null outside a feed (the `socialInteract` thread keeps its own optimistic
+ * list), and a card treats null as "nothing to tell".
+ */
+export const LocalNoteSink = createContext<AddLocalNote | null>(null);
+
+interface PendingReply {
+  parentId: string;
+  note: DiscoveredNote;
+}
+
+function treeHas(notes: readonly DiscoveredNote[], id: string): boolean {
+  return notes.some((n) => n.id === id || treeHas(n.replies, id));
+}
+
+/** `notes` with `reply` appended under `parentId`, copying only the path to it. */
+function insertReply(notes: DiscoveredNote[], parentId: string, reply: DiscoveredNote): DiscoveredNote[] {
+  let changed = false;
+  const out = notes.map((n) => {
+    if (changed) return n;
+    if (n.id === parentId) {
+      changed = true;
+      return { ...n, replies: [...n.replies, reply] };
+    }
+    const replies = insertReply(n.replies, parentId, reply);
+    if (replies === n.replies) return n;
+    changed = true;
+    return { ...n, replies };
+  });
+  return changed ? out : notes;
+}
+
+/**
+ * Each pending reply whose id is not already in the tree, under its parent. A
+ * reply whose parent is not on screen waits for a commit that brings it.
+ */
+function withPendingReplies(notes: DiscoveredNote[], pending: readonly PendingReply[]): DiscoveredNote[] {
+  let out = notes;
+  for (const { parentId, note } of pending) {
+    if (!treeHas(out, note.id)) out = insertReply(out, parentId, note);
+  }
+  return out;
 }
 
 /**
@@ -188,6 +288,9 @@ function mergeNotes(existing: DiscoveredNote[], incoming: DiscoveredNote[]): Dis
  *  - `amountMsat` / `isBoost` — adopted from a quoted kind:9735 for a Fountain
  *    wrapper note, which needs the quoted-event stage. `isBoost` also gates
  *    `noteHasSubstance`, so losing it takes the whole note off the feed.
+ *  - `quotesResolved` — the same stage. The relay pass's root paint arrives
+ *    after an index copy that already resolved the quotes, so replacing it
+ *    would take a COMMENT stamp back off the card until the last stage lands.
  */
 function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredNote {
   return {
@@ -196,6 +299,7 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
     replies: incoming.replies.length ? incoming.replies : existing.replies,
     amountMsat: incoming.amountMsat ?? existing.amountMsat,
     isBoost: incoming.isBoost || existing.isBoost,
+    quotesResolved: incoming.quotesResolved || existing.quotesResolved,
     // Same field-by-field rule as `author`. The index pass and the relay pass
     // carry different profile sets, so one can resolve a mention the other
     // could not; replacing on id would let the later, thinner copy take a
@@ -205,20 +309,36 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
 }
 
 /**
- * The notes a feed actually renders: the muted authors dropped, and the
- * notes with nothing to show (`noteHasSubstance`) dropped.
+ * The notes a feed actually renders: the muted authors dropped, the notes with
+ * nothing to show (`noteHasSubstance`) dropped, and a bot's announcement of a
+ * boost dropped when the note the sender signed about it is on screen too
+ * (`dropBoostEchoes`, docs/nostr.md "Bot announcements of a boost").
  *
  * ONE definition, because the podcast feed and the episode feed each carried a
- * byte-identical copy of this `useMemo` — the shape that drifts. Memoised on
- * the two inputs, since a feed can hold hundreds of notes and `mutedPubkeys`
- * changes identity on every mute-list hydrate.
+ * byte-identical copy of this filter, and the global feed and the boost
+ * explorer carried two more — the shape that drifts. A surface that renders
+ * `<NoteCard>`s from a fetched list goes through this.
+ *
+ * The echo pass runs LAST, on what survived the other two, on purpose: it may
+ * only hide an announcement when the sender's own card is actually rendered.
+ * Run first, a muted sender or an empty-bodied note would take the bot's card
+ * with it and the boost would leave the feed altogether.
  */
+export function visibleNotes(
+  notes: readonly DiscoveredNote[],
+  mutedPubkeys: ReadonlySet<string>,
+): DiscoveredNote[] {
+  return dropBoostEchoes(notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)));
+}
+
+/** `visibleNotes`, memoised on its two inputs: a feed can hold hundreds of
+ *  notes and `mutedPubkeys` changes identity on every mute-list hydrate. */
 export function useVisibleNotes(
   notes: DiscoveredNote[] | null,
   mutedPubkeys: ReadonlySet<string>,
 ): DiscoveredNote[] | null {
   return useMemo(
-    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : notes),
+    () => (notes ? visibleNotes(notes, mutedPubkeys) : notes),
     [notes, mutedPubkeys],
   );
 }

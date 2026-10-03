@@ -38,6 +38,13 @@
 // other feeds, and the same episode opened from its own show must find the
 // same entry. `||`, not `??`, on both halves, because feeds publish an empty
 // `<guid></guid>` and PI mirrors it.
+//
+// PLAYED. Finishing an episode deletes its entry, which on its own leaves a
+// finished episode looking like one never started. So `forgetPosition` also
+// records the finish in `bmb:played` under the same key, and the rows draw a
+// PLAYED mark from it (`usePlayed`). The mark is a record, never a gate: it
+// changes no start point, and an episode played again gets a resume entry
+// that the rows show in its place.
 import { useCallback, useSyncExternalStore } from 'react';
 import type { Episode, Podcast } from './types';
 import { storage, type ResumeEntry } from './storage';
@@ -131,11 +138,11 @@ export function seekedRecently(): boolean {
   return Date.now() - lastDeliberateSeekAt < DELIBERATE_SEEK_WINDOW_MS;
 }
 
-type ResumeEpisode = Pick<
+export type ResumeEpisode = Pick<
   Episode,
   'id' | 'guid' | 'feedId' | 'podcastGuid' | 'enclosureUrl' | 'liveStatus' | 'duration'
 >;
-type ResumePodcast = Pick<Podcast, 'id' | 'podcastGuid' | 'medium'>;
+export type ResumePodcast = Pick<Podcast, 'id' | 'podcastGuid' | 'medium'>;
 
 export function resumeKey(episode: ResumeEpisode, podcast: ResumePodcast): string {
   const feed = episode.podcastGuid || podcast.podcastGuid || `feed:${episode.feedId || podcast.id}`;
@@ -228,7 +235,58 @@ export function recordPosition(
 /** The episode was finished: drop its entry, whatever the position says. */
 export function forgetPosition(episode: ResumeEpisode, podcast: ResumePodcast): void {
   if (typeof window === 'undefined') return;
-  write(resumeKey(episode, podcast), null);
+  const key = resumeKey(episode, podcast);
+  write(key, null);
+  if (canResume(episode, podcast)) markPlayed(key);
+}
+
+// Same shape as the resume cache above: loaded once, replaced after each write.
+let playedCache: Record<string, number> | null = null;
+const playedChanges = createObservable();
+
+function playedEntries(): Record<string, number> {
+  if (!playedCache) playedCache = storage.playedEpisodes.get();
+  return playedCache;
+}
+
+function markPlayed(key: string): void {
+  // Re-read rather than trust the cache: a second tab may have written since.
+  // The finished tail writes on every flush inside it, so an episode already
+  // marked is left alone rather than rewritten each ten seconds.
+  const map = storage.playedEpisodes.get();
+  if (key in map) return;
+  map[key] = Date.now();
+  storage.playedEpisodes.set(map);
+  playedCache = storage.playedEpisodes.get();
+  playedChanges.notify();
+}
+
+/**
+ * The PLAYED tile: mark or unmark an episode by hand. Marking takes the same
+ * path as a real finish, so the saved place goes too — `<PlayedMark>` hides
+ * while one exists, and "played" with "2 h left" beside it says nothing.
+ * Unmarking does NOT bring that place back; nothing kept it.
+ */
+export function setPlayed(episode: ResumeEpisode, podcast: ResumePodcast, played: boolean): void {
+  if (typeof window === 'undefined') return;
+  if (!canResume(episode, podcast)) return;
+  if (played) {
+    forgetPosition(episode, podcast);
+    return;
+  }
+  const key = resumeKey(episode, podcast);
+  const map = storage.playedEpisodes.get();
+  if (!(key in map)) return;
+  delete map[key];
+  storage.playedEpisodes.set(map);
+  playedCache = storage.playedEpisodes.get();
+  playedChanges.notify();
+}
+
+/** Whether this device played the episode to the end. */
+export function wasPlayed(episode: ResumeEpisode, podcast: ResumePodcast): boolean {
+  if (!canResume(episode, podcast)) return false;
+  return resumeKey(episode, podcast) in playedEntries();
 }
 
 function write(key: string, value: ResumeEntry | null): void {
@@ -260,4 +318,20 @@ export function useSavedPosition(
 
 function serverSnapshot(): null {
   return null;
+}
+
+/** `wasPlayed` for a row or page, re-rendering when a finish is recorded. */
+export function usePlayed(
+  episode: ResumeEpisode | null | undefined,
+  podcast: ResumePodcast | null | undefined,
+): boolean {
+  const getSnapshot = useCallback(
+    () => (episode && podcast ? wasPlayed(episode, podcast) : false),
+    [episode, podcast],
+  );
+  return useSyncExternalStore(playedChanges.subscribe, getSnapshot, playedServerSnapshot);
+}
+
+function playedServerSnapshot(): boolean {
+  return false;
 }

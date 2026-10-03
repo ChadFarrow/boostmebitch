@@ -16,7 +16,7 @@
 // keys on top of it, publish the merge. And refuse entirely when the fetch
 // wasn't trustworthy — see the guard in `load()`.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ModalShell } from './modal-shell';
 import { coerceProfileMetadata, fetchRawProfile, publishProfile, type NostrIdentity } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
@@ -143,6 +143,11 @@ export function ProfileEditor({
     void load();
   }, [load]);
 
+  // The post-save auto-close. Cleared on unmount, or a user who closes by hand
+  // and reopens inside the 900 ms has the NEW editor closed by the old timer.
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
+
   const pic = draft.picture.trim();
   // `data:image/` is not a nicety — it's what THIS APP writes. Every account
   // onboarded through Google gets a generated identicon as an inline
@@ -224,7 +229,7 @@ export function ProfileEditor({
       if (parsed) setIdentity({ ...identity, profile: parsed });
 
       setPhase('saved');
-      setTimeout(onClose, 900);
+      closeTimer.current = setTimeout(onClose, 900);
     } catch (e) {
       setErr(getErrorMessage(e, 'could not publish your profile'));
       setPhase('ready');

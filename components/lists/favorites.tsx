@@ -136,13 +136,13 @@ export function FavoriteItemRow({
           className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
         />
         <div className="min-w-0 flex-1">
-          <div className="font-display text-base leading-tight truncate">{title}</div>
+          <div className="font-display text-base leading-tight line-clamp-2 break-words">{title}</div>
           {/* Only when it says something the title didn't. A single names its
               album after its one track, so printing both renders the same words
               twice and reads as an album sitting in the episodes list — 74 of
               one user's 227 tracks. */}
           {ep.podcastTitle && ep.podcastTitle !== title && (
-            <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
+            <div className="text-xs text-muted line-clamp-2 break-words">{ep.podcastTitle}</div>
           )}
           {ep.carried && <CarriedNote />}
         </div>
@@ -197,7 +197,8 @@ function PagedList<T>({
   const sentinel = useAutoReveal(hidden ? 0 : remaining, more);
   return (
     <>
-      <ul id={id} className="divide-y divide-bone/10" hidden={hidden}>
+      {/* Two columns from lg:, as <PodcastResults> — see the note there. */}
+      <ul id={id} className="max-lg:divide-y max-lg:divide-bone/10 lg:grid lg:grid-cols-2 lg:gap-x-6 lg:[&>li]:border-b lg:[&>li]:border-bone/10" hidden={hidden}>
         {hidden ? null : visible.map(render)}
       </ul>
       {/* Suppressed while folded, or a closed section still offers to reveal
@@ -245,8 +246,8 @@ function CarriedRow({
         className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
       />
       <div className="min-w-0 flex-1">
-        <div className="font-display text-base leading-tight truncate">{title}</div>
-        {subtitle && <div className="text-xs text-muted truncate">{subtitle}</div>}
+        <div className="font-display text-base leading-tight line-clamp-2 break-words">{title}</div>
+        {subtitle && <div className="text-xs text-muted line-clamp-2 break-words">{subtitle}</div>}
         <CarriedNote />
       </div>
     </li>

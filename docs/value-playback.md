@@ -24,8 +24,7 @@ added later.
 carries whichever word the boostagram carried: both read it from `actionFor`, so
 the Lightning payment and the Nostr record of it cannot disagree about what
 earned the sats. A boost the user pressed keeps its
-kind:1 note (`lib/nostr/boost-notes.ts`) or, on a live stream, its NIP-57 zap
-receipt, and gets no 3369.
+kind:1 note (`lib/nostr/boost-notes.ts`), and gets no 3369.
 
 That split is the whole reason this feature is allowed to exist. `CLAUDE.md`
 states that streaming publishes nothing to Nostr, because the only vehicle

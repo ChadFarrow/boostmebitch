@@ -58,7 +58,6 @@ export async function GET(req: Request) {
       `https://${host}/.well-known/keysend/${encodeURIComponent(name)}`,
       {
         headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
-        next: { revalidate: 3600 },
         // Shorter than the client's own budget so the proxy answers before the
         // caller gives up. This runs inside a boost the user is waiting on.
         signal: AbortSignal.timeout(3500),

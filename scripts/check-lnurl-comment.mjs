@@ -36,9 +36,12 @@
 
 import {
   buildLnurlComment,
+  explainPaymentError,
   lnurlCallbackRefused,
   lnurlCommentRetry,
   lnurlErrorReason,
+  retryableLegs,
+  unreachableWalletRelay,
 } from '../lib/util.ts';
 
 let failures = 0;
@@ -504,6 +507,126 @@ console.log('\n(naive) the leg that simply failed');
     naive() !== lnurlCommentRetry({ desc: DESC_91 }, 'Length 91 exceeds limit 90', SENT_91),
     true,
   );
+}
+
+// ── explainPaymentError: the failed-leg text a user reads ──────────────────
+// Lives here because its most common input is this file's subject: an LNURL
+// refusal. `nothingSent` is a MONEY claim ("you still have these sats"), so it
+// is pinned in both directions: true for the throws that precede any payment
+// request, and FALSE for every error that proves nothing — a false "nothing
+// was sent" is what talks someone into paying twice.
+console.log('\nexplainPaymentError');
+{
+  // Every string below is the shipping throw site's own wording, several of
+  // them verbatim from a real boost screen (2026-09-25).
+  const PROVEN = [
+    ['Failed to connect to wss://relay.getalby.com', 'yours', /relay\.getalby\.com/],
+    ['zap via nwc wallet did not complete: Failed to connect to wss://relay.getalby.com/v1', 'yours', /relay\.getalby\.com\)/],
+    ['LNURL callback failed (400): Recipient wallet error. Please contact the recipient.', 'recipient', /Recipient wallet error/],
+    ['LNURL service: Amount out of range', 'recipient', /Amount out of range/],
+    ['LNURL lookup failed for x@example.com', 'recipient', /did not answer/],
+    ['LNURL server for x@example.com returned an amountless invoice', 'recipient', /wrong amount/],
+    ['Zap invoice amount mismatch: requested 1000 msat, invoice is for 2000', 'recipient', /wrong amount/],
+    ['Spark rail does not support keysend (node-pubkey recipient)', 'yours', /keysend/],
+    ['No payment provider available (connect NWC, Spark, or WebLN)', 'yours', /No wallet/],
+    ['payment engine failed to load — nothing was sent (x)', 'unknown', /did not load/],
+    // A keysend that provably sent nothing, retried over LNURL: the retry decides.
+    ['keysend: no route found; LNURL retry: LNURL callback failed (503): down for maintenance', 'recipient', /maintenance/],
+  ];
+  for (const [raw, whose, text] of PROVEN) {
+    const x = explainPaymentError(raw);
+    check(`"${raw.slice(0, 60)}" → nothing sent, ${whose}`, [x.nothingSent, x.whose, text.test(x.cause)], [true, whose, true]);
+  }
+  // A bare status is not quoted as though it were a reason.
+  check('a bare status is not quoted', explainPaymentError('LNURL callback failed: 500').cause.includes('"'), false);
+
+  // THE SAFETY HALF. None of these proves the sats stayed in the wallet.
+  const UNPROVEN = [
+    'PAYMENT_FAILED: payment failed',
+    'keysend: PAYMENT_FAILED: Failed to connect to peer',
+    'insufficient balance',
+    'QUOTA_EXCEEDED: budget exceeded',
+    'User rejected the request',
+    'RESTRICTED: not allowed',
+    'no route found',
+    'publish timed out',
+    'Something nobody has seen before',
+    '',
+  ];
+  for (const raw of UNPROVEN) {
+    check(`"${raw}" never claims nothing was sent`, explainPaymentError(raw).nothingSent, false);
+  }
+  // `naive()`: "the leg failed, so nothing moved". It fails the safety half.
+  const naive = () => ({ nothingSent: true });
+  check('(naive) "failed means unpaid" claims nothing was sent for PAYMENT_FAILED',
+    naive().nothingSent !== explainPaymentError('PAYMENT_FAILED: payment failed').nothingSent, true);
+}
+
+// ── unreachableWalletRelay: the pre-boost "cannot reach your relay" notice ──
+// The boost modal prints it over the balance before the user pays, so a match
+// on a wallet that is merely REFUSING something tells a working wallet it is
+// offline. The first two strings are the Alby SDK's own throw
+// (`"Failed to connect to " + relayUrl`, in `_checkConnected`).
+console.log('\nunreachableWalletRelay');
+{
+  const HOSTS = [
+    ['Failed to connect to wss://relay.getalby.com', 'relay.getalby.com'],
+    ['Failed to connect to wss://relay.getalby.com/v1', 'relay.getalby.com'],
+    ['zap via nwc wallet did not complete: Failed to connect to wss://relay.getalby.com/v1', 'relay.getalby.com'],
+  ];
+  for (const [raw, host] of HOSTS) check(`"${raw.slice(0, 60)}" → ${host}`, unreachableWalletRelay(raw), host);
+
+  // Must still work: none of these says OUR relay never opened.
+  const NOT = [
+    'keysend: PAYMENT_FAILED: Failed to connect to peer',
+    'UNAUTHORIZED: this connection is not allowed to get_balance',
+    'RESTRICTED: websocket connection permission denied',
+    'reply timeout: event abc',
+    'publish timed out',
+    '',
+    undefined,
+  ];
+  for (const raw of NOT) check(`${JSON.stringify(raw)} → null`, unreachableWalletRelay(raw), null);
+
+  // `naive()`: the socket heuristic the lease uses to discard a client
+  // (`isSocketSuspect`) — right for "dial fresh next time", wrong for telling
+  // the user their wallet is offline. It flags the refusal above.
+  const naive = (raw) => (/not connected|connection|websocket|socket closed/i.test(raw) ? 'offline' : null);
+  check('(naive) the socket heuristic calls a permission refusal "offline"',
+    naive('RESTRICTED: websocket connection permission denied') !== unreachableWalletRelay('RESTRICTED: websocket connection permission denied'), true);
+}
+
+// ── retryableLegs: which legs the "Retry failed" button may pay again ─────
+// A money decision in the other direction from `nothingSent`: a leg on this
+// list is PAID AGAIN. So every leg that may already have paid must stay off it,
+// and the order must be the one `sendBoost` pays in (biggest share first).
+console.log('\nretryableLegs');
+{
+  const R = { name: 'x', address: 'x@example.com', type: 'lnaddress', split: 1 };
+  const leg = (sats, extra) => ({ recipient: R, sats, ok: false, ...extra });
+  const RELAY = 'Failed to connect to wss://relay.getalby.com';
+  const results = [
+    leg(10, { error: RELAY }),                                   // 0 retry
+    leg(70, { error: RELAY }),                                   // 1 retry, biggest
+    leg(50, { ok: true, preimage: 'p' }),                         // 2 paid
+    leg(40, { indeterminate: true, error: RELAY }),              // 3 may have paid — text is NOT read
+    leg(30, { error: 'PAYMENT_FAILED: payment failed' }),        // 4 no proof
+    undefined,                                                    // 5 never settled
+    leg(0, { error: RELAY }),                                    // 6 zero-sat
+    leg(20, { error: 'LNURL callback failed (400): Recipient wallet error.' }), // 7 retry
+    leg(25, { error: 'keysend: no route found; LNURL retry: ' + RELAY }),         // 8 retry: the retry half decides
+    leg(35, { error: 'publish timed out' }),                     // 9 no proof
+    leg(15, { error: 'Wallet did not answer in time — this payment may still have been sent.' }), // 10 no proof
+  ];
+  check('only proven-unsent legs, biggest share first', retryableLegs(results), [1, 8, 7, 0]);
+  check('nothing to retry after a clean boost', retryableLegs([leg(5, { ok: true }), leg(3, { ok: true })]), []);
+  check('an empty result list', retryableLegs([]), []);
+
+  // `naive()`: "retry whatever did not succeed". It re-pays the unanswered
+  // wallet and the bare PAYMENT_FAILED — the double-pay invariant 11 forbids.
+  const naive = (rs) => rs.map((r, i) => (r && !r.ok ? i : -1)).filter((i) => i >= 0);
+  check('(naive) re-pays an indeterminate leg', naive(results).includes(3) && !retryableLegs(results).includes(3), true);
+  check('(naive) re-pays PAYMENT_FAILED', naive(results).includes(4) && !retryableLegs(results).includes(4), true);
 }
 
 if (failures) {

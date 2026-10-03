@@ -2,7 +2,7 @@ import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult, ValueTimeSplit } from '../types';
 import { boostNoteTrack, httpUrl, type BoostNoteTrack } from '../util';
-import type { QuotedZapReceipt } from './zap-receipt-wait';
+import type { QuotedZapReceipt } from './zap-summary-receipt';
 import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
@@ -16,9 +16,9 @@ interface PublishArgs {
   relays?: string[];
   /**
    * The ONE receipt this note quotes: the site-signed summary for the sats the
-   * boost actually paid (`mintSummaryReceipt`), or on a live-stream zap the
-   * host provider's own receipt for the whole. Per-leg receipts are never
-   * quoted — Fountain renders the FIRST quote and nothing else, and a leg's
+   * boost actually paid (`mintSummaryReceipt`). No boost payment is a zap, so
+   * there is no provider receipt to quote instead, and a leg's would never be
+   * quoted anyway — Fountain renders the FIRST quote and nothing else, and a leg's
    * figure under a note stating the total reads as a contradiction.
    */
   summaryReceipt?: QuotedZapReceipt;
@@ -110,8 +110,11 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  * Emitted alongside the listen-link (not as a replacement) so readers get both
  * affordances: listen elsewhere, or boost back here.
  *
- * The episode guid is encodeURIComponent'd — unlike the podcast guid (a UUID),
- * it's an arbitrary feed-chosen string and is routinely a URL.
+ * Both guids are encodeURIComponent'd. The episode guid is an arbitrary
+ * feed-chosen string and is routinely a URL. The podcast guid is MEANT to be a
+ * UUID, but it is still a feed-supplied string, and one carrying `&`, `#` or a
+ * space breaks a link that can never be edited. For a UUID the encoding is the
+ * identity, so every note already published reads the same.
  *
  * The `www` host is deliberate and must match app/layout.tsx's metadataBase:
  * the apex 307-redirects here, and this URL is written into a signed, immutable
@@ -120,8 +123,21 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  */
 function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   if (!podcast.podcastGuid) return null;
-  const url = `${SITE_ORIGIN}/?podcast=${podcast.podcastGuid}`;
-  return episode?.guid ? `${url}&episode=${encodeURIComponent(episode.guid)}` : url;
+  return siteLandingUrl(podcast.podcastGuid, episode?.guid);
+}
+
+/**
+ * The same deep link from bare guids, for a publisher holding no `Podcast` —
+ * the episode like (`likes.ts`) writes it as its NIP-73 `i` hints, and a boost
+ * note's track hints use it too. Everything said above holds: it goes into a
+ * signed event, so the host is `BRAND.origin` and never `window.location`,
+ * which on a dev server is `localhost`. **One builder, so the encoding cannot
+ * differ between copies** — the track hints encoded the feed guid while this
+ * did not.
+ */
+export function siteLandingUrl(feedGuid: string, itemGuid?: string): string {
+  const url = `${SITE_ORIGIN}/?podcast=${encodeURIComponent(feedGuid)}`;
+  return itemGuid ? `${url}&episode=${encodeURIComponent(itemGuid)}` : url;
 }
 
 /**
@@ -261,7 +277,7 @@ function quotedReceipts(args: PublishArgs): QuotedZapReceipt[] {
  *
  * Placed below the artwork and above the mention run, for the reason `withArt`
  * gives: the trailing `nostr:npub…` run is what a compose box writes last. The
- * relay hints are `receiptRelayHints`' — relays known to hold the receipt.
+ * relay hints are the relays that accepted the receipt (`mintSummaryReceipt`).
  */
 function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
   if (receipts.length === 0) return content;
@@ -388,13 +404,11 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     const out: string[][] = [];
     const feed = track.feedGuid ?? podcast.podcastGuid;
     if (track.feedGuid) {
-      const hint = withHints ? `${SITE_ORIGIN}/?podcast=${encodeURIComponent(track.feedGuid)}` : null;
+      const hint = withHints ? siteLandingUrl(track.feedGuid) : null;
       out.push(hint ? ['i', `podcast:guid:${track.feedGuid}`, hint] : ['i', `podcast:guid:${track.feedGuid}`]);
     }
     if (track.itemGuid) {
-      const hint = withHints && feed
-        ? `${SITE_ORIGIN}/?podcast=${encodeURIComponent(feed)}&episode=${encodeURIComponent(track.itemGuid)}`
-        : null;
+      const hint = withHints && feed ? siteLandingUrl(feed, track.itemGuid) : null;
       out.push(hint && hint.length <= 512
         ? ['i', `podcast:item:guid:${track.itemGuid}`, hint]
         : ['i', `podcast:item:guid:${track.itemGuid}`]);
@@ -442,9 +456,9 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // The `q` tag half of the quote; `withZapReceipts` below writes the body
   // half, which is the one Fountain's badge reads. Same shape
   // `publishQuoteRepost` writes (./interactions.ts): id, relay hint, author —
-  // the author is the site for a summary receipt, the host's LNURL server for a
-  // live-stream zap. `parseQuoteRefs` (./discover.ts) reads either form, so the
-  // explorer's wrapper-vs-receipt dedupe holds.
+  // the author is the site, which signs the summary receipt. `parseQuoteRefs`
+  // (./discover.ts) reads either form, so the explorer's wrapper-vs-receipt
+  // dedupe holds.
   //
   // `amount` above stays `value_msat_total`, the whole boost as INTENDED; the
   // summary receipt carries the sats actually PAID. They differ only when a

@@ -25,7 +25,19 @@ import { BRAND } from '@/lib/brand';
 import { activeNostr } from './signer';
 import { publishSignedEvent } from './publish';
 import { zapRequestTags, type Nip73Refs, type SummarySpec } from './zap-request';
-import type { QuotedZapReceipt } from './zap-receipt-wait';
+
+/** The summary receipt, ready to be quoted by the boost note. */
+export interface QuotedZapReceipt {
+  id: string;
+  /** The site's key. Goes in the `q` tag and the `nevent` author hint. */
+  pubkey: string;
+  /**
+   * Hints, so a reader can find it: relays that ACCEPTED the receipt, never
+   * more than three. A hint naming a relay that never took it sends every
+   * reader to an empty answer.
+   */
+  relays: string[];
+}
 
 /** The site's pubkey in hex, from the per-brand pinned npub. */
 export function siteHexPubkey(): string | null {

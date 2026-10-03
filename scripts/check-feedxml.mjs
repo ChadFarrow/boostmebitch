@@ -37,7 +37,7 @@
 // load. It breaks it LOUDLY, in both this script and `check:npub`, with an
 // ERR_MODULE_NOT_FOUND naming the specifier — survivable. If you hit that, move
 // the type; do not reimplement `readAttr` in here.
-import { readAttr } from '../lib/feed-xml.ts';
+import { readAttr, decodeXmlEntities } from '../lib/feed-xml.ts';
 
 let failed = 0;
 
@@ -153,6 +153,33 @@ if (naiveCaught === 0) {
 } else {
   console.log(`  (the original \\b implementation fails ${naiveCaught} of these — vectors bite)`);
 }
+
+// ── decodeXmlEntities: a recipient NAME for display ────────────────────────
+// `readAttr` returns raw bytes, so "Mutton, Mead &amp; Music" reached the
+// splits list with the entity showing. The naive fix decodes `&amp;` FIRST,
+// which turns the literal text `&amp;lt;` into `<` — a double decode.
+const naiveDecode = (s) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+const DECODE = [
+  ['Mutton, Mead &amp; Music', 'Mutton, Mead & Music', { alsoNaive: true }],
+  ['&amp;lt;b&amp;gt;', '&lt;b&gt;'],
+  ['&#x1F3B5; Song', '\u{1F3B5} Song'],
+  ['&#x110000;', '&#x110000;'],
+  ['plain name', 'plain name', { alsoNaive: true }],
+];
+let decodeBites = 0;
+for (const [input, want, opts] of DECODE) {
+  const got = decodeXmlEntities(input);
+  if (got !== want) fail(`decodeXmlEntities(${JSON.stringify(input)}) → ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+  let naiveGot;
+  try { naiveGot = naiveDecode(input); } catch { naiveGot = Symbol('threw'); }
+  if (naiveGot === want) {
+    if (!opts?.alsoNaive) fail(`decode vector ${JSON.stringify(input)} passes against naive() too — it proves nothing`);
+  } else if (opts?.alsoNaive) {
+    fail(`decode vector ${JSON.stringify(input)} is marked alsoNaive but naive() disagrees`);
+  } else decodeBites++;
+}
+console.log(`  (naive entity decode fails ${decodeBites} of ${DECODE.length} decode vectors)`);
 
 if (failed) {
   console.error(`\ncheck:feedxml FAILED (${failed})`);

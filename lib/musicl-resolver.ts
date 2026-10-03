@@ -15,7 +15,7 @@
 import type { ValueBlock, ValueRecipient } from './types';
 import { safeFetch } from './safe-fetch';
 import { readCappedText } from './capped-body';
-import { readAttr, findTags, firstTag, findBlocks, firstBlock } from './feed-xml';
+import { readAttr, decodeXmlEntities, findTags, firstTag, findBlocks, firstBlock } from './feed-xml';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { mapLimit, FEED_FANOUT } from './util';
@@ -80,7 +80,9 @@ function parseValueRecipients(valueXml: string): ValueRecipient[] {
   // address off — a recipient silently dropped by a character inside a quoted
   // value every other client reads fine. The scanner is quote-aware.
   for (const { attrs: block } of findTags(valueXml, 'podcast:valueRecipient')) {
-    const name = readAttr(block, 'name');
+    // Display only — decoded so `&amp;` shows as `&`. Never the address.
+    const rawName = readAttr(block, 'name');
+    const name = rawName === undefined ? undefined : decodeXmlEntities(rawName);
     const typeStr = readAttr(block, 'type');
     const address = readAttr(block, 'address');
     const split = Number(readAttr(block, 'split') ?? '0');

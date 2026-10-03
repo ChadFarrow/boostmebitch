@@ -1,14 +1,17 @@
 'use client';
 import { useApp } from '@/lib/store';
-import { isHlsUrl, pickVideoAlternate } from '@/lib/util';
+import { canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate } from '@/lib/util';
 
-// Segmented Audio | Video control, shown only when the current item carries a
-// video <podcast:alternateEnclosure>. Store-driven (videoMode), so every surface
-// renders the same state and stays in sync. Defaults to Audio (videoMode starts
-// false and resets on every play). Hidden when the enclosure is already an HLS
-// video (a live stream — no audio-only rendition to switch to). Switching
-// preserves the current playback position (<Player> re-sources the media element
-// and seeks back to positionSec).
+// Segmented Audio | Video control, shown when the current item carries a video
+// <podcast:alternateEnclosure>, or is an HLS live stream on a browser that
+// plays HLS on the <audio> (Safari — see `canPlayNativeHlsAudio`). Store-driven
+// (videoMode), so every surface renders the same state and stays in sync.
+// Defaults to Audio (videoMode starts false and resets on every play), which
+// for a live stream is what keeps it playing with the screen off. Elsewhere an
+// HLS stream can only play on the <video>, so there is nothing to toggle.
+// Switching preserves the current playback position (<Player> re-sources the
+// media element and seeks back to positionSec); a live stream rejoins at the
+// live edge.
 //
 // The caller owns the `display` utility via className (e.g. `inline-flex`, or
 // `hidden sm:inline-flex` to drop it on a cramped mobile mini-bar) — the base
@@ -19,9 +22,11 @@ export function VideoToggle({ className = 'inline-flex' }: { className?: string 
   const setVideoMode = useApp((s) => s.setVideoMode);
 
   if (!current) return null;
-  // Already video (HLS live stream) — nothing to toggle.
-  if (isHlsUrl(current.episode.enclosureUrl)) return null;
-  if (!pickVideoAlternate(current.episode)) return null;
+  if (isHlsUrl(current.episode.enclosureUrl)) {
+    if (!canPlayNativeHlsAudio()) return null;
+  } else if (!pickVideoAlternate(current.episode)) {
+    return null;
+  }
 
   const seg = (on: boolean) =>
     `px-3 py-1.5 text-xs font-semibold uppercase tracking-widest rounded-full transition ${

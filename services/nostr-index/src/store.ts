@@ -34,22 +34,36 @@ export async function ingestEvent(db: Db, event: Event, stats: IngestStats): Pro
     return;
   }
 
-  if (action.type === 'delete') {
-    // A deletion may only delete its OWN author's events. Without the pubkey
-    // predicate anyone could tombstone anyone's notes by publishing a kind:5
-    // naming them — a signed event, verified, and still not authorisation.
-    const res = await db.query(
-      `update events set deleted_at = now()
-         where id = any($1::text[]) and pubkey = $2 and deleted_at is null`,
-      [action.targets, event.pubkey],
-    );
-    stats.deleted += res.rowCount ?? 0;
-    return;
-  }
-
   const client = await db.connect();
   try {
     await client.query('begin');
+
+    if (action.type === 'delete') {
+      // The request is REMEMBERED as well as applied, because the note may not
+      // be here yet: relays serve history out of order, and the kind:5 and its
+      // note arrive through different subscriptions. The insert below reads
+      // `deletion_requests`, so a note arriving later is stored tombstoned.
+      //
+      // Both statements match on the pubkey. A deletion may only delete its
+      // OWN author's events; without that predicate anyone could tombstone
+      // anyone's notes by publishing a kind:5 naming them — a signed event,
+      // verified, and still not authorisation.
+      await lockIds(client, action.targets);
+      await client.query(
+        `insert into deletion_requests (event_id, pubkey)
+           select unnest($1::text[]), $2
+         on conflict do nothing`,
+        [action.targets, event.pubkey],
+      );
+      const res = await client.query(
+        `update events set deleted_at = now()
+           where id = any($1::text[]) and pubkey = $2 and deleted_at is null`,
+        [action.targets, event.pubkey],
+      );
+      await client.query('commit');
+      stats.deleted += res.rowCount ?? 0;
+      return;
+    }
 
     if (action.type === 'profile') {
       // Replaceable: keep the newest only. `created_at` decides, never arrival
@@ -90,9 +104,17 @@ export async function ingestEvent(db: Db, event: Event, stats: IngestStats): Pro
 
     // An event id is the hash of its own content, so a conflict is the same
     // event arriving from a second relay — never an update.
+    //
+    // `deleted_at` is set at insert when its author already asked to delete
+    // it — a kind:5 that arrived first. The lock pairs with the delete branch
+    // above: without it a deletion committing while this insert is still open
+    // updates a row it cannot see yet, and this insert has already read no
+    // request, so the note lands live.
+    await lockIds(client, [event.id]);
     const ins = await client.query(
-      `insert into events (id, pubkey, kind, created_at, content, tags, sig)
-         values ($1, $2, $3, $4, $5, $6::jsonb, $7)
+      `insert into events (id, pubkey, kind, created_at, content, tags, sig, deleted_at)
+         values ($1, $2, $3, $4, $5, $6::jsonb, $7,
+                 (select now() from deletion_requests where event_id = $1 and pubkey = $2))
        on conflict (id) do nothing`,
       [event.id, event.pubkey, event.kind, event.created_at, event.content, JSON.stringify(event.tags), event.sig],
     );
@@ -139,6 +161,21 @@ export async function ingestEvent(db: Db, event: Event, stats: IngestStats): Pro
   } finally {
     client.release();
   }
+}
+
+/**
+ * Serialize the insert of a note against a deletion naming it, for the rest
+ * of the transaction. Taken in sorted order so two deletions naming
+ * overlapping ids cannot each hold one lock and wait for the other.
+ */
+async function lockIds(client: { query: Db['query'] }, ids: string[]): Promise<void> {
+  // One round trip. The target list is evaluated after the sort, so the locks
+  // are taken in `id` order.
+  await client.query(
+    `select pg_advisory_xact_lock(hashtextextended(id, 0))
+       from unnest($1::text[]) as id order by id`,
+    [ids],
+  );
 }
 
 async function queuePodcastRefs(client: { query: Db['query'] }, event: Event): Promise<void> {

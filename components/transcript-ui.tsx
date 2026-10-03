@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState, Fragment } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, Fragment } from 'react';
 import { fmt, scrollBehavior } from '@/lib/format';
 import type { TranscriptCue } from '@/lib/transcript';
 
@@ -52,6 +52,28 @@ export function TranscriptPanel({
   const boxRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLElement>(null);
   const [query, setQuery] = useState('');
+  // Both parents re-render on every `positionSec` tick and pass a fresh
+  // `onSeek` each time, so the rows are a memoized child fed a STABLE seek
+  // callback. Without that a 1,000-cue transcript re-ran `highlight` and
+  // reconciled every row once a second while only `activeIdx` ever changes.
+  const seekRef = useRef(onSeek);
+  seekRef.current = onSeek;
+  const seek = useCallback((t: number) => seekRef.current?.(t), []);
+
+  // Case-insensitive filter to matching lines, keeping each cue's original index so
+  // the active-line highlight (i === activeIdx) still lines up. Above the early
+  // returns so the hook order never changes.
+  const q = query.trim();
+  const rows = useMemo(() => {
+    const all = (cues ?? []).map((c, i) => ({ c, i }));
+    if (!q) return all;
+    const needle = q.toLowerCase();
+    return all.filter(
+      ({ c }) =>
+        c.text.toLowerCase().includes(needle) ||
+        (c.speaker?.toLowerCase().includes(needle) ?? false),
+    );
+  }, [cues, q]);
 
   // Keep the active line centered by scrolling only this container — scrollIntoView
   // would bubble up and move the whole page as playback advances. Safe in both
@@ -97,20 +119,6 @@ export function TranscriptPanel({
     );
   }
 
-  // Case-insensitive filter to matching lines, keeping each cue's original index so
-  // the active-line highlight (i === activeIdx) still lines up.
-  const q = query.trim();
-  const needle = q.toLowerCase();
-  const rows = (q
-    ? cues
-        .map((c, i) => ({ c, i }))
-        .filter(
-          ({ c }) =>
-            c.text.toLowerCase().includes(needle) ||
-            (c.speaker?.toLowerCase().includes(needle) ?? false),
-        )
-    : cues.map((c, i) => ({ c, i })));
-
   return (
     <div className={className}>
       <div className="flex items-center gap-2 mb-2">
@@ -146,40 +154,65 @@ export function TranscriptPanel({
         {q && rows.length === 0 ? (
           <p className="text-xs text-muted py-2">No matches.</p>
         ) : (
-          <ul className="text-xs">
-            {rows.map(({ c, i }) => {
-              const on = i === activeIdx;
-              const body = (
-                <>
-                  <span className={`tabular-nums w-12 flex-shrink-0 ${on ? 'text-bolt' : 'text-muted'}`}>
-                    {fmt(c.startTime)}
-                  </span>
-                  <span className="break-words">
-                    {c.speaker && (
-                      <span className="text-muted font-semibold">{highlight(c.speaker, q)}: </span>
-                    )}
-                    {highlight(c.text, q)}
-                  </span>
-                </>
-              );
-              const rowCls = `w-full flex gap-3 items-baseline text-left rounded transition py-1.5 px-2 -mx-2 ${
-                on ? 'bg-bolt/10 text-bolt' : 'text-bone/80'
-              }`;
-              return (
-                <li key={`${c.startTime}-${i}`} ref={on ? (activeRef as React.RefObject<HTMLLIElement>) : undefined}>
-                  {seekable ? (
-                    <button type="button" onClick={() => onSeek!(c.startTime)} className={`${rowCls} hover:bg-bone/5`}>
-                      {body}
-                    </button>
-                  ) : (
-                    <div className={rowCls}>{body}</div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          <TranscriptRows
+            rows={rows}
+            q={q}
+            activeIdx={activeIdx}
+            seek={seekable ? seek : undefined}
+            activeRef={activeRef}
+          />
         )}
       </div>
     </div>
   );
 }
+
+/** The rows alone, memoized — see the `seekRef` note in <TranscriptPanel>. */
+const TranscriptRows = memo(function TranscriptRows({
+  rows,
+  q,
+  activeIdx,
+  seek,
+  activeRef,
+}: {
+  rows: { c: TranscriptCue; i: number }[];
+  q: string;
+  activeIdx: number;
+  seek?: (t: number) => void;
+  activeRef: React.RefObject<HTMLElement | null>;
+}) {
+  return (
+    <ul className="text-xs">
+      {rows.map(({ c, i }) => {
+        const on = i === activeIdx;
+        const body = (
+          <>
+            <span className={`tabular-nums w-12 flex-shrink-0 ${on ? 'text-bolt' : 'text-muted'}`}>
+              {fmt(c.startTime)}
+            </span>
+            <span className="break-words">
+              {c.speaker && (
+                <span className="text-muted font-semibold">{highlight(c.speaker, q)}: </span>
+              )}
+              {highlight(c.text, q)}
+            </span>
+          </>
+        );
+        const rowCls = `w-full flex gap-3 items-baseline text-left rounded transition py-1.5 px-2 -mx-2 ${
+          on ? 'bg-bolt/10 text-bolt' : 'text-bone/80'
+        }`;
+        return (
+          <li key={`${c.startTime}-${i}`} ref={on ? (activeRef as React.RefObject<HTMLLIElement>) : undefined}>
+            {seek ? (
+              <button type="button" onClick={() => seek(c.startTime)} className={`${rowCls} hover:bg-bone/5`}>
+                {body}
+              </button>
+            ) : (
+              <div className={rowCls}>{body}</div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+});

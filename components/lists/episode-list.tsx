@@ -32,13 +32,12 @@ import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
-import { FavEpisodeHeart, FavHeart } from '../fav-heart';
-import { DownloadButton } from '../download-button';
+import { FavHeart } from '../fav-heart';
 import { AlbumDownload } from '../album-download';
-import { QueueButton } from '../queue-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
+import { PlayedMark } from './played-mark';
 import { EpisodeRowMarks, EpisodeRowMenu } from './episode-row-menu';
 
 /**
@@ -583,7 +582,7 @@ export function EpisodeList({
               if (showIsCurrent) togglePlay();
               else if (data.podcast) play(firstPlayable, data.podcast);
             }}
-            className="group relative w-20 h-20 flex-shrink-0"
+            className="group relative w-20 h-20 lg:w-28 lg:h-28 flex-shrink-0"
             title={showIsCurrent && isPlaying ? 'Pause' : 'Play album'}
             aria-label={showIsCurrent && isPlaying ? 'Pause' : 'Play album'}
           >
@@ -608,7 +607,7 @@ export function EpisodeList({
             artwork={data.podcast.artwork}
             title={data.podcast.title}
             seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
-            className="w-20 h-20 border border-bone/20 flex-shrink-0 text-3xl"
+            className="w-20 h-20 lg:w-28 lg:h-28 border border-bone/20 flex-shrink-0 text-3xl"
           />
         )}
         <div className="min-w-0 flex-1">
@@ -673,7 +672,12 @@ export function EpisodeList({
             there is no rare member of it to demote. The tiles are what makes
             that affordable — four equal cells scan as one row where four
             unequal chips scanned as a pile. */}
-        <div className="basis-full flex flex-col gap-2">
+        {/* From lg: the cluster stops being `basis-full` and sits BESIDE the
+            title, 26rem wide. The header is sticky from sm:, so its height is
+            screen the tracklist cannot use: stacked, it was an 80px cover plus
+            a full-width BOOST and a tile row (~200px) above every scroll. Side
+            by side it is about the height of the cover, even at 112px. */}
+        <div className="basis-full lg:basis-[26rem] lg:flex-none lg:self-center flex flex-col gap-2">
           {showHasValue && (
             <button
               onClick={() => setShowBoostOpen(true)}
@@ -965,12 +969,9 @@ export function EpisodeList({
               >
                 <div className="flex items-center gap-2 min-w-0">
                   {e.liveStatus && <LiveBadge status={e.liveStatus} />}
-                  {/* Two lines below lg:, where the menu gave it the width
-                      to use them, and one from lg: up. `max-lg:` rather than
-                      overriding at lg:, because `truncate` and
-                      `line-clamp-none` both set `overflow` and would resolve by
-                      stylesheet order. */}
-                  <div className={`text-base font-display font-medium leading-tight max-lg:line-clamp-2 max-lg:break-words lg:truncate ${e.unresolved ? 'text-muted italic' : ''}`}>
+                  {/* Two lines at every width: the `⋯` menu gives the title
+                      the row's width on desktop too (docs/ui.md). */}
+                  <div className={`text-base font-display font-medium leading-tight line-clamp-2 break-words ${e.unresolved ? 'text-muted italic' : ''}`}>
                     {e.unresolved
                       ? (e.unresolved === 'not-found' ? 'Track not in Podcast Index' : 'Track not looked up')
                       : e.title}
@@ -996,12 +997,10 @@ export function EpisodeList({
                   )}
                   {e.duration && <span className="whitespace-nowrap">· {fmtDuration(e.duration)}</span>}
                   {data.podcast && <ResumeLeft episode={e} podcast={data.podcast} />}
+                  {data.podcast && <PlayedMark episode={e} podcast={data.podcast} />}
                   {e.value && <span className="text-bolt whitespace-nowrap">· ⚡ V4V</span>}
-                  {/* Below lg: the state of what the `⋯` menu holds. From lg:
-                      the controls are on the row and say it themselves. */}
-                  <span className="contents lg:hidden">
-                    <EpisodeRowMarks episode={e} />
-                  </span>
+                  {/* The state of what the `⋯` menu holds, at every width. */}
+                  <EpisodeRowMarks episode={e} />
                 </div>
                 {/* These were bare inline <span>s carrying `mt-0.5`, which does
                     nothing on a non-replaced inline element, and they abutted
@@ -1033,18 +1032,7 @@ export function EpisodeList({
                   <span className="hidden sm:inline">BOOST</span>
                 </button>
               )}
-              {/* SIBLINGS of the row's tap targets, never children of them —
-                  a button may not contain a button. Every one is
-                  `flex-shrink-0` so none squashes the title column. From lg:
-                  only; below it they are in the `⋯` menu. */}
-              <div className="hidden lg:flex self-center flex-shrink-0 items-center gap-3">
-                <DownloadButton episode={e} podcast={data.podcast} />
-                <span className="hidden sm:inline-flex">
-                  <QueueButton episode={e} podcast={data.podcast} />
-                </span>
-                <FavEpisodeHeart episode={e} podcast={data.podcast} />
-              </div>
-              <EpisodeRowMenu episode={e} podcast={data.podcast} className="lg:hidden self-center" />
+              <EpisodeRowMenu episode={e} podcast={data.podcast} className="self-center" />
               </div>
             </li>
             </Fragment>
@@ -1127,7 +1115,7 @@ export function EpisodeList({
         <DeferredOnScroll
           placeholder={
             <h3 className="font-display text-lg mt-8 text-muted">
-              <span className="text-nostr">#</span> Boosts &amp; chatter on Nostr
+              <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
               {data.podcast.title ? (
                 <span className="text-muted text-sm"> · {data.podcast.title}</span>
               ) : null}

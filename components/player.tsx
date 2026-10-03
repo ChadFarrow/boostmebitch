@@ -13,9 +13,11 @@ import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
+import { usePlayHistory } from './player/use-play-history';
+import { useNowPlaying } from './player/use-now-playing';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
-import { artGateOpen, boostButtonTitle, boostGate, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
+import { artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
@@ -39,6 +41,7 @@ import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer, warmPlayerPanes } from './fullscreen-player';
 import { PodcastCover } from './podcast-cover';
 import { TransportControls } from './transport-controls';
+import { SpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 import { LiveBadge } from './live-badge';
 
@@ -215,12 +218,53 @@ export function Player() {
   // it can move between the mini-bar thumbnail and the fullscreen art pane
   // WITHOUT remounting (a remount would kill playback + the hls.js attachment),
   // which is what keeps playback alive when you collapse the fullscreen player.
+
+  /**
+   * The HLS URL whose NATIVE playback already failed, so the next attempt uses
+   * hls.js instead.
+   *
+   * NATIVE HLS IS AN ATTEMPT, NOT A VERDICT. `canPlayType` answers whether the
+   * browser *implements* HLS, which on iOS is always yes — it says nothing about
+   * this playlist. When Safari's own player then rejects one it fires
+   * `MEDIA_ERR_SRC_NOT_SUPPORTED`, and because `canPlayType` had already sent us
+   * down the native branch, hls.js was never even loaded: the stream ended at
+   * `live stream format not supported or URL unreachable`, on the platform where
+   * we have the least to say about why. Reported from an iPhone against a
+   * zap.stream broadcast that other clients played.
+   *
+   * hls.js is a real second chance there rather than a formality. Safari 17.1
+   * ships `ManagedMediaSource`, which `Hls.isSupported()` accepts, so the same
+   * MSE path desktop takes is available — and it parses playlists Safari's own
+   * player refuses, fetches over CORS, and carries the retry/recover ladder
+   * below. Failing that, it at least names the failure (`manifestLoadError`,
+   * `manifestParsingError`, …) where the native element only ever said `4`.
+   *
+   * Keyed by URL rather than a boolean, so the flag cannot outlive the source it
+   * describes: a new stream starts on native again, and a `reloadNonce` retry of
+   * the SAME url stays on hls.js instead of ping-ponging. `onMediaError` sets it
+   * and bumps the nonce; that is the one path here, and it fires once per url.
+   */
+  const nativeHlsFailedUrl = useRef<string | null>(null);
   const isHls = isHlsUrl(current?.episode.enclosureUrl);
   const videoAlt = current ? pickVideoAlternate(current.episode) : undefined;
+  // A LIVE STREAM PLAYS ON THE <audio> WHERE THE BROWSER CAN, UNTIL THE
+  // LISTENER ASKS FOR THE PICTURE. iOS pauses a backgrounded <video> that has a
+  // video track — a zap.stream broadcast has two — so a live show stopped when
+  // the screen turned off, while a podcast on the <audio> kept going. Only
+  // where the browser plays HLS natively (Safari, so every iPhone browser); a
+  // browser without it needs hls.js, which needs the <video>. `videoMode` is
+  // the listener's 📺 Video on <VideoToggle>, reset on every play, so each
+  // stream starts on audio. A native refusal (`nativeHlsFailedUrl`) sends the
+  // url to hls.js, which is the <video>, and the reload nonce that sets it
+  // re-renders this.
+  const hlsOnAudio = isHls
+    && !videoMode
+    && canPlayNativeHlsAudio()
+    && nativeHlsFailedUrl.current !== current?.episode.enclosureUrl;
   // The URL that should play through the <video>, if any. Live HLS wins; else
   // the chosen video alternate when the user toggled video on.
   const videoUrl = isHls
-    ? current?.episode.enclosureUrl
+    ? (hlsOnAudio ? undefined : current?.episode.enclosureUrl)
     : videoMode && videoAlt
       ? videoAlt.source
       : undefined;
@@ -250,32 +294,6 @@ export function Player() {
   // reconnect rather than continue. Cleared by the source effect, so the FIRST
   // play of an item takes the normal path (that effect owns that play).
   const pausedLive = useRef(false);
-  /**
-   * The HLS URL whose NATIVE playback already failed, so the next attempt uses
-   * hls.js instead.
-   *
-   * NATIVE HLS IS AN ATTEMPT, NOT A VERDICT. `canPlayType` answers whether the
-   * browser *implements* HLS, which on iOS is always yes — it says nothing about
-   * this playlist. When Safari's own player then rejects one it fires
-   * `MEDIA_ERR_SRC_NOT_SUPPORTED`, and because `canPlayType` had already sent us
-   * down the native branch, hls.js was never even loaded: the stream ended at
-   * `live stream format not supported or URL unreachable`, on the platform where
-   * we have the least to say about why. Reported from an iPhone against a
-   * zap.stream broadcast that other clients played.
-   *
-   * hls.js is a real second chance there rather than a formality. Safari 17.1
-   * ships `ManagedMediaSource`, which `Hls.isSupported()` accepts, so the same
-   * MSE path desktop takes is available — and it parses playlists Safari's own
-   * player refuses, fetches over CORS, and carries the retry/recover ladder
-   * below. Failing that, it at least names the failure (`manifestLoadError`,
-   * `manifestParsingError`, …) where the native element only ever said `4`.
-   *
-   * Keyed by URL rather than a boolean, so the flag cannot outlive the source it
-   * describes: a new stream starts on native again, and a `reloadNonce` retry of
-   * the SAME url stays on hls.js instead of ping-ponging. `onMediaError` sets it
-   * and bumps the nonce; that is the one path here, and it fires once per url.
-   */
-  const nativeHlsFailedUrl = useRef<string | null>(null);
   // The element ran out of data and is waiting on the network. NOT an error: the
   // request is still open and it may recover on its own, so this only drives a
   // readout and the resume path below — nothing here calls pause().
@@ -451,8 +469,9 @@ export function Player() {
 
   // Source the active media element when the current item changes. Audio and
   // video are mutually exclusive (one `current`), so the inactive element is
-  // left srcless/paused — otherwise the <audio> would try to load an .m3u8 and
-  // error. HLS attaches via hls.js (or native Safari on canPlayType).
+  // left srcless/paused. HLS attaches to the <video> via hls.js (or native
+  // Safari on canPlayType) — or, on Safari while the listener has not asked for
+  // the picture, to the <audio> as a plain source (`hlsOnAudio`).
   useEffect(() => {
     lastTick.current = -1;
     pausedLive.current = false;
@@ -480,16 +499,51 @@ export function Player() {
       // re-source would seek straight back to the stale offset it exists to
       // escape. Live means live — there is nothing else to resume to.
       const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
-      const seekOnLoad = () => { if (startAt > 0) el.currentTime = startAt; };
+
+      // ONE SEEK AT `loadedmetadata` IS NOT ENOUGH, and an HLS rendition got
+      // none at all. Reported from an iPhone: AUDIO → VIDEO mid-episode
+      // started the picture at 0:00. Buzzsprout publishes its video
+      // `alternateEnclosure` as an `.m3u8`, which takes the HLS branch below —
+      // written for live streams, where there is nothing to resume, so it
+      // never seeked. And Safari can accept an assignment at `loadedmetadata`
+      // and still start at 0:00. So for every video path the start position is
+      // re-checked at `loadedmetadata`, `canplay` and `playing`, and re-applied
+      // while the element is short of it. It stops for good once it has landed,
+      // after `playing` (the last chance before the listener sees the wrong
+      // place), or at the first seek it did not make — a scrub in that window
+      // is the listener's, and wins. A live item has `startAt === 0`, so it
+      // arms nothing.
+      const SEEK_EVENTS = ['loadedmetadata', 'canplay', 'playing'] as const;
+      let landed = startAt <= 0;
+      let ours = false;
+      const seekToStart = (e: Event) => {
+        if (landed) return;
+        if (Math.abs(el.currentTime - startAt) < 2) return doneSeeking();
+        ours = true;
+        el.currentTime = startAt;
+        if (e.type === 'playing') doneSeeking();
+      };
+      const onSeeking = () => {
+        if (ours) { ours = false; return; }
+        doneSeeking();
+      };
+      const doneSeeking = () => {
+        landed = true;
+        for (const ev of SEEK_EVENTS) el.removeEventListener(ev, seekToStart);
+        el.removeEventListener('seeking', onSeeking);
+      };
+      if (!landed) {
+        for (const ev of SEEK_EVENTS) el.addEventListener(ev, seekToStart);
+        el.addEventListener('seeking', onSeeking);
+      }
 
       // A plain progressive video (mp4/webm) — an alternateEnclosure rendition —
       // plays natively; only HLS needs hls.js. isHlsUrl(url) distinguishes them.
       if (!isHlsUrl(url)) {
         el.src = url;
-        el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
         if (isPlayingRef.current) playOrPark(el, () => setPlaying(false));
         return () => {
-          el.removeEventListener('loadedmetadata', seekOnLoad);
+          doneSeeking();
           el.removeAttribute('src');
           el.load();
         };
@@ -591,6 +645,9 @@ export function Player() {
             liveSyncDurationCount: 4,
             backBufferLength: 90,
             ignorePlaylistParsingErrors: true,
+            // A VOD rendition (an HLS `alternateEnclosure`) loads from where the
+            // audio was, not from fragment 0; -1 is hls.js's own default.
+            startPosition: startAt > 0 ? startAt : -1,
           });
           hls.current = inst;
           inst.loadSource(url);
@@ -671,6 +728,7 @@ export function Player() {
       }
       return () => {
         cancelled = true;
+        doneSeeking();
         reconnectMsg.current = null;
         if (recoverTimer.current) { clearTimeout(recoverTimer.current); recoverTimer.current = null; }
         if (hls.current) {
@@ -742,7 +800,8 @@ export function Player() {
      * `useState` AFTER playback began would re-run the effect, repoint `el.src`
      * and restart the episode from zero.
      */
-    const localKey = downloadManager.localKeyFor(episode);
+    // A live stream is never downloaded, so it never waits on hydration.
+    const localKey = isHlsUrl(episode.enclosureUrl) ? null : downloadManager.localKeyFor(episode);
     if (localKey === null) {
       attach(episode.enclosureUrl);
     } else {
@@ -927,7 +986,7 @@ export function Player() {
     function onForeground() {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       if (!isHlsRef.current || !isPlayingRef.current) return;
-      const el = video.current;
+      const el = isVideoRef.current ? video.current : audio.current;
       if (!el) return;
 
       // Try a plain resume first — a short background often recovers without a
@@ -1165,6 +1224,10 @@ export function Player() {
   // See ./player/use-resume-position and lib/resume-position.ts.
   useResumePosition({ audio, video, isVideoRef, pendingLocalSrc });
 
+  // Puts an episode listened to for a minute into the Listen tab's HISTORY,
+  // so it can be boosted later. See ./player/use-play-history.
+  usePlayHistory();
+
   // **A queue that survived a reload has to be reachable.** `current` is
   // in-memory and the queue is not, so every page load lands with items on disk
   // and nothing playing — and the two lines below then render nothing at all,
@@ -1172,7 +1235,15 @@ export function Player() {
   // null, which is what lets this sit above that return; doing it in the store
   // initializer instead would paint a mini-bar on the client that the server
   // did not, which is a hydration mismatch.
-  useEffect(() => { useApp.getState().revealQueue(); }, []);
+  //
+  // The episode that was in the player comes FIRST: the queue's head is only
+  // the fallback, because it is not what somebody was listening to when they
+  // played a feed row or a later queue row. Each no-ops once `current` is set.
+  useNowPlaying();
+  useEffect(() => {
+    useApp.getState().revealNowPlaying();
+    useApp.getState().revealQueue();
+  }, []);
 
   if (!current) return null;
   const { episode, podcast } = current;
@@ -1288,7 +1359,8 @@ export function Player() {
             }}
             // Progressive video (a podcast video rendition) just stops at the end;
             // live HLS never fires this. Music auto-advance stays on the <audio>.
-            onEnded={() => { forgetRestoreBaseline(); setPlaying(false); }}
+            // Collapse too, as the <audio> below does when nothing plays next.
+            onEnded={() => { forgetRestoreBaseline(); setPlaying(false); setPlayerExpanded(false); }}
             // THIS IS WHERE A LIVE-STREAM RECONNECT BECOMES VISIBLE, and the
             // ordinary rebuffer must stay distinguishable from it. `stalled`
             // alone is the mini-bar's "⋯ buffering — press play to retry"; only
@@ -1304,16 +1376,16 @@ export function Player() {
         </InPortal>
       )}
 
-      {/* `role="button"` needs `tabIndex` and a key handler to be one. Without
-          them this announces itself as a button to a screen reader, is never
-          reachable by Tab, and does nothing when activated — the control that
-          opens the fullscreen player was pointer-only. A native <button> is not
-          available here: this element wraps the transport controls, the seek
-          input and the BOOST button, and a button may not contain them.
-
-          Space is `preventDefault`ed because the browser would otherwise scroll
-          the page on keydown. The inner controls all `stopPropagation`, so a
-          key pressed while focus is on one of them never reaches this. */}
+      {/* The bar is NOT a `role="button"`, and it used to be. ARIA makes a
+          button's children presentational and its `aria-label` the name of the
+          whole subtree, so a screen reader could present the bar as ONE button
+          named "Open fullscreen player" — with the seek input, the transport and
+          BOOST inside it unreachable. The keyboard/screen-reader way in is the
+          real <button> on the episode title below, a SIBLING of those controls
+          (docs/ui.md: "a real <button> with the other control as its SIBLING,
+          never a role="button" on the row"). The bar keeps its `onClick` as a
+          pointer-only hit area, like <ModalShell>'s backdrop; the inner controls
+          all `stopPropagation`. */}
       {/* `bottom` is the tab bar's full height (`--dock-b`, globals.css), not
           0, and there is no `pb-[env(safe-area-inset-bottom)]` here any more:
           <TabBar> is the one element that pays the inset, and this sits on top
@@ -1330,16 +1402,6 @@ export function Player() {
         className="fixed left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 cursor-pointer"
         style={{ bottom: 'var(--dock-b)', transform: 'translateY(var(--kb-inset, 0px))' }}
         onClick={() => setPlayerExpanded(true)}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return;
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            setPlayerExpanded(true);
-          }
-        }}
-        role="button"
-        tabIndex={0}
-        aria-label="Open fullscreen player"
       >
         <audio
           ref={audio}
@@ -1392,12 +1454,32 @@ export function Player() {
           // queued TALK show advance, which `playsAsTracks` would refuse: that
           // gate decides whether a FEED plays as tracks, and a queue is not a
           // feed.
+          //
+          // DELETE AFTER PLAYING (`storage.deleteAfterPlay`, off by default) runs
+          // here, BEFORE `handlePlaybackEnded` moves `current` on, and only here:
+          // `ended` is the one signal that the episode was heard to the end. A
+          // skip out of the outro does not count — the safe direction, since a
+          // wrong delete costs the listener the data they downloaded to save.
+          // Podcast episodes only: an album is downloaded to be played again.
+          // The RECORD decides that (`deletableAfterPlay`), because a row
+          // played from /downloads carries a show rebuilt with no medium.
+          // The element keeps its blob URL until the next source revokes it, so
+          // a replay of this one still plays (measured in Chromium; see
+          // docs/downloads.md for what is not yet measured on iOS).
           onEnded={() => {
             if (pendingLocalSrc.current) return;
             forgetRestoreBaseline();
+            if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
+              const key = downloadManager.deletableAfterPlay(current.episode);
+              if (key) void downloadManager.remove(key);
+            }
             if (handlePlaybackEnded()) return;
             if (current && playsAsTracks(current.podcast) && playNext()) return;
+            // Nothing plays next, so the fullscreen player is a screen over a
+            // finished episode: collapse it to the mini-bar, which still carries
+            // BOOST. Only here — an advance above keeps it open on the next item.
             setPlaying(false);
+            setPlayerExpanded(false);
           }}
           // `waiting` fires the moment playback runs dry; `stalled` when the
           // browser has had no data for a while. Neither is an error and neither
@@ -1467,7 +1549,16 @@ export function Player() {
             />
           ) : null}
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-display leading-tight truncate">{episode.title}</div>
+            {/* `-my-1 py-1` grows the target past 24px (WCAG 2.5.8) without
+                moving the row: the margin gives back what the padding takes. */}
+            <button
+              type="button"
+              className="block w-full -my-1 py-1 text-left text-sm font-display leading-tight truncate"
+              aria-label={`Open fullscreen player: ${episode.title}`}
+              onClick={(e) => { e.stopPropagation(); setPlayerExpanded(true); }}
+            >
+              {episode.title}
+            </button>
             {/* The streaming indicator rides on the show line, NOT the controls
                 cluster — that side is already tight on mobile. It's shrink-0
                 (~40px) so the already-truncating title just truncates slightly
@@ -1554,6 +1645,9 @@ export function Player() {
               // cluster to play/pause on a live stream, before skip is reached.
               onSkip={skipBy}
             />
+            {/* Speed from lg: only, where the bar has the width (docs/ui.md,
+                "Playback speed"). A live item is always 1×, so no control. */}
+            {!isLive && <SpeedButton variant="chip" className="hidden lg:inline-flex" />}
             {/* Compact enough for the mini-bar on desktop; hidden on the cramped
                 mobile mini-bar (the fullscreen player carries the toggle there). */}
             <VideoToggle className="hidden sm:inline-flex" />

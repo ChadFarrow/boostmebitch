@@ -233,6 +233,19 @@ check('1 sat pays exactly one payee', names(payableSplit(1, SHOW)), ['candr show
 // Degenerate inputs must not throw or invent legs.
 check('0 sats pays nobody', payableSplit(0, SHOW).splits.every((s) => s === 0), true);
 check('no recipients', payableSplit(10, []), { recipients: [], splits: [] });
+// A feed's `split="1e400"` parses to Infinity. Clamping only at 0 let it make
+// totalWeight Infinity and its own share NaN, and `payOne`'s `sats <= 0` is
+// false for NaN, so the leg was ATTEMPTED. A non-finite weight is unreachable,
+// exactly like a negative one: 0 sats, and the rest split among the finite.
+const INF = { name: 'overflow', address: 'x@example.com', type: 'lnaddress', split: Infinity };
+const withInf = splitSats(100, [...SHOW, INF]);
+check('a non-finite weight gets 0 sats, never NaN', withInf[SHOW.length], 0);
+check('a non-finite weight leaves every share finite', withInf.every(Number.isFinite), true);
+check('a non-finite weight does not take the finite payees\' sats', withInf.reduce((a, b) => a + b, 0), 100);
+// The old clamp, `Math.max(0, split || 0)`, reproduced to prove the vector bites.
+const naiveInfShare = (100 * Math.max(0, INF.split || 0))
+  / [...SHOW, INF].reduce((s, r) => s + Math.max(0, r.split || 0), 0);
+check('naive() clamp: the Infinity payee\'s share is NaN (the bug this pins)', Number.isNaN(naiveInfShare), true);
 // A zero-weight recipient can never be paid by largest-remainder, so it must
 // not survive into the leg either.
 check('zero-weight recipient is dropped, not paid 0',
