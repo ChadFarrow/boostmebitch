@@ -730,7 +730,13 @@ export function FullscreenPlayer({
     // episode decides which branch renders (a Nostr live stream has no cover at
     // all). Everything else that moves — a longer title, a chapter label
     // appearing — is the ResizeObserver's job.
-  }, [everOpened, open, current?.episode?.id, current?.episode?.guid]);
+    //
+    // `isVideo` too, because the cover box and the video stage are both a
+    // <div> in the same slot: without their `key`s React kept ONE node, and
+    // the cover's inline cap stayed on it as the video's width — reported
+    // from an iPhone as a video at ~57% of the screen. The keys stop the
+    // node being shared; this dep re-measures the cover on the way back.
+  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo]);
 
   // ABOVE the early return: a hook may not be called conditionally, and
   // `useSavedPosition` takes null precisely so a surface can call it over its
@@ -1015,6 +1021,7 @@ export function FullscreenPlayer({
             // on the row. `video-stage` sheds all of this in the browser's top
             // layer (see app/globals.css).
             <div
+              key="video-stage"
               ref={stageRef}
               className="video-stage relative w-full max-w-md sm:max-w-lg lg:max-w-[min(64rem,calc((100dvh-13rem)*16/9))] aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black"
             >
@@ -1130,7 +1137,7 @@ export function FullscreenPlayer({
             // fit and a vanishing cover helps no one. From sm: up
             // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
             // info column, so its height is not the constraint.
-            <div ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
+            <div key="cover" ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Whatever is playing at this second, via `nowPlayingArt`: the
                   LIVE BLOCK's art first — on a Split Kit show that's the cover
                   of the record actually playing, and it's the one thing on
