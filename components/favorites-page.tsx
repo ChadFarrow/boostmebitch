@@ -476,7 +476,7 @@ export function FavoritesPage() {
           gets a row of their own; signed in they ride in <RelayTools>. */}
       {!identity && (
         <div className="flex flex-wrap items-start gap-2">
-          <OpmlImport />
+          <OpmlImport standalone />
         </div>
       )}
 

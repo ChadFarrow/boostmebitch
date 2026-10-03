@@ -214,7 +214,7 @@ Verified end to end against a real relay and a real signer, with the relays hold
 
 ### OPML import (`⇧ IMPORT OPML`, `components/opml-import.tsx`)
 
-The subscription list other podcast apps write. **Show favorites only** — OPML has no standard way to name one episode or track, so episode favorites stay on the Nostr list. Export is not built yet. Rendered signed in (inside `<RelayTools>`) AND signed out (its own row, since `<FavoritesPrivacyControl>` renders nothing then); the store has a guest bucket.
+The subscription list other podcast apps write. **Show favorites only** — OPML has no standard way to name one episode or track, so episode favorites stay on the Nostr list. Export is not built yet. Rendered signed in (inside `<RelayTools>`) AND signed out (its own row, since `<FavoritesPrivacyControl>` renders nothing then); the store has a guest bucket. **Signed out it is `.btn-ghost`, signed in `.btn-mini` (`standalone`)**: alone on its row, beside the empty state's `.btn-ghost` ← BACK TO SEARCH, a `.btn-mini` read as disabled on a phone; inside `<RelayTools>` it keeps the cluster's one shape. The preview's ADD / CANCEL are `.btn` / `.btn-ghost`, the same pair as `<RestoreBackup>`'s confirm row.
 
 The reader is `parseOpml` in `lib/feed-xml.ts`, pinned by `check:opml`. They live there, not in a module of their own, because the reader must walk with `findTags` and a second module importing `feed-xml.ts` could not load under strip-types. `parseOpml` keeps http(s) URLs only (the URL is sent to Podcast Index and stored as the favorite's `url`, which renders) and counts the rest as skipped.
 

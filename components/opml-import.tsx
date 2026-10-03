@@ -78,7 +78,12 @@ async function planImport(feeds: OpmlFeed[], skipped: number): Promise<ImportPla
   return next;
 }
 
-export function OpmlImport() {
+/**
+ * `standalone`: signed out, this is the only control on its row and sits beside
+ * the page's `.btn-ghost` actions, where a `.btn-mini` reads as disabled.
+ * Signed in it stays `.btn-mini`, one of the privacy row's family (docs/ui.md).
+ */
+export function OpmlImport({ standalone = false }: { standalone?: boolean }) {
   const identity = useApp((s) => s.identity);
   // Signed in, the account's list must have landed first (see the header).
   const waiting = useApp((s) => !!s.identity && (s.favoritesSync === 'idle' || s.favoritesSync === 'loading'));
@@ -174,7 +179,7 @@ export function OpmlImport() {
         type="button"
         onClick={() => fileRef.current?.click()}
         disabled={busy || waiting || !!plan}
-        className="btn-mini disabled:opacity-50"
+        className={`${standalone ? 'btn-ghost text-xs' : 'btn-mini'} disabled:opacity-50`}
         title="Add the shows in an OPML file from another podcast app to your favorites."
       >
         {busy ? 'looking up shows…' : '⇧ import OPML'}
@@ -198,16 +203,16 @@ export function OpmlImport() {
           <FeedDetails label="not looked up — try again" feeds={plan.unreachable} />
           <span className="flex gap-2">
             {plan.add.length > 0 && (
-              <button type="button" onClick={apply} disabled={busy || waiting} className="btn-mini disabled:opacity-50">
+              <button type="button" onClick={apply} disabled={busy || waiting} className="btn text-xs disabled:opacity-50">
                 add {plan.add.length} show{plan.add.length === 1 ? '' : 's'}
               </button>
             )}
             {plan.unreachable.length > 0 && (
-              <button type="button" onClick={retryUnreachable} disabled={busy} className="btn-mini disabled:opacity-50">
+              <button type="button" onClick={retryUnreachable} disabled={busy} className="btn-ghost text-xs disabled:opacity-50">
                 {busy ? 'looking up…' : 'try again'}
               </button>
             )}
-            <button type="button" onClick={() => { setPlan(null); setParsedFeeds(null); }} className="btn-mini">
+            <button type="button" onClick={() => { setPlan(null); setParsedFeeds(null); }} className="btn-ghost text-xs">
               {plan.add.length ? 'cancel' : 'close'}
             </button>
           </span>
