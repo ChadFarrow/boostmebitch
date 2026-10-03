@@ -5,7 +5,7 @@ import { BRAND } from '@/lib/brand';
 import { requestFavoritesSync } from '@/lib/nostr';
 import { buildOpml, MAX_OPML_BYTES, opmlFilename, parseOpml, type OpmlFeed } from '@/lib/feed-xml';
 import {
-  resolvePodcastByFeedUrl, resolvePodcastByGuid, warmPodcastCache,
+  podcastLookupAnswered, resetPiBreaker, resolvePodcastByFeedUrl, resolvePodcastByGuid, warmPodcastCache,
 } from '@/lib/podcast-meta';
 import { getErrorMessage, mapLimit } from '@/lib/util';
 import { favoriteFromPodcast } from '@/components/fav-heart';
@@ -29,6 +29,10 @@ import type { FavoritePodcast } from '@/lib/types';
  *  - **A feed Podcast Index cannot find is REPORTED, never dropped unseen.**
  *    A favorite is keyed by `podcastGuid`, so an unindexed feed cannot be
  *    saved; the preview lists it by name.
+ *  - **"Could not ask" is not "not found".** The resolvers return `null` for an
+ *    open breaker, a 5xx, a 429/408 and offline too; `podcastLookupAnswered`
+ *    separates those, so an outage is reported as one and can be retried
+ *    rather than reading as a file full of unindexed feeds.
  */
 export function OpmlTools() {
   return (
@@ -55,17 +59,24 @@ function ExportOpml() {
       // than leave the show out of the file.
       const missing = favs.filter((f) => !f.url).map((f) => f.podcastGuid);
       if (missing.length) await warmPodcastCache(missing);
+      let unreachable = 0;
       const rows = await mapLimit(favs, RESOLVE_FANOUT, async (f) => {
         if (f.url) return { url: f.url, title: f.title };
         const p = await resolvePodcastByGuid(f.podcastGuid).catch(() => null);
-        return p?.url ? { url: p.url, title: f.title ?? p.title } : null;
+        if (p?.url) return { url: p.url, title: f.title ?? p.title };
+        if (!podcastLookupAnswered({ guid: f.podcastGuid })) unreachable++;
+        return null;
       });
       const feeds = rows
         .filter((r): r is { url: string; title: string | undefined } => !!r)
         .sort((a, b) => (a.title ?? a.url).localeCompare(b.title ?? b.url));
-      const lost = favs.length - feeds.length;
+      const noUrl = favs.length - feeds.length - unreachable;
+      const lostText = [
+        noUrl ? `${noUrl} had no feed URL` : '',
+        unreachable ? `${unreachable} could not be looked up (Podcast Index did not answer — try again later)` : '',
+      ].filter(Boolean).join('; ');
       if (!feeds.length) {
-        setMsg({ tone: 'no', text: favs.length ? 'no saved show has a feed URL' : 'no saved shows' });
+        setMsg({ tone: 'no', text: favs.length ? lostText : 'no saved shows' });
         return;
       }
       const now = new Date();
@@ -83,7 +94,7 @@ function ExportOpml() {
       setMsg({
         tone: 'ok',
         text: `exported ${feeds.length} show${feeds.length === 1 ? '' : 's'}`
-          + (lost ? `; ${lost} had no feed URL and were left out` : '')
+          + (lostText ? `; left out: ${lostText}` : '')
           + '. Episode favorites are not part of OPML.',
       });
     } catch (e) {
@@ -116,8 +127,43 @@ function ExportOpml() {
 interface ImportPlan {
   add: FavoritePodcast[];
   already: number;
+  /** Podcast Index answered: it does not hold this feed. */
   notFound: OpmlFeed[];
+  /** Podcast Index holds the feed but gives it no `podcast:guid` to key a favorite by. */
+  noGuid: OpmlFeed[];
+  /** Nothing answered (breaker open, 5xx, 429/408, offline) — retryable, says nothing about the feed. */
+  unreachable: OpmlFeed[];
   skipped: number;
+}
+
+/**
+ * Resolve each feed URL and sort it into the preview's buckets. Nothing here
+ * touches the store; `apply()` is the only writer.
+ */
+async function planImport(feeds: OpmlFeed[], skipped: number): Promise<ImportPlan> {
+  // The batch route splits its list on commas, so a URL holding one goes
+  // through the single lookup below instead of the warm pass.
+  await warmPodcastCache(feeds.filter((f) => !f.url.includes(',')).map((f) => `url:${f.url}`));
+  const found = await mapLimit(feeds, RESOLVE_FANOUT, (f) =>
+    resolvePodcastByFeedUrl(f.url).catch(() => null));
+  const current = useApp.getState().favorites;
+  const next: ImportPlan = { add: [], already: 0, notFound: [], noGuid: [], unreachable: [], skipped };
+  const planned = new Set<string>();
+  feeds.forEach((f, i) => {
+    const p = found[i];
+    const guid = p?.podcastGuid;
+    if (!p) {
+      (podcastLookupAnswered({ feedUrl: f.url }) ? next.notFound : next.unreachable).push(f);
+    } else if (!guid) {
+      next.noGuid.push(f);
+    } else if (current[guid] || planned.has(guid)) {
+      next.already++;
+    } else {
+      planned.add(guid);
+      next.add.push(favoriteFromPodcast(p, guid));
+    }
+  });
+  return next;
 }
 
 function ImportOpml() {
@@ -128,6 +174,8 @@ function ImportOpml() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [plan, setPlan] = useState<ImportPlan | null>(null);
+  // Kept so the unreachable rows can be retried without choosing the file again.
+  const [parsedFeeds, setParsedFeeds] = useState<{ feeds: OpmlFeed[]; skipped: number } | null>(null);
   const [msg, setMsg] = useState<{ tone: 'ok' | 'no'; text: string } | null>(null);
 
   async function chosen(file: File | undefined) {
@@ -149,27 +197,8 @@ function ImportOpml() {
         setMsg({ tone: 'no', text: 'the file lists no podcast feeds' });
         return;
       }
-      // The batch route splits its list on commas, so a URL holding one goes
-      // through the single lookup below instead of the warm pass.
-      await warmPodcastCache(parsed.feeds.filter((f) => !f.url.includes(',')).map((f) => `url:${f.url}`));
-      const found = await mapLimit(parsed.feeds, RESOLVE_FANOUT, (f) =>
-        resolvePodcastByFeedUrl(f.url).catch(() => null));
-      const current = useApp.getState().favorites;
-      const next: ImportPlan = { add: [], already: 0, notFound: [], skipped: parsed.skipped };
-      const planned = new Set<string>();
-      parsed.feeds.forEach((f, i) => {
-        const p = found[i];
-        const guid = p?.podcastGuid;
-        if (!p || !guid) {
-          next.notFound.push(f);
-        } else if (current[guid] || planned.has(guid)) {
-          next.already++;
-        } else {
-          planned.add(guid);
-          next.add.push(favoriteFromPodcast(p, guid));
-        }
-      });
-      setPlan(next);
+      setParsedFeeds({ feeds: parsed.feeds, skipped: parsed.skipped });
+      setPlan(await planImport(parsed.feeds, parsed.skipped));
     } catch (e) {
       setMsg({ tone: 'no', text: getErrorMessage(e, 'the file could not be read') });
     } finally {
@@ -179,9 +208,34 @@ function ImportOpml() {
     }
   }
 
+  async function retryUnreachable() {
+    if (!parsedFeeds) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      // An explicit retry is what `resetPiBreaker` exists for: it also drops
+      // the negatives an open breaker left behind.
+      resetPiBreaker();
+      setPlan(await planImport(parsedFeeds.feeds, parsedFeeds.skipped));
+    } catch (e) {
+      setMsg({ tone: 'no', text: getErrorMessage(e, 'the lookup failed') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function apply() {
     if (!plan) return;
-    const current = useApp.getState().favorites;
+    // The button is disabled on the same condition, but a read can START
+    // between render and press — a degraded read retries on window `focus`,
+    // which closing the file picker fires. Painting into the store under an
+    // in-flight hydrate is what the header's second rule forbids.
+    const s = useApp.getState();
+    if (s.identity && (s.favoritesSync === 'idle' || s.favoritesSync === 'loading')) {
+      setMsg({ tone: 'no', text: 'your favorites are still loading — press add again once they have' });
+      return;
+    }
+    const current = s.favorites;
     // One entry at a time through the same action the heart uses. An entry
     // that appeared since the preview is left as it is.
     let added = 0;
@@ -221,25 +275,27 @@ function ImportOpml() {
           <span>
             {plan.add.length} new · {plan.already} already saved · {plan.notFound.length} not
             found in Podcast Index
+            {plan.noGuid.length ? ` · ${plan.noGuid.length} with no podcast:guid` : ''}
+            {plan.unreachable.length
+              ? ` · ${plan.unreachable.length} not looked up (Podcast Index did not answer)`
+              : ''}
             {plan.skipped ? ` · ${plan.skipped} skipped (not an http or https feed URL)` : ''}
           </span>
-          {plan.notFound.length > 0 && (
-            <details>
-              <summary className="btn-inline cursor-pointer">shows that cannot be added</summary>
-              <ul className="mt-1 list-disc pl-4">
-                {plan.notFound.map((f) => (
-                  <li key={f.url} className="break-all">{f.title ? `${f.title} — ${f.url}` : f.url}</li>
-                ))}
-              </ul>
-            </details>
-          )}
+          <FeedDetails label="not in Podcast Index" feeds={plan.notFound} />
+          <FeedDetails label="in Podcast Index but with no podcast:guid" feeds={plan.noGuid} />
+          <FeedDetails label="not looked up — try again" feeds={plan.unreachable} />
           <span className="flex gap-2">
             {plan.add.length > 0 && (
-              <button type="button" onClick={apply} className="btn-mini">
+              <button type="button" onClick={apply} disabled={busy || waiting} className="btn-mini disabled:opacity-50">
                 add {plan.add.length} show{plan.add.length === 1 ? '' : 's'}
               </button>
             )}
-            <button type="button" onClick={() => setPlan(null)} className="btn-mini">
+            {plan.unreachable.length > 0 && (
+              <button type="button" onClick={retryUnreachable} disabled={busy} className="btn-mini disabled:opacity-50">
+                {busy ? 'looking up…' : 'try again'}
+              </button>
+            )}
+            <button type="button" onClick={() => { setPlan(null); setParsedFeeds(null); }} className="btn-mini">
               {plan.add.length ? 'cancel' : 'close'}
             </button>
           </span>
@@ -251,5 +307,19 @@ function ImportOpml() {
         </span>
       )}
     </span>
+  );
+}
+
+function FeedDetails({ label, feeds }: { label: string; feeds: OpmlFeed[] }) {
+  if (!feeds.length) return null;
+  return (
+    <details>
+      <summary className="btn-inline cursor-pointer">{label} ({feeds.length})</summary>
+      <ul className="mt-1 list-disc pl-4">
+        {feeds.map((f) => (
+          <li key={f.url} className="break-all">{f.title ? `${f.title} — ${f.url}` : f.url}</li>
+        ))}
+      </ul>
+    </details>
   );
 }

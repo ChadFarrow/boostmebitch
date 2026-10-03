@@ -324,6 +324,17 @@ export function resolvePodcastByFeedUrl(feedUrl: string): Promise<Podcast | null
   return resolveVia(`url:${feedUrl}`, `url=${encodeURIComponent(feedUrl)}`);
 }
 
+/**
+ * Was the last lookup of this feed URL / guid ANSWERED? Both resolvers return
+ * `null` for "PI does not hold it" AND for "we could not ask" (breaker open,
+ * 5xx, 429/408, offline). Only the first is cached, so presence in `podcastMem`
+ * is the discriminator — a surface that tells the user "not in Podcast Index"
+ * must ask this first, or an outage reads as a list of unindexed feeds.
+ */
+export function podcastLookupAnswered(by: { feedUrl: string } | { guid: string }): boolean {
+  return podcastMem.has('feedUrl' in by ? `url:${by.feedUrl}` : by.guid);
+}
+
 // --- episodes --------------------------------------------------------------
 //
 // Same four guards for `/api/episode-by-guid`, sharing the breaker with the
