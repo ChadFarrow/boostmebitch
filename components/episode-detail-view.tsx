@@ -111,6 +111,8 @@ export function EpisodeDetailView() {
     s.current && s.selectedEpisode && s.current.episode.id === s.selectedEpisode.id ? s.positionSec : 0,
   );
   const openDiscussion = useApp((s) => s.openDiscussion);
+  const identity = useApp((s) => s.identity);
+  const setSignInOpen = useApp((s) => s.setSignInOpen);
 
   const [boostFor, setBoostFor] = useState<Episode | null>(null);
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
@@ -131,6 +133,11 @@ export function EpisodeDetailView() {
     hasValueRecipients(payableValue(episode, podcast)),
   );
   const [infoTab, setInfoTab] = useState<InfoTab>('notes');
+  // Set by COMMENT, cleared by the comment box once it has scrolled into view
+  // and taken focus. A flag rather than a counter: the feed mounts only while
+  // its tab is open, so a counter still set from last time would re-focus the
+  // box on every later visit to the tab.
+  const [commentFocus, setCommentFocus] = useState(false);
   // `useId()`: this view and `<FullscreenPlayer>` can be mounted at the same
   // time, and both strips would otherwise emit the same tab ids.
   const infoTabsId = useId();
@@ -227,6 +234,19 @@ export function EpisodeDetailView() {
     : t === 'boosts' ? (hasValue ? 'Boosts' : 'Comments')
     : 'Show notes';
 
+  // COMMENT: the Comments tab, scrolled to its box with the cursor in it. The
+  // box needs the episode guid to tag, which is also what gates the tab.
+  // Signed out there is nothing to type into, so it asks for the sign-in.
+  const canComment = !!episode.guid;
+  const openComment = () => {
+    setInfoTab('boosts');
+    if (!identity) {
+      setSignInOpen(true);
+      return;
+    }
+    setCommentFocus(true);
+  };
+
   const transcriptActiveIdx = isThisPlaying ? transcriptIndexAt(transcriptCues, positionSec) : -1;
 
   // Jump playback to a timestamp from a chapter/transcript tap. If this episode
@@ -302,7 +322,7 @@ export function EpisodeDetailView() {
           <button
             type="button"
             onClick={handlePlay}
-            className={`h-11 w-full ${isThisPlaying ? 'btn-bolt-soft' : 'btn'} ${hasValue ? '' : 'col-span-2'}`}
+            className={`h-11 w-full ${isThisPlaying ? 'btn-bolt-soft' : 'btn'} ${hasValue || canComment ? '' : 'col-span-2'}`}
             aria-label={isThisPlaying && isPlaying ? 'Pause' : isThisPlaying ? 'Resume' : saved ? `Resume at ${fmt(saved.t)}` : 'Play'}
           >
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : saved ? `▶ RESUME ${fmt(saved.t)}` : '▶ PLAY'}
@@ -315,6 +335,20 @@ export function EpisodeDetailView() {
               aria-label="Boost this episode"
             >
               <BoltIcon /> BOOST
+            </button>
+          )}
+          {/* A show with no value block takes no boosts, so COMMENT is the
+              second primary — the column BOOST holds on a value show, which
+              PLAY otherwise spanned. On a value show it is a tile below:
+              three primaries do not fit a 390px row. */}
+          {!hasValue && canComment && (
+            <button
+              type="button"
+              onClick={openComment}
+              className="btn-nostr h-11 w-full"
+              aria-label="Comment on this episode"
+            >
+              <span aria-hidden>💬</span> COMMENT
             </button>
           )}
         </div>
@@ -331,6 +365,16 @@ export function EpisodeDetailView() {
           {/* Beside the heart and never merged with it: ♡ is a FAVORITE in
               this app's synced list, 👍 is a public kind:17 other apps count. */}
           <EpisodeLikeButton episode={episode} podcast={podcast} />
+          {hasValue && canComment && (
+            <button
+              type="button"
+              onClick={openComment}
+              className="tile hover:border-nostr/70 hover:text-nostr"
+              aria-label="Comment on this episode"
+            >
+              <span aria-hidden className="text-lg leading-none">💬</span> COMMENT
+            </button>
+          )}
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
           <PlayedButton episode={episode} podcast={podcast} />
           <EpisodeShareButton episode={episode} podcast={podcast} />
@@ -563,7 +607,13 @@ export function EpisodeDetailView() {
                 height and yank the scroll position up when you open this tab. */}
             {activeInfo === 'boosts' && episode.guid && (
               <div className="min-h-[70vh]">
-                <EpisodeNostrFeed episode={episode} episodeGuid={episode.guid} podcast={podcast} />
+                <EpisodeNostrFeed
+                  episode={episode}
+                  episodeGuid={episode.guid}
+                  podcast={podcast}
+                  focusComment={commentFocus}
+                  onCommentFocused={() => setCommentFocus(false)}
+                />
               </div>
             )}
             </div>

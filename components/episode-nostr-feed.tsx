@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchEpisodeNotes,
   useVisibleNotes,
@@ -36,11 +36,17 @@ export function EpisodeNostrFeed({
   episode,
   episodeGuid,
   podcast,
+  focusComment = false,
+  onCommentFocused,
 }: {
   episode: Episode;
   /** `episode.guid`, checked present by the caller. */
   episodeGuid: string;
   podcast: Podcast;
+  /** The page's COMMENT button asked for the box: scroll to it and focus it. */
+  focusComment?: boolean;
+  /** Called once that is done, so the request is not replayed on a remount. */
+  onCommentFocused?: () => void;
 }) {
   const { notes, loading, err, refresh, addLocal } = useNostrFeed({
     cacheKey: `episode:${episodeGuid}`,
@@ -68,6 +74,8 @@ export function EpisodeNostrFeed({
             episodeGuid={episodeGuid}
             podcast={podcast}
             onPublished={addLocal}
+            focus={focusComment}
+            onFocused={onCommentFocused}
           />
         }
         notes={visibleNotes}
@@ -90,11 +98,15 @@ function EpisodeCommentBox({
   episodeGuid,
   podcast,
   onPublished,
+  focus,
+  onFocused,
 }: {
   episode: Episode;
   episodeGuid: string;
   podcast: Podcast;
   onPublished: (note: DiscoveredNote) => void;
+  focus: boolean;
+  onFocused?: () => void;
 }) {
   const identity = useApp((s) => s.identity);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
@@ -115,6 +127,17 @@ function EpisodeCommentBox({
     setErr(null);
     setSentAt(null);
   }, [episodeGuid]);
+
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!focus || !box) return;
+    box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // `preventScroll`: the smooth scroll above does the moving, and a focus
+    // that jumped first would cut it off.
+    box.querySelector('textarea')?.focus({ preventScroll: true });
+    onFocused?.();
+  }, [focus, onFocused]);
 
   if (!identity) {
     return (
@@ -152,7 +175,7 @@ function EpisodeCommentBox({
   }
 
   return (
-    <div className="mb-4">
+    <div ref={boxRef} className="mb-4">
       <MessageInput
         value={draft}
         onChange={(v) => {

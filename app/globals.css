@@ -145,6 +145,17 @@ body::before {
        yellow button background. */
     font-variant-emoji: text;
   }
+  /* The Nostr twin of .btn-bolt: the episode page's COMMENT primary, which
+     takes BOOST's column on a show with no value block. Same shape, so the two
+     read as the same kind of action; magenta because a comment is a Nostr note
+     and pays nothing. `font-variant-emoji: text` for the same reason as above —
+     the colour 💬 would otherwise sit on the fill in its own colours. */
+  .btn-nostr {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
+           border border-nostr bg-nostr text-ink transition
+           hover:bg-bone hover:border-bone active:translate-y-px;
+    font-variant-emoji: text;
+  }
   /* "Active / current" variant of .btn-bolt — amber outline + faint wash +
      amber text, transparent-ish so the amber reads on the dark page. Used for a
      toggle whose ON state is the current item (e.g. the detail-view
