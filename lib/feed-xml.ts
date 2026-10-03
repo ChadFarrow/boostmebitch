@@ -804,17 +804,46 @@ export type OpmlParse =
  * An http(s) URL that `new URL` accepts, or undefined. A feed URL is later
  * sent to Podcast Index and rendered, so anything else — `javascript:`,
  * `file:`, a relative path — is dropped here, at the parse boundary.
+ *
+ * **Returned AS WRITTEN, never as `new URL(s).href`.** Podcast Index's
+ * `/podcasts/byfeedurl` is an exact match on the string it crawled, and it
+ * stores some feeds with literal spaces (`…/masters scroll/pubfeed.xml`).
+ * `.href` rewrites each space as `%20`, and those shows came back "not found"
+ * from a real Fountain export. The scheme test is on the literal prefix, and
+ * control characters are refused, because `new URL` silently strips a tab or
+ * newline — `java\tscript:` parses as `javascript:` — so validating the parsed
+ * form while returning the raw one would test a different string.
  */
 function opmlFeedUrl(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
-  const s = decodeXmlText(raw);
+  const s = decodeXmlText(raw).trim();
   if (!s || s.length > MAX_OPML_URL_LEN) return undefined;
+  if (!/^https?:\/\//i.test(s) || /[\x00-\x1f\x7f]/.test(s)) return undefined;
   try {
     const u = new URL(s);
-    return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : undefined;
+    return u.protocol === 'http:' || u.protocol === 'https:' ? s : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Other spellings of the same feed URL to try when Podcast Index answers "not
+ * found" for the one in the file: percent-decoded, and percent-encoded. A
+ * Fountain export writes `…/12%20Rods/feed.xml` for a feed PI holds as
+ * `…/12 Rods/feed.xml`, and another writes the space where PI holds `%20`.
+ * Never includes `url` itself; empty when there is nothing else to try.
+ */
+export function opmlUrlVariants(url: string): string[] {
+  let decoded = url;
+  try {
+    decoded = decodeURI(url);
+  } catch {
+    // A stray `%` that is not an escape. Nothing to decode.
+  }
+  const out = new Set([decoded, encodeURI(decoded)]);
+  out.delete(url);
+  return [...out];
 }
 
 /**

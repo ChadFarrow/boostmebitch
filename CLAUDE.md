@@ -117,7 +117,7 @@ npm run dev / build / start / lint
 | `check:likes` | `tallyLikes`, `likeTags`, `unlikeTags` (`lib/nostr/like-tally.ts`) | a like Fountain cannot count, or anyone can un-like anyone |
 | `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards, or a second boost hidden |
 | `check:deletions` | `deletedNoteIds` — feed NIP-09 | strangers hide boosts |
-| `check:opml` | `parseOpml` | an imported feed silently lost |
+| `check:opml` | `parseOpml`, `opmlUrlVariants` | an imported feed silently lost |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 

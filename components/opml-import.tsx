@@ -2,7 +2,7 @@
 import { useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { requestFavoritesSync } from '@/lib/nostr';
-import { MAX_OPML_BYTES, parseOpml, type OpmlFeed } from '@/lib/feed-xml';
+import { MAX_OPML_BYTES, opmlUrlVariants, parseOpml, type OpmlFeed } from '@/lib/feed-xml';
 import {
   podcastLookupAnswered, resetPiBreaker, resolvePodcastByFeedUrl, warmPodcastCache,
 } from '@/lib/podcast-meta';
@@ -58,6 +58,20 @@ async function planImport(feeds: OpmlFeed[], skipped: number): Promise<ImportPla
   await warmPodcastCache(feeds.filter((f) => !f.url.includes(',')).map((f) => `url:${f.url}`));
   const found = await mapLimit(feeds, RESOLVE_FANOUT, (f) =>
     resolvePodcastByFeedUrl(f.url).catch(() => null));
+  // PI matches the feed URL EXACTLY, and the file's spelling is not always
+  // PI's: a space written `%20`, or the reverse. Only an ANSWERED miss is
+  // retried — "could not ask" stays in its own bucket — and in series per
+  // feed, so the fan-out stays RESOLVE_FANOUT.
+  await mapLimit(feeds.map((f, i) => ({ f, i })), RESOLVE_FANOUT, async ({ f, i }) => {
+    if (found[i] || !podcastLookupAnswered({ feedUrl: f.url })) return;
+    for (const alt of opmlUrlVariants(f.url)) {
+      const p = await resolvePodcastByFeedUrl(alt).catch(() => null);
+      if (p) {
+        found[i] = p;
+        return;
+      }
+    }
+  });
   const current = useApp.getState().favorites;
   const next: ImportPlan = { add: [], already: 0, notFound: [], noGuid: [], unreachable: [], skipped };
   const planned = new Set<string>();
