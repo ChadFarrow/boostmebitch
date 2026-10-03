@@ -20,6 +20,17 @@ import { DEFAULT_RELAYS } from './relays';
  * → docs/nostr.md, "Episode likes".
  */
 
+/**
+ * How a like or unlike is published: **resolved on the FIRST relay that
+ * accepts** (`settle: 'first'`). The tile changes only once this resolves, and
+ * waiting on all of the up-to-20 publish relays let the slowest one hold it for
+ * seconds after another had already stored the event. One acceptance is what
+ * `assertPublished` asks for; the rest finish in the background.
+ */
+function likePublishOpts(signal: AbortSignal | undefined, onSigned: (() => void) | undefined) {
+  return { signal, onSigned, settle: 'first' as const };
+}
+
 export interface EpisodeLikesRead {
   /** Every kind:17 AND kind:5 the read returned, deduped by id. The tally
    *  decides what counts — this does not filter. */
@@ -97,8 +108,10 @@ export async function publishEpisodeLike(args: {
   relays: string[];
   /** Stops the wait for the signer; see `signAndPublish`. */
   signal?: AbortSignal;
+  /** The signer has answered; only the relays are left. */
+  onSigned?: () => void;
 }): Promise<PublishedNote> {
-  const { itemGuid, feedGuid, relays, signal } = args;
+  const { itemGuid, feedGuid, relays, signal, onSigned } = args;
   const template: EventTemplate = {
     kind: EXTERNAL_REACTION_KIND,
     created_at: Math.floor(Date.now() / 1000),
@@ -115,7 +128,7 @@ export async function publishEpisodeLike(args: {
       clientTag(),
     ],
   };
-  return assertPublished(await signAndPublish(template, relays, { signal }), 'like');
+  return assertPublished(await signAndPublish(template, relays, likePublishOpts(signal, onSigned)), 'like');
 }
 
 /**
@@ -133,13 +146,15 @@ export async function publishEpisodeUnlike(args: {
   relays: string[];
   /** Stops the wait for the signer; see `signAndPublish`. */
   signal?: AbortSignal;
+  /** The signer has answered; only the relays are left. */
+  onSigned?: () => void;
 }): Promise<PublishedNote> {
-  const { itemGuid, likeIds, relays, signal } = args;
+  const { itemGuid, likeIds, relays, signal, onSigned } = args;
   const template: EventTemplate = {
     kind: DELETION_KIND,
     created_at: Math.floor(Date.now() / 1000),
     content: '',
     tags: [...unlikeTags(likeIds, itemGuid), clientTag()],
   };
-  return assertPublished(await signAndPublish(template, relays, { signal }), 'unlike');
+  return assertPublished(await signAndPublish(template, relays, likePublishOpts(signal, onSigned)), 'unlike');
 }

@@ -96,10 +96,18 @@ export function EpisodeLikeButton({ episode, podcast }: { episode: Episode; podc
     setBusy(true);
     setFailure(null);
     const slow = setTimeout(() => setWaiting(true), SIGNER_WAIT_MS);
+    // WAITING names the SIGNER, so it ends when the signer answers. It used to
+    // run until the slowest publish relay had settled too, and told a Clave user
+    // with full approval that their signer was slow while a relay was. The tile
+    // stays busy through the publish, which now ends on the first acceptance.
+    const onSigned = () => {
+      clearTimeout(slow);
+      setWaiting(false);
+    };
     try {
       const signal = controller.signal;
-      if (liked) await unlikeEpisode({ itemGuid: itemGuid!, likeIds: tally!.viewerLikeIds, identity, signal });
-      else await likeEpisode({ itemGuid: itemGuid!, feedGuid: feedGuid!, identity, signal });
+      if (liked) await unlikeEpisode({ itemGuid: itemGuid!, likeIds: tally!.viewerLikeIds, identity, signal, onSigned });
+      else await likeEpisode({ itemGuid: itemGuid!, feedGuid: feedGuid!, identity, signal, onSigned });
     } catch (err) {
       // A guard that silently withholds must say so: the tile keeps its state,
       // and says why under itself rather than in the console.

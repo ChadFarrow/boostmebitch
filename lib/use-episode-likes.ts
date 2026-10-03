@@ -173,9 +173,11 @@ export async function likeEpisode(args: {
   feedGuid: string;
   identity: NostrIdentity;
   signal?: AbortSignal;
+  /** The signer has answered; only the relays are left. */
+  onSigned?: () => void;
 }): Promise<void> {
   const relays = resolvePublishRelays(args.identity);
-  const note = await publishEpisodeLike({ itemGuid: args.itemGuid, feedGuid: args.feedGuid, relays, signal: args.signal });
+  const note = await publishEpisodeLike({ itemGuid: args.itemGuid, feedGuid: args.feedGuid, relays, signal: args.signal, onSigned: args.onSigned });
   addMine(args.itemGuid, note.event, relays);
 }
 
@@ -185,9 +187,11 @@ export async function unlikeEpisode(args: {
   likeIds: readonly string[];
   identity: NostrIdentity;
   signal?: AbortSignal;
+  /** The signer has answered; only the relays are left. */
+  onSigned?: () => void;
 }): Promise<void> {
   const relays = resolvePublishRelays(args.identity);
-  const note = await publishEpisodeUnlike({ itemGuid: args.itemGuid, likeIds: args.likeIds, relays, signal: args.signal });
+  const note = await publishEpisodeUnlike({ itemGuid: args.itemGuid, likeIds: args.likeIds, relays, signal: args.signal, onSigned: args.onSigned });
   addMine(args.itemGuid, note.event, relays);
 }
 
