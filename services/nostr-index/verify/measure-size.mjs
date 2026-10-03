@@ -24,7 +24,7 @@ const N_EPISODES = Math.round(6700  * SCALE);
 
 const db = getPool(DATABASE_URL);
 await migrate(DATABASE_URL);
-await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state cascade');
+await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state, deletion_requests cascade');
 
 // A pool of authors, so tracked_pubkeys and profiles are realistically sized
 // rather than one key per note.

@@ -116,7 +116,8 @@ DATABASE_URL=postgres://... npm run verify   # all three
   endpoint, and the three-state Podcast Index answer.
 - **`verify/check-indexer.mjs`** runs the indexer against a scripted local relay
   (`verify/mock-relay.mjs`) — backfill paging and resume, live delivery, a
-  deletion arriving after its note, a deletion from the wrong author, and a
+  deletion arriving after its note, one arriving BEFORE it (and racing it),
+  a deletion from the wrong author, and a
   relay pushing kinds nobody subscribed to.
 
 ## The three-state Podcast Index answer
