@@ -182,7 +182,7 @@ export function OpmlImport({ standalone = false }: { standalone?: boolean }) {
         className={`${standalone ? 'btn-ghost text-xs' : 'btn-mini'} disabled:opacity-50`}
         title="Add the shows in an OPML file from another podcast app to your favorites."
       >
-        {busy ? 'looking up shows…' : '⇧ import OPML'}
+        {busy ? 'looking up shows…' : '⇩ import OPML'}
       </button>
       {waiting && !busy && (
         <span className="text-[11px] text-muted">waiting for your favorites to load</span>
