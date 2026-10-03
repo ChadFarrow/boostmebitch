@@ -773,13 +773,13 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
 
 // ── OPML ────────────────────────────────────────────────────────────────────
 //
-// The subscription list other podcast apps write: one
+// The subscription list other podcast apps read and write: one
 // `<outline type="rss" xmlUrl="…"/>` per show. It lives HERE, not in a module
 // of its own, because the reader must walk the document with `findTags` (a
 // regex walk is O(n²) on a hostile file — see the scanner header) and a
 // separate module importing this one would need an extensionless relative
 // specifier, which `node --experimental-strip-types` cannot load. That is what
-// lets `npm run check:opml` pin the shipping reader.
+// lets `npm run check:opml` pin the shipping reader and writer.
 //
 // Only SHOW favorites travel as OPML. The format has no standard way to name
 // one episode or track, so episode favorites stay on the Nostr list.
@@ -877,4 +877,42 @@ export function parseOpml(text: string): OpmlParse {
     feeds.push(title ? { url, title } : { url });
   }
   return { ok: true, feeds, skipped };
+}
+
+function escapeXmlAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+    // A raw newline in an attribute is normalized to a space by every XML
+    // reader; say so rather than let the reader decide.
+    .replace(/[\r\n\t]/g, ' ');
+}
+
+/** An OPML 2.0 document listing `feeds`, in the order given. */
+export function buildOpml(feeds: OpmlFeed[], meta: { title: string; dateCreated: Date }): string {
+  const lines = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<opml version="2.0">',
+    '  <head>',
+    `    <title>${escapeXmlAttr(meta.title)}</title>`,
+    `    <dateCreated>${meta.dateCreated.toUTCString()}</dateCreated>`,
+    '  </head>',
+    '  <body>',
+  ];
+  for (const f of feeds) {
+    const t = escapeXmlAttr(f.title || f.url);
+    lines.push(`    <outline type="rss" text="${t}" title="${t}" xmlUrl="${escapeXmlAttr(f.url)}"/>`);
+  }
+  lines.push('  </body>', '</opml>', '');
+  return lines.join('\n');
+}
+
+/** `<site>-subscriptions-YYYY-MM-DD.opml`. The caller passes `BRAND.domain`. */
+export function opmlFilename(domain: string, date: Date): string {
+  const site = domain.split('.')[0];
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${site}-subscriptions-${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}.opml`;
 }

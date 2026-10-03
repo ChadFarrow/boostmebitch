@@ -153,7 +153,7 @@ function declaredMedium(podcast?: Podcast | null): string | undefined {
 
 /**
  * The ONE place a resolved `Podcast` becomes a show favorite — the heart and
- * the OPML import (`<OpmlImport>`) both build it here, so a field added to one
+ * the OPML import (`<OpmlTools>`) both build it here, so a field added to one
  * cannot go missing from the other.
  */
 export function favoriteFromPodcast(podcast: Podcast, guid: string): FavoritePodcast {
