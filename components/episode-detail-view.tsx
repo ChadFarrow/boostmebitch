@@ -220,7 +220,11 @@ export function EpisodeDetailView() {
   const infoLabel = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
-    : t === 'boosts' ? 'Boosts & comments'
+    // One word, not "Boosts & comments": that label is 171px of a 324px strip
+    // at 390px and cut the tab off on a three-tab episode. A show with no
+    // value block takes no boosts, so its notes are comments; the panel's
+    // own heading names both.
+    : t === 'boosts' ? (hasValue ? 'Boosts' : 'Comments')
     : 'Show notes';
 
   const transcriptActiveIdx = isThisPlaying ? transcriptIndexAt(transcriptCues, positionSec) : -1;
