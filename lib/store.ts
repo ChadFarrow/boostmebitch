@@ -134,6 +134,14 @@ interface AppState {
    * true over an element that never started — the ❚❚-over-silence lie again.
    */
   revealQueue: () => void;
+  /**
+   * Point the player at the episode that was in it when the app was last
+   * open (`bmb:now_playing`), paused, at its saved place — `revealQueue`'s
+   * rules, and asked BEFORE it. Without this a reload always landed on the
+   * queue's head, which is not what somebody was listening to when they
+   * played a feed row or a later queue row.
+   */
+  revealNowPlaying: () => void;
   setListenQueue: (items: QueueItem[]) => void;
   /**
    * Carry a signed-out queue onto an account that has none, at sign-in.
@@ -838,6 +846,17 @@ export const useApp = create<AppState>((set, get) => ({
         // Revealed, not playing — but the press that starts it should land
         // where the listener left it, like any other `play()`.
         positionSec: savedStartSec(head.episode, head.podcast),
+        videoMode: false,
+      };
+    }),
+  revealNowPlaying: () =>
+    set((s) => {
+      if (s.current) return {};
+      const last = storage.nowPlaying.get();
+      if (!last || !isPlayableRow(last.episode) || last.episode.liveStatus) return {};
+      return {
+        current: { episode: last.episode, podcast: last.podcast },
+        positionSec: savedStartSec(last.episode, last.podcast),
         videoMode: false,
       };
     }),

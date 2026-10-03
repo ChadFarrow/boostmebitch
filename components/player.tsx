@@ -14,6 +14,7 @@ import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayHistory } from './player/use-play-history';
+import { useNowPlaying } from './player/use-now-playing';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
 import { artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
@@ -1234,7 +1235,15 @@ export function Player() {
   // null, which is what lets this sit above that return; doing it in the store
   // initializer instead would paint a mini-bar on the client that the server
   // did not, which is a hydration mismatch.
-  useEffect(() => { useApp.getState().revealQueue(); }, []);
+  //
+  // The episode that was in the player comes FIRST: the queue's head is only
+  // the fallback, because it is not what somebody was listening to when they
+  // played a feed row or a later queue row. Each no-ops once `current` is set.
+  useNowPlaying();
+  useEffect(() => {
+    useApp.getState().revealNowPlaying();
+    useApp.getState().revealQueue();
+  }, []);
 
   if (!current) return null;
   const { episode, podcast } = current;
