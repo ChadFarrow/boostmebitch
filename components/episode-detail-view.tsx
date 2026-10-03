@@ -339,8 +339,10 @@ export function EpisodeDetailView() {
           )}
           {/* A show with no value block takes no boosts, so COMMENT is the
               second primary — the column BOOST holds on a value show, which
-              PLAY otherwise spanned. On a value show it is a tile below:
-              three primaries do not fit a 390px row. */}
+              PLAY otherwise spanned. On a value show there is NO comment
+              control up here at all: BOOST is the response that show asks
+              for, and a free COMMENT beside it competes with the payment. The
+              comment box itself stays at the top of the Boosts tab. */}
           {!hasValue && canComment && (
             <button
               type="button"
@@ -365,16 +367,6 @@ export function EpisodeDetailView() {
           {/* Beside the heart and never merged with it: ♡ is a FAVORITE in
               this app's synced list, 👍 is a public kind:17 other apps count. */}
           <EpisodeLikeButton episode={episode} podcast={podcast} />
-          {hasValue && canComment && (
-            <button
-              type="button"
-              onClick={openComment}
-              className="tile hover:border-nostr/70 hover:text-nostr"
-              aria-label="Comment on this episode"
-            >
-              <span aria-hidden className="text-lg leading-none">💬</span> COMMENT
-            </button>
-          )}
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
           <PlayedButton episode={episode} podcast={podcast} />
           <EpisodeShareButton episode={episode} podcast={podcast} />
