@@ -378,7 +378,7 @@ What that looked like in production: every leg of a boost showed **✗**, while 
 
 **A false ✗ is worse than a failed payment**, which is why this is an invariant and not a polish item. It reads as "this didn't send", the obvious response is to boost again, and a re-boost repeats **every** leg — including the ones that already paid. The repo's standing trade — losing sats is recoverable, sending them twice is not — points the same way here as it does at the streaming ledger and the keysend retry rule.
 
-So `mapNwcError` maps `Nip47ReplyTimeoutError` to a typed `NwcIndeterminateError`, `payOne` sets `BoostResult.indeterminate` alongside `ok: false` (false is correct — we hold no preimage and must not claim delivery), and every surface that renders a leg renders three states instead of two: `<SplitsPreview>`, `<LightningStatus>` (which counts them and leads with them, since "go look at your wallet" is the actionable part), `<BoostCard>` for the permanent log, and `BoostAllModal`'s per-track rows plus its summary line.
+So `mapNwcError` maps `Nip47ReplyTimeoutError` to a typed `NwcIndeterminateError`, `payOne` sets `BoostResult.indeterminate` alongside `ok: false` (false is correct — we hold no preimage and must not claim delivery), and every surface that renders a leg renders three states instead of two: `<SplitsPreview>`, `<LightningStatus>` (which counts them and leads with them, since "go look at your wallet" is the actionable part), and `BoostAllModal`'s per-track rows plus its summary line.
 
 Three things not to get wrong:
 

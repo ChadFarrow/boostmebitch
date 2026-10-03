@@ -1683,7 +1683,7 @@ shows up on a screen nobody was looking at.
   [`money-boosts.md`](money-boosts.md) ("A `fee` is inside the split").
 - **`<LegStatusGlyph>`** (`components/leg-status-glyph.tsx`) — the ✓ / ? / ✗
   beside a payment leg was drawn by the split preview, the boost-all modal and
-  the stored `<BoostCard>`, in **three failure colours** (one of them
+  the stored `<BoostCard>` (which no longer lists legs), in **three failure colours** (one of them
   `red-400`, not in the palette), and only two of them could be heard by a
   screen reader. It tests `ok` first and `indeterminate` second, so a leg whose
   wallet never answered can never render ✗ — the mark that talks someone into

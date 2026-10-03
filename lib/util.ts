@@ -2161,7 +2161,7 @@ export function compareEpisodeOrder(
 /**
  * A sent boost's per-recipient legs for the local log, biggest share first.
  *
- * Ordered rather than feed-ordered because `<BoostCard>` renders `legs`
+ * Ordered rather than feed-ordered because a reader of `legs` gets them
  * verbatim and a stored leg carries no `split` weight — whatever order is
  * written here is the order that boost is remembered in, permanently, with no
  * way to re-sort at render time. Feed order meant the history card listed a
