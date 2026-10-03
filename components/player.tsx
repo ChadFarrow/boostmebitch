@@ -499,44 +499,50 @@ export function Player() {
       // escape. Live means live — there is nothing else to resume to.
       const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
 
+      // ONE SEEK AT `loadedmetadata` IS NOT ENOUGH, and an HLS rendition got
+      // none at all. Reported from an iPhone: AUDIO → VIDEO mid-episode
+      // started the picture at 0:00. Buzzsprout publishes its video
+      // `alternateEnclosure` as an `.m3u8`, which takes the HLS branch below —
+      // written for live streams, where there is nothing to resume, so it
+      // never seeked. And Safari can accept an assignment at `loadedmetadata`
+      // and still start at 0:00. So for every video path the start position is
+      // re-checked at `loadedmetadata`, `canplay` and `playing`, and re-applied
+      // while the element is short of it. It stops for good once it has landed,
+      // after `playing` (the last chance before the listener sees the wrong
+      // place), or at the first seek it did not make — a scrub in that window
+      // is the listener's, and wins. A live item has `startAt === 0`, so it
+      // arms nothing.
+      const SEEK_EVENTS = ['loadedmetadata', 'canplay', 'playing'] as const;
+      let landed = startAt <= 0;
+      let ours = false;
+      const seekToStart = (e: Event) => {
+        if (landed) return;
+        if (Math.abs(el.currentTime - startAt) < 2) return doneSeeking();
+        ours = true;
+        el.currentTime = startAt;
+        if (e.type === 'playing') doneSeeking();
+      };
+      const onSeeking = () => {
+        if (ours) { ours = false; return; }
+        doneSeeking();
+      };
+      const doneSeeking = () => {
+        landed = true;
+        for (const ev of SEEK_EVENTS) el.removeEventListener(ev, seekToStart);
+        el.removeEventListener('seeking', onSeeking);
+      };
+      if (!landed) {
+        for (const ev of SEEK_EVENTS) el.addEventListener(ev, seekToStart);
+        el.addEventListener('seeking', onSeeking);
+      }
+
       // A plain progressive video (mp4/webm) — an alternateEnclosure rendition —
       // plays natively; only HLS needs hls.js. isHlsUrl(url) distinguishes them.
       if (!isHlsUrl(url)) {
-        // ONE SEEK AT `loadedmetadata` IS NOT ENOUGH ON iOS. Safari accepts the
-        // assignment there and can still start the picture at 0:00 — reported
-        // from an iPhone as "switching to video mid-episode starts it over".
-        // So the start position is re-checked at `canplay` and `playing` and
-        // re-applied while the element is still short of it. It stops for good
-        // once it has landed, after `playing` (the last chance before the
-        // listener sees the wrong place), or at the first seek it did not make
-        // — a scrub in that window is the listener's, and wins.
-        const SEEK_EVENTS = ['loadedmetadata', 'canplay', 'playing'] as const;
-        let landed = startAt <= 0;
-        let ours = false;
-        const seekToStart = (e: Event) => {
-          if (landed) return;
-          if (Math.abs(el.currentTime - startAt) < 2) return done();
-          ours = true;
-          el.currentTime = startAt;
-          if (e.type === 'playing') done();
-        };
-        const onSeeking = () => {
-          if (ours) { ours = false; return; }
-          done();
-        };
-        const done = () => {
-          landed = true;
-          for (const ev of SEEK_EVENTS) el.removeEventListener(ev, seekToStart);
-          el.removeEventListener('seeking', onSeeking);
-        };
         el.src = url;
-        if (!landed) {
-          for (const ev of SEEK_EVENTS) el.addEventListener(ev, seekToStart);
-          el.addEventListener('seeking', onSeeking);
-        }
         if (isPlayingRef.current) playOrPark(el, () => setPlaying(false));
         return () => {
-          done();
+          doneSeeking();
           el.removeAttribute('src');
           el.load();
         };
@@ -638,6 +644,9 @@ export function Player() {
             liveSyncDurationCount: 4,
             backBufferLength: 90,
             ignorePlaylistParsingErrors: true,
+            // A VOD rendition (an HLS `alternateEnclosure`) loads from where the
+            // audio was, not from fragment 0; -1 is hls.js's own default.
+            startPosition: startAt > 0 ? startAt : -1,
           });
           hls.current = inst;
           inst.loadSource(url);
@@ -718,6 +727,7 @@ export function Player() {
       }
       return () => {
         cancelled = true;
+        doneSeeking();
         reconnectMsg.current = null;
         if (recoverTimer.current) { clearTimeout(recoverTimer.current); recoverTimer.current = null; }
         if (hls.current) {
