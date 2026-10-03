@@ -1,10 +1,12 @@
 'use client';
-import { memo, useEffect, useId, useMemo, useState } from 'react';
+import { memo, useContext, useEffect, useId, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { ModalShell } from './modal-shell';
 import { useConfirm } from './confirm-dialog';
 import {
   isPodcastComment,
+  LocalNoteSink,
+  noteFromEvent,
   resolvePublishRelays,
   shortNpub,
   type DiscoveredNote,
@@ -237,6 +239,9 @@ function NoteCardImpl({
   const [composerMentions, setComposerMentions] = useState<MentionNpub[]>([]);
   const [composerState, setComposerState] = useState<ActionState>('idle');
   const [composerErr, setComposerErr] = useState<string | null>(null);
+  // The feed this card sits in, if any. Without it a reply published here
+  // showed up only after a manual refresh. See LocalNoteSink.
+  const addLocal = useContext(LocalNoteSink);
 
   const alreadyReposted = repostedIds?.has(note.id) ?? false;
   const [repostState, setRepostState] = useState<ActionState>(
@@ -341,20 +346,25 @@ function NoteCardImpl({
     setComposerState('busy');
     setComposerErr(null);
     try {
+      const relays = resolvePublishRelays(identity);
       if (composerMode === 'reply') {
-        await publishReply({
+        const { event } = await publishReply({
           parent: note.rawEvent,
           content: composerDraft.trim(),
-          relays: resolvePublishRelays(identity),
+          relays,
           mentions: composerMentions,
         });
+        addLocal?.(noteFromEvent(event, relays, identity.profile ?? null), note.id);
       } else {
-        await publishQuoteRepost({
+        // A quote is a top-level note of its own (it inherits the NIP-73
+        // tags), so it joins the list rather than this card's thread.
+        const { event } = await publishQuoteRepost({
           parent: note.rawEvent,
           comment: composerDraft,
-          relays: resolvePublishRelays(identity),
+          relays,
           mentions: composerMentions,
         });
+        addLocal?.(noteFromEvent(event, relays, identity.profile ?? null));
       }
       setComposerState('done');
       closeComposer();

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { storage } from '../storage';
 import { noteHasSubstance, type DiscoveredNote } from './discover';
 import { dropBoostEchoes } from './boost-echo';
@@ -68,7 +68,7 @@ export function useNostrFeed({
   loading: boolean;
   err: string | null;
   refresh: () => Promise<void>;
-  addLocal: (note: DiscoveredNote) => void;
+  addLocal: AddLocalNote;
 } {
   const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -87,10 +87,22 @@ export function useNostrFeed({
   // filters by it, because the index pass, a later relay commit, or the cache
   // on the next deps change can each bring one back.
   const deleted = useRef<Set<string>>(new Set());
+  // Replies this device published, re-attached under their parent on EVERY
+  // commit. One insert is not enough: `richer` takes the incoming copy's
+  // `replies` whenever it has any, so a relay pass that answers before the
+  // reply has reached it would carry the parent back without it.
+  const pendingReplies = useRef<PendingReply[]>([]);
 
-  function commit(incoming: DiscoveredNote[], myGen: number): void {
+  // Memoised, and so is `addLocal` below: `addLocal` is the value of
+  // `LocalNoteSink`, and a new function per render would re-render every
+  // `<NoteCard>` in the feed past its `memo`. Everything it reads is a ref, a
+  // state setter or `cacheKey`.
+  const commit = useCallback((incoming: DiscoveredNote[], myGen: number): void => {
     if (myGen !== gen.current) return; // superseded
-    const merged = withoutDeleted(mergeNotes(shown.current, incoming), deleted.current);
+    const merged = withPendingReplies(
+      withoutDeleted(mergeNotes(shown.current, incoming), deleted.current),
+      pendingReplies.current,
+    );
     shown.current = merged;
     setNotes(merged);
     // `loading` means "there is nothing to show yet", NOT "a fetch is running".
@@ -103,7 +115,7 @@ export function useNostrFeed({
     // screen, never take it away, which is what makes an early clear safe.
     setLoading(false);
     storage.feedNotes.set(cacheKey, merged);
-  }
+  }, [cacheKey]);
 
   async function refresh() {
     const myGen = ++gen.current;
@@ -150,6 +162,7 @@ export function useNostrFeed({
 
   useEffect(() => {
     shown.current = [];
+    pendingReplies.current = [];
     const cached = storage.feedNotes.get(cacheKey);
     if (cached) {
       shown.current = withoutDeleted(cached, deleted.current);
@@ -167,13 +180,69 @@ export function useNostrFeed({
   /**
    * Put a note this device just published on screen without waiting for a
    * relay to echo it. Same union as every other commit, so the relay copy that
-   * arrives later merges into it rather than doubling it.
+   * arrives later merges into it rather than doubling it. With `parentId` it is
+   * a reply, nested under that note wherever it sits in the tree.
    */
-  function addLocal(note: DiscoveredNote): void {
-    commit([note], gen.current);
-  }
+  const addLocal = useCallback((note: DiscoveredNote, parentId?: string): void => {
+    if (parentId) {
+      pendingReplies.current = [...pendingReplies.current, { parentId, note }];
+      commit([], gen.current);
+    } else {
+      commit([note], gen.current);
+    }
+  }, [commit]);
 
   return { notes, loading, err, refresh, addLocal };
+}
+
+export type AddLocalNote = (note: DiscoveredNote, parentId?: string) => void;
+
+/**
+ * The feed a `<NoteCard>` sits in, so the card's reply and quote composers can
+ * put what they publish on screen. Without it a reply appeared only after a
+ * manual refresh — the card published it and closed, and nothing told the list.
+ *
+ * Null outside a feed (the `socialInteract` thread keeps its own optimistic
+ * list), and a card treats null as "nothing to tell".
+ */
+export const LocalNoteSink = createContext<AddLocalNote | null>(null);
+
+interface PendingReply {
+  parentId: string;
+  note: DiscoveredNote;
+}
+
+function treeHas(notes: readonly DiscoveredNote[], id: string): boolean {
+  return notes.some((n) => n.id === id || treeHas(n.replies, id));
+}
+
+/** `notes` with `reply` appended under `parentId`, copying only the path to it. */
+function insertReply(notes: DiscoveredNote[], parentId: string, reply: DiscoveredNote): DiscoveredNote[] {
+  let changed = false;
+  const out = notes.map((n) => {
+    if (changed) return n;
+    if (n.id === parentId) {
+      changed = true;
+      return { ...n, replies: [...n.replies, reply] };
+    }
+    const replies = insertReply(n.replies, parentId, reply);
+    if (replies === n.replies) return n;
+    changed = true;
+    return { ...n, replies };
+  });
+  return changed ? out : notes;
+}
+
+/**
+ * Each pending reply whose id is not already in the tree, under its parent. A
+ * reply whose parent is not on screen waits for a commit that brings it.
+ */
+function withPendingReplies(notes: DiscoveredNote[], pending: readonly PendingReply[]): DiscoveredNote[] {
+  let out = notes;
+  for (const { parentId, note } of pending) {
+    if (!treeHas(out, note.id)) out = insertReply(out, parentId, note);
+  }
+  return out;
 }
 
 /**

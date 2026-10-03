@@ -10,6 +10,7 @@ import {
   noteNpubs,
   resolvePublishRelays,
   type DiscoveredNote,
+  LocalNoteSink,
 } from '@/lib/nostr';
 import { publishEpisodeComment } from '@/lib/nostr/interactions';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
@@ -53,30 +54,32 @@ export function EpisodeNostrFeed({
   const visibleNotes = useVisibleNotes(notes, mutedPubkeys);
 
   return (
-    <FeedSection
-      heading={
-        <h3 className="font-display text-lg">
-          <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
-          {episode.title ? <span className="text-muted text-sm"> · {episode.title}</span> : null}
-        </h3>
-      }
-      description={
-        <EpisodeCommentBox
-          episode={episode}
-          episodeGuid={episodeGuid}
-          podcast={podcast}
-          onPublished={addLocal}
-        />
-      }
-      notes={visibleNotes}
-      loading={loading}
-      err={err}
-      emptyMessage="no boosts or comments for this episode on nostr yet — be the first."
-      onRefresh={refresh}
-      renderNote={(n: DiscoveredNote) => (
-        <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
-      )}
-    />
+    <LocalNoteSink.Provider value={addLocal}>
+      <FeedSection
+        heading={
+          <h3 className="font-display text-lg">
+            <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
+            {episode.title ? <span className="text-muted text-sm"> · {episode.title}</span> : null}
+          </h3>
+        }
+        description={
+          <EpisodeCommentBox
+            episode={episode}
+            episodeGuid={episodeGuid}
+            podcast={podcast}
+            onPublished={addLocal}
+          />
+        }
+        notes={visibleNotes}
+        loading={loading}
+        err={err}
+        emptyMessage="no boosts or comments for this episode on nostr yet — be the first."
+        onRefresh={refresh}
+        renderNote={(n: DiscoveredNote) => (
+          <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
+        )}
+      />
+    </LocalNoteSink.Provider>
   );
 }
 

@@ -6,6 +6,7 @@ import {
   indexedPodcastNotes,
   useViewerReposts,
   type DiscoveredNote,
+  LocalNoteSink,
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { FeedSection } from './feed-section';
@@ -28,7 +29,7 @@ export function PodcastNostrFeed({
   episodeGuids?: string[];
 }) {
   const guidsKey = episodeGuids?.join(',') ?? '';
-  const { notes, loading, err, refresh } = useNostrFeed({
+  const { notes, loading, err, refresh, addLocal } = useNostrFeed({
     cacheKey: `podcast:${podcastGuid}`,
     fetcher: (opts) => fetchPodcastNotes(podcastGuid, opts, episodeGuids),
     indexFetcher: () => indexedPodcastNotes(podcastGuid),
@@ -40,22 +41,24 @@ export function PodcastNostrFeed({
   const visibleNotes = useVisibleNotes(notes, mutedPubkeys);
 
   return (
-    <FeedSection
-      className="mt-8"
-      heading={
-        <h3 className="font-display text-lg">
-          <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
-          {podcastTitle ? <span className="text-muted text-sm"> · {podcastTitle}</span> : null}
-        </h3>
-      }
-      notes={visibleNotes}
-      loading={loading}
-      err={err}
-      emptyMessage="no nostr notes tagged this podcast yet — be the first to boost."
-      onRefresh={refresh}
-      renderNote={(n: DiscoveredNote) => (
-        <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
-      )}
-    />
+    <LocalNoteSink.Provider value={addLocal}>
+      <FeedSection
+        className="mt-8"
+        heading={
+          <h3 className="font-display text-lg">
+            <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
+            {podcastTitle ? <span className="text-muted text-sm"> · {podcastTitle}</span> : null}
+          </h3>
+        }
+        notes={visibleNotes}
+        loading={loading}
+        err={err}
+        emptyMessage="no nostr notes tagged this podcast yet — be the first to boost."
+        onRefresh={refresh}
+        renderNote={(n: DiscoveredNote) => (
+          <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
+        )}
+      />
+    </LocalNoteSink.Provider>
   );
 }
