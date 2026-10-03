@@ -129,6 +129,7 @@ const KEYS = {
   deleteAfterPlay: 'bmb:dl_delete_played', // '1' when a podcast episode's download is deleted once it plays to the end; absent = keep (the default). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
   played: 'bmb:played',               // Record<resumeKey, epoch ms> — podcast episodes this device played to the end, capped at PLAYED_CAP newest. DEVICE-wide like bmb:resume, and for the same reason not a cache.
+  nowPlaying: 'bmb:now_playing',      // QueueItem — the episode last in the player, so a reload reopens IT (paused) rather than the queue's head. DEVICE-wide like bmb:resume; the place inside it is bmb:resume's job. Not a cache: nothing can rebuild what was in the player, so deliberately absent from EVICTABLE_PREFIXES.
   playHistory: 'bmb:play_history',    // HistoryItem[] newest first — podcast episodes this device played for a minute, for the Listen tab's HISTORY (boost them later). A LOG capped at PLAY_HISTORY_CAP: the oldest goes. DEVICE-wide like bmb:resume, and not a cache: nothing on the network can rebuild what somebody listened to, so deliberately absent from EVICTABLE_PREFIXES.
 } as const;
 
@@ -1892,6 +1893,31 @@ export const storage = {
       safeSet(KEYS.playHistory, JSON.stringify(v.slice(0, PLAY_HISTORY_CAP))),
     /** A REMOVAL, not a write of `[]` — `listenQueue.clear` says why. */
     clear: () => safeRemove(KEYS.playHistory),
+  },
+
+  /**
+   * The episode last in the player — `revealNowPlaying` puts it back, paused,
+   * on the next load. Without it a reload landed on the listen queue's HEAD
+   * (`revealQueue`), which is not what somebody who tapped a feed row, or a
+   * later queue row, was listening to.
+   *
+   * Stored as a queue item is (`trimForQueue`), and validated on read for the
+   * queue's reason: it is the one input here that does not come from the app.
+   */
+  nowPlaying: {
+    get: (): QueueItem | null => {
+      const raw = safeGet(KEYS.nowPlaying);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw) as QueueItem;
+        return parsed?.episode?.enclosureUrl && typeof parsed?.podcast?.id === 'number'
+          ? parsed
+          : null;
+      } catch {
+        return null;
+      }
+    },
+    set: (v: QueueItem): boolean => safeSet(KEYS.nowPlaying, JSON.stringify(v)),
   },
 
   /**
