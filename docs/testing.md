@@ -84,6 +84,10 @@ those, and a new script imports it rather than pasting a twelfth copy:
   path already exited. `exit` closes every browser first; the `exit`, SIGINT and
   SIGTERM hooks close them on any other way out, and `close()` sweeps `ps` for
   anything still holding the profile before deleting it.
+- **The mini-player bar is `MINI_BAR`** (`[data-mini-player]`), never a label.
+  Five scripts spelled it `[aria-label="Open fullscreen player"]`; #443 took
+  that label off the bar with its `role="button"` (docs/ui.md), and all five
+  went red together, reading as five unrelated app faults.
 
 `checker()` keeps both assertion shapes the scripts already used —
 `equal(label, actual, expected)` and `ok(label, cond, detail)` — so a migrated

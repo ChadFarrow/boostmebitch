@@ -46,7 +46,7 @@
 //
 // The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
 // paths; muted, on a free debug port, and closed on any exit.
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { MINI_BAR, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 
@@ -108,7 +108,7 @@ await send('Page.navigate', { url: `${APP}/?podcast=${POD}&episode=${encodeURICo
 await wait(9000);
 await js(`(() => { const b = [...document.querySelectorAll('button')].find(x => /^\\s*(▶|PLAY)/i.test(x.textContent)); b && b.click(); return !!b; })()`);
 await wait(5000);
-await js(`(() => { const bar = document.querySelector('[aria-label="Open fullscreen player"]'); bar && bar.click(); return !!bar; })()`);
+await js(`(() => { const bar = document.querySelector(${JSON.stringify(MINI_BAR)}); bar && bar.click(); return !!bar; })()`);
 await wait(1500);
 await js(`(() => { document.querySelector('audio').currentTime = ${INSIDE_CHAPTER}; return true; })()`);
 // Long enough for the seek to settle, the chapter art to paint and the buffer

@@ -33,7 +33,7 @@
 // a Chrome left over from an earlier run used to hold the fixed port and the
 // profile, so the new one exited and the assertions quietly attached to the OLD
 // browser's storage. Nothing can attach to a port this run did not choose.
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { MINI_BAR, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 
@@ -984,7 +984,7 @@ console.log(`\n13. A PANE THAT CANNOT LOAD COSTS THE PANE, NOT PLAYBACK`);
   check('it is playing before the tap', !!pre && pre.paused === false, true);
 
   await p3.send('Network.setBlockedURLs', { urls: ['*/_next/static/chunks/*'] });
-  const box = await p3.js(`(() => { const d = document.querySelector('[aria-label="Open fullscreen player"]');
+  const box = await p3.js(`(() => { const d = document.querySelector(${JSON.stringify(MINI_BAR)});
     if (!d) return null; const r = d.getBoundingClientRect();
     return { x: Math.round(r.x + r.width * 0.45), y: Math.round(r.y + 22) }; })()`);
   // A REAL gesture: the bar's inner controls stopPropagation, so element.click()
@@ -1001,7 +1001,7 @@ console.log(`\n13. A PANE THAT CANNOT LOAD COSTS THE PANE, NOT PLAYBACK`);
   }
   const post = await p3.js(`(() => { const a = document.querySelector('audio');
     return { audio: a ? { t: a.currentTime, paused: a.paused } : null,
-             bar: !!document.querySelector('[aria-label="Open fullscreen player"]'),
+             bar: !!document.querySelector(${JSON.stringify(MINI_BAR)}),
              expanded: !!document.querySelector('button[aria-label="Back"]'),
              says: /could not load/i.test(document.body.innerText) }; })()`);
 
@@ -1085,7 +1085,7 @@ console.log(`\n14. THE PLAYER OFFERS A WAY BACK WHEN THE ELEMENT HAS LOST THE PL
   }
   await wait(2000);
 
-  const box4 = await p4.js(`(() => { const d = document.querySelector('[aria-label="Open fullscreen player"]');
+  const box4 = await p4.js(`(() => { const d = document.querySelector(${JSON.stringify(MINI_BAR)});
     if (!d) return null; const r = d.getBoundingClientRect();
     return { x: Math.round(r.x + r.width * 0.45), y: Math.round(r.y + 22) }; })()`);
   if (box4) {

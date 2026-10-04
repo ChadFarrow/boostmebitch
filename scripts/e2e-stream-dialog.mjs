@@ -23,7 +23,7 @@
 //
 // It needs the network: Tinderbox (a `music` album with a value block, so
 // STREAM renders) comes from Podcast Index through the app's routes.
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { MINI_BAR, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 const ALBUM_GUID = '537df90e-0cc4-535b-84d0-dcb3ca87f1f8';
@@ -109,12 +109,12 @@ section('2. In the player, STREAM in the ⋯ menu opens the SAME dialog, on scre
 // ---------------------------------------------------------------------------
 {
   await tap(`document.querySelector('button[aria-label="Play album"]')`);
-  const bar = await until(() => js(`!!document.querySelector('[aria-label="Open fullscreen player"]')`), 15000);
+  const bar = await until(() => js(`!!document.querySelector(${JSON.stringify(MINI_BAR)})`), 15000);
   t.ok('a track is playing, so the player exists', bar, 'no now-playing bar');
   await wait(1500);
   // The bar's inner controls stop propagation, so a synthetic click on the
   // wrapper opens nothing; a pointer press left of centre lands on the title.
-  const box = await js(`(() => { const d = document.querySelector('[aria-label="Open fullscreen player"]'); const r = d.getBoundingClientRect();
+  const box = await js(`(() => { const d = document.querySelector(${JSON.stringify(MINI_BAR)}); const r = d.getBoundingClientRect();
     return { x: Math.round(r.x + r.width * 0.45), y: Math.round(r.y + 22) }; })()`);
   for (const type of ['mousePressed', 'mouseReleased']) {
     await send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 });
