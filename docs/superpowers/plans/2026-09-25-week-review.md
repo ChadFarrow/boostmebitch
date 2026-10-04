@@ -70,9 +70,12 @@ and no fix is written before the cause is found.
   (`serviceInstanceLimits.memoryBytes = 500000000`). Over the 6 h before
   2026-10-04 17:25 EDT the Postgres used 0.487–0.498 GB, which is at the cap;
   watch for OOM restarts.
-- [ ] **`PODCAST_INDEX_SECRET` in the boostmebuddy Vercel project** is flagged
+- [x] **`PODCAST_INDEX_SECRET` in the boostmebuddy Vercel project** is flagged
   `readable-secret`; save it again as a sensitive variable (boostmebitch already is).
-  Still `encrypted` + `readable-secret` for production and preview on 2026-10-04.
+  - 2026-10-04: saved again as `sensitive` (env id `eQdlO6oFQrwpisxS`), targets
+    `production` + `preview` like boostmebitch's, no security issues. The old
+    `encrypted` copies are gone. The running deployment keeps the value it was
+    built with; the next deployment reads the new variable.
 - [x] Delete the merged branch `fix/queued-notes-refetch-loop`. The remote branch
   was already gone; the local copy (`909969f`) was deleted on 2026-10-04.
 
