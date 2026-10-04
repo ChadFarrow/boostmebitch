@@ -15,8 +15,10 @@ and no fix is written before the cause is found.
   window: `npm run typecheck` and `npm run lint` clean; `npm run check` → all 46
   `check:*` PASS, `check:conformance` 28 pass / 3 fail (the expected three).
   The e2e results are quoted under each item: `e2e:queue` OK; `e2e:downloads`,
-  `e2e:resume` and `e2e:seekhover` RED (items 16 and 19). Items that need a
-  phone, a real payment or a live show stay open.
+  `e2e:resume` and `e2e:seekhover` RED (items 16 and 19) — **all three are stale
+  scripts, not app faults** (found the same day; see items 16 and 19 and the
+  follow-up below). Items that need a phone, a real payment or a live show stay
+  open.
 - The zap change landed on 2026-09-16 (#402), a day before the baseline, so the
   payment items start there.
 - A blame scan of every commit's deleted lines in the window found no revert or
@@ -82,6 +84,18 @@ and no fix is written before the cause is found.
     built with; the next deployment reads the new variable.
 - [x] Delete the merged branch `fix/queued-notes-refetch-loop`. The remote branch
   was already gone; the local copy (`909969f`) was deleted on 2026-10-04.
+- [ ] **Fix the stale e2e scripts** (causes in items 16 and 19), on their own
+  branch off `main`:
+  - Five scripts look for `[aria-label="Open fullscreen player"]`, which #443
+    (`9df7342`, an a11y fix, 2026-09-25) moved off the mini-player bar onto the
+    title button as `Open fullscreen player: <title>`: `e2e-seekhover`,
+    `e2e-downloads` (3 places), `e2e-artgate`, `e2e-artbytes`,
+    `e2e-stream-dialog`. The last three were not run on 2026-10-04 and are
+    probably red for the same reason. The bar has no stable hook; the test copy
+    used `div.fixed.z-30.cursor-pointer`, and a `data-` attribute on the bar in
+    `components/player.tsx` would be sturdier.
+  - `e2e-resume`'s `playOtherRow` must skip a disabled Play (a pending live
+    item), and section 2 must accept `▶ RESUME` without the time after #486.
 
 ## The checklist
 
@@ -200,7 +214,7 @@ and no fix is written before the cause is found.
     third reader exists only while the player is open — which is exactly when a boost from the player runs, the
     case `auth-control.tsx` describes. (The refresh is debounced 1.2 s.) Not
     fixed here; a fix gets its own branch.
-- [ ] **16. Downloads re-land and the now-playing redesign** — #421 `b2ed006`:
+- [x] **16. Downloads re-land and the now-playing redesign** — #421 `b2ed006`:
   seven actions behind ⋯, the episode row below `lg` is BOOST + ⋯, lazy panes,
   resume fixes, the `/api/audio` fallback. `e2e:downloads` against `npm start`.
   - 2026-10-04 on `6be0b54` (`npm run build && npm start`): **RED, 8 fails, cause
@@ -212,6 +226,12 @@ and no fix is written before the cause is found.
     taken" and "playback is not interrupted" pass. The script was last edited in
     #461; #485 and #486 changed the player after it. Not yet known whether the
     test or the app is wrong.
+  - **Cause found 2026-10-04: the script, not the app.** Sections 13 and 14 open
+    the fullscreen player by tapping `[aria-label="Open fullscreen player"]`,
+    which #443 removed from the bar, so `box` is `null`, nothing is tapped and
+    nothing after it can pass. The same 8 fails on `59a315b` (#461) and on
+    `83f6c25` (before #485/#486). With only that selector changed, a copy of the
+    script passes on `6be0b54`: `DOWNLOADS E2E OK`, 58 checks.
 - [x] **17. Listen queue** — #422 `909beae`: ⏭/⏮ follow the queue, Up Next left
   the now-playing screen. `e2e:queue`.
   - 2026-10-04: `e2e:queue` → `QUEUE E2E OK` on `6be0b54` (section 8, the
@@ -220,7 +240,7 @@ and no fix is written before the cause is found.
   dropped its PLAYLISTS link. `check:favnew`.
   - 2026-10-04: `check:favnew` PASS on `6be0b54` (after #472 changed a show's
     first check to show its latest episode).
-- [ ] **19. Resume position and seek-bar chapter hover** — #414 `3bf49c0`, #415 `4dcccca`.
+- [x] **19. Resume position and seek-bar chapter hover** — #414 `3bf49c0`, #415 `4dcccca`.
   - 2026-10-04 on `6be0b54`, both **RED, cause not found**:
     - `e2e:resume`, 6 fails. Section 2: the episode page's button reads
       `▶ RESUME`, not `▶ RESUME 5:0x`, while the element did resume at ~5:00.
@@ -236,8 +256,23 @@ and no fix is written before the cause is found.
       (`null`), then `TypeError: Cannot read properties of null (reading
       'ticks')` at `scripts/e2e-seekhover.mjs:99`. The script was last edited in
       #416 (2026-09-18), before #461 restyled the player.
-  - Next step: run the three red suites on `59a315b` (#461, which updated two of
-    them) and bisect to #485 / #486, before any fix.
+  - **Causes found 2026-10-04: the scripts, not the app.** Each suite was run on
+    `59a315b` (#461), on `83f6c25` (just before #485/#486) and on `6be0b54`:
+    - `e2e:seekhover` fails the same way on all three: its `MINI` scope is
+      `[aria-label="Open fullscreen player"]`, removed from the bar by #443. With
+      only that scope changed, a copy passes on `6be0b54` (14 checks).
+    - `e2e:resume` sections 3–4 fail on all three. The show in the test (Bowl
+      After Bowl) now lists a PENDING live item first ("starts Oct 5"), whose
+      Play is correctly disabled ("Not started yet"). `playOtherRow` clicks the
+      first row with a Play button, so it pressed the disabled one, the episode
+      never changed, and every later check followed from that. It depends on
+      the feed's calendar, which is why it passed before.
+    - `e2e:resume` section 2 passes on the two older commits and fails only on
+      `6be0b54`: #486 now puts the episode back in the player after a reload,
+      and the episode page shows `▶ RESUME` with no time for the current
+      episode. Playback still starts at the saved place. An expected change.
+    - With `playOtherRow` skipping a disabled Play and section 2 accepting
+      `▶ RESUME`, a copy passes on `6be0b54` (35 checks).
 - [x] **20. A Podcast Index `0` is no timestamp** — #426 `da21c39`. `check:liveover`, `check:livemerge`.
   - 2026-10-04: both PASS on `6be0b54`.
 - [ ] **21. Controls look like controls** — #427; **one BOOST gate** — #416 `02bbfdb`.
