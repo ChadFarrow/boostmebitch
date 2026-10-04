@@ -96,6 +96,11 @@ and no fix is written before the cause is found.
     `components/player.tsx` would be sturdier.
   - `e2e-resume`'s `playOtherRow` must skip a disabled Play (a pending live
     item), and section 2 must accept `▶ RESUME` without the time after #486.
+  - 2026-10-04: **PR #490** (`test/e2e-mini-bar-selector`, `a38e23a`) — the bar
+    carries `data-mini-player`, `scripts/cdp.mjs` exports it as `MINI_BAR` for
+    all five scripts, and `e2e-resume` is fixed as above. All six suites pass on
+    the branch (resume 36, seekhover 14, downloads 58, artgate 3, artbytes 8,
+    stream-dialog 18). Tick this when it merges.
 
 ## The checklist
 
