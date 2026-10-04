@@ -36,9 +36,13 @@ and no fix is written before the cause is found.
 
 ## Open follow-ups
 
-- [ ] **Phone test for #450.** Force-close the installed app, reopen it, play a
+- [x] **Phone test for #450.** Force-close the installed app, reopen it, play a
   queued episode: taps stay responsive. It is the likely cause of the slow taps
   reported on 2026-09-25.
+  - 2026-10-04: PASSED on the user's iPhone (installed app, force-closed first).
+    A talk episode queued and played from the Listen tab, then a minute of taps
+    (fullscreen open/close, tabs, scrolling), then 5 min paused and taps again:
+    every tap answered at once.
 - [x] **A real `live` podping reaches `/live`.** When a show goes live, it must
   appear in `https://pp.musicsideproject.com/api/live` (with a `piFeedId`) and
   then on the Live tab with no favorite or search.
