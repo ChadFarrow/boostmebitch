@@ -72,6 +72,14 @@ and no fix is written before the cause is found.
 - [ ] **Viewer `/health` is slow.** It runs `max(block_num)` and no index covers
   `block_num`. 13–15 s on 2026-09-26 during the first prune; 3.1 s on
   2026-10-04. A small msp-podping-service PR adds the index.
+  - 2026-10-04, measured read-only in production: `Parallel Seq Scan on
+    podpings`, 354,971 rows / 225 MB heap, 3,060 ms uncached and 108 ms cached
+    (`shared_buffers` 128 MB). The collector runs the same query at every
+    (re)start. **msp-podping-service PR #4** adds `podpings_block_num_idx`; on a
+    local table of the same size `max(block_num)` went from 37–40 ms to under
+    1 ms (Index Only Scan Backward), the index build took 126 ms, and a new
+    `db.test.ts` case pins the index path. A merge there redeploys the viewer
+    and restarts the pusher.
 - [x] **`pp_database` memory cap.** The Railway limit is set at 500 MB
   (`serviceInstanceLimits.memoryBytes = 500000000`). Over the 6 h before
   2026-10-04 17:25 EDT the Postgres used 0.487–0.498 GB, which is at the cap;
