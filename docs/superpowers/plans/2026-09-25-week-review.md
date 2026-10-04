@@ -82,6 +82,9 @@ and no fix is written before the cause is found.
     `production` + `preview` like boostmebitch's, no security issues. The old
     `encrypted` copies are gone. The running deployment keeps the value it was
     built with; the next deployment reads the new variable.
+  - Verified on that next deployment (`392de23`, #490): a fresh
+    `www.boostmebuddy.com/api/search?q=homegrown hits` answered 200 with
+    `x-vercel-cache: MISS` and 4 feeds, so Podcast Index accepted the key.
 - [x] Delete the merged branch `fix/queued-notes-refetch-loop`. The remote branch
   was already gone; the local copy (`909969f`) was deleted on 2026-10-04.
 - [x] **Fix the stale e2e scripts** (causes in items 16 and 19), on their own
