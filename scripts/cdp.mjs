@@ -29,6 +29,12 @@ import { join } from 'node:path';
 
 export const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** The mini-player bar (`components/player.tsx`). One copy for the reason this
+ *  file exists: five scripts each spelled it `[aria-label="Open fullscreen
+ *  player"]`, the bar lost that label with its `role="button"` (#443), and all
+ *  five went red at once with nothing pointing at the cause. */
+export const MINI_BAR = '[data-mini-player]';
+
 /** `CHROME_PATH`, else the first of the usual install paths that exists. */
 export function chromePath() {
   if (process.env.CHROME_PATH) return process.env.CHROME_PATH;

@@ -39,7 +39,7 @@
 //
 // It needs the network: the enclosure, the chapters JSON, and Podcast Index
 // through the app's routes.
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { MINI_BAR, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 const POD = '290e12c3-91a7-5c30-be14-1837a1a976e2';
@@ -113,7 +113,7 @@ t.ok('a COLLAPSED player fetches no original — tile and lock screen both proxi
   collapsed.length === 0, `${collapsed.length} original(s), ${total(collapsed).toLocaleString()} bytes`);
 
 const mark = wire.length;
-const bar = await js(`(() => { const d = document.querySelector('[aria-label="Open fullscreen player"]');
+const bar = await js(`(() => { const d = document.querySelector(${JSON.stringify(MINI_BAR)});
   if (!d) return null; const r = d.getBoundingClientRect();
   return { x: Math.round(r.x + r.width * 0.45), y: Math.round(r.y + 22) }; })()`);
 t.ok('the now-playing bar is on screen', !!bar, JSON.stringify(bar));

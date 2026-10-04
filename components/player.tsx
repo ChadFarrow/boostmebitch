@@ -1398,7 +1398,11 @@ export function Player() {
           composer with the tab bar gone from under it — and both come back down
           together when iOS leaves the visual viewport scrolled past the layout
           one. See lib/keyboard-inset.ts — <TabBar> publishes it. */}
+      {/* `data-mini-player` is how the e2e scripts find this bar (`MINI_BAR` in
+          scripts/cdp.mjs). They used `aria-label="Open fullscreen player"`, which
+          left with the `role="button"` above, and five scripts went red with it. */}
       <div
+        data-mini-player
         className="fixed left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 cursor-pointer"
         style={{ bottom: 'var(--dock-b)', transform: 'translateY(var(--kb-inset, 0px))' }}
         onClick={() => setPlayerExpanded(true)}
