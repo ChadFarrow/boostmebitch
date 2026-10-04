@@ -84,7 +84,7 @@ and no fix is written before the cause is found.
     built with; the next deployment reads the new variable.
 - [x] Delete the merged branch `fix/queued-notes-refetch-loop`. The remote branch
   was already gone; the local copy (`909969f`) was deleted on 2026-10-04.
-- [ ] **Fix the stale e2e scripts** (causes in items 16 and 19), on their own
+- [x] **Fix the stale e2e scripts** (causes in items 16 and 19), on their own
   branch off `main`:
   - Five scripts look for `[aria-label="Open fullscreen player"]`, which #443
     (`9df7342`, an a11y fix, 2026-09-25) moved off the mini-player bar onto the
@@ -100,7 +100,7 @@ and no fix is written before the cause is found.
     carries `data-mini-player`, `scripts/cdp.mjs` exports it as `MINI_BAR` for
     all five scripts, and `e2e-resume` is fixed as above. All six suites pass on
     the branch (resume 36, seekhover 14, downloads 58, artgate 3, artbytes 8,
-    stream-dialog 18). Tick this when it merges.
+    stream-dialog 18). Merged 2026-10-04 as `392de23`.
 
 ## The checklist
 
