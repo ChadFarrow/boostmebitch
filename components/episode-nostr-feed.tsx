@@ -30,12 +30,15 @@ const COMMENT_MAX = 2000;
  *
  * It carries the episode's COMMENT box too. Without it the only way onto this
  * list was a boost, and a show with no value block has no BOOST button — so its
- * Comments tab was a list nobody here could add to.
+ * Comments tab was a list nobody here could add to. On a show WITH a value
+ * block the box is not rendered (`commentable` false): BOOST is the response
+ * that show asks for, and a free comment box competes with the payment.
  */
 export function EpisodeNostrFeed({
   episode,
   episodeGuid,
   podcast,
+  commentable,
   focusComment = false,
   onCommentFocused,
 }: {
@@ -43,6 +46,8 @@ export function EpisodeNostrFeed({
   /** `episode.guid`, checked present by the caller. */
   episodeGuid: string;
   podcast: Podcast;
+  /** Render the comment box. False on a show with a value block. */
+  commentable: boolean;
   /** The page's COMMENT button asked for the box: scroll to it and focus it. */
   focusComment?: boolean;
   /** Called once that is done, so the request is not replayed on a remount. */
@@ -69,7 +74,7 @@ export function EpisodeNostrFeed({
           </h3>
         }
         description={
-          <EpisodeCommentBox
+          commentable && <EpisodeCommentBox
             episode={episode}
             episodeGuid={episodeGuid}
             podcast={podcast}

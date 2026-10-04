@@ -342,7 +342,8 @@ export function EpisodeDetailView() {
               PLAY otherwise spanned. On a value show there is NO comment
               control up here at all: BOOST is the response that show asks
               for, and a free COMMENT beside it competes with the payment. The
-              comment box itself stays at the top of the Boosts tab. */}
+              Boosts tab drops its comment box on a value show for the same
+              reason (`commentable`). */}
           {!hasValue && canComment && (
             <button
               type="button"
@@ -603,6 +604,7 @@ export function EpisodeDetailView() {
                   episode={episode}
                   episodeGuid={episode.guid}
                   podcast={podcast}
+                  commentable={!hasValue}
                   focusComment={commentFocus}
                   onCommentFocused={() => setCommentFocus(false)}
                 />
