@@ -15,6 +15,7 @@ import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/int
 import { MessageInput } from './message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { sendZap } from '@/lib/v4v/zap';
+import { MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
@@ -745,7 +746,7 @@ function ZapDialog({
   const canZap = !!lud;
 
   async function onZap() {
-    if (!canZap) return;
+    if (!canZap || amount < MIN_BOOST_SATS) return;
     setState('busy');
     setErr(null);
     try {
@@ -796,16 +797,17 @@ function ZapDialog({
             <input
               id={amountId}
               type="number"
-              min={1}
+              min={MIN_BOOST_SATS}
               step={1}
               value={amount}
-              // Math.round as well as the clamp: the field accepts decimals, and
-              // a fractional sat is not a thing that can be sent.
-              onChange={(e) => setAmount(Math.max(1, Math.round(Number(e.target.value) || 0)))}
+              // Math.round: the field accepts decimals, and a fractional sat is
+              // not a thing that can be sent. No clamp to the minimum here — that
+              // would rewrite the field mid-keystroke; the send button gates it.
+              onChange={(e) => setAmount(Math.max(0, Math.round(Number(e.target.value) || 0)))}
               className="input w-full mb-3"
             />
             <div className="flex gap-2 mb-3">
-              {[21, 100, 500, 1000].map((n) => (
+              {[100, 500, 1000, 5000].map((n) => (
                 <button
                   key={n}
                   onClick={() => setAmount(n)}
@@ -824,9 +826,12 @@ function ZapDialog({
               placeholder="great post"
               className="input w-full mb-3"
             />
+            {amount < MIN_BOOST_SATS && (
+              <p className="text-[11px] text-muted mb-2">minimum {MIN_BOOST_SATS} sats</p>
+            )}
             <button
               onClick={onZap}
-              disabled={state === 'busy' || state === 'done'}
+              disabled={state === 'busy' || state === 'done' || amount < MIN_BOOST_SATS}
               className="btn-bolt w-full"
             >
               {state === 'busy' ? 'paying…' : state === 'done' ? 'zapped ⚡' : `Send ${amount} sats`}
