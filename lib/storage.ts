@@ -20,6 +20,7 @@ import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
   DEFAULT_STREAM_RATE_PER_MIN,
   STREAM_AMOUNT_MAX_SATS,
+  STREAM_AMOUNT_MIN_SATS,
   STREAM_RATE_MAX_PER_MIN,
 } from './v4v/stream-ledger';
 import { coerceProfileMetadata } from './nostr/profile-metadata';
@@ -446,12 +447,18 @@ function saneRate(raw: string | null): number | null {
   return Math.floor(n);
 }
 
-/** `saneRate` for the per-track amount — same corrupt-reads-as-absent rule. */
+/** `saneRate` for the per-track amount — same corrupt-reads-as-absent rule.
+ *  A real amount under `STREAM_AMOUNT_MIN_SATS` (stored before the floor) is
+ *  raised to it rather than read as absent. */
 function saneAmount(raw: string | null): number | null {
   if (raw === null) return null;
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1 || n > STREAM_AMOUNT_MAX_SATS) return null;
-  return Math.floor(n);
+  return Math.max(STREAM_AMOUNT_MIN_SATS, Math.floor(n));
+}
+
+function clampAmount(sats: number): number {
+  return Math.min(STREAM_AMOUNT_MAX_SATS, Math.max(STREAM_AMOUNT_MIN_SATS, Math.floor(sats)));
 }
 
 /** Anything that isn't an explicit `'track'` reads as per-minute — the mode that
@@ -1607,13 +1614,13 @@ export const storage = {
       ?? saneAmount(safeGet(KEYS.streamAmount))
       ?? DEFAULT_STREAM_AMOUNT_PER_TRACK,
     setAmount: (sats: number) => {
-      const n = Math.min(STREAM_AMOUNT_MAX_SATS, Math.max(1, Math.floor(sats)));
+      const n = clampAmount(sats);
       safeSet(KEYS.streamAmount, String(n));
       streamRateObservable.notify();
     },
     setShowAmount: (showKey: string, sats: number) => {
       if (!showKey) return;
-      const n = Math.min(STREAM_AMOUNT_MAX_SATS, Math.max(1, Math.floor(sats)));
+      const n = clampAmount(sats);
       safeSet(`${KEYS.streamAmount}:${showKey}`, String(n));
       streamRateObservable.notify();
     },
