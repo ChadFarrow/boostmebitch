@@ -560,17 +560,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       noteSplit,
       noteArtist,
       primaryValue: value,
-      // Per LEG GROUP, not per boost. `boostagram` carries the whole typed
-      // amount, because that is what the NOTE must say (invariant 7: note
-      // amount is intent, not actual) — but a redirect pays this leg only
-      // `primarySats`, and the show's leg already overrides its own total to
-      // `hostSats`. Passing the base object here left the two groups
-      // advertising `sats + hostSats` for a boost of `sats`, so anything
-      // reading TLV 7629169 saw a total larger than what arrived. <BoostAllModal>
-      // has always done this per group; this is the modal that did not.
-      primaryBoostagram: trackSplit
-        ? { ...boostagram, value_msat_total: primaryLeg.sats * 1000 }
-        : boostagram,
+      // The base object, typed total included: bLIP-10 defines
+      // `value_msat_total` as the amount the listener entered, the same on
+      // every leg of every split — so a redirect's track and show legs both
+      // carry `sats`, never their own share. → docs/money-boosts.md
+      primaryBoostagram: boostagram,
       // The trimmed block the preview rendered, NOT hostValue — sending the
       // full one would re-split inside sendBoost and could pay a recipient
       // zero, which reports as a ✓. Same object, so the rows the user
@@ -578,9 +572,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       hostValue: showsHostLeg ? { ...hostValue!, recipients: hostLeg!.recipients } : null,
       // Its own uuid — it's a distinct payment and a recipient aggregator
       // dedupes on that field — but the same remote_* guids as the track
-      // leg, which is what lets the host see which song earned their share.
+      // leg, which is what lets the host see which song earned their share,
+      // and the same typed `value_msat_total`.
       hostBoostagram: showsHostLeg
-        ? { ...boostagram, uuid: randomId(), value_msat_total: hostLeg!.sats * 1000 }
+        ? { ...boostagram, uuid: randomId() }
         : null,
       collected: [],
       hostCollected: [],

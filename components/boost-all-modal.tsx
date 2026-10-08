@@ -252,7 +252,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         remote_feed_guid: split.remoteItem?.feedGuid,
         remote_item_guid: split.remoteItem?.itemGuid,
         ts: 0,
-        value_msat_total: track.sats * 1000,
+        // The per-track amount the listener typed (bLIP-10), not the
+        // artist's share — the show leg below carries the same number.
+        value_msat_total: sats * 1000,
         message: msg || undefined,
         sender_name: senderName,
         sender_id: anonymous ? undefined : identity?.pubkey,
@@ -331,7 +333,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           remote_feed_guid: split.remoteItem?.feedGuid,
           remote_item_guid: split.remoteItem?.itemGuid,
           ts: 0,
-          value_msat_total: host.sats * 1000,
+          value_msat_total: sats * 1000,
           message: msg || undefined,
           sender_name: senderName,
           sender_id: anonymous ? undefined : identity?.pubkey,
