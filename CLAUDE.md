@@ -68,7 +68,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias `@/*` → repo root.
 
-**Forty-six `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Forty-seven `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -117,6 +117,7 @@ npm run dev / build / start / lint
 | `check:likes` | `tallyLikes`, `likeTags`, `unlikeTags` (`lib/nostr/like-tally.ts`) | a like Fountain cannot count, or anyone can un-like anyone |
 | `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards, or a second boost hidden |
 | `check:deletions` | `deletedNoteIds` — feed NIP-09 | strangers hide boosts |
+| `check:opml` | `parseOpml`, `opmlUrlVariants`, `buildOpml` | an imported feed silently lost |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
@@ -132,9 +133,9 @@ Each **imports the real module** via `node --experimental-strip-types`: a copy p
 
 **`npm run check:claudemd`** guards this file's size (budget in the script), and **`check:conformance`** runs the spec's 31 vectors against the favorites merge (needs `../PC20-Nostr` or `PC20_NOSTR_DIR`). Neither pins a pure function. **`npm run check` runs every `check:*`** (conformance reported, never gating); run it with typecheck/lint/build before shipping.
 
-**Stop the dev server before `npm run build`, and `rm -rf .next` before starting `dev` again** — the collision runs BOTH ways, and the dev-side symptom is a React Refresh error that reads as an application bug.
+**Stop the dev server before `npm run build`, and `rm -rf .next` before starting `dev` again** — they collide BOTH ways, and dev shows it as a React Refresh error that looks like an app bug.
 
-**"Testing locally" and "testing against local data" are DIFFERENT THINGS.** A dev server on localhost still publishes to the public relays under whatever npub is signed in — including the shared kind:10333 event another app reads, which keeps no history, so a bug found that way is found in production on someone else's device. A session touching favorites, mutes, follows or the profile uses `npm run relay` (in-memory NIP-01, WITH replaceable-event semantics), `npm run seed:relay -- <npub>` (a real list with history in it), `npm run e2e:favorites` or `npm run e2e:mutes` (a throwaway key over CDP, real NIP-44) — never a real account. **And a branch "N commits ahead of `main`" is NOT unfinished work**: a squash merge changes the patch id, so ask `gh pr list --state merged`. → [`docs/testing.md`](docs/testing.md)
+**"Testing locally" and "testing against local data" are DIFFERENT THINGS.** A dev server on localhost still publishes to the public relays under whatever npub is signed in — including the shared kind:10333 event another app reads, which keeps no history, so a bug found that way is found in production on someone else's device. A session touching favorites, mutes, follows or the profile uses `npm run relay` (in-memory NIP-01, WITH replaceable-event semantics), `npm run seed:relay -- <npub>` (a real list with history in it), `npm run e2e:favorites` or `npm run e2e:mutes` (a throwaway key over CDP, real NIP-44) — never a real account. A branch "N commits ahead of `main`" may be squash-merged already. → [`docs/testing.md`](docs/testing.md)
 
 **Re-landing a REVERTED feature: compute what the revert touched — the conflict list will not.** A merge conflicts only where BOTH sides changed a file, so a revert's deletions land unopposed, on a green build. → [`docs/ops.md`](docs/ops.md)
 
