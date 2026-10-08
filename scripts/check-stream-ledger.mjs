@@ -72,6 +72,7 @@ import {
   settleBatch,
   settlePlan,
   STREAM_AMOUNT_MAX_SATS,
+  STREAM_AMOUNT_MIN_SATS,
   STREAM_MAX_TICK_MS,
   STREAM_MIN_SETTLE_SATS,
   STREAM_PENDING_MAX_AGE_MS,
@@ -192,6 +193,8 @@ check('rate ceiling is 10,000 sats/min', STREAM_RATE_MAX_PER_MIN, 10_000);
 check('default is 100 sats/track', DEFAULT_STREAM_AMOUNT_PER_TRACK, 100);
 check('…so a 12-track hour costs 1,200 sats', DEFAULT_STREAM_AMOUNT_PER_TRACK * 12, 1_200);
 check('per-track ceiling is 100,000 sats', STREAM_AMOUNT_MAX_SATS, 100_000);
+check('per-track floor is 100 sats', STREAM_AMOUNT_MIN_SATS, 100);
+check('…and the default is not under it', DEFAULT_STREAM_AMOUNT_PER_TRACK >= STREAM_AMOUNT_MIN_SATS, true);
 check('position carry is capped at 2 s', STREAM_POS_CARRY_MAX_MS, 2_000);
 
 // --- Accrual ---------------------------------------------------------------
