@@ -1678,6 +1678,28 @@ function descriptorOnly(desc: string | undefined): string | undefined {
   return m ? m[1] : desc;
 }
 
+/**
+ * The message cut to `room` characters — but never through the middle of a URL.
+ *
+ * The prose rule the descriptor already follows: a clipped link is a dead link
+ * that still spends the budget. A boost message can carry one of its own — a
+ * picked GIF is appended as a bare URL on its own line (`lib/giphy.ts`) — so a
+ * cut landing inside it drops the whole URL and keeps the words before it.
+ * Ordinary prose is still cut mid-word, exactly as before.
+ */
+function clipProse(message: string, room: number): string | undefined {
+  if (message.length <= room) return message;
+  const cut = message.slice(0, room);
+  // The cut ended inside a token only if the next character continues it.
+  if (/\S/.test(message[room] ?? '')) {
+    const start = cut.search(/\S+$/);
+    if (start >= 0 && /^https?:\/\//i.test(message.slice(start))) {
+      return cut.slice(0, start).trimEnd() || undefined;
+    }
+  }
+  return cut || undefined;
+}
+
 export function buildLnurlComment(
   args: { desc?: string; message?: string },
   commentAllowed: number | undefined,
@@ -1687,9 +1709,9 @@ export function buildLnurlComment(
   const desc = descriptorOnly(args.desc?.trim() || undefined);
   const message = args.message?.trim() || undefined;
 
-  if (!desc) return message?.slice(0, budget) || undefined;
+  if (!desc) return message ? clipProse(message, budget) : undefined;
   // Whole or not at all.
-  if (desc.length > budget) return message?.slice(0, budget) || undefined;
+  if (desc.length > budget) return message ? clipProse(message, budget) : undefined;
   if (!message) return desc;
 
   const sep = ' — ';
@@ -1697,7 +1719,8 @@ export function buildLnurlComment(
   // No room for a separator plus at least one character of prose: send the
   // descriptor alone rather than a dangling em dash.
   if (room < 1) return desc;
-  return `${desc}${sep}${message.slice(0, room)}`;
+  const prose = clipProse(message, room);
+  return prose ? `${desc}${sep}${prose}` : desc;
 }
 
 /**

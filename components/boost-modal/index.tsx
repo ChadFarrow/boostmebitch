@@ -15,7 +15,9 @@ import { BoltIcon } from '../icons';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from '../wallet-balance';
 import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
-import { MessageInput } from '../message-input';
+import { MessageInput, BOOSTAGRAM_MAX } from '../message-input';
+import { GifPicker } from './gif-picker';
+import { giphyGifUrl, gifCost, withGif } from '@/lib/giphy';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './sender-name';
@@ -161,6 +163,15 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // same string becomes the boostagram TLV message and the LNURL comment, where
   // a 63-character npub would be truncated mid-bech32 with nothing reporting it.
   const [mentions, setMentions] = useState<MentionNpub[]>([]);
+  // The picked GIF's GIPHY id. Kept beside `msg`, not inside it: the URL is
+  // appended at send time (`withGif`), so the box shows only the user's words
+  // and the GIF can be removed without editing them.
+  const [gifId, setGifId] = useState<string | null>(null);
+  const gifUrl = gifId ? giphyGifUrl(gifId) : null;
+  // The GIF URL spends the same keysend budget the words do — see
+  // BOOSTAGRAM_MAX for why that budget is 250 and not more.
+  const msgMax = BOOSTAGRAM_MAX - gifCost(gifUrl);
+  const msgTooLong = msg.length > msgMax;
   const [name, setName] = useState('');
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   const [rail, setRail] = useState<Rail | null>(null);
@@ -459,6 +470,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // here, not forgetting what they typed.
     if (name) storage.senderName.set(identity?.npub, name);
 
+    // The words and the GIF as ONE string: the boostagram's `message`, the LNURL
+    // comment, the note body, the live chat line and the local log all read it.
+    const boostMsg = withGif(msg, gifUrl);
+
     // The live target is the RENDERED one (`useLiveTarget` above), not a fresh
     // snapshot: the legs pay `value`, which was built from it, so the
     // boostagram's remote guids and the note's track line must name the same
@@ -479,7 +494,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       url: podcast.url,
       ts: episode ? Math.floor(positionSec) : 0,
       value_msat_total: sats * 1000,
-      message: msg || undefined,
+      message: boostMsg || undefined,
       sender_name: senderName,
       sender_id: anonymous ? undefined : identity?.pubkey,
       // Same gate, and it is not optional: a lightning address resolves to the
@@ -544,7 +559,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     const sent: SentBoost = {
       boostagram,
       sats,
-      msg,
+      msg: boostMsg,
       senderName,
       shareNostr,
       shareAs,
@@ -939,6 +954,20 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             // Same condition maybePublishNote signs by: anything else and the
             // site signs, so a sender-chosen `p` tag would be dropped.
             willNotify={!!identity && shareAs === 'self'}
+            maxLength={msgMax}
+          />
+          {/* `maxLength` stops new typing, never trims text already in the box —
+              so a message typed BEFORE a GIF can still be over, and the send
+              button waits on it. Said here, beside the box. */}
+          {msgTooLong && (
+            <p className="text-[11px] text-nostr/80 -mt-2" role="status">
+              The message is {msg.length - msgMax} characters too long with the GIF. Shorten it or remove the GIF.
+            </p>
+          )}
+          <GifPicker
+            gifId={gifId}
+            onChange={setGifId}
+            disabled={running || paymentDone}
           />
           <SenderName value={name} onChange={setName} anonymous={anonymous} />
           <ShareNostrPicker
@@ -1061,7 +1090,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
                 // `nothingPayable` is its own gate: the amount clears the
                 // minimum and a rail is connected, so every other condition
                 // here reads as ready while there is nobody the block can pay.
-                disabled={running || !rail || sats < MIN_BOOST_SATS || resolvingSplit || nothingPayable}
+                disabled={running || !rail || sats < MIN_BOOST_SATS || resolvingSplit || nothingPayable || msgTooLong}
                 className="btn-bolt disabled:opacity-40"
               >
                 <BoltIcon />

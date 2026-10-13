@@ -405,6 +405,19 @@ A boost with failed legs used to leave one way forward: press BOOST again — wh
 
 Not covered: a host leg whose `sendBoost` THREW (no results to judge), and `<BoostAllModal>`.
 
+### A GIF on a boost (`lib/giphy.ts`, `<GifPicker>`)
+
+Both boost modals carry a **+ GIF** control. A picked GIF becomes **one URL appended to the message** (`withGif`), on its own line after the words — so the same string is the boostagram `message` (TLV `7629169`, and the LNURL comment), the note body, the live chat line and the `StoredBoost`. The note and the boostagram cannot name two different GIFs, because there is only one string. Note readers render a bare `.gif` URL as a picture; what a boostagram reader does with it is the recipient's business — do not write that down here.
+
+Four rules:
+
+- **The URL is BUILT from the GIPHY id, never copied from the API.** GIPHY returns renditions with ~100 characters of `cid`/`rid` tracking parameters; `giphyGifUrl` is ~58 characters, ends in `.gif`, and carries nothing about the session. The id is validated (`isGiphyId`) before it goes into any URL, and `parseGiphyResults` keeps only `id` and `title` — nothing GIPHY sends reaches an `src` as-is. A kind:1 cannot be edited, so the short, permanent form is the one that matters.
+- **The GIF spends the boostagram budget.** `BOOSTAGRAM_MAX` (250, set by the keysend onion — see `message-input.tsx`) covers words AND URL. The modal lowers the box's `maxLength` by `gifCost`; since `maxLength` never trims text already typed, an over-long message is **said on screen and holds the send button** (`msgTooLong`), never truncated silently.
+- **`buildLnurlComment` never cuts through a URL in the prose (`clipProse`).** A tight `commentAllowed` used to slice the appended GIF into `…media.gi`, a dead link that still spent the allowance — the descriptor rule, applied to the message. The URL is dropped whole and the words before it survive; that is why it goes AFTER the words. Pinned by `check:lnurl`.
+- **The key stays on the server.** `/api/gifs` proxies search and trending with `GIPHY_API_KEY`, rate-limited and body-capped; no key answers 503 and the picker says so. The rating comes from the brand (`giphyRating`: `g` on buddy). A pasted `nsec` is refused in the picker, rendered, before any fetch, and again in the route. The grid loads ~10 KB stills (`200w_s.gif`), not ~300 KB animations, because the episode may be streaming on the same connection; only the picked GIF animates.
+
+No `imeta` tag is written for the GIF: `/api/nostr/site-sign` allows one `imeta` (`MAX_IMETA_TAGS`), and the banner holds it. The body URL is what renders the picture anyway.
+
 ### Serving our own lightning address
 
 The mirror image of the above: `chadf@boostmebitch.com` is a recipient other apps pay, assembled from two pieces on this domain plus an LNbits instance behind `pay.boostmebitch.com` fronting Chad's LND node.

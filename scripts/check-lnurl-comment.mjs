@@ -164,6 +164,53 @@ console.log('buildLnurlComment — the descriptor survives whole or not at all')
   );
 }
 
+console.log('\nbuildLnurlComment — a URL in the PROSE survives whole or not at all');
+{
+  // A picked GIF is appended to the message as a bare URL on its own line
+  // (lib/giphy.ts `withGif`). This is that wire string, built by the same rule.
+  // The old slice cut it mid-URL — `…media.gi` — a dead link that still spent
+  // the allowance, the same failure the descriptor rule above exists for.
+  const GIF = 'https://media.giphy.com/media/3o7TKSjRrfIPjeiVyM/giphy.gif';
+  const WITH_GIF = `${MSG}\n${GIF}`;
+  check(
+    'both fit: descriptor, message and the whole GIF URL',
+    buildLnurlComment({ desc: DESC, message: WITH_GIF }, 255),
+    `${DESC} — ${WITH_GIF}`,
+  );
+  check(
+    'a cut inside the GIF URL drops the URL and keeps the words',
+    buildLnurlComment({ desc: DESC, message: WITH_GIF }, DESC.length + 3 + MSG.length + 10),
+    `${DESC} — ${MSG}`,
+  );
+  check(
+    'no descriptor: a cut inside the URL keeps the words only',
+    buildLnurlComment({ message: WITH_GIF }, MSG.length + 10),
+    MSG,
+  );
+  check(
+    'a GIF-only message that does not fit: descriptor alone, no URL fragment',
+    buildLnurlComment({ desc: DESC, message: GIF }, DESC.length + 3 + 20),
+    DESC,
+  );
+  check(
+    'a GIF-only message that does not fit and no descriptor: no comment',
+    buildLnurlComment({ message: GIF }, 20),
+    undefined,
+  );
+  check(
+    'a URL that ends exactly at the budget is whole, so it stays',
+    buildLnurlComment({ message: WITH_GIF }, WITH_GIF.length),
+    WITH_GIF,
+  );
+  // Must still work: only a URL is protected. Prose is still cut mid-word, as
+  // it always was — the vectors above with MSG.slice(0, n) pin the same thing.
+  check(
+    'a non-URL word is still cut mid-word',
+    buildLnurlComment({ message: 'httpish words go here' }, 5),
+    'httpi',
+  );
+}
+
 console.log('\nbuildLnurlComment — the must-still-work half');
 {
   // BoostBox failure is non-fatal by design; the plain message path is what
