@@ -15,7 +15,9 @@ import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
-import { MessageInput } from './message-input';
+import { MessageInput, BOOSTAGRAM_MAX } from './message-input';
+import { GifPicker } from './boost-modal/gif-picker';
+import { giphyGifUrl, gifCost, withGif } from '@/lib/giphy';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './boost-modal/sender-name';
@@ -64,6 +66,12 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // Identity beside the prose, not inside it — see <BoostModal> for why the
   // npub must never enter `msg`.
   const [mentions, setMentions] = useState<MentionNpub[]>([]);
+  // The picked GIF, beside `msg` for the reason <BoostModal> gives.
+  const [gifId, setGifId] = useState<string | null>(null);
+  const gifUrl = gifId ? giphyGifUrl(gifId) : null;
+  const msgMax = BOOSTAGRAM_MAX - gifCost(gifUrl);
+  const msgOver = gifUrl ? msg.trim().length - msgMax : 0;
+  const msgTooLong = msgOver > 0;
   const [name, setName] = useState('');
   const [rail, setRail] = useState<Rail | null>(null);
   // ONE balance read for the whole modal, feeding both the footer balance and
@@ -209,6 +217,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // Saved even for an anonymous boost — it's the user's device-local "From"
     // default; anonymity is about what leaves the device, not forgetting it.
     if (name) storage.senderName.set(identity?.npub, name);
+    // Words and GIF as one string, read by every boostagram, the log and the
+    // summary note below.
+    const boostMsg = withGif(msg, gifUrl);
 
     setRunning(true);
     setProgress([]);
@@ -253,7 +264,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         remote_item_guid: split.remoteItem?.itemGuid,
         ts: 0,
         value_msat_total: track.sats * 1000,
-        message: msg || undefined,
+        message: boostMsg || undefined,
         sender_name: senderName,
         sender_id: anonymous ? undefined : identity?.pubkey,
         action: 'boost',
@@ -294,7 +305,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               episodeTitle: episode.title,
               episodeGuid: episode.guid,
               sats: track.sats,
-              message: msg || undefined,
+              message: boostMsg || undefined,
               senderName,
               legs: storedBoostLegs(results),
             };
@@ -332,7 +343,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           remote_item_guid: split.remoteItem?.itemGuid,
           ts: 0,
           value_msat_total: host.sats * 1000,
-          message: msg || undefined,
+          message: boostMsg || undefined,
           sender_name: senderName,
           sender_id: anonymous ? undefined : identity?.pubkey,
           action: 'boost',
@@ -364,7 +375,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               episodeTitle: episode.title,
               episodeGuid: episode.guid,
               sats: host.sats,
-              message: msg || undefined,
+              message: boostMsg || undefined,
               senderName,
               legs: storedBoostLegs(hostResults),
             };
@@ -414,7 +425,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       episode_guid: episode.guid,
       ts: 0,
       value_msat_total: totalSats * 1000,
-      message: msg || undefined,
+      message: boostMsg || undefined,
       sender_name: senderName,
       sender_id: anonymous ? undefined : identity?.pubkey,
       action: 'boost',
@@ -422,7 +433,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     };
 
     const lines: string[] = ['⚡ Boost ⚡', ''];
-    if (msg.trim()) lines.push(msg.trim(), '');
+    if (boostMsg.trim()) lines.push(boostMsg.trim(), '');
     // Mirrors formatContent's attribution line, off the same `senderName` the
     // boostagrams carry — so an anonymous summary note reads as
     // DEFAULT_SENDER_NAME rather than attributing itself back to the user.
@@ -666,7 +677,14 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                 onMentionsChange={setMentions}
                 feedNpubs={feedNpubs}
                 willNotify={!!identity && shareAs === 'self'}
+                maxLength={msgMax}
               />
+              {msgTooLong && (
+                <p className="text-[11px] text-nostr/80 -mt-2" role="status">
+                  The message is {msgOver} character{msgOver === 1 ? '' : 's'} too long with the GIF. Shorten it or remove the GIF.
+                </p>
+              )}
+              <GifPicker gifId={gifId} onChange={setGifId} disabled={running || done} />
               <SenderName value={name} onChange={setName} anonymous={anonymous} />
               <ShareNostrPicker
                 signedIn={!!identity}
@@ -724,7 +742,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                 )}
                 <button
                   onClick={go}
-                  disabled={running || !rail || sats < MIN_BOOST_SATS || splits.length === 0}
+                  disabled={running || !rail || sats < MIN_BOOST_SATS || splits.length === 0 || msgTooLong}
                   className="btn-bolt disabled:opacity-40"
                 >
                   <BoltIcon />
