@@ -96,6 +96,12 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
             src={giphyPreviewUrl(gifId)}
             alt="GIF"
             loading="lazy"
+            // GIPHY can take a GIF down; the stored boost names it forever.
+            // Hidden, as `<NoteCard>` hides a dead note image, rather than a
+            // broken-image icon standing in the card for good.
+            onError={(e) => {
+              e.currentTarget.style.display = 'none';
+            }}
             className="mt-1.5 h-32 w-auto max-w-full rounded border border-line object-contain"
           />
         )}

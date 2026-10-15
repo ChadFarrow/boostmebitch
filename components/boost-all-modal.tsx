@@ -70,7 +70,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [gifId, setGifId] = useState<string | null>(null);
   const gifUrl = gifId ? giphyGifUrl(gifId) : null;
   const msgMax = BOOSTAGRAM_MAX - gifCost(gifUrl);
-  const msgTooLong = msg.length > msgMax;
+  const msgOver = gifUrl ? msg.trim().length - msgMax : 0;
+  const msgTooLong = msgOver > 0;
   const [name, setName] = useState('');
   const [rail, setRail] = useState<Rail | null>(null);
   // ONE balance read for the whole modal, feeding both the footer balance and
@@ -680,7 +681,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               />
               {msgTooLong && (
                 <p className="text-[11px] text-nostr/80 -mt-2" role="status">
-                  The message is {msg.length - msgMax} characters too long with the GIF. Shorten it or remove the GIF.
+                  The message is {msgOver} character{msgOver === 1 ? '' : 's'} too long with the GIF. Shorten it or remove the GIF.
                 </p>
               )}
               <GifPicker gifId={gifId} onChange={setGifId} disabled={running || done} />

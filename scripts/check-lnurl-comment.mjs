@@ -164,7 +164,7 @@ console.log('buildLnurlComment — the descriptor survives whole or not at all')
   );
 }
 
-console.log('\nbuildLnurlComment — a URL in the PROSE survives whole or not at all');
+console.log('\nbuildLnurlComment — the GIF URL on the last line survives whole or not at all');
 {
   // A picked GIF is appended to the message as a bare URL on its own line
   // (lib/giphy.ts `withGif`). This is that wire string, built by the same rule.
@@ -202,12 +202,96 @@ console.log('\nbuildLnurlComment — a URL in the PROSE survives whole or not at
     buildLnurlComment({ message: WITH_GIF }, WITH_GIF.length),
     WITH_GIF,
   );
-  // Must still work: only a URL is protected. Prose is still cut mid-word, as
-  // it always was — the vectors above with MSG.slice(0, n) pin the same thing.
+  // Must still work: only a URL alone on the last line is protected. Prose is
+  // still cut mid-word, as it always was — the vectors above with
+  // MSG.slice(0, n) pin the same thing.
   check(
     'a non-URL word is still cut mid-word',
     buildLnurlComment({ message: 'httpish words go here' }, 5),
     'httpi',
+  );
+  // A cut ON the newline before the URL is the same cut one character earlier.
+  // It once kept the newline, so a SMALLER budget gave a LONGER comment.
+  check(
+    'a cut on the newline before the URL leaves no dangling newline',
+    buildLnurlComment({ message: WITH_GIF }, MSG.length + 1),
+    MSG,
+  );
+  check(
+    'a cut on the newline before the URL, with a descriptor',
+    buildLnurlComment({ desc: DESC, message: WITH_GIF }, DESC.length + 3 + MSG.length + 1),
+    `${DESC} — ${MSG}`,
+  );
+  // Must still work: prose cut ON a space keeps it, exactly as the old slice did.
+  check(
+    'prose cut on a space is cut exactly as before',
+    buildLnurlComment({ message: MSG }, 6),
+    MSG.slice(0, 6),
+  );
+  // Must still work: a link TYPED inside the prose is not the GIF. A boost with
+  // no GIF sends the comment it always did, on every LNURL leg and every zap.
+  const TYPED = 'loved it, see https://example.com/some/long/path for the clip';
+  check(
+    'a link typed inside the prose is cut as it always was',
+    buildLnurlComment({ message: TYPED }, 25),
+    TYPED.slice(0, 25),
+  );
+  check(
+    'a message that opens with a typed link is cut as it always was',
+    buildLnurlComment({ message: `https://example.com/clip and ${MSG}` }, 15),
+    'https://example',
+  );
+  // TOTAL, like the descriptor sweep above: whole or absent, never a fragment,
+  // never its newline alone, never over budget.
+  let broken = null;
+  for (let budget = 0; budget <= 200 && !broken; budget++) {
+    for (const desc of [undefined, DESC]) {
+      const out = buildLnurlComment({ desc, message: WITH_GIF }, budget);
+      if (out == null) continue;
+      if (out.length > budget) broken = { budget, desc: !!desc, why: 'over budget' };
+      else if (out.includes('https://media.') && !out.includes(GIF)) broken = { budget, desc: !!desc, why: 'URL fragment' };
+      else if (out.endsWith('\n')) broken = { budget, desc: !!desc, why: 'dangling newline' };
+    }
+  }
+  check('a GIF URL is whole or absent and never leaves its newline, budgets 0..200', broken, null);
+
+  // (naive) the blind slice this replaced, on the same wire string — proof the
+  // vectors above can fail, and that it agrees wherever no GIF is cut.
+  const naiveSlice = (desc, message, budget) => {
+    if (!desc) return message.slice(0, budget) || undefined;
+    const room = budget - desc.length - 3;
+    return room < 1 ? desc : `${desc} — ${message.slice(0, room)}`;
+  };
+  const CUT = DESC.length + 3 + MSG.length + 10;
+  check(
+    '(naive slice) really did emit a clipped GIF URL',
+    naiveSlice(DESC, WITH_GIF, CUT),
+    `${DESC} — ${MSG}\nhttps://m`,
+  );
+  check(
+    '(naive slice) disagrees where the cut lands inside the URL',
+    buildLnurlComment({ desc: DESC, message: WITH_GIF }, CUT) !== naiveSlice(DESC, WITH_GIF, CUT),
+    true,
+  );
+  check(
+    '(naive slice) disagrees with no descriptor too',
+    buildLnurlComment({ message: WITH_GIF }, MSG.length + 10) !== naiveSlice(undefined, WITH_GIF, MSG.length + 10),
+    true,
+  );
+  check(
+    '(naive slice) agrees when the whole URL fits',
+    buildLnurlComment({ desc: DESC, message: WITH_GIF }, 255) === naiveSlice(DESC, WITH_GIF, 255),
+    true,
+  );
+  check(
+    '(naive slice) agrees on plain prose cut mid-word',
+    buildLnurlComment({ desc: DESC, message: MSG }, DESC.length + 3 + 10) === naiveSlice(DESC, MSG, DESC.length + 3 + 10),
+    true,
+  );
+  check(
+    '(naive slice) agrees on a typed link',
+    buildLnurlComment({ desc: DESC, message: TYPED }, DESC.length + 3 + 25) === naiveSlice(DESC, TYPED, DESC.length + 3 + 25),
+    true,
   );
 }
 

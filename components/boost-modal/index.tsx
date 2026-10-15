@@ -171,7 +171,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // The GIF URL spends the same keysend budget the words do — see
   // BOOSTAGRAM_MAX for why that budget is 250 and not more.
   const msgMax = BOOSTAGRAM_MAX - gifCost(gifUrl);
-  const msgTooLong = msg.length > msgMax;
+  // Measured the way `withGif` sends it — trimmed — and only while a GIF is
+  // picked: without one the box's own `maxLength` is the whole rule, as before,
+  // so a mention pick that runs past it does not hold a GIF-less boost.
+  const msgOver = gifUrl ? msg.trim().length - msgMax : 0;
+  const msgTooLong = msgOver > 0;
   const [name, setName] = useState('');
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   const [rail, setRail] = useState<Rail | null>(null);
@@ -961,7 +965,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               button waits on it. Said here, beside the box. */}
           {msgTooLong && (
             <p className="text-[11px] text-nostr/80 -mt-2" role="status">
-              The message is {msg.length - msgMax} characters too long with the GIF. Shorten it or remove the GIF.
+              The message is {msgOver} character{msgOver === 1 ? '' : 's'} too long with the GIF. Shorten it or remove the GIF.
             </p>
           )}
           <GifPicker

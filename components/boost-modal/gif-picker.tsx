@@ -125,6 +125,7 @@ export function GifPicker({
         placeholder="search GIPHY…"
         autoComplete="off"
         autoFocus
+        disabled={disabled}
       />
       {secretHit ? (
         <p className="mt-1.5 flex items-start gap-2 rounded border border-red-400/50 bg-red-400/5 px-3 py-2 text-xs text-red-300">
@@ -148,8 +149,11 @@ export function GifPicker({
                 <button
                   key={g.id}
                   type="button"
-                  className="aspect-square min-h-[44px] overflow-hidden rounded border border-line bg-bone/5 hover:border-bolt focus-visible:border-bolt"
+                  className="aspect-square min-h-[44px] overflow-hidden rounded border border-line bg-bone/5 hover:border-bolt focus-visible:border-bolt disabled:opacity-40"
                   onClick={() => { onChange(g.id); setOpen(false); setQ(''); }}
+                  // The grid can be open when Send is pressed. A pick after
+                  // that would show a GIF the sent boost does not carry.
+                  disabled={disabled}
                   title={g.title || 'GIF'}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element -- third-party media */}

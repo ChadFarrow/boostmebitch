@@ -8,7 +8,7 @@
 // message. That single string is the boostagram's `message` (TLV 7629169, and
 // the LNURL comment) AND the note body `formatContent` writes, so the note and
 // the boostagram cannot disagree about which GIF was sent. Note readers render
-// a bare image URL as a picture; boostagram readers get a link.
+// a bare image URL as a picture.
 //
 // THE URL IS BUILT FROM THE ID, NEVER COPIED FROM THE API. GIPHY's API returns
 // renditions like `media2.giphy.com/media/v1.Y2lk…/giphy.gif?cid=…&rid=…`: well
@@ -82,9 +82,12 @@ export function gifCost(gifUrl: string | null): number {
  * GIPHY's content rating for a deploy. The family-friendly brand asks for `g`
  * only; the other for `pg-13`. GIPHY applies the filter server-side, so this is
  * what decides which GIFs can be offered at all.
+ *
+ * Named the other way round on purpose: a brand id this does not know gets `g`,
+ * so a third deploy starts family-friendly rather than inheriting `pg-13`.
  */
 export function giphyRating(brandId: string): 'g' | 'pg-13' {
-  return brandId === 'buddy' ? 'g' : 'pg-13';
+  return brandId === 'bmb' ? 'pg-13' : 'g';
 }
 
 /** One row the picker can render — nothing else from GIPHY's record survives. */
