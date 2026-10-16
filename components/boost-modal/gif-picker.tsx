@@ -96,11 +96,14 @@ export function GifPicker({
       <div>
         <button
           type="button"
-          className="btn-mini"
+          // A full-width `.btn-ghost`, not a `.btn-mini`: as a small grey chip
+          // between the message and FROM it read as a hint, not a control.
+          // Not bolt-yellow — that colour is the money action's.
+          className="btn-ghost w-full"
           onClick={() => setOpen(true)}
           disabled={disabled}
         >
-          + GIF
+          + Add a GIF
         </button>
       </div>
     );
@@ -116,8 +119,8 @@ export function GifPicker({
   return (
     <>
       <div>
-        <button type="button" className="btn-mini" disabled>
-          + GIF
+        <button type="button" className="btn-ghost w-full" disabled>
+          + Add a GIF
         </button>
       </div>
       <ModalShell
