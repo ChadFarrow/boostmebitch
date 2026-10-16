@@ -159,19 +159,23 @@ export function GifPicker({
       ) : state.kind === 'ready' && state.gifs.length === 0 ? (
         <p className="mt-2 text-xs text-muted" role="status">No GIFs match that search.</p>
       ) : (
+        // The scroll box and the layout are two elements, and the layout is
+        // CSS columns, not a grid. A grid inside a fixed-height scroll box
+        // sized its rows from each tile's min-content height — which is 0 for
+        // a percent-sized square — so iOS Safari squeezed every row to fit the
+        // box and the tiles covered each other. Columns let each GIF keep its
+        // own shape, uncropped, at the height its width gives it.
         <div
-          className="mt-3 grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto overscroll-contain sm:grid-cols-3"
+          className="mt-3 min-h-0 flex-1 overflow-y-auto overscroll-contain"
           aria-busy={state.kind === 'loading'}
         >
+          <div className="columns-2 gap-2 sm:columns-3">
           {state.kind === 'ready'
             ? state.gifs.map((g) => (
-                // Square by `pb-[100%]`, not `aspect-square`: iOS Safari sized
-                // the grid ROWS before it applied the ratio, so each tile
-                // overflowed its row and covered half of the next one.
                 <button
                   key={g.id}
                   type="button"
-                  className="relative block w-full overflow-hidden rounded border border-line bg-bone/5 pb-[100%] hover:border-bolt focus-visible:border-bolt disabled:opacity-40"
+                  className="mb-2 block min-h-[44px] w-full break-inside-avoid overflow-hidden rounded border border-line bg-bone/5 hover:border-bolt focus-visible:border-bolt disabled:opacity-40"
                   onClick={() => { onChange(g.id); close(); }}
                   // The grid can be open when Send is pressed. A pick after
                   // that would show a GIF the sent boost does not carry.
@@ -183,13 +187,14 @@ export function GifPicker({
                     src={giphyStillUrl(g.id)}
                     alt={g.title || 'GIF'}
                     loading="lazy"
-                    className="absolute inset-0 h-full w-full object-cover"
+                    className="block h-auto w-full"
                   />
                 </button>
               ))
             : Array.from({ length: 6 }, (_, i) => (
-                <div key={i} className="w-full rounded border border-line bg-bone/5 pb-[100%] animate-pulse" />
+                <div key={i} className="mb-2 h-32 w-full break-inside-avoid rounded border border-line bg-bone/5 animate-pulse" />
               ))}
+          </div>
         </div>
       )}
       <div className="mt-2 text-right text-[10px] text-muted">Powered by GIPHY</div>
