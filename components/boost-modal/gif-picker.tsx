@@ -2,6 +2,7 @@
 import { useEffect, useId, useState } from 'react';
 import { giphyPreviewUrl, giphyStillUrl, type GifResult } from '@/lib/giphy';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
+import { ModalShell } from '@/components/modal-shell';
 
 /** How long a keystroke waits before GIPHY is asked. */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -105,19 +106,37 @@ export function GifPicker({
     );
   }
 
+  const close = () => { setOpen(false); setQ(''); };
+
+  // The search opens as its OWN modal over the boost modal: inline, the grid
+  // got a 256px window inside a card already full of amount, message and
+  // splits, so on a phone a row of GIFs was cut in half. `<ModalShell>` stacks
+  // (portal + shared scroll-lock refcount), and its Escape handler stops
+  // propagation, so Escape closes this one and leaves the boost modal open.
   return (
-    <div>
+    <>
+      <div>
+        <button type="button" className="btn-mini" disabled>
+          + GIF
+        </button>
+      </div>
+      <ModalShell
+        onClose={close}
+        label="Search GIFs"
+        clearsPlayer={false}
+        className="flex h-full w-full max-w-lg flex-col p-4"
+      >
       <div className="flex items-center justify-between">
         <label htmlFor={inputId} className="text-[11px] uppercase tracking-widest text-muted">
           Search GIFs
         </label>
-        <button type="button" className="btn-mini" onClick={() => { setOpen(false); setQ(''); }}>
+        <button type="button" className="btn-mini min-h-[32px]" onClick={close}>
           Close
         </button>
       </div>
       <input
         id={inputId}
-        className="input mt-1.5"
+        className="input mt-2"
         type="search"
         value={q}
         maxLength={50}
@@ -141,16 +160,19 @@ export function GifPicker({
         <p className="mt-2 text-xs text-muted" role="status">No GIFs match that search.</p>
       ) : (
         <div
-          className="mt-2 grid max-h-64 grid-cols-3 gap-1.5 overflow-y-auto overscroll-contain"
+          className="mt-3 grid min-h-0 flex-1 grid-cols-2 content-start gap-2 overflow-y-auto overscroll-contain sm:grid-cols-3"
           aria-busy={state.kind === 'loading'}
         >
           {state.kind === 'ready'
             ? state.gifs.map((g) => (
+                // Square by `pb-[100%]`, not `aspect-square`: iOS Safari sized
+                // the grid ROWS before it applied the ratio, so each tile
+                // overflowed its row and covered half of the next one.
                 <button
                   key={g.id}
                   type="button"
-                  className="aspect-square min-h-[44px] overflow-hidden rounded border border-line bg-bone/5 hover:border-bolt focus-visible:border-bolt disabled:opacity-40"
-                  onClick={() => { onChange(g.id); setOpen(false); setQ(''); }}
+                  className="relative block w-full overflow-hidden rounded border border-line bg-bone/5 pb-[100%] hover:border-bolt focus-visible:border-bolt disabled:opacity-40"
+                  onClick={() => { onChange(g.id); close(); }}
                   // The grid can be open when Send is pressed. A pick after
                   // that would show a GIF the sent boost does not carry.
                   disabled={disabled}
@@ -161,16 +183,17 @@ export function GifPicker({
                     src={giphyStillUrl(g.id)}
                     alt={g.title || 'GIF'}
                     loading="lazy"
-                    className="h-full w-full object-cover"
+                    className="absolute inset-0 h-full w-full object-cover"
                   />
                 </button>
               ))
             : Array.from({ length: 6 }, (_, i) => (
-                <div key={i} className="aspect-square rounded border border-line bg-bone/5 animate-pulse" />
+                <div key={i} className="w-full rounded border border-line bg-bone/5 pb-[100%] animate-pulse" />
               ))}
         </div>
       )}
-      <div className="mt-1 text-right text-[10px] text-muted">Powered by GIPHY</div>
-    </div>
+      <div className="mt-2 text-right text-[10px] text-muted">Powered by GIPHY</div>
+      </ModalShell>
+    </>
   );
 }
