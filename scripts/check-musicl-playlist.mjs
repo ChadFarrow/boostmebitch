@@ -119,6 +119,17 @@ vec(
   [{ feedGuid: G5, itemGuid: I5 }],
   { alsoNaive: true },
 );
+// NOT `alsoNaive`: `naive()` returns the attribute's raw bytes. Verbatim from
+// ChadFarrow/chadf-musicl-playlists smallgroup-shows-playlist.xml (2026-10-23),
+// a `podcastL` whose MMO entries escape the `&` of a WordPress permalink guid.
+// Podcast Index holds `…&p=5224` (MMO #240); the raw `…&amp;p=5224` it was
+// asked for resolves to nothing, so all four MMO rows read "not in Podcast
+// Index" — and a heart on one would write the escaped guid to kind:10333.
+vec(
+  'an escaped & in a permalink item guid is decoded (real wire)',
+  wrap('    <podcast:remoteItem feedGuid="31740861-81e8-5dda-8801-a2abb2634271" feedUrl="https://mmo.show/wp-content/feed.xml" itemGuid="https://mmo.show/?post_type=podcast&amp;p=5224"/>'),
+  [{ feedGuid: '31740861-81e8-5dda-8801-a2abb2634271', itemGuid: 'https://mmo.show/?post_type=podcast&p=5224' }],
+);
 
 // ── ORDER IS THE DATA ───────────────────────────────────────────────────────
 // A playlist's running order is the order the entries are written in, and

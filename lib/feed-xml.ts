@@ -60,8 +60,10 @@ export function decodeXmlText(raw: string): string {
 /**
  * The XML entity pass alone, for an ATTRIBUTE value — `readAttr` returns the
  * raw bytes, so `name="Mutton, Mead &amp; Music"` reached the splits list
- * as "&amp;". For DISPLAY fields only (a recipient's `name`); never run it on
- * an `address` or a custom record, whose bytes are what gets paid.
+ * as "&amp;". For DISPLAY fields (a recipient's `name`) and for a LOOKUP KEY
+ * another system compares against its own parsed copy (a playlist entry's
+ * guids — see `parsePlaylistRemoteItems`); never run it on an `address` or a
+ * custom record, whose bytes are what gets paid.
  *
  * `&amp;` is decoded LAST, so `&amp;lt;` stays the literal text `&lt;` rather
  * than being decoded twice into `<`. Numeric references go through
@@ -752,8 +754,17 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
       continue;
     }
     const attrs = entry.item!.attrs;
-    const feedGuid = readAttr(attrs, 'feedGuid');
-    const itemGuid = readAttr(attrs, 'itemGuid');
+    // DECODED, because the pair is a lookup key and every system it is looked
+    // up in holds the parsed value. An item guid that is a URL carries a query
+    // string, which a correct writer escapes — MMO writes
+    // `<guid>https://mmo.show/?post_type=podcast&amp;p=5224</guid>` — so the
+    // raw attribute asked Podcast Index for `&amp;p=5224`, which no feed
+    // publishes, and the row rendered as "not in Podcast Index" over an
+    // episode PI holds.
+    const rawFeedGuid = readAttr(attrs, 'feedGuid');
+    const rawItemGuid = readAttr(attrs, 'itemGuid');
+    const feedGuid = rawFeedGuid && decodeXmlEntities(rawFeedGuid);
+    const itemGuid = rawItemGuid && decodeXmlEntities(rawItemGuid);
     if (!feedGuid || !itemGuid) continue;
     if (feedGuid.length > MAX_FEED_GUID_LEN || itemGuid.length > MAX_ITEM_GUID_LEN) continue;
     const key = `${feedGuid}:${itemGuid}`;
