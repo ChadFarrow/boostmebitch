@@ -15,8 +15,8 @@
   "enableNotifications": false,
   "startUrl": "/",
   "webManifestUrl": "https://www.boostmebitch.com/manifest.json",
-  "iconUrl": "https://www.boostmebitch.com/icons/icon-512.png",
-  "maskableIconUrl": "https://www.boostmebitch.com/icons/icon-512-maskable.png",
+  "iconUrl": "https://www.boostmebitch.com/icons/bmb/icon-512.png",
+  "maskableIconUrl": "https://www.boostmebitch.com/icons/bmb/icon-512-maskable.png",
   "splashScreenFadeOutDuration": 300,
   "signingKey": {
     "path": "./android.keystore",

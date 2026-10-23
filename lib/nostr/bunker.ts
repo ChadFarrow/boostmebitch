@@ -1453,7 +1453,7 @@ function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: 
     // has been showing. Served from the origin above so the two always agree,
     // and it is the manifest's 192px PNG rather than the SVG because signers
     // render these in a native image view.
-    image: `${origin}/icons/icon-192.png`,
+    image: `${origin}${BRAND.iconDir}/icon-192.png`,
   });
   nostrconnectMemo = { uri, clientSk, secret };
   storage.ncPending.set({ uri, clientSk: bytesToHex(clientSk), ts: Date.now() });
