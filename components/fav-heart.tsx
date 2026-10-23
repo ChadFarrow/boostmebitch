@@ -152,6 +152,25 @@ function declaredMedium(podcast?: Podcast | null): string | undefined {
 }
 
 /**
+ * The ONE place a resolved `Podcast` becomes a show favorite — the heart and
+ * the OPML import (`<OpmlTools>`) both build it here, so a field added to one
+ * cannot go missing from the other.
+ */
+export function favoriteFromPodcast(podcast: Podcast, guid: string): FavoritePodcast {
+  return {
+    id: podcast.id,
+    podcastGuid: guid,
+    title: podcast.title,
+    author: podcast.author,
+    image: podcast.image,
+    artwork: podcast.artwork,
+    url: podcast.url,
+    medium: declaredMedium(podcast),
+    addedAt: Date.now(),
+  };
+}
+
+/**
  * `nameTarget` makes the button read `♡ SHOW` / `♡ ALBUM` instead of
  * `♡ FAVORITE`. Pass it wherever a show heart and an episode heart sit in the
  * SAME cluster — today that is only the fullscreen player, where the two
@@ -184,18 +203,7 @@ export function FavHeart({
     if (isFav) {
       removeFavorite(guid!);
     } else {
-      const fav: FavoritePodcast = {
-        id: podcast.id,
-        podcastGuid: guid!,
-        title: podcast.title,
-        author: podcast.author,
-        image: podcast.image,
-        artwork: podcast.artwork,
-        url: podcast.url,
-        medium: declaredMedium(podcast),
-        addedAt: Date.now(),
-      };
-      addFavorite(fav);
+      addFavorite(favoriteFromPodcast(podcast, guid!));
     }
     requestFavoritesSync(identity);
   }
