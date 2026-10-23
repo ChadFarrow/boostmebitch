@@ -19,6 +19,8 @@ import { fetchEpisodeByGuid, fetchPodcastByFeedUrl, fetchPodcastByGuid, piConfig
 export interface ApiConfig {
   apiKey: string;
   piTtlHours: number;
+  /** TTL for a row recording PI's "not found" (`miss`); see config.ts. */
+  piMissTtlHours: number;
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -314,6 +316,10 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
   //
   // Filling in an absent key with null is the negative-cache poisoning bug the
   // app's COULD_NOT_ASK set exists to prevent, arriving from the server side.
+  //
+  // A cached null expires after `piMissTtlHours`, not `piTtlHours`: "not found"
+  // is the state every new episode starts in, so it must not outlive PI's crawl
+  // by a week. Past its TTL a row is ABSENT here and PI is asked again.
 
   app.post('/pi/podcasts', async (req, reply) => {
     const body = req.body as { guids?: unknown };
@@ -324,8 +330,9 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
 
     const { rows } = await db.query<{ guid: string; data: unknown; miss: boolean }>(
       `select guid, data, miss from pi_podcasts
-         where guid = any($1::text[]) and fetched_at > now() - ($2 || ' hours')::interval`,
-      [guids, String(cfg.piTtlHours)],
+         where guid = any($1::text[])
+           and fetched_at > now() - ((case when miss then $3::text else $2::text end) || ' hours')::interval`,
+      [guids, String(cfg.piTtlHours), String(cfg.piMissTtlHours)],
     );
     for (const r of rows) out[r.guid] = r.miss ? null : r.data;
 
@@ -359,8 +366,8 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
     const { rows } = await db.query<{ feed_guid: string; item_guid: string; data: unknown; miss: boolean }>(
       `select feed_guid, item_guid, data, miss from pi_episodes
          where (feed_guid, item_guid) in (select * from unnest($1::text[], $2::text[]))
-           and fetched_at > now() - ($3 || ' hours')::interval`,
-      [refs.map((r) => r.feedGuid), refs.map((r) => r.itemGuid), String(cfg.piTtlHours)],
+           and fetched_at > now() - ((case when miss then $4::text else $3::text end) || ' hours')::interval`,
+      [refs.map((r) => r.feedGuid), refs.map((r) => r.itemGuid), String(cfg.piTtlHours), String(cfg.piMissTtlHours)],
     );
     for (const r of rows) out[`${r.feed_guid}:${r.item_guid}`] = r.miss ? null : r.data;
 

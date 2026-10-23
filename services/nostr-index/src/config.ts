@@ -100,6 +100,13 @@ export const config = {
   // How stale a pi_* row may be before the warm-fill refreshes it.
   piTtlHours: num('INDEX_PI_TTL_HOURS', 24 * 7),
 
+  // The same for a row recording PI's "not found". Far shorter, because the
+  // two go stale in opposite directions: a feed rarely loses an episode, but an
+  // episode PI has not crawled yet is the ordinary state of a new one. Under
+  // the week-long TTL a playlist's newest entry read "not in Podcast Index"
+  // for seven days after PI had it.
+  piMissTtlHours: num('INDEX_PI_MISS_TTL_HOURS', 1),
+
   // How often tracked-pubkey subscriptions are reconsidered. Exposed mainly so
   // verify/check-indexer.mjs can drive it in milliseconds instead of minutes.
   resubscribeIntervalMs: num('INDEX_RESUBSCRIBE_MS', 60_000),
