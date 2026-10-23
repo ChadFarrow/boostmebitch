@@ -61,6 +61,7 @@ DATABASE_URL=postgres://... INDEX_API_KEY=... npm start
 | `INDEX_CONNECTIVITY_MS` | no | How often relay health is checked. Default 60000. |
 | `PODCAST_INDEX_KEY` / `_SECRET` | no | Absent means the `pi_*` tables are only filled on demand, never warmed ahead. |
 | `INDEX_PI_TTL_HOURS` | no | How stale a `pi_*` row may be. Default 168. |
+| `INDEX_PI_MISS_TTL_HOURS` | no | How stale a `pi_*` row recording PI's "not found" may be. Default 1. |
 
 Migrations run automatically on boot; `npm run migrate` runs them alone.
 

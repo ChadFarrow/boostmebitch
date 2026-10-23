@@ -4,7 +4,7 @@ import { rateLimit } from '@/lib/rate-limit';
 import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
 import { resolvePlaylistTracks } from '@/lib/playlist-db';
 import { batchEpisodes, episodeKey, fillTrackValues, MAX_BATCH } from '@/lib/pi-batch';
-import { fnvHash, hasValueRecipients, mergeRssOverPi } from '@/lib/util';
+import { fnvHash, hasValueRecipients, mergeRssOverPi, playsAsTracks } from '@/lib/util';
 import type { Episode, PlayGroup, Podcast } from '@/lib/types';
 import type { PlaylistItemRef } from '@/lib/feed-xml';
 
@@ -173,7 +173,14 @@ export async function GET(req: Request) {
     // separation is the money rule: `payableValue` reads `episode.value` first,
     // so a block carried straight through here would outrank the live one
     // `fillTrackValues` reads below. See `PlaylistDbTracks.values`.
-    const db = await resolvePlaylistTracks(page, podcast.id);
+    //
+    // **Asked only when the rows are TRACKS (`playsAsTracks`).** The database
+    // is StableKraft's track table: no show notes, no show title. That is all a
+    // song row needs, but a `podcastL` row is an EPISODE that opens the detail
+    // view, and the table holds some podcasts too — so on the Small Group Shows
+    // list it answered 20 of 114 rows with episodes that had no notes to show.
+    // A miss is harmless and a hit is not, which is the accelerator rule.
+    const db = playsAsTracks(podcast) ? await resolvePlaylistTracks(page, podcast.id) : null;
     const stillNeeded = db
       ? page.filter((ref) => !db.tracks.has(episodeKey(ref)))
       : page;

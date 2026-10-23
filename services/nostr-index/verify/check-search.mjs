@@ -199,7 +199,7 @@ const stats = emptyStats();
 for (const e of seeds) await ingestEvent(db, e, stats);
 console.log(`seed: ${JSON.stringify(stats)}`);
 
-const app = buildApi(db, { apiKey: API_KEY, piTtlHours: 24 });
+const app = buildApi(db, { apiKey: API_KEY, piTtlHours: 24, piMissTtlHours: 1 });
 const get = async (url) => {
   const res = await app.inject({ method: 'GET', url, headers: { 'x-index-key': API_KEY } });
   return { status: res.statusCode, body: res.json() };
