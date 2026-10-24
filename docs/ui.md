@@ -6,7 +6,7 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 ## PWA install
 
-`public/manifest.json` + `public/sw.js` + `<ServiceWorkerRegister>` (`components/sw-register.tsx`, mounted in `app/layout.tsx`). Display mode `standalone`; icons in `public/icons/` + `public/icon.svg`; iPhone splashes in `public/splash/`. Header has `pt-[env(safe-area-inset-top)]` so the bolt + title clear the notch.
+`public/manifest.json` + `public/sw.js` + `<ServiceWorkerRegister>` (`components/sw-register.tsx`, mounted in `app/layout.tsx`). Display mode `standalone`; icons **per brand** in `public/icons/bmb/` and `public/icons/buddy/`, chosen by `BRAND.iconDir` (sources and the Helipad / Podcast Index copies in `brand/` — see `brand/README.md`); the older brand-neutral `public/icons/*.png` and `public/icon.svg` stay only because outside URLs point at them, and the splash and maskable scripts still draw the old bolt from `public/icon.svg`; iPhone splashes in `public/splash/`. Header has `pt-[env(safe-area-inset-top)]` so the bolt + title clear the notch.
 
 **The SW has no precaching.** Next.js emits hashed bundle URLs that change every build, so a stale cache would silently break installed users. The empty `fetch` handler exists only so Chrome/Edge surface the install prompt.
 
