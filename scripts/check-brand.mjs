@@ -110,10 +110,11 @@ const REQUIRED = [
   'androidPackageId', 'androidAppUrl',
 ];
 
-/** Every file `app/layout.tsx`, the manifests and the TWA configs read out of `iconDir`. */
+/** Every file `app/layout.tsx`, `<AppHeader>`, the manifests and the TWA configs read out of `iconDir`. */
 const ICON_FILES = [
   'icon.svg', 'favicon.svg', 'favicon-32.png', 'icon-192.png', 'icon-512.png',
   'icon-192-maskable.png', 'icon-512-maskable.png', 'apple-touch-icon.png',
+  'header-mark.svg',
 ];
 
 // ---------------------------------------------------------------------------

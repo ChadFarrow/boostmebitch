@@ -62,9 +62,27 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
   // rather than `w-6`: 4px, which is the whole margin. Re-measure at 360px on
   // the BUDDY brand before adding anything to this row; the bmb brand fits
   // either way and will not show you the failure.
+  //
+  // TWO ICONS, ONE PER BREAKPOINT. Below sm: it stays the plain `BoltIcon` at
+  // w-5, for the margin above — the brand mark's face is unreadable at 20px
+  // anyway. From sm: up the row has room, so it shows the brand mark
+  // (`BRAND.iconDir/header-mark.svg`: the stamp frame and the face bolt, the
+  // same art as the favicon and app icon). 34px, under the 38px `.btn-ghost`
+  // that sets the row height, so `--app-header-h` does not move. It is an
+  // <img> of the per-brand file, not an inline copy of the artwork, so the
+  // two deploys and `brand/src` cannot drift apart. Decorative: the wordmark
+  // beside it already names the app, so `alt=""`.
   const wordmark = (
     <>
-      <BoltIcon className="w-5 h-5 sm:w-6 sm:h-6 text-bolt shrink-0" />
+      <BoltIcon className="w-5 h-5 sm:hidden text-bolt shrink-0" />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={`${BRAND.iconDir}/header-mark.svg`}
+        alt=""
+        width={34}
+        height={34}
+        className="hidden sm:block w-[34px] h-[34px] shrink-0"
+      />
       <span className="font-display text-xl sm:text-2xl truncate">{BRAND.displayName}</span>
       <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline shrink-0">
         podcasting 2.0

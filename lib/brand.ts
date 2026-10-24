@@ -104,7 +104,8 @@ export interface Brand {
    * The folder under `public/` holding this brand's icon set: `icon.svg` (the
    * full stamp), `favicon.svg` and `favicon-32.png` (the text-free mark, for
    * tab-sized renders where the stamp's lettering is noise), `icon-192.png`,
-   * `icon-512.png`, the two `*-maskable.png` and `apple-touch-icon.png`.
+   * `icon-512.png`, the two `*-maskable.png`, `apple-touch-icon.png`, and
+   * `header-mark.svg` (the desktop header's logo, `<AppHeader>`).
    *
    * PER BRAND, NOT SHARED. Both deploys build from this one repo, so `public/`
    * holds both sets and this field chooses — the same shape as `boostSound` and
