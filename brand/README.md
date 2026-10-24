@@ -19,7 +19,7 @@ The masters. Text is outlined (Bricolage Grotesque 800), so nothing needs the fo
 | --- | --- | --- |
 | `*-full.svg` | the stamp, full bleed | `icon.svg`, every PNG an OS or a listing shows large |
 | `*-maskable.svg` | the stamp at 72% | Android adaptive icons — every corner sits inside the 40% safe-zone circle |
-| `*-mark.svg` | frame + face bolt, no text, no filter | favicons; at 16–32px the lettering is noise |
+| `*-mark.svg` | thick frame + large face bolt, no inner frame, no text, no filter | favicons (`favicon.svg`, `favicon-32.png`); at 16–32px the inner frame and lettering turn to grey noise, so the tab icon is simplified and the frame style alone carries the brand |
 | `*-header.svg` | frame + face bolt, cropped tight, transparent | `public/icons/*/header-mark.svg`, the desktop header (34px, `sm:` and up; phones keep the plain bolt) |
 
 The PNGs in `public/icons/{bmb,buddy}/` are rendered from these with resvg (it supports the filter; librsvg and Inkscape exports differ). A changed source means re-rendering every size, then checking the 32px favicon by eye.
