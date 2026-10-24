@@ -1,11 +1,13 @@
 # Brand icons
 
-The "Stamp Bolt, inked" logo. One shape for both brands; the colours tell them apart.
+The "face in the stamp" logo: the inked stamp, with a bolt character inside it. Good twin, evil twin — one shape for both brands; the colours and the face tell them apart.
 
 | Brand | Look |
 | --- | --- |
-| Boost Me Bitch | cream outline stamp, yellow bolt, on `#0a0a08` |
-| Boost Me Buddy | solid yellow stamp, black bolt, on `#0a0a08` |
+| Boost Me Bitch | cream outline stamp, yellow bolt with angry brows and a smirk, on `#0a0a08` |
+| Boost Me Buddy | solid yellow stamp, black bolt with happy eyes and an open smile, on `#0a0a08` |
+
+The bolt is the chunky, flat-topped one from a Nano Banana exploration, redrawn as vector. Its upper half is wide on purpose: the face has to sit inside it, and the app's older thin bolt left no room for brows. Both brands use the identical bolt path.
 
 It was checked against the Podcasting 2.0 Boostagram chapter art (a dark speech bubble split by a bolt, on pale yellow). There is no speech bubble here on purpose: the two must not be confused.
 
@@ -17,7 +19,7 @@ The masters. Text is outlined (Bricolage Grotesque 800), so nothing needs the fo
 | --- | --- | --- |
 | `*-full.svg` | the stamp, full bleed | `icon.svg`, every PNG an OS or a listing shows large |
 | `*-maskable.svg` | the stamp at 72% | Android adaptive icons — every corner sits inside the 40% safe-zone circle |
-| `*-mark.svg` | frame + bolt, no text, no filter | favicons; at 16–32px the lettering is noise |
+| `*-mark.svg` | frame + face bolt, no text, no filter | favicons; at 16–32px the lettering is noise |
 
 The PNGs in `public/icons/{bmb,buddy}/` are rendered from these with resvg (it supports the filter; librsvg and Inkscape exports differ). A changed source means re-rendering every size, then checking the 32px favicon by eye.
 
