@@ -28,6 +28,8 @@ The masters. Text is outlined (Bricolage Grotesque 800), so nothing needs the fo
 | `*-mark.svg` | thick frame + large yellow face bolt on ink, no inner frame, no text, no filter: a cream frame (bmb), a yellow frame (buddy) — the header mark's colours, drawn heavier | favicons (`favicon.svg`, `favicon-32.png`); at 16–32px the inner frame and lettering turn to grey noise, so the tab icon is simplified and the frame colour alone carries the brand |
 | `*-header.svg` | outline frame filled with ink + yellow face bolt, cropped tight: a cream frame (bmb), a yellow frame (buddy) | `public/icons/*/header-mark.svg`, the desktop header (34px, `sm:` and up; phones keep the plain bolt). The ink fill is for the light theme — an `<img>` cannot follow the theme tokens, so a transparent frame vanished on the cream header |
 
+**`icon-512.png` is read by three things outside this app**: the site kind:0 `picture` (`scripts/publish-site-profile.mjs`), the TWA `iconUrl` (`android/twa-manifest*.json`) and the Zapstore `icon` (`zapstore*.yaml`). Changing the picture keeps its URL; renaming or moving the file blanks the site's avatar on every Nostr client until `npm run publish:site-profile` and `publish:site-profile:buddy` run again, and the Android app and Zapstore listing until their next publish.
+
 The PNGs in `public/icons/{bmb,buddy}/` are rendered from these with resvg (it supports the filter; librsvg and Inkscape exports differ). `@resvg/resvg-js` 2.6.2 with `fitTo: { mode: 'width' }` reproduces the shipped bmb PNGs pixel for pixel, so use that version. A changed source means re-rendering every size, then checking the 32px favicon by eye.
 
 ## For other repos
@@ -36,10 +38,10 @@ These files are not served by this app. They are the exact files two Podcast Ind
 
 ### Helipad — `Podcastindex-org/helipad`
 
-Helipad draws a sending app's icon at max 60×60, square, no corner rounding, on a `#c4c4df` card.
+Helipad draws a sending app's icon at max 60×60, square, no corner rounding, on a `#c4c4df` card. **It does not read the Podcast Index apps list** — it serves its own static `webroot/extra/apps.json` — so each list needs its own PR.
 
 1. `helipad/boostmebitch.png` and `helipad/boostmebuddy.png` → `webroot/image/`
-2. Two entries in `webroot/extra/apps.json`. The key is the boostagram's `app_name` lowercased, which is `BRAND.wireName`:
+2. Two entries in `webroot/extra/apps.json`. The key is the boostagram's `app_name` lowercased, which is `BRAND.wireName`. **Lowercase is required**: `webroot/script/helipad.js` looks up `appList[boostApp.toLowerCase()]`, so a key with a capital letter never matches and the boost shows `unknown.png` (the `"StableKraft"` and `"ITDV App"` keys did, until Podcastindex-org/helipad#164):
 
    ```json
    "boostmebitch": { "icon": "boostmebitch", "url": "https://www.boostmebitch.com" },
@@ -48,4 +50,4 @@ Helipad draws a sending app's icon at max 60×60, square, no corner rounding, on
 
 ### Podcast Index apps page — `Podcastindex-org/web-ui`
 
-`podcastindex/boostmebitch.png` and `podcastindex/boostmebuddy.png` → the assets folder, then an entry each in `server/data/apps.json` naming the file in `appIconUrl` (PNG or JPG; schema in `server/data/apps-schema.json`).
+`podcastindex/boostmebitch.png` and `podcastindex/boostmebuddy.png` → `server/assets/`, then an entry each in `server/data/apps.json` naming the file in `appIconUrl` (PNG or JPG; schema in `server/data/apps-schema.json`, which CI validates). Both entries list the same `supportedElements`, because both deploys run the same code; when the app gains or drops a Podcasting 2.0 element, change both. Edit the 4,500-line file as text — re-serializing it rewrites every other app's entry.
