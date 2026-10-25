@@ -137,12 +137,17 @@ export const metadata: Metadata = {
     ],
   },
   icons: {
+    // Per brand (`BRAND.iconDir`). The tab favicon is the text-free mark: at
+    // 16-32px the stamp's lettering is noise. Everything an OS draws large —
+    // the 192/512 PNGs, the apple-touch icon — is the face bolt alone: the
+    // stamp sat in a wide black band on a home screen and read small.
     icon: [
-      { url: '/icon.svg', type: 'image/svg+xml' },
-      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-      { url: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+      { url: `${BRAND.iconDir}/favicon.svg`, type: 'image/svg+xml' },
+      { url: `${BRAND.iconDir}/favicon-32.png`, sizes: '32x32', type: 'image/png' },
+      { url: `${BRAND.iconDir}/icon-192.png`, sizes: '192x192', type: 'image/png' },
+      { url: `${BRAND.iconDir}/icon-512.png`, sizes: '512x512', type: 'image/png' },
     ],
-    apple: [{ url: '/icons/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
+    apple: [{ url: `${BRAND.iconDir}/apple-touch-icon.png`, sizes: '180x180', type: 'image/png' }],
   },
   openGraph: {
     title: siteTitle(),
