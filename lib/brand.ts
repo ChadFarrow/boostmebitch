@@ -102,7 +102,7 @@ export interface Brand {
   manifest: string;
   /**
    * The folder under `public/` holding this brand's icon set: `icon.svg` (the
-   * face bolt alone, the installed-app icon), `favicon.svg` and
+   * installed-app icon: the face bolt, framed on buddy), `favicon.svg` and
    * `favicon-32.png` (the text-free mark, for tab-sized renders where the
    * stamp's lettering is noise), `icon-192.png`, `icon-512.png`, the two
    * `*-maskable.png`, `apple-touch-icon.png`, and `header-mark.svg` (the
