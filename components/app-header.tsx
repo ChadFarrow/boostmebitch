@@ -72,6 +72,12 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
   // <img> of the per-brand file, not an inline copy of the artwork, so the
   // two deploys and `brand/src` cannot drift apart. Decorative: the wordmark
   // beside it already names the app, so `alt=""`.
+  //
+  // THE MARK CANNOT FOLLOW THE THEME, so its frame is FILLED with ink. An
+  // <img> never sees `--ink`/`--bolt`, and the light theme's `--ink` is the
+  // bmb frame's own cream (#fdfaf3): with a transparent frame the bmb mark
+  // lost its frame and its yellow bolt on a light header. Filled, it reads as
+  // a dark badge there and is unchanged on the dark header.
   const wordmark = (
     <>
       <BoltIcon className="w-5 h-5 sm:hidden text-bolt shrink-0" />

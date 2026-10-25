@@ -24,7 +24,7 @@ The masters. Text is outlined (Bricolage Grotesque 800), so nothing needs the fo
 | `*-full.svg` | the stamp, full bleed | the Helipad and Podcast Index PNGs below, where the stamp's lettering names the app |
 | `*-maskable.svg` | the stamp at 72% | not shipped; kept as the stamp's safe-zone reference |
 | `*-mark.svg` | thick frame + large face bolt, no inner frame, no text, no filter | favicons (`favicon.svg`, `favicon-32.png`); at 16–32px the inner frame and lettering turn to grey noise, so the tab icon is simplified and the frame style alone carries the brand |
-| `*-header.svg` | frame + face bolt, cropped tight, transparent | `public/icons/*/header-mark.svg`, the desktop header (34px, `sm:` and up; phones keep the plain bolt) |
+| `*-header.svg` | outline frame filled with ink + yellow face bolt, cropped tight: a cream frame (bmb), a yellow frame (buddy) | `public/icons/*/header-mark.svg`, the desktop header (34px, `sm:` and up; phones keep the plain bolt). Buddy does NOT use its solid yellow tile here: on the dark header it was the brightest thing on the page. The ink fill is for the light theme — an `<img>` cannot follow the theme tokens, so a transparent frame vanished on the cream header |
 
 The PNGs in `public/icons/{bmb,buddy}/` are rendered from these with resvg (it supports the filter; librsvg and Inkscape exports differ). A changed source means re-rendering every size, then checking the 32px favicon by eye.
 

@@ -139,7 +139,8 @@ export const metadata: Metadata = {
   icons: {
     // Per brand (`BRAND.iconDir`). The tab favicon is the text-free mark: at
     // 16-32px the stamp's lettering is noise. Everything an OS draws large —
-    // the 192/512 PNGs, the apple-touch icon — is the full stamp.
+    // the 192/512 PNGs, the apple-touch icon — is the face bolt alone: the
+    // stamp sat in a wide black band on a home screen and read small.
     icon: [
       { url: `${BRAND.iconDir}/favicon.svg`, type: 'image/svg+xml' },
       { url: `${BRAND.iconDir}/favicon-32.png`, sizes: '32x32', type: 'image/png' },
