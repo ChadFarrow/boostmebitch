@@ -179,7 +179,7 @@ export {
   recordFavoritesPrivacy,
 } from './settings-backup';
 
-export { hydrateFavorites, startFavoritesReadRetry } from './favorites-hydrator';
+export { favoriteFromPodcast, hydrateFavorites, startFavoritesReadRetry } from './favorites-hydrator';
 
 export {
   MUTES_KIND,

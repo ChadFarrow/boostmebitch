@@ -500,6 +500,26 @@ zero by construction. Reading the map uses `key in obj`, never `?? null`: the
 latter turns every unanswered guid into a cached miss, which is exactly the
 poisoning `COULD_NOT_ASK` exists to prevent.
 
+### The POST door, and the OPML import that needs it
+
+`/api/by-guid/batch` also answers **POST** `{ guids: string[] }`, with the same
+key rule (`isLookupKey`) and the same limiter BUCKET as the GET. It exists for the
+OPML import (`lookupFeedUrls`, `lib/podcast-meta.ts`), whose every key is
+`url:<feed address>`, and the GET fails it in two ways that are both quiet: it
+**splits on commas**, so an address with one reaches Podcast Index as two halves
+of an address, and a hundred long addresses do not reliably fit a URL. The shared
+bucket is the point — an import and a hydration from one household spend one
+budget of PI calls, never two.
+
+`lookupFeedUrls` keeps the three states intact and **stops at the first failed
+chunk**: a 429 is that shared budget running out, and every later chunk would be
+refused the same way while costing hydration its share. It never trips the
+breaker, for `warmPodcastCache`'s reason. A found show is cached under its
+`url:` key AND its guid, so the hydrator resolving the new favorites a moment
+later issues no request. **The read index STORES every `url:` key it is asked
+about** (`pi_podcasts`), which is one reason a private feed address must never
+reach this route — see the OPML section of `docs/security.md`.
+
 ## The batch door fans out, and it has to be BOUNDED
 
 `probeThenBatch` (`lib/pi-batch.ts`) ended with a bare `Promise.allSettled(rest.map(resolve))`. One request carries up to `MAX_BATCH` refs, so that fired up to **99 concurrent Podcast Index calls out of a single handler** — three times over for a 231-track favorites list, since the client chunks at 100.

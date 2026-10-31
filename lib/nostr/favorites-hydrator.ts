@@ -72,7 +72,9 @@ import { resolvePublishRelays } from './relays';
 import type { DecryptPurpose } from './signer';
 import type { NostrIdentity } from './auth';
 
-function favoriteFromPodcast(p: Podcast): FavoritePodcast | null {
+/** A resolved show as a favorite. Exported for the OPML import, which adds
+ *  shows it found by feed address — one builder, so the two cannot drift. */
+export function favoriteFromPodcast(p: Podcast): FavoritePodcast | null {
   if (!p?.podcastGuid) return null;
   return {
     id: p.id,

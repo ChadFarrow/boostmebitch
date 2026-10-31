@@ -1,7 +1,19 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestJson, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { batchPodcasts, MAX_BATCH } from '@/lib/pi-batch';
+
+/**
+ * Same 120-char bound as the single route, and the `url:` prefix is the
+ * podroll fallback for feeds PI does not index by guid — and the whole of an
+ * OPML import, which knows each show only by its feed address.
+ */
+function isLookupKey(g: string): boolean {
+  return g.length > 0 && g.length <= 2048 && (g.startsWith('url:') || g.length <= 120);
+}
+
+/** MAX_BATCH `url:` keys at the 2048-char ceiling, with room for the JSON. */
+const MAX_REQUEST_BYTES = 256 * 1024;
 
 /**
  * Resolve up to MAX_BATCH podcast:guid identifiers in ONE request.
@@ -30,9 +42,7 @@ export async function GET(req: Request) {
   const guids = raw
     .split(',')
     .map((g) => g.trim())
-    // Same 120-char bound as the single route, and the `url:` prefix is the
-    // podroll fallback for feeds PI does not index by guid.
-    .filter((g) => g.length > 0 && g.length <= 2048 && (g.startsWith('url:') || g.length <= 120))
+    .filter(isLookupKey)
     .slice(0, MAX_BATCH);
   if (!guids.length) return NextResponse.json({ error: 'no valid guids' }, { status: 400 });
 
@@ -56,5 +66,47 @@ export async function GET(req: Request) {
       // `max-age` here would have hidden it.
       { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },
     );
+  }, 'batch lookup failed');
+}
+
+/**
+ * The same lookup with the keys in a JSON body: `{ guids: string[] }`.
+ *
+ * For the OPML import (`lookupFeedUrls` in lib/podcast-meta.ts), whose keys are
+ * all `url:<feed address>`. The GET above cannot carry them, for two reasons
+ * that both fail quietly rather than with an error: it SPLITS ON COMMAS, and a
+ * feed address may contain one, so the key reaches Podcast Index as two halves
+ * of an address; and a hundred long addresses do not reliably fit a URL. Same
+ * trade `/api/episode-by-guid/batch` made — a POST loses the CDN cache, which a
+ * per-user list would rarely hit anyway.
+ *
+ * THE SAME LIMITER BUCKET as the GET, on purpose: both spend one Podcast Index
+ * call per key, so an import and a hydration from one household share one
+ * budget rather than doubling it.
+ */
+export async function POST(req: Request) {
+  const limited = rateLimit(req, 'by-guid-batch', 30);
+  if (limited) return limited;
+  const notJson = requireJsonBody(req);
+  if (notJson) return notJson;
+
+  const read = await readCappedRequestJson(req, MAX_REQUEST_BYTES);
+  if (!read.ok) return read.response;
+  const rawGuids = (read.body as { guids?: unknown })?.guids;
+  if (!Array.isArray(rawGuids)) {
+    return NextResponse.json({ error: 'guids must be an array' }, { status: 400 });
+  }
+  const guids = rawGuids
+    .filter((g): g is string => typeof g === 'string')
+    .map((g) => g.trim())
+    .filter(isLookupKey)
+    .slice(0, MAX_BATCH);
+  if (!guids.length) return NextResponse.json({ error: 'no valid guids' }, { status: 400 });
+
+  return withErrorHandling(async () => {
+    const podcasts = await batchPodcasts(guids);
+    // No Cache-Control: a POST with a per-user body gives a shared cache
+    // nothing to key on — the same reasoning as the episode batch route.
+    return NextResponse.json({ podcasts });
   }, 'batch lookup failed');
 }

@@ -29,6 +29,10 @@ import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { FavoritesNewEpisodes } from '@/components/favorites-new-episodes';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
+import {
+  OpmlImportButton, OpmlImportPanel, OpmlTools, useOpmlImport, type OpmlImporter,
+} from '@/components/favorites-opml';
+import { saveFile } from '@/lib/save-file';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import {
@@ -97,6 +101,9 @@ export function FavoritesPage() {
   // reason.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  // Held HERE, above both of its triggers — see `useOpmlImport`.
+  const opml = useOpmlImport();
 
   const [view, setView] = useState(() => storage.favView.get());
   const [q, setQ] = useState('');
@@ -481,6 +488,12 @@ export function FavoritesPage() {
           library, this describes the wire. */}
       <FavoritesNewEpisodes key={identity?.npub ?? 'guest'} onOpen={openNewEpisode} />
 
+      {/* The OPML import's progress and result. Here, above the split, because
+          an import started from the empty card turns that card into the
+          library the moment it lands — and the "not added" list must survive
+          that. Self-hiding until a file is picked. */}
+      <OpmlImportPanel importer={opml} />
+
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
           fell straight through to <EmptyLibrary>, which says "Nothing saved
@@ -496,7 +509,7 @@ export function FavoritesPage() {
       {!mounted || (total === 0 && checking) ? (
         <p className="text-muted text-sm py-8">loading your favorites…</p>
       ) : total === 0 ? (
-        <EmptyLibrary signedIn={!!identity} degraded={degraded} off={syncOff} />
+        <EmptyLibrary signedIn={!!identity} degraded={degraded} off={syncOff} importer={opml} />
       ) : (
         <>
           {/* ALL THREE CONTROLS ON ONE ROW. Six rows of chrome stood between
@@ -607,6 +620,10 @@ export function FavoritesPage() {
               ))}
             </>
           )}
+          {/* UNDER the library, not above it: rarely pressed, and the controls
+              above are judged on how fast they get you to a favorite. The
+              empty branch offers the import in its own card instead. */}
+          <OpmlTools importer={opml} />
         </>
       )}
     </div>
@@ -1338,20 +1355,10 @@ function DownloadFavorites() {
         setMsg({ tone: 'no', text: refusal ?? 'no event came back from the relays' });
         return;
       }
-      const blob = new Blob([serializeFavoritesBackup(read.event)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = favoritesBackupFilename(read.event, BRAND.domain);
-      // In the document before the click: Firefox ignores a click on a
-      // detached anchor, so the download silently never starts.
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      // Next macrotask, not immediately: revoking inside the same task can
-      // cancel a download that has not yet been handed to the browser. It
-      // touches no React state, so an unmount in between is harmless.
-      setTimeout(() => URL.revokeObjectURL(url), 0);
+      saveFile(
+        new Blob([serializeFavoritesBackup(read.event)], { type: 'application/json' }),
+        favoritesBackupFilename(read.event, BRAND.domain),
+      );
       // The COUNT, not the tag total: an `i` tag is a favorite or a
       // placement group, and `⇧ RESTORE FROM BACKUP` reads it the same way.
       const count = favoriteIds(parseFavoritesList(read.event.tags)).length;
@@ -1514,7 +1521,8 @@ function EmptyLibrary({
   signedIn,
   degraded,
   off,
-}: { signedIn: boolean; degraded: boolean; off: boolean }) {
+  importer,
+}: { signedIn: boolean; degraded: boolean; off: boolean; importer: OpmlImporter }) {
   return (
     <div className="card p-6 flex flex-col gap-3 items-start">
       <p className="font-display text-xl">
@@ -1531,11 +1539,24 @@ function EmptyLibrary({
           && ' Favorites are set to stay on this device, so nothing saved in another app is shown here.'}
         {!signedIn && ' Favorites are stored on this device — sign in with Nostr to sync them across apps.'}
       </p>
-      {/* Clears the selection for the same reason <AppHeader>'s wordmark does
-          on this route — see `clearShowSelection`. */}
-      <Link href="/" onClick={clearShowSelection} className="btn-ghost text-xs">
-        ← back to search
-      </Link>
+      {/* The new user this page most often meets: someone with a library in
+          ANOTHER app. Not offered on a degraded read — the list may be full
+          and unreadable, and "bring your shows over" would be the same false
+          claim the headline above refuses to make. */}
+      {!degraded && (
+        <p className="text-sm text-muted leading-relaxed max-w-prose">
+          Coming from another podcast app? Export your subscriptions there as an OPML file,
+          then import it here.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {!degraded && <OpmlImportButton importer={importer} className="btn-ghost text-xs disabled:opacity-50" />}
+        {/* Clears the selection for the same reason <AppHeader>'s wordmark does
+            on this route — see `clearShowSelection`. */}
+        <Link href="/" onClick={clearShowSelection} className="btn-ghost text-xs">
+          ← back to search
+        </Link>
+      </div>
     </div>
   );
 }
