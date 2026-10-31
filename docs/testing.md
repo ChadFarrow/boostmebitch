@@ -93,6 +93,29 @@ those, and a new script imports it rather than pasting a twelfth copy:
 `equal(label, actual, expected)` and `ok(label, cond, detail)` — so a migrated
 assertion keeps its meaning, and every result line starts `ok` or `FAIL`.
 
+## An Android phone or emulator: `npm run android:advance`, never an `e2e:*` script
+
+`scripts/android-advance.mjs` launches nothing: it attaches to the browser already
+running on an adb device (`adb forward tcp:0 localabstract:chrome_devtools_remote`),
+which is why it is not an `e2e:*` script and does not use `scripts/cdp.mjs`.
+
+- **`watch`** (the default) is safe on a real phone. It adds its own event log
+  (`__advlog`) and prints it live beside the OS's view — screen, Doze state, the
+  media session, started audio players, and whether the browser's media service is
+  a FOREGROUND service — while the listener does the steps. At the end it prints
+  the app's own `bmb:plog:device`.
+- **`repro`** queues two episodes, plays to the end, locks the screen, optionally
+  forces Doze (`--doze deep`) or sends a lock-screen ⏭ (`--next-at 4`), unlocks and
+  reports. **It clears the origin's `localStorage`** — on a phone, the listener's
+  queue, settings, signer and wallet connection — so it refuses any serial that
+  does not start with `emulator-`.
+
+Nine `repro` runs on the Android 16 emulator (2026-10-30) — Chrome tab, Chrome TWA,
+Brave 1.98 TWA; streamed and downloaded; locked 12 s and 7 min; deep Doze;
+lock-screen ⏭; delete-after-play — all advanced, so the listener's report of the
+next queue item not playing with the screen locked is still open. The traps that
+cost those runs time are in the script's header.
+
 ## A branch "N commits ahead of `main`" is NOT unfinished work
 
 A squash merge changes the patch id, so `git log main..`, `git cherry` and

@@ -16,7 +16,9 @@ import { bugReportBody, bugReportTitle, parseBugReport } from '@/lib/bug-report'
 // `bugReportBody` fencing all caller text so it cannot @mention anyone.
 // GitHub's error body is never reflected; see lib/bug-report.ts.
 
-const MAX_REQUEST_BYTES = 32 * 1024;
+// Three answers at MAX_ANSWER_CHARS, the snapshot, and a full playback log
+// (PLAYBACK_LOG_CAP lines, typically under 80 characters each).
+const MAX_REQUEST_BYTES = 48 * 1024;
 const DEFAULT_REPO = 'ChadFarrow/boostmebitch';
 
 export async function POST(req: Request) {
@@ -48,7 +50,7 @@ export async function POST(req: Request) {
       },
       body: JSON.stringify({
         title: bugReportTitle(report.answers),
-        body: bugReportBody(report.answers, report.info),
+        body: bugReportBody(report.answers, report.info, report.log),
         // `user-report` is how the owner tells a listener's report from the
         // owner's own issues: both show the OWNER as the author, because the
         // token is the owner's. `bug` sorts it with the other bugs. Fixed

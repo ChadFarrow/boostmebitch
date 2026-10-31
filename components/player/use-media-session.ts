@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { artCandidates } from '@/lib/util';
+import { logPlayback } from '@/lib/playback-log';
 import type { Episode, Podcast } from '@/lib/types';
 
 /**
@@ -68,8 +69,12 @@ export function useMediaSession({
       ['seekforward', (d) => skipBy(d.seekOffset || 10)],
       ['seekto', (d) => { if (d.seekTime != null) seekTo(d.seekTime); }],
     ];
+    // Each action is written to the playback log first: a lock-screen ⏭ that
+    // reached the page and a press that never arrived look the same otherwise.
     for (const [action, handler] of handlers) {
-      try { ms.setActionHandler(action, handler); } catch { /* unsupported action — skip */ }
+      try {
+        ms.setActionHandler(action, (d) => { logPlayback('ms', { action }); handler(d); });
+      } catch { /* unsupported action — skip */ }
     }
     return () => {
       for (const [action] of handlers) {
