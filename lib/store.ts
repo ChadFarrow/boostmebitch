@@ -10,9 +10,10 @@ import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
   addToHistory, epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
-  queueShowFor, trimForQueue,
+  queueShowFor, speedShowKey, trimForQueue,
 } from './util';
 import { savedStartSec } from './resume-position';
+import { downloadManager } from './downloads/download-manager';
 
 /** Which view the sign-in modal opens on. See `signInIntent` below. */
 export type SignInIntent = 'default' | 'google';
@@ -220,8 +221,11 @@ interface AppState {
   // Player speed, one of `PLAYBACK_RATES` (lib/util.ts). Starts at 1 and is
   // hydrated from `storage.playbackRate` by <Player>'s mount, never read at
   // store creation — this module is evaluated on the server too. The setter
-  // writes through to storage. <Player> applies it to the media element and
-  // forces 1× on a live item.
+  // writes through to storage: the global speed always, and the current
+  // podcast's own speed too (`speedKeyFor`), so a show plays at what was last
+  // chosen for it and a show never touched plays at the last speed chosen
+  // anywhere. `useShowSpeed` re-resolves it when `current` moves to another
+  // show. <Player> applies it to the media element and forces 1× on a live item.
   playbackRate: number;
   setPlaybackRate: (r: number) => void;
 
@@ -937,7 +941,12 @@ export const useApp = create<AppState>((set, get) => ({
   setPlayerExpanded: (b) => set({ playerExpanded: b }),
 
   playbackRate: 1,
-  setPlaybackRate: (r) => { storage.playbackRate.set(r); set({ playbackRate: r }); },
+  setPlaybackRate: (r) => {
+    storage.playbackRate.set(r);
+    const showKey = speedKeyFor(get().current);
+    if (showKey) storage.playbackRate.setShow(showKey, r);
+    set({ playbackRate: r });
+  },
 
   artOk: true,
   setArtOk: (b) => set({ artOk: b }),
@@ -1158,4 +1167,51 @@ function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
  */
 export function clearShowSelection() {
   useApp.getState().selectPodcast(null);
+}
+
+/**
+ * The speed an item plays at: its show's own speed when it has one, else the
+ * global speed. A track feed, an HLS enclosure and a live item have no show
+ * entry (`speedShowKey` is null), so they take the global one — and <Player>
+ * still forces a live item to 1×.
+ */
+export function resolvePlaybackRate(current: { episode: Episode; podcast: Podcast } | null): number {
+  const showKey = speedKeyFor(current);
+  return (showKey ? storage.playbackRate.getShow(showKey) : null) ?? storage.playbackRate.get();
+}
+
+/**
+ * `speedShowKey` for the item in the player, with its download RECORD as the
+ * witness for the medium when the show carries none. `/downloads` rebuilds the
+ * show with `dbRowToPodcast`, which has no medium, so an album track played
+ * from there would otherwise save a speed for its album — the rule
+ * `deletableAfterPlay` follows for the same reason (docs/downloads.md).
+ */
+export function speedKeyFor(current: { episode: Episode; podcast: Podcast } | null): string | null {
+  if (!current) return null;
+  const { episode, podcast } = current;
+  const medium = podcast.medium ?? downloadManager.feedMediumFor(episode);
+  return speedShowKey(episode, medium === podcast.medium ? podcast : { ...podcast, medium });
+}
+
+/**
+ * `<Player>`'s answer when the element refuses `refused` (the spec lets a
+ * browser throw `NotSupportedError` for a speed it cannot play). It drops the
+ * stored speed that holds `refused` — the show's own entry, the global one, or
+ * both — and re-resolves, so the element and the tile agree on what plays.
+ *
+ * **Not `setPlaybackRate(1)`.** That writes `'1'` as the show's own choice,
+ * and an entry outranks the global speed for ever: a refusal is not a choice.
+ * If the re-resolved speed is refused too, the apply effect runs again and
+ * this drops that one, so it ends at 1×.
+ */
+export function dropRefusedPlaybackRate(refused: number): void {
+  const current = useApp.getState().current;
+  const showKey = speedKeyFor(current);
+  if (showKey && storage.playbackRate.getShow(showKey) === refused) storage.playbackRate.clearShow(showKey);
+  if (storage.playbackRate.get() === refused) storage.playbackRate.set(1);
+  const next = resolvePlaybackRate(current);
+  // A refused speed held by neither key (it cannot be today) must still leave
+  // the store, or the tile names a speed the element is not playing.
+  useApp.setState({ playbackRate: next === refused ? 1 : next });
 }
