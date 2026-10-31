@@ -9,6 +9,7 @@ import { BRAND } from '@/lib/brand';
 import { BUILD_ID } from '@/lib/build-id';
 import { fmt } from '@/lib/format';
 import { getErrorMessage } from '@/lib/util';
+import { playbackLogLines } from '@/lib/playback-log';
 import {
   APP_INFO_KEYS,
   MAX_ANSWER_CHARS,
@@ -75,6 +76,9 @@ type Status =
 export function BugReportModal({ onClose }: { onClose: () => void }) {
   const [answers, setAnswers] = useState<BugReportAnswers>({ happened: '', expected: '', steps: '' });
   const [info] = useState<AppInfo>(takeSnapshot);
+  // Read at open for the snapshot's reason. It is under the same checkbox: it
+  // says what was playing and when, which is app info.
+  const [log] = useState<string[]>(playbackLogLines);
   // On by default, because it is what makes most reports fixable; the user
   // can still send the text alone. Off sends NO snapshot at all.
   const [includeInfo, setIncludeInfo] = useState(true);
@@ -96,7 +100,7 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
       const res = await fetch('/api/bug-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answers, info: includeInfo ? info : {} }),
+        body: JSON.stringify({ answers, info: includeInfo ? info : {}, log: includeInfo ? log : [] }),
       });
       const data = (await res.json().catch(() => ({}))) as { number?: number | null; error?: string };
       if (!res.ok) {
@@ -173,8 +177,8 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
         <span>
           Include app info
           <span className="block text-[11px] text-muted">
-            Super helpful: it shows us your device, sign-in and wallet type, and what was playing.
-            No keys, wallet strings or balances.
+            Super helpful: it shows us your device, sign-in and wallet type, what was playing, and
+            a log of recent playback events. No keys, wallet strings or balances.
           </span>
         </span>
       </label>
@@ -191,6 +195,14 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
             </div>
           ))}
         </dl>
+        {log.length > 0 && (
+          <>
+            <p className="mt-3 text-muted">Playback log, {log.length} events (UTC)</p>
+            <pre className="mt-1 max-h-40 overflow-auto overscroll-contain whitespace-pre font-mono text-[11px] text-bone/80">
+              {log.join('\n')}
+            </pre>
+          </>
+        )}
       </details>
 
       {secret && (

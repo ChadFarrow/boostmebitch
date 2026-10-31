@@ -24,6 +24,7 @@ import {
   STREAM_RATE_MAX_PER_MIN,
 } from './v4v/stream-ledger';
 import { coerceProfileMetadata } from './nostr/profile-metadata';
+import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 import { createObservable } from './pubsub';
 
 // Rail-pref changes need to reach live UI (account-menu summary, balance
@@ -80,6 +81,7 @@ const KEYS = {
   episodeMetaPrefix: 'bmb:epmeta',    // /api/episode-by-guid result, keyed by '<feedGuid>:<itemGuid>'
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   socialThreadPrefix: 'bmb:social',   // last DiscoveredNote[] per podcast:socialInteract URI
+  playbackLogPrefix: 'bmb:plog',      // string[] — the last PLAYBACK_LOG_CAP lines of lib/playback-log.ts, one key (`bmb:plog:device`). DEVICE-wide. A DIAGNOSTIC, so it is the FIRST namespace EVICTABLE_PREFIXES drops: losing it costs a bug report some detail and nothing else.
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
   profilePrefix: 'bmb:profile4',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion — and here, to flush negative-cache entries poisoned by a relay-stall bug — so stale misses don't pin missing profiles for the miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
@@ -329,6 +331,7 @@ const memoryMirror = new Map<string, string>();
  * numerous and cost a visible refetch, so they go last.
  */
 const EVICTABLE_PREFIXES = [
+  KEYS.playbackLogPrefix,
   KEYS.socialThreadPrefix,
   KEYS.feedNotesPrefix,
   KEYS.profilePrefix,
@@ -1900,6 +1903,33 @@ export const storage = {
       safeSet(KEYS.playHistory, JSON.stringify(v.slice(0, PLAY_HISTORY_CAP))),
     /** A REMOVAL, not a write of `[]` — `listenQueue.clear` says why. */
     clear: () => safeRemove(KEYS.playHistory),
+  },
+
+  /**
+   * The playback diagnostic log (`lib/playback-log.ts`), oldest line first.
+   *
+   * On disk rather than in memory because the case it exists for is a page
+   * the OS stopped or discarded while the screen was off: the lines written
+   * before that are the evidence, and memory does not outlive it. Lines that
+   * fail `isPlaybackLogLine` are dropped on read, so a value from an older
+   * format cannot reach a bug report.
+   */
+  playbackLog: {
+    get: (): string[] => {
+      const raw = safeGet(`${KEYS.playbackLogPrefix}:device`);
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((l): l is string => typeof l === 'string' && isPlaybackLogLine(l))
+          .slice(-PLAYBACK_LOG_CAP);
+      } catch {
+        return [];
+      }
+    },
+    set: (lines: string[]): boolean =>
+      safeSet(`${KEYS.playbackLogPrefix}:device`, JSON.stringify(lines.slice(-PLAYBACK_LOG_CAP))),
+    clear: () => safeRemove(`${KEYS.playbackLogPrefix}:device`),
   },
 
   /**

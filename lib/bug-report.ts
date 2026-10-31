@@ -1,4 +1,5 @@
 import { looksLikeSecretKey } from './nostr/npub-input';
+import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 
 // "Report a bug": <BugReportModal> asks three questions, takes a snapshot of
 // the app, and POSTs both to /api/bug-report, which files a GitHub issue with a
@@ -22,6 +23,11 @@ import { looksLikeSecretKey } from './nostr/npub-input';
 //   @mention anyone, cross-reference another repo's issue, or draw markup,
 //   under the token owner's name — one unauthenticated POST must not notify
 //   strangers.
+//
+// The PLAYBACK LOG (`lib/playback-log.ts`) rides under the same consent as the
+// snapshot and the same three rules, plus a fourth: every line must pass
+// `isPlaybackLogLine`, a character allowlist no URL, key or wallet string can
+// satisfy. A line that fails is dropped, never repaired.
 
 export interface BugReportAnswers {
   happened: string;
@@ -81,9 +87,9 @@ export function secretInReport(text: string): 'nsec' | 'nwc' | null {
  */
 export function parseBugReport(
   raw: unknown,
-): { ok: true; answers: BugReportAnswers; info: AppInfo } | { ok: false; error: string } {
+): { ok: true; answers: BugReportAnswers; info: AppInfo; log: string[] } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, error: 'invalid report' };
-  const r = raw as { answers?: unknown; info?: unknown };
+  const r = raw as { answers?: unknown; info?: unknown; log?: unknown };
   const a = (r.answers && typeof r.answers === 'object' ? r.answers : {}) as Record<string, unknown>;
   const answers: BugReportAnswers = { happened: '', expected: '', steps: '' };
   for (const k of ['happened', 'expected', 'steps'] as const) {
@@ -102,9 +108,14 @@ export function parseBugReport(
     if (typeof v === 'string' && v) info[k] = v.slice(0, MAX_INFO_VALUE_CHARS);
   }
 
-  const all = [answers.happened, answers.expected, answers.steps, ...Object.values(info)].join('\n');
+  // The NEWEST lines are kept: the end of the log is where the bug is.
+  const log = (Array.isArray(r.log) ? r.log : [])
+    .filter((l): l is string => typeof l === 'string' && isPlaybackLogLine(l))
+    .slice(-PLAYBACK_LOG_CAP);
+
+  const all = [answers.happened, answers.expected, answers.steps, ...Object.values(info), ...log].join('\n');
   if (secretInReport(all)) return { ok: false, error: 'the report contains a secret key or wallet string' };
-  return { ok: true, answers, info };
+  return { ok: true, answers, info, log };
 }
 
 export function bugReportTitle(answers: BugReportAnswers): string {
@@ -124,7 +135,7 @@ function fenced(text: string): string {
   return `${fence}text\n${text || '(not given)'}\n${fence}`;
 }
 
-export function bugReportBody(answers: BugReportAnswers, info: AppInfo): string {
+export function bugReportBody(answers: BugReportAnswers, info: AppInfo, log: string[] = []): string {
   const infoLines = APP_INFO_KEYS
     .filter(([k]) => info[k])
     .map(([k, label]) => `${label}: ${info[k]}`)
@@ -142,6 +153,7 @@ export function bugReportBody(answers: BugReportAnswers, info: AppInfo): string 
     '### App snapshot',
     infoLines ? fenced(infoLines) : '_The reporter chose not to send app info._',
     '',
+    ...(log.length ? ['### Playback log (UTC, oldest first)', fenced(log.join('\n')), ''] : []),
     '_Sent from the in-app bug report._',
   ].join('\n');
 }
