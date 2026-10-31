@@ -8,13 +8,14 @@ import {
   type HtmlPortalNode,
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
-import { useApp } from '@/lib/store';
+import { resolvePlaybackRate, useApp } from '@/lib/store';
 import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayHistory } from './player/use-play-history';
 import { useNowPlaying } from './player/use-now-playing';
+import { useShowSpeed } from './player/use-show-speed';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
 import { artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
@@ -866,9 +867,10 @@ export function Player() {
   }, [current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Playback speed. Hydrated here rather than at store creation, which also
-  // runs on the server.
+  // runs on the server. The show's own speed when it has one, else the global
+  // one; `useShowSpeed` re-resolves it each time `current` moves to another show.
   useEffect(() => {
-    useApp.setState({ playbackRate: storage.playbackRate.get() });
+    useApp.setState({ playbackRate: resolvePlaybackRate(useApp.getState().current) });
   }, []);
 
   // Applies the speed to the active element. Declared AFTER the source effect
@@ -1223,6 +1225,10 @@ export function Player() {
   // Saves where each episode was left, so the next play() of it resumes there.
   // See ./player/use-resume-position and lib/resume-position.ts.
   useResumePosition({ audio, video, isVideoRef, pendingLocalSrc });
+
+  // Plays each podcast at the speed last chosen for it. Subscribes before the
+  // reveal effect below sets `current`. See ./player/use-show-speed.
+  useShowSpeed();
 
   // Puts an episode listened to for a minute into the Listen tab's HISTORY,
   // so it can be boosted later. See ./player/use-play-history.

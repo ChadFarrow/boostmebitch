@@ -10,7 +10,7 @@ import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
   addToHistory, epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
-  queueShowFor, trimForQueue,
+  queueShowFor, speedShowKey, trimForQueue,
 } from './util';
 import { savedStartSec } from './resume-position';
 
@@ -220,8 +220,11 @@ interface AppState {
   // Player speed, one of `PLAYBACK_RATES` (lib/util.ts). Starts at 1 and is
   // hydrated from `storage.playbackRate` by <Player>'s mount, never read at
   // store creation — this module is evaluated on the server too. The setter
-  // writes through to storage. <Player> applies it to the media element and
-  // forces 1× on a live item.
+  // writes through to storage: the global speed always, and the current
+  // podcast's own speed too (`speedShowKey`), so a show plays at what was last
+  // chosen for it and a show never touched plays at the last speed chosen
+  // anywhere. `useShowSpeed` re-resolves it when `current` moves to another
+  // show. <Player> applies it to the media element and forces 1× on a live item.
   playbackRate: number;
   setPlaybackRate: (r: number) => void;
 
@@ -937,7 +940,13 @@ export const useApp = create<AppState>((set, get) => ({
   setPlayerExpanded: (b) => set({ playerExpanded: b }),
 
   playbackRate: 1,
-  setPlaybackRate: (r) => { storage.playbackRate.set(r); set({ playbackRate: r }); },
+  setPlaybackRate: (r) => {
+    storage.playbackRate.set(r);
+    const c = get().current;
+    const showKey = c ? speedShowKey(c.episode, c.podcast) : null;
+    if (showKey) storage.playbackRate.setShow(showKey, r);
+    set({ playbackRate: r });
+  },
 
   artOk: true,
   setArtOk: (b) => set({ artOk: b }),
@@ -1158,4 +1167,15 @@ function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
  */
 export function clearShowSelection() {
   useApp.getState().selectPodcast(null);
+}
+
+/**
+ * The speed an item plays at: its show's own speed when it has one, else the
+ * global speed. A track feed, an HLS enclosure and a live item have no show
+ * entry (`speedShowKey` is null), so they take the global one — and <Player>
+ * still forces a live item to 1×.
+ */
+export function resolvePlaybackRate(current: { episode: Episode; podcast: Podcast } | null): number {
+  const showKey = current ? speedShowKey(current.episode, current.podcast) : null;
+  return (showKey ? storage.playbackRate.getShow(showKey) : null) ?? storage.playbackRate.get();
 }

@@ -122,7 +122,7 @@ const KEYS = {
   streamRate: 'bmb:stream_rate',      // remembered sats-per-minute — a positive number or absent; never 0, and never removed by the toggle
   streamMode: 'bmb:stream_mode',      // 'track' when the unit picker is on "per track"; absent/'rate' = per minute. Show-scope entry overrides the global one, same precedence as the rate.
   streamAmount: 'bmb:stream_amount',  // remembered sats-per-TRACK, kept separate from streamRate so flipping the unit never destroys the other number
-  playbackRate: 'bmb:playback_rate', // player speed from PLAYBACK_RATES; absent = 1×. A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
+  playbackRate: 'bmb:playback_rate', // player speed from PLAYBACK_RATES; absent = 1×. Also the prefix for a podcast's own speed `…:<speedShowKey>`, which overrides the global one. A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   epOrder: 'bmb:ep_order',            // per-SHOW episode order: 'oldest' when the user flipped that show to oldest-first; absent = newest-first (the feed's own order). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
@@ -990,6 +990,24 @@ export const storage = {
     set: (rate: number) => {
       if (rate === 1 || !(PLAYBACK_RATES as readonly number[]).includes(rate)) safeRemove(KEYS.playbackRate);
       else safeSet(KEYS.playbackRate, String(rate));
+    },
+    /**
+     * One podcast's own speed, keyed by `speedShowKey`. `null` = no entry, so
+     * the show plays at the global speed. Unlike the global key, 1× IS
+     * written: a show at 1× under a global 2× is a choice, not the default.
+     * Read against the same allowlist; anything else is `null`.
+     */
+    getShow: (showKey: string): number | null => {
+      if (!showKey) return null;
+      const raw = safeGet(`${KEYS.playbackRate}:${showKey}`);
+      const n = Number(raw);
+      return raw !== null && (PLAYBACK_RATES as readonly number[]).includes(n) ? n : null;
+    },
+    setShow: (showKey: string, rate: number) => {
+      if (!showKey) return;
+      const key = `${KEYS.playbackRate}:${showKey}`;
+      if ((PLAYBACK_RATES as readonly number[]).includes(rate)) safeSet(key, String(rate));
+      else safeRemove(key);
     },
   },
 
