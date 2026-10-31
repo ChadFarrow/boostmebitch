@@ -1322,6 +1322,8 @@ interface RssEpisodeEnrichment {
   transcriptType?: string;
   link?: string;
   alternateEnclosures?: AlternateEnclosure[];
+  /** The item's own `<podcast:funding>` links (support links for this track). */
+  funding?: FundingLink[];
   /** The item's own `<podcast:value>`: a block when present, null when the
    *  tag was present but empty/self-closing, undefined when the tag was
    *  absent (the host does not emit it). */
@@ -1563,6 +1565,9 @@ export async function getRssEpisodeEnrichment(
     const alternateEnclosures = parseAlternateEnclosures(inner);
     // <podcast:txt purpose="nostr"> — this track's/episode's own artist.
     const nostrNpubs = parseFeedNpubs(inner);
+    // <podcast:funding> may sit in an <item> too — this track's own support
+    // link. Same parser, same httpUrl guard, as the channel's.
+    const funding = parseFunding(inner);
     // The item's own value block, read here because Podcast Index can hold a
     // stale one. Every item gets an entry, enriched or not, so the route can
     // tell "the feed lists this item and gives it no block" from "the scan
@@ -1570,7 +1575,7 @@ export async function getRssEpisodeEnrichment(
     // undefined = tag absent (host doesn't emit it), null = tag present but
     // empty/self-closing (publisher removed V4V).
     const value = parseValueBlock(inner);
-    episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, value });
+    episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, funding, value });
   }
   const feedValue = parseValueBlock(channelXml);
   return { episodes, rssRead: true, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle };
@@ -1751,6 +1756,7 @@ function episodeFromRssItem(inner: string, rssUrl: string, idx: number, feedId: 
     value: parseValueBlock(inner),
     socialInteract: parseSocialInteractsFromRss(inner),
     nostrNpubs: parseFeedNpubs(inner),
+    funding: parseFunding(inner),
   };
 }
 

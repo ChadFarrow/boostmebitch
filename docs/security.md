@@ -68,7 +68,7 @@ The second signing oracle for the site's key, and it is narrower than the first.
 
 Three sources, all third-party, all fixed at the **parse boundary** rather than at the render site, so a fourth surface inherits the guard instead of re-deciding it:
 
-- **`<podcast:funding url>`** — `parseFunding` took the raw attribute, and `fundingFromPi` took PI's mirror of it. Podcast Index carries the feed author's string verbatim; it is not a filter. Two render sites (`episode-detail-view.tsx`, `lists/episode-list.tsx`).
+- **`<podcast:funding url>`** — `parseFunding` took the raw attribute, and `fundingFromPi` took PI's mirror of it. Podcast Index carries the feed author's string verbatim; it is not a filter. Render sites: `episode-detail-view.tsx`, `lists/episode-list.tsx`, and the boost modal's `SupportLinks`. The episode page and the modal re-run `httpUrl` at render, because a queued or history episode — which now carries its own `funding` — comes back from disk.
 - **A chapters JSON `url`** — attacker-chosen bytes at a URL the feed names, rendered as the ↗ control in `<EpisodeContents>`. Its sibling `img` deliberately stays unfiltered: it is only ever an `<img src>`, where no scheme executes, and narrowing it would drop the `data:` covers some feeds legitimately inline.
 - **BoostBox's `url`** — a third-party service response that is also **persisted into `StoredBoost.legs`**, so an unchecked value outlives the request and sits in the user's own boost history until that entry is evicted.
 

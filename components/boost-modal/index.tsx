@@ -8,10 +8,10 @@ import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, httpUrl, payableLeg, payableValue, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
-import { BoltIcon } from '../icons';
+import { BoltIcon, CoinIcon } from '../icons';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from '../wallet-balance';
 import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
@@ -1065,6 +1065,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               )}
             </>
           )}
+          <SupportLinks episode={episode} podcast={podcast} />
           {/* Whole-send failure. role="alert" because it means nothing was paid
               and the user is about to decide whether to try again. */}
           {sendErr && (
@@ -1114,5 +1115,44 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           </div>
         </div>
     </ModalShell>
+  );
+}
+
+/**
+ * `<podcast:funding>` — the non-Lightning ways to support (PayPal, Cash App,
+ * Venmo, Patreon, a merch store: whatever URL the tag names). The track's own
+ * links when its `<item>` carries any, else the show's. Under the boost, never
+ * instead of it; where these finally sit is still a first draft.
+ *
+ * `httpUrl` again here although both parsers already ran it: a queued or
+ * history episode comes back from DISK, which is a second parse site
+ * (CLAUDE.md), and the value is an href on an origin holding the NWC
+ * credential and the nsec.
+ */
+function SupportLinks({ episode, podcast }: { episode?: Episode; podcast: Podcast }) {
+  const own = episode?.funding?.length ? episode.funding : podcast.funding;
+  const links = (own ?? []).flatMap((l) => {
+    const url = httpUrl(l.url);
+    return url ? [{ url, message: l.message }] : [];
+  });
+  if (!links.length) return null;
+  return (
+    <div data-testid="boost-funding-links">
+      <p className="text-[11px] text-muted mb-2">Other ways to support</p>
+      <div className="flex flex-wrap gap-2">
+        {links.map((l) => (
+          <a
+            key={l.url}
+            href={l.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="tile max-w-full"
+            title={l.message || 'Support this show'}
+          >
+            <CoinIcon /> <span className="truncate">{l.message || 'SUPPORT'}</span>
+          </a>
+        ))}
+      </div>
+    </div>
   );
 }

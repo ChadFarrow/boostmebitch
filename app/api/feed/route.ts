@@ -223,6 +223,9 @@ export async function GET(req: Request) {
         // RSS-only (PI indexes no <podcast:txt>), so there's no PI value to
         // prefer, same as contentEncoded.
         nostrNpubs: rss?.nostrNpubs,
+        // <podcast:funding> on the item — this track's own support link.
+        // RSS-only: PI indexes funding per FEED, not per item.
+        funding: rss?.funding,
       };
     });
     // Live first (live > pending), then regular by datePublished desc.
