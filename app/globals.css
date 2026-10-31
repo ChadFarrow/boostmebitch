@@ -326,6 +326,13 @@ input[type='range'].seek::-moz-range-thumb {
   border-radius: 0;
   cursor: pointer;
 }
+/* The ⋯ menu's speed slider (<SpeedSlider>). The mouse rule's 14px box is a
+   14px target, under the 24px floor, and nothing beside it needs the -6px
+   margins. `min-height`, not `height`, so the touch rule's 32px still wins. */
+input[type='range'].seek.seek-speed {
+  min-height: 24px;
+  margin-block: 0;
+}
 
 /* Sanitized HTML show notes from RSS <content:encoded> */
 .show-notes p { @apply mb-3 last:mb-0; }

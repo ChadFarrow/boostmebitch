@@ -24,8 +24,15 @@ import { useEffect, type RefObject } from 'react';
  * `button` and `a[href]`, because the account menu's rows are plain buttons.
  * Selection itself stays the item's own `onClick`; Enter and Space already
  * activate a focused button, so nothing is re-implemented here.
+ *
+ * A range input is an item too — the player's ⋯ menu holds the speed slider.
+ * Left it out and the slider was unreachable: the arrows skipped it and Tab
+ * closes the menu. On it, ArrowUp/Down still move between items and
+ * ArrowLeft/Right stay the slider's; Home/End are the slider's as well (its
+ * minimum and maximum), so this hook leaves them alone there.
  */
-const ITEM_SELECTOR = '[role^="menuitem"]:not([disabled]), button:not([disabled]), a[href]';
+const ITEM_SELECTOR =
+  '[role^="menuitem"]:not([disabled]), button:not([disabled]), a[href], input[type="range"]:not([disabled])';
 
 export function useMenuKeys({
   open,
@@ -67,6 +74,7 @@ export function useMenuKeys({
       const list = items();
       if (!list.length) return;
       const at = list.indexOf(document.activeElement as HTMLElement);
+      const onSlider = (document.activeElement as HTMLInputElement | null)?.type === 'range';
       const go = (i: number) => {
         e.preventDefault();
         list[(i + list.length) % list.length]?.focus({ preventScroll: true });
@@ -74,8 +82,8 @@ export function useMenuKeys({
       switch (e.key) {
         case 'ArrowDown': go(at + 1); break;
         case 'ArrowUp': go(at - 1); break;
-        case 'Home': go(0); break;
-        case 'End': go(list.length - 1); break;
+        case 'Home': if (!onSlider) go(0); break;
+        case 'End': if (!onSlider) go(list.length - 1); break;
         case 'Escape':
           e.preventDefault();
           close();

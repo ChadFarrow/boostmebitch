@@ -202,7 +202,7 @@ import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
-import { SpeedButton, FastSpeedButton } from './player/speed-button';
+import { SpeedButton, FastSpeedButton, SpeedSlider } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
@@ -818,13 +818,15 @@ export function FullscreenPlayer({
         <span aria-hidden className="text-lg leading-none">≋</span>,
         'STREAM',
       )}
-      {/* SPEED, then 3.5× and 5×. Without STREAM they are a third row of
-          three; with it, 5× sits alone in a fourth (docs/ui.md). Last because
-          they are about playback, not about this show or episode. No speed
-          on a live item: <Player> holds it at 1×, since there is nothing
-          ahead of the live edge to play into. */}
+      {/* SPEED, then 3.5× and 5×, then the 1×–2× slider as a full-width row
+          of its own. Without STREAM the tiles are a third row of three; with
+          it, 5× sits alone in a fourth (docs/ui.md). Last because they are
+          about playback, not about this show or episode. No speed on a live
+          item: <Player> holds it at 1×, since there is nothing ahead of the
+          live edge to play into. */}
       {!isLive && <SpeedButton />}
       {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+      {!isLive && <SpeedSlider />}
     </>
   );
 
