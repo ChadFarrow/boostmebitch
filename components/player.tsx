@@ -8,7 +8,7 @@ import {
   type HtmlPortalNode,
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
-import { resolvePlaybackRate, useApp } from '@/lib/store';
+import { dropRefusedPlaybackRate, resolvePlaybackRate, useApp } from '@/lib/store';
 import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
@@ -888,15 +888,17 @@ export function Player() {
     // A browser may refuse a speed: the spec lets it throw NotSupportedError
     // for one it cannot play, and Chrome does outside 0.0625–16. Uncaught, that
     // throw is an effect error that takes the player down with it. Fall back
-    // to 1× on the element, and in the store, so the tile does not claim a
-    // speed the audio is not playing at.
+    // to 1× on the element, and drop the stored speed that holds the refused
+    // one, so the tile does not claim a speed the audio is not playing at —
+    // never through `setPlaybackRate(1)`, which would save 1× as this show's
+    // own choice (`dropRefusedPlaybackRate`, lib/store.ts).
     try {
       el.defaultPlaybackRate = rate;
       el.playbackRate = rate;
     } catch {
       el.defaultPlaybackRate = 1;
       el.playbackRate = 1;
-      if (rate !== 1) useApp.getState().setPlaybackRate(1);
+      if (rate !== 1) dropRefusedPlaybackRate(rate);
     }
   }, [playbackRate, isLiveMedia, current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]);
 

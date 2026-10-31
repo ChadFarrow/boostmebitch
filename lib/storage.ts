@@ -1009,6 +1009,10 @@ export const storage = {
       if ((PLAYBACK_RATES as readonly number[]).includes(rate)) safeSet(key, String(rate));
       else safeRemove(key);
     },
+    /** Remove one show's entry, so it plays at the global speed again. */
+    clearShow: (showKey: string) => {
+      if (showKey) safeRemove(`${KEYS.playbackRate}:${showKey}`);
+    },
   },
 
   /** Per-device theme preference. Absent = dark (the app default). Only
