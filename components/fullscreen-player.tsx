@@ -990,8 +990,24 @@ export function FullscreenPlayer({
           // STREAM alone on a second row beside three empty cells. 3 + 2 reads
           // as a block. 224px is the width `useAnchoredMenu` is told about, so
           // the panel cannot hang off the left of the screen.
-          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2"
-          style={{ top: tiles.at.top, bottom: tiles.at.bottom, right: tiles.at.right }}
+          //
+          // CAPPED TO THE ROOM IT OPENS INTO, and it scrolls past that. A
+          // `fixed` panel cannot be scrolled to by the page, and the speed
+          // slider made it ~60px taller as its LAST row: on a phone in
+          // landscape (~320px of viewport) the slider sat under the screen's
+          // bottom edge with no way to reach it. The edge it grows toward
+          // keeps the safe-area inset, `max()` and never a sum (CLAUDE.md).
+          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2 overflow-y-auto overscroll-contain"
+          style={{
+            top: tiles.at.top,
+            bottom: tiles.at.bottom,
+            right: tiles.at.right,
+            maxHeight: `calc(100dvh - ${tiles.at.top ?? tiles.at.bottom ?? 0}px - max(0.5rem, env(safe-area-inset-${tiles.at.top !== undefined ? 'bottom' : 'top'})))`,
+          }}
+          // `useMenuKeys` focuses with `preventScroll`, which stops this
+          // panel's own scroll too: an arrow key onto a row scrolled out of
+          // the capped panel would focus something nobody can see.
+          onFocus={(e) => (e.target as HTMLElement).scrollIntoView({ block: 'nearest' })}
         >
           {secondaryTiles}
         </div>,

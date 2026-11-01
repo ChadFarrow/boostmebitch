@@ -106,6 +106,34 @@ function sliderIndex(rate: number): number {
 }
 
 /**
+ * The speed a key moves the slider to, stepped from the TRUE speed, not from
+ * the thumb. At 1.25× the thumb sits on 1.2 (1.2 and 1.3 are equally near, and
+ * `sliderIndex` keeps the first), so the browser's own ArrowLeft went from
+ * there to 1.1 and 1.2 could not be reached. A fast speed steps from the 1×
+ * the slider shows, so ArrowLeft and Home are a way back to 1× too — at the
+ * slider's minimum they used to change nothing. Null for a key the slider does
+ * not take: ArrowUp/Down move between the menu's items (`useMenuKeys`).
+ */
+function sliderKeyRate(key: string, rate: number): number | null {
+  const stops: readonly number[] = SPEED_SLIDER_RATES;
+  const from = isSteppedRate(rate) ? rate : 1;
+  switch (key) {
+    case 'ArrowRight':
+    case 'PageUp':
+      return stops.find((r) => r > from) ?? stops[stops.length - 1];
+    case 'ArrowLeft':
+    case 'PageDown':
+      return [...stops].reverse().find((r) => r < from) ?? stops[0];
+    case 'Home':
+      return stops[0];
+    case 'End':
+      return stops[stops.length - 1];
+    default:
+      return null;
+  }
+}
+
+/**
  * The stops that carry a number under their tick. EVERY stop has a tick you
  * can see (the owner's request, 2026-11-01: a tick for each 0.1), and these
  * three are taller and labelled — a number under each of the eleven does not
@@ -123,9 +151,18 @@ const SLIDER_LABELS: readonly number[] = [1, 1.5, 2];
  * The input's value is an INDEX into the list, never the speed: a speed read
  * back from a range input is whatever float the browser serialized, and the
  * storage allowlist reads `1.2000000000000002` back as 1×. A speed between two
- * stops (the cycle's 1.25× and 1.75×) puts the thumb on the nearest one while
- * `aria-valuetext` and the SPEED tile name the true speed. A fast speed puts it
- * at 1×, as SPEED shows 1× then; moving it is also a way back from 3.5× or 5×.
+ * stops (the cycle's 1.25× and 1.75×) puts the thumb on the nearest one, and a
+ * fast speed puts it at 1×, as SPEED shows 1× then. `aria-valuetext` names the
+ * TRUE speed at every speed, 3.5× and 5× included: a screen reader told "1×"
+ * while the audio plays at 3.5× is told something false.
+ *
+ * Because the thumb can sit on a stop that is not the speed, two things the
+ * browser does for a range input are not enough here. Its arrow keys step from
+ * the thumb, so the keys are ours (`sliderKeyRate`). And a tap on the stop the
+ * thumb already sits on changes no value, so no change event fires: at 1.25× a
+ * tap on 1.2 did nothing, and at 3.5× a tap on 1× did nothing. The click sets
+ * the stop the thumb shows; after a drag that is the speed already, so it is a
+ * no-op.
  *
  * `.seek` for the look of the scrub bar, `.seek-speed` for a 24px box, and
  * the ticks inset by half a thumb, the inset <ChapterTicks> uses, because a
@@ -147,8 +184,20 @@ export function SpeedSlider() {
         step={1}
         value={sliderIndex(shown)}
         onChange={(e) => setRate(SPEED_SLIDER_RATES[Number(e.target.value)] ?? 1)}
+        onKeyDown={(e) => {
+          const to = sliderKeyRate(e.key, rate);
+          if (to === null) return;
+          e.preventDefault();
+          if (to !== rate) setRate(to);
+        }}
+        onClick={(e) => {
+          // The store, not `rate`: the press's own change event may have set
+          // a new speed that this render's closure has not seen.
+          const to = SPEED_SLIDER_RATES[Number(e.currentTarget.value)];
+          if (to !== undefined && to !== useApp.getState().playbackRate) setRate(to);
+        }}
         aria-label="Playback speed, 1× to 2× in 0.1 steps"
-        aria-valuetext={`${shown}×`}
+        aria-valuetext={`${rate}×`}
       />
       <div aria-hidden className="relative h-6 mx-[calc(var(--seek-thumb)/2)]">
         {SPEED_SLIDER_RATES.map((r, i) => {
