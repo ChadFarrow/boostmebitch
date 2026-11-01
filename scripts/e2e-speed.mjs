@@ -213,6 +213,15 @@ const SLIDER = `document.querySelector('input[type="range"][aria-label^="Playbac
 const openMenu = async () => {
   await js(`document.querySelector('button[aria-label^="Open fullscreen player"]')?.click()`);
   await until(`!!document.querySelector('button[aria-label="More actions for this episode"]')`, 15000);
+  // The fullscreen player SLIDES up, and the ⋯ starts BELOW the screen (y=854
+  // at 390×844). `useAnchoredMenu` measures the trigger once, at open, so a
+  // press during the slide put the panel at `bottom: -1.9px`, off the screen.
+  // No finger presses a button below the screen: wait until it is on the
+  // screen and two reads, a poll apart, agree on where.
+  await js(`(() => { window.__e2eMoreAt = null; return true; })()`);
+  await until(`(() => { const r = document.querySelector('button[aria-label="More actions for this episode"]')?.getBoundingClientRect();
+    if (!r || r.top < 0 || r.bottom > innerHeight) return false;
+    const at = Math.round(r.top) + ':' + Math.round(r.left); const same = window.__e2eMoreAt === at; window.__e2eMoreAt = at; return same; })()`, 15000);
   await js(`document.querySelector('button[aria-label="More actions for this episode"]').click()`);
   // The menu puts focus on its first item a frame or two AFTER it opens
   // (`useMenuKeys`). Focusing the slider before that lands loses it to the

@@ -997,12 +997,15 @@ export function FullscreenPlayer({
           // landscape (~320px of viewport) the slider sat under the screen's
           // bottom edge with no way to reach it. The edge it grows toward
           // keeps the safe-area inset, `max()` and never a sum (CLAUDE.md).
+          // The height is the `innerHeight` that `at` was measured against
+          // (`useAnchoredMenu` re-measures on resize, which re-renders this),
+          // so the edge and the cap come from one number.
           className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2 overflow-y-auto overscroll-contain"
           style={{
             top: tiles.at.top,
             bottom: tiles.at.bottom,
             right: tiles.at.right,
-            maxHeight: `calc(100dvh - ${tiles.at.top ?? tiles.at.bottom ?? 0}px - max(0.5rem, env(safe-area-inset-${tiles.at.top !== undefined ? 'bottom' : 'top'})))`,
+            maxHeight: `calc(${window.innerHeight - (tiles.at.top ?? tiles.at.bottom ?? 0)}px - max(0.5rem, env(safe-area-inset-${tiles.at.top !== undefined ? 'bottom' : 'top'})))`,
           }}
           // `useMenuKeys` focuses with `preventScroll`, which stops this
           // panel's own scroll too: an arrow key onto a row scrolled out of
