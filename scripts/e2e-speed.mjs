@@ -362,7 +362,7 @@ await js(`document.querySelector('[role="menu"] button')?.focus()`);
 await key('ArrowUp', 38);
 await wait(300);
 const kb = await js(`(() => { const s = ${SLIDER}; const m = s.closest('[role="menu"]').getBoundingClientRect(); const r = s.getBoundingClientRect();
-  return { focused: document.activeElement === s, shown: r.top >= m.top && r.bottom <= m.bottom }; })()`);
+  return { focused: document.activeElement === s, shown: r.top >= m.top && r.bottom <= m.bottom && r.bottom <= innerHeight }; })()`);
 t.ok('landscape: ArrowUp onto the slider scrolls it into view', kb?.focused && kb.shown, JSON.stringify(kb));
 await send('Emulation.clearDeviceMetricsOverride');
 
