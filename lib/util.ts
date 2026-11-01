@@ -3039,15 +3039,6 @@ export function deletesAfterPlay(feedMedium: string | null | undefined): boolean
 }
 
 /**
- * The playback speeds the SPEED control cycles through, in order. An ALLOWLIST,
- * not a range: `storage.playbackRate` reads anything else back as 1, so a
- * corrupt or hand-edited value plays at normal speed rather than at whatever
- * number it happens to hold. Here rather than in the component because the
- * storage accessor needs the same list and must not import a component.
- */
-export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 3.5, 5] as const;
-
-/**
  * The speeds the SPEED tile cycles through. 3.5× and 5× are NOT in it: each
  * has a tile of its own (`FAST_PLAYBACK_RATES`), because reaching 5× by
  * stepping meant six presses, and stepping past it meant a jump from 5× back
@@ -3056,17 +3047,48 @@ export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 3.5, 5] as const;
  */
 export const SPEED_CYCLE_RATES = [1, 1.25, 1.5, 1.75, 2] as const;
 
+/**
+ * The stops on the ⋯ menu's speed slider: 1× to 2× in 0.1 steps, BESIDE the
+ * cycle rather than instead of it. Written out, not generated from 0.1:
+ * `1 + 7 * 0.1` is 1.7000000000000002, so a generated stop would be a number
+ * nobody typed, and a stored 1.7× would not match a list that says 1.7.
+ */
+export const SPEED_SLIDER_RATES = [1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2] as const;
+
 /** The speeds with a tile each, beside SPEED. */
 export const FAST_PLAYBACK_RATES = [3.5, 5] as const;
 
 /**
- * The speed after `rate` in `SPEED_CYCLE_RATES`, wrapping back to 1. From a
- * speed outside the cycle (a fast tile's) it answers 1.25, because the SPEED
- * tile shows 1× while a fast tile is on — the press steps from what it shows.
+ * Every playback speed, ascending — the union of the three lists above. An
+ * ALLOWLIST, not a range: `storage.playbackRate` reads anything else back as 1,
+ * so a corrupt or hand-edited value plays at normal speed rather than at
+ * whatever number it happens to hold. Here rather than in the component because
+ * the storage accessor needs the same list and must not import a component.
+ */
+export const PLAYBACK_RATES: readonly number[] = [
+  ...new Set<number>([...SPEED_CYCLE_RATES, ...SPEED_SLIDER_RATES, ...FAST_PLAYBACK_RATES]),
+].sort((a, b) => a - b);
+
+/**
+ * True for a speed the SPEED tile and the slider name: one from the cycle or
+ * the slider, 1× to 2×. False for a fast tile's 3.5× or 5×, which only that
+ * tile names while it is lit.
+ */
+export function isSteppedRate(rate: number): boolean {
+  return (SPEED_CYCLE_RATES as readonly number[]).includes(rate)
+    || (SPEED_SLIDER_RATES as readonly number[]).includes(rate);
+}
+
+/**
+ * The speed after `rate` in `SPEED_CYCLE_RATES`: the next stop ABOVE it,
+ * wrapping from 2× back to 1. A slider speed between two stops goes up to the
+ * next one (1.3× → 1.5×), so a press never slows playback except at the wrap.
+ * From a fast tile's speed it answers 1.25, because the SPEED tile shows 1×
+ * while a fast tile is on — the press steps from what it shows.
  */
 export function nextPlaybackRate(rate: number): number {
-  const i = Math.max(0, SPEED_CYCLE_RATES.indexOf(rate as (typeof SPEED_CYCLE_RATES)[number]));
-  return SPEED_CYCLE_RATES[(i + 1) % SPEED_CYCLE_RATES.length];
+  const from = isSteppedRate(rate) ? rate : 1;
+  return SPEED_CYCLE_RATES.find((r) => r > from) ?? SPEED_CYCLE_RATES[0];
 }
 
 // True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js
