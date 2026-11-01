@@ -781,3 +781,52 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
   }
   return out;
 }
+
+// ── OPML: the subscription list another podcast app exported ───────────────
+
+/** One `<outline xmlUrl=…>` from an OPML file — decoded, NOT yet validated. */
+export interface OpmlOutline {
+  /** The feed address exactly as the file wrote it, entities decoded. */
+  xmlUrl: string;
+  /** `title`, else `text`, else `''`. Display only — never a lookup key. */
+  title: string;
+}
+
+/**
+ * Every feed an OPML document lists, in document order, or `null` when the
+ * text has no `<opml>` root at all.
+ *
+ * The two answers are different on screen: "this is not an OPML file" sends
+ * somebody back to their old app's export menu, while "this file lists no
+ * feeds" is a real (if useless) export. Folding the first into an empty list
+ * would tell a user who picked the wrong file that their library is empty.
+ *
+ * **A feed is an outline with an `xmlUrl`, at ANY depth, and nothing else.**
+ * Apps nest feeds inside folder outlines (`<outline text="feeds">`), and
+ * Overcast's full export nests EPISODE outlines inside each feed — those carry
+ * `url`/`overcastUrl` and no `xmlUrl`, so the attribute test is what keeps a
+ * thousand episodes from reading as a thousand shows. `findTags` returns every
+ * open tag regardless of nesting, which is exactly that walk.
+ *
+ * Comments are removed first, so an outline an editor commented out stays out.
+ * `readAttr` is case-insensitive and whitespace-anchored, so `xmlurl=` (some
+ * exporters lowercase it) reads and a decoy `x-xmlUrl=` does not. The value is
+ * entity-decoded because it is a LOOKUP KEY: a correct writer escapes a query
+ * string's `&` as `&amp;`, and Podcast Index holds the decoded address.
+ */
+export function parseOpml(xml: string): OpmlOutline[] | null {
+  const doc = stripComments(xml);
+  if (!firstTag(doc, 'opml')) return null;
+  const out: OpmlOutline[] = [];
+  for (const tag of findTags(doc, 'outline')) {
+    const raw = readAttr(tag.attrs, 'xmlUrl');
+    if (raw === undefined) continue;
+    const xmlUrl = decodeXmlEntities(raw).trim();
+    if (!xmlUrl) continue;
+    // `||`, not `??`: an exporter that writes `title=""` beside a real `text`
+    // means "no separate title", and the empty string would win under `??`.
+    const name = readAttr(tag.attrs, 'title') || readAttr(tag.attrs, 'text') || '';
+    out.push({ xmlUrl, title: decodeXmlEntities(name).replace(/\s+/g, ' ').trim() });
+  }
+  return out;
+}
