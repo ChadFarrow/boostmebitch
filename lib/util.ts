@@ -3078,6 +3078,36 @@ export function isHlsUrl(url: string | undefined | null): boolean {
 }
 
 /**
+ * The show a podcast episode's own speed is saved under
+ * (`bmb:playback_rate:<key>`), or `null` when the item keeps none and plays at
+ * the global speed. Podcast episodes only: a track feed, an HLS enclosure and a
+ * live or pending item answer null — the last two are always 1× in `<Player>`,
+ * and a speed chosen there would otherwise be saved for a show that never plays
+ * at it. The same refusals as `canResume` (lib/resume-position.ts).
+ *
+ * **The EPISODE's `podcastGuid` comes first**, as in `resumeKey`, so a
+ * `podcastL` playlist row plays at its own show's speed rather than the
+ * playlist's. For an ordinary show this is `showStorageKey(podcast)`.
+ *
+ * **No guid and no feed id is `null`, not `'0'`.** A download record with
+ * neither rebuilds as `feedId: 0` / `id: 0` (`dbRowToEpisode`), and a `'0'` key
+ * would hand every such item, from unrelated shows, one shared speed.
+ *
+ * `/downloads` rebuilds the show with no `medium`, so an album track played
+ * from there passes `playsAsTracks` as a podcast; `speedKeyFor` (lib/store.ts)
+ * asks the download record first, as `deletableAfterPlay` does.
+ */
+export function speedShowKey(
+  episode: Pick<Episode, 'podcastGuid' | 'feedId' | 'enclosureUrl' | 'liveStatus'>,
+  podcast: Pick<Podcast, 'podcastGuid' | 'id' | 'medium'>,
+): string | null {
+  if (playsAsTracks(podcast) || isHlsUrl(episode.enclosureUrl)) return null;
+  if (episode.liveStatus === 'live' || episode.liveStatus === 'pending') return null;
+  const id = episode.feedId || podcast.id;
+  return episode.podcastGuid || podcast.podcastGuid || (id ? String(id) : null);
+}
+
+/**
  * Whether this browser plays HLS natively on a plain `<audio>` — Safari, which
  * on an iPhone is every browser, and any other browser whose `canPlayType`
  * says so. That is where a live stream is sent to the

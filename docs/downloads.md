@@ -339,7 +339,10 @@ APP from deciding to delete; this is the listener deciding, once, in advance.
   written before the field, and a playlist track whose container is not its
   parent (the container's medium is not the track's, the rule `parentFeed`
   is under). `downloadManager.deletableAfterPlay` asks it; `<Player>` also
-  skips anything `playsAsTracks` while it is playing.
+  skips anything `playsAsTracks` while it is playing. **The per-show speed key
+  asks the same record** — `downloadManager.feedMediumFor`, read by
+  `speedKeyFor` (`lib/store.ts`) — so an album track played from `/downloads`
+  saves no speed for its album (see [`ui.md`](ui.md), "Playback speed").
 - **The bytes go; the playing element does not notice.** `<Player>` holds a
   blob URL for the file and revokes it only when the next source attaches, so
   a replay of the episode that just ended still plays. Measured in Chromium
@@ -632,6 +635,18 @@ profile, so the new one exited and the harness quietly attached to the **old**
 browser, and every assertion ran against storage it was never told about — the
 failure read as *"the app wrote a record but no bytes"*, a shipping bug that was
 not there. Nothing can attach to a port this run did not choose.
+
+**The full run (`E2E_DOWNLOADS_FULL=1`) reaches DOWNLOAD through each row's ⋯
+menu**, and reads "downloaded" off the row's date line (`<DownloadMark>`). Since
+#461 the tile renders only while that menu is open, and a row is an `<li>` with
+a Play button, no longer one with an `<h3>`. Sections 5–7, 9 and 10 still
+looked for an `<h3>` row with a `Download` button until 2026-10-31, found
+neither, and failed 13 checks without a download ever starting — which read as
+a broken feature, not a stale test. **Section 10's offline play must first move
+`current` to ANOTHER episode**: section 9 played the downloaded one, so the
+reload reveals it on its network source, and its row's ↺ Resume restarts that
+element instead of re-sourcing it from the download. The step used to press row
+0, which stopped moving `current` once row 0 was a PENDING item.
 
 Section 12 plays two downloads of one show back to back, from two WAVs it
 generates in the page, with the second one's local read delayed: the resume
