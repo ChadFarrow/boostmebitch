@@ -144,7 +144,7 @@ Nine pages, twenty-five route handlers, and the module boundaries that keep wall
 | --- | --- |
 | `/` | search, the global Nostr feed, URL-restored show and episode views |
 | `/live` | everything on air — podcast `liveItem`s verified against RSS, beside kind:30311 streams |
-| `/favorites` | your kind:10333 list — grouping, filter, visibility, audit + repair, export/import, OPML import/export |
+| `/favorites` | your kind:10333 list — grouping, filter, visibility, audit + repair, export/import, OPML import |
 | `/playlists` | the curated `musicL` collections |
 | `/stream/[naddr]` | one broadcast, shareable |
 | `/live/[npub]` | a host's *current* broadcast — a permanent link that survives each new dTag |

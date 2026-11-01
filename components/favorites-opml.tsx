@@ -1,5 +1,5 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import type { FavoritesPrivacy } from '@/lib/nostr/favorites-list';
 import { BRAND } from '@/lib/brand';
@@ -14,10 +14,23 @@ import { lookupFeedUrls, resolvePodcastByGuid, warmPodcastCache } from '@/lib/po
 import { favoriteFromPodcast, requestFavoritesSync } from '@/lib/nostr';
 import { saveFile } from '@/lib/save-file';
 import { getErrorMessage, mapLimit } from '@/lib/util';
+import { scrollBehavior } from '@/lib/format';
 import type { FavoritePodcast, Podcast } from '@/lib/types';
 
 /**
- * OPML import and export on the favorites page.
+ * OPML import on the favorites page — and the export, kept OFF the page.
+ *
+ * IMPORT ONLY ON SCREEN (the owner's call, 2026-11-01): the page offers the
+ * import and no export button. The export is `exportFavoritesOpml` below, with
+ * its rules in `lib/opml.ts` and pinned by `check:opml`, kept for a later
+ * change that puts a button on it. Nothing renders it today.
+ *
+ * TWO PLACES, ONE IMPORTER. An EMPTY library offers the import in its own card
+ * (the page's empty branch) and shows the result ABOVE the library; a library
+ * that has shows offers it as one quiet line UNDER the list
+ * (`<OpmlLibraryImport>`), and shows the result in that box. `origin` says
+ * which, so a result is never drawn twice, and never at the top of the page
+ * while the reader is at the bottom.
  *
  * WHO IT IS FOR: a new user arriving from another podcast app, who exports an
  * OPML file there and imports it here so they do not have to find every show
@@ -59,10 +72,20 @@ type ImportState =
   | { step: 'ready'; run: ImportRun }
   | { step: 'error'; text: string };
 
+/**
+ * Where the import was started, which is where its result is drawn.
+ * `empty` — the empty-library card; the result goes ABOVE the library, because
+ * that card unmounts the moment the shows land. `library` — the line under a
+ * library that has shows; the result goes in that box, where the reader is.
+ */
+export type OpmlOrigin = 'empty' | 'library';
+
 export interface OpmlImporter {
   state: ImportState;
   busy: boolean;
-  pick: (file: File) => void;
+  /** Where the current import was started. Meaningless while `idle`. */
+  origin: OpmlOrigin;
+  pick: (file: File, origin: OpmlOrigin) => void;
   lookUpMore: () => void;
   add: () => void;
   dismiss: () => void;
@@ -70,6 +93,7 @@ export interface OpmlImporter {
 
 export function useOpmlImport(): OpmlImporter {
   const [state, setState] = useState<ImportState>({ step: 'idle' });
+  const [origin, setOrigin] = useState<OpmlOrigin>('empty');
   const addFavorites = useApp((s) => s.addFavorites);
   const identity = useApp((s) => s.identity);
   const busy = state.step === 'busy';
@@ -99,8 +123,9 @@ export function useOpmlImport(): OpmlImporter {
     }
   }
 
-  async function pick(file: File) {
+  async function pick(file: File, from: OpmlOrigin) {
     if (busy) return;
+    setOrigin(from);
     if (file.size > OPML_MAX_BYTES) {
       setState({
         step: 'error',
@@ -168,7 +193,8 @@ export function useOpmlImport(): OpmlImporter {
   return {
     state,
     busy,
-    pick: (file) => { void pick(file); },
+    origin,
+    pick: (file, from) => { void pick(file, from); },
     lookUpMore: () => { if (state.step === 'ready' && !busy) void lookUp(state.run); },
     add,
     dismiss: () => { if (!busy) setState({ step: 'idle' }); },
@@ -187,9 +213,12 @@ export function useOpmlImport(): OpmlImporter {
  */
 export function OpmlImportButton({
   importer,
+  origin = 'empty',
   className = 'btn-mini disabled:opacity-50',
 }: {
   importer: OpmlImporter;
+  /** Where the result is drawn — see `OpmlOrigin`. */
+  origin?: OpmlOrigin;
   className?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
@@ -219,7 +248,7 @@ export function OpmlImportButton({
           // Cleared so picking the SAME file again (after a rate limit, say)
           // still fires `change`.
           e.target.value = '';
-          if (file) importer.pick(file);
+          if (file) importer.pick(file, origin);
         }}
       />
     </>
@@ -250,9 +279,12 @@ function destination(signedIn: boolean, mode: FavoritesPrivacy | null, done: boo
 }
 
 /**
- * The import's progress and result, ABOVE the library. Renders nothing idle.
+ * The import's progress and result. Renders nothing idle, and nothing for an
+ * import started somewhere else (`where` ≠ `importer.origin`), so the page can
+ * mount one above the library and one in the library's box without a result
+ * ever showing twice. `data-opml-panel` is what `e2e:opml` reads.
  */
-export function OpmlImportPanel({ importer }: { importer: OpmlImporter }) {
+export function OpmlImportPanel({ importer, where }: { importer: OpmlImporter; where: OpmlOrigin }) {
   const favorites = useApp((s) => s.favorites);
   const identity = useApp((s) => s.identity);
   // Same window the page calls `checking`: signed in, the relay read not back.
@@ -266,11 +298,11 @@ export function OpmlImportPanel({ importer }: { importer: OpmlImporter }) {
   // while the panel is open.
   const { mode } = useFavoritesMode();
   const { state } = importer;
-  if (state.step === 'idle') return null;
+  if (state.step === 'idle' || importer.origin !== where) return null;
 
   if (state.step === 'busy') {
     return (
-      <div className="card p-4 text-sm text-muted" role="status" aria-live="polite">
+      <div className="card p-4 text-sm text-muted" role="status" aria-live="polite" data-opml-panel="">
         {state.text}
       </div>
     );
@@ -278,7 +310,7 @@ export function OpmlImportPanel({ importer }: { importer: OpmlImporter }) {
 
   if (state.step === 'error') {
     return (
-      <div className="card p-4 flex flex-col items-start gap-2" role="alert">
+      <div className="card p-4 flex flex-col items-start gap-2" role="alert" data-opml-panel="">
         <p className="text-sm text-bone">{state.text}</p>
         <button type="button" onClick={importer.dismiss} className="btn-mini">close</button>
       </div>
@@ -295,7 +327,7 @@ export function OpmlImportPanel({ importer }: { importer: OpmlImporter }) {
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
   return (
-    <div className="card p-4 flex flex-col gap-3" aria-live="polite">
+    <div className="card p-4 flex flex-col gap-3" aria-live="polite" data-opml-panel="">
       <div className="flex flex-col gap-1">
         <p className="text-[11px] uppercase tracking-widest text-muted">
           import from <span className="normal-case tracking-normal text-bone">{run.fileName}</span>
@@ -402,77 +434,132 @@ function hostOf(url: string): string {
 }
 
 /**
- * The page-bottom row for a library that has something in it: import more,
- * or take the shows to another app. Rarely pressed, so it sits under the
- * library rather than adding a row of chrome above it.
+ * The import for a library that already HAS shows: one quiet line under the
+ * list, and a small box when it is pressed.
+ *
+ * Rarely pressed, so it is a line of text, not a row of buttons: the controls
+ * above the library are judged on how fast they get the reader to a favorite.
+ * The empty library's card says the same thing at full size, to a new user.
+ *
+ * THE RESULT IS DRAWN HERE, not above the library. The reader pressed this at
+ * the bottom of the page; a result at the top was out of view on any real
+ * library, and the button only went grey. A library does not unmount when
+ * shows land, so the box keeps the result through the add.
+ *
+ * It SCROLLS ITSELF INTO VIEW, twice: when the box opens and when the result
+ * changes. A box opened at the very bottom is drawn below the fold, and the
+ * dock covers the last 60-odd pixels — `scroll-margin-bottom` keeps both clear
+ * of it (`--dock-b`, never a literal).
  */
-export function OpmlTools({ importer }: { importer: OpmlImporter }) {
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+export function OpmlLibraryImport({ importer }: { importer: OpmlImporter }) {
+  const [open, setOpen] = useState(false);
+  const boxId = useId();
+  const box = useRef<HTMLDivElement>(null);
+  const result = useRef<HTMLDivElement>(null);
+  const mine = importer.state.step !== 'idle' && importer.origin === 'library';
+  const shown = open || mine;
+  const step = mine ? importer.state.step : 'idle';
 
-  async function exportOpml() {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const { favorites, favoriteEpisodes } = useApp.getState();
-      const favs = Object.values(favorites);
-      if (!favs.length) {
-        setMsg('There is no show to export. An OPML file holds shows only, not episodes or tracks.');
-        return;
-      }
-      // A row this device never resolved has no feed address yet. Warm first,
-      // then the per-guid pass — the batch-door pattern, so a cold list costs
-      // a few requests, not one per show.
-      const missing = favs.filter((f) => !f.url).map((f) => f.podcastGuid);
-      const resolved = new Map<string, Podcast>();
-      if (missing.length) {
-        await warmPodcastCache(missing);
-        const found = await mapLimit(missing, 6, (g) => resolvePodcastByGuid(g));
-        found.forEach((p, i) => { if (p) resolved.set(missing[i]!, p); });
-      }
-      const shows = favs
-        .map((f) => {
-          const p = resolved.get(f.podcastGuid);
-          return { url: f.url ?? p?.url, title: f.title ?? p?.title };
-        })
-        .sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''));
-      const created = new Date();
-      const { xml, written } = buildOpml(shows, { title: `${BRAND.displayName} favorites`, created });
-      if (!written) {
-        setMsg('No show could be exported: their feed addresses are not known yet. Try again when you are online.');
-        return;
-      }
-      const name = opmlFilename(BRAND.domain, created);
-      saveFile(new Blob([xml], { type: 'text/x-opml' }), name);
-      const left = favs.length - written;
-      setMsg(
-        `Saved ${written} ${written === 1 ? 'show' : 'shows'} to ${name}.`
-        + (left > 0 ? ` ${left} ${left === 1 ? 'show is' : 'shows are'} not in it, because the feed address is not known yet.` : '')
-        + (Object.keys(favoriteEpisodes).length > 0 ? ' Episode and track favorites are not in it — an OPML file holds shows only.' : ''),
-      );
-    } catch (e) {
-      setMsg(getErrorMessage(e, 'The export failed.'));
-    } finally {
-      setBusy(false);
-    }
-  }
+  useEffect(() => {
+    if (open) box.current?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+  }, [open]);
+  useEffect(() => {
+    if (step !== 'idle') result.current?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() });
+  }, [step]);
+
+  const clearOfDock = { scrollMarginBottom: 'calc(var(--dock-b) + 1rem)' };
 
   return (
-    <div className="mt-6 flex flex-col gap-1 border-t border-line pt-4">
-      <p className="text-[11px] uppercase tracking-widest text-muted">other podcast apps</p>
-      <div className="flex flex-wrap items-center gap-2">
-        <OpmlImportButton importer={importer} />
-        <button
-          type="button"
-          onClick={exportOpml}
-          disabled={busy}
-          className="btn-mini disabled:opacity-50"
-          title="Save your favorite shows as an OPML file that other podcast apps can import."
-        >
-          {busy ? 'reading feed addresses…' : '⇩ export opml'}
-        </button>
-      </div>
-      {msg && <p className="text-[11px] text-muted">{msg}</p>}
+    <div className="mt-6 border-t border-line pt-3" data-opml-library="">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={shown}
+        aria-controls={boxId}
+        className="btn-inline min-h-6 py-1 text-left text-xs text-muted hover:text-bone"
+      >
+        Use another podcast app too? Import your shows from OPML{' '}
+        <span aria-hidden="true">{shown ? '▾' : '▸'}</span>
+      </button>
+      {shown && (
+        <div id={boxId} className="mt-2 flex flex-col gap-3">
+          <div ref={box} className="border border-line p-3 flex flex-col gap-3" style={clearOfDock}>
+            <p className="text-xs text-muted leading-relaxed max-w-prose">
+              OPML is the file every podcast app uses for your show list. Export it from your
+              other app, then import it here. Import adds only the shows you do not have
+              yet — it never removes a favorite.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <OpmlImportButton importer={importer} origin="library" />
+              <button
+                type="button"
+                onClick={() => {
+                  if (mine) importer.dismiss();
+                  setOpen(false);
+                }}
+                disabled={importer.busy}
+                className="btn-mini disabled:opacity-50"
+              >
+                close
+              </button>
+            </div>
+          </div>
+          {mine && (
+            <div ref={result} style={clearOfDock}>
+              <OpmlImportPanel importer={importer} where="library" />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * Save the favorite SHOWS as an OPML file, and say what was saved.
+ *
+ * **NOT ON THE PAGE** (2026-11-01: the page offers the import only). Kept,
+ * whole and typed, for the change that puts a button back on it — the button
+ * shows the returned sentence. The rules it writes by are `buildOpml` and
+ * `opmlFilename` in lib/opml.ts, pinned by `check:opml`.
+ *
+ * A row this device never resolved has no feed address yet. Warm first, then
+ * the per-guid pass — the batch-door pattern, so a cold list costs a few
+ * requests, not one per show. A show whose address is still unknown is left
+ * out and counted.
+ */
+export async function exportFavoritesOpml(): Promise<string> {
+  try {
+    const { favorites, favoriteEpisodes } = useApp.getState();
+    const favs = Object.values(favorites);
+    if (!favs.length) {
+      return 'There is no show to export. An OPML file holds shows only, not episodes or tracks.';
+    }
+    const missing = favs.filter((f) => !f.url).map((f) => f.podcastGuid);
+    const resolved = new Map<string, Podcast>();
+    if (missing.length) {
+      await warmPodcastCache(missing);
+      const found = await mapLimit(missing, 6, (g) => resolvePodcastByGuid(g));
+      found.forEach((p, i) => { if (p) resolved.set(missing[i]!, p); });
+    }
+    const shows = favs
+      .map((f) => {
+        const p = resolved.get(f.podcastGuid);
+        return { url: f.url ?? p?.url, title: f.title ?? p?.title };
+      })
+      .sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''));
+    const created = new Date();
+    const { xml, written } = buildOpml(shows, { title: `${BRAND.displayName} favorites`, created });
+    if (!written) {
+      return 'No show could be exported: their feed addresses are not known yet. Try again when you are online.';
+    }
+    const name = opmlFilename(BRAND.domain, created);
+    saveFile(new Blob([xml], { type: 'text/x-opml' }), name);
+    const left = favs.length - written;
+    return `Saved ${written} ${written === 1 ? 'show' : 'shows'} to ${name}.`
+      + (left > 0 ? ` ${left} ${left === 1 ? 'show is' : 'shows are'} not in it, because the feed address is not known yet.` : '')
+      + (Object.keys(favoriteEpisodes).length > 0 ? ' Episode and track favorites are not in it — an OPML file holds shows only.' : '');
+  } catch (e) {
+    return getErrorMessage(e, 'The export failed.');
+  }
 }

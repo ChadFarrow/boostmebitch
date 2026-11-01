@@ -1,4 +1,4 @@
-// End-to-end for the OPML import and export on /favorites.
+// End-to-end for the OPML import on /favorites (the page has no export button).
 //
 // Usage:
 //   npm run dev                                   # in another terminal
@@ -15,12 +15,18 @@
 //   2. Signed out, phone width: the import adds through the store into
 //      `bmb:favorites:guest`, the result panel SURVIVES the empty card
 //      unmounting under it, and two addresses for one show add one favorite.
-//   3. The export downloads a file holding each imported show's feed address.
+//   3. With a library, the import is ONE quiet line under it, and import
+//      only — the page has no export button (the export code is kept for a
+//      later change). The line opens a note with the IMPORT button ON SCREEN,
+//      not under the dock, and the result opens INSIDE that box, at the bottom
+//      where the reader is — not at the top of the page, out of view. A show
+//      added from there lands, and the result survives it.
 //   4. A second import of the same file adds nothing.
 //   5. No horizontal overflow at 390px, and every new control is 24×24 or more.
-//   6. Signed in, mode never chosen: ADD asks where favorites go and publishes
-//      NOTHING before the answer; after "Public" the relay holds a kind:10333
-//      with both shows' `i` tags and an empty `content`.
+//   6. Signed in with an empty relay list (seeded Public): the panel says
+//      PUBLIC before ADD, the lookup publishes nothing, and ADD makes ONE
+//      kind:10333 with both shows' `i` tags and an empty `content`.
+//   7. Signed in, "Not on Nostr": the import stays on this device.
 //
 // The relay is the in-memory one `npm run relay` starts and the signer is a
 // throwaway key reached over a CDP binding — the `e2e:favorites` shape — so no
@@ -28,7 +34,7 @@
 // they go to this app's `/api/by-guid/batch` and from there to Podcast Index,
 // which is why the fixture names real public feeds.
 
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRelay } from './local-relay.mjs';
@@ -43,7 +49,6 @@ const PC20_GUID = '917393e3-1b1e-5cef-ace4-edaa54e1f810';
 const NA_GUID = '856cd618-7f34-57ea-9b84-3600f1f65e7f';
 const SECRET = 'E2ESECRETTOKEN0123';
 const work = mkdtempSync(join(tmpdir(), 'bmb-e2e-opml-'));
-const downloads = join(work, 'downloads');
 const OPML = join(work, 'subscriptions.opml');
 writeFileSync(OPML, `<?xml version="1.0" encoding="UTF-8"?>
 <opml version="2.0">
@@ -58,6 +63,22 @@ writeFileSync(OPML, `<?xml version="1.0" encoding="UTF-8"?>
       <outline type="rss" text="Podcasting 2.0, again" xmlUrl="https://feeds.podcastindex.org/pc20.xml"/>
       <outline type="rss" text="Not a feed" xmlUrl="javascript:alert(1)"/>
     </outline>
+  </body>
+</opml>
+`);
+
+// The library import's file: one show the first import already added, and one
+// it did not — so the box has something to ADD, and the add can be seen to land.
+const NEW_TITLE = 'Security Now (Audio)';
+const NEW_FEED = 'https://feeds.twit.tv/sn.xml';
+const NEW_GUID = '74488637-5251-5e8b-9959-8e20347b1dba';
+const MORE = join(work, 'more.opml');
+writeFileSync(MORE, `<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>e2e more subscriptions</title></head>
+  <body>
+    <outline type="rss" text="Podcasting 2.0" xmlUrl="https://feeds.podcastindex.org/pc20.xml"/>
+    <outline type="rss" text="${NEW_TITLE}" xmlUrl="${NEW_FEED}"/>
   </body>
 </opml>
 `);
@@ -78,7 +99,6 @@ await send('Page.enable');
 await send('Runtime.enable');
 await send('Network.enable');
 await send('DOM.enable');
-await send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads });
 
 const requests = [];
 const pageErrors = [];
@@ -127,7 +147,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
 
 const t = checker();
 const text = () => js('document.body.innerText');
-const panel = () => js(`(() => { const p=[...document.querySelectorAll('.card')].find(c=>c.innerText.toLowerCase().includes('import from')); return p ? p.innerText : null; })()`);
+const panel = () => js(`(() => { const p=document.querySelector('[data-opml-panel]'); return p ? p.innerText : null; })()`);
 const clickButton = (label) => js(`(() => { const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim().toLowerCase()===${JSON.stringify(label)}); if (b && !b.disabled) { b.click(); return true; } return false; })()`);
 
 /**
@@ -135,12 +155,12 @@ const clickButton = (label) => js(`(() => { const b=[...document.querySelectorAl
  * input": signed in, `⇧ RESTORE FROM BACKUP` has one earlier in the page, and
  * the first run of this script fed the OPML to the restore control.
  */
-async function pickFile() {
+async function pickFile(file = OPML) {
   // `send` answers with the whole CDP message; the value is under `result`.
   const { root } = (await send('DOM.getDocument', { depth: -1 })).result;
   const { nodeId } = (await send('DOM.querySelector', { nodeId: root.nodeId, selector: 'input[data-opml-input]' })).result;
   if (!nodeId) throw new Error('no file input on the page');
-  await send('DOM.setFileInputFiles', { nodeId, files: [OPML] });
+  await send('DOM.setFileInputFiles', { nodeId, files: [file] });
 }
 
 async function fresh(seed) {
@@ -155,8 +175,8 @@ async function fresh(seed) {
 async function measure(where) {
   const r = JSON.parse(await js(`(() => {
     const el = document.documentElement;
-    const panelEl = [...document.querySelectorAll('.card')].find(c => c.innerText.toLowerCase().includes('import from'));
-    const row = [...document.querySelectorAll('p')].find(p => p.textContent.trim() === 'other podcast apps')?.parentElement;
+    const panelEl = document.querySelector('[data-opml-panel]');
+    const row = document.querySelector('[data-opml-library]');
     const empty = [...document.querySelectorAll('.card')].find(c => c.innerText.includes('Coming from another podcast app?'));
     const targets = [panelEl, row, empty].filter(Boolean)
       .flatMap(c => [...c.querySelectorAll('button, summary')])
@@ -175,7 +195,7 @@ await fresh();
 t.ok('the empty card offers the import', await until(`document.body.innerText.includes('Coming from another podcast app?')`));
 await measure('empty card');
 await pickFile();
-t.ok('the lookup finishes and the panel offers the add', await until(`(() => { const p=[...document.querySelectorAll('.card')].find(c=>c.innerText.toLowerCase().includes('import from')); return p && p.innerText.includes('ready to add'); })()`, 60000));
+t.ok('the lookup finishes and the panel offers the add', await until(`(() => { const p=document.querySelector('[data-opml-panel]'); return p && p.innerText.includes('ready to add'); })()`, 60000));
 let p = (await panel()) ?? '';
 t.ok('two shows are ready to add', p.includes('2 shows are ready to add'), p);
 t.ok('the second address for No Agenda is "already", not a second favorite', p.includes('1 show is in your favorites already'), p);
@@ -192,33 +212,55 @@ t.equal('and nothing else', await js(`Object.keys(JSON.parse(localStorage.getIte
 p = (await panel()) ?? '';
 t.ok('the panel survived the empty card unmounting, and says where they went', p.includes('Added 2 shows') && p.includes('saved on this device'), p);
 t.ok('the "not added" list is still on screen', p.includes('Not in Podcast Index — 1'), p);
+t.equal('the result shows once, at the top — not again in the library box', await js(`document.querySelectorAll('[data-opml-panel]').length`), 1);
 // Lowercased: the count is CSS `uppercase`, and `innerText` applies it.
 t.ok('the library renders them', await until(`document.body.innerText.toLowerCase().includes('2 saved')`, 8000));
 await measure('library with the panel open');
 
-await clickButton('⇩ export opml');
-let file = null;
-for (let i = 0; i < 40 && !file; i++) {
-  await wait(250);
-  try { file = readdirSync(downloads).find((f) => f.endsWith('.opml')) ?? null; } catch { /* not created yet */ }
-}
-t.ok('the export downloads a .opml file', !!file, readdirSync(work).join(', '));
-if (file) {
-  const xml = readFileSync(join(downloads, file), 'utf8');
-  t.ok(`its name is <site>-shows-<date>.opml (${file})`, /^boostme(bitch|buddy)-shows-\d{4}-\d{2}-\d{2}\.opml$/.test(file));
-  t.ok('it lists Podcasting 2.0', xml.includes('xmlUrl="https://feeds.podcastindex.org/pc20.xml"'), xml);
-  t.ok("it lists No Agenda by Podcast Index's address for it", xml.includes('xmlUrl="https://feeds.noagendaassets.com/noagenda.xml"'), xml);
-  t.equal('and exactly two shows', (xml.match(/<outline /g) ?? []).length, 2);
-}
-t.ok('the page names the file it saved', (await text()).includes('Saved 2 shows to boostme'));
-
 await clickButton('done');
+
+console.log('\n3–4. With a library: one line at the bottom, import only');
+t.ok('the page offers no export', !(await js(`[...document.querySelectorAll('button')].some(b => b.textContent.toLowerCase().includes('export opml'))`)));
+const inBox = (label) => `[...document.querySelectorAll('[data-opml-library] button')].find(b => b.textContent.trim().toLowerCase() === ${JSON.stringify(label)})`;
+const LINE = `[...document.querySelectorAll('[data-opml-library] button')].find(b => b.textContent.toLowerCase().includes('import your shows from opml'))`;
+const BOX_PANEL = `document.querySelector('[data-opml-library] [data-opml-panel]')`;
+/** The element's top line is on screen and is what a tap there would hit — not the dock. */
+const topInView = (sel) => `(() => { const el = ${sel}; if (!el) return false; const r = el.getBoundingClientRect();
+  const y = r.top + Math.min(10, r.height / 2); if (r.top < 0 || y > innerHeight) return false;
+  const hit = document.elementFromPoint(r.left + Math.min(20, r.width / 2), y); return !!hit && (hit === el || el.contains(hit)); })()`;
+t.ok('under the library, one line offers the import', await until(`!!${LINE}`, 5000));
+t.ok('the note is closed until the line is pressed', !(await text()).includes('OPML is the file every podcast app uses'));
+// As a reader does: from the BOTTOM of the page, where the line is.
+await js(`(() => { window.scrollTo(0, document.documentElement.scrollHeight); return 1; })()`);
+await js(`(() => { ${LINE}.click(); return 1; })()`);
+t.ok('one press opens the note', await until(`document.body.innerText.includes('OPML is the file every podcast app uses')`, 3000));
+t.ok('its IMPORT button is on screen, not under the dock', await until(topInView(inBox('⇧ import opml')), 3000));
+await measure('the open box');
+
+await pickFile(MORE);
+t.ok('the result opens IN the box', await until(`(() => { const p = ${BOX_PANEL}; return !!p && p.innerText.includes('ready to add'); })()`, 60000));
+t.equal('and nowhere else on the page', await js(`document.querySelectorAll('[data-opml-panel]').length`), 1);
+t.ok('the result is on screen without a scroll', await until(topInView(BOX_PANEL), 3000));
+p = (await panel()) ?? '';
+t.ok('one show is ready to add', p.includes('1 show is ready to add'), p);
+t.ok('the show the library has is "already"', p.includes('1 show is in your favorites already'), p);
+await measure('the box with a result');
+await clickButton('add 1 show');
+t.ok('the guest store gains the new show', await until(`(() => { const f=JSON.parse(localStorage.getItem('bmb:favorites:guest')||'{}'); return !!f[${JSON.stringify(NEW_GUID)}]; })()`, 5000));
+t.equal('and holds three shows', await js(`Object.keys(JSON.parse(localStorage.getItem('bmb:favorites:guest')||'{}')).length`), 3);
+p = (await panel()) ?? '';
+t.ok('the result in the box survives the add, and says where it went', p.includes('Added 1 show') && p.includes('saved on this device'), p);
+t.ok('the library renders it', await until(`document.body.innerText.toLowerCase().includes('3 saved')`, 8000));
+await clickButton('done');
+t.ok('DONE clears the result and leaves the note open', await until(`!document.querySelector('[data-opml-panel]') && document.body.innerText.includes('OPML is the file every podcast app uses')`, 3000));
+
 await pickFile();
-t.ok('a second import of the same file finds nothing new', await until(`(() => { const p=[...document.querySelectorAll('.card')].find(c=>c.innerText.toLowerCase().includes('import from')); return p && p.innerText.includes('There is no new show to add.'); })()`, 30000));
+t.ok('a second import of the first file finds nothing new', await until(`(() => { const p = ${BOX_PANEL}; return !!p && p.innerText.includes('There is no new show to add.'); })()`, 30000));
 p = (await panel()) ?? '';
 t.ok('all three addresses read as already a favorite', p.includes('3 shows are in your favorites already'), p);
 t.ok('and no add button is offered', !(await js(`[...document.querySelectorAll('button')].some(b => b.textContent.trim().toLowerCase().startsWith('add '))`)));
-await clickButton('done');
+await js(`(() => { ${inBox('close')}.click(); return 1; })()`);
+t.ok('CLOSE folds the note and clears the result', await until(`!document.querySelector('[data-opml-panel]') && !document.body.innerText.includes('OPML is the file every podcast app uses')`, 3000));
 
 // ===========================================================================
 // A FRESH ACCOUNT IS PUBLIC BEFORE IT PRESSES ANYTHING. `seedFavoritesMode`

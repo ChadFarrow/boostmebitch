@@ -30,7 +30,7 @@ import { FavoritesNewEpisodes } from '@/components/favorites-new-episodes';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
 import {
-  OpmlImportButton, OpmlImportPanel, OpmlTools, useOpmlImport, type OpmlImporter,
+  OpmlImportButton, OpmlImportPanel, OpmlLibraryImport, useOpmlImport, type OpmlImporter,
 } from '@/components/favorites-opml';
 import { saveFile } from '@/lib/save-file';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
@@ -488,11 +488,12 @@ export function FavoritesPage() {
           library, this describes the wire. */}
       <FavoritesNewEpisodes key={identity?.npub ?? 'guest'} onOpen={openNewEpisode} />
 
-      {/* The OPML import's progress and result. Here, above the split, because
-          an import started from the empty card turns that card into the
-          library the moment it lands — and the "not added" list must survive
-          that. Self-hiding until a file is picked. */}
-      <OpmlImportPanel importer={opml} />
+      {/* The progress and result of an OPML import started from the EMPTY
+          card. Here, above the split, because that card turns into the library
+          the moment the shows land — and the "not added" list must survive
+          that. An import started under a library draws its result in
+          <OpmlLibraryImport>'s box instead, so this one hides for it. */}
+      <OpmlImportPanel importer={opml} where="empty" />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
@@ -623,7 +624,7 @@ export function FavoritesPage() {
           {/* UNDER the library, not above it: rarely pressed, and the controls
               above are judged on how fast they get you to a favorite. The
               empty branch offers the import in its own card instead. */}
-          <OpmlTools importer={opml} />
+          <OpmlLibraryImport importer={opml} />
         </>
       )}
     </div>
