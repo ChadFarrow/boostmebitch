@@ -155,6 +155,76 @@ section('4. Both cache buckets exist under their exact names');
 }
 
 // ---------------------------------------------------------------------------
+// THE ROW'S DOWNLOAD IS IN ITS ⋯ MENU. Since #461 (Next UI, 2026-10-01) an
+// episode row keeps only BOOST on the line; DOWNLOAD is a tile in the row's ⋯
+// menu (`components/lists/episode-row-menu.tsx`), rendered only while that
+// menu is OPEN, and the row says the state on its date line instead
+// (`<DownloadMark>`: "✓ downloaded"). And a row no longer carries an `<h3>`:
+// it is an `<li>` whose first button is Play (Pause while it plays), with the
+// ⋯ trigger last — absent when the menu would be empty. Sections 5-7, 9 and
+// 10 looked for an h3 row and a `Download` button on it, found neither, and
+// failed 13 checks without a download ever starting — reading as a broken
+// downloads feature.
+const ROWS = `[...document.querySelectorAll('li')].filter((li) => li.querySelector('button[aria-label="Play"], button[aria-label="Pause"], button[aria-label^="More actions for "]'))`;
+const ROW_MENU = (i) => `${ROWS}[${i}]?.querySelector('button[aria-label^="More actions for "]')`;
+const OPEN_MENU = `document.querySelector('[role="menu"]')`;
+// The idle tile's name; "Download of … failed" also starts with "Download ".
+const MENU_DOWNLOAD = `[...document.querySelectorAll('[role="menu"] button[aria-label^="Download "]')].find((b) => /to play without a connection/.test(b.getAttribute('aria-label')))`;
+const DOWNLOADED_ROW = `${ROWS}.find((li) => /✓ downloaded/.test(li.textContent || ''))`;
+
+/** Open row `i`'s ⋯ menu; false when the row has none (nothing to offer). */
+async function openRowMenu(i) {
+  if (await js(`!!${OPEN_MENU}`)) await closeRowMenu();
+  const has = await js(`(() => { const b = ${ROW_MENU(i)}; if (!b) return false; b.click(); return true; })()`);
+  if (!has) return false;
+  for (let k = 0; k < 20 && !(await js(`!!${OPEN_MENU}`)); k++) await wait(100);
+  return js(`!!${OPEN_MENU}`);
+}
+/** The trigger toggles; a script click fires no pointerdown, so no outside-click race. */
+async function closeRowMenu() {
+  await js(`(() => { const b = document.querySelector('button[aria-label^="More actions for "][aria-expanded="true"]'); b?.click(); return true; })()`);
+  for (let k = 0; k < 20 && (await js(`!!${OPEN_MENU}`)); k++) await wait(100);
+}
+/** Per row: is it a live/upcoming/pending item, and does its own menu offer a download? */
+async function rowsOfferingDownload() {
+  const rows = await js(`${ROWS}.length`);
+  const out = [];
+  for (let i = 0; i < rows; i++) {
+    const live = await js(`/LIVE|UPCOMING|PENDING/i.test(${ROWS}[${i}].textContent || '')`);
+    const offers = !!(await openRowMenu(i)) && await js(`!!${MENU_DOWNLOAD}`);
+    out.push({ live, offers });
+  }
+  await closeRowMenu();
+  return out;
+}
+/** Press DOWNLOAD in the first row whose menu offers it; the menu closes itself. */
+async function downloadFirstOffered() {
+  const rows = await js(`${ROWS}.length`);
+  for (let i = 0; i < rows; i++) {
+    if (!(await openRowMenu(i))) continue;
+    if (await js(`(() => { const b = ${MENU_DOWNLOAD}; if (!b) return false; b.click(); return true; })()`)) return true;
+  }
+  await closeRowMenu();
+  return false;
+}
+/** Wait for a row's date line to say "✓ downloaded" (up to four minutes). */
+async function waitDownloaded() {
+  for (let i = 0; i < 120; i++) {
+    if (await js(`!!${DOWNLOADED_ROW}`)) return true;
+    await wait(2000);
+  }
+  return false;
+}
+/** The downloaded row's own tile, read where it lives: in its open menu. */
+async function downloadedRowMenuSaysRemove() {
+  const i = await js(`${ROWS}.indexOf(${DOWNLOADED_ROW})`);
+  if (i < 0 || !(await openRowMenu(i))) return false;
+  const says = await js(`!!document.querySelector('[role="menu"] button[aria-label^="Remove the download"]')`);
+  await closeRowMenu();
+  return says;
+}
+
+// ---------------------------------------------------------------------------
 if (process.env.E2E_DOWNLOADS_FULL === '1') {
   // A real show, reached by deep link. `<HomePage>`'s mount effect is the one
   // thing that restores `?podcast=`, so this only works on `/`.
@@ -169,27 +239,23 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     // the URL says "not a file". If this count ever equals the row count, the
     // liveStatus refusal has been narrowed back to `'live'` and the button is
     // offering to download a stream that never ends.
-    const counts = await js(`
-      (() => {
-        const rows = [...document.querySelectorAll('li')].filter(li => li.querySelector('h3'));
-        const live = rows.filter(li => /LIVE|UPCOMING/i.test(li.textContent || '')).length;
-        return { buttons: document.querySelectorAll('button[aria-label^="Download"]').length, live };
-      })()
-    `);
-    check('at least one row, and not every row, offers a download',
-      counts.buttons > 0 && counts.buttons < 20, true);
+    // Asked per row, not as a count against the row total: the show's live
+    // item comes and goes (Episode 157 sat PENDING on 2026-10-31), and a count
+    // can only fail on a day the page happens to list one.
+    const rows = await rowsOfferingDownload();
+    const liveRows = rows.filter((r) => r.live);
+    check('at least one ordinary row offers a download', rows.some((r) => !r.live && r.offers), true);
+    check('no LIVE, UPCOMING or PENDING row offers one', liveRows.filter((r) => r.offers).length, 0);
+    console.log(`        (${rows.filter((r) => r.offers).length} of ${rows.length} rows offer one; ${liveRows.length} live, upcoming or pending`
+      + (liveRows.length ? ')' : ' — so the refusal half had nothing to test today)'));
   }
 
   section('6. A real episode downloads, and is stored with its value block');
   let record = null;
   {
-    await js(`document.querySelector('button[aria-label^="Download"]').click(); true`);
-    let done = false;
-    for (let i = 0; i < 120 && !done; i++) {
-      await wait(2000);
-      done = await js(`!!document.querySelector('button[aria-label^="Remove the download"]')`);
-    }
-    check('the button reached its downloaded state', done, true);
+    check('a row\'s ⋯ menu offers DOWNLOAD, and it starts', await downloadFirstOffered(), true);
+    check('the row says it is downloaded', await waitDownloaded(), true);
+    check('the button reached its downloaded state', await downloadedRowMenuSaysRemove(), true);
     record = await js(`
       (async () => {
         const cache = await caches.open('bmb-downloads-v1');
@@ -236,7 +302,7 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     const play = `
       (() => {
         const rows = [...document.querySelectorAll('li')];
-        const row = rows.find(li => li.querySelector('button[aria-label^="Remove the download"]')) || rows[0];
+        const row = ${DOWNLOADED_ROW} || rows[0];
         (row.querySelector('h3, button, a') || row).click();
         return true;
       })()`;
@@ -317,12 +383,8 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     const GUID = 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f';
     await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
     await wait(14000);
-    await js(`document.querySelector('button[aria-label^="Download"]').click(); true`);
-    let done = false;
-    for (let i = 0; i < 120 && !done; i++) {
-      await wait(2000);
-      done = await js(`!!document.querySelector('button[aria-label^="Remove the download"]')`);
-    }
+    await downloadFirstOffered();
+    await waitDownloaded();
     await send('Page.navigate', { url: `${APP}/downloads` });
     await wait(5000);
     const listed = await js(`
@@ -372,12 +434,8 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     const GUID = 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f';
     await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
     await wait(14000);
-    await js(`document.querySelector('button[aria-label^="Download"]').click(); true`);
-    let done = false;
-    for (let i = 0; i < 120 && !done; i++) {
-      await wait(2000);
-      done = await js(`!!document.querySelector('button[aria-label^="Remove the download"]')`);
-    }
+    await downloadFirstOffered();
+    await waitDownloaded();
     // The extras are fetched AFTER the record is written, so the button turning
     // green is not proof they landed. Give them their own moment.
     await wait(4000);
@@ -459,12 +517,25 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     // the proxied PNG in cache. An iPhone launching cold has no such cache.
     await send('Network.clearBrowserCache');
     await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
-    await js(`document.querySelector('ul li button, li h3')?.click(); true`);
+    // MOVE `current` OFF the downloaded episode first. Section 9 played it, so
+    // this load REVEALS it — paused, on the network source it was revealed
+    // with — and its row's first button (↺ Resume) restarts THAT element rather
+    // than re-sourcing it from the download. This line used to press the first
+    // row's first button, which moved `current` while row 0 was a playable
+    // episode; on 2026-10-31 row 0 was Episode 157, PENDING, whose Play does
+    // nothing, and the check below then graded the network source.
+    const moved = await js(`(() => {
+      const dl = ${DOWNLOADED_ROW};
+      const other = ${ROWS}.find((li) => li !== dl && !/LIVE|UPCOMING|PENDING/i.test(li.textContent || '')
+        && li.querySelector('button[aria-label="Play"]:not([disabled])'));
+      other?.querySelector('button[aria-label="Play"]').click();
+      return !!other;
+    })()`);
+    check('another episode takes the player first', moved, true);
     await wait(2000);
     await js(`
       (() => {
-        const rows = [...document.querySelectorAll('li')];
-        const row = rows.find(li => li.querySelector('button[aria-label^="Remove the download"]'));
+        const row = ${DOWNLOADED_ROW};
         (row?.querySelector('h3, button, a') || row)?.click();
         return true;
       })()

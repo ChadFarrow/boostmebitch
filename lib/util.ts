@@ -3088,6 +3088,14 @@ export function isHlsUrl(url: string | undefined | null): boolean {
  * **The EPISODE's `podcastGuid` comes first**, as in `resumeKey`, so a
  * `podcastL` playlist row plays at its own show's speed rather than the
  * playlist's. For an ordinary show this is `showStorageKey(podcast)`.
+ *
+ * **No guid and no feed id is `null`, not `'0'`.** A download record with
+ * neither rebuilds as `feedId: 0` / `id: 0` (`dbRowToEpisode`), and a `'0'` key
+ * would hand every such item, from unrelated shows, one shared speed.
+ *
+ * `/downloads` rebuilds the show with no `medium`, so an album track played
+ * from there passes `playsAsTracks` as a podcast; `speedKeyFor` (lib/store.ts)
+ * asks the download record first, as `deletableAfterPlay` does.
  */
 export function speedShowKey(
   episode: Pick<Episode, 'podcastGuid' | 'feedId' | 'enclosureUrl' | 'liveStatus'>,
@@ -3095,7 +3103,8 @@ export function speedShowKey(
 ): string | null {
   if (playsAsTracks(podcast) || isHlsUrl(episode.enclosureUrl)) return null;
   if (episode.liveStatus === 'live' || episode.liveStatus === 'pending') return null;
-  return episode.podcastGuid || podcast.podcastGuid || String(episode.feedId || podcast.id);
+  const id = episode.feedId || podcast.id;
+  return episode.podcastGuid || podcast.podcastGuid || (id ? String(id) : null);
 }
 
 /**
