@@ -105,7 +105,12 @@ function sliderIndex(rate: number): number {
   return best;
 }
 
-/** The stops that carry a number under their tick. */
+/**
+ * The stops that carry a number under their tick. EVERY stop has a tick you
+ * can see (the owner's request, 2026-11-01: a tick for each 0.1), and these
+ * three are taller and labelled — a number under each of the eleven does not
+ * fit a 224px menu.
+ */
 const SLIDER_LABELS: readonly number[] = [1, 1.5, 2];
 
 /**
@@ -145,7 +150,7 @@ export function SpeedSlider() {
         aria-label="Playback speed, 1× to 2× in 0.1 steps"
         aria-valuetext={`${shown}×`}
       />
-      <div aria-hidden className="relative h-5 mx-[calc(var(--seek-thumb)/2)]">
+      <div aria-hidden className="relative h-6 mx-[calc(var(--seek-thumb)/2)]">
         {SPEED_SLIDER_RATES.map((r, i) => {
           const major = SLIDER_LABELS.includes(r);
           return (
@@ -154,7 +159,7 @@ export function SpeedSlider() {
               className="absolute top-0 -translate-x-1/2 flex flex-col items-center gap-0.5"
               style={{ left: `${(i / last) * 100}%` }}
             >
-              <span className={`w-px ${major ? 'h-2 bg-bone/60' : 'h-1 bg-bone/30'}`} />
+              <span data-speed-tick="" className={`w-px ${major ? 'h-3 bg-bone/80' : 'h-2 bg-bone/60'}`} />
               {major && (
                 <span className="font-mono text-[10px] leading-none tabular-nums text-muted">{r}×</span>
               )}

@@ -245,6 +245,8 @@ const sbox = await js(`(() => { const r = ${SLIDER}.getBoundingClientRect(); con
   return { w: Math.round(r.width), h: Math.round(r.height), menu: Math.round(m.width) }; })()`);
 // "Full-width" is the menu's width less its padding, not a number of pixels.
 t.ok('phone: the slider is at least 24px tall and spans the menu', sbox && sbox.h >= 24 && sbox.w >= sbox.menu - 32, JSON.stringify(sbox));
+const ticks = await js(`(() => { const m = ${SLIDER}.closest('[role="menu"]'); return [...m.querySelectorAll('[data-speed-tick]')].map((el) => { const r = el.getBoundingClientRect(); return Math.round(r.height); }); })()`);
+t.ok('phone: a visible tick for every 0.1 stop — eleven, each at least 8px', Array.isArray(ticks) && ticks.length === 11 && ticks.every((h) => h >= 8), JSON.stringify(ticks));
 t.equal('phone: no horizontal overflow with the slider shown', await js(`document.documentElement.scrollWidth - document.documentElement.clientWidth`), 0);
 
 await right(3);
