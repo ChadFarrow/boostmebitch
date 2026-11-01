@@ -14,7 +14,11 @@
 // and a show never touched follows the global speed. Section 7 plays three
 // seeded downloads from /downloads, where only the download RECORD knows an
 // album track is music, and a record with no feed guid or id must not share a
-// '0' key. Section 8 makes the browser refuse 3.5×: the refused key goes, and
+// '0' key. Section 8 drives the 1×–2× SLIDER in the fullscreen player's ⋯
+// menu on a phone: the keyboard and a pointer each move it, the speed it saves
+// is the list's exact string (never a browser float), SPEED goes on from it,
+// a fast tile parks it at 1×, and a slider speed is saved for its show like
+// any other. Section 9 makes the browser refuse 3.5×: the refused key goes, and
 // no show is handed a '1' entry.
 //
 //   npm run build && npm start          # in another terminal
@@ -193,13 +197,95 @@ t.ok('no shared "0" entry', !('bmb:playback_rate:0' in s), JSON.stringify(s));
 t.ok('no entry under any other made-up key', Object.keys(s).every((k) => k === 'bmb:playback_rate'
   || k === `bmb:playback_rate:${DL_POD.feed}`), JSON.stringify(s));
 
-// 8. A browser may REFUSE a speed (the spec lets it throw NotSupportedError).
+// 8. THE SLIDER, where a phone has it: the fullscreen player's ⋯ menu. It sets
+// the store's ONE speed through `setPlaybackRate`, so everything above applies
+// to it; what is new is the input itself. Its value is an INDEX into
+// `SPEED_SLIDER_RATES`, and the assertions on the stored STRINGS are what
+// prove no browser float (1.2000000000000002) reaches the storage allowlist.
+console.log('\n8. The slider (phone, 390×844): keys and pointer, exact strings, per show');
+await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+await go(`${APP}/privacy`);
+await js(`(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('bmb:playback_rate')) localStorage.removeItem(k); return true; })()`);
+const SLIDER = `document.querySelector('input[type="range"][aria-label^="Playback speed, 1× to 2×"]')`;
+const openMenu = async () => {
+  await js(`document.querySelector('button[aria-label^="Open fullscreen player"]')?.click()`);
+  await until(`!!document.querySelector('button[aria-label="More actions for this episode"]')`, 15000);
+  await js(`document.querySelector('button[aria-label="More actions for this episode"]').click()`);
+  // The menu puts focus on its first item a frame or two AFTER it opens
+  // (`useMenuKeys`). Focusing the slider before that lands loses it to the
+  // first tile, and the arrow keys then press nothing — a test race, not an
+  // app one: measured, the keys hold at 30 ms apart once the menu has settled.
+  if (!await until(`!!document.activeElement?.closest('[role="menu"]')`, 10000)) return false;
+  await wait(300);
+  return until(`!!${SLIDER} && ${SLIDER}.getBoundingClientRect().width > 0`, 10000);
+};
+const key = async (k, code) => {
+  for (const type of ['keyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key: k, code: k, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code });
+  await wait(150);
+};
+const right = async (n) => {
+  await js(`${SLIDER}.focus()`);
+  if (!await js(`document.activeElement === ${SLIDER}`)) t.fail('the slider holds focus before the keys', await js(`document.activeElement?.outerHTML.slice(0, 120) ?? null`));
+  for (let i = 0; i < n; i++) await key('ArrowRight', 39);
+  await wait(300);
+};
+/** A pointer press on the slider's stop `i` (0 = 1×, 10 = 2×). */
+const pressStop = async (i) => {
+  const at = JSON.parse(await js(`(() => { const el = ${SLIDER}; const r = el.getBoundingClientRect();
+    const thumb = parseFloat(getComputedStyle(el).getPropertyValue('--seek-thumb')) || 16;
+    return JSON.stringify({ x: r.left + thumb / 2 + (${i} / 10) * (r.width - thumb), y: r.top + r.height / 2 }); })()`));
+  for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1 });
+  await wait(400);
+};
+const valuetext = () => js(`${SLIDER}?.getAttribute('aria-valuetext') ?? null`);
+
+expectRate('phone: show A starts at 1×', await playShow(SHOW_A), 1);
+t.ok('phone: the ⋯ menu shows the slider', await openMenu());
+const sbox = await js(`(() => { const r = ${SLIDER}.getBoundingClientRect(); const m = ${SLIDER}.closest('[role="menu"]').getBoundingClientRect();
+  return { w: Math.round(r.width), h: Math.round(r.height), menu: Math.round(m.width) }; })()`);
+// "Full-width" is the menu's width less its padding, not a number of pixels.
+t.ok('phone: the slider is at least 24px tall and spans the menu', sbox && sbox.h >= 24 && sbox.w >= sbox.menu - 32, JSON.stringify(sbox));
+t.equal('phone: no horizontal overflow with the slider shown', await js(`document.documentElement.scrollWidth - document.documentElement.clientWidth`), 0);
+
+await right(3);
+expectRate('three ArrowRight presses → 1.3×', await rateNow(), 1.3);
+s = await stored();
+expectRate('the exact string "1.3", globally', s['bmb:playback_rate'], '1.3');
+expectRate('and for show A', s[`bmb:playback_rate:${SHOW_A}`], '1.3');
+expectRate('aria-valuetext names it', await valuetext(), '1.3×');
+const lit = `document.querySelector('button[aria-label^="Playback speed 1.3×"]')`;
+t.ok('SPEED shows the slider speed', await js(`!!${lit}`), await js(`[...document.querySelectorAll('button[aria-label^="Playback speed"]')].map((b) => b.getAttribute('aria-label')).join(' | ')`));
+await js(`${lit}?.click()`);
+await wait(400);
+expectRate('SPEED goes on to the next stop above it: 1.3× → 1.5×', await rateNow(), 1.5);
+
+await pressStop(8);
+expectRate('a pointer press on the 1.8 stop → 1.8×', await rateNow(), 1.8);
+expectRate('stored as the exact string "1.8"', (await stored())[`bmb:playback_rate:${SHOW_A}`], '1.8');
+
+await js(`document.querySelector('button[aria-label="Playback speed 3.5×"]')?.click()`);
+await wait(400);
+expectRate('the 3.5× tile', await rateNow(), 3.5);
+expectRate('a fast speed parks the slider at 1×', await valuetext(), '1×');
+await right(1);
+expectRate('one ArrowRight from 3.5× → 1.1×, a way back', await rateNow(), 1.1);
+
+expectRate('show B, never touched, follows the global 1.1×', await playShow(SHOW_B), 1.1);
+t.ok('phone: the ⋯ menu on show B', await openMenu());
+await right(5);
+expectRate('the slider moves show B to 1.6×', await rateNow(), 1.6);
+s = await stored();
+expectRate(`bmb:playback_rate:${SHOW_B}`, s[`bmb:playback_rate:${SHOW_B}`], '1.6');
+expectRate('show A keeps the 1.1× its slider left', await playShow(SHOW_A), 1.1);
+await send('Emulation.clearDeviceMetricsOverride');
+
+// 9. A browser may REFUSE a speed (the spec lets it throw NotSupportedError).
 // The refusal is simulated by a setter that throws for 3.5×, installed before
 // any page script runs. <Player> must drop the stored speed that holds the
 // refused one and play at what is left — and must NOT save 1× as the show's
 // own choice, which `setPlaybackRate(1)` did: that entry outranks the global
 // speed for ever. Last, because the stub stays for the rest of the page.
-console.log('\n8. A refused speed: drops the key that holds it, saves no "1"');
+console.log('\n9. A refused speed: drops the key that holds it, saves no "1"');
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
   for (const prop of ['playbackRate', 'defaultPlaybackRate']) {
     const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, prop);
