@@ -23,10 +23,12 @@ import { subscribeBunkerApproval, cancelBunkerApprovalWait, type BunkerApprovalS
  *
  * The notice used to say only "waiting for you to approve", which is true of
  * six different requests, and on a connection set to approve everything a user
- * has no way to tell which one their signer is refusing. Clave has answered
- * `no permission` on a Full Trust connection (docs/signers.md), so "I set it to
- * approve everything" does not settle it; the request does. Unknown labels and
- * kinds fall through to the raw label rather than to a guess.
+ * has no way to tell which one their signer is refusing. "I set it to approve
+ * everything" does not settle it either: the refusal may come from ANOTHER
+ * signer app holding the same key — `no permission` on a Full Trust Clave
+ * connection turned out to be Amber on a second device (docs/signers.md, "Two
+ * signer apps, one key") — and the request is what a bug report can act on.
+ * Unknown labels and kinds fall through to the raw label rather than to a guess.
  */
 const KIND_NAMES: Record<number, string> = {
   0: 'your profile',

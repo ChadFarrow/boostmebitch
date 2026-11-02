@@ -2,17 +2,19 @@
 //
 // Pinned by `npm run check:nip46error`. Read this before editing it.
 //
-// WHY THIS EXISTS. Clave (the iOS signer, see ./clave.ts) does not hold a
-// request open while the user approves it. It answers immediately with an
-// ERROR — `permission denied` — and then, once the user taps approve, sends the
-// REAL result on the SAME request id. nostr-tools 2.19.4 settles on the first
-// response it sees, so the caller gets a rejection and the signed event is
-// delivered to a handler that is already gone.
+// WHY THIS EXISTS. Clave (the iOS signer, see ./clave.ts) used to answer a
+// request it was holding for its user with an ERROR — `permission denied` — and
+// then, once the user tapped approve, send the REAL result on the SAME request
+// id. nostr-tools 2.19.4 settles on the first response it sees, so the caller
+// got a rejection and the signed event was delivered to a handler already gone.
+// `lib/nostr/bunker.ts` re-issues the call on this predicate instead. Clave
+// stopped doing that in `dc59364` (2026-06-14) and now sends nothing until the
+// user acts, but other signers still answer that way, so the predicate stays.
 //
-// Left alone, that is not a sign-in bug. Pairing succeeds; it is every
-// SIGNATURE afterwards that fails — the boost note, the favorites publish, the
-// mute publish — each on the first approval, each looking like the signer
-// refused. `lib/nostr/bunker.ts` re-issues the call on this predicate instead.
+// A SECOND SOURCE OF THESE ANSWERS IS NOT THE PAIRED SIGNER AT ALL: another app
+// holding the same key, answering a client it was never paired with. That is
+// what `holdErrorsForResult` below is for, and it runs BEFORE this predicate
+// ever sees an answer.
 //
 // IT FAILS CLOSED ON ANYTHING THAT IS NOT A BARE STRING, and that is the load-
 // bearing half rather than the regex list.
@@ -53,12 +55,17 @@
  * note above.
  *
  * **`no permission` is the sixth, and it came off a real iPhone rather than out
- * of that file.** Clave answered a pairing's `get_public_key` with exactly that
- * string; the modal rendered *"no permission"* in magenta while Clave's own
- * Recent Activity listed the same call twice with a green tick. A list copied
- * from a vendor's client is a starting point, not the set — when a signer
- * produces a phrasing that is not here, the fix is to add the observed string,
- * never to loosen an existing pattern into a token that would have caught it.
+ * of that file** — but NOT FROM CLAVE, which is what the report that supplied it
+ * concluded. The modal rendered *"no permission"* in magenta while Clave's own
+ * Recent Activity listed the same `get_public_key` twice with a green tick: two
+ * signer apps answering one request. Clave's source has never sent the string;
+ * Amber sends it, verbatim, to any client it has no permission row for. It stays
+ * on the list because with only such an app answering, the call should still
+ * reach the approval loop and its Stop-waiting control rather than fail outright
+ * — and since `holdErrorsForResult`, it only gets here when no result arrived in
+ * the grace window. When a signer produces a phrasing that is not here, add the
+ * observed string, never loosen an existing pattern into a token that would
+ * have caught it.
  */
 export const APPROVAL_PENDING_PATTERNS: readonly RegExp[] = [
   /permission denied/i,
@@ -88,6 +95,167 @@ export function isApprovalPending(e: unknown): boolean {
   const s = e.trim();
   if (!s) return false;
   return APPROVAL_PENDING_PATTERNS.some((re) => re.test(s));
+}
+
+// ── TWO SIGNER APPS, ONE KEY: a result beats an error on the same id ───────
+//
+// A NIP-46 request is addressed to the user's PUBKEY. Every signer app that
+// holds that key and listens on the relay sees it, and each answers in its own
+// way. The one that has never been paired with this client answers with an
+// ERROR — Amber writes `BunkerResponse(id, "", "no permission")` for any client
+// it has no permission row for (`EventNotificationConsumer.kt`) — while the
+// signer the user actually paired answers with the RESULT.
+//
+// nostr-tools 2.19.4 settles a request on the FIRST answer for its id and then
+// runs `delete listeners[id]` (`lib/esm/nip46.js`, read in node_modules). So
+// whichever app is faster decides the call. Reported from an iPhone on
+// 2026-11-01: a brand-new "Sign in with Clave" pairing, Amber on the same
+// user's Android phone listening on the same two relays, and the account menu
+// on "Waiting for you to approve in your signer (asked 5×) — Request: reading
+// your public key" while Clave answered every one of those requests within a
+// second. Amber was faster each time; `isApprovalPending` read its `no
+// permission` as "queued for the user" and `withApprovalWait` asked again, into
+// the same race. The relays' stored kind:24133 traffic showed two answers per
+// request from the one key — a 176-character error and a 220-character result.
+//
+// THE RULE, AND WHY IT IS SAFE: every program that can author with this key
+// produces the SAME correct result — the same pubkey, a valid signature by the
+// same key, the same plaintext. An error is the only kind of answer that
+// describes the RESPONDER's own state (its pairings, its permissions), so it is
+// the only kind that can be wrong about this client. A result therefore beats
+// an error on the same id; an error waits `NIP46_ERROR_GRACE_MS` for one.
+//
+// `no permission` WAS ONCE ATTRIBUTED TO CLAVE, and that was this same race.
+// Clave's source (`Shared/LightSigner.swift`) has never sent that string, and
+// since `dc59364` it sends no "not yet" answer at all. See docs/signers.md.
+
+/** One entry in nostr-tools 2.19.4's `listeners` table — what `sendRequest`
+ *  stores per request id and the subscription handler settles. */
+export type Nip46Listener = {
+  resolve: (result: string) => void;
+  reject: (error: unknown) => void;
+};
+
+/** The two timer calls the hold needs, injected so the check script can drive
+ *  a fake clock instead of waiting on a real one. */
+export type HoldTimers = {
+  set: (fn: () => void, ms: number) => unknown;
+  clear: (handle: unknown) => void;
+};
+
+/**
+ * How long an error answer waits for a result on the same id.
+ *
+ * Clave answered about a second after Amber in the field traffic, and an
+ * APNs-woken Clave answers an auto-allowed method in low single-digit seconds
+ * (its own PR #93 measured a promptless probe at 1.2 s from a cold launch).
+ * Five seconds covers that with room. THE COST is on a real refusal from the
+ * only signer, which now reaches the caller this much later: a user who tapped
+ * Deny in another app does not see it, and a short window that lets the
+ * imposter win again would undo the whole fix.
+ */
+export const NIP46_ERROR_GRACE_MS = 5_000;
+
+const DEFAULT_TIMERS: HoldTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+const HELD_TABLES = new WeakSet<object>();
+
+/** Has `holdErrorsForResult` already wrapped this table? Wrapping twice would
+ *  stack two grace windows on one request. */
+export function isHeldListenerTable(table: unknown): boolean {
+  return typeof table === 'object' && table !== null && HELD_TABLES.has(table);
+}
+
+/**
+ * Wrap nostr-tools' `listeners` table so that an ERROR answer does not end a
+ * request while a RESULT may still arrive on the same id.
+ *
+ * It changes only what an entry's `reject` and the table's `delete` do; the
+ * library's own dispatcher runs unchanged on top of it:
+ *
+ *   - `reject(error)` starts a grace timer and returns. A second error in the
+ *     window does not restart it. When the window ends with no result, the
+ *     caller's real `reject` runs.
+ *   - `resolve(result)` settles at once, inside the window or before it.
+ *   - `delete table[id]` is a no-op on an entry that has not settled. The
+ *     library deletes right after it calls `reject` — the line this exists to
+ *     neutralise — and also after an answer that carries NEITHER field, which
+ *     would otherwise let one empty reply from any responder kill the request.
+ *     ONLY A SETTLE REMOVES AN ENTRY.
+ *
+ * WHICH ERROR IS REPORTED when several arrive: the first, except that a final
+ * answer replaces a "not yet" one. `isApprovalPending` is a claim that a later
+ * answer is coming; a final refusal from another responder is the better guess
+ * at what the user meant, and reporting it fails the call FAST instead of
+ * sending `withApprovalWait` into a re-issue loop over a signer that said no.
+ *
+ * Entries that are not listener-shaped pass through untouched.
+ */
+export function holdErrorsForResult(
+  table: Record<string, Nip46Listener>,
+  graceMs: number = NIP46_ERROR_GRACE_MS,
+  timers: HoldTimers = DEFAULT_TIMERS,
+): Record<string, Nip46Listener> {
+  if (isHeldListenerTable(table)) return table;
+  // The entries THIS proxy built, and which of them have settled. `delete` keeps
+  // only an entry that is both ours and unsettled, so a raw entry written
+  // straight onto the target is never pinned in place.
+  const ours = new WeakSet<Nip46Listener>();
+  const settled = new WeakSet<Nip46Listener>();
+  const held = new Proxy(table, {
+    set(target, key, value) {
+      if (typeof key !== 'string' || !isListener(value)) {
+        Reflect.set(target, key, value);
+        return true;
+      }
+      const real = value;
+      let timer: unknown = null;
+      let chosen: unknown;
+      const entry: Nip46Listener = {
+        resolve: (result) => {
+          if (settled.has(entry)) return;
+          settled.add(entry);
+          if (timer !== null) timers.clear(timer);
+          if (target[key] === entry) delete target[key];
+          real.resolve(result);
+        },
+        reject: (error) => {
+          if (settled.has(entry)) return;
+          if (timer === null) {
+            chosen = error;
+            timer = timers.set(() => {
+              if (settled.has(entry)) return;
+              settled.add(entry);
+              if (target[key] === entry) delete target[key];
+              real.reject(chosen);
+            }, graceMs);
+            return;
+          }
+          if (isApprovalPending(chosen) && !isApprovalPending(error)) chosen = error;
+        },
+      };
+      ours.add(entry);
+      Reflect.set(target, key, entry);
+      return true;
+    },
+    deleteProperty(target, key) {
+      const entry: unknown = Reflect.get(target, key);
+      if (isListener(entry) && ours.has(entry) && !settled.has(entry)) return true;
+      Reflect.deleteProperty(target, key);
+      return true;
+    },
+  });
+  HELD_TABLES.add(held);
+  return held;
+}
+
+function isListener(v: unknown): v is Nip46Listener {
+  return typeof v === 'object' && v !== null
+    && typeof (v as Nip46Listener).resolve === 'function'
+    && typeof (v as Nip46Listener).reject === 'function';
 }
 
 // ── How BIG a NIP-46 request may be ────────────────────────────────────────
