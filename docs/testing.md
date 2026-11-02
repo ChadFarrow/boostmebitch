@@ -43,6 +43,7 @@ a real account.
 | `npm run seed:relay -- <npub>` | Copies that account's real kind:10333 into it, strictly read-only against the public relays. An empty relay is the EASY state; the ones that have cost this repo data need a list with history in it. |
 | `npm run e2e:favorites` | The whole loop with no account involved: a throwaway key reached from the page over a CDP binding, so `window.nostr` is indistinguishable from an extension and the NIP-44 is real. `--headed` to watch it. |
 | `npm run e2e:mutes` | The same harness over the kind:10000 private half — which cipher each payload routes to, that a NIP-44 list is republished as NIP-44, and that an unreadable blob is carried and said so on screen. |
+| `npm run e2e:twosigners` | Two stub NIP-46 responders on ONE key over a local relay: one answers `no permission` at once (Amber, for a client it never paired), the other answers correctly 700 ms later (Clave). Pins that the paired signer's result wins, that a real refusal still lands, and that the approval notice still appears when only the imposter answers. See docs/signers.md, "Two signer apps, one key". |
 
 ### Two things about the harness that look like detail and are not
 

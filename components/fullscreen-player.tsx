@@ -202,7 +202,7 @@ import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
-import { SpeedButton, FastSpeedButton } from './player/speed-button';
+import { SpeedButton, FastSpeedButton, SpeedSlider } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
@@ -818,13 +818,15 @@ export function FullscreenPlayer({
         <span aria-hidden className="text-lg leading-none">≋</span>,
         'STREAM',
       )}
-      {/* SPEED, then 3.5× and 5×. Without STREAM they are a third row of
-          three; with it, 5× sits alone in a fourth (docs/ui.md). Last because
-          they are about playback, not about this show or episode. No speed
-          on a live item: <Player> holds it at 1×, since there is nothing
-          ahead of the live edge to play into. */}
+      {/* SPEED, then 3.5× and 5×, then the 1×–2× slider as a full-width row
+          of its own. Without STREAM the tiles are a third row of three; with
+          it, 5× sits alone in a fourth (docs/ui.md). Last because they are
+          about playback, not about this show or episode. No speed on a live
+          item: <Player> holds it at 1×, since there is nothing ahead of the
+          live edge to play into. */}
       {!isLive && <SpeedButton />}
       {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+      {!isLive && <SpeedSlider />}
     </>
   );
 
@@ -988,8 +990,27 @@ export function FullscreenPlayer({
           // STREAM alone on a second row beside three empty cells. 3 + 2 reads
           // as a block. 224px is the width `useAnchoredMenu` is told about, so
           // the panel cannot hang off the left of the screen.
-          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2"
-          style={{ top: tiles.at.top, bottom: tiles.at.bottom, right: tiles.at.right }}
+          //
+          // CAPPED TO THE ROOM IT OPENS INTO, and it scrolls past that. A
+          // `fixed` panel cannot be scrolled to by the page, and the speed
+          // slider made it ~60px taller as its LAST row: on a phone in
+          // landscape (~320px of viewport) the slider sat under the screen's
+          // bottom edge with no way to reach it. The edge it grows toward
+          // keeps the safe-area inset, `max()` and never a sum (CLAUDE.md).
+          // The height is the `innerHeight` that `at` was measured against
+          // (`useAnchoredMenu` re-measures on resize, which re-renders this),
+          // so the edge and the cap come from one number.
+          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2 overflow-y-auto overscroll-contain"
+          style={{
+            top: tiles.at.top,
+            bottom: tiles.at.bottom,
+            right: tiles.at.right,
+            maxHeight: `calc(${window.innerHeight - (tiles.at.top ?? tiles.at.bottom ?? 0)}px - max(0.5rem, env(safe-area-inset-${tiles.at.top !== undefined ? 'bottom' : 'top'})))`,
+          }}
+          // `useMenuKeys` focuses with `preventScroll`, which stops this
+          // panel's own scroll too: an arrow key onto a row scrolled out of
+          // the capped panel would focus something nobody can see.
+          onFocus={(e) => (e.target as HTMLElement).scrollIntoView({ block: 'nearest' })}
         >
           {secondaryTiles}
         </div>,

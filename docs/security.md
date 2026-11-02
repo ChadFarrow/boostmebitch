@@ -200,3 +200,26 @@ The general rule, which is in `CLAUDE.md` because it reaches files this doc
 doesn't name: **a parser's `null` is a "no" about parsing, not a decision about
 safety.** Any input accepting a Nostr identifier — npub, nprofile, hex pubkey —
 needs the explicit secret-key refusal before whatever the miss falls through to.
+
+### A private feed address in an OPML file is a credential (`looksPrivate`, `lib/opml.ts`)
+
+An OPML export from the user's current app lists paid and members-only feeds
+beside the public ones, and their **address is the key** — Patreon's `?auth=`,
+Supercast and Supporting Cast in the path. The import looks each address up by
+sending it to our server, which passes it to the read index (which STORES every
+`url:` key in `pi_podcasts`) and to Podcast Index. So `planOpmlImport` keeps a
+private-looking address back **before anything is sent**, and the panel names it
+by its host only — the rest of it is the key, and the screen is no place for it.
+
+Nothing is lost by keeping one back: Podcast Index does not list a private feed,
+and a favorite needs the `podcast:guid` it would have answered with. So the
+heuristic leans towards keeping back — userinfo, a credential-shaped query
+parameter, a known paid-feed host, a `private` path segment — and a public feed
+that trips it is listed as "looks private, not looked up", which search fixes.
+`auth` and `key` match whole names only, because as substrings they catch
+`author` and `monkey`.
+
+Pinned by `check:opml` (`naivePlan()` sends every `xmlUrl` as written) and by
+`e2e:opml`, which records every request the page makes over CDP and finds none
+carrying the fixture's Patreon key. Verified that the e2e FAILS with the filter
+disabled: five assertions go red, the request check among them.
