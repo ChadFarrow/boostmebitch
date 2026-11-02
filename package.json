@@ -66,6 +66,7 @@
     "e2e:resume": "node scripts/e2e-resume.mjs",
     "e2e:mutes": "node scripts/e2e-mutes.mjs",
     "e2e:bunkerrestore": "node scripts/e2e-bunker-restore.mjs",
+    "e2e:twosigners": "node scripts/e2e-two-signers.mjs",
     "e2e:mentions": "node --experimental-strip-types scripts/e2e-mentions.mjs",
     "e2e:playlist": "node scripts/e2e-playlist.mjs",
     "e2e:yield": "node scripts/e2e-yield.mjs",

@@ -40,8 +40,11 @@
 
 import {
   APPROVAL_PENDING_PATTERNS,
+  holdErrorsForResult,
   isApprovalPending,
+  isHeldListenerTable,
   isRequestTooLarge,
+  NIP46_ERROR_GRACE_MS,
   nip46RequestBytes,
   nip46RequestFits,
   NIP46_MAX_REQUEST_BYTES,
@@ -94,11 +97,14 @@ section('A bare string off the wire, in a phrasing that means "still asking"');
   vec('queued for approval', 'queued for approval', true, { alsoNaive: true });
 
   // THE SIXTH CAME OFF A PHONE, NOT OUT OF THAT FILE — which is why it is
-  // called out rather than appended. Clave answered a pairing's
-  // `get_public_key` with exactly this, and none of the five above matched, so
-  // the sign-in reported "no permission" while Clave's Recent Activity showed
-  // the same call succeeding. A vendor's list is where this starts, not where
-  // it ends: when a signer produces a phrasing that is missing, add the
+  // called out rather than appended. The sign-in reported "no permission" while
+  // Clave's Recent Activity showed the same call succeeding. That was read as
+  // Clave answering with an error first; it was AMBER, holding the same key on
+  // another device, answering a client it was never paired with (its
+  // `BunkerResponse(id, "", "no permission")`). The section "Two signer apps,
+  // one key" below pins the fix for that race. The pattern stays: when ONLY
+  // such an app answers, the call should reach the approval loop and its Stop
+  // waiting control. When a signer produces a phrasing that is missing, add the
   // observed string — never loosen a pattern above into a token that would
   // have swept it up along with everything else.
   vec('no permission', 'no permission', true, { alsoNaive: true });
@@ -316,6 +322,174 @@ section('MUST STILL WORK: only the encrypt-side refusal counts as "too large"');
 }
 
 // ---------------------------------------------------------------------------
+section('Two signer apps, one key: a result beats an error on the same id');
+// ---------------------------------------------------------------------------
+//
+// THE FAULT THIS PINS. A NIP-46 request is addressed to the user's pubkey, so
+// every signer app holding that key answers it. One never paired with this
+// client answers with an ERROR — Amber's `no permission` — and nostr-tools
+// 2.19.4 settles on the first answer and deletes the listener, so the faster
+// app decides the call. Reported 2026-11-01: Amber beat Clave on every request
+// and the account menu sat on "asked 5×" over a signer that had answered.
+//
+// The DISPATCHER below is nostr-tools 2.19.4's own (`lib/esm/nip46.js`,
+// `setupSubscription`'s onevent), transcribed: `if (error) reject; else if
+// (result) resolve; delete listeners[id]`. The shipping patch does not touch it
+// — it wraps the TABLE under it — so the replay drives the real
+// `holdErrorsForResult` through the library's exact sequence of calls.
+//
+// BOTH DIRECTIONS COST SOMETHING:
+//   no hold      the imposter wins and the real signer's answer is dropped.
+//   hold forever a real refusal never reaches the user; a signer that is gone
+//                stops looking gone. Hence the window, and the vectors that
+//                prove an error still lands after it.
+{
+  const GRACE = 5000;
+  const PK = 'f'.repeat(64);
+
+  function fakeClock() {
+    let now = 0;
+    let seq = 0;
+    const pending = new Map();
+    return {
+      timers: {
+        set: (fn, ms) => { const h = ++seq; pending.set(h, { at: now + ms, fn }); return h; },
+        clear: (h) => { pending.delete(h); },
+      },
+      now: () => now,
+      tick(ms) {
+        const until = now + ms;
+        for (;;) {
+          let next = null;
+          for (const [h, t] of pending) if (t.at <= until && (!next || t.at < next[1].at)) next = [h, t];
+          if (!next) break;
+          pending.delete(next[0]);
+          now = next[1].at;
+          next[1].fn();
+        }
+        now = until;
+      },
+    };
+  }
+
+  // nostr-tools 2.19.4's dispatcher, verbatim in shape.
+  function dispatch(listeners, id, answer) {
+    const handler = listeners[id];
+    if (handler) {
+      if (answer.error) handler.reject(answer.error);
+      else if (answer.result) handler.resolve(answer.result);
+      delete listeners[id];
+    }
+  }
+
+  // Steps: ['error', text] | ['result', text] | ['empty'] | ['tick', ms].
+  // Returns how the caller's promise settled, when, and whether the entry is
+  // still in the table at the end — a held entry that never leaves is a leak.
+  function run(steps, hold) {
+    const clock = fakeClock();
+    const raw = {};
+    const table = hold ? holdErrorsForResult(raw, GRACE, clock.timers) : raw;
+    let outcome = { how: 'pending' };
+    // What `sendRequest` does: `this.listeners[id] = { resolve, reject }`.
+    table.r1 = {
+      resolve: (v) => { if (outcome.how === 'pending') outcome = { how: 'resolve', value: v, at: clock.now() }; },
+      reject: (e) => { if (outcome.how === 'pending') outcome = { how: 'reject', value: e, at: clock.now() }; },
+    };
+    for (const [kind, arg] of steps) {
+      if (kind === 'tick') clock.tick(arg);
+      else if (kind === 'error') dispatch(table, 'r1', { result: '', error: arg });
+      else if (kind === 'result') dispatch(table, 'r1', { result: arg });
+      else if (kind === 'empty') dispatch(table, 'r1', { result: '' });
+    }
+    clock.tick(60_000); // let every timer fire, so "pending" means pending
+    return { ...outcome, leftInTable: 'r1' in raw };
+  }
+
+  const naive = (steps) => run(steps, false);
+  const holdVectors = [];
+  function holdVec(label, steps, expected, opts = {}) {
+    holdVectors.push({ label, steps, expected, ...opts });
+    const got = run(steps, true);
+    check(label, JSON.stringify(got), JSON.stringify(expected));
+  }
+
+  // THE FIELD SHAPE: the imposter's error first, the real result ~1 s later.
+  holdVec('imposter "no permission", then the real result 1 s later → the result',
+    [['error', 'no permission'], ['tick', 1000], ['result', PK]],
+    { how: 'resolve', value: PK, at: 1000, leftInTable: false });
+  holdVec('...the same with a final-sounding imposter error',
+    [['error', 'Client not paired — send connect with valid bunker secret first'], ['tick', 900], ['result', PK]],
+    { how: 'resolve', value: PK, at: 900, leftInTable: false });
+  holdVec('a result just inside the window still wins',
+    [['error', 'no permission'], ['tick', GRACE - 1], ['result', PK]],
+    { how: 'resolve', value: PK, at: GRACE - 1, leftInTable: false });
+  // An empty reply from any responder used to delete the listener outright.
+  holdVec('an answer carrying neither field does not kill the request',
+    [['empty'], ['tick', 500], ['result', PK]],
+    { how: 'resolve', value: PK, at: 500, leftInTable: false });
+
+  // MUST STILL WORK: the one-signer world is unchanged except for the window.
+  holdVec('a lone result settles at once', [['result', PK]],
+    { how: 'resolve', value: PK, at: 0, leftInTable: false }, { alsoNaive: true });
+  holdVec('a result first, an error after → the result', [['result', PK], ['tick', 100], ['error', 'no permission']],
+    { how: 'resolve', value: PK, at: 0, leftInTable: false }, { alsoNaive: true });
+  holdVec('a lone refusal still lands — after the window',
+    [['error', 'user rejected']],
+    { how: 'reject', value: 'user rejected', at: GRACE, leftInTable: false });
+  holdVec('a result AFTER the window is too late; the error stands',
+    [['error', 'no permission'], ['tick', GRACE + 1], ['result', PK]],
+    { how: 'reject', value: 'no permission', at: GRACE, leftInTable: false });
+  // WHICH ERROR: a final answer replaces a "not yet" one, so a real refusal
+  // fails fast instead of feeding withApprovalWait's re-issue loop.
+  holdVec('"not yet" then a final refusal → the refusal is reported',
+    [['error', 'no permission'], ['tick', 700], ['error', 'user rejected']],
+    { how: 'reject', value: 'user rejected', at: GRACE, leftInTable: false });
+  holdVec('a final refusal then "not yet" → the refusal stays',
+    [['error', 'user rejected'], ['tick', 700], ['error', 'no permission']],
+    { how: 'reject', value: 'user rejected', at: GRACE, leftInTable: false });
+  holdVec('two "not yet" answers → the first, after ONE window (no restart)',
+    [['error', 'no permission'], ['tick', 3000], ['error', 'permission denied']],
+    { how: 'reject', value: 'no permission', at: GRACE, leftInTable: false });
+  holdVec('nothing at all → still pending, and still listening',
+    [],
+    { how: 'pending', leftInTable: true }, { alsoNaive: true });
+
+  // The naive replay: nostr-tools as shipped, first answer wins. Total over
+  // every vector; the exemptions are asserted, not assumed.
+  let disagreements = 0;
+  let exempted = 0;
+  for (const v of holdVectors) {
+    const agrees = JSON.stringify(naive(v.steps)) === JSON.stringify(v.expected);
+    if (agrees && v.alsoNaive) { exempted += 1; continue; }
+    if (agrees) continue;
+    if (v.alsoNaive) check(`naive agrees where it is exempted: ${v.label}`, false, true);
+    disagreements += 1;
+  }
+  check('every hold vector was replayed', holdVectors.length, 12);
+  check('the naive dispatcher agrees on the three it is exempted for', exempted, 3);
+  check('...and disagrees on all nine others', disagreements, 9);
+  check('specifically: the naive dispatcher hands the call to the imposter',
+    naive([['error', 'no permission'], ['tick', 1000], ['result', PK]]).value, 'no permission');
+
+  // The e2e scripts (e2e-mutes.mjs, e2e-two-signers.mjs) are plain .mjs and
+  // cannot import the .ts constant, so they carry its value as GRACE_MS. This
+  // is the one place both are held to the same number.
+  check('the grace window the e2e scripts assume (GRACE_MS = 5000)', NIP46_ERROR_GRACE_MS, 5000);
+
+  // The table contract the patch in bunker.ts relies on.
+  const raw = {};
+  const once = holdErrorsForResult(raw, GRACE, fakeClock().timers);
+  check('wrapping twice returns the same table (no stacked windows)',
+    holdErrorsForResult(once, GRACE, fakeClock().timers) === once, true);
+  check('a wrapped table is recognised', isHeldListenerTable(once), true);
+  check('a raw table is not', isHeldListenerTable(raw), false);
+  once.notAListener = 7;
+  check('a non-listener value passes through untouched', raw.notAListener, 7);
+  delete once.notAListener;
+  check('...and deletes normally', 'notAListener' in raw, false);
+}
+
+// ---------------------------------------------------------------------------
 section('nip46-errors.ts stays loadable under plain Node');
 // ---------------------------------------------------------------------------
 {
@@ -351,13 +525,11 @@ section('The pairing URI still ASKS for permissions');
   //
   // WHY THAT IS WORTH A CHECK AT ALL. The URI shipped without `perms` for the
   // life of the Clave work, with a comment presenting it as a safety choice. It
-  // is not one — it is what makes a signer prompt on EVERY call, so Clave
-  // answered `no permission` to the handshake's own `get_public_key` and to
-  // every signature after it, and `withApprovalWait` sat out a re-issue gap on
-  // each. Sign-in, the boost note, the favorites publish and the mute publish
-  // all paid it, and the whole thing presents as "it works, but it's slow" —
-  // which is why it survived review. Deleting the argument would restore that
-  // silently. See docs/signers.md.
+  // is not one — it is what makes a signer prompt on EVERY call, queueing each
+  // signature for a tap while `withApprovalWait` sits out a re-issue gap.
+  // (The `no permission` once blamed on this was a second signer app holding
+  // the same key — see "Two signer apps, one key" above.) Deleting the argument
+  // would restore the prompting silently. See docs/signers.md.
   const src = readFileSync(new URL('../lib/nostr/bunker.ts', import.meta.url), 'utf8');
   const call = src.slice(src.indexOf('createNostrConnectURI({'));
   const inCall = call.slice(0, call.indexOf('\n  });'));
