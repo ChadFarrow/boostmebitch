@@ -40,6 +40,7 @@ import { WalletModalHost } from '@/components/wallet-modal-host';
 import { FavoritesPrivacyPrompt } from '@/components/favorites-privacy';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { BRAND, siteTitle } from '@/lib/brand';
+import { IS_BETA } from '@/lib/beta';
 
 export const metadata: Metadata = {
   // The canonical origin, and it must be the `www` form: the apex 307-redirects
@@ -49,6 +50,10 @@ export const metadata: Metadata = {
   // artwork from a domain the app doesn't otherwise use, while the boost-note
   // deep links, NIP-05 and the OAuth origins all say boostmebitch.com.
   metadataBase: new URL(BRAND.origin),
+  // The beta site only. Vercel adds no `X-Robots-Tag` to a preview served on a
+  // custom domain, so without this a search engine indexes a second copy of the
+  // site that runs unfinished work. Set here, a route's own metadata inherits it.
+  ...(IS_BETA ? { robots: { index: false, follow: false } } : {}),
   title: siteTitle(),
   description: BRAND.description,
   manifest: BRAND.manifest,
@@ -331,6 +336,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Outside the Player boundary on purpose: losing playback should not
             also lose the way to /favorites. */}
         <TabBar />
+        {/* The beta site only: an installed app has no address bar to say which
+            site this is. On the screen edge and not in <AppHeader>, which has a
+            38px height limit and no spare width at 390px. `z-[65]` keeps it in
+            view over <ModalShell> and <FullscreenPlayer>, and below the iOS
+            status strip's `z-[70]`. `pointer-events-none` so it blocks no touch. */}
+        {IS_BETA && (
+          <div
+            data-beta-tag
+            className="fixed right-0 top-1/2 -translate-y-1/2 z-[65] pointer-events-none [writing-mode:vertical-rl] bg-bolt text-ink font-mono text-[10px] leading-none px-0.5 py-1.5 rounded-l"
+          >
+            BETA
+          </div>
+        )}
         {/* Renders <WalletModal> whenever `walletOpen` is set. In the layout so the
             boost modal's wallet button and <FullscreenPlayer>'s overlay
             <AuthControl> work on every route, not only the ones that render

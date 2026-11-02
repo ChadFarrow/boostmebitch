@@ -498,11 +498,20 @@ and settings backups have one copy per user across all deploys, so a beta bug ca
 damage them. Boost notes keep `BRAND.origin`, so their links open `www`. Browser
 storage is per origin, so on beta you sign in and connect the wallet again.
 
+**`NEXT_PUBLIC_BETA=1` marks the build** (`lib/beta.ts`), and it is inert anywhere
+else. It shows a `BETA` tag on the screen edge, because an installed app has no
+address bar; it sets `noindex`, because Vercel adds no `X-Robots-Tag` to a preview
+on a custom domain; and it makes the bug report's `site` say
+`beta.boostmebitch.com`. It does NOT change `BRAND.domain`, which a NIP-05, the
+keysend route and every boost note read. `npm run e2e:beta` drives all three at
+phone size, in both modes, and never files a report.
+
 **Its variables are scoped to the branch `beta`**, so PR previews do not get them.
 The Preview environment already holds the rest.
 
 | Variable | Why beta needs it |
 |---|---|
+| `NEXT_PUBLIC_BETA` | the marker above |
 | `GITHUB_BUG_TOKEN` | the bug report; sensitive, so it is pasted by hand |
 | `NOSTR_INDEX_URL`, `NOSTR_INDEX_KEY` | beta reads like production; the app sends no write to the index |
 | `PLAYLIST_DB_URL`, `PLAYLIST_DB_CA` | same; `lib/playlist-db.ts` is read-only |

@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "beta": "node scripts/beta.mjs",
     "beta:test": "node scripts/beta-test.mjs",
+    "e2e:beta": "node scripts/e2e-beta.mjs",
     "android:config": "cd android && npx --yes @bubblewrap/cli@1.25.0 updateConfig --jdkPath \"$JAVA_HOME\" --androidSdkPath \"$ANDROID_HOME\"",
     "android:update": "cd android && npx --yes @bubblewrap/cli@1.25.0 update --skipVersionUpgrade",
     "android:release": "cd android && npx --yes @bubblewrap/cli@1.25.0 build --skipPwaValidation",
