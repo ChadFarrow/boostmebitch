@@ -2326,6 +2326,129 @@ export function splitAtPosition<T extends { startTime: number; duration: number 
 }
 
 /**
+ * The longest marker believed when nothing says how long its track is. Of 169
+ * sampled markers under it, 162 matched their track within 30 s, and all 18 `music`
+ * markers over it sit on a song of 2 to 6 minutes (docs/ui.md, "Music plays at 1×").
+ */
+export const MUSIC_HOLD_UNVERIFIED_MAX_SEC = 15 * 60;
+/** A gap this short between two holds is not talk. See `musicHoldSpans`. */
+export const MUSIC_HOLD_MERGE_GAP_SEC = 5;
+/** About one `timeupdate`, the spacing the player sees the position at. */
+const MUSIC_HOLD_TICK_SEC = 0.25;
+
+/**
+ * The remote feed mediums that mean a song. Anything else a feed can say
+ * (`podcast`, `video`, `audiobook`…) is not known to be music, so it stays at
+ * the listener's speed. `publisher` counts because it leads to the album feeds:
+ * `lib/musicl-resolver.ts` walks it that way.
+ */
+const MUSIC_HOLD_MEDIUMS: ReadonlySet<string> = new Set(['music', 'musicl', 'publisher']);
+
+/** What `musicHoldSpans` reads of a marker: raw from the feed, or resolved. */
+type MusicHoldMarker = Pick<ValueTimeSplit, 'startTime' | 'duration'> & Partial<
+  Pick<ValueTimeSplit, 'remoteStartTime' | 'trackDuration' | 'feedMedium'>
+> & { remoteItem?: { medium?: string } };
+
+/** A stretch of an episode that plays at 1×, half-open: [start, end). */
+export interface MusicHoldSpan { start: number; end: number }
+
+/** How long one marker holds 1×, in seconds. 0 means it does not hold. */
+function musicHoldLength(m: MusicHoldMarker): number {
+  const d = m.duration;
+  if (!Number.isFinite(m.startTime) || !Number.isFinite(d) || d <= 0) return 0;
+  // The lookup outranks what the host declared: the first is the feed's own
+  // record, and the second is usually not there at all.
+  const medium = (m.feedMedium ?? m.remoteItem?.medium)?.toLowerCase();
+  if (medium && !MUSIC_HOLD_MEDIUMS.has(medium)) return 0;
+  const played = (m.trackDuration ?? 0) - (m.remoteStartTime ?? 0);
+  if (Number.isFinite(played) && played > 0) return Math.min(d, played);
+  return d <= MUSIC_HOLD_UNVERIFIED_MAX_SEC ? d : 0;
+}
+
+/**
+ * The stretches of an episode that play at 1× whatever speed the listener set,
+ * sorted and merged. A "track marker" is one `<podcast:valueTimeSplit>`.
+ *
+ * **A marker's length is not trusted and its absence of a medium means nothing.**
+ * `medium` is on none of 3,461 markers measured across three music shows, and 18
+ * of the 24 over 15 minutes sit on a song of 2 to 6 minutes: Homegrown Hits 122
+ * has 5,643 minutes over a song of 3:25. So the track's own length decides how
+ * long a hold runs, and the 15-minute cap applies only when nothing knows it.
+ * Throwing a long marker away instead would play that song at speed; believing
+ * it would hold 1× through the talk to the end of the episode.
+ *
+ * **A separate rule from `splitAtPosition`, and it must stay one.** That function
+ * decides who is PAID, first match wins, and it keeps every marker as written. A
+ * song's speed is a question about the union of what is playing, so an overlap
+ * is harmless here and a wrong length is correctable; neither is true there.
+ *
+ * Two holds with a gap under `MUSIC_HOLD_MERGE_GAP_SEC` between them are one: 508
+ * of 3,144 measured gaps are that short, and at 2× the rate would go up for under
+ * 2.5 s and straight back down. A marker that holds nothing bridges nothing.
+ */
+export function musicHoldSpans(markers: readonly MusicHoldMarker[] | null | undefined): MusicHoldSpan[] {
+  if (!markers?.length) return [];
+  const spans = markers
+    .map((m) => ({ start: m.startTime, end: m.startTime + musicHoldLength(m) }))
+    .filter((s) => s.end > s.start)
+    .sort((a, b) => a.start - b.start);
+  const merged: MusicHoldSpan[] = [];
+  for (const s of spans) {
+    const last = merged[merged.length - 1];
+    if (last && s.start - last.end < MUSIC_HOLD_MERGE_GAP_SEC) {
+      last.end = Math.max(last.end, s.end);
+    } else {
+      merged.push({ ...s });
+    }
+  }
+  return merged;
+}
+
+/**
+ * Whether `positionSec` is in a hold. `leadSec` starts one early and never ends
+ * one late; see `musicHoldLeadSec`.
+ */
+export function inMusicHold(spans: readonly MusicHoldSpan[], positionSec: number, leadSec = 0): boolean {
+  if (!Number.isFinite(positionSec)) return false;
+  return spans.some((s) => positionSec + leadSec >= s.start && positionSec < s.end);
+}
+
+/**
+ * How early a hold starts: one `timeupdate` of content at the speed the listener
+ * set, so the song's first beat is not at speed. **The SET speed, never the
+ * element's current one**: at 1× the lead would shrink the moment the hold began,
+ * and the position would fall back out of it.
+ */
+export function musicHoldLeadSec(setRate: number): number {
+  return MUSIC_HOLD_TICK_SEC * setRate;
+}
+
+/**
+ * The remote feed's own medium, written beside each marker. `feeds` is
+ * `batchPodcasts`'s three-state answer: a record, `null` for a feed Podcast Index
+ * does not hold, or an absent key for one nobody could ask about. The last two
+ * say nothing, so `musicHoldSpans` falls to its cap rule.
+ *
+ * **`feedMedium`, never `remoteItem.medium`.** That field is empty on every marker
+ * and looks like the place. It is the host's own declaration: `<FavTrackHeart>`
+ * publishes it to a list other apps read, and `actionFor` labels a streaming
+ * payment with it, so a lookup written there changes both.
+ *
+ * Never drops or reorders: callers read this list positionally, and
+ * `splitAtPosition` walks it to decide who a boost pays.
+ */
+export function withFeedMediums<T extends { remoteItem?: { feedGuid?: string } }>(
+  splits: readonly T[],
+  feeds: Readonly<Record<string, { medium?: string } | null | undefined>>,
+): (T & { feedMedium?: string })[] {
+  return splits.map((s) => {
+    const guid = s.remoteItem?.feedGuid;
+    const medium = guid ? feeds[guid]?.medium : undefined;
+    return medium ? { ...s, feedMedium: medium } : s;
+  });
+}
+
+/**
  * One row of the merged episode-contents list: either a track the show played
  * (a `<podcast:valueTimeSplit>` window) or a chapter.
  *
@@ -3101,11 +3224,11 @@ export function isHlsUrl(url: string | undefined | null): boolean {
 
 /**
  * The show a podcast episode's own speed is saved under
- * (`bmb:playback_rate:<key>`), or `null` when the item keeps none and plays at
- * the global speed. Podcast episodes only: a track feed, an HLS enclosure and a
- * live or pending item answer null — the last two are always 1× in `<Player>`,
- * and a speed chosen there would otherwise be saved for a show that never plays
- * at it. The same refusals as `canResume` (lib/resume-position.ts).
+ * (`bmb:playback_rate:<key>`), or `null` when the item keeps none. Podcast
+ * episodes only: a track feed, an HLS enclosure and a live or pending item answer
+ * null — all are always 1× in `<Player>`, and a speed chosen there would otherwise
+ * be saved for a show that never plays at it. The same refusals as `canResume`
+ * (lib/resume-position.ts).
  *
  * **The EPISODE's `podcastGuid` comes first**, as in `resumeKey`, so a
  * `podcastL` playlist row plays at its own show's speed rather than the

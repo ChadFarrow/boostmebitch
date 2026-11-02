@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { PI_EPISODE_MAX, getEpisodes, getPodcast, getRssItemValueTimeSplits, resolveValueTimeSplits } from '@/lib/pi';
+import { withRemoteFeedMediums } from '@/lib/pi-batch';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -32,7 +33,7 @@ export async function GET(req: Request) {
     if (!episode && !raw) return NextResponse.json({ error: 'episode not found' }, { status: 404 });
     raw = raw ?? [];
     if (!raw.length) return NextResponse.json({ splits: [] });
-    const splits = await resolveValueTimeSplits(raw);
+    const splits = await withRemoteFeedMediums(await resolveValueTimeSplits(raw));
     return NextResponse.json(
       { splits },
       // Splits are effectively immutable per episode — let the CDN keep them.

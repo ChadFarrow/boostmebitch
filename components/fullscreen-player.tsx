@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useAnchoredMenu } from './use-anchored-menu';
 import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
-import { useApp } from '@/lib/store';
+import { isMusicItem, useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
@@ -749,6 +749,9 @@ export function FullscreenPlayer({
 
   const { episode, podcast } = current;
   const isMusic = isMusicMedium(podcast);
+  // Not `isMusic`: a playlist's tracks count too, and from /downloads the show has
+  // no medium, so only the download record can say.
+  const musicItem = isMusicItem(current);
   const isLive = episode.liveStatus === 'live';
   const resumeTo =
     savedPos && !isLive && savedPos.t - positionSec > RESUME_GAP_SEC ? savedPos.t : null;
@@ -823,10 +826,11 @@ export function FullscreenPlayer({
           it, 5× sits alone in a fourth (docs/ui.md). Last because they are
           about playback, not about this show or episode. No speed on a live
           item: <Player> holds it at 1×, since there is nothing ahead of the
-          live edge to play into. */}
-      {!isLive && <SpeedButton />}
-      {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
-      {!isLive && <SpeedSlider />}
+          live edge to play into. None on an album or playlist track either:
+          music is hard-coded at 1×. */}
+      {!isLive && !musicItem && <SpeedButton />}
+      {!isLive && !musicItem && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+      {!isLive && !musicItem && <SpeedSlider />}
     </>
   );
 

@@ -57,6 +57,20 @@ export interface ValueTimeSplit {
    * which is ordinary — a surface renders what it has and says nothing more.
    */
   artist?: string;
+  /**
+   * The remote item's OWN length in seconds, from Podcast Index or its feed. A
+   * marker's `duration` is hand-written and can be wrong by days, so this is what
+   * decides how long a song holds 1× (`musicHoldSpans`). Absent whenever no lookup
+   * knew it. **Nothing may pay by it.**
+   */
+  trackDuration?: number;
+  /**
+   * The remote feed's own `medium`, from its Podcast Index record. Absent when the
+   * lookup missed, failed or was never made. Not `remoteItem.medium`, which is what
+   * the HOST declared and which public favorites and streaming labels read; see
+   * `withFeedMediums`. **Nothing may pay by it.**
+   */
+  feedMedium?: string;
   episodeGuid?: string;
   /**
    * The feed guid that actually CONTAINS this track, when resolution learned

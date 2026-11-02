@@ -8,7 +8,7 @@ import {
   type HtmlPortalNode,
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
-import { dropRefusedPlaybackRate, resolvePlaybackRate, useApp } from '@/lib/store';
+import { dropRefusedPlaybackRate, isMusicItem, resolvePlaybackRate, useApp } from '@/lib/store';
 import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
@@ -16,6 +16,7 @@ import { useResumePosition } from './player/use-resume-position';
 import { usePlayHistory } from './player/use-play-history';
 import { useNowPlaying } from './player/use-now-playing';
 import { useShowSpeed } from './player/use-show-speed';
+import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
 import { artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
@@ -151,6 +152,7 @@ export function Player() {
   const handlePlaybackEnded = useApp((s) => s.handlePlaybackEnded);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const playbackRate = useApp((s) => s.playbackRate);
+  const musicHold = useApp((s) => s.musicHold);
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
@@ -278,6 +280,11 @@ export function Player() {
   // below: this one also catches an HLS enclosure that never carried a
   // liveStatus, because the resume behaviour follows the transport, not the tag.
   const isLiveMedia = isHls || current?.episode.liveStatus === 'live';
+  // The speed the audio plays at, which `playbackRate` is not: that one stays what
+  // the listener SET, and music is hard-coded at 1× — an album or playlist track
+  // whole, a song inside an episode for as long as it plays (./player/use-music-hold).
+  const musicItem = isMusicItem(current);
+  const effectiveRate = isLiveMedia || musicItem || musicHold ? 1 : playbackRate;
   // isHlsRef gates the HLS-only foreground-resume nudge; isLiveRef gates the
   // resume-from-pause reconnect; isVideoRef selects the active media element
   // (video vs audio) in the other effects.
@@ -880,11 +887,13 @@ export function Player() {
   // and every stall reload would drop back to 1×.
   //
   // A live item is always 1×: there is no timeline ahead of the live edge to
-  // play faster into, and hls.js would only stall against it.
+  // play faster into, and hls.js would only stall against it. Music is always 1×
+  // by the listener's wish (`effectiveRate`), and `defaultPlaybackRate` follows,
+  // so a stall reload inside a song stays at 1×.
   useEffect(() => {
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
-    const rate = isLiveMedia ? 1 : playbackRate;
+    const rate = effectiveRate;
     // A browser may refuse a speed: the spec lets it throw NotSupportedError
     // for one it cannot play, and Chrome does outside 0.0625–16. Uncaught, that
     // throw is an effect error that takes the player down with it. Fall back
@@ -900,7 +909,7 @@ export function Player() {
       el.playbackRate = 1;
       if (rate !== 1) dropRefusedPlaybackRate(rate);
     }
-  }, [playbackRate, isLiveMedia, current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]);
+  }, [effectiveRate, current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]);
 
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz
   // timer reading useApp.getState() — mounted from here because <Player> is the
@@ -1220,7 +1229,7 @@ export function Player() {
   // HERE, after `nowArt`, because the metadata effect consumes it.
   useMediaSession({
     current, isPlaying, positionSec, duration, nowArt,
-    playbackRate: isLiveMedia ? 1 : playbackRate,
+    playbackRate: effectiveRate,
     setPlaying, skipBy, seekTo,
   });
 
@@ -1231,6 +1240,10 @@ export function Player() {
   // Plays each podcast at the speed last chosen for it. Subscribes before the
   // reveal effect below sets `current`. See ./player/use-show-speed.
   useShowSpeed();
+
+  // Plays the songs of an episode at 1×. Subscribes before the reveal effect for
+  // the same reason. Reads the one fetch of `splits` above: no request of its own.
+  const syncMusicHold = useMusicHold(current?.episode, splits);
 
   // Puts an episode listened to for a minute into the Listen tab's HISTORY,
   // so it can be boosted later. See ./player/use-play-history.
@@ -1350,6 +1363,7 @@ export function Player() {
             className="w-full h-full object-contain bg-black"
             onTimeUpdate={(e) => {
               const t = e.currentTarget.currentTime;
+              syncMusicHold(t);
               const tick = Math.floor(t);
               if (tick !== lastTick.current) {
                 lastTick.current = tick;
@@ -1357,6 +1371,7 @@ export function Player() {
                 sampleHeadroom(e.currentTarget);
               }
             }}
+            onSeeked={(e) => syncMusicHold(e.currentTarget.currentTime)}
             // A video alternateEnclosure has a finite duration (unlike a live HLS
             // stream, whose duration is Infinity) — feed the seek bar. Guard on
             // isFinite so a live stream doesn't set a bogus duration.
@@ -1436,12 +1451,17 @@ export function Player() {
               return;
             }
             if (t > 0) lastGoodPos.current = t;
+            syncMusicHold(t);
             const tick = Math.floor(t);
             if (tick !== lastTick.current) {
               lastTick.current = tick;
               setPosition(t);
               sampleHeadroom(e.currentTarget);
             }
+          }}
+          onSeeked={(e) => {
+            // The previous episode, as in `onTimeUpdate` above.
+            if (!pendingLocalSrc.current) syncMusicHold(e.currentTarget.currentTime);
           }}
           onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setAudioErr(null); }}
           // **`playsAsTracks`, not `isMusicMedium` — an ALBUM is not the only
@@ -1658,8 +1678,9 @@ export function Player() {
               onSkip={skipBy}
             />
             {/* Speed from lg: only, where the bar has the width (docs/ui.md,
-                "Playback speed"). A live item is always 1×, so no control. */}
-            {!isLive && <SpeedButton variant="chip" className="hidden lg:inline-flex" />}
+                "Playback speed"). A live item and a music item are always 1×, so
+                no control. */}
+            {!isLive && !musicItem && <SpeedButton variant="chip" className="hidden lg:inline-flex" />}
             {/* Compact enough for the mini-bar on desktop; hidden on the cramped
                 mobile mini-bar (the fullscreen player carries the toggle there). */}
             <VideoToggle className="hidden sm:inline-flex" />

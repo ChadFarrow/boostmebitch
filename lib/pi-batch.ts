@@ -20,7 +20,7 @@ import {
 } from './pi';
 import { resolveItemValueFromRss } from './musicl-resolver';
 import { askIndex } from './nostr-index-server';
-import { FEED_FANOUT, hasValueRecipients, mapLimit, probeThenBatch } from './util';
+import { FEED_FANOUT, hasValueRecipients, mapLimit, probeThenBatch, withFeedMediums } from './util';
 
 /** Hard cap on identifiers per request. An attacker-chosen list length must
  *  never turn one request into an unbounded PI fan-out. The per-request
@@ -28,7 +28,7 @@ import { FEED_FANOUT, hasValueRecipients, mapLimit, probeThenBatch } from './uti
  *  — this bounds how many are asked for, that bounds how many at once, and
  *  shipping only the first is what made a 231-track list resolve four. */
 export const MAX_BATCH = 100;
-import type { Episode, Podcast } from './types';
+import type { Episode, Podcast, ValueTimeSplit } from './types';
 
 
 export async function batchPodcasts(guids: string[]): Promise<Record<string, Podcast | null>> {
@@ -77,6 +77,28 @@ export async function batchPodcasts(guids: string[]): Promise<Record<string, Pod
 }
 
 export interface EpisodeRef { feedGuid: string; itemGuid: string }
+
+/**
+ * Each marker with its remote feed's own medium beside it, for `musicHoldSpans`.
+ * Podcast Index carries `medium` on the FEED record, never on the episode, so it
+ * is a separate lookup over the distinct feeds, through the batch door.
+ *
+ * **It never throws and never loses a marker.** These markers decide who a boost
+ * pays, and a song's speed is not worth one of them: on any failure the list comes
+ * back as it went in, and the player uses its fallback rule.
+ *
+ * After `resolveValueTimeSplits`, not beside it, so the request stays inside one
+ * `PI_FANOUT`.
+ */
+export async function withRemoteFeedMediums(splits: ValueTimeSplit[]): Promise<ValueTimeSplit[]> {
+  const guids = [...new Set(splits.map((s) => s.remoteItem?.feedGuid).filter((g): g is string => !!g))];
+  if (!guids.length) return splits;
+  try {
+    return withFeedMediums(splits, await batchPodcasts(guids));
+  } catch {
+    return splits;
+  }
+}
 
 export function episodeKey(r: EpisodeRef): string {
   return `${r.feedGuid}:${r.itemGuid}`;

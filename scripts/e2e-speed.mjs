@@ -10,11 +10,12 @@
 // subscribed before the reveal effect sets `current` on a reload. Only the
 // element's own `playbackRate` proves either.
 //
-// It also pins what the feature must NOT do: a music feed saves no show entry,
-// and a show never touched follows the global speed. Section 7 plays three
-// seeded downloads from /downloads, where only the download RECORD knows an
-// album track is music, and a record with no feed guid or id must not share a
-// '0' key. Section 8 drives the 1×–2× SLIDER in the fullscreen player's ⋯
+// It also pins what the feature must NOT do: a music feed plays at 1× with no
+// control and saves no show entry, and a show never touched follows the global
+// speed. Section 7 plays three seeded downloads from /downloads, where only the
+// download RECORD knows an album track is music, and a record with no feed guid or
+// id must not share a '0' key. The songs INSIDE an episode are `e2e:music-hold`.
+// Section 8 drives the 1×–2× SLIDER in the fullscreen player's ⋯
 // menu on a phone: the keyboard and a pointer each move it, the speed it saves
 // is the list's exact string (never a browser float), the menu's SPEED tile
 // goes on from it, a fast tile parks the thumb at 1× while the slider names
@@ -115,11 +116,14 @@ expectRate('the element is at 1.5× after the reload', await rateNow(), 1.5);
 const chip = await js(`${CHIP}?.textContent.trim() ?? null`);
 t.ok('the chip names 1.5×', typeof chip === 'string' && chip.startsWith('1.5×'), `chip: ${chip}`);
 
-console.log('\n5. A music feed — the global speed, and no show entry');
-expectRate('the music track plays at the global 1×', await playShow(MUSIC), 1);
-t.ok('the chip moves the track to 2×', await chipTo(2), JSON.stringify(await stored()));
+// Music is hard-coded at 1× (docs/ui.md, "Music plays at 1×"), and until then this
+// section pinned that a track played at the global speed.
+console.log('\n5. A music feed — 1× under a global 2×, no control, no show entry, the global kept');
+await js(`(() => { localStorage.setItem('bmb:playback_rate', '2'); return true; })()`);
+expectRate('the music track plays at 1×, not the global 2×', await playShow(MUSIC), 1);
+t.ok('no speed chip on a music track', await js(`!${CHIP}`));
 s = await stored();
-expectRate('global bmb:playback_rate', s['bmb:playback_rate'], '2');
+expectRate('the global 2× is untouched', s['bmb:playback_rate'], '2');
 const musicKeys = Object.keys(s).filter((k) => k.includes(MUSIC));
 t.ok('no entry for the music feed', musicKeys.length === 0, JSON.stringify(musicKeys));
 
@@ -184,12 +188,12 @@ const playDownload = async (title) => {
   await wait(800);
   return rateNow();
 };
-expectRate('the album track plays at the global 1.5×', await playDownload(DL_ALB.title), 1.5);
-t.ok('the chip moves the album track to 2×', await chipTo(2), JSON.stringify(await stored()));
+expectRate('the album track plays at 1× (its record says music)', await playDownload(DL_ALB.title), 1);
+t.ok('no speed chip on the album track', await js(`!${CHIP}`));
 s = await stored();
 t.ok('no entry for the album (its record says music)', !(`bmb:playback_rate:${DL_ALB.feed}` in s), JSON.stringify(s));
-expectRate('global bmb:playback_rate', s['bmb:playback_rate'], '2');
-expectRate('the podcast download plays at the global 2×', await playDownload(DL_POD.title), 2);
+expectRate('the global 1.5× is untouched', s['bmb:playback_rate'], '1.5');
+expectRate('the podcast download plays at the global 1.5×', await playDownload(DL_POD.title), 1.5);
 t.ok('the chip moves the podcast download to 1.25×', await chipTo(1.25), JSON.stringify(await stored()));
 s = await stored();
 expectRate(`bmb:playback_rate:${DL_POD.feed}`, s[`bmb:playback_rate:${DL_POD.feed}`], '1.25');

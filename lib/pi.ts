@@ -1961,9 +1961,14 @@ export async function getEpisodeByGuid(
 async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
   if (!split.remoteItem?.feedGuid || !split.remoteItem.itemGuid) return split;
   const ep = await getEpisodeByGuid(split.remoteItem.feedGuid, split.remoteItem.itemGuid);
+  // The track's own length, on EVERY way out below. It is independent of whether
+  // the item could be paid: an item PI holds with no value block still has a
+  // length, and a song still plays at 1× (`musicHoldSpans`, lib/util.ts).
+  const piLength = ep?.duration && ep.duration > 0 ? ep.duration : undefined;
+  const measured: ValueTimeSplit = piLength ? { ...split, trackDuration: piLength } : split;
   if (ep?.value) {
     return {
-      ...split,
+      ...measured,
       value: ep.value,
       title: ep.title,
       image: ep.image,
@@ -1988,11 +1993,13 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
       `/podcasts/byguid?guid=${encodeURIComponent(split.remoteItem.feedGuid)}`,
     );
     const feedUrl: string | undefined = feedRes.feed?.url;
-    if (!feedUrl) return split;
+    if (!feedUrl) return measured;
     const rss = await resolveRemoteItemFromRss(feedUrl, split.remoteItem.itemGuid);
-    if (!rss) return split;
+    if (!rss) return measured;
+    const rssLength = piLength ?? parseItunesDuration(rss.durationText);
     return {
       ...split,
+      ...(rssLength ? { trackDuration: rssLength } : {}),
       value: rss.value,
       title: rss.title,
       image: rss.image,
@@ -2005,7 +2012,7 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
       parentFeedGuid: rss.viaPublisher ? rss.albumFeedGuid ?? null : undefined,
     };
   } catch {
-    return split;
+    return measured;
   }
 }
 

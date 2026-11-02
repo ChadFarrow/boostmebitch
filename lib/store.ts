@@ -10,7 +10,7 @@ import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
   addToHistory, epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
-  queueShowFor, speedShowKey, trimForQueue,
+  playsAsTracks, queueShowFor, speedShowKey, trimForQueue,
 } from './util';
 import { savedStartSec } from './resume-position';
 import { downloadManager } from './downloads/download-manager';
@@ -225,9 +225,19 @@ interface AppState {
   // podcast's own speed too (`speedKeyFor`), so a show plays at what was last
   // chosen for it and a show never touched plays at the last speed chosen
   // anywhere. `useShowSpeed` re-resolves it when `current` moves to another
-  // show. <Player> applies it to the media element and forces 1× on a live item.
+  // show. <Player> applies it to the media element and forces 1× on a live item
+  // and a music item (`isMusicItem`), and inside a hold (`musicHold`). This stays
+  // the speed the listener SET through all of those.
   playbackRate: number;
   setPlaybackRate: (r: number) => void;
+
+  // True while the position is inside a song of an episode (`musicHoldSpans`,
+  // lib/util.ts), so the audio plays at 1× whatever `playbackRate` says. In memory
+  // only and never written through `setPlaybackRate`: a hold is not a choice, and
+  // a saved 1× would outrank the global speed for ever. <Player>'s
+  // `useMusicHold` is the only writer, and only when it changes, so the position
+  // ticks do not re-render anything that reads it.
+  musicHold: boolean;
 
   // Whether the Nostr sign-in modal is open. Lifted into the store so surfaces
   // other than the header (e.g. the fullscreen player / live chat) can open it
@@ -951,6 +961,7 @@ export const useApp = create<AppState>((set, get) => ({
     if (showKey) storage.playbackRate.setShow(showKey, r);
     set({ playbackRate: r });
   },
+  musicHold: false,
 
   artOk: true,
   setArtOk: (b) => set({ artOk: b }),
@@ -1191,10 +1202,11 @@ export function clearShowSelection() {
 }
 
 /**
- * The speed an item plays at: its show's own speed when it has one, else the
+ * The speed an item is SET to: its show's own speed when it has one, else the
  * global speed. A track feed, an HLS enclosure and a live item have no show
  * entry (`speedShowKey` is null), so they take the global one — and <Player>
- * still forces a live item to 1×.
+ * still plays a live item and a music item at 1× (`isMusicItem`), so the global
+ * speed reaches neither element and neither can change it.
  */
 export function resolvePlaybackRate(current: { episode: Episode; podcast: Podcast } | null): number {
   const showKey = speedKeyFor(current);
@@ -1202,17 +1214,34 @@ export function resolvePlaybackRate(current: { episode: Episode; podcast: Podcas
 }
 
 /**
- * `speedShowKey` for the item in the player, with its download RECORD as the
- * witness for the medium when the show carries none. `/downloads` rebuilds the
- * show with `dbRowToPodcast`, which has no medium, so an album track played
- * from there would otherwise save a speed for its album — the rule
- * `deletableAfterPlay` follows for the same reason (docs/downloads.md).
+ * The item's medium, with its download RECORD as the witness when the show
+ * carries none. `/downloads` rebuilds the show with `dbRowToPodcast`, which has
+ * no medium — the rule `deletableAfterPlay` follows for the same reason
+ * (docs/downloads.md).
+ */
+function witnessedMedium({ episode, podcast }: { episode: Episode; podcast: Podcast }): string | undefined {
+  return podcast.medium ?? downloadManager.feedMediumFor(episode);
+}
+
+/**
+ * `speedShowKey` for the item in the player, with the witnessed medium, so an
+ * album track played from `/downloads` saves no speed for its album.
  */
 export function speedKeyFor(current: { episode: Episode; podcast: Podcast } | null): string | null {
   if (!current) return null;
   const { episode, podcast } = current;
-  const medium = podcast.medium ?? downloadManager.feedMediumFor(episode);
+  const medium = witnessedMedium(current);
   return speedShowKey(episode, medium === podcast.medium ? podcast : { ...podcast, medium });
+}
+
+/**
+ * Whether the item in the player is a song on its own: an album or playlist
+ * track. Music is hard-coded at 1×, so <Player> plays it there and the callers
+ * of the speed controls hide them, as on a live item. Not `speedKeyFor() === null`,
+ * which is also true of an HLS enclosure and of an item with no ids.
+ */
+export function isMusicItem(current: { episode: Episode; podcast: Podcast } | null): boolean {
+  return !!current && playsAsTracks({ medium: witnessedMedium(current) });
 }
 
 /**
