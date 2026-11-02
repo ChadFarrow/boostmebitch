@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { checker, exit } from './cdp.mjs';
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'beta.mjs');
-const PUSH_LINE = 'git push --force-with-lease origin beta';
+const FIRST_PUSH = 'git push --force-with-lease=beta: origin beta';
 const t = checker();
 const root = mkdtempSync(join(tmpdir(), 'bmb-beta-test-'));
 
@@ -161,6 +161,8 @@ const listOn = (cwd, ref = 'beta') =>
 const filesOn = (cwd, ref = 'beta') => git(cwd, 'ls-tree', '--name-only', ref).split('\n');
 const worktrees = (cwd) => git(cwd, 'worktree', 'list').split('\n').length;
 const lastLine = (s) => s.trim().split('\n').at(-1);
+/** The push line runs as printed, because what counts is what git does with it. */
+const runPrinted = (cwd, line) => spawnSync('sh', ['-c', line], { cwd, env: ENV, encoding: 'utf8' });
 
 /** One refused command: exit 1, and neither `beta` nor the origin moved. */
 function refuses(c, label, args, mustName) {
@@ -189,7 +191,7 @@ try {
     t.ok('feat-b is merged', filesOn(c.clone).includes('b.txt'));
     t.ok('beta is built on origin/main',
       gitTry(c.clone, 'merge-base', '--is-ancestor', 'origin/main', 'beta') !== null);
-    t.equal('the last line is the push command', lastLine(r.stdout), PUSH_LINE);
+    t.equal('the last line is the push, and it expects no beta on origin', lastLine(r.stdout), FIRST_PUSH);
     t.equal('nothing was pushed', git(c.origin, 'branch', '--list', 'beta'), '');
     t.equal('the checkout stayed on its branch', git(c.clone, 'rev-parse', '--abbrev-ref', 'HEAD'), 'work');
     t.equal('the uncommitted file was not touched',
@@ -199,7 +201,7 @@ try {
     t.equal('no worktree left behind', worktrees(c.clone), 1);
 
     console.log('2. the second machine reads the same list');
-    git(c.clone, 'push', '--quiet', 'origin', 'beta');
+    t.equal('the printed line makes the first push', runPrinted(c.clone, lastLine(r.stdout)).status, 0);
     const second = join(c.dir, 'clone-2');
     git(c.dir, 'clone', '--quiet', '--branch', 'main', c.origin, second);
     const l = beta(second, 'list');
@@ -212,7 +214,8 @@ try {
     const add7 = beta(c.clone, 'add', '7');
     t.equal('add 7: exit 0', add7.status, 0);
     t.equal('add 7 resolves to feat-c', listOn(c.clone), ['feat-a', 'feat-b', 'feat-c']);
-    git(c.clone, 'push', '--quiet', '--force', 'origin', 'beta');
+    t.equal('the printed line replaces beta on origin', runPrinted(c.clone, lastLine(add7.stdout)).status, 0);
+    t.equal('origin holds the new list', listOn(c.origin), ['feat-a', 'feat-b', 'feat-c']);
 
     const again = beta(c.clone, 'add', 'feat-c');
     t.equal('add a listed name: exit 0', again.status, 0);
@@ -297,7 +300,27 @@ try {
     const r = beta(c.clone, 'add', 'feat-b');
     t.equal('second add: exit 0', r.status, 0);
     t.ok('it warns that local beta differs from origin/beta', /local beta/i.test(r.stdout) && r.stdout.includes('origin/beta'), r.stdout);
+    t.ok('it names what local beta held', r.stdout.includes('feat-a'), r.stdout);
     t.equal('the list came from origin, as the warning says', listOn(c.clone), ['feat-b']);
+    const l = beta(c.clone, 'list');
+    t.equal('list: exit 0', l.status, 0);
+    t.ok('list also warns about the unpushed rebuild', /local beta/i.test(l.stdout) && l.stdout.includes('feat-b'), l.stdout);
+  }
+  console.log('8. a fetch must not cancel the lease');
+  {
+    const c = fresh();
+    seedList(c, ['feat-a']);
+    const second = join(c.dir, 'clone-2');
+    git(c.dir, 'clone', '--quiet', '--branch', 'main', c.origin, second);
+    const first = beta(c.clone, 'add', 'feat-b');
+    t.equal('machine 1 rebuilds and does not push', first.status, 0);
+    const other = beta(second, 'add', 'feat-c');
+    t.equal('machine 2 rebuilds', other.status, 0);
+    t.equal('machine 2 pushes', runPrinted(second, lastLine(other.stdout)).status, 0);
+    t.equal('machine 1 fetches, as list does', beta(c.clone, 'list').status, 0);
+    const stale = runPrinted(c.clone, lastLine(first.stdout));
+    t.ok('the stale push is refused after that fetch', stale.status !== 0, stale.stderr);
+    t.equal('origin keeps the list of machine 2', listOn(c.origin), ['feat-a', 'feat-c']);
   }
 } catch (e) {
   t.fail('the harness threw', e instanceof Error ? e.message : String(e));

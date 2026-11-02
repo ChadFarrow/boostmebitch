@@ -78,8 +78,23 @@ const tagState = () => js(`(() => {
     inViewport: r.width > 0 && r.height > 0 && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight,
     overHeader: !!h && r.left < h.right && r.right > h.left && r.top < h.bottom && r.bottom > h.top,
     hit: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === el,
+    color: s.color,
+    background: s.backgroundColor,
   };
 })()`);
+
+/** WCAG contrast of two computed `rgb(r, g, b)` values. */
+function contrast(a, b) {
+  const lum = (c) => {
+    const [r, g, bl] = c.match(/[\d.]+/g).slice(0, 3).map((v) => {
+      const x = Number(v) / 255;
+      return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
 
 async function sendReport() {
   const opened = await js(`(async () => {
@@ -123,6 +138,14 @@ if (EXPECT === 'on') {
   t.ok('it stays below the iOS status strip', tag?.zIndex < 70, `z-index ${tag?.zIndex}`);
   t.equal('it is inside the viewport', tag?.inViewport, true);
   t.equal('it does not cover the header', tag?.overHeader, false);
+  const dark = contrast(tag.color, tag.background);
+  t.ok('the word is readable in the dark theme', dark >= 4.5, `contrast ${dark.toFixed(2)}`);
+  await js(`localStorage.setItem('bmb:theme', 'light'); 1`);
+  await go('/');
+  const lit = await tagState();
+  const light = contrast(lit.color, lit.background);
+  t.ok('the word is readable in the light theme', light >= 4.5, `contrast ${light.toFixed(2)}`);
+  await js(`localStorage.removeItem('bmb:theme'); 1`);
 } else {
   t.equal('there is no tag', tag, null);
 }

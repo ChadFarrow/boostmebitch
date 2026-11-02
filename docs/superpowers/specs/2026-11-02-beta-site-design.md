@@ -81,7 +81,8 @@ needs no PR into `main`, and both machines read the same list from `origin/beta`
 - On a conflict, it stops, names the branch and the files, and leaves the local
   `beta` as it was.
 - On success, it commits `.beta-branches`, moves the local `beta`, and prints
-  `git push --force-with-lease origin beta`.
+  `git push --force-with-lease=beta:<sha> origin beta`, with the `origin/beta` sha
+  the list was read from.
 
 **Conflicts get fixed on the PR branch**, so each rebuild stays clean. #505
 conflicts with `main` in `package.json` and `CLAUDE.md`, at list lines only, so

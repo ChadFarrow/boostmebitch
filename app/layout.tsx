@@ -344,7 +344,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {IS_BETA && (
           <div
             data-beta-tag
-            className="fixed right-0 top-1/2 -translate-y-1/2 z-[65] pointer-events-none [writing-mode:vertical-rl] bg-bolt text-ink font-mono text-[10px] leading-none px-0.5 py-1.5 rounded-l"
+            className="fixed right-0 top-1/2 -translate-y-1/2 z-[65] pointer-events-none [writing-mode:vertical-rl] bg-bone text-ink font-mono text-[10px] leading-none px-0.5 py-1.5 rounded-l"
           >
             BETA
           </div>

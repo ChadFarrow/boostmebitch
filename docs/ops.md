@@ -480,8 +480,10 @@ npm run beta:test                   # the script against real git, no network
 
 The script works in a temporary worktree, so the checkout it runs from does not
 change, and it moves only the local `beta`. **It never pushes**: it prints
-`git push --force-with-lease origin beta`, because a push from inside a script is
-invisible to the hook that asks Chad first. It drops an entry whose PR is merged,
+`git push --force-with-lease=beta:<sha> origin beta`, because a push from inside a
+script is invisible to the hook that asks Chad first. The sha is the `origin/beta`
+the list was read from: a bare `--force-with-lease` compares with whatever the last
+fetch left, so it lets a stale rebuild overwrite the other machine's list. It drops an entry whose PR is merged,
 because a squash merge changes the patch id and merging that branch again
 conflicts with its own change on `main`.
 
@@ -490,7 +492,8 @@ conflicts with its own change on `main`.
 - **`beta` never merges into `main`.** Each feature still lands through its own
   PR. The script refuses to run if `.beta-branches` ever appears on `origin/main`.
 - **The list is read from `origin/beta`**, so both machines agree. A second `add`
-  before a push starts from the old list, and the script warns.
+  before a push starts from the old list, and each command warns, naming what local
+  `beta` holds.
 
 **Beta protects the code, not the data.** It uses the same relays, the same
 `SITE_NOSTR_SK` and real sats. Favorites (kind:10333) and the kind:30078 wallet

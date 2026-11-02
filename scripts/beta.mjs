@@ -15,6 +15,12 @@
 // a hook that reads the command line. A script that pushes from inside itself is
 // invisible to that hook, so this one prints the command and stops.
 //
+// WHY THE PRINTED LEASE NAMES A SHA: a bare `--force-with-lease` compares with
+// `origin/beta`, and every fetch moves that ref. So after any fetch, a stale
+// rebuild on one machine overwrites the list the other machine pushed, with no
+// message. The sha here is the `origin/beta` the list was read from. An empty
+// sha means the push expects no `beta` on origin at all.
+//
 // WHY THE LIST LIVES ON `beta` AND IS READ FROM `origin/beta`: a change to the
 // list needs no PR into `main`, and the two machines read one list. The cost is
 // that a second `add` before a push starts from the old list, so it warns.
@@ -33,7 +39,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const LIST_FILE = '.beta-branches';
-const PUSH_LINE = 'git push --force-with-lease origin beta';
 const USAGE = 'usage: npm run beta -- list | add <pr-or-branch>... | drop <pr-or-branch>... | rebuild';
 const RESERVED = new Set(['main', 'beta']);
 
@@ -72,11 +77,21 @@ function ghJson(args) {
   }
 }
 
-function readList() {
-  if (!shaOf('refs/remotes/origin/beta')) return [];
-  const r = run('git', ['show', `origin/beta:${LIST_FILE}`], root);
+function readList(ref) {
+  const r = run('git', ['show', `${ref}:${LIST_FILE}`], root);
   if (!r.ok) return [];
   return r.out.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+}
+
+/**
+ * Local `beta` is either an unpushed rebuild or an older copy from before the
+ * other machine pushed, and this cannot tell which. So it names what is there.
+ */
+function warnIfLocalDiffers(originBeta) {
+  const localBeta = shaOf('refs/heads/beta');
+  if (!localBeta || localBeta === originBeta) return;
+  const held = readList('refs/heads/beta').join(', ') || '(nothing)';
+  console.log(`Warning: local beta differs from origin/beta. The list comes from origin/beta. Local beta lists: ${held}. If that is unpushed work, the next rebuild replaces it.`);
 }
 
 function refuseIfCheckedOut() {
@@ -174,17 +189,15 @@ function main() {
     throw new Stop(`${LIST_FILE} is on origin/main, so beta reached main. Remove it from main first.`);
   }
 
-  const list = readList();
+  const originBeta = shaOf('refs/remotes/origin/beta');
+  const list = originBeta ? readList('origin/beta') : [];
+  warnIfLocalDiffers(originBeta);
   if (cmd === 'list') {
     console.log(list.length ? list.join('\n') : '(the list is empty)');
     return;
   }
 
   refuseIfCheckedOut();
-  const localBeta = shaOf('refs/heads/beta');
-  if (localBeta && localBeta !== shaOf('refs/remotes/origin/beta')) {
-    console.log('Warning: local beta differs from origin/beta. The list comes from origin/beta, so an unpushed rebuild is replaced.');
-  }
 
   const changed = cmd === 'rebuild' ? list : applyChange(cmd, names, list);
   const next = pruneMerged(changed);
@@ -193,7 +206,7 @@ function main() {
 
   console.log(`\nLocal beta is ${sha.slice(0, 7)}, with ${next.length} branches:`);
   for (const name of next) console.log(`  ${name}`);
-  console.log(`\nPush it with:\n${PUSH_LINE}`);
+  console.log(`\nPush it with:\ngit push --force-with-lease=beta:${originBeta ?? ''} origin beta`);
 }
 
 try {
