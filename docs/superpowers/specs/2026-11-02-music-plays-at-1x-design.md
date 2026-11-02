@@ -62,6 +62,7 @@ Any of these makes the feature a failure even if songs play at 1×:
 - `batchPodcasts` caps at `MAX_BATCH` (100) and `PI_FANOUT` bounds concurrency (`check:fanout`).
 - The screen can be locked. The repo docs say that iOS can suspend the page's JavaScript while audio
   plays, so a switch can come late there. A web page cannot schedule a rate change without JavaScript.
+  Chad's test on the preview found no late switch in a Safari tab (see "Tested by Chad" below).
 
 ## What the data says
 
@@ -221,8 +222,12 @@ runs first is the likely one.
 
 The exact label fit, the file layout inside `components/player/`, and how the e2e reaches a position.
 
+## Tested by Chad
+
+- A locked iPhone in a Safari tab, on the PR preview, 2026-11-02: Homegrown Hits with the screen locked. The speed changed on time. No number was measured.
+
 ## Not testable here
 
-- A locked iPhone: needs an iPhone. iOS can suspend the page's JavaScript, so the switch can come late.
+- The iPhone Home Screen app: the test above was in a Safari tab, and iOS can treat an installed app differently in the background.
 - Android background: needs a device. `docs/android.md` has no verdict on background audio.
 - An audible click at the switch: the test browser is muted.
