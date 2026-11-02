@@ -462,6 +462,66 @@ gets it when someone notices the feature is missing there. Treat "set the
 variable" as a two-project step, and `.env.example`'s warning about the
 **copied** `ANDROID_*` pair as the one exception where copying is the bug.
 
+## The beta site
+
+`beta.boostmebitch.com` is a domain on the `boostmebitch` Vercel project, bound
+to the branch `beta`, so it builds with the Preview environment and a push to it
+never changes the production deployment. **`beta` is `origin/main` plus the PR
+branches listed in `.beta-branches`, and it is rebuilt from scratch each time.**
+That file exists only on `beta`.
+
+```bash
+npm run beta -- list
+npm run beta -- add 512 507 505     # a PR number or a branch name
+npm run beta -- drop 505
+npm run beta -- rebuild             # after main or a listed branch moved
+npm run beta:test                   # the script against real git, no network
+```
+
+The script works in a temporary worktree, so the checkout it runs from does not
+change, and it moves only the local `beta`. **It never pushes**: it prints
+`git push --force-with-lease=beta:<sha> origin beta`, because a push from inside a
+script is invisible to the hook that asks Chad first. The sha is the `origin/beta`
+the list was read from: a bare `--force-with-lease` compares with whatever the last
+fetch left, so it lets a stale rebuild overwrite the other machine's list. It drops an entry whose PR is merged,
+because a squash merge changes the patch id and merging that branch again
+conflicts with its own change on `main`.
+
+- **Fix a conflict on the PR branch**, usually by merging `main` into it, so the
+  next rebuild stays clean. A rebuild keeps no resolutions.
+- **`beta` never merges into `main`.** Each feature still lands through its own
+  PR. The script refuses to run if `.beta-branches` ever appears on `origin/main`.
+- **The list is read from `origin/beta`**, so both machines agree. A second `add`
+  before a push starts from the old list, and each command warns, naming what local
+  `beta` holds.
+
+**Beta protects the code, not the data.** It uses the same relays, the same
+`SITE_NOSTR_SK` and real sats. Favorites (kind:10333) and the kind:30078 wallet
+and settings backups have one copy per user across all deploys, so a beta bug can
+damage them. Boost notes keep `BRAND.origin`, so their links open `www`. Browser
+storage is per origin, so on beta you sign in and connect the wallet again.
+
+**`NEXT_PUBLIC_BETA=1` marks the build** (`lib/beta.ts`), and it is inert anywhere
+else. It shows a `BETA` tag on the screen edge, because an installed app has no
+address bar; it sets `noindex`, because Vercel adds no `X-Robots-Tag` to a preview
+on a custom domain; and it makes the bug report's `site` say
+`beta.boostmebitch.com`. It does NOT change `BRAND.domain`, which a NIP-05, the
+keysend route and every boost note read. `npm run e2e:beta` drives all three at
+phone size, in both modes, and never files a report.
+
+**Its variables are scoped to the branch `beta`**, so PR previews do not get them.
+The Preview environment already holds the rest.
+
+| Variable | Why beta needs it |
+|---|---|
+| `NEXT_PUBLIC_BETA` | the marker above |
+| `GITHUB_BUG_TOKEN` | the bug report; sensitive, so it is pasted by hand |
+| `NOSTR_INDEX_URL`, `NOSTR_INDEX_KEY` | beta reads like production; the app sends no write to the index |
+| `PLAYLIST_DB_URL`, `PLAYLIST_DB_CA` | same; `lib/playlist-db.ts` is read-only |
+
+The `boostmebuddy` project also builds `beta` as an ordinary preview, as it does
+every branch. That preview has no domain, and it is harmless.
+
 ## Re-landing a reverted feature: the merge will not tell you what it dropped
 
 **Measured 2026-09-13, merging `feat/favorites-new` (downloads + listen queue +

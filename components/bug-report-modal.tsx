@@ -6,6 +6,7 @@ import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { pickRail } from '@/lib/v4v/boost';
 import { BRAND } from '@/lib/brand';
+import { reportSite } from '@/lib/beta';
 import { BUILD_ID } from '@/lib/build-id';
 import { fmt } from '@/lib/format';
 import { getErrorMessage } from '@/lib/util';
@@ -42,7 +43,7 @@ function takeSnapshot(): AppInfo {
   const favShows = Object.keys(s.favorites).length;
   const favEps = Object.keys(s.favoriteEpisodes).length;
   return {
-    site: BRAND.domain,
+    site: reportSite(BRAND.domain),
     build: BUILD_ID,
     page: window.location.pathname,
     installedApp: window.matchMedia?.('(display-mode: standalone)').matches ? 'yes' : 'no',
