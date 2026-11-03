@@ -24,6 +24,7 @@ import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { downloadManager } from '@/lib/downloads/download-manager';
+import { logPlayback, playbackItemId, startPlaybackLog, watchMediaElement } from '@/lib/playback-log';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
@@ -468,6 +469,21 @@ export function Player() {
   // idle, so the deferral that keeps them out of the first load still holds.
   useEffect(() => { warmPlayerPanes(); }, []);
 
+  // The playback diagnostic log (lib/playback-log.ts) — what "Report a bug"
+  // attaches. The page half runs for the life of the page. The element half
+  // keys on `hasCurrent` because both elements render only while something is
+  // loaded (`if (!current) return null` below), and it is declared BEFORE the
+  // source effect so the first `play()` of an item is already watched.
+  useEffect(() => startPlaybackLog(), []);
+  const hasCurrent = !!current;
+  useEffect(() => {
+    if (!hasCurrent) return;
+    const stops: (() => void)[] = [];
+    if (audio.current) stops.push(watchMediaElement(audio.current, 'a'));
+    if (video.current) stops.push(watchMediaElement(video.current, 'v'));
+    return () => { for (const stop of stops) stop(); };
+  }, [hasCurrent]);
+
   // Source the active media element when the current item changes. Audio and
   // video are mutually exclusive (one `current`), so the inactive element is
   // left srcless/paused. HLS attaches to the <video> via hls.js (or native
@@ -492,6 +508,7 @@ export function Player() {
       const el = video.current;
       const url = videoUrl;
       if (!el || !url) return;
+      logPlayback('src', { el: 'v', kind: isHlsUrl(url) ? 'hls' : 'stream', item: current ? playbackItemId(current.episode) : undefined });
 
       // Start position: preserved when toggling audio→video mid-play (positionSec
       // holds the live position), and set by play(ep, pod, startSec). Applied on
@@ -770,6 +787,7 @@ export function Player() {
       restoreTries.current = 0;
       revokeLocalSrc();
       if (src.startsWith('blob:')) localSrcRef.current = src;
+      logPlayback('src', { el: 'a', kind: src.startsWith('blob:') ? 'local' : isHlsUrl(src) ? 'hls' : 'stream', item: playbackItemId(episode) });
       el.src = src;
       if (startAt > 0) el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
       if (isPlayingRef.current) {
@@ -807,6 +825,7 @@ export function Player() {
       attach(episode.enclosureUrl);
     } else {
       pendingLocalSrc.current = true;
+      logPlayback('src.wait', { el: 'a', why: localKey === undefined ? 'hydrating' : 'local', item: playbackItemId(episode) });
       void (localKey === undefined
         ? downloadManager.resolveSource(episode)
         : downloadManager.objectUrlFor(localKey)
@@ -924,6 +943,7 @@ export function Player() {
   // an episode switch (which doesn't change isPlaying) can't re-run this and call
   // play() on a not-yet-sourced element — the source effect above owns first play.
   useEffect(() => {
+    logPlayback('want', { playing: isPlaying });
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
     if (!isPlaying) {
@@ -1478,15 +1498,26 @@ export function Player() {
           // The element keeps its blob URL until the next source revokes it, so
           // a replay of this one still plays (measured in Chromium; see
           // docs/downloads.md for what is not yet measured on iOS).
+          //
+          // Each branch writes its decision to the playback log: "the next
+          // item did not play" needs to tell an advance that never happened
+          // from one the browser refused.
           onEnded={() => {
-            if (pendingLocalSrc.current) return;
+            if (pendingLocalSrc.current) { logPlayback('advance', { via: 'pending' }); return; }
             forgetRestoreBaseline();
             if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
               const key = downloadManager.deletableAfterPlay(current.episode);
               if (key) void downloadManager.remove(key);
             }
-            if (handlePlaybackEnded()) return;
-            if (current && playsAsTracks(current.podcast) && playNext()) return;
+            if (handlePlaybackEnded()) {
+              logPlayback('advance', { via: 'queue', playing: useApp.getState().isPlaying });
+              return;
+            }
+            if (current && playsAsTracks(current.podcast) && playNext()) {
+              logPlayback('advance', { via: 'tracks' });
+              return;
+            }
+            logPlayback('advance', { via: 'none' });
             // Nothing plays next, so the fullscreen player is a screen over a
             // finished episode: collapse it to the mini-bar, which still carries
             // BOOST. Only here — an advance above keeps it open on the next item.
