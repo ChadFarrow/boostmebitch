@@ -20,7 +20,8 @@
 // collide with a guid in either cache.
 
 import { storage } from './storage';
-import type { Episode, PlayGroup, Podcast, ValueTimeSplit } from './types';
+import type { Episode, ItemPayment, PlayGroup, Podcast, ValueTimeSplit } from './types';
+import { isPlaylistMedium } from './util';
 
 /**
  * Entry cap for the two in-memory tiers below.
@@ -324,6 +325,95 @@ export function resolvePodcastByFeedUrl(feedUrl: string): Promise<Podcast | null
   return resolveVia(`url:${feedUrl}`, `url=${encodeURIComponent(feedUrl)}`);
 }
 
+// Smaller than BATCH_SIZE on purpose: a feed-URL key is rarely in the read
+// index, so each one is a live Podcast Index call, and a smaller request gives
+// the import's progress line something to say more than every few seconds.
+const FEED_URL_CHUNK = 50;
+
+export interface FeedUrlLookup {
+  /** Keyed by the address asked about. ABSENT = could not ask — see below. */
+  answers: Record<string, Podcast | null>;
+  /** Asking stopped early: a 429, a 5xx, offline, or the breaker was open. */
+  stopped: boolean;
+}
+
+/**
+ * Look shows up by FEED ADDRESS, for an OPML import (`components/favorites-opml.tsx`).
+ *
+ * The three-state contract of `warmPodcastCache` reaches the caller intact: a
+ * key present with a record, present with `null` (Podcast Index answered "not
+ * found"), or ABSENT — never asked, or asking failed. `sortOpmlAnswers` turns
+ * an absent key into "not checked yet" with a button to try again; an absent
+ * key filled in as `null` would be a final "not found" for a show PI holds.
+ *
+ * It STOPS at the first failed chunk rather than pressing on. A 429 is the
+ * household's shared budget running out (see `/api/by-guid/batch`), and every
+ * later chunk would be refused the same way while also costing the favorites
+ * hydration its share. A failure does not trip the breaker, for the reason
+ * `warmPodcastCache` gives: a bulk lookup must not switch metadata off for the
+ * whole tab.
+ *
+ * Answers are cached exactly as `resolvePodcastByFeedUrl` caches its own, under
+ * `url:<address>`, and a found show is ALSO cached under its guid — the key the
+ * favorites hydrator resolves the new entries by, moments later.
+ */
+export async function lookupFeedUrls(
+  urls: string[],
+  onProgress?: (asked: number) => void,
+): Promise<FeedUrlLookup> {
+  const answers: Record<string, Podcast | null> = {};
+  const remember = (url: string, podcast: Podcast | null) => {
+    answers[url] = podcast;
+    podcastMem.set(`url:${url}`, podcast);
+    if (podcast?.podcastGuid) podcastMem.set(podcast.podcastGuid, podcast);
+    capMem(podcastMem);
+    if (podcast) {
+      storage.podcastMeta.set(`url:${url}`, podcast);
+      if (podcast.podcastGuid) storage.podcastMeta.set(podcast.podcastGuid, podcast);
+    }
+  };
+
+  const unique = [...new Set(urls)];
+  const wanted: string[] = [];
+  for (const url of unique) {
+    const key = `url:${url}`;
+    if (podcastMem.has(key)) {
+      answers[url] = podcastMem.get(key) ?? null;
+      continue;
+    }
+    const cached = storage.podcastMeta.get(key);
+    if (cached) remember(url, cached);
+    else wanted.push(url);
+  }
+  let asked = unique.length - wanted.length;
+  onProgress?.(asked);
+  if (!wanted.length) return { answers, stopped: false };
+  if (!piMaybeUp()) return { answers, stopped: true };
+
+  for (const chunk of chunked(wanted, FEED_URL_CHUNK)) {
+    try {
+      const r = await fetch('/api/by-guid/batch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ guids: chunk.map((url) => `url:${url}`) }),
+      });
+      if (!r.ok) return { answers, stopped: true };
+      const { podcasts } = (await r.json()) as { podcasts: Record<string, Podcast | null> };
+      if (!podcasts || typeof podcasts !== 'object') return { answers, stopped: true };
+      for (const url of chunk) {
+        const key = `url:${url}`;
+        // `in`, never `?? null` — see `warmPodcastCache`.
+        if (key in podcasts) remember(url, podcasts[key] ?? null);
+      }
+    } catch {
+      return { answers, stopped: true };
+    }
+    asked += chunk.length;
+    onProgress?.(asked);
+  }
+  return { answers, stopped: false };
+}
+
 // --- episodes --------------------------------------------------------------
 //
 // Same four guards for `/api/episode-by-guid`, sharing the breaker with the
@@ -515,6 +605,38 @@ export function loadValueSplits(feedId: number, episodeId: number): Promise<Valu
 }
 
 const valueSplitsInFlight = new Map<string, Promise<ValueTimeSplit[] | null>>();
+
+/**
+ * Who one item pays, out of its parent feed: `/api/item-value`, coalesced the way
+ * `loadValueSplits` is. For a row nothing has read a feed for (`valueNotRead`).
+ *
+ * `podcastGuid` first, because it is PI's answer for the feed the item lives in. A
+ * playlist row's `feedId` can be the PLAYLIST's, and that channel block belongs to
+ * the curator, so a row with no guid on a playlist is not asked at all.
+ *
+ * Never rejects: a failure is `{ read: false }`.
+ */
+export function loadItemValue(
+  episode: Pick<Episode, 'guid' | 'podcastGuid' | 'feedId'>,
+  podcast: Pick<Podcast, 'medium'> | null | undefined,
+): Promise<ItemPayment> {
+  if (!episode.guid) return Promise.resolve({ read: false });
+  const params = new URLSearchParams({ itemGuid: episode.guid });
+  if (episode.podcastGuid) params.set('feedGuid', episode.podcastGuid);
+  else if (episode.feedId > 0 && !(podcast && isPlaylistMedium(podcast))) params.set('feedId', String(episode.feedId));
+  else return Promise.resolve({ read: false });
+  const url = `/api/item-value?${params}`;
+  const existing = itemValueInFlight.get(url);
+  if (existing) return existing;
+  const p: Promise<ItemPayment> = fetch(url)
+    .then(async (r) => (r.ok ? ((await r.json()) as ItemPayment) : ({ read: false } as const)))
+    .catch(() => ({ read: false } as const))
+    .finally(() => { itemValueInFlight.delete(url); });
+  itemValueInFlight.set(url, p);
+  return p;
+}
+
+const itemValueInFlight = new Map<string, Promise<ItemPayment>>();
 
 /** What `/api/playlist` answers with. Loose for the same reason `FeedResponse` is. */
 export interface PlaylistResponse {

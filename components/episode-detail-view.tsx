@@ -8,6 +8,7 @@ import { fmt, fmtDate, fmtDuration } from '@/lib/format';
 import { useSavedPosition } from '@/lib/resume-position';
 import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
+import { useItemValue } from '@/lib/use-item-value';
 import { useChapters } from '@/lib/chapters';
 import { useResolvedSplits } from '@/lib/track-art';
 import { EpisodeContents } from './episode-contents';
@@ -96,8 +97,10 @@ function EpisodeShareButton({ episode, podcast }: { episode: Episode; podcast: N
 type InfoTab = 'notes' | 'contents' | 'transcript' | 'boosts';
 
 export function EpisodeDetailView() {
-  const episode = useApp((s) => s.selectedEpisode);
+  const selected = useApp((s) => s.selectedEpisode);
   const podcast = useApp((s) => s.selectedPodcast);
+  // A row opened from a playlist reaches this page with no payee.
+  const episode = useItemValue(selected, podcast);
   const closeEpisode = useApp((s) => s.closeEpisode);
   const play = useApp((s) => s.play);
   const requestSeek = useApp((s) => s.requestSeek);

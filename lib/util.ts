@@ -774,14 +774,13 @@ export function nextPlayableIndexBy<T>(
  *
  * **The second obvious test — "is a `<podcast:valueTimeSplit>` window open?" —
  * is worse, because it looks right.** A window means somebody other than the
- * show is paid; it does not mean a song. Bowl After Bowl's RSS holds 186
- * windows, but 129 carry inline `<podcast:valueRecipient>` entries and no
- * remote item, and `parseRawValueTimeSplits` (lib/pi.ts) filters on `feedGuid`
- * — so the app never sees the ones that really are songs. Of the windows it
- * DOES see, two declare `medium="podcast"`: a 7220-second cross-promotion to
- * the Podcasting 2.0 show at 33%. Treating an open window as a song therefore
- * labels a talk-show co-promo as music while the actual music stays invisible,
- * which is exactly backwards.
+ * show is paid; it does not mean a song. Bowl After Bowl's RSS holds 191
+ * windows, and 134 carry inline `<podcast:valueRecipient>` entries and no remote
+ * item, and `itemValueTimeSplits` (lib/pi.ts) filters on `feedGuid` — so the app
+ * never sees the ones that really are songs. Of the 57 it DOES see, two declare
+ * `medium="podcast"`: a 7220-second cross-promotion to the Podcasting 2.0 show at
+ * 33%. Treating an open window as a song therefore labels a talk-show co-promo as
+ * music while the actual music stays invisible, which is exactly backwards.
  *
  * **So the signal for a live show is Split Kit, which stamps every block it
  * pushes.** `'music'` for a song, `'chapter'` for a host segment (a promo, a
@@ -1476,45 +1475,83 @@ export function payableValue(
 }
 
 /**
- * Which value block `/api/feed` ships on an episode row: the feed's own
- * declaration, when the feed was read and lists the item, over Podcast
- * Index's copy.
+ * Whether a show gets the ⚡ V4V stamp: its feed's own block, or Podcast Index's
+ * hint. A LABEL, and it can be wrong: a show PI lists can have no BOOST, because
+ * only its feed names a payee. Nothing that pays reads this.
+ */
+export function carriesV4V(podcast: Pick<Podcast, 'value' | 'v4vHint'>): boolean {
+  return !!podcast.v4vHint || hasValueRecipients(podcast.value);
+}
+
+/**
+ * Which value block `/api/feed` ships on an episode row. Only an RSS document
+ * names a payee: Podcast Index's copy is not read at all (`buildPodcast`,
+ * `buildEpisode`), because it can be stale. Measured 2026-09-23 on Jimmy V –
+ * Jimmy V Collection (PI feed 6734639): the RSS carries one channel block and no
+ * item blocks, while PI held item blocks on 11 of 13 tracks from a 2025-10-09
+ * crawl, paying 5% to a node the feed no longer names.
  *
- * PI's copy of an ITEM block can be stale while its channel block is current.
- * Measured 2026-09-23 on Jimmy V – Jimmy V Collection (PI feed 6734639): the
- * RSS carries one channel block and no item blocks, while PI held item blocks
- * on 11 of 13 tracks from a 2025-10-09 crawl — paying 5% to a node the feed
- * no longer names and 1% to a leg it dropped. `e.value ?? podcast.value` let
- * that stale block win on every track BOOST.
+ * `rowValue` is therefore only ever a block an RSS read already put on the row:
+ * a live item, or an item PI has not crawled.
  *
- * Three cases, and the middle one is why `rssItem` is separate from `rssRead`:
- * - the feed was read AND lists the item: the feed is the authority, including
- *   ABSENCE — its item block, else its channel block, else none. PI's item
- *   block is ignored even when the feed gives none.
- * - the feed was read but the scan did not reach the item (past the item cap,
- *   or a guid PI normalized differently): nothing says PI's item block is
- *   wrong, so it keeps it; the channel fallback is the feed's, which the
- *   route also ships as `podcast.value`.
- * - the feed was not read: PI's answer, exactly as before.
+ * Three cases:
+ * - the feed was read AND lists the item: its item block, else its channel
+ *   block, else `null`, which means the feed names nobody.
+ * - the feed was read but the scan did not reach the item (past the item cap, or
+ *   a guid PI normalized differently): the row's block, else the channel's.
+ * - the feed was not read: the row's block, which is usually `undefined`. That
+ *   means NOT READ, never "none" (`valueNotRead`), so BOOST asks again when it
+ *   is pressed.
  */
 export function feedItemValue(
   rssRead: boolean,
-  rssItem: { value: ValueBlock | null | undefined } | undefined,
+  rssItem: { value: ValueBlock | null } | undefined,
   rssChannel: ValueBlock | null | undefined,
-  piItem: ValueBlock | null | undefined,
-  piChannel: ValueBlock | null | undefined,
+  rowValue: ValueBlock | null | undefined,
 ): ValueBlock | null | undefined {
-  if (!rssRead) return piItem ?? piChannel;
-  // rssChannel undefined → the host does not emit <podcast:value> at all
-  // (Anchor, Spotify, etc.). The RSS has nothing to say about value, so
-  // fall through to PI entirely — same as the !rssRead path.
-  if (rssChannel === undefined && (!rssItem || rssItem.value === undefined)) {
-    return piItem ?? piChannel;
-  }
-  // rssChannel null → the tag was present and empty — the publisher took
-  // V4V down, so PI's leftover copy must not pay.
+  if (!rssRead) return rowValue;
   if (rssItem) return rssItem.value ?? rssChannel ?? null;
-  return piItem ?? rssChannel ?? null;
+  return rowValue ?? rssChannel ?? null;
+}
+
+/**
+ * True when no RSS read has answered for this item yet, so its missing `value`
+ * says nothing about the payee. `value` has three states, and JSON keeps them
+ * apart because it drops `undefined`:
+ *
+ * - no `value`: not read. A playlist row, a stored copy, anything Podcast Index
+ *   built. `<Player>` asks the feed on play, and a row asks on the BOOST press.
+ * - `null`: the feed was read and names nobody.
+ * - a block: the feed's own.
+ *
+ * A live item is the watcher's to answer (`liveValueState`), an unresolved
+ * playlist row has nothing to boost, and an item with no guid cannot be looked up.
+ */
+export function valueNotRead(
+  episode: Pick<Episode, 'value' | 'guid' | 'liveStatus' | 'unresolved'>,
+): boolean {
+  return episode.value === undefined && !!episode.guid && !episode.liveStatus && !episode.unresolved;
+}
+
+/**
+ * A copy read back from disk (the listen queue, the play history, the new-episode
+ * rows) with its payee removed. The block on disk is as old as the enqueue, and
+ * `payableValue` reads `episode.value` first, so it would outrank the feed. The
+ * copy reads as not read, and play and BOOST ask the feed.
+ */
+export function withoutStoredValue<T extends { episode: Episode; podcast: Podcast }>(item: T): T {
+  const podcast = { ...item.podcast };
+  delete podcast.value;
+  return { ...item, episode: episodeWithoutValue(item.episode), podcast };
+}
+
+/** The episode half of {@link withoutStoredValue}, for a stored row with no show. */
+export function episodeWithoutValue(e: Episode): Episode {
+  const episode = { ...e };
+  delete episode.value;
+  delete episode.valueTimeSplits;
+  delete episode.liveValueState;
+  return episode;
 }
 
 /**
@@ -1542,12 +1579,12 @@ export interface BoostGate {
 }
 
 export function boostGate(
-  episode: Pick<Episode, 'value' | 'podcastGuid' | 'liveValueState'> | null | undefined,
+  episode: Pick<Episode, 'value' | 'podcastGuid' | 'liveValueState' | 'liveStatus' | 'unresolved'> | null | undefined,
   podcast: Pick<Podcast, 'value' | 'podcastGuid' | 'medium'> | null | undefined,
 ): BoostGate {
   const value = payableValue(episode, podcast);
   if (hasValueRecipients(value)) return { value, hasValue: true, reason: 'ok' };
-  const reason = episode?.liveValueState ?? 'none';
+  const reason = episode?.liveValueState ?? (episode && valueNotRead(episode) ? 'pending' : 'none');
   return { value, hasValue: false, reason };
 }
 
@@ -1557,7 +1594,7 @@ export function boostButtonTitle(gate: BoostGate, noun: 'Episode' | 'Stream'): s
   switch (gate.reason) {
     case 'ok': return 'Send a boost';
     case 'pending': return 'Checking for a value block…';
-    case 'unread': return 'Could not read the value block for this stream — reload to try again';
+    case 'unread': return `Could not read the value block for this ${noun.toLowerCase()} — reload to try again`;
     default: return `${noun} has no value block`;
   }
 }
@@ -3039,15 +3076,6 @@ export function deletesAfterPlay(feedMedium: string | null | undefined): boolean
 }
 
 /**
- * The playback speeds the SPEED control cycles through, in order. An ALLOWLIST,
- * not a range: `storage.playbackRate` reads anything else back as 1, so a
- * corrupt or hand-edited value plays at normal speed rather than at whatever
- * number it happens to hold. Here rather than in the component because the
- * storage accessor needs the same list and must not import a component.
- */
-export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 3.5, 5] as const;
-
-/**
  * The speeds the SPEED tile cycles through. 3.5× and 5× are NOT in it: each
  * has a tile of its own (`FAST_PLAYBACK_RATES`), because reaching 5× by
  * stepping meant six presses, and stepping past it meant a jump from 5× back
@@ -3056,17 +3084,48 @@ export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 3.5, 5] as const;
  */
 export const SPEED_CYCLE_RATES = [1, 1.25, 1.5, 1.75, 2] as const;
 
+/**
+ * The stops on the ⋯ menu's speed slider: 1× to 2× in 0.1 steps, BESIDE the
+ * cycle rather than instead of it. Written out, not generated from 0.1:
+ * `1 + 7 * 0.1` is 1.7000000000000002, so a generated stop would be a number
+ * nobody typed, and a stored 1.7× would not match a list that says 1.7.
+ */
+export const SPEED_SLIDER_RATES = [1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2] as const;
+
 /** The speeds with a tile each, beside SPEED. */
 export const FAST_PLAYBACK_RATES = [3.5, 5] as const;
 
 /**
- * The speed after `rate` in `SPEED_CYCLE_RATES`, wrapping back to 1. From a
- * speed outside the cycle (a fast tile's) it answers 1.25, because the SPEED
- * tile shows 1× while a fast tile is on — the press steps from what it shows.
+ * Every playback speed, ascending — the union of the three lists above. An
+ * ALLOWLIST, not a range: `storage.playbackRate` reads anything else back as 1,
+ * so a corrupt or hand-edited value plays at normal speed rather than at
+ * whatever number it happens to hold. Here rather than in the component because
+ * the storage accessor needs the same list and must not import a component.
+ */
+export const PLAYBACK_RATES: readonly number[] = [
+  ...new Set<number>([...SPEED_CYCLE_RATES, ...SPEED_SLIDER_RATES, ...FAST_PLAYBACK_RATES]),
+].sort((a, b) => a - b);
+
+/**
+ * True for a speed the SPEED tile and the slider name: one from the cycle or
+ * the slider, 1× to 2×. False for a fast tile's 3.5× or 5×, which only that
+ * tile names while it is lit.
+ */
+export function isSteppedRate(rate: number): boolean {
+  return (SPEED_CYCLE_RATES as readonly number[]).includes(rate)
+    || (SPEED_SLIDER_RATES as readonly number[]).includes(rate);
+}
+
+/**
+ * The speed after `rate` in `SPEED_CYCLE_RATES`: the next stop ABOVE it,
+ * wrapping from 2× back to 1. A slider speed between two stops goes up to the
+ * next one (1.3× → 1.5×), so a press never slows playback except at the wrap.
+ * From a fast tile's speed it answers 1.25, because the SPEED tile shows 1×
+ * while a fast tile is on — the press steps from what it shows.
  */
 export function nextPlaybackRate(rate: number): number {
-  const i = Math.max(0, SPEED_CYCLE_RATES.indexOf(rate as (typeof SPEED_CYCLE_RATES)[number]));
-  return SPEED_CYCLE_RATES[(i + 1) % SPEED_CYCLE_RATES.length];
+  const from = isSteppedRate(rate) ? rate : 1;
+  return SPEED_CYCLE_RATES.find((r) => r > from) ?? SPEED_CYCLE_RATES[0];
 }
 
 // True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js

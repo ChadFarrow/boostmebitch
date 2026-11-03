@@ -61,6 +61,8 @@ export function HistoryBoostButton({ episode, podcast }: { episode: Episode; pod
     const fresh = await loadEpisodeFromFeed(podcast.id, episode.guid).catch(() => null);
     if (!fresh?.episode) { setState({ kind: 'failed' }); return; }
     const gate = boostGate(fresh.episode, fresh.podcast);
+    // The feed did not answer, and nothing else here will ask it: RETRY is the ask.
+    if (gate.reason === 'pending') { setState({ kind: 'failed' }); return; }
     if (!gate.hasValue) {
       setState({ kind: 'closed', title: boostButtonTitle(gate, 'Episode') });
       return;

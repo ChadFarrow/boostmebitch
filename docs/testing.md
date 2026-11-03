@@ -43,6 +43,7 @@ a real account.
 | `npm run seed:relay -- <npub>` | Copies that account's real kind:10333 into it, strictly read-only against the public relays. An empty relay is the EASY state; the ones that have cost this repo data need a list with history in it. |
 | `npm run e2e:favorites` | The whole loop with no account involved: a throwaway key reached from the page over a CDP binding, so `window.nostr` is indistinguishable from an extension and the NIP-44 is real. `--headed` to watch it. |
 | `npm run e2e:mutes` | The same harness over the kind:10000 private half — which cipher each payload routes to, that a NIP-44 list is republished as NIP-44, and that an unreadable blob is carried and said so on screen. |
+| `npm run e2e:twosigners` | Two stub NIP-46 responders on ONE key over a local relay: one answers `no permission` at once (Amber, for a client it never paired), the other answers correctly 700 ms later (Clave). Pins that the paired signer's result wins, that a real refusal still lands, and that the approval notice still appears when only the imposter answers. See docs/signers.md, "Two signer apps, one key". |
 
 ### Two things about the harness that look like detail and are not
 
@@ -92,6 +93,29 @@ those, and a new script imports it rather than pasting a twelfth copy:
 `checker()` keeps both assertion shapes the scripts already used —
 `equal(label, actual, expected)` and `ok(label, cond, detail)` — so a migrated
 assertion keeps its meaning, and every result line starts `ok` or `FAIL`.
+
+## An Android phone or emulator: `npm run android:advance`, never an `e2e:*` script
+
+`scripts/android-advance.mjs` launches nothing: it attaches to the browser already
+running on an adb device (`adb forward tcp:0 localabstract:chrome_devtools_remote`),
+which is why it is not an `e2e:*` script and does not use `scripts/cdp.mjs`.
+
+- **`watch`** (the default) is safe on a real phone. It adds its own event log
+  (`__advlog`) and prints it live beside the OS's view — screen, Doze state, the
+  media session, started audio players, and whether the browser's media service is
+  a FOREGROUND service — while the listener does the steps. At the end it prints
+  the app's own `bmb:plog:device`.
+- **`repro`** queues two episodes, plays to the end, locks the screen, optionally
+  forces Doze (`--doze deep`) or sends a lock-screen ⏭ (`--next-at 4`), unlocks and
+  reports. **It clears the origin's `localStorage`** — on a phone, the listener's
+  queue, settings, signer and wallet connection — so it refuses any serial that
+  does not start with `emulator-`.
+
+Nine `repro` runs on the Android 16 emulator (2026-10-30) — Chrome tab, Chrome TWA,
+Brave 1.98 TWA; streamed and downloaded; locked 12 s and 7 min; deep Doze;
+lock-screen ⏭; delete-after-play — all advanced, so the listener's report of the
+next queue item not playing with the screen locked is still open. The traps that
+cost those runs time are in the script's header.
 
 ## A branch "N commits ahead of `main`" is NOT unfinished work
 

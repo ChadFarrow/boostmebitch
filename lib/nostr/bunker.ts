@@ -42,12 +42,51 @@ import { storage } from '../storage';
 import { BRAND } from '../brand';
 import { CLAVE_RELAY } from './clave';
 import {
+  holdErrorsForResult,
   isApprovalPending,
+  isHeldListenerTable,
   isRequestTooLarge,
   nip46RequestBytes,
   NIP46_MAX_REQUEST_BYTES,
+  type Nip46Listener,
 } from './nip46-errors';
 import { httpUrl } from '../util';
+
+// A RESULT BEATS AN ERROR ON THE SAME REQUEST ID, patched onto the pinned
+// nostr-tools 2.19.4 — the reasoning lives beside `holdErrorsForResult` in
+// ./nip46-errors.ts and in docs/signers.md ("Two signer apps, one key").
+//
+// THE HOOK IS `setupSubscription` AND IT HAS TO BE. The library's response
+// handler is a closure inside that method which captures `this.listeners` at
+// the moment it runs, so the table has to be wrapped BEFORE the original body
+// executes. Every path into a live signer goes through it: `fromBunker` calls
+// it straight after construction, `fromURI` calls it on the connect ack, and
+// `sendRequest` calls it again whenever the subscription has closed — the
+// `isHeldListenerTable` guard keeps that third call from stacking a second
+// grace window on the first. The library's dispatcher itself is not copied;
+// only the table under it changes, so a nostr-tools bump that rewrites the
+// dispatcher still meets the same table contract or visibly fails
+// `npm run e2e:twosigners`.
+//
+// `BunkerSigner` comes from the `nostr-tools/nip46` subpath, the SAME module
+// every `fromURI`/`fromBunker` below constructs from — patching a copy from
+// another entry point would type-check and do nothing (see relay-socket.ts for
+// the time that happened with `AbstractRelay`).
+type ListenerHost = { listeners: Record<string, Nip46Listener> };
+let nip46HoldInstalled = false;
+function installNip46ResultBeatsError(): void {
+  if (nip46HoldInstalled) return;
+  nip46HoldInstalled = true;
+  const proto = BunkerSigner.prototype as unknown as {
+    setupSubscription: (this: ListenerHost, params: unknown) => void;
+  };
+  const original = proto.setupSubscription;
+  proto.setupSubscription = function setupSubscription(this: ListenerHost, params: unknown) {
+    if (!isHeldListenerTable(this.listeners)) this.listeners = holdErrorsForResult(this.listeners);
+    return original.call(this, params);
+  };
+}
+installNip46ResultBeatsError();
 
 // A NIP-46 `auth_url` is the raw `error` string of a kind:24133 reply, so the
 // REMOTE SIGNER chooses it — and the sign-in modal renders it as the "Approve
@@ -118,14 +157,16 @@ const NOSTRCONNECT_RELAYS = [
  * The NIP-46 methods the pairing URI ASKS FOR, granted once on the signer's
  * approval screen.
  *
- * OMITTING THIS WAS THE MOST EXPENSIVE LINE IN THE FILE. The URI used to carry
- * no `perms` at all, with a comment saying "bunker prompts per call" as though
- * that were a safety property. What it actually produced: Clave prompts per
- * call, so it answers `no permission` to the handshake's own `get_public_key`
- * and to every signature afterwards, and `withApprovalWait` below then waits out
- * a re-issue interval on each one. Sign-in, the boost note, the favorites
- * publish and the mute publish all paid it. The re-issue loop is the COST of
- * not sending this, not a feature that stands on its own.
+ * OMITTING THIS WAS AN EXPENSIVE LINE. The URI used to carry no `perms` at all,
+ * with a comment saying "bunker prompts per call" as though that were a safety
+ * property. A signer that prompts per call queues every signature for a tap,
+ * and `withApprovalWait` below then waits out a re-issue interval on each one.
+ *
+ * NOT THE CAUSE OF `no permission`, which is what this comment used to claim.
+ * That answer came from a SECOND signer app holding the same key (Amber, on
+ * another device) racing Clave for every request — see `holdErrorsForResult` in
+ * ./nip46-errors.ts and docs/signers.md, "Two signer apps, one key". Clave's
+ * source never sends that string. `perms` is still right to send.
  *
  * Measured against Conduit (github.com/Conduit-BTC/conduit-mono), whose iOS
  * Clave flow is tap → approve → switch back → signed in with no pause:
@@ -862,14 +903,18 @@ function waitBeforeReissue(ms: number, generation: number): Promise<void> {
 /**
  * Re-issue a request the signer has QUEUED for the user's approval.
  *
- * WHY THIS EXISTS. Clave (lib/nostr/clave.ts) does not hold a request open
- * while the user decides. It answers immediately with `permission denied`, and
- * then — once the user taps approve — sends the real result on the same request
- * id. nostr-tools 2.19.4 settles on the FIRST response, so the caller gets a
- * rejection and the signature is delivered to a handler that is already gone.
- * Pairing succeeds and every signature afterwards fails: the boost note, the
- * favorites publish, the mute publish, each on the first approval, each looking
- * like the signer refused.
+ * WHY THIS EXISTS. Clave (lib/nostr/clave.ts) used to answer a request it was
+ * holding for its user immediately with `permission denied`, and then — once
+ * the user tapped approve — send the real result on the same request id.
+ * nostr-tools 2.19.4 settles on the FIRST response, so the caller got a
+ * rejection and the signature was delivered to a handler already gone. Clave
+ * stopped answering that way in `dc59364`; other signers still do.
+ *
+ * AN ANSWER REACHES THIS LOOP ONLY AFTER `holdErrorsForResult` HAS HELD IT
+ * (`NIP46_ERROR_GRACE_MS`, ./nip46-errors.ts), so a "not yet" here means no
+ * signer app produced a result in that window — not merely that the fastest
+ * one said no. That is what stopped a second app holding the same key (Amber's
+ * `no permission`) from winning every re-issue against the paired signer.
  *
  * So we ask again, on a NEW request id, until the signer stops saying "not yet".
  * A new id rather than a second listen, because there is nothing left to listen
@@ -1409,9 +1454,8 @@ function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: 
     relays: NOSTRCONNECT_RELAYS,
     secret,
     // WHAT THE SIGNER IS BEING ASKED TO GRANT, once, on its approval screen.
-    // See NOSTRCONNECT_PERMS: leaving this off is what made a queueing signer
-    // answer `no permission` to every later call, and withApprovalWait the
-    // price of it.
+    // See NOSTRCONNECT_PERMS: leaving this off makes a signer that prompts per
+    // call queue every later request for a tap.
     perms: NOSTRCONNECT_PERMS,
     // `wireName`, NOT `displayName`, and the reason is the encoder rather
     // than taste: createNostrConnectURI builds the query with
@@ -1506,15 +1550,17 @@ export function startNostrConnect(
     }
     let pubkey: string;
     try {
-      // THE HANDSHAKE'S OWN get_public_key NEEDS THE APPROVAL WAIT TOO, and
-      // leaving it out is what made a paired Clave show as signed out. This was
-      // a deliberate exclusion once, on the reasoning that the connect paths
+      // THE HANDSHAKE'S OWN get_public_key NEEDS THE APPROVAL WAIT TOO. This
+      // was a deliberate exclusion once, on the reasoning that the connect paths
       // own their own timeouts and a retry underneath one would stall sign-in.
-      // A field report disproved it: without the retry sign-in does not stall,
-      // it FAILS. Clave answers this call with an error string first and the
-      // real key after the tap, exactly as it does a signature — the user's
-      // phone listed `get_public_key` twice with a green tick while this page
-      // showed the refusal.
+      // Without the retry an error answer does not stall sign-in, it FAILS it.
+      //
+      // The field report behind this — the phone listing `get_public_key` twice
+      // with a green tick while this page showed "no permission" — was read as
+      // Clave answering with an error first. It was a SECOND signer app holding
+      // the same key (Amber) answering faster, which `holdErrorsForResult` now
+      // handles underneath this call; see docs/signers.md, "Two signer apps,
+      // one key".
       //
       // `withApprovalWait` keeps BUNKER_CALL_TIMEOUT_MS per attempt, so the
       // only behaviour added is the re-issue, and only on an approval-pending

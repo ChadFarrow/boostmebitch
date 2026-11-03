@@ -73,6 +73,7 @@ interface AppState {
   // A downloaded episode's stored block may name a payee the feed has since
   // dropped; `payableValue` reads `episode.value` first, so the stale copy
   // outranks the feed's own.
+  markCurrentValueUnread: (guid: string) => void;
   refreshCurrentValue: (guid: string, value: ValueBlock | null | undefined, vts: ValueTimeSplit[] | undefined) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
   /**
@@ -321,6 +322,10 @@ interface AppState {
   favorites: Record<string, FavoritePodcast>;
   isFavorite: (guid: string | undefined) => boolean;
   addFavorite: (p: FavoritePodcast) => void;
+  /** Many at once — the OPML import. One write and one render, not N. An id
+   *  already in the map is left exactly as it is. Returns whether the write
+   *  reached disk (`safeSet`'s answer), so the caller can say when it did not. */
+  addFavorites: (ps: FavoritePodcast[]) => boolean;
   removeFavorite: (guid: string) => void;
   setFavorites: (next: Record<string, FavoritePodcast>) => void;
 
@@ -769,6 +774,13 @@ export const useApp = create<AppState>((set, get) => ({
       if (vts !== undefined && ep.valueTimeSplits !== vts) { ep.valueTimeSplits = vts; changed = true; }
       return changed ? { current: { ...s.current, episode: ep } } : {};
     }),
+  // The feed did not answer, so BOOST says that rather than "no value block".
+  markCurrentValueUnread: (guid) =>
+    set((s) => {
+      if (!s.current || !guid || s.current.episode.guid !== guid) return {};
+      if (s.current.episode.value !== undefined) return {};
+      return { current: { ...s.current, episode: { ...s.current.episode, liveValueState: 'unread' } } };
+    }),
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
   // Both step through `nextPlayableIndex`, never `idx ± 1`. A playlist's queue
   // holds a row for every `<podcast:remoteItem>` including the ones Podcast
@@ -1011,6 +1023,23 @@ export const useApp = create<AppState>((set, get) => ({
     markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes, s.favorites, s.favoriteEpisodes, landed);
     return { favorites: next };
   }),
+  // A user action like `addFavorite`, so it marks like one — but it never
+  // REPLACES an entry: an import that re-adds a show must not reset its
+  // `addedAt` or drop what another app's hint put on it.
+  addFavorites: (ps) => {
+    let landed = true;
+    set((s) => {
+      const fresh = ps.filter((p) => !s.favorites[p.podcastGuid]);
+      if (!fresh.length) return s;
+      const next = { ...s.favorites };
+      for (const p of fresh) next[p.podcastGuid] = p;
+      landed = storage.favorites.set(s.identity?.npub, next);
+      dropBaselineIfWriteFailed(landed, s.identity?.npub, 'favorites');
+      markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes, s.favorites, s.favoriteEpisodes, landed);
+      return { favorites: next };
+    });
+    return landed;
+  },
   removeFavorite: (guid) => set((s) => {
     if (!s.favorites[guid]) return s;
     const next = { ...s.favorites };

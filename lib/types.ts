@@ -139,6 +139,11 @@ export interface Podcast {
   url?: string;           // RSS feed URL
   medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
   value?: ValueBlock | null;
+  /** True when Podcast Index lists a value block for this show. A DISPLAY hint for
+   *  the ⚡ V4V stamp and nothing else: it names nobody and opens no BOOST, so a
+   *  show can carry it and still have no BOOST, because only its feed names a payee.
+   *  Read it through `carriesV4V`. */
+  v4vHint?: boolean;
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
   funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
   nostrNpubs?: FeedNpub[]; // <podcast:txt purpose="nostr"> — the show's own npub(s), from RSS
@@ -307,7 +312,8 @@ export interface Episode {
    *  BOOST is disabled in all three cases; only the SENTENCE differs, and that
    *  is the whole point. "Stream has no value block" over a stream we merely
    *  failed to read is a claim about somebody's money that we had not earned.
-   *  Set by `streamToEpisode` from the `StreamV4V` it is handed. */
+   *  Set by `streamToEpisode` from the `StreamV4V` it is handed, and to 'unread'
+   *  by `markCurrentValueUnread` when an ordinary item's feed did not answer. */
   liveValueState?: 'pending' | 'unread';
   /** <podcast:txt purpose="nostr"> published inside this <item> — the track's
    *  or episode's own artist, distinct from the channel-level show npub. Both
@@ -680,3 +686,12 @@ export interface LiveShow {
    */
   verified: boolean;
 }
+
+/**
+ * What one read of a feed says about who one of its items pays (`/api/item-value`).
+ * `read: false` means the document never arrived, which is a different answer
+ * from `value: null`, a feed that names nobody.
+ */
+export type ItemPayment =
+  | { read: false }
+  | { read: true; value: ValueBlock | null; valueTimeSplits: ValueTimeSplit[] };

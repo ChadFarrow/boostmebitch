@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue } from './util';
+import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue, withoutStoredValue, episodeWithoutValue } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -24,6 +24,7 @@ import {
   STREAM_RATE_MAX_PER_MIN,
 } from './v4v/stream-ledger';
 import { coerceProfileMetadata } from './nostr/profile-metadata';
+import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 import { createObservable } from './pubsub';
 
 // Rail-pref changes need to reach live UI (account-menu summary, balance
@@ -80,6 +81,7 @@ const KEYS = {
   episodeMetaPrefix: 'bmb:epmeta',    // /api/episode-by-guid result, keyed by '<feedGuid>:<itemGuid>'
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   socialThreadPrefix: 'bmb:social',   // last DiscoveredNote[] per podcast:socialInteract URI
+  playbackLogPrefix: 'bmb:plog',      // string[] — the last PLAYBACK_LOG_CAP lines of lib/playback-log.ts, one key (`bmb:plog:device`). DEVICE-wide. A DIAGNOSTIC, so it is the FIRST namespace EVICTABLE_PREFIXES drops: losing it costs a bug report some detail and nothing else.
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
   profilePrefix: 'bmb:profile4',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion — and here, to flush negative-cache entries poisoned by a relay-stall bug — so stale misses don't pin missing profiles for the miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
@@ -329,6 +331,7 @@ const memoryMirror = new Map<string, string>();
  * numerous and cost a visible refetch, so they go last.
  */
 const EVICTABLE_PREFIXES = [
+  KEYS.playbackLogPrefix,
   KEYS.socialThreadPrefix,
   KEYS.feedNotesPrefix,
   KEYS.profilePrefix,
@@ -495,6 +498,14 @@ function getTimed<T>(key: string, ttlMs: number): T | null {
   } catch {
     return null;
   }
+}
+
+/** A display cache names no payee: it can hold a block from an older build for days. */
+function withoutCachedValue<T extends { value?: unknown }>(v: T | null): T | null {
+  if (!v) return v;
+  const copy = { ...v };
+  delete copy.value;
+  return copy;
 }
 
 function setTimed<T>(key: string, value: T) {
@@ -1266,7 +1277,7 @@ export const storage = {
    */
   podcastMeta: {
     get: (guid: string): Podcast | null =>
-      getTimed<Podcast>(`${KEYS.podcastMetaPrefix}:${guid}`, PODCAST_META_TTL_MS),
+      withoutCachedValue(getTimed<Podcast>(`${KEYS.podcastMetaPrefix}:${guid}`, PODCAST_META_TTL_MS)),
     set: (guid: string, v: Podcast) =>
       setTimed(`${KEYS.podcastMetaPrefix}:${guid}`, v),
   },
@@ -1275,7 +1286,7 @@ export const storage = {
    *  eviction class as podcastMeta — a network-regenerable display cache. */
   episodeMeta: {
     get: (key: string): Episode | null =>
-      getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS),
+      withoutCachedValue(getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS)),
     set: (key: string, v: Episode) =>
       setTimed(`${KEYS.episodeMetaPrefix}:${key}`, v),
   },
@@ -1854,7 +1865,9 @@ export const storage = {
         if (!Array.isArray(parsed)) return [];
         return (parsed as QueueItem[])
           .filter((i) => !!i?.episode?.enclosureUrl && typeof i?.podcast?.id === 'number')
-          .slice(0, LISTEN_QUEUE_CAP);
+          .slice(0, LISTEN_QUEUE_CAP)
+          // A copy from disk names no payee: `<Player>` asks the feed on play.
+          .map(withoutStoredValue);
       } catch {
         return [];
       }
@@ -1912,7 +1925,9 @@ export const storage = {
           .filter((h) => !!h?.episode?.enclosureUrl
             && typeof h?.podcast?.id === 'number'
             && Number.isFinite(h?.at))
-          .slice(0, PLAY_HISTORY_CAP);
+          .slice(0, PLAY_HISTORY_CAP)
+          // A copy from disk names no payee, see `listenQueue.get`.
+          .map(withoutStoredValue);
       } catch {
         return [];
       }
@@ -1922,6 +1937,33 @@ export const storage = {
       safeSet(KEYS.playHistory, JSON.stringify(v.slice(0, PLAY_HISTORY_CAP))),
     /** A REMOVAL, not a write of `[]` — `listenQueue.clear` says why. */
     clear: () => safeRemove(KEYS.playHistory),
+  },
+
+  /**
+   * The playback diagnostic log (`lib/playback-log.ts`), oldest line first.
+   *
+   * On disk rather than in memory because the case it exists for is a page
+   * the OS stopped or discarded while the screen was off: the lines written
+   * before that are the evidence, and memory does not outlive it. Lines that
+   * fail `isPlaybackLogLine` are dropped on read, so a value from an older
+   * format cannot reach a bug report.
+   */
+  playbackLog: {
+    get: (): string[] => {
+      const raw = safeGet(`${KEYS.playbackLogPrefix}:device`);
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((l): l is string => typeof l === 'string' && isPlaybackLogLine(l))
+          .slice(-PLAYBACK_LOG_CAP);
+      } catch {
+        return [];
+      }
+    },
+    set: (lines: string[]): boolean =>
+      safeSet(`${KEYS.playbackLogPrefix}:device`, JSON.stringify(lines.slice(-PLAYBACK_LOG_CAP))),
+    clear: () => safeRemove(`${KEYS.playbackLogPrefix}:device`),
   },
 
   /**
@@ -1939,8 +1981,10 @@ export const storage = {
       if (!raw) return null;
       try {
         const parsed = JSON.parse(raw) as QueueItem;
+        // A copy from disk names no payee, see `listenQueue.get`. This one goes
+        // straight into `current` (`revealNowPlaying`), and `<Player>` then asks.
         return parsed?.episode?.enclosureUrl && typeof parsed?.podcast?.id === 'number'
-          ? parsed
+          ? withoutStoredValue(parsed)
           : null;
       } catch {
         return null;
@@ -1997,7 +2041,8 @@ export const storage = {
             if (!r || typeof r !== 'object') continue;
             if (typeof r.feedId !== 'number') continue;
             if (typeof r.datePublished !== 'number') continue;
-            rows.push(r as Episode);
+            // A copy from disk names no payee, see `listenQueue.get`.
+            rows.push(episodeWithoutValue(r as Episode));
             if (rows.length >= FAV_NEW_CAP) break;
           }
         }
