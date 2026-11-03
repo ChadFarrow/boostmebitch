@@ -65,8 +65,7 @@ function check(name, actual, expected) {
 }
 
 // ── Wire vectors ────────────────────────────────────────────────────────────
-// The real split, exactly as Podcast Index returns it in `timesplits[0]` and as
-// lib/pi.ts:parseRawValueTimeSplits reshapes it. Episode duration is 6135, so
+// The real split, in the shape `ValueTimeSplit` carries. Episode duration is 6135, so
 // this window runs to the last second of the enclosure.
 const COPENHAGEN = {
   startTime: 5854,

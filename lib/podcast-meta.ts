@@ -20,7 +20,8 @@
 // collide with a guid in either cache.
 
 import { storage } from './storage';
-import type { Episode, PlayGroup, Podcast, ValueTimeSplit } from './types';
+import type { Episode, ItemPayment, PlayGroup, Podcast, ValueTimeSplit } from './types';
+import { isPlaylistMedium } from './util';
 
 /**
  * Entry cap for the two in-memory tiers below.
@@ -604,6 +605,38 @@ export function loadValueSplits(feedId: number, episodeId: number): Promise<Valu
 }
 
 const valueSplitsInFlight = new Map<string, Promise<ValueTimeSplit[] | null>>();
+
+/**
+ * Who one item pays, out of its parent feed: `/api/item-value`, coalesced the way
+ * `loadValueSplits` is. For a row nothing has read a feed for (`valueNotRead`).
+ *
+ * `podcastGuid` first, because it is PI's answer for the feed the item lives in. A
+ * playlist row's `feedId` can be the PLAYLIST's, and that channel block belongs to
+ * the curator, so a row with no guid on a playlist is not asked at all.
+ *
+ * Never rejects: a failure is `{ read: false }`.
+ */
+export function loadItemValue(
+  episode: Pick<Episode, 'guid' | 'podcastGuid' | 'feedId'>,
+  podcast: Pick<Podcast, 'medium'> | null | undefined,
+): Promise<ItemPayment> {
+  if (!episode.guid) return Promise.resolve({ read: false });
+  const params = new URLSearchParams({ itemGuid: episode.guid });
+  if (episode.podcastGuid) params.set('feedGuid', episode.podcastGuid);
+  else if (episode.feedId > 0 && !(podcast && isPlaylistMedium(podcast))) params.set('feedId', String(episode.feedId));
+  else return Promise.resolve({ read: false });
+  const url = `/api/item-value?${params}`;
+  const existing = itemValueInFlight.get(url);
+  if (existing) return existing;
+  const p: Promise<ItemPayment> = fetch(url)
+    .then(async (r) => (r.ok ? ((await r.json()) as ItemPayment) : ({ read: false } as const)))
+    .catch(() => ({ read: false } as const))
+    .finally(() => { itemValueInFlight.delete(url); });
+  itemValueInFlight.set(url, p);
+  return p;
+}
+
+const itemValueInFlight = new Map<string, Promise<ItemPayment>>();
 
 /** What `/api/playlist` answers with. Loose for the same reason `FeedResponse` is. */
 export interface PlaylistResponse {

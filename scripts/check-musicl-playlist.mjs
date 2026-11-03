@@ -37,7 +37,8 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
+import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
@@ -716,7 +717,7 @@ console.log('\nWhose value block a boost for one row may be paid against');
   //
   // The exempt vectors are the ones that pin the refusal's LIMITS: an
   // unindexed feed (no guids anywhere), a show-level boost on a playlist, and
-  // the track block `fillTrackValues` resolves. Each is a property of that
+  // the track block the row's own feed gives. Each is a property of that
   // input, not a hole — a naive fallback happens to get them right too.
   const ARTIST = { type: 'lightning', method: 'keysend', recipients: [{ name: 'Artist', type: 'node', address: '03aaa', split: 100 }] };
   const CURATOR = { type: 'lightning', method: 'keysend', recipients: [{ name: 'ChadF', type: 'node', address: '03ccc', split: 100 }] };
@@ -744,7 +745,7 @@ console.log('\nWhose value block a boost for one row may be paid against');
     // BOOST away along with the bug.
     null, { value: CURATOR, medium: 'musicL', podcastGuid: LIST_GUID },
     CURATOR, { alsoNaive: true });
-  val('a playlist row that HAS a block is paid against it — what fillTrackValues resolves',
+  val('a playlist row that HAS a block is paid against it — what its own feed gave it',
     { value: ARTIST, podcastGuid: ALBUM_GUID },
     { value: CURATOR, medium: 'musicL', podcastGuid: LIST_GUID }, ARTIST, { alsoNaive: true });
 
@@ -800,73 +801,61 @@ console.log('\nWhose value block a boost for one row may be paid against');
 }
 
 // ---------------------------------------------------------------------------
-console.log('\nWhose value block /api/feed ships on a row: the feed\'s, over PI\'s');
+console.log('\nWhose value block /api/feed ships on a row: only the RSS names a payee');
 // ---------------------------------------------------------------------------
 {
   // `feedItemValue` is the expression /api/feed runs where it used to run
-  // `e.value ?? podcast.value`. Podcast Index can hold a STALE item block while
-  // its channel block is current, and the naive expression lets the stale one
-  // win on every track BOOST.
+  // `e.value ?? podcast.value`. Podcast Index's value block is no longer read at
+  // all (`buildPodcast`, `buildEpisode`), so `rowValue` is only ever a block an
+  // RSS read already put on the row: a live item, or an item PI had not crawled.
   //
-  // The first vector is the measured case, from the wire on 2026-09-23: Jimmy V
-  // – Jimmy V Collection (PI feed 6734639). The RSS has ONE channel
-  // <podcast:value> and no item blocks; PI held an item block on 11 of 13
-  // tracks from a 2025-10-09 crawl. Recipients copied from both documents,
-  // trimmed to the legs that differ: the feed pays SirLibre Node 03460a…, PI's
-  // item block pays the old Kolomona node 030a58… and a "Fountain Boostbot"
-  // leg the feed dropped.
-  //
-  //   OVER-TRUST PI      a track BOOST pays a node the feed no longer names.
-  //   OVER-TRUST RSS     a feed the scan did not reach, or could not read,
-  //                      loses the block PI has — BOOST goes dead.
+  // Measured on 2026-09-23 on Jimmy V – Jimmy V Collection (PI feed 6734639): the
+  // RSS has ONE channel <podcast:value> and no item blocks, while PI held item
+  // blocks from a 2025-10-09 crawl that paid a node the feed no longer names.
   const JV = '03b6f613e88bd874177c28c6ad83b3baba43c4c656f56be1f8df84669556054b79';
   const FEED_CHANNEL = { type: 'lightning', method: 'keysend', recipients: [
     { name: 'Jimmy V - Musicianship & Hosting', type: 'node', address: JV, customKey: '906608', customValue: '01dIRsYB86CoEkZ4yUubfh', split: 85, fee: false },
     { name: 'SirLibre Node', type: 'node', address: '03460a453d13c98ff06b36b3b6a8c06a7b48328ad5f983dacc3a7b0991b841bc57', split: 5, fee: false },
   ] };
-  const PI_STALE_ITEM = { type: 'lightning', method: 'keysend', recipients: [
-    { name: 'Jimmy V - Musicianship & Hosting', type: 'node', address: JV, customKey: '906608', customValue: '01dIRsYB86CoEkZ4yUubfh', split: 85 },
-    { name: 'Fountain Boostbot', type: 'node', address: JV, customKey: '906608', customValue: '01arpnAY9hHWR1ihl8YyUr', split: 1 },
-    { name: 'Kolomona - Sir Libre - LightningThrashes.com - Tech help', type: 'node', address: '030a58b8653d32b99200a2334cfe913e51dc7d155aa0116c176657a4f1722677a3', customKey: '696969', customValue: '912ezE5oAMbMPuxCiHq8', split: 5 },
+  const PI_CHANNEL = { type: 'lightning', method: 'keysend', recipients: [
+    { name: 'Podcast Index copy', type: 'node', address: '030a58b8653d32b99200a2334cfe913e51dc7d155aa0116c176657a4f1722677a3', split: 100 },
   ] };
-  // PI's copy of the channel block matched the feed on that date.
-  const PI_CHANNEL = FEED_CHANNEL;
   const ARTIST = { type: 'lightning', method: 'keysend', recipients: [{ name: 'Artist', type: 'node', address: '03aaa', split: 100 }] };
   const OLD_ARTIST = { type: 'lightning', method: 'keysend', recipients: [{ name: 'Artist (old node)', type: 'node', address: '03old', split: 100 }] };
 
   const vv = [];
-  // args: [rssRead, rssItem, rssChannel, piItem, piChannel]
+  // args: [rssRead, rssItem, rssChannel, rowValue]
   const val = (label, args, expect, opts = {}) => vv.push({ label, args, expect, ...opts });
 
-  // ── must refuse PI's stale copy ──────────────────────────────────────────
-  val('Jimmy V: the feed lists the track with no item block — the CHANNEL pays, not PI\'s stale item block',
-    [true, { value: null }, FEED_CHANNEL, PI_STALE_ITEM, PI_CHANNEL], FEED_CHANNEL);
-  val('the feed\'s own item block beats PI\'s older item block',
-    [true, { value: ARTIST }, FEED_CHANNEL, OLD_ARTIST, PI_CHANNEL], ARTIST);
-  val('a feed that dropped V4V entirely is paid NOTHING, not PI\'s leftovers',
-    // The feed was read, lists the item, and declares no block anywhere. The
-    // publisher took payments down; PI has not noticed.
-    [true, { value: null }, null, PI_STALE_ITEM, PI_CHANNEL], null);
-  val('an item past the scan cap, on a feed that dropped its channel block, does not fall back to PI\'s channel',
-    // The route ships `podcast.value = feedValue` when the feed was read, so
-    // the row must not disagree with the show-level answer.
-    [true, undefined, null, undefined, PI_CHANNEL], null);
+  // ── the feed decides ─────────────────────────────────────────────────────
+  val('the feed\'s own item block beats its channel block',
+    [true, { value: ARTIST }, FEED_CHANNEL, undefined], ARTIST);
+  val('a listed item ignores a block already on the row: the feed\'s item block pays',
+    [true, { value: ARTIST }, FEED_CHANNEL, OLD_ARTIST], ARTIST);
+  val('a listed item with no block anywhere is paid NOTHING, whatever the row holds',
+    [true, { value: null }, null, OLD_ARTIST], null);
+
+  // ── a Podcast Index block is not a source, on any path ───────────────────
+  val('a feed that could not be read is NOT an answer, and PI\'s channel block does not stand in',
+    [false, undefined, undefined, undefined, PI_CHANNEL], undefined, { alsoNaive: true });
+  val('a feed with no value tag is paid NOTHING, and PI\'s channel block does not stand in',
+    [true, { value: null }, null, undefined, PI_CHANNEL], null, { alsoNaive: true });
+  val('an item past the scan cap on a feed with no value tag is paid NOTHING',
+    [true, undefined, null, undefined, PI_CHANNEL], null, { alsoNaive: true });
 
   // ── must still work ──────────────────────────────────────────────────────
-  val('the feed could not be read: PI\'s item block, exactly as before',
-    [false, undefined, undefined, ARTIST, PI_CHANNEL], ARTIST, { alsoNaive: true });
-  val('the feed could not be read and PI has no item block: PI\'s channel block',
-    [false, undefined, undefined, undefined, PI_CHANNEL], PI_CHANNEL, { alsoNaive: true });
-  val('the scan did not reach the item: PI\'s item block stands — nothing says it is wrong',
-    [true, undefined, FEED_CHANNEL, ARTIST, PI_CHANNEL], ARTIST, { alsoNaive: true });
-  val('an ordinary show whose feed and PI agree ships the same block either way',
-    [true, { value: null }, FEED_CHANNEL, undefined, PI_CHANNEL], FEED_CHANNEL, { alsoNaive: true });
-  val('a per-track album the feed and PI agree on keeps each track\'s own block',
-    [true, { value: ARTIST }, FEED_CHANNEL, ARTIST, PI_CHANNEL], ARTIST, { alsoNaive: true });
+  val('Jimmy V: a listed track with no item block inherits the CHANNEL',
+    [true, { value: null }, FEED_CHANNEL, undefined], FEED_CHANNEL, { alsoNaive: true });
+  val('an item past the scan cap inherits the channel',
+    [true, undefined, FEED_CHANNEL, undefined], FEED_CHANNEL, { alsoNaive: true });
+  val('a live row keeps the block its own RSS read gave it',
+    [true, undefined, FEED_CHANNEL, ARTIST], ARTIST, { alsoNaive: true });
+  val('an unread feed leaves a block an RSS read already put on the row',
+    [false, undefined, undefined, ARTIST], ARTIST, { alsoNaive: true });
 
   const ser = (v) => (v === undefined ? 'undefined' : JSON.stringify(v));
-  // The route's old expression: `e.value ?? podcast.value`, with PI supplying both.
-  const naive = (_rssRead, _rssItem, _rssChannel, piItem, piChannel) => piItem ?? piChannel;
+  // What the route's expression would be with PI gone and no feed check.
+  const naive = (_rssRead, _rssItem, rssChannel, rowValue) => rowValue ?? rssChannel;
   const call = (impl, v) => {
     try {
       return ser(impl === 'real' ? feedItemValue(...v.args) : naive(...v.args));
@@ -890,6 +879,115 @@ console.log('\nWhose value block /api/feed ships on a row: the feed\'s, over PI\
     }
   }
   console.log(`  ${vv.length} vector(s) replayed, ${vv.filter((v) => v.alsoNaive).length} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nA row no feed has answered for is not a row with no value block');
+// ---------------------------------------------------------------------------
+{
+  // Three states, and they reach the client as JSON, so the fixtures go over the
+  // wire first: `undefined` is dropped there, and that is the "not read" state.
+  //   no `value` key   no RSS read has answered: BOOST asks the feed when pressed
+  //   `value: null`    the feed was read and names nobody: BOOST stays closed
+  //   `value: {…}`     the feed's block: BOOST pays it
+  const wire = (o) => JSON.parse(JSON.stringify(o));
+  const BLOCK = { type: 'lightning', method: 'keysend', recipients: [{ name: 'A', type: 'node', address: '03a', split: 100 }] };
+  const row = (extra) => wire({ id: 1, guid: 'g', title: 't', enclosureUrl: 'u', podcastGuid: 'album', ...extra });
+  const SHOW = wire({ id: 9, podcastGuid: 'album' });
+  const PLAYLIST = wire({ id: 8, podcastGuid: 'list', medium: 'musicL', value: BLOCK });
+
+  const notRead = [
+    ['a PI row, whose value was never read', row({ value: undefined }), true],
+    ['a row the feed answered "none" for', row({ value: null }), false],
+    ['a row with the feed\'s block', row({ value: BLOCK }), false],
+    ['a live row, which the live-value watcher answers', row({ liveStatus: 'live' }), false],
+    ['a playlist placeholder, which has nothing to boost', row({ unresolved: 'not-found' }), false],
+    ['an item with no guid, which cannot be looked up', row({ guid: undefined }), false],
+  ];
+  for (const [label, e, want] of notRead) {
+    if (valueNotRead(e) === want) ok(`valueNotRead: ${label} → ${want}`);
+    else fail(`valueNotRead: ${label}: got ${valueNotRead(e)}, want ${want}`);
+  }
+
+  const gates = [
+    ['a not-read row waits, it does not claim "no value block"', row({}), SHOW, 'pending', false],
+    ['a feed\'s "none" is closed', row({ value: null }), SHOW, 'none', false],
+    ['a feed\'s block is open', row({ value: BLOCK }), SHOW, 'ok', true],
+    ['a not-read playlist row does not borrow the curator\'s block', row({}), PLAYLIST, 'pending', false],
+    ['a failed read says so', row({ liveValueState: 'unread' }), SHOW, 'unread', false],
+    ['a live row with no block is not "pending" on our account', row({ liveStatus: 'live' }), SHOW, 'none', false],
+  ];
+  for (const [label, e, p, reason, hasValue] of gates) {
+    const g = boostGate(e, p);
+    if (g.reason === reason && g.hasValue === hasValue) ok(`boostGate: ${label}`);
+    else fail(`boostGate: ${label}: got ${g.reason}/${g.hasValue}, want ${reason}/${hasValue}`);
+  }
+
+  // The ⚡ V4V stamp may read Podcast Index. It is a yes or no, and nothing that pays
+  // may read it: a hint that opened BOOST would be PI's block by another name.
+  const HINTED = wire({ id: 9, podcastGuid: 'album', v4vHint: true });
+  if (carriesV4V(HINTED)) ok('carriesV4V: Podcast Index\'s hint shows the stamp');
+  else fail('carriesV4V: the hint did not show the stamp');
+  if (carriesV4V(wire({ id: 9, value: BLOCK }))) ok('carriesV4V: the feed\'s own block shows the stamp');
+  else fail('carriesV4V: the feed\'s block did not show the stamp');
+  if (!carriesV4V(wire({ id: 9, value: null }))) ok('carriesV4V: no hint and no block shows no stamp');
+  else fail('carriesV4V: a stamp with no hint and no block');
+  const hintGate = boostGate(row({ value: null }), HINTED);
+  if (!hintGate.hasValue && !hintGate.value) ok('the hint opens no BOOST, and names nobody');
+  else fail(`the hint opened BOOST: ${JSON.stringify(hintGate)}`);
+  if (payableValue(row({}), HINTED) === undefined) ok('payableValue does not read the hint');
+  else fail('payableValue read the hint');
+
+  const stored = { episode: { ...row({ value: BLOCK, valueTimeSplits: [{ startTime: 0 }] }), liveValueState: 'unread' }, podcast: { ...SHOW, value: BLOCK }, at: 5 };
+  const clean = withoutStoredValue(stored);
+  if (!('value' in clean.episode) && !('valueTimeSplits' in clean.episode) && !('value' in clean.podcast)
+      && !('liveValueState' in clean.episode) && clean.at === 5 && clean.episode.guid === 'g') {
+    ok('withoutStoredValue: a copy from disk carries no payee, and keeps everything else');
+  } else fail(`withoutStoredValue kept a payee or lost a field: ${JSON.stringify(clean)}`);
+  if (valueNotRead(clean.episode)) ok('withoutStoredValue: the copy reads as not read, so play and BOOST ask the feed');
+  else fail('withoutStoredValue: the copy does not read as not read');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nNothing server-side reads a payee from anywhere but an RSS document');
+// ---------------------------------------------------------------------------
+{
+  // A source scan on purpose. `buildPodcast` and `buildEpisode` were the only two
+  // reads of Podcast Index's value block and its time splits, and one line put
+  // back in either pays through a copy the feed never stated. No type catches it:
+  // the field is optional, so it type-checks and reads as a working BOOST.
+  // `piListsValue` is the one allowed read, because it answers with a boolean.
+  const code = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/.*$/gm, '$1')
+    .replace(/function piListsValue[\s\S]*?\n}\n/, '');
+  const banned = [
+    ['lib/pi.ts', /\bnormalizeValue\b/, 'a reader of PI\'s value block'],
+    ['lib/pi.ts', /\b[fe]\??\.value\b/, 'a read of PI\'s value block outside `piListsValue`'],
+    ['lib/pi.ts', /\.timesplits\b/, 'a read of PI\'s time splits'],
+    ['lib/pi-batch.ts', /\bfillTrackValues\b/, 'the playlist fill from PI\'s album block'],
+    ['lib/playlist-db.ts', /\bvalues\b/, 'the playlist database as a source of payees'],
+    ['lib/playlist-db-map.ts', /\bdbValueBlock\b/, 'the playlist database as a source of payees'],
+    ['app/api/playlist/route.ts', /\bdb\??\.values\b/, 'the playlist database as a source of payees'],
+    ['lib/downloads/downloads-db.ts', /\br\.value(TimeSplits)?\b/, 'a download record as a source of payees'],
+    ['lib/v4v/boost.ts', /\bv4vHint\b/, 'a read of the display hint'],
+    ['lib/v4v/streaming.ts', /\bv4vHint\b/, 'a read of the display hint'],
+    ['components/boost-modal/index.tsx', /\bv4vHint\b/, 'a read of the display hint'],
+    ['components/boost-all-modal.tsx', /\bv4vHint\b/, 'a read of the display hint'],
+  ];
+  for (const [rel, re, what] of banned) {
+    if (re.test(code(rel))) fail(`${rel} contains ${what} (${re})`);
+    else ok(`${rel}: clean of ${what}`);
+  }
+  // And the other half: every stored copy that can reach `current` drops its payee.
+  // `bmb:now_playing` shipped without it, and an old block reached the modal.
+  const storage = code('lib/storage.ts');
+  for (const cell of ['listenQueue', 'playHistory', 'nowPlaying']) {
+    const at = storage.indexOf(`  ${cell}: {`);
+    const body = at < 0 ? '' : storage.slice(at, storage.indexOf('\n  },', at));
+    if (body.includes('withoutStoredValue')) ok(`storage.${cell}: a copy from disk drops its payee`);
+    else fail(`storage.${cell} hands back a stored copy with its payee on it`);
+  }
 }
 
 // ---------------------------------------------------------------------------

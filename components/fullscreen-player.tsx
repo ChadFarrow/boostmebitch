@@ -655,7 +655,8 @@ export function FullscreenPlayer({
       if (notesLive) return;
       useApp.getState().refreshCurrentValue(
         guid,
-        r.episode.value ?? null,
+        // Undefined when the feed did not answer, and that leaves `value` alone.
+        r.episode.value,
         r.episode.valueTimeSplits,
       );
     }).catch(() => {

@@ -10,7 +10,7 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 The `⚡ BOOST` button on the `EpisodeList` header opens this mode (gated on `showHasValue`). The per-episode path in `Player` is unchanged.
 
-**Per-track BOOST on each row.** Every `EpisodeList` row carries a far-right `⚡ BOOST` (`boostTrack` state → `<BoostModal episode={boostTrack}>`) when `hasValueRecipients(e.value)`. `ev.stopPropagation()` keeps it off the row's play/open handler. Not music-only — any feed whose tracks carry a value block gets it.
+**Per-track BOOST on each row.** Every `EpisodeList` row carries a far-right `⚡ BOOST` (`boostTrack` state → `<BoostModal episode={boostTrack}>`) when `hasValueRecipients(e.value)`, or when nothing has read the row's feed yet (`valueNotRead`), and then the press reads it first (`boostRow`). `ev.stopPropagation()` keeps it off the row's play/open handler. Not music-only — any feed whose tracks carry a value block gets it.
 
 
 ## Which value block a boost is paid against (`payableValue`)
@@ -25,7 +25,7 @@ A Podcasting 2.0 PLAYLIST is that case. Its rows are `<podcast:remoteItem>` refe
 
 **Over-refusing costs as much as over-falling-through, so the refusal is narrow in three deliberate places.** A SHOW-level boost (no episode) always pays the feed's own block, playlist or not — the listener chose the container. An episode carrying its own block is returned untouched, which is also what keeps a *hybrid* list feed working: `/api/feed` folds the channel block into `e.value` server-side before this is ever asked. And the guid test needs BOTH guids present, because a feed PI has not indexed carries neither — refusing there would hide BOOST on exactly the independent releases this app exists to pay. A disabled BOOST button reads as a feature that does not exist, not as a bug.
 
-**What arrives as `episode.value` is decided server-side too, and Podcast Index's copy of it can be STALE.** `/api/feed` ships the feed's own block over PI's whenever it read the feed (`feedItemValue`) — see *The feed's value block outranks Podcast Index's copy* in [`feeds.md`](feeds.md) for the measured case and the three branches.
+**What arrives as `episode.value` only ever comes from an RSS document.** Podcast Index's copy is not read at all, and a row with no `value` key has not been asked about yet (`valueNotRead`) — see *Only an RSS document names a payee* in [`feeds.md`](feeds.md) for the measured cases and the branches.
 
 Where a playlist row's real block comes from is the other half, and it is server-side: see *Whose value block pays a playlist row* in [`feeds.md`](feeds.md).
 
@@ -51,7 +51,7 @@ Reported as a bug: a boost modal read `ChadF 44.6%`, `ChadF test node 44.6%`, `b
 
 ## Boost-all tracks (valueTimeSplits)
 
-Music podcasts tag each track in their RSS with a `<podcast:valueTimeSplit>` — a startTime/duration window plus a `<podcast:remoteItem feedGuid itemGuid>` pointing at the track's own album feed. **PI surfaces these as `e.timesplits[]`** — a flat top-level array on the episode, NOT nested under `e.value.valueTimeSplits` despite the field name. Each entry carries `feedGuid`/`itemGuid`/`medium` directly; `parseRawValueTimeSplits` maps that to the consumer-facing nested `ValueTimeSplit.remoteItem`.
+Music podcasts tag each track in their RSS with a `<podcast:valueTimeSplit>` — a startTime/duration window plus either a `<podcast:remoteItem feedGuid itemGuid>` pointing at the track's own album feed, or inline `<podcast:valueRecipient>` entries. **Windows come from the RSS, and an ordinary item keeps only the first kind** (`itemValueTimeSplits`). Podcast Index's flat `e.timesplits[]` is not read.
 
 The `⚡ BOOST N TRACKS` button on each episode row (`components/lists.tsx`) opens `<BoostAllModal>` (`components/boost-all-modal.tsx`). Sequential per-track sends, not parallel.
 
