@@ -34,6 +34,8 @@
 //      the two failures one answer and caches nothing.
 //   9. The file picker's `accept` names no photo or camera type. Only a real
 //      iPhone can show what iOS does with it.
+//  10. Signed in, a link follows the same two rules as a file: "Not on Nostr"
+//      publishes nothing, and a public list gets ONE kind:10333 with every show.
 //
 // The relay is the in-memory one `npm run relay` starts and the signer is a
 // throwaway key reached over a CDP binding — the `e2e:favorites` shape — so no
@@ -353,7 +355,23 @@ t.ok('ADD puts them in the guest store', await until(`Object.keys(JSON.parse(loc
 await clickButton('done');
 
 t.ok('under the library, the line is there', await until(`!!${LINE}`, 8000));
-await js(`(() => { window.scrollTo(0, document.documentElement.scrollHeight); ${LINE}.click(); return 1; })()`);
+// As a reader does: scroll until the page stops moving, THEN press. The list
+// reveals rows as it scrolls, and New Episodes sits above it and grows when its
+// check starts (`SETTLE_MS`, 1.2 s) and when it answers. A press in that window
+// is the race docs/ui.md leaves alone, and without this wait the check below
+// fails about half its runs. Ten quiet samples outlast `SETTLE_MS`.
+{
+  let last = -1, quiet = 0;
+  for (let i = 0; i < 150 && quiet < 10; i++) {
+    const height = await js(`document.documentElement.scrollHeight`);
+    const checking = await js(`document.body.innerText.includes('checking')`);
+    quiet = height === last && !checking ? quiet + 1 : 0;
+    last = height;
+    await js(`(() => { window.scrollTo(0, document.documentElement.scrollHeight); return 1; })()`);
+    await wait(200);
+  }
+}
+await js(`(() => { ${LINE}.click(); return 1; })()`);
 t.ok('the open box offers the link box', await until(`!!document.querySelector('[data-opml-library] [data-opml-link] input')`, 3000));
 t.ok('the link box is on screen, not under the dock', await until(topInView(`document.querySelector('[data-opml-library] [data-opml-link] input')`), 3000));
 await measure('the link box in the open box');
@@ -418,6 +436,45 @@ await clickButton('add 2 shows');
 t.ok('the account store holds both shows', await until(`(() => { const f=JSON.parse(localStorage.getItem('bmb:favorites:' + ${JSON.stringify(npub)})||'{}'); return !!f[${JSON.stringify(PC20_GUID)}] && !!f[${JSON.stringify(NA_GUID)}]; })()`, 5000));
 await wait(3000);
 t.equal('and nothing is published', published.length, before);
+
+// ===========================================================================
+console.log('\n10. Signed in, from a pasted link');
+const offBefore = published.length;
+await fresh(signIn(`localStorage.setItem('bmb:fav_privacy:' + ${JSON.stringify(npub)}, 'off');`));
+t.ok('"Not on Nostr": the link box is there', await until(`!!${LINK_BOX} || !!${LINE}`, 30000));
+if (!(await js(`!!${LINK_BOX}`))) await js(`(() => { ${LINE}.click(); return 1; })()`);
+await until(`!!${LINK_BOX}`, 3000);
+await pasteLink(SHOW_LIST);
+t.ok('"Not on Nostr": the link reaches the review', await panelSays('ready to add', 60000), await panel());
+p = (await panel()) ?? '';
+t.ok('"Not on Nostr": before the add, the panel says they stay on this device', p.includes('saved on this device only'), p);
+const offReady = Number(/(\d+) shows? (?:is|are) ready to add/.exec(p)?.[1] ?? 0);
+await clickButton(`add ${offReady} shows`);
+t.ok('"Not on Nostr": the account store gains them', await until(`Object.keys(JSON.parse(localStorage.getItem('bmb:favorites:' + ${JSON.stringify(npub)})||'{}')).length >= ${offReady}`, 5000));
+await wait(3000);
+t.equal('"Not on Nostr": nothing is published', published.length, offBefore);
+
+// The relay still holds the public list step 6 published, so this account reads
+// as Public with shows in it, and the link's shows are new to it.
+await fresh(signIn());
+t.ok('Public: the library line shows once the relay read answers', await until(`!!document.querySelector('button[aria-haspopup="menu"][aria-label^="Favorites are"]') && !!${LINE}`, 30000));
+await js(`(() => { ${LINE}.click(); return 1; })()`);
+await until(`!!${LINK_BOX}`, 3000);
+await pasteLink(SHOW_LIST);
+const pubAdd = `[...document.querySelectorAll('button')].find(x => /^add \\d+ shows?$/.test(x.textContent.trim().toLowerCase()) && !x.disabled)`;
+t.ok('Public: the link reaches the review, and ADD is ready', await until(`!!${pubAdd}`, 60000), await panel());
+p = (await panel()) ?? '';
+t.ok('Public: before the add, the panel says PUBLIC', p.includes('public favorites list on Nostr'), p);
+const pubReady = Number(/(\d+) shows? (?:is|are) ready to add/.exec(p)?.[1] ?? 0);
+const pubBefore = published.length;
+t.equal('Public: the lookup publishes nothing', pubBefore, offBefore);
+await js(`(() => { ${pubAdd}.click(); return 1; })()`);
+for (let i = 0; i < 60 && published.length === pubBefore; i++) await wait(250);
+await wait(3000);
+t.equal('Public: ONE publish for the whole list', published.length, pubBefore + 1);
+const pubLast = published.at(-1);
+const pubIds = (pubLast?.tags ?? []).filter((x) => x[0] === 'i').map((x) => x[1]);
+t.ok(`Public: it carries the list it read and the ${pubReady} new shows (${pubIds.length} in all)`, pubReady > 0 && pubIds.length >= pubReady + 2 && pubIds.includes(`podcast:guid:${PC20_GUID}`), JSON.stringify(pubIds));
 
 // ===========================================================================
 console.log('\nAcross both halves');
