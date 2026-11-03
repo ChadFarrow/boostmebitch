@@ -205,6 +205,10 @@ export interface Episode {
   /** Podcasting 2.0 <podcast:alternateEnclosure> renditions (e.g. a video
    *  version). Parsed from RSS — PI doesn't index the tag. */
   alternateEnclosures?: AlternateEnclosure[];
+  /** This item's own `<podcast:funding>` links. The namespace allows the tag
+   *  in `<item>` as well as `<channel>`; an item without one falls back to
+   *  `podcast.funding` where it is shown. Parsed from RSS through `httpUrl`. */
+  funding?: FundingLink[];
   duration?: number;
   datePublished?: number;
   image?: string;

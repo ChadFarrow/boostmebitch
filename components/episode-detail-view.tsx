@@ -391,17 +391,24 @@ export function EpisodeDetailView() {
             <span aria-hidden className="text-lg leading-none">≋</span>,
             'STREAM',
           )}
-          {podcast.funding?.[0]?.url ? (
-            <a
-              href={podcast.funding[0].url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="tile"
-              title={podcast.funding[0].message || 'Support this show'}
-            >
-              <CoinIcon /> SUPPORT
-            </a>
-          ) : null}
+          {/* <podcast:funding>: this episode's own link when its <item> names
+              one, else the show's. Both were checked by `httpUrl` at parse. */}
+          {(() => {
+            const link = episode.funding?.[0]?.url ? episode.funding[0] : podcast.funding?.[0];
+            // Again here: a history or queue episode comes back from disk.
+            const url = httpUrl(link?.url);
+            return link && url ? (
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="tile"
+                title={link.message || 'Support this show'}
+              >
+                <CoinIcon /> SUPPORT
+              </a>
+            ) : null;
+          })()}
           {episode.socialInteract?.length ? (
             <button
               type="button"

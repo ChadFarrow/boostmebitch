@@ -1283,6 +1283,8 @@ interface RssEpisodeEnrichment {
   transcriptType?: string;
   link?: string;
   alternateEnclosures?: AlternateEnclosure[];
+  /** The item's own `<podcast:funding>` links (support links for this track). */
+  funding?: FundingLink[];
   /** The item's own `<podcast:value>`, or null when it declares none. Read
    *  from the live feed because Podcast Index can hold a stale one — see
    *  `feedItemValue` (lib/util.ts). */
@@ -1525,6 +1527,9 @@ export async function getRssEpisodeEnrichment(
     const alternateEnclosures = parseAlternateEnclosures(inner);
     // <podcast:txt purpose="nostr"> — this track's/episode's own artist.
     const nostrNpubs = parseFeedNpubs(inner);
+    // <podcast:funding> may sit in an <item> too — this track's own support
+    // link. Same parser, same httpUrl guard, as the channel's.
+    const funding = parseFunding(inner);
     // The item's own value block, read here because Podcast Index can hold a
     // stale one. Every item gets an entry, enriched or not, so the route can
     // tell "the feed lists this item and gives it no block" from "the scan
@@ -1533,7 +1538,7 @@ export async function getRssEpisodeEnrichment(
     // Who gets paid during a song, for the same reason. Guarded so a long feed
     // with no windows does not run the block scan once per item.
     const valueTimeSplits = inner.includes(VALUE_TIME_SPLIT_TAG) ? itemValueTimeSplits(inner) : undefined;
-    episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, value, valueTimeSplits });
+    episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, funding, value, valueTimeSplits });
   }
   const feedValue = parseValueBlock(channelXml);
   return { episodes, rssRead: true, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle };
@@ -1714,6 +1719,7 @@ function episodeFromRssItem(inner: string, rssUrl: string, idx: number, feedId: 
     value: parseValueBlock(inner),
     socialInteract: parseSocialInteractsFromRss(inner),
     nostrNpubs: parseFeedNpubs(inner),
+    funding: parseFunding(inner),
   };
 }
 
