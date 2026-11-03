@@ -6,9 +6,9 @@ import { BRAND } from '@/lib/brand';
 import { useFavoritesMode } from '@/components/favorites-privacy';
 import { parseOpml } from '@/lib/feed-xml';
 import {
-  OPML_LOOKUP_PER_RUN, OPML_MAX_BYTES, OPML_MAX_FEEDS,
-  buildOpml, opmlFilename, planOpmlImport, sortOpmlAnswers,
-  type OpmlFeed, type OpmlPlan, type OpmlSkip,
+  OPML_FILE_ACCEPT, OPML_LOOKUP_PER_RUN, OPML_MAX_BYTES, OPML_MAX_FEEDS,
+  buildOpml, opmlFilename, opmlLinkName, opmlLinkVerdict, planOpmlImport, sortOpmlAnswers,
+  type OpmlFeed, type OpmlOutlineIn, type OpmlPlan, type OpmlSkip,
 } from '@/lib/opml';
 import { lookupFeedUrls, resolvePodcastByGuid, warmPodcastCache } from '@/lib/podcast-meta';
 import { favoriteFromPodcast, requestFavoritesSync } from '@/lib/nostr';
@@ -46,6 +46,11 @@ import type { FavoritePodcast, Podcast } from '@/lib/types';
  * A ♡ adds one show the user is looking at; this adds hundreds the user is
  * not, to a list that is public by default, and the wrong file is an easy
  * mistake to make from a Downloads folder.
+ *
+ * A FILE OR A LINK, ONE REVIEW. `pick` reads a file here and `pickLink` asks
+ * `/api/opml` to read a link, because most hosts send no CORS header. Both end
+ * in `review`, so a list from a link gets the same plan, the same lookup and the
+ * same ADD as a list from a file.
  *
  * THE STATE LIVES IN THE PAGE (`useOpmlImport`), not in a trigger. The import
  * starts from the empty-library card and the card unmounts the moment the
@@ -86,9 +91,41 @@ export interface OpmlImporter {
   /** Where the current import was started. Meaningless while `idle`. */
   origin: OpmlOrigin;
   pick: (file: File, origin: OpmlOrigin) => void;
+  /** `raw` as pasted. `opmlLinkVerdict` decides whether it may leave the device. */
+  pickLink: (raw: string, origin: OpmlOrigin) => void;
   lookUpMore: () => void;
   add: () => void;
   dismiss: () => void;
+}
+
+/**
+ * Ask `/api/opml` to read a link. Every failure is one sentence for the panel.
+ *
+ * The 404 and the refused address read the same on purpose: the route gives no
+ * detail, so the SSRF guard behind it does not become an oracle.
+ */
+async function readOpmlLink(url: string): Promise<{ outlines: OpmlOutlineIn[] } | { failed: string }> {
+  try {
+    const res = await fetch('/api/opml', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (res.status === 422) {
+      return { failed: 'That link does not open an OPML file. Check the link, then try again.' };
+    }
+    if (res.status === 429) {
+      return { failed: 'Too many links in one minute. Wait a minute, then try again.' };
+    }
+    if (res.ok) {
+      const { outlines } = (await res.json()) as { outlines?: OpmlOutlineIn[] };
+      if (Array.isArray(outlines)) return { outlines };
+    }
+    return { failed: 'That link could not be read. Check the link, then try again.' };
+  } catch (e) {
+    console.warn('[opml] link read failed', e);
+    return { failed: 'That link could not be read. Check your connection, then try again.' };
+  }
 }
 
 export function useOpmlImport(): OpmlImporter {
@@ -149,12 +186,39 @@ export function useOpmlImport(): OpmlImporter {
       });
       return;
     }
+    await review(file.name, outlines);
+  }
+
+  async function pickLink(raw: string, from: OpmlOrigin) {
+    if (busy) return;
+    setOrigin(from);
+    const verdict = opmlLinkVerdict(raw);
+    if ('refused' in verdict) {
+      setState({
+        step: 'error',
+        text: verdict.refused === 'private'
+          ? 'This link looks private, so it was not sent anywhere. Save the file, then import the file.'
+          : 'This is not a whole web address. Paste the full link, with the https:// at the start.',
+      });
+      return;
+    }
+    setState({ step: 'busy', text: 'reading the link…' });
+    const read = await readOpmlLink(verdict.url);
+    if ('failed' in read) {
+      setState({ step: 'error', text: read.failed });
+      return;
+    }
+    await review(opmlLinkName(verdict.url), read.outlines);
+  }
+
+  /** Where a file and a link meet: the list is read, and nothing is added yet. */
+  async function review(fileName: string, outlines: readonly OpmlOutlineIn[]) {
     if (!outlines.length) {
       setState({ step: 'error', text: 'This OPML file lists no shows.' });
       return;
     }
     const run: ImportRun = {
-      fileName: file.name,
+      fileName,
       plan: planOpmlImport(outlines),
       answers: {},
       stopped: false,
@@ -195,6 +259,7 @@ export function useOpmlImport(): OpmlImporter {
     busy,
     origin,
     pick: (file, from) => { void pick(file, from); },
+    pickLink: (raw, from) => { void pickLink(raw, from); },
     lookUpMore: () => { if (state.step === 'ready' && !busy) void lookUp(state.run); },
     add,
     dismiss: () => { if (!busy) setState({ step: 'idle' }); },
@@ -205,21 +270,18 @@ export function useOpmlImport(): OpmlImporter {
  * The trigger. A real `<button>` that opens a hidden file input, so it is
  * reachable from a keyboard — a `<label>` styled as a button is not.
  *
- * NO `accept` ATTRIBUTE, on purpose. iOS greys out every file whose type it
- * does not recognise when `accept` is set, and an `.opml` saved from another
- * app to Files is exactly such a file: the picker would open with the user's
- * export visible and unselectable. `parseOpml` says plainly when the file
- * picked is not OPML, which is the better place for that check.
+ * `accept` is `OPML_FILE_ACCEPT`, and what it must not do is grey out the file
+ * the user came here to pick: it stays a suggestion to the picker. `parseOpml`
+ * says plainly when the file picked is not OPML, which is the better place for
+ * that check.
  */
-export function OpmlImportButton({
+function OpmlImportButton({
   importer,
   origin = 'empty',
-  className = 'btn-mini disabled:opacity-50',
 }: {
   importer: OpmlImporter;
   /** Where the result is drawn — see `OpmlOrigin`. */
   origin?: OpmlOrigin;
-  className?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
   return (
@@ -228,10 +290,10 @@ export function OpmlImportButton({
         type="button"
         onClick={() => input.current?.click()}
         disabled={importer.busy}
-        className={className}
+        className="btn-ghost text-xs disabled:opacity-50"
         title="Add the shows from another podcast app's OPML export to your favorites."
       >
-        ⇧ import opml
+        ⇧ choose a file
       </button>
       {/* `data-opml-input` is what `e2e:opml` hands the file to. Signed in,
           `⇧ RESTORE FROM BACKUP` renders a hidden file input EARLIER in the
@@ -239,6 +301,7 @@ export function OpmlImportButton({
       <input
         ref={input}
         type="file"
+        accept={OPML_FILE_ACCEPT}
         data-opml-input=""
         className="hidden"
         tabIndex={-1}
@@ -252,6 +315,83 @@ export function OpmlImportButton({
         }}
       />
     </>
+  );
+}
+
+/**
+ * The other way in: a pasted link to an OPML file, for a list that is on the web
+ * rather than in Files.
+ *
+ * `noValidate`, so a bad address gets `opmlLinkVerdict`'s sentence in the panel
+ * instead of the browser's bubble. `.input` is what keeps it from zooming iOS:
+ * the 16px floor in globals.css applies to every input on a touch screen. The
+ * keyboard closes on submit, because it covers the result on a phone.
+ */
+function OpmlLinkForm({ importer, origin = 'empty' }: { importer: OpmlImporter; origin?: OpmlOrigin }) {
+  const [link, setLink] = useState('');
+  const box = useRef<HTMLInputElement>(null);
+  const empty = !link.trim();
+  return (
+    <form
+      noValidate
+      data-opml-link=""
+      className="flex w-full flex-col gap-2 sm:flex-row sm:items-stretch"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (empty || importer.busy) return;
+        box.current?.blur();
+        importer.pickLink(link, origin);
+      }}
+    >
+      <input
+        ref={box}
+        type="url"
+        inputMode="url"
+        enterKeyHint="go"
+        autoCapitalize="none"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        aria-label="Link to an OPML file"
+        placeholder="Paste an OPML link"
+        className="input min-w-0 sm:flex-1"
+        value={link}
+        onChange={(e) => setLink(e.target.value)}
+      />
+      <button
+        type="submit"
+        disabled={empty || importer.busy}
+        className="btn-ghost shrink-0 self-start text-xs disabled:opacity-50 sm:self-auto"
+      >
+        import link
+      </button>
+    </form>
+  );
+}
+
+/**
+ * The two ways in, each under its own label, the file first.
+ *
+ * THE ORDER AND THE BUTTON STYLE FIX A REAL MISREAD (the owner, on an iPhone,
+ * 2026-11-03). The link box came first with the file button under it, and IMPORT
+ * LINK wore `.btn-mini`, whose text is muted even when it can be pressed. So the
+ * button that worked looked disabled, and the file button looked like the one to
+ * press after a paste. Now only the link's own button is under the box, and both
+ * are `.btn-ghost`, which dims only when it is disabled.
+ */
+export function OpmlImportControls({ importer, origin = 'empty' }: { importer: OpmlImporter; origin?: OpmlOrigin }) {
+  const label = 'text-[11px] uppercase tracking-widest text-muted';
+  return (
+    <div className="flex w-full max-w-prose flex-col gap-4" data-opml-controls="">
+      <div className="flex flex-col items-start gap-1.5">
+        <p className={label}>From a file</p>
+        <OpmlImportButton importer={importer} origin={origin} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className={label}>From a link</p>
+        <OpmlLinkForm importer={importer} origin={origin} />
+      </div>
+    </div>
   );
 }
 
@@ -486,23 +626,21 @@ export function OpmlLibraryImport({ importer }: { importer: OpmlImporter }) {
           <div ref={box} className="border border-line p-3 flex flex-col gap-3" style={clearOfDock}>
             <p className="text-xs text-muted leading-relaxed max-w-prose">
               OPML is the file every podcast app uses for your show list. Export it from your
-              other app, then import it here. Import adds only the shows you do not have
-              yet — it never removes a favorite.
+              other app, then import it here, or paste a link to it. Import adds only the shows
+              you do not have yet — it never removes a favorite.
             </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <OpmlImportButton importer={importer} origin="library" />
-              <button
-                type="button"
-                onClick={() => {
-                  if (mine) importer.dismiss();
-                  setOpen(false);
-                }}
-                disabled={importer.busy}
-                className="btn-mini disabled:opacity-50"
-              >
-                close
-              </button>
-            </div>
+            <OpmlImportControls importer={importer} origin="library" />
+            <button
+              type="button"
+              onClick={() => {
+                if (mine) importer.dismiss();
+                setOpen(false);
+              }}
+              disabled={importer.busy}
+              className="btn-mini self-start disabled:opacity-50"
+            >
+              close
+            </button>
           </div>
           {mine && (
             <div ref={result} style={clearOfDock}>

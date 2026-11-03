@@ -161,6 +161,7 @@ The **dock** (`components/tab-bar.tsx`) fronts three of them — **Home / Live /
 | `api/search` | PI `/search/byterm` | credentials are server-only; merges the music and playlist lanes, repairs blank PI records from RSS |
 | `api/feed` | PI byfeedid ×2 + RSS | credentials; RSS enrichment, show-notes sanitizer, live-item merge |
 | `api/by-guid` · `api/by-guid/batch` | PI byguid / byfeedurl | credentials; the batch resolves a whole favorites list in one request, and its POST an OPML import's feed addresses |
+| `api/opml` | an OPML link somebody pasted | CORS; returns only its outlines, `no-store` |
 | `api/episode-by-guid` · `…/batch` | PI `/episodes/byguid` | credentials; the batch is POST because item guids are often permalink URLs |
 | `api/value-splits` | RSS, PI as directory | an episode's `valueTimeSplit` windows, each remote item's payee from its album feed |
 | `api/item-value` | RSS, PI as directory | who one item pays, read when it plays or its BOOST is pressed |

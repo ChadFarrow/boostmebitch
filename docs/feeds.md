@@ -513,6 +513,17 @@ zero by construction. Reading the map uses `key in obj`, never `?? null`: the
 latter turns every unanswered guid into a cached miss, which is exactly the
 poisoning `COULD_NOT_ASK` exists to prevent.
 
+### `/api/opml`: a pasted link to an OPML file
+
+The file half of the import reads in the browser. The link half cannot, because
+most hosts send no `Access-Control-Allow-Origin`, so `POST /api/opml { url }` reads
+it through `safeFetch` and answers with `{ outlines }`, the same shape `parseOpml`
+gives the browser for a file. **Rate limit 20 a minute: it is pressed by hand.**
+`upstream <status>` is a 502, a document with no `<opml>` is a 422, and a refused
+address or a timeout is the handler's fallback, so the three failures a reader can
+act on stay apart and the SSRF guard names nothing. Why it is POST and `no-store`
+is in the OPML section of `docs/security.md`.
+
 ### The POST door, and the OPML import that needs it
 
 `/api/by-guid/batch` also answers **POST** `{ guids: string[] }`, with the same

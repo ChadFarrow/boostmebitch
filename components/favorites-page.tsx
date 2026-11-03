@@ -30,7 +30,7 @@ import { FavoritesNewEpisodes } from '@/components/favorites-new-episodes';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
 import {
-  OpmlImportButton, OpmlImportPanel, OpmlLibraryImport, useOpmlImport, type OpmlImporter,
+  OpmlImportControls, OpmlImportPanel, OpmlLibraryImport, useOpmlImport, type OpmlImporter,
 } from '@/components/favorites-opml';
 import { saveFile } from '@/lib/save-file';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
@@ -1547,11 +1547,11 @@ function EmptyLibrary({
       {!degraded && (
         <p className="text-sm text-muted leading-relaxed max-w-prose">
           Coming from another podcast app? Export your subscriptions there as an OPML file,
-          then import it here.
+          then import it here, or paste a link to it.
         </p>
       )}
-      <div className="flex flex-wrap items-center gap-2">
-        {!degraded && <OpmlImportButton importer={importer} className="btn-ghost text-xs disabled:opacity-50" />}
+      {!degraded && <OpmlImportControls importer={importer} />}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         {/* Clears the selection for the same reason <AppHeader>'s wordmark does
             on this route — see `clearShowSelection`. */}
         <Link href="/" onClick={clearShowSelection} className="btn-ghost text-xs">
