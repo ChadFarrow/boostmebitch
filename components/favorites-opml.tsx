@@ -275,15 +275,13 @@ export function useOpmlImport(): OpmlImporter {
  * says plainly when the file picked is not OPML, which is the better place for
  * that check.
  */
-export function OpmlImportButton({
+function OpmlImportButton({
   importer,
   origin = 'empty',
-  className = 'btn-mini disabled:opacity-50',
 }: {
   importer: OpmlImporter;
   /** Where the result is drawn — see `OpmlOrigin`. */
   origin?: OpmlOrigin;
-  className?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
   return (
@@ -292,10 +290,10 @@ export function OpmlImportButton({
         type="button"
         onClick={() => input.current?.click()}
         disabled={importer.busy}
-        className={className}
+        className="btn-ghost text-xs disabled:opacity-50"
         title="Add the shows from another podcast app's OPML export to your favorites."
       >
-        ⇧ import opml
+        ⇧ choose a file
       </button>
       {/* `data-opml-input` is what `e2e:opml` hands the file to. Signed in,
           `⇧ RESTORE FROM BACKUP` renders a hidden file input EARLIER in the
@@ -329,7 +327,7 @@ export function OpmlImportButton({
  * the 16px floor in globals.css applies to every input on a touch screen. The
  * keyboard closes on submit, because it covers the result on a phone.
  */
-export function OpmlLinkForm({ importer, origin = 'empty' }: { importer: OpmlImporter; origin?: OpmlOrigin }) {
+function OpmlLinkForm({ importer, origin = 'empty' }: { importer: OpmlImporter; origin?: OpmlOrigin }) {
   const [link, setLink] = useState('');
   const box = useRef<HTMLInputElement>(null);
   const empty = !link.trim();
@@ -337,7 +335,7 @@ export function OpmlLinkForm({ importer, origin = 'empty' }: { importer: OpmlImp
     <form
       noValidate
       data-opml-link=""
-      className="flex w-full max-w-prose items-stretch gap-2"
+      className="flex w-full flex-col gap-2 sm:flex-row sm:items-stretch"
       onSubmit={(e) => {
         e.preventDefault();
         if (empty || importer.busy) return;
@@ -356,14 +354,44 @@ export function OpmlLinkForm({ importer, origin = 'empty' }: { importer: OpmlImp
         spellCheck={false}
         aria-label="Link to an OPML file"
         placeholder="Paste an OPML link"
-        className="input min-w-0 flex-1"
+        className="input min-w-0 sm:flex-1"
         value={link}
         onChange={(e) => setLink(e.target.value)}
       />
-      <button type="submit" disabled={empty || importer.busy} className="btn-mini shrink-0 disabled:opacity-50">
+      <button
+        type="submit"
+        disabled={empty || importer.busy}
+        className="btn-ghost shrink-0 self-start text-xs disabled:opacity-50 sm:self-auto"
+      >
         import link
       </button>
     </form>
+  );
+}
+
+/**
+ * The two ways in, each under its own label, the file first.
+ *
+ * THE ORDER AND THE BUTTON STYLE FIX A REAL MISREAD (the owner, on an iPhone,
+ * 2026-11-03). The link box came first with the file button under it, and IMPORT
+ * LINK wore `.btn-mini`, whose text is muted even when it can be pressed. So the
+ * button that worked looked disabled, and the file button looked like the one to
+ * press after a paste. Now only the link's own button is under the box, and both
+ * are `.btn-ghost`, which dims only when it is disabled.
+ */
+export function OpmlImportControls({ importer, origin = 'empty' }: { importer: OpmlImporter; origin?: OpmlOrigin }) {
+  const label = 'text-[11px] uppercase tracking-widest text-muted';
+  return (
+    <div className="flex w-full max-w-prose flex-col gap-4" data-opml-controls="">
+      <div className="flex flex-col items-start gap-1.5">
+        <p className={label}>From a file</p>
+        <OpmlImportButton importer={importer} origin={origin} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className={label}>From a link</p>
+        <OpmlLinkForm importer={importer} origin={origin} />
+      </div>
+    </div>
   );
 }
 
@@ -601,21 +629,18 @@ export function OpmlLibraryImport({ importer }: { importer: OpmlImporter }) {
               other app, then import it here, or paste a link to it. Import adds only the shows
               you do not have yet — it never removes a favorite.
             </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <OpmlImportButton importer={importer} origin="library" />
-              <button
-                type="button"
-                onClick={() => {
-                  if (mine) importer.dismiss();
-                  setOpen(false);
-                }}
-                disabled={importer.busy}
-                className="btn-mini disabled:opacity-50"
-              >
-                close
-              </button>
-            </div>
-            <OpmlLinkForm importer={importer} origin="library" />
+            <OpmlImportControls importer={importer} origin="library" />
+            <button
+              type="button"
+              onClick={() => {
+                if (mine) importer.dismiss();
+                setOpen(false);
+              }}
+              disabled={importer.busy}
+              className="btn-mini self-start disabled:opacity-50"
+            >
+              close
+            </button>
           </div>
           {mine && (
             <div ref={result} style={clearOfDock}>

@@ -243,7 +243,7 @@ t.ok('the note is closed until the line is pressed', !(await text()).includes('O
 await js(`(() => { window.scrollTo(0, document.documentElement.scrollHeight); return 1; })()`);
 await js(`(() => { ${LINE}.click(); return 1; })()`);
 t.ok('one press opens the note', await until(`document.body.innerText.includes('OPML is the file every podcast app uses')`, 3000));
-t.ok('its IMPORT button is on screen, not under the dock', await until(topInView(inBox('⇧ import opml')), 3000));
+t.ok('its file button is on screen, not under the dock', await until(topInView(inBox('⇧ choose a file')), 3000));
 await measure('the open box');
 
 await pickFile(MORE);
@@ -293,6 +293,18 @@ t.ok('the file input names no photo or video type', !/image\/|video\/|audio\/|\*
 t.ok('the file input does not ask for the camera', !(await js(`document.querySelector('input[data-opml-input]').hasAttribute('capture')`)));
 t.ok('IMPORT LINK waits until there is a link', !(await clickButton('import link')));
 await measure('the link box in the empty card');
+
+// The owner's misread on an iPhone: the button that worked looked disabled, and
+// the file button under the box looked like the one to press after a paste.
+const LINK_BUTTON = `document.querySelector('[data-opml-link] button')`;
+const FILE_BUTTON = `document.querySelector('[data-opml-controls] button')`;
+t.ok('the file button is above the link box', await js(`${FILE_BUTTON}.getBoundingClientRect().bottom <= ${LINK_BOX}.getBoundingClientRect().top`));
+t.ok('at phone width IMPORT LINK is directly under the box', await js(`${LINK_BUTTON}.getBoundingClientRect().top >= ${LINK_BOX}.getBoundingClientRect().bottom`));
+t.ok('IMPORT LINK is dim with no link in the box', await until(`getComputedStyle(${LINK_BUTTON}).opacity === '0.5'`, 3000));
+await js(`(() => { ${LINK_BOX}.focus(); return 1; })()`);
+await send('Input.insertText', { text: SHOW_LIST });
+t.ok('IMPORT LINK is at full strength with a link in the box', await until(`getComputedStyle(${LINK_BUTTON}).opacity === '1'`, 3000));
+t.equal('and its text is the same color as the file button', await js(`getComputedStyle(${LINK_BUTTON}).color`), await js(`getComputedStyle(${FILE_BUTTON}).color`));
 
 // The 16px floor only applies on a touch screen, so this one needs one.
 await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
