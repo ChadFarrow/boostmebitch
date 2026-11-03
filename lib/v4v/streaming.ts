@@ -249,11 +249,15 @@ async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>
     // found") IS an answer and stays a cached miss.
     if (!res.ok && res.status !== 404) throw new Error(`value-splits ${res.status}`);
     const data = await res.json();
+    const splits = (data.splits as ValueTimeSplit[]) ?? [];
     const map = new Map<string, ValueTimeSplit>();
-    for (const s of (data.splits as ValueTimeSplit[]) ?? []) {
+    for (const s of splits) {
       if (hasValueRecipients(s.value)) map.set(trackBucket(s), s);
     }
-    splitCache.set(cacheKey, map.size ? map : null, Date.now());
+    // A window whose album feed did not answer has no payee YET. Not cached, or
+    // that artist's windows stream to the show for the hour after the host is back.
+    const complete = splits.every((s) => !s.remoteItem?.itemGuid || hasValueRecipients(s.value));
+    if (complete) splitCache.set(cacheKey, map.size ? map : null, Date.now());
     return map;
   } catch {
     // Not cached as a miss: a network blip must not pin the whole episode to

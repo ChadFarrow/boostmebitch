@@ -303,7 +303,8 @@ export interface Episode {
    *  BOOST is disabled in all three cases; only the SENTENCE differs, and that
    *  is the whole point. "Stream has no value block" over a stream we merely
    *  failed to read is a claim about somebody's money that we had not earned.
-   *  Set by `streamToEpisode` from the `StreamV4V` it is handed. */
+   *  Set by `streamToEpisode` from the `StreamV4V` it is handed, and to 'unread'
+   *  by `markCurrentValueUnread` when an ordinary item's feed did not answer. */
   liveValueState?: 'pending' | 'unread';
   /** <podcast:txt purpose="nostr"> published inside this <item> — the track's
    *  or episode's own artist, distinct from the channel-level show npub. Both
@@ -676,3 +677,12 @@ export interface LiveShow {
    */
   verified: boolean;
 }
+
+/**
+ * What one read of a feed says about who one of its items pays (`/api/item-value`).
+ * `read: false` means the document never arrived, which is a different answer
+ * from `value: null`, a feed that names nobody.
+ */
+export type ItemPayment =
+  | { read: false }
+  | { read: true; value: ValueBlock | null; valueTimeSplits: ValueTimeSplit[] };

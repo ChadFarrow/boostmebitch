@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue } from './util';
+import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue, withoutStoredValue, episodeWithoutValue } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -498,6 +498,14 @@ function getTimed<T>(key: string, ttlMs: number): T | null {
   } catch {
     return null;
   }
+}
+
+/** A display cache names no payee: it can hold a block from an older build for days. */
+function withoutCachedValue<T extends { value?: unknown }>(v: T | null): T | null {
+  if (!v) return v;
+  const copy = { ...v };
+  delete copy.value;
+  return copy;
 }
 
 function setTimed<T>(key: string, value: T) {
@@ -1269,7 +1277,7 @@ export const storage = {
    */
   podcastMeta: {
     get: (guid: string): Podcast | null =>
-      getTimed<Podcast>(`${KEYS.podcastMetaPrefix}:${guid}`, PODCAST_META_TTL_MS),
+      withoutCachedValue(getTimed<Podcast>(`${KEYS.podcastMetaPrefix}:${guid}`, PODCAST_META_TTL_MS)),
     set: (guid: string, v: Podcast) =>
       setTimed(`${KEYS.podcastMetaPrefix}:${guid}`, v),
   },
@@ -1278,7 +1286,7 @@ export const storage = {
    *  eviction class as podcastMeta — a network-regenerable display cache. */
   episodeMeta: {
     get: (key: string): Episode | null =>
-      getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS),
+      withoutCachedValue(getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS)),
     set: (key: string, v: Episode) =>
       setTimed(`${KEYS.episodeMetaPrefix}:${key}`, v),
   },
@@ -1857,7 +1865,9 @@ export const storage = {
         if (!Array.isArray(parsed)) return [];
         return (parsed as QueueItem[])
           .filter((i) => !!i?.episode?.enclosureUrl && typeof i?.podcast?.id === 'number')
-          .slice(0, LISTEN_QUEUE_CAP);
+          .slice(0, LISTEN_QUEUE_CAP)
+          // A copy from disk names no payee: `<Player>` asks the feed on play.
+          .map(withoutStoredValue);
       } catch {
         return [];
       }
@@ -1915,7 +1925,9 @@ export const storage = {
           .filter((h) => !!h?.episode?.enclosureUrl
             && typeof h?.podcast?.id === 'number'
             && Number.isFinite(h?.at))
-          .slice(0, PLAY_HISTORY_CAP);
+          .slice(0, PLAY_HISTORY_CAP)
+          // A copy from disk names no payee, see `listenQueue.get`.
+          .map(withoutStoredValue);
       } catch {
         return [];
       }
@@ -1969,8 +1981,10 @@ export const storage = {
       if (!raw) return null;
       try {
         const parsed = JSON.parse(raw) as QueueItem;
+        // A copy from disk names no payee, see `listenQueue.get`. This one goes
+        // straight into `current` (`revealNowPlaying`), and `<Player>` then asks.
         return parsed?.episode?.enclosureUrl && typeof parsed?.podcast?.id === 'number'
-          ? parsed
+          ? withoutStoredValue(parsed)
           : null;
       } catch {
         return null;
@@ -2027,7 +2041,8 @@ export const storage = {
             if (!r || typeof r !== 'object') continue;
             if (typeof r.feedId !== 'number') continue;
             if (typeof r.datePublished !== 'number') continue;
-            rows.push(r as Episode);
+            // A copy from disk names no payee, see `listenQueue.get`.
+            rows.push(episodeWithoutValue(r as Episode));
             if (rows.length >= FAV_NEW_CAP) break;
           }
         }

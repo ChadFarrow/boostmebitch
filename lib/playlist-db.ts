@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { dbRowToEpisode, type DbTrackRow } from './playlist-db-map';
 import { fnvHash } from './util';
 import { episodeKey } from './pi-batch';
-import type { Episode, ValueBlock } from './types';
+import type { Episode } from './types';
 import type { PlaylistItemRef } from './feed-xml';
 
 /**
@@ -15,8 +15,8 @@ import type { PlaylistItemRef } from './feed-xml';
  * A `musicL` playlist publishes no `<item>`s, so every track is resolved one
  * Podcast Index lookup at a time — 100 per page, thirteen pages for the
  * Homegrown Hits list. The StableKraft database already holds 13,783 of those
- * tracks with their value blocks, so a page that hits it costs one query
- * instead of a batch call, and PI is left for the misses.
+ * tracks, so a page that hits it costs one query instead of a batch call, and PI
+ * is left for the misses.
  *
  * **It is an ACCELERATOR, never an authority — the same contract the Nostr read
  * index carries, and for the same reason.** Three properties make that true and
@@ -33,12 +33,10 @@ import type { PlaylistItemRef } from './feed-xml';
  *    exactly as before. That is what makes the data being months out of date
  *    harmless: a track added last week is simply not here.
  *
- *    **That argument covers MEMBERSHIP and stops there.** A stale HIT on a
- *    value block is an answer, and `payableValue` reads it before it looks
- *    anywhere else — so the blocks are handed back separately and applied only
- *    where nothing fresher could answer. Measured on one 8-row page of It's A
- *    Mood: 8 of 8 snapshots disagreed with the live feed, two of them naming a
- *    different destination node outright. See `PlaylistDbTracks.values`.
+ *    **That argument covers MEMBERSHIP and stops there.** A stale HIT on a value
+ *    block would pay: measured on one 8-row page of It's A Mood, 8 of 8 snapshots
+ *    disagreed with the live feed, two of them naming a different destination
+ *    node. So a row carries no payee at all (`PlaylistDbTracks`).
  * 3. **Every failure is `null`, never an empty result.** An unset env var, an
  *    unreachable host, a schema that moved underneath us — all of it reverts to
  *    the pre-existing path. Unset `PLAYLIST_DB_URL` and this file does nothing.
@@ -105,11 +103,9 @@ function getPool(): Pool | null {
       // certificate instead.
       //
       // That is an INTEGRITY problem, not the confidentiality one the previous
-      // comment here argued. `dbValueBlock` validates the SHAPE of a value
-      // block and never a payee, so an active MITM could return well-formed
-      // rows naming their own node, and nothing downstream would notice. The
-      // value block no longer outranks Podcast Index (see
-      // `resolvePlaylistTracks`), which bounds that; the pin is what closes it.
+      // comment here argued: an active MITM could return well-formed rows
+      // naming their own enclosure. No row carries a payee any more, which
+      // bounds that; the pin is what closes it.
       //
       // `checkServerIdentity` is overridden because the leaf's CN is
       // `localhost` and the hostname is the Railway proxy — the names cannot
@@ -130,27 +126,11 @@ function getPool(): Pool | null {
 
 export interface PlaylistDbTracks {
   /**
-   * The rows this database answered, keyed by `episodeKey`. **Their `value` is
-   * deliberately absent** — see `values`.
+   * The rows this database answered, keyed by `episodeKey`. **They carry no
+   * payee.** This database is a crawl, months behind, and only a track's own feed
+   * names who it pays. Membership and metadata are accelerated; money is not.
    */
   tracks: Map<string, Episode>;
-  /**
-   * Each answered track's value block, held APART from its episode.
-   *
-   * `payableValue` returns `episode.value` before it looks anywhere else, so a
-   * block left on the episode outranks whatever Podcast Index or the artist's
-   * own RSS says moments later — and this database is a crawl, months behind.
-   * An artist who changed a node pubkey or moved off a Lightning-address host
-   * since then would be paid at the old destination on the strength of a row
-   * we happened to hold, with every leg reporting ✓.
-   *
-   * So the caller applies these only to rows nothing fresher could value. The
-   * accelerator can still make a track payable that PI cannot resolve at all —
-   * which is strictly better than the page had before it — but it can never
-   * overrule a live answer. Membership and metadata are accelerated; money is
-   * not.
-   */
-  values: Map<string, ValueBlock>;
 }
 
 /**
@@ -172,7 +152,7 @@ export async function resolvePlaylistTracks(
   refs: PlaylistItemRef[],
   feedId: number,
 ): Promise<PlaylistDbTracks | null> {
-  if (!refs.length) return { tracks: new Map(), values: new Map() };
+  if (!refs.length) return { tracks: new Map() };
   const p = getPool();
   if (!p) return null;
 
@@ -196,7 +176,6 @@ export async function resolvePlaylistTracks(
               t.duration        as "duration",
               coalesce(t.image, f.image) as "image",
               t."publishedAt"   as "publishedAt",
-              t."v4vValue"      as "value",
               t."chaptersUrl"   as "chaptersUrl",
               -- Selected only so dbRowToEpisode can REFUSE a row we would
               -- otherwise answer with less than Podcast Index would. Never mapped.
@@ -215,7 +194,6 @@ export async function resolvePlaylistTracks(
   }
 
   const tracks = new Map<string, Episode>();
-  const values = new Map<string, ValueBlock>();
   for (const row of rows) {
     const key = episodeKey({
       feedGuid: String(row.feedGuid ?? ''),
@@ -238,12 +216,7 @@ export async function resolvePlaylistTracks(
       playlistPlays: ref.plays,
     });
     if (!ep) continue;
-    // Lifted off the episode rather than never mapped, so `dbRowToEpisode`
-    // stays a faithful reading of the row and this module owns the precedence
-    // policy. See `PlaylistDbTracks.values`.
-    const { value, ...track } = ep;
-    tracks.set(key, track);
-    if (value) values.set(key, value);
+    tracks.set(key, ep);
   }
-  return { tracks, values };
+  return { tracks };
 }

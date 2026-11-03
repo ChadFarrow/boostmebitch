@@ -1,4 +1,4 @@
-import type { Episode, Podcast, ValueBlock, ValueTimeSplit } from '../types';
+import type { Episode, Podcast } from '../types';
 import { downloadEpisodeId } from '../util';
 
 /**
@@ -72,17 +72,6 @@ export interface DownloadRecord {
   feedMedium?: string;
   duration?: number;
   datePublished?: number;
-
-  /**
-   * The value block as it stood when the download was taken.
-   *
-   * Carried so a download can still be boosted. It is a CACHE of the feed's
-   * splits and never outranks a live read: `payableValue` reads `episode.value`
-   * first, so a record handed back into an `Episode` must be handed back whole
-   * or not at all — see `dbRowToEpisode`'s note.
-   */
-  value?: ValueBlock | null;
-  valueTimeSplits?: ValueTimeSplit[];
 
   // The document URLs, so an episode rebuilt from this record asks for the same
   // things the original did — which is what makes the cached copies below hit.
@@ -203,8 +192,6 @@ export function dbRowToEpisode(r: DownloadRecord): Episode {
     feedTitle: r.feedTitle,
     feedImage: r.feedImage,
     podcastGuid: r.feedGuid,
-    value: r.value,
-    valueTimeSplits: r.valueTimeSplits,
     chaptersUrl: r.chaptersUrl,
     transcriptUrl: r.transcriptUrl,
     transcriptType: r.transcriptType,
@@ -214,11 +201,7 @@ export function dbRowToEpisode(r: DownloadRecord): Episode {
 /**
  * The minimal {@link Podcast} that goes with it.
  *
- * `value` is deliberately left undefined rather than copied from the episode.
- * The episode's block is the one the record actually captured; duplicating it
- * onto the podcast would make `e.value ?? podcast.value` (the server-side
- * fallback in `app/api/feed/route.ts`) answer from a second copy that no feed
- * ever stated.
+ * No payee: a record is a copy from disk, so `<Player>` asks the feed on play.
  */
 export function dbRowToPodcast(r: DownloadRecord): Podcast {
   return {

@@ -18,14 +18,14 @@ import { useNowPlaying } from './player/use-now-playing';
 import { useShowSpeed } from './player/use-show-speed';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
-import { artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
+import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { downloadManager } from '@/lib/downloads/download-manager';
 import { logPlayback, playbackItemId, startPlaybackLog, watchMediaElement } from '@/lib/playback-log';
-import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
+import { loadItemValue } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
@@ -839,19 +839,6 @@ export function Player() {
         // `null` here is an evicted download, which the manager has already
         // forgotten. Streaming is what the listener had before they pressed it.
         attach(localSrc ?? episode.enclosureUrl);
-        // The download record's value block may be stale — payableValue reads
-        // episode.value first, so a stale copy outranks the feed's own.
-        if (localSrc && episode.feedId && episode.guid) {
-          const g = episode.guid;
-          loadEpisodeFromFeed(episode.feedId, g).then((r) => {
-            if (cancelled || !r?.episode) return;
-            useApp.getState().refreshCurrentValue(
-              g,
-              r.episode.value ?? null,
-              r.episode.valueTimeSplits,
-            );
-          });
-        }
       });
     }
     // `{ once: true }` removes the listener when it FIRES, which is not the same
@@ -1140,6 +1127,33 @@ export function Player() {
 
   // Above the early return (hook rules); returns null unless a live block with
   // art is being credited, so ordinary playback is untouched.
+  // WHO GETS PAID, read when it plays. A playlist row, a queue item from disk and a
+  // download carry no payee (`valueNotRead`), and only the item's own feed names
+  // one. BOOST and the streaming engine both read `current`, so they see it the
+  // moment it lands: the engine's next tick, and this surface's next render.
+  //
+  // Primitives in the deps: `refreshCurrentValue` replaces the episode object, and
+  // that must not re-ask.
+  const valueUnread = !!current && valueNotRead(current.episode);
+  const valueGuid = current?.episode.guid;
+  const valueFeedGuid = current?.episode.podcastGuid;
+  const valueFeedId = current?.episode.feedId ?? 0;
+  const valueMedium = current?.podcast.medium;
+  useEffect(() => {
+    if (!valueUnread || !valueGuid) return;
+    let cancelled = false;
+    void loadItemValue(
+      { guid: valueGuid, podcastGuid: valueFeedGuid, feedId: valueFeedId },
+      { medium: valueMedium },
+    ).then((r) => {
+      if (cancelled) return;
+      const app = useApp.getState();
+      if (r.read) app.refreshCurrentValue(valueGuid, r.value, r.valueTimeSplits);
+      else app.markCurrentValueUnread(valueGuid);
+    });
+    return () => { cancelled = true; };
+  }, [valueUnread, valueGuid, valueFeedGuid, valueFeedId, valueMedium]);
+
   const liveBlockImage = useLiveBlockImage(current?.episode.guid);
 
   // This episode's resolved <podcast:valueTimeSplit> windows. Owned here and
