@@ -1,5 +1,5 @@
 // Pins the OPML import and export: `parseOpml` (lib/feed-xml.ts) and
-// `planOpmlImport`, `sortOpmlAnswers`, `buildOpml` (lib/opml.ts).
+// `planOpmlImport`, `opmlLinkVerdict`, `sortOpmlAnswers`, `buildOpml` (lib/opml.ts).
 //
 // Usage:
 //   npm run check:opml
@@ -32,7 +32,8 @@
 
 import { parseOpml } from '../lib/feed-xml.ts';
 import {
-  OPML_MAX_FEEDS, buildOpml, looksPrivate, planOpmlImport, sortOpmlAnswers,
+  OPML_FILE_ACCEPT, OPML_MAX_FEEDS, buildOpml, looksPrivate, opmlLinkName, opmlLinkVerdict,
+  planOpmlImport, sortOpmlAnswers,
 } from '../lib/opml.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -45,6 +46,7 @@ const ok = (msg) => console.log(`  ok    ${msg}`);
 const NA = 'http://feed.nashownotes.com/rss.xml';
 const PC20 = 'https://feeds.podcastindex.org/pc20.xml';
 const ATP = 'https://atp.fm/rss';
+const SHOW_LIST = 'https://chadfarrow.github.io/chadf-musicl-playlists/small-group-scoop-shows.opml';
 
 const POCKET_CASTS = `<?xml version="1.0" encoding="UTF-8"?>
 <opml version="1.0">
@@ -126,6 +128,14 @@ function naiveParse(xml) {
 }
 function naivePlan(outlines) {
   return { feeds: outlines.map((x) => ({ url: x.xmlUrl, title: x.title })), skipped: [], overCap: 0 };
+}
+// "Send whatever was pasted": the key in a link reaches the server.
+function naiveLink(raw) {
+  return { url: raw };
+}
+// The last path segment as written: a bare host names nothing, a bad escape throws.
+function naiveLinkName(url) {
+  return decodeURIComponent(new URL(url).pathname.split('/').at(-1));
 }
 function naiveSort(feeds, answers, isFavorite) {
   const out = { add: [], already: [], notFound: [], noGuid: [], unasked: [] };
@@ -226,6 +236,34 @@ const vectors = [
   { label: 'a title that is only whitespace falls back to the address, as `text` requires', kind: 'roundtrip',
     args: [[{ url: PC20, title: '   ' }]],
     expect: { written: 1, strict: [], read: [o(PC20, PC20)] } },
+
+  // ── A pasted link: what may leave the device ──
+  { label: 'a public OPML link may be sent', kind: 'link',
+    args: [SHOW_LIST], expect: { url: SHOW_LIST }, alsoNaive: true },
+  { label: 'a link pasted with spaces around it is trimmed', kind: 'link',
+    args: [`  ${SHOW_LIST}\n`], expect: { url: SHOW_LIST } },
+  { label: 'a link with a token in it stays on the device', kind: 'link',
+    args: ['https://app.example/subscriptions.opml?token=abc123'], expect: { refused: 'private' } },
+  { label: 'a link with a password in it stays on the device', kind: 'link',
+    args: ['https://me:hunter2@app.example/subscriptions.opml'], expect: { refused: 'private' } },
+  { label: 'a link on a paid-feed host stays on the device', kind: 'link',
+    args: ['https://www.patreon.com/subscriptions.opml'], expect: { refused: 'private' } },
+  { label: 'a link with no scheme is refused, not guessed at', kind: 'link',
+    args: ['chadfarrow.github.io/shows.opml'], expect: { refused: 'not-web' } },
+  { label: 'a Nostr secret key pasted by mistake is not a web address', kind: 'link',
+    args: ['nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5'], expect: { refused: 'not-web' } },
+  { label: 'a javascript: link is not a web address', kind: 'link',
+    args: ['javascript:alert(1)'], expect: { refused: 'not-web' } },
+  { label: 'a file: link is not a web address', kind: 'link',
+    args: ['file:///etc/passwd'], expect: { refused: 'not-web' } },
+
+  // ── A pasted link: what the panel calls it ──
+  { label: 'a link is named by its file', kind: 'linkname',
+    args: [SHOW_LIST], expect: 'small-group-scoop-shows.opml', alsoNaive: true },
+  { label: 'a link with no path is named by its host', kind: 'linkname',
+    args: ['https://example.com/'], expect: 'example.com' },
+  { label: 'a bad escape in a link does not throw', kind: 'linkname',
+    args: ['https://example.com/100%25%.opml'], expect: '100%25%.opml' },
 ];
 
 /**
@@ -261,6 +299,10 @@ const run = (impl, v) => {
         overCap: p.overCap,
       };
     }
+    case 'link':
+      return (real ? opmlLinkVerdict : naiveLink)(...v.args);
+    case 'linkname':
+      return (real ? opmlLinkName : naiveLinkName)(...v.args);
     case 'sort': {
       const [feeds, answers, favs] = v.args;
       const s = (real ? sortOpmlAnswers : naiveSort)(feeds, answers, (g) => favs.includes(g));
@@ -299,6 +341,17 @@ replayVectors({ vectors, invoke: call, fail });
   if (wrongKept.length) fail(`looksPrivate lets these leave the device: ${wrongKept.join(', ')}`);
   else if (wrongSent.length) fail(`looksPrivate keeps back these public feeds: ${wrongSent.join(', ')}`);
   else ok(`looksPrivate keeps ${kept.length} private addresses back and sends ${sent.length} public ones`);
+}
+
+// ── The picker: no photos, and nothing greyed out ──────────────────────────
+// This pins the string. Only a real iPhone can pin what iOS does with it.
+{
+  const tokens = OPML_FILE_ACCEPT.split(',');
+  const media = tokens.filter((x) => /^(image|video|audio)\//.test(x) || x === '*/*');
+  const needed = ['application/octet-stream', '.opml'].filter((x) => !tokens.includes(x));
+  if (media.length) fail(`OPML_FILE_ACCEPT brings the photo options back: ${media.join(', ')}`);
+  else if (needed.length) fail(`OPML_FILE_ACCEPT lost ${needed.join(', ')}, and a picker greys out the export`);
+  else ok('OPML_FILE_ACCEPT names no media type, and keeps an .opml selectable');
 }
 
 // ── The module must stay loadable under plain Node ─────────────────────────

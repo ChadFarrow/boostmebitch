@@ -223,3 +223,18 @@ Pinned by `check:opml` (`naivePlan()` sends every `xmlUrl` as written) and by
 `e2e:opml`, which records every request the page makes over CDP and finds none
 carrying the fixture's Patreon key. Verified that the e2e FAILS with the filter
 disabled: five assertions go red, the request check among them.
+
+**A pasted OPML link gets the same test, and it is the link itself that is sent.**
+`opmlLinkVerdict` keeps a private-looking link on the device, and refuses anything
+that is not a whole http(s) address, which is where a secret key pasted by mistake
+stops. `/api/opml` asks again for a caller that is not this page. An address with
+its key in the path is not caught, and the heuristic above has the same gap. So
+the route is POST and `no-store`: a query string lands in platform logs and keys a
+shared cache, and a body does neither.
+
+**That route is a fourth read behind `safeFetch`, and the narrowest.** It returns
+only the `xmlUrl` and title of each outline, so a document that is not OPML comes
+back as a 422 with nothing of it. A list that names private feeds passes through
+our server when somebody pastes a link to it, but nothing there stores it, and
+the browser still keeps those feeds back from the lookup. A link's list is at an
+address its owner chose to publish, which a file is not.

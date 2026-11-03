@@ -27,6 +27,13 @@
 //      PUBLIC before ADD, the lookup publishes nothing, and ADD makes ONE
 //      kind:10333 with both shows' `i` tags and an empty `content`.
 //   7. Signed in, "Not on Nostr": the import stays on this device.
+//   8. A PASTED LINK: the real show list on GitHub Pages reaches the same review
+//      and the same add as a file, in both places. A link with a key in it, or a
+//      Nostr secret key pasted by mistake, makes no request at all. A page, a 404
+//      and a loopback address each end in one sentence, and `/api/opml` gives
+//      the two failures one answer and caches nothing.
+//   9. The file picker's `accept` names no photo or camera type. Only a real
+//      iPhone can show what iOS does with it.
 //
 // The relay is the in-memory one `npm run relay` starts and the signer is a
 // throwaway key reached over a CDP binding — the `e2e:favorites` shape — so no
@@ -179,7 +186,7 @@ async function measure(where) {
     const row = document.querySelector('[data-opml-library]');
     const empty = [...document.querySelectorAll('.card')].find(c => c.innerText.includes('Coming from another podcast app?'));
     const targets = [panelEl, row, empty].filter(Boolean)
-      .flatMap(c => [...c.querySelectorAll('button, summary')])
+      .flatMap(c => [...c.querySelectorAll('button, summary, input[type="url"]')])
       .map(b => { const r = b.getBoundingClientRect(); return { t: b.textContent.trim().slice(0, 40), w: Math.round(r.width), h: Math.round(r.height) }; })
       .filter(x => x.w > 0);
     return JSON.stringify({ scroll: el.scrollWidth, client: el.clientWidth, small: targets.filter(x => x.w < 24 || x.h < 24), n: targets.length });
@@ -261,6 +268,99 @@ t.ok('all three addresses read as already a favorite', p.includes('3 shows are i
 t.ok('and no add button is offered', !(await js(`[...document.querySelectorAll('button')].some(b => b.textContent.trim().toLowerCase().startsWith('add '))`)));
 await js(`(() => { ${inBox('close')}.click(); return 1; })()`);
 t.ok('CLOSE folds the note and clears the result', await until(`!document.querySelector('[data-opml-panel]') && !document.body.innerText.includes('OPML is the file every podcast app uses')`, 3000));
+
+// ===========================================================================
+console.log('\n8–9. A pasted link, signed out, at phone width');
+const SHOW_LIST = 'https://chadfarrow.github.io/chadf-musicl-playlists/small-group-scoop-shows.opml';
+const LINK_BOX = `document.querySelector('[data-opml-link] input')`;
+const linkCalls = () => requests.filter((r) => r.includes('/api/opml')).length;
+/** As a reader does: type into the box, then press the button beside it. */
+async function pasteLink(link) {
+  await js(`(() => { const b = ${LINK_BOX}; b.focus(); b.select(); return 1; })()`);
+  await send('Input.insertText', { text: link });
+  await until(`${LINK_BOX}.value === ${JSON.stringify(link)}`, 3000);
+  return clickButton('import link');
+}
+const panelSays = (words, ms = 15000) => until(`(() => { const p=document.querySelector('[data-opml-panel]'); return !!p && p.innerText.includes(${JSON.stringify(words)}); })()`, ms);
+
+await fresh();
+t.ok('the empty card offers the link box', await until(`!!${LINK_BOX}`, 8000));
+const accept = (await js(`document.querySelector('input[data-opml-input]').getAttribute('accept')`)) ?? '';
+t.ok('the file input keeps an .opml selectable', accept.includes('application/octet-stream') && accept.includes('.opml'), accept);
+t.ok('the file input names no photo or video type', !/image\/|video\/|audio\/|\*\/\*/.test(accept), accept);
+t.ok('the file input does not ask for the camera', !(await js(`document.querySelector('input[data-opml-input]').hasAttribute('capture')`)));
+t.ok('IMPORT LINK waits until there is a link', !(await clickButton('import link')));
+await measure('the link box in the empty card');
+
+// The 16px floor only applies on a touch screen, so this one needs one.
+await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+t.equal('the box is 16px on a touch screen, so iOS does not zoom on it', await js(`getComputedStyle(${LINK_BOX}).fontSize`), '16px');
+await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+
+const callsBefore = linkCalls();
+const NSEC = nip19.nsecEncode(generateSecretKey());
+await pasteLink('chadfarrow.github.io/chadf-musicl-playlists/small-group-scoop-shows.opml');
+t.ok('a link with no scheme gets the sentence', await panelSays('not a whole web address'), await panel());
+await clickButton('close');
+await pasteLink(NSEC);
+t.ok('a Nostr secret key gets the same sentence', await panelSays('not a whole web address'), await panel());
+await clickButton('close');
+await pasteLink(`https://app.example.invalid/subscriptions.opml?token=${SECRET}`);
+t.ok('a link with a key in it is refused', await panelSays('looks private'), await panel());
+await clickButton('close');
+t.equal('none of those three asked the server', linkCalls(), callsBefore);
+t.ok('no request carried the Nostr secret key', !requests.some((r) => r.includes(NSEC)));
+
+await pasteLink('https://example.com/');
+t.ok('a page that is not OPML gets the sentence', await panelSays('does not open an OPML file'), await panel());
+await clickButton('close');
+await pasteLink('https://chadfarrow.github.io/chadf-musicl-playlists/bmb-e2e-no-such-file.opml');
+t.ok('a 404 gets the sentence', await panelSays('could not be read'), await panel());
+await clickButton('close');
+await pasteLink(`http://127.0.0.1:${PORT}/subscriptions.opml`);
+t.ok('a loopback address gets the same sentence as a 404', await panelSays('could not be read'), await panel());
+await clickButton('close');
+
+const api = async (body, type = 'application/json') => JSON.parse(await js(`(async () => {
+  const r = await fetch('/api/opml', { method: 'POST', headers: { 'Content-Type': ${JSON.stringify(type)} }, body: ${JSON.stringify(body)} });
+  return JSON.stringify({ status: r.status, cache: r.headers.get('cache-control'), body: await r.text() });
+})()`));
+t.equal('the route refuses a body that is not declared JSON', (await api('{}', 'text/plain')).status, 415);
+// Its own token, not SECRET: this call reaches the route on purpose, and the
+// last check of this script is that SECRET never does.
+const keyed = await api(JSON.stringify({ url: 'https://app.example.invalid/x.opml?token=e2e-route-only' }));
+t.equal('the route refuses a key by itself, for a caller that is not this page', keyed.status, 400);
+const loop = await api(JSON.stringify({ url: `http://127.0.0.1:${PORT}/x.opml` }));
+t.equal('the route names no internal host in its answer', loop.body, '{"error":"opml link failed"}');
+const notOpml = await api(JSON.stringify({ url: 'https://example.com/' }));
+t.ok('the route returns nothing of a document that is not OPML', notOpml.status === 422 && !notOpml.body.includes('Example Domain'), notOpml.body);
+const listed = await api(JSON.stringify({ url: SHOW_LIST }));
+t.equal('the route says no-store on the outlines', listed.cache, 'no-store');
+const outlines = JSON.parse(listed.body).outlines ?? [];
+t.equal('the route reads the 19 shows on the real list', outlines.length, 19);
+
+await pasteLink(SHOW_LIST);
+t.ok('the real link reaches the review', await panelSays('ready to add', 60000), await panel());
+p = (await panel()) ?? '';
+t.ok('the panel names the file, not the whole address', p.toLowerCase().includes('small-group-scoop-shows.opml') && !p.includes('chadfarrow.github.io'), p);
+const ready = Number(/(\d+) shows? (?:is|are) ready to add/.exec(p)?.[1] ?? 0);
+console.log(`        ${ready} of ${outlines.length} shows on the real list are ready to add`);
+t.ok('shows from the link are ready to add', ready > 0, p);
+t.equal('nothing is added before ADD', await js(`Object.keys(JSON.parse(localStorage.getItem('bmb:favorites:guest')||'{}')).length`), 0);
+await measure('the review of a link');
+await clickButton(ready === 1 ? 'add 1 show' : `add ${ready} shows`);
+t.ok('ADD puts them in the guest store', await until(`Object.keys(JSON.parse(localStorage.getItem('bmb:favorites:guest')||'{}')).length === ${ready}`, 5000));
+await clickButton('done');
+
+t.ok('under the library, the line is there', await until(`!!${LINE}`, 8000));
+await js(`(() => { window.scrollTo(0, document.documentElement.scrollHeight); ${LINE}.click(); return 1; })()`);
+t.ok('the open box offers the link box', await until(`!!document.querySelector('[data-opml-library] [data-opml-link] input')`, 3000));
+t.ok('the link box is on screen, not under the dock', await until(topInView(`document.querySelector('[data-opml-library] [data-opml-link] input')`), 3000));
+await measure('the link box in the open box');
+await pasteLink(SHOW_LIST);
+t.ok('the result of a link opens IN the box', await until(`(() => { const p = ${BOX_PANEL}; return !!p && p.innerText.includes('There is no new show to add.'); })()`, 60000));
+t.equal('and nowhere else on the page', await js(`document.querySelectorAll('[data-opml-panel]').length`), 1);
+t.ok('a second paste adds nothing new', ((await panel()) ?? '').includes(`${ready} show`), await panel());
 
 // ===========================================================================
 // A FRESH ACCOUNT IS PUBLIC BEFORE IT PRESSES ANYTHING. `seedFavoritesMode`

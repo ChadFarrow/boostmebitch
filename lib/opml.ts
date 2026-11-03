@@ -36,6 +36,22 @@ export const OPML_LOOKUP_PER_RUN = 500;
 /** `/api/by-guid/batch` drops a `url:` key over 2048 characters. */
 export const OPML_URL_MAX = 2000;
 
+/**
+ * The file input's `accept`, which on a phone decides what the picker OFFERS.
+ *
+ * iOS shows "Photo Library" and "Take Photo or Video" beside "Choose File" when
+ * `accept` is absent, because absent means any file. Naming only document types
+ * takes it straight to Files. The catch is that iOS greys out a file whose type
+ * it does not recognise, and an `.opml` saved to Files is one, which is why this
+ * input once had no `accept` at all.
+ *
+ * `application/octet-stream` is what answers both: iOS maps it to `public.data`,
+ * which every file conforms to, so nothing is greyed out. It is not an image or
+ * a video type, so no camera. It is not enough alone: a desktop picker reads it
+ * as `.bin` and hides the `.opml`, hence the extensions and the XML types.
+ */
+export const OPML_FILE_ACCEPT = 'application/octet-stream,text/x-opml,text/xml,application/xml,.opml,.xml';
+
 /** What the reader found, before any rule here ran — `OpmlOutline` in feed-xml.ts. */
 export interface OpmlOutlineIn {
   xmlUrl: string;
@@ -153,6 +169,39 @@ export function planOpmlImport(outlines: readonly OpmlOutlineIn[]): OpmlPlan {
     }
   }
   return { feeds, skipped, overCap };
+}
+
+/**
+ * `not-web` — not a whole http(s) address. `private` — carries a credential.
+ */
+export type OpmlLinkVerdict = { url: string } | { refused: 'not-web' | 'private' };
+
+/**
+ * Whether a pasted link may leave the device, to be read by `/api/opml`.
+ *
+ * The same two tests a feed address in a file gets, and for the same reason: a
+ * link with `?token=` in it IS the key to whoever's list it opens, and the
+ * server is one of the places a key must not reach. Pasting is also how a wrong
+ * clipboard reaches a box, and a Nostr secret key is not a web address, so
+ * `not-web` keeps that on the device too. No `https://` is guessed for an address
+ * without one, because a guess would turn that same secret key into a hostname.
+ */
+export function opmlLinkVerdict(raw: string): OpmlLinkVerdict {
+  const url = opmlFeedUrl(raw);
+  if (!url) return { refused: 'not-web' };
+  return looksPrivate(url) ? { refused: 'private' } : { url };
+}
+
+/** What the review panel calls a list read from a link: its file name, or its host. */
+export function opmlLinkName(url: string): string {
+  const u = new URL(url);
+  const last = u.pathname.split('/').filter(Boolean).at(-1);
+  if (!last) return u.host;
+  try {
+    return decodeURIComponent(last);
+  } catch {
+    return last;
+  }
 }
 
 /** The part of a Podcast Index record this module reads. */
