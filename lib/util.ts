@@ -1475,6 +1475,15 @@ export function payableValue(
 }
 
 /**
+ * Whether a show gets the ⚡ V4V stamp: its feed's own block, or Podcast Index's
+ * hint. A LABEL, and it can be wrong: a show PI lists can have no BOOST, because
+ * only its feed names a payee. Nothing that pays reads this.
+ */
+export function carriesV4V(podcast: Pick<Podcast, 'value' | 'v4vHint'>): boolean {
+  return !!podcast.v4vHint || hasValueRecipients(podcast.value);
+}
+
+/**
  * Which value block `/api/feed` ships on an episode row. Only an RSS document
  * names a payee: Podcast Index's copy is not read at all (`buildPodcast`,
  * `buildEpisode`), because it can be stale. Measured 2026-09-23 on Jimmy V –

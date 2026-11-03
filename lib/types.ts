@@ -139,6 +139,11 @@ export interface Podcast {
   url?: string;           // RSS feed URL
   medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
   value?: ValueBlock | null;
+  /** True when Podcast Index lists a value block for this show. A DISPLAY hint for
+   *  the ⚡ V4V stamp and nothing else: it names nobody and opens no BOOST, so a
+   *  show can carry it and still have no BOOST, because only its feed names a payee.
+   *  Read it through `carriesV4V`. */
+  v4vHint?: boolean;
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
   funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
   nostrNpubs?: FeedNpub[]; // <podcast:txt purpose="nostr"> — the show's own npub(s), from RSS

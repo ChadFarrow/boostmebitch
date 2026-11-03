@@ -247,5 +247,20 @@ section('9. A slow answer cannot swap the payee under an open modal');
   await closeDialog();
 }
 
+section('10. The V4V stamp is a label from Podcast Index, and it names nobody');
+{
+  // Hell Money's RSS has no value tag, and Podcast Index lists a block for it.
+  const hell = 'bacbf97f-e9a4-5ebe-922c-731897da0188';
+  const { podcast } = await fetch(`${APP}/api/by-guid?guid=${hell}`).then((r) => r.json());
+  t.equal('Podcast Index\'s record gives the hint', podcast.v4vHint, true);
+  t.equal('and no payee', 'value' in podcast, false);
+  // A show with a podroll puts PI records on screen, so the stamp has somewhere to show.
+  const bowl = '2d418249-453a-5714-8abc-5b657570b641';
+  await send('Page.navigate', { url: `${APP}/?podcast=${bowl}` });
+  // The podroll loads when it scrolls into view.
+  const stamps = await until(`() => { window.scrollTo(0, document.body.scrollHeight); const n = [...document.querySelectorAll('.stamp')].filter((s) => s.textContent.includes('V4V')).length; return n || null; }`, 45000);
+  t.ok('a podroll row shows the stamp', !!stamps, `saw ${stamps}`);
+}
+
 console.log(`\n${t.fails ? `${t.fails} of ${t.count} checks FAILED.` : `All ${t.count} checks passed.`}`);
 await exit(t.fails ? 1 : 0);

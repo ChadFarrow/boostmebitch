@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -923,6 +923,21 @@ console.log('\nA row no feed has answered for is not a row with no value block')
     else fail(`boostGate: ${label}: got ${g.reason}/${g.hasValue}, want ${reason}/${hasValue}`);
   }
 
+  // The ⚡ V4V stamp may read Podcast Index. It is a yes or no, and nothing that pays
+  // may read it: a hint that opened BOOST would be PI's block by another name.
+  const HINTED = wire({ id: 9, podcastGuid: 'album', v4vHint: true });
+  if (carriesV4V(HINTED)) ok('carriesV4V: Podcast Index\'s hint shows the stamp');
+  else fail('carriesV4V: the hint did not show the stamp');
+  if (carriesV4V(wire({ id: 9, value: BLOCK }))) ok('carriesV4V: the feed\'s own block shows the stamp');
+  else fail('carriesV4V: the feed\'s block did not show the stamp');
+  if (!carriesV4V(wire({ id: 9, value: null }))) ok('carriesV4V: no hint and no block shows no stamp');
+  else fail('carriesV4V: a stamp with no hint and no block');
+  const hintGate = boostGate(row({ value: null }), HINTED);
+  if (!hintGate.hasValue && !hintGate.value) ok('the hint opens no BOOST, and names nobody');
+  else fail(`the hint opened BOOST: ${JSON.stringify(hintGate)}`);
+  if (payableValue(row({}), HINTED) === undefined) ok('payableValue does not read the hint');
+  else fail('payableValue read the hint');
+
   const stored = { episode: { ...row({ value: BLOCK, valueTimeSplits: [{ startTime: 0 }] }), liveValueState: 'unread' }, podcast: { ...SHOW, value: BLOCK }, at: 5 };
   const clean = withoutStoredValue(stored);
   if (!('value' in clean.episode) && !('valueTimeSplits' in clean.episode) && !('value' in clean.podcast)
@@ -941,22 +956,28 @@ console.log('\nNothing server-side reads a payee from anywhere but an RSS docume
   // reads of Podcast Index's value block and its time splits, and one line put
   // back in either pays through a copy the feed never stated. No type catches it:
   // the field is optional, so it type-checks and reads as a working BOOST.
+  // `piListsValue` is the one allowed read, because it answers with a boolean.
   const code = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|\s)\/\/.*$/gm, '$1');
+    .replace(/(^|\s)\/\/.*$/gm, '$1')
+    .replace(/function piListsValue[\s\S]*?\n}\n/, '');
   const banned = [
     ['lib/pi.ts', /\bnormalizeValue\b/, 'a reader of PI\'s value block'],
-    ['lib/pi.ts', /\b[fe]\.value\b/, 'a read of PI\'s value block'],
+    ['lib/pi.ts', /\b[fe]\??\.value\b/, 'a read of PI\'s value block outside `piListsValue`'],
     ['lib/pi.ts', /\.timesplits\b/, 'a read of PI\'s time splits'],
     ['lib/pi-batch.ts', /\bfillTrackValues\b/, 'the playlist fill from PI\'s album block'],
     ['lib/playlist-db.ts', /\bvalues\b/, 'the playlist database as a source of payees'],
     ['lib/playlist-db-map.ts', /\bdbValueBlock\b/, 'the playlist database as a source of payees'],
     ['app/api/playlist/route.ts', /\bdb\??\.values\b/, 'the playlist database as a source of payees'],
     ['lib/downloads/downloads-db.ts', /\br\.value(TimeSplits)?\b/, 'a download record as a source of payees'],
+    ['lib/v4v/boost.ts', /\bv4vHint\b/, 'a read of the display hint'],
+    ['lib/v4v/streaming.ts', /\bv4vHint\b/, 'a read of the display hint'],
+    ['components/boost-modal/index.tsx', /\bv4vHint\b/, 'a read of the display hint'],
+    ['components/boost-all-modal.tsx', /\bv4vHint\b/, 'a read of the display hint'],
   ];
   for (const [rel, re, what] of banned) {
     if (re.test(code(rel))) fail(`${rel} contains ${what} (${re})`);
-    else ok(`${rel}: no ${what}`);
+    else ok(`${rel}: clean of ${what}`);
   }
   // And the other half: every stored copy that can reach `current` drops its payee.
   // `bmb:now_playing` shipped without it, and an old block reached the modal.

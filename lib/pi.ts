@@ -152,6 +152,17 @@ function numOrUndef(v: unknown): number | undefined {
 
 // One canonical mapping from PI feed shape → our Podcast type. Used by every
 // fetch endpoint so a new field is added in one place.
+/**
+ * Whether Podcast Index lists a value block for this show, for the ⚡ V4V stamp.
+ * The ONE read of PI's `value`, and it answers with a boolean so that no payee can
+ * leave here. PI writes `{ model, destinations }`; a record the read index normalized
+ * carries `recipients`.
+ */
+function piListsValue(f: any): boolean {
+  const block = f?.value;
+  return !!(block?.destinations?.length || block?.recipients?.length);
+}
+
 function buildPodcast(f: any): Podcast {
   return {
     id: f.id,
@@ -175,6 +186,7 @@ function buildPodcast(f: any): Podcast {
     artwork: f.artwork && f.artwork !== f.image ? f.artwork : undefined,
     url: f.url,
     medium: typeof f.medium === 'string' && f.medium.length > 0 ? f.medium : undefined,
+    v4vHint: piListsValue(f) || undefined,
     funding: fundingFromPi(f),
   };
 }

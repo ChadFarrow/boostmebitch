@@ -7,7 +7,7 @@
 // `showV4VStamp` is on for search results (where the value-block is known)
 // and off for favorites (the cache only carries metadata, not value).
 import type { Podcast } from '@/lib/types';
-import { isPlaylistMedium } from '@/lib/util';
+import { carriesV4V, isPlaylistMedium } from '@/lib/util';
 import { PodcastCover } from '../podcast-cover';
 import { FavHeart } from '../fav-heart';
 
@@ -96,7 +96,7 @@ export function PodcastRow({
             {isPlaylistMedium(podcast) && (
               <span className="stamp text-muted border-muted/40">♫ PLAYLIST</span>
             )}
-            {showV4VStamp && podcast.value && (
+            {showV4VStamp && carriesV4V(podcast) && (
               <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
             )}
           </div>
