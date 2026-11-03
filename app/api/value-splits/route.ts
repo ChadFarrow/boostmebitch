@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { PI_EPISODE_MAX, getEpisodes, getPodcast, getRssItemValueTimeSplits, resolveValueTimeSplits } from '@/lib/pi';
+import { withRemoteFeedMediums } from '@/lib/pi-batch';
 import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { hasValueRecipients } from '@/lib/util';
@@ -43,7 +44,7 @@ export async function GET(req: Request) {
     const raw = answer.splits;
     if (!raw) return NextResponse.json({ error: 'episode not found' }, { status: 404 });
     if (!raw.length) return NextResponse.json({ splits: [] });
-    const splits = await resolveValueTimeSplits(raw);
+    const splits = await withRemoteFeedMediums(await resolveValueTimeSplits(raw));
     // A window whose album feed did not answer has no payee YET. An hour of CDN
     // would keep that gap after the host came back, and each window is now a feed
     // read that can fail on its own.

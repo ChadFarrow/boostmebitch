@@ -118,6 +118,7 @@ interface FoundItem {
   itemXml: string;
   title?: string;
   image?: string;
+  durationText?: string;
 }
 
 function findItemByGuid(xml: string, itemGuid: string): FoundItem | null {
@@ -133,10 +134,12 @@ function findItemByGuid(xml: string, itemGuid: string): FoundItem | null {
     const image =
       (itunesImg ? readAttr(itunesImg.attrs, 'href') : undefined)
       ?? (rssImageUrl?.inner.trim() || undefined);
+    const duration = firstBlock(itemXml, 'itunes:duration');
     return {
       itemXml,
       title: title?.inner.trim(),
       image,
+      durationText: duration && !duration.selfClosing ? duration.inner.trim() : undefined,
     };
   }
   return null;
@@ -213,6 +216,9 @@ export interface ResolvedRemoteItem {
   value: ValueBlock;
   title?: string;
   image?: string;
+  /** The item's `<itunes:duration>` as the feed wrote it, seconds or a clock.
+   *  `lib/pi.ts` holds the parser, and this module must not import that file. */
+  durationText?: string;
   /**
    * True when the item was reached by WALKING a publisher feed's remoteItems —
    * i.e. the `feedGuid` the caller resolved from names the publisher, not the
@@ -245,10 +251,11 @@ export interface ResolvedRemoteItem {
 function directHit(xml: string, itemGuid: string): ResolvedRemoteItem | null {
   const direct = findItemByGuid(xml, itemGuid);
   if (!direct) return null;
+  const { title, image, durationText } = direct;
   const itemValue = extractValueBlock(direct.itemXml);
-  if (itemValue) return { value: itemValue, title: direct.title, image: direct.image };
+  if (itemValue) return { value: itemValue, title, image, durationText };
   const channelValue = extractValueBlock(channelScope(xml));
-  if (channelValue) return { value: channelValue, title: direct.title, image: direct.image };
+  if (channelValue) return { value: channelValue, title, image, durationText };
   return null;
 }
 
@@ -321,14 +328,14 @@ export async function resolveRemoteItemFromRss(
       const itemValue = extractValueBlock(found.itemXml);
       if (itemValue) {
         return {
-          value: itemValue, title: found.title, image: found.image,
+          value: itemValue, title: found.title, image: found.image, durationText: found.durationText,
           viaPublisher: true, albumFeedGuid,
         };
       }
       const channelValue = extractValueBlock(channelScope(albumXml));
       if (channelValue) {
         return {
-          value: channelValue, title: found.title, image: found.image,
+          value: channelValue, title: found.title, image: found.image, durationText: found.durationText,
           viaPublisher: true, albumFeedGuid,
         };
       }

@@ -20,6 +20,10 @@ import { resolvePlaybackRate, speedKeyFor, useApp } from '@/lib/store';
  * the OLD show's speed to the new source first. One listener also covers every
  * writer of `current` — `play`, `cue`, `stepTo`, the queue paths and the two
  * reveals.
+ *
+ * The store's value is the speed SET. A track feed has no key, so it resolves to
+ * the global speed here and <Player> plays it at 1× anyway, as it does a song
+ * inside an episode (`useMusicHold`). Neither ever writes the store's speed.
  */
 export function useShowSpeed(): void {
   useEffect(() => useApp.subscribe((s, prev) => {

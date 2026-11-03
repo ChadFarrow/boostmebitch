@@ -1965,11 +1965,17 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
   // URL. The payee only ever comes from the feed. A throw here is how
   // `resolveValueTimeSplits`' probe learns that PI is down.
   const ep = await getEpisodeByGuid(split.remoteItem.feedGuid, split.remoteItem.itemGuid);
+  // The track's own length, on EVERY way out below. It is independent of whether
+  // the item could be paid: an item PI holds with no value block still has a
+  // length, and a song still plays at 1× (`musicHoldSpans`, lib/util.ts).
+  const piLength = ep?.duration && ep.duration > 0 ? ep.duration : undefined;
   // What PI's record can say about the track, with no payee: a window whose album
   // feed is gone still shows the song that is playing.
-  const named: ValueTimeSplit = ep
-    ? { ...split, title: ep.title, image: ep.image, feedId: ep.feedId, feedTitle: ep.feedTitle, episodeGuid: ep.guid }
-    : split;
+  const named: ValueTimeSplit = {
+    ...split,
+    ...(ep ? { title: ep.title, image: ep.image, feedId: ep.feedId, feedTitle: ep.feedTitle, episodeGuid: ep.guid } : {}),
+    ...(piLength ? { trackDuration: piLength } : {}),
+  };
   // The RSS chain covers two more cases on top of the ordinary one:
   //   1. PI knows the feed but hasn't crawled the specific item
   //   2. The host's valueTimeSplit feedGuid points at a publisher feed
@@ -1983,8 +1989,10 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
     if (!feedUrl) return named;
     const rss = await resolveRemoteItemFromRss(feedUrl, split.remoteItem.itemGuid);
     if (!rss) return named;
+    const rssLength = piLength ?? parseItunesDuration(rss.durationText);
     return {
       ...named,
+      ...(rssLength ? { trackDuration: rssLength } : {}),
       value: rss.value,
       // The ALBUM's title, not the show's, is `feedTitle` — see
       // ValueTimeSplit.feedTitle. Only PI's record can supply it: ResolvedRemoteItem

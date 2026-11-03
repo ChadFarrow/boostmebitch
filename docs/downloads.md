@@ -342,7 +342,8 @@ APP from deciding to delete; this is the listener deciding, once, in advance.
   skips anything `playsAsTracks` while it is playing. **The per-show speed key
   asks the same record** — `downloadManager.feedMediumFor`, read by
   `speedKeyFor` (`lib/store.ts`) — so an album track played from `/downloads`
-  saves no speed for its album (see [`ui.md`](ui.md), "Playback speed").
+  saves no speed for its album. `isMusicItem` asks it too, so that track plays
+  at 1× with no speed control (see [`ui.md`](ui.md), "Music plays at 1×").
 - **The bytes go; the playing element does not notice.** `<Player>` holds a
   blob URL for the file and revokes it only when the next source attaches, so
   a replay of the episode that just ended still plays. Measured in Chromium
