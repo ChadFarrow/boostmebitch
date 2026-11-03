@@ -210,7 +210,9 @@ if (MODE === 'repro') {
   log('queued', await js(pressQueue));
   await send('Page.navigate', { url: `${ORIGIN}/listen` }); await wait(8000);
   log('instrument', await js(INSTRUMENT));
-  await js(`document.querySelector('button[aria-label="Play"]').click(), 1`, { userGesture: true });
+  // The queue row, never `button[aria-label="Play"]`: that also matches the mini-player's
+  // Play when an item is already current, which resumes that item instead of the head.
+  await js(`[...document.querySelectorAll('button[aria-label^="Play "]')].find((b) => !b.closest('[data-mini-player]')).click(), 1`, { userGesture: true });
   for (let i = 0; i < 30; i++) {
     const s = await js(`(() => { const a = document.querySelector('audio'); return a && !a.paused && a.currentTime > 0; })()`);
     if (s === true) break;
