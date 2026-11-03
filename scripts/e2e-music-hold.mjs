@@ -293,11 +293,12 @@ if (want(6)) {
   }
 
   const answer = await js(`fetch('/api/value-splits?feedId=${HGH_FEED}&episodeId=${HGH122_ID}').then((r) => r.json())`);
-  const bad = answer?.splits?.find((x) => x.startTime === 1862);
+  // `Math.round`: the marker comes from the RSS now, which writes 1861.797.
+  const bad = answer?.splits?.find((x) => Math.round(x.startTime) === 1862);
   t.equal('/api/value-splits gives the bad marker its song\'s length', bad?.trackDuration, 205);
   t.equal('and its feed\'s medium', bad?.feedMedium, 'music');
   t.equal('and leaves the host\'s declaration empty', bad?.remoteItem?.medium, undefined);
-  t.equal('and keeps the bad length, which pays people', bad?.duration, 338617);
+  t.equal('and keeps the bad length, which pays people', Math.round(bad?.duration), 338617);
   t.equal('and drops no marker', answer?.splits?.length, 14);
 
   await seedSpeed('2');

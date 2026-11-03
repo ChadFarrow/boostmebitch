@@ -184,7 +184,7 @@ export async function GET(req: Request) {
       // and freezing the survivors into a shared cache for five minutes (and
       // fifteen with stale-while-revalidate) serves that shortfall to everyone
       // long after the transient host failure that caused it. /api/playlist
-      // applies the same rule with `couldNotAsk > 0 || unaskedValues > 0`.
+      // applies the same rule with `couldNotAsk > 0`.
       { headers: couldNotAskPi || feeds.length < albumUrls.length ? NO_STORE : PUBLISHER_CACHE },
     );
   }, 'publisher resolution failed');

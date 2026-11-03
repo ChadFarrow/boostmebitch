@@ -73,6 +73,7 @@ interface AppState {
   // A downloaded episode's stored block may name a payee the feed has since
   // dropped; `payableValue` reads `episode.value` first, so the stale copy
   // outranks the feed's own.
+  markCurrentValueUnread: (guid: string) => void;
   refreshCurrentValue: (guid: string, value: ValueBlock | null | undefined, vts: ValueTimeSplit[] | undefined) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
   /**
@@ -782,6 +783,13 @@ export const useApp = create<AppState>((set, get) => ({
       if (value !== undefined && ep.value !== value) { ep.value = value; changed = true; }
       if (vts !== undefined && ep.valueTimeSplits !== vts) { ep.valueTimeSplits = vts; changed = true; }
       return changed ? { current: { ...s.current, episode: ep } } : {};
+    }),
+  // The feed did not answer, so BOOST says that rather than "no value block".
+  markCurrentValueUnread: (guid) =>
+    set((s) => {
+      if (!s.current || !guid || s.current.episode.guid !== guid) return {};
+      if (s.current.episode.value !== undefined) return {};
+      return { current: { ...s.current, episode: { ...s.current.episode, liveValueState: 'unread' } } };
     }),
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
   // Both step through `nextPlayableIndex`, never `idx ± 1`. A playlist's queue

@@ -247,9 +247,6 @@ export interface ResolvedRemoteItem {
  * `<podcast:value>` once, on the channel, and let every track inherit it — so a
  * reader that only looks inside `<item>` finds nothing on the majority of real
  * albums and reports a track as unpayable while its splits sit one level up.
- *
- * Split out because two callers need exactly this and only one of them may have
- * the publisher walk below it: see `resolveItemValueFromRss`.
  */
 function directHit(xml: string, itemGuid: string): ResolvedRemoteItem | null {
   const direct = findItemByGuid(xml, itemGuid);
@@ -260,32 +257,6 @@ function directHit(xml: string, itemGuid: string): ResolvedRemoteItem | null {
   const channelValue = extractValueBlock(channelScope(xml));
   if (channelValue) return { value: channelValue, title, image, durationText };
   return null;
-}
-
-/**
- * The value block for one item of a feed we ALREADY know is that item's parent.
- *
- * **Deliberately has no publisher walk, and that is the whole reason it is a
- * separate export.** `resolveRemoteItemFromRss` falls through to fetching up to
- * `MAX_ALBUM_FEEDS` album feeds when the URL turns out to name a publisher, and
- * its own comment says why that is capped: the caller's list is feed-supplied,
- * so nested, the two fan-outs MULTIPLY. `/api/playlist` calls this once per
- * unvalued track on a page of up to 100, having resolved each track's real
- * parent feed through Podcast Index first — so there is no publisher to walk,
- * and a walk reachable from there would turn one page into thousands of
- * outbound fetches.
- *
- * Returns null when the feed does not hold the item, or holds it with no value
- * block at any level. Rides the same 5-minute `fetchFeedXml` cache, so N tracks
- * from one album cost one fetch.
- */
-export async function resolveItemValueFromRss(
-  feedUrl: string,
-  itemGuid: string,
-): Promise<ValueBlock | null> {
-  const xml = await fetchFeedXml(feedUrl);
-  if (!xml) return null;
-  return directHit(xml, itemGuid)?.value ?? null;
 }
 
 /**

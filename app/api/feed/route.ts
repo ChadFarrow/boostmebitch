@@ -197,12 +197,14 @@ export async function GET(req: Request) {
       const rss = e.guid ? enrichMap.get(e.guid) : undefined;
       return {
         ...e,
-        // WHO GETS PAID. The feed's own block outranks PI's copy whenever the
-        // feed was read and lists this item — PI can hold a stale ITEM block
-        // while its channel block is current, and that stale block used to win
-        // here. An item with no block of its own inherits the channel's.
+        // WHO GETS PAID. Only the RSS names a payee: PI's copy is not read at all.
+        // An item with no block of its own inherits the channel's, and an unread
+        // feed leaves `value` undefined, which means NOT READ, never "none".
         // `feedItemValue` (lib/util.ts, pinned by check:musicl) has the cases.
-        value: feedItemValue(!!rssRead, rss, feedValue, e.value, podcast.value),
+        value: feedItemValue(!!rssRead, rss, feedValue, e.value),
+        // Who gets paid during a song, from the same read. `e.valueTimeSplits`
+        // is only ever RSS too: a live item, or an item PI has not crawled.
+        valueTimeSplits: rss?.valueTimeSplits ?? e.valueTimeSplits,
         // socialInteract and contentEncoded come from RSS — PI doesn't index them.
         socialInteract: e.socialInteract ?? rss?.socialInteract,
         contentEncoded: rss?.contentEncoded,
@@ -264,12 +266,9 @@ export async function GET(req: Request) {
     // `channelSlice` of the live feed moments ago; prefer it whenever it exists.
     if (feedMedium) podcast.medium = feedMedium;
     // Same rule for the CHANNEL value block — the show-level BOOST. A read feed
-    // is the authority when it DECLARES a block (or its absence). But a feed
-    // whose host does not emit <podcast:value> at all (Anchor, Spotify, etc.)
-    // returns undefined — keep PI's block for those, because the tag's absence
-    // is not a publisher decision.  feedValue null = tag present, empty/no
-    // recipients → the publisher took V4V down.
-    if (rssRead && feedValue !== undefined) podcast.value = feedValue;
+    // is the authority, including when it declares no block: a publisher who
+    // took V4V down is not paid through PI's leftover copy.
+    if (rssRead) podcast.value = feedValue ?? null;
     // Same reasoning for a BLANK title. PI can hold a feed it crawled badly with
     // `title: ""`, which renders as an invisible row in search results and a
     // headerless show page — "I don't see it listed", for a feed that is right

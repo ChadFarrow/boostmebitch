@@ -373,8 +373,6 @@ export class DownloadManager {
       duration: episode.duration,
       datePublished: episode.datePublished,
       enclosureLength: episode.enclosureLength,
-      value: episode.value,
-      valueTimeSplits: episode.valueTimeSplits,
       chaptersUrl: episode.chaptersUrl,
       transcriptUrl: episode.transcriptUrl,
       transcriptType: episode.transcriptType,

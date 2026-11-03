@@ -4,7 +4,7 @@ import { useApp } from '@/lib/store';
 import { resolvePodcastByGuid, resolvePodcastByFeedUrl, piMaybeUp, warmPodcastCache } from '@/lib/podcast-meta';
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel';
 import type { Podcast, PodrollItem } from '@/lib/types';
-import { authorLine, mapLimit, PI_FANOUT } from '@/lib/util';
+import { authorLine, carriesV4V, mapLimit, PI_FANOUT } from '@/lib/util';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './fav-heart';
 
@@ -150,7 +150,7 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
               </div>
             </button>
             <div className="flex items-center justify-between gap-2 mt-auto pt-1">
-              {p.value ? (
+              {carriesV4V(p) ? (
                 <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
               ) : (
                 <span />

@@ -1,7 +1,7 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
 import { PiHttpError, isPiMiss } from './pi-error';
-import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
+import type { ItemPayment, Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
 import {
   readAttr,
   decodeXmlText,
@@ -150,39 +150,19 @@ function numOrUndef(v: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-function normalizeValue(v: any): ValueBlock | null {
-  // Already in OUR shape — pass it through rather than answering null.
-  //
-  // PI's shape is `{ model, destinations }` and ours is `{ type, method,
-  // suggested, recipients }`, so a record that has been through here once has
-  // neither `model` nor `destinations` and the test below would DELETE its
-  // value block. That matters because the read index caches Podcast Index's
-  // raw answer and hands it back to `lib/pi-batch.ts`, which now normalizes
-  // it here; if that cache is ever changed to store normalized records
-  // instead, this branch is what stops the same call silently unvaluing every
-  // feed it touches. Cheap, and the alternative failure is invisible.
-  if (Array.isArray(v?.recipients)) return v as ValueBlock;
-  if (!v?.model || !v?.destinations?.length) return null;
-  const recipients: ValueRecipient[] = v.destinations.map((d: any) => ({
-    // PI mirrors the feed's attribute string verbatim, entities included.
-    name: typeof d.name === 'string' ? decodeXmlEntities(d.name) : d.name,
-    type: d.type ?? 'node',
-    address: d.address,
-    customKey: d.customKey ? String(d.customKey) : undefined,
-    customValue: d.customValue ? String(d.customValue) : undefined,
-    split: Number(d.split) || 0,
-    fee: !!d.fee,
-  }));
-  return {
-    type: v.model.type ?? 'lightning',
-    method: v.model.method ?? 'keysend',
-    suggested: v.model.suggested,
-    recipients,
-  };
-}
-
 // One canonical mapping from PI feed shape → our Podcast type. Used by every
 // fetch endpoint so a new field is added in one place.
+/**
+ * Whether Podcast Index lists a value block for this show, for the ⚡ V4V stamp.
+ * The ONE read of PI's `value`, and it answers with a boolean so that no payee can
+ * leave here. PI writes `{ model, destinations }`; a record the read index normalized
+ * carries `recipients`.
+ */
+function piListsValue(f: any): boolean {
+  const block = f?.value;
+  return !!(block?.destinations?.length || block?.recipients?.length);
+}
+
 function buildPodcast(f: any): Podcast {
   return {
     id: f.id,
@@ -206,7 +186,7 @@ function buildPodcast(f: any): Podcast {
     artwork: f.artwork && f.artwork !== f.image ? f.artwork : undefined,
     url: f.url,
     medium: typeof f.medium === 'string' && f.medium.length > 0 ? f.medium : undefined,
-    value: normalizeValue(f.value),
+    v4vHint: piListsValue(f) || undefined,
     funding: fundingFromPi(f),
   };
 }
@@ -240,7 +220,7 @@ export function podcastFromPiFeed(f: any): Podcast | null {
  * derives. `value` is the one that costs money: PI sends
  * `{ model, destinations }`, `hasValueRecipients` reads `.recipients`, so
  * every album the index answered for tested as having NO splits.
- * `valueTimeSplits` (PI calls the field `timesplits`), `transcriptUrl`,
+ * `transcriptUrl`,
  * `socialInteract`, `season` and the `image`/`artwork` fallbacks were all
  * simply absent. None of it reproduces locally, because it needs the index to
  * be configured AND warm.
@@ -465,29 +445,6 @@ export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   }
 }
 
-// PI exposes valueTimeSplits as a flat top-level `timesplits` array on each
-// episode (each entry has feedGuid/itemGuid/medium directly, NOT under a
-// nested remoteItem). We keep the consumer-facing ValueTimeSplit shape with
-// remoteItem nested because that mirrors the Podcasting 2.0 RSS structure
-// and matches how downstream code (boost-all-modal, /api/value-splits) reads
-// the data.
-function parseRawValueTimeSplits(raw: any): ValueTimeSplit[] {
-  if (!Array.isArray(raw) || !raw.length) return [];
-  return raw
-    .filter((s: any) => s?.feedGuid)
-    .map((s: any) => ({
-      startTime: Number(s.startTime) || 0,
-      duration: Number(s.duration) || 0,
-      remoteStartTime: s.remoteStartTime != null ? Number(s.remoteStartTime) : undefined,
-      remotePercentage: s.remotePercentage != null ? Number(s.remotePercentage) : undefined,
-      remoteItem: {
-        feedGuid: s.feedGuid,
-        itemGuid: s.itemGuid,
-        medium: s.medium || undefined,
-      },
-    }));
-}
-
 // Normalise a raw URI field from <podcast:socialInteract> to a `nostr:` URI.
 // Some publishers use https://njump.me/<bech32> instead of the spec-compliant
 // `nostr:<bech32>` form — extract the bech32 from either.
@@ -556,8 +513,6 @@ function buildEpisode(e: any): Episode {
     season: typeof e.season === 'number' && e.season > 0 ? e.season : null,
     chaptersUrl: typeof e.chaptersUrl === 'string' && e.chaptersUrl.length > 0 ? e.chaptersUrl : undefined,
     ...transcriptFromPi(e),
-    value: normalizeValue(e.value),
-    valueTimeSplits: parseRawValueTimeSplits(e.timesplits),
     socialInteract: parseNostrSocialInteracts(e.socialInteract),
   };
 }
@@ -1009,12 +964,10 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
   return out;
 }
 
-function parseValueBlock(xml: string): ValueBlock | null | undefined {
+function parseValueBlock(xml: string): ValueBlock | null {
   const vBlock = firstBlock(xml, 'podcast:value');
-  if (!vBlock) return undefined;
-  // A self-closing <podcast:value/> names no recipient, so it is no block —
-  // but the TAG IS PRESENT, which means the publisher spoke. null, not undefined.
-  if (vBlock.selfClosing) return null;
+  // A self-closing <podcast:value/> names no recipient, so it is no block.
+  if (!vBlock || vBlock.selfClosing) return null;
   const vAttrs = vBlock.attrs;
   // <podcast:valueTimeSplit> is a CHILD of <podcast:value>, and it may carry
   // its own inline <podcast:valueRecipient> tags. Strip those blocks before
@@ -1069,13 +1022,21 @@ function firstRemoteItem(xml: string): ValueTimeSplitRemoteItem | undefined {
 }
 
 /**
+ * The windows an ordinary item's boost and streaming engine can pay: the ones that
+ * name a remote item. **A window with inline recipients stays the show's.** Nothing
+ * else keys it: `trackBucket` names a track by its remote item, so inline windows
+ * collapse into one bucket, and the last window's people would be paid for all of
+ * them. A live item keeps them, because the live path builds its own target.
+ */
+function itemValueTimeSplits(xml: string): ValueTimeSplit[] {
+  return parseValueTimeSplitsFromRss(xml).filter((s) => s.remoteItem?.feedGuid);
+}
+
+/**
  * Parse <podcast:valueTimeSplit> children out of raw RSS.
  *
- * Podcast Index surfaces splits as its own flat `timesplits` JSON (see
- * parseRawValueTimeSplits), so this is the only path that reads the actual
- * tag — needed because PI never indexes a live item's children. The output
- * shape is deliberately identical to parseRawValueTimeSplits' so downstream
- * code can't tell where a split came from.
+ * Podcast Index's own flat `timesplits` JSON is not read, so this is the only path:
+ * tag, which is also what a live item needs, because PI never indexes its children.
  */
 function parseValueTimeSplitsFromRss(xml: string): ValueTimeSplit[] {
   const out: ValueTimeSplit[] = [];
@@ -1322,10 +1283,12 @@ interface RssEpisodeEnrichment {
   transcriptType?: string;
   link?: string;
   alternateEnclosures?: AlternateEnclosure[];
-  /** The item's own `<podcast:value>`: a block when present, null when the
-   *  tag was present but empty/self-closing, undefined when the tag was
-   *  absent (the host does not emit it). */
-  value: ValueBlock | null | undefined;
+  /** The item's own `<podcast:value>`, or null when it declares none. Read
+   *  from the live feed because Podcast Index can hold a stale one — see
+   *  `feedItemValue` (lib/util.ts). */
+  value: ValueBlock | null;
+  /** The item's `<podcast:valueTimeSplit>` windows. Absent when it has none. */
+  valueTimeSplits?: ValueTimeSplit[];
 }
 
 export interface RssFeedEnrichment {
@@ -1335,8 +1298,7 @@ export interface RssFeedEnrichment {
   /** True when the feed document was read. Every other field is only an
    *  answer about the feed when this is. */
   rssRead?: boolean;
-  /** The channel `<podcast:value>`: a block when present, null when the tag
-   *  was present but empty, undefined when the host does not emit it. */
+  /** The channel `<podcast:value>`, or null when the channel declares none. */
   feedValue?: ValueBlock | null;
   feedMedium?: string;
   feedPodroll?: PodrollItem[];
@@ -1567,10 +1529,11 @@ export async function getRssEpisodeEnrichment(
     // stale one. Every item gets an entry, enriched or not, so the route can
     // tell "the feed lists this item and gives it no block" from "the scan
     // never reached it" — only the first is an answer about the payee.
-    // undefined = tag absent (host doesn't emit it), null = tag present but
-    // empty/self-closing (publisher removed V4V).
     const value = parseValueBlock(inner);
-    episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, value });
+    // Who gets paid during a song, for the same reason. Guarded so a long feed
+    // with no windows does not run the block scan once per item.
+    const valueTimeSplits = inner.includes(VALUE_TIME_SPLIT_TAG) ? itemValueTimeSplits(inner) : undefined;
+    episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, value, valueTimeSplits });
   }
   const feedValue = parseValueBlock(channelXml);
   return { episodes, rssRead: true, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle };
@@ -1831,7 +1794,7 @@ export async function getRssEpisodesNewerThan(
     if (date == null || date <= newerThan) continue;
     const ep = episodeFromRssItem(item.inner, rssUrl, i, feedId);
     if (!ep || !ep.enclosureUrl) continue;
-    const valueTimeSplits = parseValueTimeSplitsFromRss(item.inner);
+    const valueTimeSplits = itemValueTimeSplits(item.inner);
     out.push(valueTimeSplits.length ? { ...ep, valueTimeSplits } : ep);
   }
   return out;
@@ -1849,14 +1812,46 @@ export async function getRssEpisodesNewerThan(
 export async function getRssItemValueTimeSplits(
   rssUrl: string,
   episodeId: number,
-): Promise<ValueTimeSplit[] | null> {
-  const xml = await fetchFeedXml(rssUrl);
-  if (xml == null) return null;
+  itemGuid?: string,
+): Promise<{ read: false } | { read: true; splits: ValueTimeSplit[] | null }> {
+  const xml = await fetchFeedXml(rssUrl).catch(() => null);
+  if (xml == null) return { read: false };
   for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
     const guid = extractText(item.inner, 'guid');
-    if (guid && -fnvHash(guid) === episodeId) return parseValueTimeSplitsFromRss(item.inner);
+    if (!guid) continue;
+    if (itemGuid ? guid === itemGuid : -fnvHash(guid) === episodeId) {
+      return { read: true, splits: itemValueTimeSplits(item.inner) };
+    }
   }
-  return null;
+  return { read: true, splits: null };
+}
+
+/**
+ * The payee of one item, out of its parent feed: the item's own block, else the
+ * channel's, else `null`. `{ read: false }` means the document never arrived,
+ * which is a different answer from a feed that names nobody.
+ *
+ * An item the scan does not find still inherits the channel, because that is
+ * what the feed says about any item with no block of its own. **A playlist or
+ * publisher feed is the exception:** its channel block belongs to the curator, so
+ * it never stands in for a track it merely lists (`payableValue`).
+ */
+export async function getItemPaymentFromRss(rssUrl: string, itemGuid: string): Promise<ItemPayment> {
+  const xml = await fetchFeedXml(rssUrl).catch(() => null);
+  if (xml == null) return { read: false };
+  const channelXml = channelSlice(xml);
+  const medium = extractText(channelXml, 'podcast:medium');
+  const listsOthers = isPlaylistMedium({ medium }) || medium?.toLowerCase() === 'publisher';
+  const channel = listsOthers ? null : parseValueBlock(channelXml);
+  for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
+    if (extractText(item.inner, 'guid') !== itemGuid) continue;
+    return {
+      read: true,
+      value: parseValueBlock(item.inner) ?? channel,
+      valueTimeSplits: itemValueTimeSplits(item.inner),
+    };
+  }
+  return { read: true, value: channel, valueTimeSplits: [] };
 }
 
 /** A `musicL` playlist's channel metadata and its track references. */
@@ -1960,49 +1955,45 @@ export async function getEpisodeByGuid(
 
 async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
   if (!split.remoteItem?.feedGuid || !split.remoteItem.itemGuid) return split;
+  // Podcast Index is the DIRECTORY here: the track's title and art, and the feed
+  // URL. The payee only ever comes from the feed. A throw here is how
+  // `resolveValueTimeSplits`' probe learns that PI is down.
   const ep = await getEpisodeByGuid(split.remoteItem.feedGuid, split.remoteItem.itemGuid);
   // The track's own length, on EVERY way out below. It is independent of whether
   // the item could be paid: an item PI holds with no value block still has a
   // length, and a song still plays at 1× (`musicHoldSpans`, lib/util.ts).
   const piLength = ep?.duration && ep.duration > 0 ? ep.duration : undefined;
-  const measured: ValueTimeSplit = piLength ? { ...split, trackDuration: piLength } : split;
-  if (ep?.value) {
-    return {
-      ...measured,
-      value: ep.value,
-      title: ep.title,
-      image: ep.image,
-      feedId: ep.feedId,
-      // The ALBUM's title, not the show's — see ValueTimeSplit.feedTitle. Only
-      // this branch can supply it: the RSS fallback below resolves an item out
-      // of a feed it may have reached through a publisher chain, and
-      // ResolvedRemoteItem carries no channel title, so it stays undefined
-      // there rather than being guessed at from the URL.
-      feedTitle: ep.feedTitle,
-      episodeGuid: ep.guid,
-    };
-  }
-  // PI didn't have the item — try the RSS chain. Two cases this rescues:
+  // What PI's record can say about the track, with no payee: a window whose album
+  // feed is gone still shows the song that is playing.
+  const named: ValueTimeSplit = {
+    ...split,
+    ...(ep ? { title: ep.title, image: ep.image, feedId: ep.feedId, feedTitle: ep.feedTitle, episodeGuid: ep.guid } : {}),
+    ...(piLength ? { trackDuration: piLength } : {}),
+  };
+  // The RSS chain covers two more cases on top of the ordinary one:
   //   1. PI knows the feed but hasn't crawled the specific item
   //   2. The host's valueTimeSplit feedGuid points at a publisher feed
   //      (medium=publisher) whose <podcast:remoteItem> entries name the
   //      actual album feed URLs we need to fetch.
-  // Both need the feed URL, which we get cheaply via /podcasts/byguid.
   try {
     const feedRes = await pi<any>(
       `/podcasts/byguid?guid=${encodeURIComponent(split.remoteItem.feedGuid)}`,
     );
     const feedUrl: string | undefined = feedRes.feed?.url;
-    if (!feedUrl) return measured;
+    if (!feedUrl) return named;
     const rss = await resolveRemoteItemFromRss(feedUrl, split.remoteItem.itemGuid);
-    if (!rss) return measured;
+    if (!rss) return named;
     const rssLength = piLength ?? parseItunesDuration(rss.durationText);
     return {
-      ...split,
+      ...named,
       ...(rssLength ? { trackDuration: rssLength } : {}),
       value: rss.value,
-      title: rss.title,
-      image: rss.image,
+      // The ALBUM's title, not the show's, is `feedTitle` — see
+      // ValueTimeSplit.feedTitle. Only PI's record can supply it: ResolvedRemoteItem
+      // carries no channel title, so it stays undefined rather than being guessed
+      // at from the URL.
+      title: ep?.title ?? rss.title,
+      image: ep?.image ?? rss.image,
       // Case 2 above is the one that matters here: the host's feedGuid named a
       // PUBLISHER, so it is not the track's parent and can't resolve it later.
       // `albumFeedGuid` is the real one when the album declared it, and `null`
@@ -2012,7 +2003,7 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
       parentFeedGuid: rss.viaPublisher ? rss.albumFeedGuid ?? null : undefined,
     };
   } catch {
-    return measured;
+    return named;
   }
 }
 
