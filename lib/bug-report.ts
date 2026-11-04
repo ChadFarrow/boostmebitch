@@ -1,3 +1,4 @@
+import { wordlist as bip39Words } from '@scure/bip39/wordlists/english.js';
 import { looksLikeSecretKey } from './nostr/npub-input';
 import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 
@@ -17,8 +18,10 @@ import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 //   string, a wallet balance or a URL query/fragment (`/amber-callback`'s
 //   fragment is a signer result). The modal shows the user every value it
 //   sends before they send it.
-// - Free text is refused if it holds a secret (`secretInReport`), in the modal
-//   AND in the route.
+//   The page path's npub segment is elided (`reportPath`).
+// - Free text is refused if it holds a secret (`secretInReport`: an nsec, an
+//   NWC string, a 64-hex key or a BIP-39 seed phrase), in the modal AND in the
+//   route.
 // - Every caller-supplied string is rendered inside a code fence, so it cannot
 //   @mention anyone, cross-reference another repo's issue, or draw markup,
 //   under the token owner's name — one unauthenticated POST must not notify
@@ -66,19 +69,56 @@ export type AppInfo = Partial<Record<AppInfoKey, string>>;
 export const MAX_ANSWER_CHARS = 4000;
 export const MAX_INFO_VALUE_CHARS = 400;
 
+export type ReportSecret = 'nsec' | 'nwc' | 'hex' | 'mnemonic';
+
+// A seed phrase is 12 to 24 words; 12 in a row is the shortest one there is.
+const MNEMONIC_RUN = 12;
+const BIP39 = new Set<string>(bip39Words);
+const HEX_KEY = /^(?:0x)?[0-9a-f]{64}$/i;
+// "1." / "2)" / "3:" numbering in a pasted seed list neither counts nor breaks a run.
+const NUMBERING = /^\d{1,2}[.):]?$/;
+
 // The issue is public, so a pasted key is burnt the moment it is filed. Every
 // whitespace-separated token is tested, because a key pasted into a sentence
 // is as public as one pasted alone. `looksLikeSecretKey` is a prefix test that
 // never decodes; an NWC string is a spending credential.
-export function secretInReport(text: string): 'nsec' | 'nwc' | null {
-  for (const raw of text.split(/\s+/)) {
+//
+// `typed` adds the two tests that cannot tell a secret from an ordinary value
+// by shape alone, and so run on what the USER TYPED only, never on the
+// snapshot: a 64-hex token (a raw private key — and also an event id or a
+// pubkey, which is why the refusal names the bech32 forms as the way round
+// it; feeds use sha256 hex as an episode guid, so the snapshot would refuse
+// every report about one), and a run of 12+ BIP-39 words (the Spark wallet's
+// seed, which is the whole wallet). English prose does not produce 12 list
+// words in a row: "the", "a", "to", "is" and "it" are not on the list.
+export function secretInReport(text: string, typed = true): ReportSecret | null {
+  let run = 0;
+  for (const raw of text.split(/[\s,;]+/)) {
     // Leading quotes and brackets: `"nsec1…"` and `(nsec1…)` are the same key.
     const token = raw.replace(/^[^a-z0-9]+/i, '');
     if (!token) continue;
     if (looksLikeSecretKey(token)) return 'nsec';
     if (token.toLowerCase().startsWith('nostr+walletconnect:')) return 'nwc';
+    if (!typed) continue;
+    const bare = token.replace(/[^a-z0-9]+$/i, '');
+    if (HEX_KEY.test(bare)) return 'hex';
+    if (NUMBERING.test(bare)) continue;
+    run = BIP39.has(bare.toLowerCase()) ? run + 1 : 0;
+    if (run >= MNEMONIC_RUN) return 'mnemonic';
   }
   return null;
+}
+
+/**
+ * The page path with any Nostr identity segment elided: `/npub/<npub>` and
+ * `/live/<npub>` name a person, and on the reporter's own profile that person
+ * is the reporter. The route re-runs it, because the POST is unauthenticated.
+ */
+export function reportPath(pathname: string): string {
+  return pathname
+    .split('/')
+    .map((seg) => (/^(?:npub1|nprofile1)/i.test(seg) ? '…' : seg))
+    .join('/');
 }
 
 /**
@@ -107,14 +147,18 @@ export function parseBugReport(
     const v = i[k];
     if (typeof v === 'string' && v) info[k] = v.slice(0, MAX_INFO_VALUE_CHARS);
   }
+  if (info.page) info.page = reportPath(info.page);
 
   // The NEWEST lines are kept: the end of the log is where the bug is.
   const log = (Array.isArray(r.log) ? r.log : [])
     .filter((l): l is string => typeof l === 'string' && isPlaybackLogLine(l))
     .slice(-PLAYBACK_LOG_CAP);
 
-  const all = [answers.happened, answers.expected, answers.steps, ...Object.values(info), ...log].join('\n');
-  if (secretInReport(all)) return { ok: false, error: 'the report contains a secret key or wallet string' };
+  const typed = [answers.happened, answers.expected, answers.steps].join('\n');
+  const app = [...Object.values(info), ...log].join('\n');
+  if (secretInReport(typed) || secretInReport(app, false)) {
+    return { ok: false, error: 'the report contains a secret key, seed phrase or wallet string' };
+  }
   return { ok: true, answers, info, log };
 }
 

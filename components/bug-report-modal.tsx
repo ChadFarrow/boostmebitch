@@ -14,6 +14,7 @@ import { playbackLogLines } from '@/lib/playback-log';
 import {
   APP_INFO_KEYS,
   MAX_ANSWER_CHARS,
+  reportPath,
   secretInReport,
   type AppInfo,
   type BugReportAnswers,
@@ -46,7 +47,7 @@ function takeSnapshot(): AppInfo {
   return {
     site: reportSite(BRAND.domain),
     build: BUILD_ID,
-    page: window.location.pathname,
+    page: reportPath(window.location.pathname),
     installedApp: window.matchMedia?.('(display-mode: standalone)').matches ? 'yes' : 'no',
     online: navigator.onLine ? 'yes' : 'no',
     viewport: `${window.innerWidth}×${window.innerHeight}`,
@@ -210,7 +211,11 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
         <p role="alert" className="mt-3 text-sm text-nostr">
           {secret === 'nsec'
             ? 'That looks like a Nostr secret key. Remove it: reports are public.'
-            : 'That looks like a wallet connection string. Remove it: reports are public.'}
+            : secret === 'hex'
+              ? 'That looks like a hex secret key. Remove it: reports are public. For a note or a profile, paste its note1… or npub1… form instead.'
+              : secret === 'mnemonic'
+                ? 'That looks like a wallet seed phrase. Remove it: reports are public.'
+                : 'That looks like a wallet connection string. Remove it: reports are public.'}
         </p>
       )}
       {status.kind === 'failed' && (
