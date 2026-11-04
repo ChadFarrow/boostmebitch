@@ -16,7 +16,8 @@ import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 // - The snapshot is a fixed ALLOWLIST of keys (`APP_INFO_KEYS`); the route
 //   drops anything else. It never carries the npub, a key, a connection
 //   string, a wallet balance or a URL query/fragment (`/amber-callback`'s
-//   fragment is a signer result). The modal shows the user every value it
+//   fragment is a signer result), nor what the person listens to or how
+//   their account is set up. The modal shows the user every value it
 //   sends before they send it.
 //   The page path's npub segment is elided (`reportPath`).
 // - Free text is refused if it holds a secret (`secretInReport`: an nsec, an
@@ -38,7 +39,16 @@ export interface BugReportAnswers {
   steps: string;
 }
 
-/** The snapshot's keys, in the order the issue lists them, with their labels. */
+/**
+ * The snapshot's keys, in the order the issue lists them, with their labels.
+ *
+ * App STATE only, never facts about the PERSON: no npub, key, connection
+ * string, balance or URL query, and also nothing that says what they listen
+ * to or how they set up their account — no now-playing title, feed or episode
+ * guid, position, favorites counts or signer type (all removed 2026-11-04 at
+ * the owner's request). `browser` is a coarse family (`coarseBrowser`), never
+ * the user-agent string. A key added here reaches a public issue.
+ */
 export const APP_INFO_KEYS = [
   ['site', 'Site'],
   ['build', 'Build'],
@@ -48,17 +58,11 @@ export const APP_INFO_KEYS = [
   ['viewport', 'Viewport'],
   ['browser', 'Browser'],
   ['signedIn', 'Signed in'],
-  ['signer', 'Signer'],
   ['wallets', 'Wallets connected'],
   ['boostRail', 'Boost rail'],
   ['streaming', 'Streaming sats'],
   ['favoritesSync', 'Favorites sync'],
-  ['favorites', 'Favorites'],
-  ['nowPlaying', 'Now playing'],
   ['medium', 'Medium'],
-  ['feedGuid', 'Feed guid'],
-  ['episodeGuid', 'Episode guid'],
-  ['position', 'Position'],
   ['playback', 'Playback'],
   ['live', 'Live status'],
 ] as const;
@@ -109,6 +113,44 @@ export function secretInReport(text: string, typed = true): ReportSecret | null 
   return null;
 }
 
+const BROWSERS = ['Edge', 'Samsung Internet', 'Opera', 'Firefox', 'Chrome', 'Safari'] as const;
+const SYSTEMS = ['Android', 'iOS', 'Windows', 'macOS', 'ChromeOS', 'Linux'] as const;
+const COARSE_BROWSER = new RegExp(
+  `^(?:${BROWSERS.join('|')}|Other browser)(?: \\d{1,4})?, (?:${SYSTEMS.join('|')}|Other OS)$`,
+);
+
+/**
+ * A user-agent reduced to browser family, major version and OS family, e.g.
+ * `Chrome 131, Android`. The full string carries the device model and minor
+ * versions, which narrow a public reporter down. The output is built from two
+ * fixed lists, so nothing from the input reaches the issue but one number.
+ * Idempotent: the route re-runs it on what the modal sent.
+ */
+export function coarseBrowser(ua: string): string {
+  if (COARSE_BROWSER.test(ua)) return ua;
+  const pick: [(typeof BROWSERS)[number], RegExp][] = [
+    ['Edge', /\bEdg(?:e|A|iOS)?\/(\d+)/],
+    ['Samsung Internet', /\bSamsungBrowser\/(\d+)/],
+    ['Opera', /\b(?:OPR|OPiOS)\/(\d+)/],
+    ['Firefox', /\b(?:Firefox|FxiOS)\/(\d+)/],
+    ['Chrome', /\b(?:Chrome|CriOS)\/(\d+)/],
+    ['Safari', /\bVersion\/(\d+)[^ ]* (?:Mobile\/\S+ )?Safari\//],
+  ];
+  let browser = 'Other browser';
+  for (const [name, re] of pick) {
+    const m = ua.match(re);
+    if (m) { browser = `${name} ${m[1].slice(0, 4)}`; break; }
+  }
+  const os = /\b(?:iPhone|iPad|iPod)\b/.test(ua) ? 'iOS'
+    : /\bAndroid\b/.test(ua) ? 'Android'
+      : /\bCrOS\b/.test(ua) ? 'ChromeOS'
+        : /\bWindows\b/.test(ua) ? 'Windows'
+          : /\bMac OS X\b|\bMacintosh\b/.test(ua) ? 'macOS'
+            : /\bLinux\b/.test(ua) ? 'Linux'
+              : 'Other OS';
+  return `${browser}, ${os}`;
+}
+
 /**
  * The page path with any Nostr identity segment elided: `/npub/<npub>` and
  * `/live/<npub>` name a person, and on the reporter's own profile that person
@@ -148,6 +190,7 @@ export function parseBugReport(
     if (typeof v === 'string' && v) info[k] = v.slice(0, MAX_INFO_VALUE_CHARS);
   }
   if (info.page) info.page = reportPath(info.page);
+  if (info.browser) info.browser = coarseBrowser(info.browser);
 
   // The NEWEST lines are kept: the end of the log is where the bug is.
   const log = (Array.isArray(r.log) ? r.log : [])
