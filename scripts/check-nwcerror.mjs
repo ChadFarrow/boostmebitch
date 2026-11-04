@@ -41,6 +41,12 @@
 //                     have happened. An ordinary failure is the honest answer,
 //                     and calling it indeterminate would tell the user not to
 //                     retry a leg that genuinely never sent.
+//   failed dial       the socket never opened, so `_checkConnected` threw ahead
+//                     of any publish. Same honest answer as a publish timeout,
+//                     and the class is what makes `withNwcClient` drop the
+//                     client: the SDK's copy of nostr-tools keeps the rejected
+//                     connect promise, so that client can never dial again. The
+//                     wire section below drives a real refused upgrade to pin it.
 //
 // THE DISPATCH IS THE FRAGILE PART, WHICH IS WHY THIS IMPORTS THE REAL MODULE.
 // `Nip47ReplyTimeoutError` and `Nip47PublishTimeoutError` both extend
@@ -91,6 +97,9 @@ function section(name) {
 const walletError = (code) => new nwc.Nip47WalletError('wallet said no', code);
 const replyTimeout = () => new nwc.Nip47ReplyTimeoutError('no reply in 60s');
 const publishTimeout = () => new nwc.Nip47PublishTimeoutError('never reached the relay');
+// The exact message and class `NWCClient._checkConnected` throws. The wire section
+// below proves that claim against a real refused upgrade.
+const failedDial = () => new nwc.Nip47NetworkError('Failed to connect to wss://relay.getalby.com/v1', 'OTHER');
 
 // ---------------------------------------------------------------------------
 section('The wallet answered instead of paying — retryable');
@@ -224,6 +233,66 @@ section('isSocketSuspect — is the CONNECTION bad, or did the wallet decline?')
   check('a reply timeout is NOT', isSocketSuspect(replyTimeout()), false);
   check('a websocket message is', isSocketSuspect(new Error('socket closed')), true);
   check('a wallet refusal is not', isSocketSuspect(walletError('NOT_IMPLEMENTED')), false);
+  // The message says "connect", not "connection", so the text test below the class
+  // test never matched it, and a client that could not dial stayed in the pool.
+  check('a failed dial is a suspect socket', isSocketSuspect(failedDial()), true);
+  // A leg's Lightning routing failure reads almost the same and says nothing about
+  // our socket, which is why the test above is on the class and not on the words.
+  check('a routing failure that says "connect to peer" is not',
+    isSocketSuspect(new Error('failed to connect to peer')), false);
+}
+
+// ---------------------------------------------------------------------------
+section('A refused upgrade, on the wire — why a failed dial must drop the client');
+// ---------------------------------------------------------------------------
+{
+  // Built from the wire, not from the class: Cloudflare in front of relay.getalby.com
+  // answers an upgrade with `429`, and a phone whose radio is late fails the same
+  // way. This drives the real SDK client into that and reads what it throws.
+  //
+  // THE SECOND HALF PINS THE DEPENDENCY, and it failing is news, not noise. On
+  // @getalby/sdk 5.1.2 (its own nostr-tools 2.15.0) `connect()` clears
+  // `connectionPromise` only when the socket had been open, so a socket that never
+  // opened leaves the rejected promise behind and every later `connect()` returns
+  // it with NO dial. A bump that fixes this also unleashes the SDK's notification
+  // loop, which redials every second with no backoff, and that loop would then
+  // hold the 429 block open. Re-read docs/wallets.md before you edit this vector.
+  const { createServer } = await import('node:http');
+  let dials = 0;
+  const server = createServer();
+  server.on('upgrade', (_req, socket) => {
+    dials += 1;
+    socket.end('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 600\r\nContent-Length: 0\r\n\r\n');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const uri = `nostr+walletconnect://${'a'.repeat(64)}?relay=ws://127.0.0.1:${server.address().port}&secret=${'b'.repeat(64)}`;
+
+  // The SDK logs each failure to the console, and this is a failure on purpose.
+  const logError = console.error;
+  console.error = () => {};
+  const attempt = (c) => c.getBalance().then(() => null, (e) => e);
+  const client = new nwc.NWCClient({ nostrWalletConnectUrl: uri });
+  const first = await attempt(client);
+  const dialsAfterFirst = dials;
+  const second = await attempt(client);
+  const dialsAfterSecond = dials;
+  const replacement = new nwc.NWCClient({ nostrWalletConnectUrl: uri });
+  await attempt(replacement);
+  const dialsAfterReplacement = dials;
+  console.error = logError;
+  client.close();
+  replacement.close();
+  server.close();
+
+  check('the first call dials once', dialsAfterFirst, 1);
+  check('and throws the class isSocketSuspect tests', first instanceof nwc.Nip47NetworkError, true);
+  check('which is a suspect socket', isSocketSuspect(first), true);
+  check('and never blames the recipient', failureBlamesDestination(first), false);
+  check('and never demotes an address', shouldDemoteAddress(first, false), false);
+  check('and is not read as "may have paid"', mapNwcError(first) instanceof NwcIndeterminateError, false);
+  check('the same client fails again', second instanceof nwc.Nip47NetworkError, true);
+  check('with no second dial: this client is dead for good', dialsAfterSecond, 1);
+  check('a new client dials, so replacing it is the only way back', dialsAfterReplacement, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +347,10 @@ section('failureBlamesDestination — attribution, never a licence to re-pay');
       error: publishTimeout(), expected: false },
     { label: 'a dead socket does not',
       error: new Error('websocket connection closed'), expected: false },
+    // The payer's relay was never reached, so the recipient was never tried. This
+    // fell to the default-TRUE arm and put a good address on LNURL for 6 hours.
+    { label: 'a relay that could not be dialled does not',
+      error: failedDial(), expected: false },
   ];
 
   // The plausible wrong version: "anything but an unanswered wallet is the
@@ -455,6 +528,8 @@ section('shouldDemoteAddress — demote only what could not be rescued');
       error: mapNwcError(replyTimeout()), refused: false, expected: false },
     { label: 'a dead socket does not demote',
       error: new Error('websocket connection closed'), refused: false, expected: false },
+    { label: 'a relay that could not be dialled does not demote',
+      error: failedDial(), refused: false, expected: false },
   ];
 
   // The wrong version, and the one that was shipping: demote on attribution
