@@ -1,3 +1,4 @@
+import { wordlist as bip39Words } from '@scure/bip39/wordlists/english.js';
 import { looksLikeSecretKey } from './nostr/npub-input';
 import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 
@@ -15,10 +16,13 @@ import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 // - The snapshot is a fixed ALLOWLIST of keys (`APP_INFO_KEYS`); the route
 //   drops anything else. It never carries the npub, a key, a connection
 //   string, a wallet balance or a URL query/fragment (`/amber-callback`'s
-//   fragment is a signer result). The modal shows the user every value it
+//   fragment is a signer result), nor what the person listens to or how
+//   their account is set up. The modal shows the user every value it
 //   sends before they send it.
-// - Free text is refused if it holds a secret (`secretInReport`), in the modal
-//   AND in the route.
+//   The page path's npub segment is elided (`reportPath`).
+// - Free text is refused if it holds a secret (`secretInReport`: an nsec, an
+//   NWC string, a 64-hex key or a BIP-39 seed phrase), in the modal AND in the
+//   route.
 // - Every caller-supplied string is rendered inside a code fence, so it cannot
 //   @mention anyone, cross-reference another repo's issue, or draw markup,
 //   under the token owner's name — one unauthenticated POST must not notify
@@ -35,7 +39,16 @@ export interface BugReportAnswers {
   steps: string;
 }
 
-/** The snapshot's keys, in the order the issue lists them, with their labels. */
+/**
+ * The snapshot's keys, in the order the issue lists them, with their labels.
+ *
+ * App STATE only, never facts about the PERSON: no npub, key, connection
+ * string, balance or URL query, and also nothing that says what they listen
+ * to or how they set up their account — no now-playing title, feed or episode
+ * guid, position, favorites counts or signer type (all removed 2026-11-04 at
+ * the owner's request). `browser` is a coarse family (`coarseBrowser`), never
+ * the user-agent string. A key added here reaches a public issue.
+ */
 export const APP_INFO_KEYS = [
   ['site', 'Site'],
   ['build', 'Build'],
@@ -45,17 +58,11 @@ export const APP_INFO_KEYS = [
   ['viewport', 'Viewport'],
   ['browser', 'Browser'],
   ['signedIn', 'Signed in'],
-  ['signer', 'Signer'],
   ['wallets', 'Wallets connected'],
   ['boostRail', 'Boost rail'],
   ['streaming', 'Streaming sats'],
   ['favoritesSync', 'Favorites sync'],
-  ['favorites', 'Favorites'],
-  ['nowPlaying', 'Now playing'],
   ['medium', 'Medium'],
-  ['feedGuid', 'Feed guid'],
-  ['episodeGuid', 'Episode guid'],
-  ['position', 'Position'],
   ['playback', 'Playback'],
   ['live', 'Live status'],
 ] as const;
@@ -66,19 +73,94 @@ export type AppInfo = Partial<Record<AppInfoKey, string>>;
 export const MAX_ANSWER_CHARS = 4000;
 export const MAX_INFO_VALUE_CHARS = 400;
 
+export type ReportSecret = 'nsec' | 'nwc' | 'hex' | 'mnemonic';
+
+// A seed phrase is 12 to 24 words; 12 in a row is the shortest one there is.
+const MNEMONIC_RUN = 12;
+const BIP39 = new Set<string>(bip39Words);
+const HEX_KEY = /^(?:0x)?[0-9a-f]{64}$/i;
+// "1." / "2)" / "3:" numbering in a pasted seed list neither counts nor breaks a run.
+const NUMBERING = /^\d{1,2}[.):]?$/;
+
 // The issue is public, so a pasted key is burnt the moment it is filed. Every
 // whitespace-separated token is tested, because a key pasted into a sentence
 // is as public as one pasted alone. `looksLikeSecretKey` is a prefix test that
 // never decodes; an NWC string is a spending credential.
-export function secretInReport(text: string): 'nsec' | 'nwc' | null {
-  for (const raw of text.split(/\s+/)) {
+//
+// `typed` adds the two tests that cannot tell a secret from an ordinary value
+// by shape alone, and so run on what the USER TYPED only, never on the
+// snapshot: a 64-hex token (a raw private key — and also an event id or a
+// pubkey, which is why the refusal names the bech32 forms as the way round
+// it; feeds use sha256 hex as an episode guid, so the snapshot would refuse
+// every report about one), and a run of 12+ BIP-39 words (the Spark wallet's
+// seed, which is the whole wallet). English prose does not produce 12 list
+// words in a row: "the", "a", "to", "is" and "it" are not on the list.
+export function secretInReport(text: string, typed = true): ReportSecret | null {
+  let run = 0;
+  for (const raw of text.split(/[\s,;]+/)) {
     // Leading quotes and brackets: `"nsec1…"` and `(nsec1…)` are the same key.
     const token = raw.replace(/^[^a-z0-9]+/i, '');
     if (!token) continue;
     if (looksLikeSecretKey(token)) return 'nsec';
     if (token.toLowerCase().startsWith('nostr+walletconnect:')) return 'nwc';
+    if (!typed) continue;
+    const bare = token.replace(/[^a-z0-9]+$/i, '');
+    if (HEX_KEY.test(bare)) return 'hex';
+    if (NUMBERING.test(bare)) continue;
+    run = BIP39.has(bare.toLowerCase()) ? run + 1 : 0;
+    if (run >= MNEMONIC_RUN) return 'mnemonic';
   }
   return null;
+}
+
+const BROWSERS = ['Edge', 'Samsung Internet', 'Opera', 'Firefox', 'Chrome', 'Safari'] as const;
+const SYSTEMS = ['Android', 'iOS', 'Windows', 'macOS', 'ChromeOS', 'Linux'] as const;
+const COARSE_BROWSER = new RegExp(
+  `^(?:${BROWSERS.join('|')}|Other browser)(?: \\d{1,4})?, (?:${SYSTEMS.join('|')}|Other OS)$`,
+);
+
+/**
+ * A user-agent reduced to browser family, major version and OS family, e.g.
+ * `Chrome 131, Android`. The full string carries the device model and minor
+ * versions, which narrow a public reporter down. The output is built from two
+ * fixed lists, so nothing from the input reaches the issue but one number.
+ * Idempotent: the route re-runs it on what the modal sent.
+ */
+export function coarseBrowser(ua: string): string {
+  if (COARSE_BROWSER.test(ua)) return ua;
+  const pick: [(typeof BROWSERS)[number], RegExp][] = [
+    ['Edge', /\bEdg(?:e|A|iOS)?\/(\d+)/],
+    ['Samsung Internet', /\bSamsungBrowser\/(\d+)/],
+    ['Opera', /\b(?:OPR|OPiOS)\/(\d+)/],
+    ['Firefox', /\b(?:Firefox|FxiOS)\/(\d+)/],
+    ['Chrome', /\b(?:Chrome|CriOS)\/(\d+)/],
+    ['Safari', /\bVersion\/(\d+)[^ ]* (?:Mobile\/\S+ )?Safari\//],
+  ];
+  let browser = 'Other browser';
+  for (const [name, re] of pick) {
+    const m = ua.match(re);
+    if (m) { browser = `${name} ${m[1].slice(0, 4)}`; break; }
+  }
+  const os = /\b(?:iPhone|iPad|iPod)\b/.test(ua) ? 'iOS'
+    : /\bAndroid\b/.test(ua) ? 'Android'
+      : /\bCrOS\b/.test(ua) ? 'ChromeOS'
+        : /\bWindows\b/.test(ua) ? 'Windows'
+          : /\bMac OS X\b|\bMacintosh\b/.test(ua) ? 'macOS'
+            : /\bLinux\b/.test(ua) ? 'Linux'
+              : 'Other OS';
+  return `${browser}, ${os}`;
+}
+
+/**
+ * The page path with any Nostr identity segment elided: `/npub/<npub>` and
+ * `/live/<npub>` name a person, and on the reporter's own profile that person
+ * is the reporter. The route re-runs it, because the POST is unauthenticated.
+ */
+export function reportPath(pathname: string): string {
+  return pathname
+    .split('/')
+    .map((seg) => (/^(?:npub1|nprofile1)/i.test(seg) ? '…' : seg))
+    .join('/');
 }
 
 /**
@@ -107,14 +189,19 @@ export function parseBugReport(
     const v = i[k];
     if (typeof v === 'string' && v) info[k] = v.slice(0, MAX_INFO_VALUE_CHARS);
   }
+  if (info.page) info.page = reportPath(info.page);
+  if (info.browser) info.browser = coarseBrowser(info.browser);
 
   // The NEWEST lines are kept: the end of the log is where the bug is.
   const log = (Array.isArray(r.log) ? r.log : [])
     .filter((l): l is string => typeof l === 'string' && isPlaybackLogLine(l))
     .slice(-PLAYBACK_LOG_CAP);
 
-  const all = [answers.happened, answers.expected, answers.steps, ...Object.values(info), ...log].join('\n');
-  if (secretInReport(all)) return { ok: false, error: 'the report contains a secret key or wallet string' };
+  const typed = [answers.happened, answers.expected, answers.steps].join('\n');
+  const app = [...Object.values(info), ...log].join('\n');
+  if (secretInReport(typed) || secretInReport(app, false)) {
+    return { ok: false, error: 'the report contains a secret key, seed phrase or wallet string' };
+  }
   return { ok: true, answers, info, log };
 }
 

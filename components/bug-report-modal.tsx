@@ -8,12 +8,13 @@ import { pickRail } from '@/lib/v4v/boost';
 import { BRAND } from '@/lib/brand';
 import { reportSite } from '@/lib/beta';
 import { BUILD_ID } from '@/lib/build-id';
-import { fmt } from '@/lib/format';
 import { getErrorMessage } from '@/lib/util';
 import { playbackLogLines } from '@/lib/playback-log';
 import {
   APP_INFO_KEYS,
+  coarseBrowser,
   MAX_ANSWER_CHARS,
+  reportPath,
   secretInReport,
   type AppInfo,
   type BugReportAnswers,
@@ -35,34 +36,26 @@ const FIELDS: { key: keyof BugReportAnswers; label: string; placeholder: string 
 // The snapshot is taken ONCE, when the modal opens — the state the user saw
 // the bug in, not the state after they typed for a minute. Every value is on
 // the allowlist in lib/bug-report.ts; no npub, key, connection string, balance
-// or URL query/fragment.
+// or URL query/fragment, and nothing about what the person listens to.
 function takeSnapshot(): AppInfo {
   const s = useApp.getState();
   const rails = availableRails();
   const rail = pickRail();
   const cur = s.current;
-  const favShows = Object.keys(s.favorites).length;
-  const favEps = Object.keys(s.favoriteEpisodes).length;
   return {
     site: reportSite(BRAND.domain),
     build: BUILD_ID,
-    page: window.location.pathname,
+    page: reportPath(window.location.pathname),
     installedApp: window.matchMedia?.('(display-mode: standalone)').matches ? 'yes' : 'no',
     online: navigator.onLine ? 'yes' : 'no',
     viewport: `${window.innerWidth}×${window.innerHeight}`,
-    browser: navigator.userAgent,
+    browser: coarseBrowser(navigator.userAgent),
     signedIn: s.identity ? 'yes' : 'no',
-    signer: s.identity ? (storage.signer.get() ?? 'nip07') : undefined,
     wallets: rails.length ? rails.join(', ') : 'none',
     boostRail: rail ? `${rail}${storage.railPref.get() ? ' (chosen)' : ''}` : undefined,
     streaming: storage.streaming.isOn() ? 'on' : 'off',
     favoritesSync: s.favoritesSync,
-    favorites: `${favShows} shows, ${favEps} episodes`,
-    nowPlaying: cur ? `${cur.podcast.title} — ${cur.episode.title}` : 'nothing',
     medium: cur?.podcast.medium,
-    feedGuid: cur?.podcast.podcastGuid,
-    episodeGuid: cur?.episode.guid,
-    position: cur ? fmt(s.positionSec) : undefined,
     playback: cur ? (s.isPlaying ? 'playing' : 'paused') : undefined,
     live: cur?.episode.liveStatus,
   };
@@ -210,7 +203,11 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
         <p role="alert" className="mt-3 text-sm text-nostr">
           {secret === 'nsec'
             ? 'That looks like a Nostr secret key. Remove it: reports are public.'
-            : 'That looks like a wallet connection string. Remove it: reports are public.'}
+            : secret === 'hex'
+              ? 'That looks like a hex secret key. Remove it: reports are public. For a note or a profile, paste its note1… or npub1… form instead.'
+              : secret === 'mnemonic'
+                ? 'That looks like a wallet seed phrase. Remove it: reports are public.'
+                : 'That looks like a wallet connection string. Remove it: reports are public.'}
         </p>
       )}
       {status.kind === 'failed' && (
