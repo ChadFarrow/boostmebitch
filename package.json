@@ -84,6 +84,7 @@
     "e2e:speed-gaps": "node scripts/e2e-speed-gaps.mjs",
     "e2e:music-hold": "node scripts/e2e-music-hold.mjs",
     "e2e:nwcrelay": "node scripts/e2e-nwc-relay.mjs",
+    "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs",
     "check:fanout": "node --experimental-strip-types scripts/check-fanout.mjs",

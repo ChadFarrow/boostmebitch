@@ -291,17 +291,41 @@ export function NoteEpisodeCard({
           stops propagation itself, and it also sits OUTSIDE the tap area above
           rather than relying on that. */}
       {favoritable && item ? (
-        <div className="px-2.5 pb-2.5 flex items-center gap-2 flex-wrap">
-          <FavEpisodeHeart episode={item} podcast={podcast} size="md" />
-          {/* A SIBLING of the heart, on the same `favoritable` gate: both need
-              an item guid, and both are about this episode rather than about
-              the note. The note's own action row further up is social actions
-              gated on `identity` — a listen queue needs no identity, so it
-              would be hidden from exactly the signed-out reader who can use
-              it. */}
-          {onQueue ? <NoteQueueButton episode={item} onQueue={onQueue} /> : null}
-        </div>
+        <NoteEpisodeControls item={item} podcast={podcast} onQueue={onQueue} className="px-2.5 pb-2.5" />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The heart and the queue for the episode a note names.
+ *
+ * Shared by the card above and by a note that names an episode and draws no card
+ * (`<NoteCard>`'s one-line label), so the two offer the same two words at the same
+ * size and a reader does not have to learn which notes have them. The caller gates
+ * on the heart's guard, as the card does with `favoritable`.
+ */
+export function NoteEpisodeControls({
+  item,
+  podcast,
+  onQueue,
+  className,
+}: {
+  item: Episode;
+  podcast: Podcast;
+  onQueue?: () => Promise<boolean>;
+  className: string;
+}) {
+  return (
+    <div className={`flex items-center gap-2 flex-wrap ${className}`}>
+      <FavEpisodeHeart episode={item} podcast={podcast} size="md" />
+      {/* A SIBLING of the heart, on the same `favoritable` gate: both need
+          an item guid, and both are about this episode rather than about
+          the note. The note's own action row further up is social actions
+          gated on `identity` — a listen queue needs no identity, so it
+          would be hidden from exactly the signed-out reader who can use
+          it. */}
+      {onQueue ? <NoteQueueButton episode={item} onQueue={onQueue} /> : null}
     </div>
   );
 }

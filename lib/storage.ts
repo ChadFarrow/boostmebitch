@@ -1285,8 +1285,12 @@ export const storage = {
   /** /api/episode-by-guid result, keyed '<feedGuid>:<itemGuid>'. Same TTL and
    *  eviction class as podcastMeta — a network-regenerable display cache. */
   episodeMeta: {
-    get: (key: string): Episode | null =>
-      withoutCachedValue(getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS)),
+    // A record with no guid is a miss an older build stored as an answer. See
+    // `getEpisodeByGuid`. Read as absent, so the next load asks again.
+    get: (key: string): Episode | null => {
+      const cached = withoutCachedValue(getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS));
+      return cached?.guid ? cached : null;
+    },
     set: (key: string, v: Episode) =>
       setTimed(`${KEYS.episodeMetaPrefix}:${key}`, v),
   },
