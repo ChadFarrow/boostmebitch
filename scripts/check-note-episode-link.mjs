@@ -61,7 +61,7 @@
  * `podcast:publisher:guid:` target, which is neither the item nor its show, and
  * a note tagging all three (a real shape, below) must not resolve to it.
  */
-import { episodeLinkInNote, landingLinksInNote } from '../lib/util.ts';
+import { episodeLinkInNote, landingLinksInNote, noteOwnItemGuid } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
@@ -100,6 +100,80 @@ function checkLanding(label, tags, body, expected, { alsoNaive = false } = {}) {
 
 function section(name) {
   console.log(`\n${name}`);
+}
+
+// ---------------------------------------------------------------------------
+// `noteOwnItemGuid` — the one item a note is about. Its failure is quieter than
+// the link's: a note that names an episode loses its record, so its card offers
+// no heart and no queue, with nothing on screen saying why.
+function checkOwnItem(label, guids, tags, expected, { alsoNaive = false } = {}) {
+  compare(label, noteOwnItemGuid(guids, tags), expected);
+  vectors.push({ label, kind: 'ownItem', args: [guids, tags], alsoNaive });
+}
+
+section('noteOwnItemGuid — a track boost is one episode and its track');
+{
+  // Verbatim from kind:1 80179e8b… on relay.damus.io, 2026-11-05: a BoostMeBuddy
+  // boost pressed inside a <podcast:valueTimeSplit> window. The show and the
+  // episode come first, then the track's album and the track.
+  const SHOW = 'fafd2bfc-98ac-5010-9fcb-7403abfd420a';
+  const ITEM = 'f7cb78c5-c90b-4ace-a6a3-4b6ef01f9d9b';
+  const ALBUM = '6725424d-08a9-5fc2-a352-b8b2dd09a323';
+  const TRACK = '08d15078-94b7-4fdd-b141-91ec4aef8db2';
+  const site = 'https://www.boostmebuddy.com/';
+  const trackBoost = [
+    ['i', `podcast:guid:${SHOW}`, `${site}?podcast=${SHOW}`],
+    ['k', 'podcast:guid'],
+    ['i', `podcast:item:guid:${ITEM}`, `${site}?podcast=${SHOW}&episode=${ITEM}`],
+    ['k', 'podcast:item:guid'],
+    ['i', `podcast:guid:${ALBUM}`, `${site}?podcast=${ALBUM}`],
+    ['i', `podcast:item:guid:${TRACK}`, `${site}?podcast=${ALBUM}&episode=${TRACK}`],
+  ];
+  checkOwnItem('a track boost names its episode, never the track', [ITEM, TRACK], trackBoost, ITEM);
+
+  const one = [['i', `podcast:guid:${SHOW}`], ['i', `podcast:item:guid:${ITEM}`]];
+  checkOwnItem('one item is that item', [ITEM], one, ITEM, { alsoNaive: true });
+  checkOwnItem('no item is no answer', [], [['i', `podcast:guid:${SHOW}`]], null, { alsoNaive: true });
+  checkOwnItem(
+    'two items on ONE show are two tracks of an album, not one episode',
+    [ITEM, TRACK],
+    [['i', `podcast:guid:${SHOW}`], ['i', `podcast:item:guid:${ITEM}`], ['i', `podcast:item:guid:${TRACK}`]],
+    null,
+    { alsoNaive: true },
+  );
+  // Verbatim shape from MSP 2.0 on 2026-10-31. The one show is the track's ALBUM,
+  // and the episode's own show is not tagged, so item one and that show are no pair.
+  checkOwnItem(
+    "another app's [episode, album, track] is no pair",
+    ['homegrownhits-156', '56b31dbd-2943-4d8e-829f-0d900eb1b87f'],
+    [
+      ['i', 'podcast:item:guid:homegrownhits-156'],
+      ['i', 'podcast:guid:e1b9c210-eec2-493a-b1ca-5615d55266e3'],
+      ['i', 'podcast:item:guid:56b31dbd-2943-4d8e-829f-0d900eb1b87f'],
+    ],
+    null,
+    { alsoNaive: true },
+  );
+  checkOwnItem(
+    'a publisher guid is not a second show',
+    [ITEM, TRACK],
+    [
+      ['i', `podcast:guid:${SHOW}`],
+      ['i', `podcast:item:guid:${ITEM}`],
+      ['i', `podcast:item:guid:${TRACK}`],
+      ['i', `podcast:publisher:guid:${ALBUM}`],
+    ],
+    null,
+    { alsoNaive: true },
+  );
+  checkOwnItem(
+    'three items on three shows are about no one episode',
+    [ITEM, TRACK, 'x'],
+    [['i', `podcast:guid:${SHOW}`], ['i', `podcast:guid:${ALBUM}`], ['i', 'podcast:guid:z']],
+    null,
+    { alsoNaive: true },
+  );
+  checkOwnItem('a note cached with no tags keeps the old answer', [ITEM, TRACK], undefined, null, { alsoNaive: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -511,6 +585,11 @@ section('total replay against naive()');
  * above each catch — the feed-XML subdomain, both lookalike hosts, the
  * non-page path, the artist page, and the ambiguous pair.
  */
+// The rule this replaced: anything but exactly one item is no answer.
+function naiveOwnItem(guids) {
+  return guids.length === 1 ? guids[0] : null;
+}
+
 function naive(tags, body) {
   const urls = (body.match(/https?:\/\/[^\s]+/g) ?? []).map((u) => u.replace(/[.,;:!?]+$/, ''));
   for (const t of tags ?? []) {
@@ -551,8 +630,8 @@ function naiveLanding(tags, body) {
   };
   const call = (which, v) => {
     try {
-      const real = v.kind === 'landing' ? landingLinksInNote : episodeLinkInNote;
-      const wrong = v.kind === 'landing' ? naiveLanding : naive;
+      const real = v.kind === 'ownItem' ? noteOwnItemGuid : v.kind === 'landing' ? landingLinksInNote : episodeLinkInNote;
+      const wrong = v.kind === 'ownItem' ? naiveOwnItem : v.kind === 'landing' ? naiveLanding : naive;
       return repr(which === 'real' ? real(...v.args) : wrong(...v.args));
     } catch (e) {
       // A wrong implementation is allowed to throw where the real one returns.

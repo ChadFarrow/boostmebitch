@@ -25,7 +25,7 @@ import { extractImages, removeUrl, renderNostrText, timeAgo } from '@/lib/format
 import { Avatar } from './avatar';
 import { PodcastCover } from './podcast-cover';
 import { FollowButton } from './follow-button';
-import { NoteEpisodeCard } from './note-episode-card';
+import { NoteEpisodeCard, NoteEpisodeControls } from './note-episode-card';
 
 type ActionState = 'idle' | 'busy' | 'done' | 'error';
 
@@ -582,6 +582,21 @@ function NoteCardImpl({
             }
           />
         )}
+
+        {/* The note names an episode and draws no card: a bot's announcement,
+            or a note with no app link. The ceiling on cards is about artwork
+            (docs/nostr.md), and the label above already names this episode, so
+            the two controls go under it with no second picture. `episodeGuid`
+            is the same test the card's own row passes: the heart needs an item
+            guid, and `podcast` supplies the parent. */}
+        {!unfurl && podcast && episode && episodeGuid ? (
+          <NoteEpisodeControls
+            item={episode}
+            podcast={podcast}
+            onQueue={() => queueBoostedEpisode(podcast, episodeGuid)}
+            className="mt-2"
+          />
+        ) : null}
 
         <div className="flex items-center gap-3 mt-2 text-[11px] flex-wrap">
           {identity ? (

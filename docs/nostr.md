@@ -1414,6 +1414,57 @@ below the fold. The link in the body is the author pointing at something.
 Everything else keeps the one-line label — which is suppressed when the card
 shows, because it states the same two facts with the same two click targets.
 
+**The ceiling is on artwork, not on the controls.** A note under the label that
+names a resolved episode carries the same `♡ FAVORITE` and `＋ QUEUE` as a card,
+from one component (`<NoteEpisodeControls>`). Reported as "the home feed doesn't
+always show a favorite or queue button". Measured on the signed-out feed on
+2026-11-05, 94 podcast notes, 40 with no controls:
+
+| Notes | Why | Now |
+| --- | --- | --- |
+| 12 | Episode resolved, no app link and not our note: a bot's announcement, a tagged comment | Controls under the label |
+| 5 | A track boost, tagging two items on two shows | `noteOwnItemGuid` names the first pair, the host episode |
+| 10 | A live item Podcast Index does not hold | Unchanged. See below |
+| 6 | The item is in neither Podcast Index nor the RSS | Unchanged. There is no episode to name |
+| 5 | The note tags a show and no item | Unchanged. See the show heart rule below |
+| 2 | The show is not in Podcast Index | Unchanged. No label either |
+
+**Two items on ONE show stay unanswered, and that is not caution.** MSP 2.0 and
+Boostr_Bot also write `[episode, album, track]`, where the one show is the track's
+album and the episode's own show is not tagged. Pairing the first item with that
+show asks PI about a pair that does not exist. The `[show, item, show, item]`
+shape is the one to trust: four clients write it, and on 2026-11-05 the first pair
+resolved to the host episode in 14 of 15 lookups.
+
+**No RSS fallback for an item PI does not hold, and the table is why.** Every miss
+the feed could answer was a `<podcast:liveItem>`, and `enqueueEpisode` refuses a
+broadcast. So a fallback would download a whole `/api/feed` per show for a heart
+on a live item, and that item leaves the feed when the broadcast ends, which turns
+the favorite into a row that never resolves.
+
+**A miss must stay a miss.** PI can answer a pair it does not hold with 200 and an
+empty `episode`. `getEpisodeByGuid` tested `data.episode`, which is truthy, so the
+route answered with a record holding no guid and the browser kept it in
+`bmb:epmeta` for seven days. An episode released that morning kept no controls for
+a week after PI crawled it. The route now answers 404, and `storage.episodeMeta`
+reads a stored record with no guid as absent, so the bad ones already on devices
+heal on the next load. `npm run e2e:feedbuttons` pins all of this.
+
+**The card's second art rung is the SHOW's art, whichever field holds it.**
+`<PodcastCover>` steps only through the URLs it is handed, and the card hands it
+the item's own art first. `buildPodcast` drops `artwork` whenever it equals
+`image`, which most feeds do, so `artwork={podcast.artwork}` alone left an episode
+with art of its own NO show art behind it. Homegrown Hits 157 showed it on
+2026-11-07: the feed names `episode-157.gif`, the show's server answers 404, and
+the card drew the initial tile while the show's cover loads everywhere else. A
+track boost reaches this more often now, because `noteOwnItemGuid` sends it to
+the episode rather than the show. The rung is `podcast.artwork || podcast.image`.
+The e2e answers that file with a 404 itself, through Fetch interception and NOT
+`Network.setBlockedURLs`: a block fails with no round trip, and an instant failure
+can land between `<PodcastCover>`'s ladder reset and its remount, which leaves a
+broken image with no error left to fire. That race is older than this card, and a
+404 from a server does not hit it.
+
 **The card is gated on the SHOW resolving, never on the ITEM — a presentation
 decision must not be decided by Podcast Index's coverage.** It was gated on both
 for two releases (`podcast && episode?.guid ? episodeLink : null`), and that read
@@ -1421,7 +1472,7 @@ as the feature working intermittently: one note unfurled, the note under it kept
 three lines of magenta URL, and nothing on either card said why. PI missing an
 item is ordinary, not exotic — it answers "not found" for a
 `<podcast:liveItem>` and for anything it has not crawled, and `episodeRefOf`
-never asks at all when a note tags more than one `podcast:item:guid:` (a
+never asks at all when a note tags several `podcast:item:guid:` on one show (a
 boost-all across an album's tracks, which is deliberate: that note is not about
 one episode). None of that is visible to the reader or to the author, so the
 same link on the same feature gave opposite results for reasons neither could

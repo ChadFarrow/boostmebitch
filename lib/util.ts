@@ -3629,6 +3629,42 @@ function isPodcastAppUrl(raw: string): boolean {
 }
 
 /**
+ * The one `podcast:item:guid:` a note is about, or null when it names no single
+ * episode.
+ *
+ * One item is the ordinary answer. Several is a note about no one episode, and
+ * picking the first would print a track the author did not single out.
+ *
+ * **Two items on two shows is one episode and the track that was playing.** A
+ * boost pressed inside a `<podcast:valueTimeSplit>` window writes the show and
+ * the episode first and then the track's feed and item (`trackTags` in
+ * lib/nostr/boost-notes.ts). Counted as "several", every such note lost its episode
+ * record, so its card named the show and offered no heart and no queue, while the
+ * sender's next boost on the same episode had both. The show count is what
+ * tells the two shapes apart: a note listing an album's tracks tags one show.
+ * Measured on 2026-11-05: BoostMeBuddy, BoostMeBitch, MSP 2.0 and Boostr_Bot all
+ * write `[show, item, show, item]`, and the first pair is the host episode.
+ *
+ * **Never answer for two items on ONE show.** MSP 2.0 and Boostr_Bot also write
+ * `[episode, album, track]`, where the one show is the TRACK's album and the
+ * episode's own show is not tagged at all. The first item and that show are not a
+ * pair, whatever the note's order suggests.
+ *
+ * `tags` is optional because a note cached before `rawEvent` existed has none.
+ * Absent answers null, which is the old answer and the safe one: a card with no
+ * item.
+ */
+export function noteOwnItemGuid(
+  episodeGuids: string[],
+  tags: string[][] | undefined,
+): string | null {
+  if (episodeGuids.length === 1) return episodeGuids[0];
+  if (episodeGuids.length !== 2 || !tags) return null;
+  const shows = tags.filter((t) => t[0] === 'i' && t[1]?.startsWith('podcast:guid:')).length;
+  return shows === 2 ? episodeGuids[0] : null;
+}
+
+/**
  * Which URL in a note's body is the one that names the episode the note is
  * tagged with — or null when no URL in the body does.
  *

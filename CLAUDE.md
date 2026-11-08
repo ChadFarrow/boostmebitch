@@ -97,7 +97,7 @@ npm run dev / build / start / lint
 | `check:chapters` | `lib/chapters-json.ts` — the one corruption a feed chapters document may carry | a chapter TITLE loses characters, or chapters vanish entirely |
 | `check:art` | `artWidth`, `artCandidates`, `artTypeVerdict`, `playableAhead`, `artGateOpen` | a failing proxy blanks every cover on twelve surfaces |
 | `check:gif` | `lib/gif-first-frame.ts` — the block walk cutting an animated cover to frame one | attacker-chosen bytes on a truncated prefix |
-| `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to | an attacker's link sits under a real show's artwork |
+| `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to; `noteOwnItemGuid` | an attacker's link sits under a real show's artwork |
 | `check:zapreceipt` | `zapRequestTags` — the kind:9734 the server mirrors; `validateSummaryRequest` — the summary receipt the site signs and the note quotes | the site attests a stranger's payment, under its key and the user's |
 | `check:cache` | `createBoundedCache` — the age, entry AND byte bounds both RSS caches share | an entry cap is not a memory bound |
 | `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load, forever |

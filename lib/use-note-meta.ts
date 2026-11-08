@@ -8,6 +8,7 @@ import {
   warmPodcastCache,
 } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
+import { noteOwnItemGuid } from '@/lib/util';
 
 // UUID-shaped podcast:guid filter. Some clients post boost notes with
 // non-UUID values in the i-tag (feed IDs, episode strings); those will
@@ -23,6 +24,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export interface NoteRefs {
   podcastGuid: string | null;
   episodeGuids: string[];
+  /** The signed event, where there is one. A zap receipt has none. */
+  rawEvent?: { tags: string[][] };
 }
 
 /**
@@ -30,17 +33,17 @@ export interface NoteRefs {
  * BOTH halves are required — PI's /episodes/byguid disambiguates an item guid
  * by its podcastguid — and the show guid goes through the same UUID filter the
  * podcast resolve uses, so a client's non-UUID i-tag isn't round-tripped to a
- * 404. Exactly one item guid, deliberately: a note tagging several (a boost-all
- * across an album's tracks) is not about one episode, and picking the first
- * would print a track the user didn't single out and link somewhere they
- * didn't boost. The show line is the honest label there.
+ * 404. One item guid, deliberately: a note tagging several (a boost-all across
+ * an album's tracks) is not about one episode, and picking the first would print
+ * a track the user didn't single out and link somewhere they didn't boost. The
+ * show line is the honest label there. A track boost is the exception, and
+ * `noteOwnItemGuid` is what tells it apart.
  */
 export function episodeRefOf(
   refs: NoteRefs,
 ): { feedGuid: string; itemGuid: string; key: string } | null {
   const feedGuid = refs.podcastGuid;
-  if (refs.episodeGuids.length !== 1) return null;
-  const itemGuid = refs.episodeGuids[0];
+  const itemGuid = noteOwnItemGuid(refs.episodeGuids, refs.rawEvent?.tags);
   if (!feedGuid || !itemGuid || !UUID_RE.test(feedGuid)) return null;
   return { feedGuid, itemGuid, key: `${feedGuid}:${itemGuid}` };
 }

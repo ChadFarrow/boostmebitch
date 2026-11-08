@@ -1942,7 +1942,12 @@ export async function getEpisodeByGuid(
     const data = await pi<any>(
       `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&podcastguid=${encodeURIComponent(feedGuid)}`,
     );
-    return data.episode ? buildEpisode(data.episode) : null;
+    // On the guid, not on `data.episode`. PI can answer a pair it does not hold
+    // with 200 and an empty `episode`, which is truthy. `buildEpisode` then makes
+    // a record with no guid and no title, and the browser keeps it for seven
+    // days, so a note stays without its heart and queue long after PI crawls the
+    // item. Measured on a live item and on an episode released hours before.
+    return data.episode?.guid ? buildEpisode(data.episode) : null;
   } catch (e) {
     // Same miss-is-not-an-outage rule as getPodcastByFeedUrl above, and it
     // matters more here. PI answers an unindexed pair with **400**
