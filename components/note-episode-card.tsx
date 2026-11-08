@@ -172,10 +172,18 @@ export function NoteEpisodeCard({
         {/* Always both URLs — PI mirrors RSS <image> as `image` and
             <itunes:image> as `artwork` and they routinely disagree. The
             episode's own art wins when it has any, which for a music feed is
-            the track cover rather than the album's. */}
+            the track cover rather than the album's.
+
+            The second rung falls back to the show's `image` because
+            `buildPodcast` (lib/pi.ts) drops `artwork` whenever it equals `image`,
+            which most feeds do. Without it, an episode with art of its own had
+            NO show art behind it: Homegrown Hits 157's `episode-157.gif` 404s
+            on the show's server, and the card drew the initial tile where the
+            show's cover loads fine. With no item art the two rungs are one
+            URL, and `artCandidates` drops the repeat. */}
         <PodcastCover
           image={item?.image || podcast.image}
-          artwork={podcast.artwork}
+          artwork={podcast.artwork || podcast.image}
           title={item?.title ?? podcast.title}
           seed={item?.guid ?? podcast.podcastGuid ?? String(podcast.id)}
           className="w-16 h-16 sm:w-20 sm:h-20 object-cover border border-bone/20 flex-shrink-0"

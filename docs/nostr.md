@@ -1450,6 +1450,21 @@ a week after PI crawled it. The route now answers 404, and `storage.episodeMeta`
 reads a stored record with no guid as absent, so the bad ones already on devices
 heal on the next load. `npm run e2e:feedbuttons` pins all of this.
 
+**The card's second art rung is the SHOW's art, whichever field holds it.**
+`<PodcastCover>` steps only through the URLs it is handed, and the card hands it
+the item's own art first. `buildPodcast` drops `artwork` whenever it equals
+`image`, which most feeds do, so `artwork={podcast.artwork}` alone left an episode
+with art of its own NO show art behind it. Homegrown Hits 157 showed it on
+2026-11-07: the feed names `episode-157.gif`, the show's server answers 404, and
+the card drew the initial tile while the show's cover loads everywhere else. A
+track boost reaches this more often now, because `noteOwnItemGuid` sends it to
+the episode rather than the show. The rung is `podcast.artwork || podcast.image`.
+The e2e answers that file with a 404 itself, through Fetch interception and NOT
+`Network.setBlockedURLs`: a block fails with no round trip, and an instant failure
+can land between `<PodcastCover>`'s ladder reset and its remount, which leaves a
+broken image with no error left to fire. That race is older than this card, and a
+404 from a server does not hit it.
+
 **The card is gated on the SHOW resolving, never on the ITEM — a presentation
 decision must not be decided by Podcast Index's coverage.** It was gated on both
 for two releases (`podcast && episode?.guid ? episodeLink : null`), and that read

@@ -19,6 +19,12 @@
 //   5. A record with no guid, stored on a device by an older build, does not hold
 //      the controls back. It is read as absent and replaced.
 //   6. No horizontal overflow at 390 and 320, and each control clears 24×24.
+//   7. An episode whose own art fails still shows the SHOW's cover, never the
+//      initial tile. Homegrown Hits 157's `episode-157.gif` was a 404 on the
+//      show's server, and the card had no show art behind it, because
+//      `buildPodcast` drops `artwork` when it equals `image`. The test answers
+//      that file with a 404 itself, so it holds whatever the show's server does
+//      next.
 //
 // The notes are seeded into the feed's own stale-while-revalidate cache, so they
 // paint with no relay, in the wire shapes measured on the live feed. Signed out, so
@@ -41,6 +47,9 @@ const BOWL = '2d418249-453a-5714-8abc-5b657570b641'; // Bowl After Bowl
 const BOWL_ITEM = 'https://bowlafterbowl.com/episodes/episode-466/';
 const LIVE = 'c1959795-28f1-502d-ad3e-70abf5a034a9'; // v4vmusic Show
 const LIVE_ITEM = 'c1fbf44d-3e12-4c7c-a1a0-1b8fc385ee1d'; // its live item, not in PI
+const HGH = 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f'; // Homegrown Hits
+const HGH_ITEM = 'de330c86-439f-46d5-a83e-ee870aa20c1c'; // Episode 157
+const HGH_ART = 'episode-157.gif'; // that episode's own art, answered 404 below
 
 const now = Math.floor(Date.now() / 1000);
 const sk = generateSecretKey();
@@ -79,6 +88,13 @@ const NOTES = [
     client: 'BoostMeBitch', podcastGuid: LIVE, episodeGuids: [LIVE_ITEM],
     tags: [['i', `podcast:guid:${LIVE}`], ['i', `podcast:item:guid:${LIVE_ITEM}`]],
   }),
+  note('E2E-ART', {
+    client: 'BoostMeBuddy', podcastGuid: HGH, episodeGuids: [HGH_ITEM],
+    tags: [
+      ['i', `podcast:guid:${HGH}`], ['k', 'podcast:guid'],
+      ['i', `podcast:item:guid:${HGH_ITEM}`], ['k', 'podcast:item:guid'],
+    ],
+  }),
 ];
 
 // ---- the page -------------------------------------------------------------
@@ -86,6 +102,18 @@ const { page } = await launchChrome({ name: 'feedbuttons', args: ['--disable-gpu
 const { send, js, until } = page;
 await send('Page.enable');
 await send('Runtime.enable');
+// Answer that file with a real 404, as the show's server did. Both the /api/art
+// proxy URL and the raw one carry the file name unencoded. NOT
+// Network.setBlockedURLs: a block fails with no round trip, and an instant
+// failure can land between <PodcastCover>'s ladder reset and its remount, which
+// leaves a broken <img> with no error left to fire. That race is older than this
+// card and a 404 from a server does not hit it; this test is about the card.
+await send('Fetch.enable', { patterns: [{ urlPattern: `*${HGH_ART}*` }] });
+page.on((m) => {
+  if (m.method === 'Fetch.requestPaused') {
+    send('Fetch.fulfillRequest', { requestId: m.params.requestId, responseCode: 404, body: '' }).catch(() => {});
+  }
+});
 const pageErrors = [];
 page.on((m) => {
   if (m.method === 'Runtime.exceptionThrown') {
@@ -190,6 +218,22 @@ t.ok('the controls still appear', await until(`!!${control('E2E-BOT', HEART)}`, 
 t.ok('the label names the episode', (await textOf('E2E-BOT')).includes('Episode 466'));
 const healed = await stored(BAD);
 t.equal('the record on disk is now the real one', healed?.v?.guid, BOWL_ITEM);
+
+// ---------------------------------------------------------------------------
+console.log('\n6. An episode whose own art fails');
+const ART_CARD = `${ARTICLE('E2E-ART')}?.querySelector('.mt-2.border.border-line')`;
+t.ok('the card appears', await until(`!!${ART_CARD}`, 40000));
+t.ok('the card names the episode', await until(`(${ART_CARD}?.innerText ?? '').includes('Episode 157')`, 40000));
+// The cover is lazy (`lowPriority`), so it loads only once it is on screen.
+await js(`${ARTICLE('E2E-ART')}.scrollIntoView({ block: 'center' })`);
+const COVER = `${ART_CARD}?.querySelector('img')`;
+t.ok('the cover is an image that loaded, not the initial tile',
+  await until(`!!${COVER} && ${COVER}.complete && ${COVER}.naturalWidth > 0`, 30000),
+  await js(`(() => { const i = ${COVER}; if (!i) return 'no img: ' + (${ART_CARD}?.firstElementChild?.firstElementChild?.outerHTML?.slice(0, 160) ?? 'no card');
+    const r = i.getBoundingClientRect();
+    return JSON.stringify({ src: i.getAttribute('src'), currentSrc: i.currentSrc, complete: i.complete, w: i.naturalWidth, top: Math.round(r.top), vh: innerHeight }); })()`));
+t.ok('the image is not the failed episode art',
+  !String(await js(`${COVER}?.currentSrc ?? ''`)).includes(HGH_ART));
 
 t.equal('no page exception', pageErrors, []);
 
