@@ -115,6 +115,17 @@ export function FavoritesPage() {
     storage.favView.set(next);
   }
 
+  // Counts presses of the quick buttons. The scroll has to wait for the commit,
+  // because the press is what changes how much sits below the controls: on the
+  // old, longer list the browser would clamp to a position the new list cannot
+  // hold. A counter rather than a flag, so a second press of the same button
+  // scrolls again.
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const [quickPress, setQuickPress] = useState(0);
+  useEffect(() => {
+    if (quickPress) controlsRef.current?.scrollIntoView({ block: 'start' });
+  }, [quickPress]);
+
   const feedRows = useMemo(() => Object.values(favorites), [favorites]);
   const itemRows = useMemo(() => Object.values(favoriteEpisodes), [favoriteEpisodes]);
   const total = feedRows.length + itemRows.length;
@@ -395,6 +406,43 @@ export function FavoritesPage() {
     [tabs, total],
   );
 
+  /**
+   * One press to each of the four sections this page is mostly visited for,
+   * where the menu above takes two and says nothing until it is opened.
+   *
+   * IT SETS THE FILTER, IT DOES NOT SCROLL TO AN ANCHOR. Under `all` a jump would
+   * land just below the section above it, inside `useAutoReveal`'s 200px margin,
+   * so that section reveals twelve more rows over the landing point. Chrome's
+   * scroll anchoring hides that and Safari has none, so an iPhone would land on
+   * albums after a press of the next button down. A filter has nothing above the
+   * list to grow, and `resetKey` holds the bytes cap to twelve rows.
+   *
+   * Words from `crossSplitLabel`, for the same reason the menu takes them: the
+   * button and the heading of the section it selects must not differ. A pair with
+   * no rows gets no button, as it gets no menu entry. Every other medium, and
+   * `~unknown`, stays in the menu: this row is four words wide at 320px and the
+   * sixteen segment strip it must not grow back into is in the note above.
+   */
+  const quickButtons = tabs
+    .filter((t) => t.key === 'music' || t.key === 'podcast')
+    .flatMap((t) =>
+      (['feeds', 'items'] as const)
+        .filter((k) => (k === 'feeds' ? t.feedCount : t.itemCount) > 0)
+        .map((k) => ({ tab: t.key, kind: k, label: crossSplitLabel(t.key, t.label, k) })),
+    );
+  function pressQuick(tabKey: string, kind: 'feeds' | 'items', on: boolean) {
+    if (on) {
+      update({ tab: 'all', split: 'all' });
+    } else {
+      update({ tab: tabKey, split: kind });
+      // A press that opened on a folded heading would still leave the reader
+      // with no rows and one more control to find.
+      const fold = `favpage:${kind}`;
+      if (collapsed.has(fold)) toggleCollapsed(fold);
+    }
+    setQuickPress((n) => n + 1);
+  }
+
   const showFeeds = split !== 'items';
   const showItems = split !== 'feeds';
 
@@ -427,12 +475,12 @@ export function FavoritesPage() {
   const feedSections = showFeeds
     ? tab === 'all'
       ? mediumSections(feeds, 'feeds', halfTotals.feeds, !!query)
-      : [{ fold: 'favpage:feeds', mediumKey: tab, heading: headingFor('feeds'), rows: feeds, ofTotal: feedRows.length }]
+      : [{ fold: 'favpage:feeds', mediumKey: tab, heading: headingFor('feeds'), rows: feeds, ofTotal: halfTotals.feeds.get(tab) ?? 0 }]
     : [];
   const itemSections = showItems
     ? tab === 'all'
       ? mediumSections(items, 'items', halfTotals.items, !!query)
-      : [{ fold: 'favpage:items', mediumKey: tab, heading: headingFor('items'), rows: items, ofTotal: itemRows.length }]
+      : [{ fold: 'favpage:items', mediumKey: tab, heading: headingFor('items'), rows: items, ofTotal: halfTotals.items.get(tab) ?? 0 }]
     : [];
 
   return (
@@ -454,6 +502,39 @@ export function FavoritesPage() {
           degraded. */}
       <FavoritesSyncNotice />
       <MutesSyncNotice />
+
+      {/* Under the notices, which stay the topmost thing, and over everything
+          else. PINNED because the reader who most wants this row is deep in a
+          long section, and a row that scrolled away would send them back up
+          the whole list first. `mounted` for the reason the gate above gives:
+          `tabs` is empty on the server. */}
+      {mounted && quickButtons.length > 1 && (
+        <div
+          role="group"
+          aria-label="Go to section"
+          className="sticky top-[var(--app-header-h)] z-10 flex gap-1 py-1 bg-ink/90 backdrop-blur"
+        >
+          {quickButtons.map((b) => {
+            const on = tab === b.tab && (split === b.kind || !tabHasBothHalves);
+            return (
+              <button
+                key={`${b.tab}|${b.kind}`}
+                type="button"
+                aria-pressed={on}
+                onClick={() => pressQuick(b.tab, b.kind, on)}
+                // `.btn-ghost`, not `.btn-mini`: the mini's muted text read as
+                // disabled on a real iPhone (see the OPML link box). `px-1` and
+                // 11px are what fit EPISODES into a quarter of 320px.
+                className={`btn-ghost h-11 min-w-0 flex-1 whitespace-nowrap px-1 text-[11px] sm:flex-none sm:px-6 ${
+                  on ? 'border-bolt text-bolt hover:border-bolt' : ''
+                }`}
+              >
+                {b.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Above the loading/empty/rows split on purpose, so it is reachable in
           every one of them. A signed-in user with nothing saved yet is exactly
@@ -522,8 +603,12 @@ export function FavoritesPage() {
 
               The menu comes FIRST, matching where the search box's selector
               sits relative to its input: the mode is a question about the
-              whole list, and the text box narrows what the mode returned. */}
-          <div className="flex items-center gap-2">
+              whole list, and the text box narrows what the mode returned.
+
+              A quick button lands HERE, under the pinned row: 60px is that
+              row's 52px plus the page's own 8px of air. Landing on the first
+              heading instead would hide the menu that names the filter. */}
+          <div ref={controlsRef} className="flex items-center gap-2 scroll-mt-[calc(var(--app-header-h)+60px)]">
             {/* One menu naming the current one of up to sixteen (medium, half)
                 states. See `filterOptions` above for what is in it, and
                 `<SelectMenu>` for why it is a menu rather than the strip of
@@ -1461,9 +1546,10 @@ function mediumSections<T extends { medium?: string }>(
  *
  * `shown` / `ofTotal`: the heading states how many rows the section HAS, never
  * how many happen to be revealed — a count that shrank to match the visible
- * slice would be a worse lie than a long list. When a filter or a tab is
- * narrowing it, it says so explicitly rather than quietly restating a smaller
- * number as if it were the whole.
+ * slice would be a worse lie than a long list. When a filter is narrowing it, it
+ * says so explicitly rather than quietly restating a smaller number as if it
+ * were the whole. `ofTotal` is the medium's own count for that half. A medium tab
+ * passed the whole library's once, so ALBUMS read `60 of 65` with no album hidden.
  */
 function Section({
   listId, heading, shown, ofTotal, collapsed, onToggle, children,
@@ -1476,7 +1562,9 @@ function Section({
   onToggle: () => void;
   children: React.ReactNode;
 }) {
-  if (!shown && ofTotal === null) return null;
+  // `!ofTotal` covers both: null under `all`, and 0 for the half a medium tab
+  // does not have, which would otherwise head an empty list `EPISODES — 0`.
+  if (!shown && !ofTotal) return null;
   return (
     <section>
       <CollapsibleHeading
