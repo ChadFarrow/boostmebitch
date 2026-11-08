@@ -227,6 +227,8 @@ export function bugReportBody(answers: BugReportAnswers, info: AppInfo, log: str
     .filter(([k]) => info[k])
     .map(([k, label]) => `${label}: ${info[k]}`)
     .join('\n');
+  // These four headings are also the field labels of `.github/ISSUE_TEMPLATE/bug.yml`,
+  // so a bug filed on GitHub reads like one filed from the app. Rename both together.
   return [
     '### What happened',
     fenced(answers.happened),
