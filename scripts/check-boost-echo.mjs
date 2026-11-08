@@ -172,9 +172,12 @@ const MSP_ECHO_25 = {
 };
 
 // chadf_boostbot's own post of that same 333-sat boost, 3 s after ChadF's note.
-// It posts EVERY boost on purpose and must ALWAYS show (Chad, 2026-10-02). What
-// keeps it on screen is that it names nobody: no `sender`, no `amount` — its
-// 333 sats come from a kind:9735 the bot signed itself, adopted later.
+// It names nobody: no `sender`, no `amount` — its 333 sats come from a kind:9735
+// the bot signed itself, adopted later. Every note it published before
+// 2026-11-08 has this shape, so they all still show beside ChadF's own.
+// Since 2026-11-08 the bot names ChadF in a `sender` tag (CHADF_BOT_TAGGED
+// below, Helipad-to-Nostr-BoostBot #22): Chad's call that day, reversing his
+// 2026-10-02 rule that its notes must always show.
 const CHADF_BOT_COPY = {
   id: '4210020e7675be4a429b2e35353b4ea5e7711c174d236eb529d42af8a08ef539',
   pubkey: 'f3bd42a91af5f3f1c40ca45ad2269464ab79996b32da78e8ed2ab91111b08e65',
@@ -215,6 +218,12 @@ const withTag = (tags, name, value) => tags.map((t) => (t[0] === name ? [name, v
 const withItem = (tags, guid) => tags.map((t) => (t[0] === 'i' && t[1].startsWith('podcast:item:guid:')
   ? ['i', `podcast:item:guid:${guid}`] : t));
 const withoutItems = (e) => e.tags.filter((t) => !(t[0] === 'i' && t[1].startsWith('podcast:item:guid:')));
+
+// The same post as chadf_boostbot writes it since 2026-11-08: one `sender` tag
+// naming ChadF (the npub of CHADF_OWN_333's author), everything else unchanged.
+const CHADF_BOT_TAGGED = edit(CHADF_BOT_COPY, {
+  tags: [...CHADF_BOT_COPY.tags, ['sender', 'npub177fz5zkm87jdmf0we2nz7mm7uc2e7l64uzqrv6rvdrsg8qkrg7yqx0aaq7']],
+});
 
 const QUINCY_ROOT = note(QUINCY_OWN, null);            // first paint
 const QUINCY_FULL = note(QUINCY_OWN, QUINCY_QUOTED_MSAT); // after the quote stage
@@ -283,8 +292,12 @@ const vectors = [
     kind: 'hidden', args: [[note(CHADF_OWN_333), note(MSP_ECHO_25)]], expect: [],
   },
   {
-    label: 'chadf_boostbot ALWAYS shows beside ChadF’s own note — it names no sender',
+    label: 'a chadf_boostbot note from before 2026-11-08 shows beside ChadF’s own note — it names no sender',
     kind: 'hidden', args: [[note(CHADF_OWN_333), note(CHADF_BOT_COPY, 333000)]], expect: [], alsoNaive: true,
+  },
+  {
+    label: 'since 2026-11-08 chadf_boostbot names ChadF, so beside ChadF’s own note it is absorbed',
+    kind: 'hidden', args: [[note(CHADF_OWN_333), note(CHADF_BOT_TAGGED, 333000)]], expect: [CHADF_BOT_TAGGED.id], alsoNaive: true,
   },
   {
     label: 'the sender’s note is about ANOTHER track',
@@ -366,8 +379,10 @@ console.log('\nProperties:');
 
   if (echoSender(MSP) !== QUINCY_OWN.pubkey) fail('echoSender does not decode the MSP 2.0 bot’s npub to Quincy’s pubkey');
   else ok('echoSender decodes the wire npub to the author of the sender’s note');
-  if (echoSender(note(CHADF_BOT_COPY, 333000)) !== null) fail('echoSender names a sender for chadf_boostbot, which must always show');
-  else ok('echoSender names nobody for chadf_boostbot, so nothing can absorb it');
+  if (echoSender(note(CHADF_BOT_COPY, 333000)) !== null) fail('echoSender names a sender for a pre-2026-11-08 chadf_boostbot note, which names nobody');
+  else ok('echoSender names nobody for a pre-2026-11-08 chadf_boostbot note, so nothing can absorb it');
+  if (echoSender(note(CHADF_BOT_TAGGED, 333000)) !== CHADF_OWN_333.pubkey) fail('echoSender does not read ChadF from a tagged chadf_boostbot note');
+  else ok('echoSender reads ChadF from a chadf_boostbot note with a sender tag');
   const nsec = nip19.nsecEncode(new Uint8Array(32).fill(7));
   if (echoSender(note(edit(MSP_ECHO, { tags: withTag(MSP_ECHO.tags, 'sender', nsec) }))) !== null) {
     fail('echoSender accepted an nsec as a sender');
