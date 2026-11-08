@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 **How to read this file.** Each entry is a rule plus one clause naming the consequence of breaking it. The consequence lets you judge a trade-off; "this shipped broken once" is evidence the obvious version is wrong, not an invitation to re-litigate. **The reasoning lives in `docs/`, indexed below, and the `→` at the end of an entry points at it** — follow it before you edit in that area. The README at the repo root is the architecture spec.
 
 **What lives here vs `docs/`.** Only what must be in mind *before* you know which file you're opening: money-path and security invariants, boundaries, repo-wide conventions, stop-ship checks. **A new rule goes in the relevant `docs/` file unless it (a) can lose funds or leak a credential, (b) governs where code may go, or (c) applies to edits in files you haven't opened yet** — and even then as a rule plus a pointer, never a narrative. Without that test this file grows back: it reached 26,000 words once, which is why `npm run check:claudemd` measures it.
@@ -384,3 +382,4 @@ Reusable element classes — `.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.btn-m
 - **Browse-mode layout is single-column** in `app/page.tsx`; `selectedPodcast` and `discussionEpisode` are state-driven swaps, not routes. Don't reintroduce a right-pane "select a podcast on the left" empty state.
 - Native HTML5 `<audio>` plays the enclosure URL directly — no proxy, no transcoding. The one exception is HLS live streams.
 - **Inline SVG `BoltIcon`** (`components/icons.tsx`) on yellow buttons — the `⚡` emoji is invisible on `bg-bolt`. Yellow-text-on-dark and V4V stamps keep the emoji. `ShareIcon` and `Sun`/`MoonIcon` inherit `currentColor`.
+- **File issues with the matching `.github/ISSUE_TEMPLATE/` form: its label, one `### <label>` per field.**
