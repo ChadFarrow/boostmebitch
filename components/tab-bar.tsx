@@ -213,6 +213,25 @@ const itemClass = (current: boolean) =>
 
 export function TabBar() {
   const pathname = usePathname() ?? '/';
+
+  /**
+   * ON `/` THE HOME TAB IS A VIEW CHANGE, NOT A NAVIGATION.
+   *
+   * `<HomePage>` pushes a history entry for each view change once it has landed
+   * (lib/view-history.ts), so clearing the selection there already pushes `/`.
+   * Left to `<Link>` as well, Next.js navigated too: a second entry for the same
+   * view — one Back press that does nothing — or, when the URL was already `/`,
+   * a same-URL REPLACE that drops the entry's view id. So on `/` a plain click
+   * clears in place and scrolls up, which is what the navigation amounted to.
+   * A modified click (new tab, new window) is left to the browser.
+   */
+  const onHomeTab = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    clearShowSelection();
+    if (pathname !== '/') return;
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    window.scrollTo({ top: 0 });
+  };
   // Mounted here rather than in the layout because this is the component the
   // variable exists for, and it is on every route already.
   useEffect(() => startKeyboardInsetSync(), []);
@@ -240,7 +259,7 @@ export function TabBar() {
                 // The home tab is the one that must clear the selection — see
                 // the header comment. Harmless elsewhere but not needed: the
                 // other routes read the store as a handoff, not a filter.
-                onClick={tab.href === '/' ? clearShowSelection : undefined}
+                onClick={tab.href === '/' ? onHomeTab : undefined}
                 aria-current={current ? 'page' : undefined}
                 className={itemClass(current)}
               >
