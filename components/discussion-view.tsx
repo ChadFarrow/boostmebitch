@@ -1,5 +1,6 @@
 'use client';
 import { useApp } from '@/lib/store';
+import { backOr } from '@/lib/view-history';
 import { EpisodeSocialThread } from './episode-social-thread';
 
 /**
@@ -16,7 +17,9 @@ export function DiscussionView() {
   if (!episode?.socialInteract?.length) return null;
   return (
     <div>
-      <button onClick={closeDiscussion} className="btn-ghost text-xs mb-3">
+      {/* `backOr`: a step back through the browser history when the entry
+          behind is the view this returns to — see lib/view-history.ts. */}
+      <button onClick={() => backOr({ discussionEpisode: null }, closeDiscussion)} className="btn-ghost text-xs mb-3">
         {hasEpisodeDetail ? '← back to episode' : '← back to episodes'}
       </button>
       <section className="card p-4">

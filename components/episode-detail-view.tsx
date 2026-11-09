@@ -4,6 +4,7 @@ import { cloneElement, useEffect, useId, useState } from 'react';
 import { useAnchoredMenu } from './use-anchored-menu';
 import { createPortal } from 'react-dom';
 import { useApp } from '@/lib/store';
+import { backOr } from '@/lib/view-history';
 import { fmt, fmtDate, fmtDuration } from '@/lib/format';
 import { useSavedPosition } from '@/lib/resume-position';
 import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml } from '@/lib/util';
@@ -270,7 +271,9 @@ export function EpisodeDetailView() {
 
   return (
     <div>
-      <button onClick={closeEpisode} className="btn-ghost text-xs mb-3">
+      {/* `backOr`: a step back through the browser history when the entry
+          behind is this show — see lib/view-history.ts. */}
+      <button onClick={() => backOr({ selectedEpisode: null }, closeEpisode)} className="btn-ghost text-xs mb-3">
         ← back to episodes
       </button>
 

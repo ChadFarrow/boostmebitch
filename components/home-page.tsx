@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { SearchBar } from '@/components/search-bar';
 import type { SearchInfo } from '@/components/search-bar';
@@ -17,6 +18,8 @@ import type { SearchType } from '@/lib/util';
 
 import { loadCollection } from '@/lib/playlist-collection';
 import type { Podcast } from '@/lib/types';
+import { NO_SELECTION, applyStoreView, backOr, currentEntryView, syncEntry, viewForEntry } from '@/lib/view-history';
+import type { HomeView } from '@/lib/view-history';
 
 /**
  * The three heavy surfaces this page can show but usually does not, split out
@@ -115,6 +118,7 @@ export function HomePage() {
   const openEpisode = useApp((s) => s.openEpisode);
   const discussionEpisode = useApp((s) => s.discussionEpisode);
   const openDiscussion = useApp((s) => s.openDiscussion);
+  const showOrigin = useApp((s) => s.showOrigin);
   /**
    * Whether we yet know which page this is — the home page, or a `?podcast=` /
    * `?feed=` deep link on its way to a show.
@@ -150,6 +154,21 @@ export function HomePage() {
   const [entryResolved, setEntryResolved] = useState(false);
 
   /**
+   * Whether the mount-time restore below has FINISHED — the show, and the
+   * episode or discussion after it, or the answer that there is none.
+   *
+   * It is what ends "landing" for the history mirror: until it is true every
+   * write REPLACES the entry, because the restore is still describing the page
+   * the visitor arrived on, and a deep link to an episode must not leave a
+   * Back step to its show behind it. `entryResolved` cannot answer this: it is
+   * set before the episode is loaded. See lib/view-history.ts.
+   */
+  const [urlSettled, setUrlSettled] = useState(false);
+  /** Flips once the first write after `urlSettled` has happened. From then on a
+   *  view change PUSHES a history entry. */
+  const landed = useRef(false);
+
+  /**
    * The query string as it was when the page LOADED.
    *
    * A `useRef` initializer runs during render, ahead of every effect, which is
@@ -171,6 +190,18 @@ export function HomePage() {
     typeof window === 'undefined' ? '' : window.location.search,
   );
 
+  /**
+   * The view this page already wrote into the history entry it mounted on, if
+   * any — a step back (or forward) into `/` from another route.
+   *
+   * Read during the first render for the reason `initialSearch` is: the mirror
+   * effect stamps the entry on mount, so under StrictMode's second effect run a
+   * live read would find this page's own stamp and skip a deep link's restore.
+   */
+  const landedOn = useRef<HomeView | null>(
+    typeof window === 'undefined' ? null : currentEntryView(),
+  );
+
   // Which publisher load is current. Opening B, or leaving the publisher view,
   // retires A's still-running `loadCollection`, or A's albums land late under
   // B's header and A's `finally` clears B's spinner.
@@ -183,6 +214,17 @@ export function HomePage() {
   // Nostr thread. Bad/unresolvable params fall back to browse silently.
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    // **The entry's own view wins over its URL and over the store.** Back from
+    // `/favorites` into `/?podcast=A` must show A — but the store, which
+    // outlives this page, may hold show B, handed to `/` from favorites after A
+    // was left. The URL restore below early-returns on any selection, so
+    // without this the page showed B and the mirror rewrote A's entry to B.
+    if (landedOn.current) {
+      applyStoreView(landedOn.current);
+      setEntryResolved(true);
+      setUrlSettled(true);
+      return;
+    }
     const params = new URLSearchParams(initialSearch.current);
     const guid = params.get('podcast');
     const feedId = params.get('feed');
@@ -202,8 +244,8 @@ export function HomePage() {
     // hand-written `t=90.5` is a reasonable thing for a person to type.
     const tRaw = params.get('t')?.trim() ?? '';
     const startSec = /^\d+(\.\d+)?$/.test(tRaw) ? Number(tRaw) : null;
-    if (!guid && !feedId && !playlistParam) { setEntryResolved(true); return; }
-    if (useApp.getState().selectedPodcast) { setEntryResolved(true); return; }
+    if (!guid && !feedId && !playlistParam) { setEntryResolved(true); setUrlSettled(true); return; }
+    if (useApp.getState().selectedPodcast) { setEntryResolved(true); setUrlSettled(true); return; }
     // **Every write below has to be able to give up.**
     //
     // This effect runs two network round trips and then writes to the MODULE
@@ -291,7 +333,7 @@ export function HomePage() {
         const pod = useApp.getState().selectedPodcast ?? loaded.podcast;
         if (pod) useApp.getState().play(ep, pod, startSec);
       }
-    })();
+    })().finally(() => { if (!cancelled) setUrlSettled(true); });
     return () => { cancelled = true; };
   }, [setSelected, openEpisode, openDiscussion]);
 
@@ -303,62 +345,26 @@ export function HomePage() {
     if (naddr) router.replace(`/stream/${naddr}`);
   }, [router]);
 
-  // Selection → URL: replaceState so navigation doesn't pile browser history
-  // entries (the explicit back buttons are the only in-app exit paths). Lets
-  // the SHARE buttons copy real deep links and refresh restore the view.
-  // ?podcast=<guid> when the show has one, else ?feed=<id>; +?episode / +?discussion.
+  // View → URL and browser history. One effect for every view on this page —
+  // show, episode, discussion and the publisher aside — because "did the view
+  // change?" is one question, and two effects writing the same entry would each
+  // answer it alone. The URL lets SHARE copy a real deep link and a refresh
+  // restore the view; the history lets the browser's back button (and
+  // Android's) step back through them instead of leaving the site.
+  //
+  // REPLACE while landing, PUSH after: until the restore above has finished,
+  // the write describes the entry the visitor arrived on. `syncEntry` writes
+  // nothing when the URL already matches — which is what a `popstate` restore
+  // produces, so stepping back never pushes. The mapping, and why each param is
+  // or is not written, is `viewUrl` in lib/view-history.ts.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    // Preview (not-in-PI) feeds have a synthetic negative id and no guid — they
-    // aren't restorable from the URL (a refresh would hit /api/feed?id=<neg> and
-    // blank the view), so mirror nothing for them; they're an ephemeral preview.
-    const isPreview = !!selected?.isPreview;
-    // A PLAYLIST is the one preview feed worth linking to. Every other preview
-    // is a publisher checking their own not-yet-submitted feed, but a musicL
-    // playlist is a thing people share — and it restores exactly, because
-    // `/api/playlist` keys off the feed URL rather than a Podcast Index id.
-    const playlistUrl = selected && !selected.podcastGuid && isPlaylistMedium(selected)
-      ? selected.url : undefined;
-    if (playlistUrl) url.searchParams.set('playlist', playlistUrl);
-    else url.searchParams.delete('playlist');
-    if (selected?.podcastGuid) {
-      url.searchParams.set('podcast', selected.podcastGuid);
-      url.searchParams.delete('feed');
-    } else if (selected && !isPreview) {
-      url.searchParams.set('feed', String(selected.id));
-      url.searchParams.delete('podcast');
-    } else {
-      url.searchParams.delete('podcast');
-      url.searchParams.delete('feed');
-    }
-    // Discussion is opened from episode detail, so selectedEpisode is usually
-    // set; fall back to discussionEpisode for the restored case. Skip for
-    // preview feeds — the episode can't be re-resolved without a real feed.
-    const episodeForUrl = selectedEpisode ?? discussionEpisode;
-    if (episodeForUrl?.guid && !isPreview) url.searchParams.set('episode', episodeForUrl.guid);
-    else url.searchParams.delete('episode');
-    if (discussionEpisode && !isPreview) url.searchParams.set('discussion', '1');
-    else url.searchParams.delete('discussion');
-    // `t` is a one-shot ARRIVAL parameter, never mirrored: the selection this
-    // effect writes from carries no playback position, so there is nothing to
-    // re-derive it from and nothing that could keep it honest. Left alone it
-    // survives every later selection — opening another episode would leave the
-    // previous episode's timestamp in the address bar attached to this one, and
-    // a refresh would then start the wrong episode at the wrong second.
-    url.searchParams.delete('t');
-    window.history.replaceState({}, '', url.toString());
-  }, [selected?.podcastGuid, selected?.id, selected, selectedEpisode?.guid, selectedEpisode, discussionEpisode]);
-
-  // Publisher view → ?publisher=<feedUrl>. Separate effect because the publisher
-  // aside only renders in browse mode (no podcast/episode selected).
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    if (publisherSource?.url) url.searchParams.set('publisher', publisherSource.url);
-    else url.searchParams.delete('publisher');
-    window.history.replaceState({}, '', url.toString());
-  }, [publisherSource?.url]);
+    syncEntry(
+      { selectedPodcast: selected, selectedEpisode, discussionEpisode, showOrigin, publisher: publisherSource },
+      landed.current ? 'push' : 'replace',
+    );
+    if (urlSettled) landed.current = true;
+  }, [urlSettled, selected, selectedEpisode, discussionEpisode, showOrigin, publisherSource]);
 
   // Mount-time hydration of the publisher view from ?publisher=<feedUrl>. Detail
   // wins, so skip if a podcast/feed param is present. The publisher record isn't
@@ -543,6 +549,40 @@ export function HomePage() {
     clearPublisher();
     if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
   }
+
+  /**
+   * Back and forward between entries of THIS page put that entry's view back.
+   *
+   * Only on `/`: a step to another route is Next.js's, and this page unmounts.
+   * A step INTO `/` from another route is the mount path (`landedOn`).
+   *
+   * `flushSync`, because the view is two kinds of state — the store half and the
+   * publisher aside, which is this component's — and the mirror effect above
+   * PUSHES on any change once landed. Committed separately, the first half
+   * would show it a view that is neither entry's, and it would push that. In
+   * one commit the mirror sees exactly the entry's view, finds the URL already
+   * says so, and writes nothing.
+   *
+   * An entry this page has no record of (`viewForEntry` → null) names a show
+   * only its URL can describe now, and the restore that reads a URL runs on
+   * load — so it reloads.
+   */
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onPopState = (e: PopStateEvent) => {
+      if (window.location.pathname !== '/') return;
+      const view = viewForEntry(e.state, window.location.href);
+      if (!view) { window.location.reload(); return; }
+      flushSync(() => {
+        applyStoreView(view);
+        if ((view.publisher?.url ?? null) === (publisherSource?.url ?? null)) return;
+        if (view.publisher) void handleSelect(view.publisher);
+        else clearPublisher();
+      });
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [publisherSource, handleSelect]);
   // Favorites moved to `/favorites`, and the `mounted` gate this page used to
   // carry went with them: it existed solely because `hasFavorites` fed
   // `showLeftRightLayout`, and lib/store.ts hydrates `favorites` from
@@ -612,7 +652,6 @@ export function HomePage() {
    */
   const showLeftRightLayout = loading || !!query || feeds.length > 0 || selected || !!publisherSource;
   const inDetailView = !!selected;
-  const showOrigin = useApp((s) => s.showOrigin);
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
   const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
   const drilledIn = inDetailView || inEpisodeDetail || inDiscussion;
@@ -748,7 +787,7 @@ export function HomePage() {
               </Link>
             ) : (
               <button
-                onClick={() => setSelected(null)}
+                onClick={() => backOr(NO_SELECTION, () => setSelected(null))}
                 className="btn-ghost text-xs mb-3"
                 aria-label="Back"
               >
@@ -772,7 +811,7 @@ export function HomePage() {
               <>
                 <button
                   type="button"
-                  onClick={clearPublisher}
+                  onClick={() => backOr({ publisher: null }, clearPublisher)}
                   className="btn-ghost text-xs mb-2 px-1"
                 >
                   ← {publisherSource.title}
