@@ -1421,6 +1421,72 @@ export function mergeSearchLanes<T extends Pick<Podcast, 'id' | 'medium'>>(
   return out;
 }
 
+/**
+ * One feed URL, spelled so two spellings of the same feed compare equal.
+ *
+ * The scheme and a trailing slash are dropped — Podcast Index stores whatever
+ * the publisher submitted, so `http://` against `https://` is one feed — and
+ * the host is lower-cased by the URL parser. The path and query are KEPT as
+ * written: they are case-sensitive on a real server, and folding them would
+ * make two different feeds one. An unparseable or non-http(s) value is returned
+ * trimmed, so it can only ever equal itself; a blank one is `''`, which the
+ * caller must treat as "no URL", never as a key.
+ */
+export function feedUrlKey(url: string | undefined): string {
+  const raw = url?.trim() ?? '';
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return raw;
+    return `${u.host}${u.pathname.replace(/\/+$/, '')}${u.search}`;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * The curated-collection playlists a search may add: the ones no Podcast Index
+ * lane already returned.
+ *
+ * `lib/curated-roster.ts` holds the playlists the app's own collections list on
+ * `/playlists`, resolved PI-first and from RSS where PI holds nothing — so a
+ * playlist still being built out, which PI has not indexed, can be found by
+ * name (reported as #529). Its rows join a search AFTER both PI lanes, and two
+ * copies of one playlist are two rows for one feed.
+ *
+ * **Deduped by feed URL as well as by id, and the id alone is the trap.** A
+ * record built from RSS carries a NEGATIVE id (`-fnvHash(url)`), so it never
+ * equals the PI id of the same feed. That is every row of a roster resolved
+ * while PI was rate limiting (`couldNotAskPi`), and an id-only dedupe then
+ * lists It's A Mood twice: once from PI, once stamped NOT IN PI. The URL is the
+ * one identity both records agree on (`feedUrlKey`).
+ *
+ * Duplicates WITHIN `curated` are dropped too, first one kept, because
+ * `<PodcastResults>` keys rows by id. Order is preserved: this filters, it
+ * does not rank.
+ */
+export function curatedNotListed<T extends Pick<Podcast, 'id' | 'url'>>(
+  curated: readonly T[],
+  listed: readonly T[],
+): T[] {
+  const ids = new Set<number>();
+  const urls = new Set<string>();
+  const note = (f: T) => {
+    ids.add(f.id);
+    const k = feedUrlKey(f.url);
+    if (k) urls.add(k);
+  };
+  listed.forEach(note);
+  const out: T[] = [];
+  for (const f of curated) {
+    const k = feedUrlKey(f.url);
+    if (ids.has(f.id) || (k && urls.has(k))) continue;
+    note(f);
+    out.push(f);
+  }
+  return out;
+}
+
 // True when a value block actually has payees — the gate for showing BOOST.
 export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;

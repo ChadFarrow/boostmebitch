@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -1034,6 +1034,17 @@ console.log('\nWhich kind of thing the search box was asked for');
     // What somebody writes: default when absent, otherwise take what you were
     // given. That is the missing allowlist.
     parse: (v) => v ?? 'all',
+    // What somebody writes: dedupe by id, the way `mergeSearchLanes` does. It is
+    // right for every curated row PI resolved, which is what makes it tempting,
+    // and wrong for every row built from RSS — its id is `-fnvHash(url)` and
+    // never equals PI's — so a roster resolved under a PI rate limit lists each
+    // indexed playlist twice, the second copy stamped NOT IN PI.
+    unlisted: (curated, listed) => {
+      const ids = new Set(listed.map((f) => f.id));
+      return curated.filter((f) => !ids.has(f.id));
+    },
+    // What somebody writes: compare the URL as written.
+    urlkey: (u) => (u ?? '').trim(),
   };
 
   const ser = (v) => JSON.stringify(v ?? null);
@@ -1108,10 +1119,55 @@ console.log('\nWhich kind of thing the search box was asked for');
   vec('parse', 'case and surrounding space are normalized', ['  MUSIC '], 'music');
   vec('parse', 'npub survives the round trip — it is a real mode, just not a lane', ['npub'], 'npub', { alsoNaive: true });
 
+  // ── curatedNotListed — the curated lane, minus what a PI lane returned ───
+  // Real URLs from the publisher feed (#529). The OnlyBoosts playlist is the
+  // one Podcast Index had not indexed; It's A Mood is PI feed 7443544.
+  const GH = 'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/';
+  const OB = { id: -1500540634, url: `${GH}onlyboosts-top-songs-playlist.xml` };
+  const IAM_PI = { id: 7443544, url: `${GH}IAM-music-playlist.xml` };
+  vec('unlisted', 'a curated playlist no PI lane returned is KEPT — the whole point of #529',
+    [[OB], [IAM_PI]], [OB], { alsoNaive: true });
+  vec('unlisted', 'a curated row PI resolved, which a PI lane also returned, is dropped by id',
+    [[IAM_PI], [IAM_PI]], [], { alsoNaive: true });
+  // THE ONE THAT MATTERS. Resolved while PI rate limited the roster, the row is
+  // an RSS preview with a negative id, and only the URL says it is the same feed.
+  vec('unlisted', 'an RSS preview of a feed a PI lane returned is dropped by URL, not kept by id',
+    [[{ id: -42, url: IAM_PI.url }], [IAM_PI]], []);
+  vec('unlisted', 'http and https name one feed',
+    [[{ id: -42, url: IAM_PI.url.replace('https:', 'http:') }], [IAM_PI]], []);
+  vec('unlisted', 'a trailing slash names one feed',
+    [[{ id: -42, url: `${IAM_PI.url}/` }], [IAM_PI]], []);
+  vec('unlisted', 'two copies inside the curated lane become one row, the first kept',
+    [[OB, { id: -7, url: OB.url }], []], [OB]);
+  // Must-still-work: over-folding is a regression too. A path is case-sensitive
+  // on a real server, so these are two feeds.
+  vec('unlisted', 'a path that differs only in case is a DIFFERENT feed',
+    [[{ id: -42, url: `${GH}iam-music-playlist.xml` }], [IAM_PI]],
+    [{ id: -42, url: `${GH}iam-music-playlist.xml` }], { alsoNaive: true });
+  // A blank URL is "no URL", never a key two blanks can share.
+  vec('unlisted', 'a row with no URL is not matched by another row with no URL',
+    [[{ id: -9 }], [{ id: 4 }]], [{ id: -9 }], { alsoNaive: true });
+  vec('unlisted', 'nothing listed leaves the curated lane as it was',
+    [[OB, IAM_PI], []], [OB, IAM_PI], { alsoNaive: true });
+
+  // ── feedUrlKey ───────────────────────────────────────────────────────────
+  vec('urlkey', 'the scheme is dropped and the host lower-cased',
+    ['https://Example.COM/a/feed.xml'], 'example.com/a/feed.xml');
+  vec('urlkey', 'a trailing slash is dropped', ['http://x.com/feed.xml/'], 'x.com/feed.xml');
+  vec('urlkey', 'the PATH keeps its case', ['https://x.com/Feed.XML'], 'x.com/Feed.XML');
+  vec('urlkey', 'the query is part of the feed', ['https://x.com/f?id=1'], 'x.com/f?id=1');
+  vec('urlkey', 'surrounding space is not part of the URL', ['  https://x.com/f  '], 'x.com/f');
+  vec('urlkey', 'blank is no key', ['   '], '', { alsoNaive: true });
+  vec('urlkey', 'absent is no key', [undefined], '', { alsoNaive: true });
+  vec('urlkey', 'a non-http value only equals itself', ['bmb:collection:community'], 'bmb:collection:community', { alsoNaive: true });
+  vec('urlkey', 'an unparseable value only equals itself', ['not a url'], 'not a url', { alsoNaive: true });
+
   const real = {
     matches: matchesSearchType,
     merge: mergeSearchLanes,
     parse: parseSearchType,
+    unlisted: curatedNotListed,
+    urlkey: feedUrlKey,
   };
   const call = (impl, v) => {
     const fn = impl === 'real' ? real[v.kind] : naive[v.kind];
