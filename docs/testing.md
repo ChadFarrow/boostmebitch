@@ -86,6 +86,18 @@ those, and a new script imports it rather than pasting a twelfth copy:
   path already exited. `exit` closes every browser first; the `exit`, SIGINT and
   SIGTERM hooks close them on any other way out, and `close()` sweeps `ps` for
   anything still holding the profile before deleting it.
+- **Every bug report is a dry run.** `attach` installs `BUG_REPORT_DRY_RUN` in
+  each tab before any page loads: a `window.fetch` wrapper that adds
+  `X-Bug-Report-Dry-Run: 1` to `/api/bug-report` and to nothing else, and the
+  route answers that with 200 `{ dryRun: true }` after every check, filing
+  nothing. `e2e:playbacklog` sends real reports to the real route and assumed
+  the server had no `GITHUB_BUG_TOKEN`; one run against a server that had it
+  filed public issue #527 under the owner's name. It is not CDP `Fetch`, because
+  `Fetch.enable` REPLACES the pattern list and five scripts call it, and not
+  `Network.setExtraHTTPHeaders`, because a custom header on every request makes
+  each cross-origin feed fetch a CORS preflight. **A script that wraps `fetch`
+  for that route must call through to the `fetch` it finds**; `openTab(url)`
+  opens blank and navigates after `attach` for the same reason.
 - **The mini-player bar is `MINI_BAR`** (`[data-mini-player]`), never a label.
   Five scripts spelled it `[aria-label="Open fullscreen player"]`; #443 took
   that label off the bar with its `role="button"` (docs/ui.md), and all five
