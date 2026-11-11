@@ -32,6 +32,16 @@ export async function POST(req: Request) {
   const report = parseBugReport(read.body);
   if (!report.ok) return NextResponse.json({ error: report.error }, { status: 400, headers: NO_STORE });
 
+  // A dry run stops HERE: every check above has run, nothing is filed. Every
+  // tab `scripts/cdp.mjs` opens sends it, so an e2e run can drive the real
+  // route against a server that holds the token — issue #527 was such a run,
+  // filed under the owner's name. The header only REMOVES the filing step,
+  // so it is safe on this unauthenticated route. Before the token check, so
+  // the answer is the same with or without one.
+  if (req.headers.get('x-bug-report-dry-run') === '1') {
+    return NextResponse.json({ number: null, dryRun: true }, { headers: NO_STORE });
+  }
+
   const token = process.env.GITHUB_BUG_TOKEN;
   if (!token) {
     return NextResponse.json({ error: 'bug reports are not set up on this site' }, { status: 503, headers: NO_STORE });

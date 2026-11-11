@@ -17,6 +17,11 @@
 // - NO EXIT ON SUCCESS. A script holding a relay or a CDP socket open never
 //   returns on its own, and only a GREEN run hangs, because the failure path
 //   already exited. End every script with `exit(code)`.
+// - A REAL BUG REPORT. `e2e:playbacklog` sends "Report a bug" through the real
+//   route and assumed the server had no `GITHUB_BUG_TOKEN`; one run against a
+//   server that had it filed public issue #527 under the owner's name. Every
+//   tab here now marks each `/api/bug-report` request a dry run (see
+//   `BUG_REPORT_DRY_RUN`): the route runs every check and files nothing.
 //
 // Deliberately dependency-free — Node 22's global `fetch` and `WebSocket` —
 // for the reason scripts/playwright-global.mjs gives: a browser-automation
@@ -34,6 +39,36 @@ export const wait = (ms) => new Promise((r) => setTimeout(r, ms));
  *  player"]`, the bar lost that label with its `role="button"` (#443), and all
  *  five went red at once with nothing pointing at the cause. */
 export const MINI_BAR = '[data-mini-player]';
+
+/** The header `app/api/bug-report/route.ts` answers with a parse and no issue. */
+export const BUG_REPORT_DRY_RUN_HEADER = 'X-Bug-Report-Dry-Run';
+
+/**
+ * Installed in every tab before any page script runs (`attach`). It wraps
+ * `window.fetch` for `/api/bug-report` ONLY and adds the dry-run header, so a
+ * script can drive "Report a bug" end to end against any server — a dev server
+ * whose `.env.local` holds the token, or production — and never file an issue.
+ *
+ * Not CDP `Fetch`: five scripts call `Fetch.enable` with their own patterns,
+ * which REPLACES any earlier list, and some continue every paused request.
+ * Not `Network.setExtraHTTPHeaders`: a custom header on every request turns
+ * each cross-origin feed fetch into a CORS preflight. A script that stubs the
+ * route (e2e-beta) or records it (e2e-playback-log) wraps this one, and a
+ * wrapper must call through to it rather than to a `fetch` it saved earlier.
+ */
+const BUG_REPORT_DRY_RUN = `(() => {
+  const real = window.fetch;
+  if (typeof real !== 'function' || real.__bmbDryRun) return;
+  const wrapped = (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url ?? '';
+    if (!String(url).includes('/api/bug-report')) return real(input, init);
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    headers.set(${JSON.stringify(BUG_REPORT_DRY_RUN_HEADER)}, '1');
+    return real(input, { ...init, headers });
+  };
+  wrapped.__bmbDryRun = true;
+  window.fetch = wrapped;
+})();`;
 
 /** `CHROME_PATH`, else the first of the usual install paths that exists. */
 export function chromePath() {
@@ -142,9 +177,13 @@ export async function launchChrome({
   }
 
   b.page = await attach(b, target);
+  // Opened blank and navigated AFTER `attach`: `/json/new?<url>` loads the page
+  // before the bug-report guard exists in the tab.
   b.openTab = async (url = 'about:blank') => {
-    const t = await (await fetch(`http://127.0.0.1:${b.port}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' })).json();
-    return attach(b, t);
+    const t = await (await fetch(`http://127.0.0.1:${b.port}/json/new?${encodeURIComponent('about:blank')}`, { method: 'PUT' })).json();
+    const tab = await attach(b, t);
+    if (url !== 'about:blank') await tab.send('Page.navigate', { url });
+    return tab;
   };
   b.close = () => closeBrowser(b);
   return b;
@@ -156,6 +195,7 @@ export async function launchChrome({
  * hanging it. `js` returns `undefined` when the page throws — right for a
  * poll whose expression throws until the element exists; `jsOrThrow` throws
  * the page's own error. `on(fn)` sees every CDP event and returns its remover.
+ * Every tab carries `BUG_REPORT_DRY_RUN`; no script may remove it.
  */
 async function attach(b, target) {
   const ws = new WebSocket(target.webSocketDebuggerUrl);
@@ -205,6 +245,11 @@ async function attach(b, target) {
     }
     return false;
   };
+  // Before the tab is handed out, so no page this tab loads runs without it.
+  // A failure throws: a run without the guard can file a public issue.
+  const guard = await send('Page.addScriptToEvaluateOnNewDocument', { source: BUG_REPORT_DRY_RUN });
+  if (guard.error) throw new Error(`could not install the bug-report dry-run guard: ${guard.error.message}`);
+
   const tab = {
     targetId: target.id,
     ws,

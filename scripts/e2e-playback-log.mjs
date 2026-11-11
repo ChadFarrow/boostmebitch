@@ -19,11 +19,15 @@
 // froze: those need a phone or an emulator. `npm run android:advance`
 // (`scripts/android-advance.mjs`) drives them over adb.
 //
-// Signed out, nothing reaches a relay. Without `GITHUB_BUG_TOKEN` the route
-// answers 503 AFTER `parseBugReport` accepts the report, which is what the
-// report check reads; it never files an issue.
+// Signed out, nothing reaches a relay. The report goes to the REAL route, so
+// the route's own `parseBugReport` judges the log the app wrote — but as a dry
+// run: `scripts/cdp.mjs` adds `X-Bug-Report-Dry-Run: 1`, and the route answers
+// 200 `{ dryRun: true }` after every check and files nothing, token or not.
+// This script once assumed the server had no token; a run against one that
+// had it filed public issue #527. Section 3 asserts every request carried the
+// header.
 
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { BUG_REPORT_DRY_RUN_HEADER, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://localhost:3000';
 const PC20 = '917393e3-1b1e-5cef-ace4-edaa54e1f810';  // Podcasting 2.0 (talk)
@@ -130,20 +134,32 @@ t.equal('a freeze and its resume are recorded', L3.some((l) => / freeze$/.test(l
 // ---------------------------------------------------------------------------
 section('3. "Report a bug" shows the log and sends it only with app info');
 // ---------------------------------------------------------------------------
+// What left the browser, read off the wire rather than the page: the dry-run
+// header is the only thing between this run and a public issue.
+const dryRunHeaders = [];
+page.on((m) => {
+  if (m.method !== 'Network.requestWillBeSent' || !m.params.request?.url?.includes('/api/bug-report')) return;
+  const h = Object.entries(m.params.request.headers ?? {}).find(([k]) => k.toLowerCase() === BUG_REPORT_DRY_RUN_HEADER.toLowerCase());
+  dryRunHeaders.push(h ? h[1] : null);
+});
+await send('Network.enable');
+// Calls through to the `fetch` it finds, which is cdp.mjs's dry-run wrapper.
 await js(`(() => {
   window.__reports = [];
   const f = window.fetch;
   window.fetch = async (input, init) => {
     if (String(input).includes('/api/bug-report')) {
       const res = await f(input, init);
-      window.__reports.push({ body: JSON.parse(init.body), status: res.status });
+      const json = await res.clone().json().catch(() => null);
+      window.__reports.push({ body: JSON.parse(init.body), status: res.status, json });
       return res;
     }
     return f(input, init);
   };
   return 1;
 })()`);
-const opened = await js(`(async () => {
+// A sent report swaps the form for "Thank you", so each send needs a fresh open.
+const openReport = () => js(`(async () => {
   const tick = () => new Promise((r) => setTimeout(r, 400));
   const trigger = [...document.querySelectorAll('button[aria-haspopup="menu"]')].find((b) => /Sign in/.test(b.textContent));
   if (!trigger) return 'no trigger';
@@ -151,12 +167,23 @@ const opened = await js(`(async () => {
   const item = [...document.querySelectorAll('[role="menuitem"]')].find((b) => /Report a bug/.test(b.textContent));
   if (!item) return 'no item';
   item.click(); await tick();
-  return !!(${DIALOG});
+  const d = ${DIALOG};
+  if (!d) return false;
+  d.querySelector('details').open = true;
+  return true;
 })()`);
-t.equal('the report modal opens', opened, true);
+const THANKS = `[...document.querySelectorAll('[role="dialog"]')].find((d) => /Thank you/.test(d.querySelector('h2')?.textContent ?? ''))`;
+const closeThanks = () => js(`(async () => {
+  const d = ${THANKS};
+  if (!d) return 'no thank-you';
+  const text = d.querySelector('p')?.textContent ?? null;
+  [...d.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Done').click();
+  await new Promise((r) => setTimeout(r, 400));
+  return { text, closed: !(${THANKS}) };
+})()`);
+t.equal('the report modal opens', await openReport(), true);
 const shown = await js(`(() => {
   const d = (${DIALOG}).querySelector('details');
-  d.open = true;
   const p = [...d.querySelectorAll('p')].find((x) => /Playback log/.test(x.textContent));
   const pre = d.querySelector('pre');
   return { label: p?.textContent ?? null, lines: pre ? pre.textContent.split('\\n').length : 0 };
@@ -177,10 +204,13 @@ const sendReport = () => js(`(async () => {
 })()`);
 const r1 = await sendReport();
 t.equal('with app info: the log is sent, every line', r1?.body?.log?.length, onDisk);
-// 503 = parseBugReport accepted it and the route stopped at the missing token.
-// A 400 would mean the route refused a log the app wrote.
-t.equal('...and the route accepts it (503: no token here, parsed fine)', r1?.status, 503);
+// 200 dryRun = parseBugReport accepted it and the route filed nothing. A 400
+// would mean the route refused a log the app wrote; a 503 or a number, that
+// the dry run did not reach the route.
+t.equal('...and the route accepts it as a dry run, filing nothing', { status: r1?.status, json: r1?.json }, { status: 200, json: { number: null, dryRun: true } });
+t.equal('the modal says sent, with no issue number', await closeThanks(), { text: 'Your report is sent. We read every one.', closed: true });
 
+t.equal('the modal opens again', await openReport(), true);
 await js(`(() => {
   window.__want = 2;
   const box = (${DIALOG}).querySelector('input[type="checkbox"]');
@@ -189,6 +219,10 @@ await js(`(() => {
 })()`);
 const r2 = await sendReport();
 t.equal('without app info: no log is sent', r2?.body?.log, []);
+t.equal('...and that one is a dry run too', r2?.json, { number: null, dryRun: true });
+t.equal('every report request left with the dry-run header', dryRunHeaders, ['1', '1']);
+t.equal('the modal closes after the second report', (await closeThanks())?.closed, true);
+t.equal('...and opens a third time for the layout check', await openReport(), true);
 
 // ---------------------------------------------------------------------------
 section('4. At phone width the log box scrolls inside itself, not the page');
