@@ -127,6 +127,12 @@ export async function launchChrome({
     '--no-first-run',
     '--no-default-browser-check',
     '--mute-audio',
+    // No 1.4 GB code-sign copy of Chrome under $TMPDIR/../X/ on macOS. Chrome makes one
+    // per start and only CDP Browser.close removes it; the SIGTERM/SIGKILL in
+    // closeBrowser leave it (measured 2026-11-11). Other platforms ignore the name.
+    // Chrome keeps only the LAST --disable-features, so a feature passed in `args`
+    // would replace this one: add it to this list instead.
+    '--disable-features=MacAppCodeSignClone',
     ...(autoplay ? ['--autoplay-policy=no-user-gesture-required'] : []),
     ...args,
     'about:blank',

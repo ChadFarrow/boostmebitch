@@ -86,6 +86,14 @@ those, and a new script imports it rather than pasting a twelfth copy:
   path already exited. `exit` closes every browser first; the `exit`, SIGINT and
   SIGTERM hooks close them on any other way out, and `close()` sweeps `ps` for
   anything still holding the profile before deleting it.
+- **No code-sign copy.** On macOS every Chrome start clones the app (1.4 GB in
+  `du`) under `$TMPDIR/../X/com.google.Chrome.code_sign_clone/`, and only CDP
+  `Browser.close` removes the clone — the SIGTERM and SIGKILL that `close()`
+  sends leave it (measured 2026-11-11, when 357 had piled up on the Mac mini).
+  `launchChrome` passes `--disable-features=MacAppCodeSignClone`, so no clone is
+  made. Chrome keeps only the LAST `--disable-features`, so a script that needs
+  another feature off must add it to that list, not pass a second switch in
+  `args`.
 - **Every bug report is a dry run.** `attach` installs `BUG_REPORT_DRY_RUN` in
   each tab before any page loads: a `window.fetch` wrapper that adds
   `X-Bug-Report-Dry-Run: 1` to `/api/bug-report` and to nothing else, and the
