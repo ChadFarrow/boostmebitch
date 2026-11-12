@@ -44,10 +44,15 @@ export async function checkArt(url: string): Promise<{ ok: true } | { ok: false;
  * is known and is not `music`. Three states from `batchEpisodes`: a value is
  * found, `null` is not found, and an absent key means nobody could be asked,
  * which passes (a Podcast Index outage must not refuse a listener's playlist).
+ *
+ * `feedUrls` is the address Podcast Index holds for each feed guid it answered,
+ * from the same `batchPodcasts` read as the medium. The routes store THAT as the
+ * song's `feedUrl` (`withIndexFeedUrls`), never the client's; a guid the index
+ * could not answer has none, and its remoteItem goes out without one.
  */
 export async function verifySongs(
   songs: PlaylistSong[],
-): Promise<{ notFound: string[]; notMusic: string[] }> {
+): Promise<{ notFound: string[]; notMusic: string[]; feedUrls: Map<string, string> }> {
   // Stop at the first chunk that holds a missing song: the draft is refused
   // already, and a 500-song draft of made-up guids must not cost five PI calls.
   const notFound = new Set<string>();
@@ -60,9 +65,10 @@ export async function verifySongs(
     }
   }
   // A refused draft needs no medium lookup.
-  if (notFound.size) return { notFound: [...notFound], notMusic: [] };
+  if (notFound.size) return { notFound: [...notFound], notMusic: [], feedUrls: new Map() };
 
   const mediums = new Map<string, string | undefined>();
+  const feedUrls = new Map<string, string>();
   const guids = [...new Set(songs.map((s) => s.feedGuid))];
   for (let i = 0; i < guids.length; i += MAX_BATCH) {
     const chunk = guids.slice(i, i + MAX_BATCH);
@@ -70,6 +76,7 @@ export async function verifySongs(
     for (const g of chunk) {
       const p = pods[g];
       if (p) mediums.set(g, p.medium);
+      if (p?.url) feedUrls.set(g, p.url);
     }
   }
   const notMusic = songs
@@ -78,5 +85,5 @@ export async function verifySongs(
       return !!m && m !== 'music';
     })
     .map((s) => s.itemGuid);
-  return { notFound: [], notMusic: [...new Set(notMusic)] };
+  return { notFound: [], notMusic: [...new Set(notMusic)], feedUrls };
 }

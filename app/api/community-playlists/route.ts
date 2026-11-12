@@ -2,7 +2,10 @@ import { NextResponse } from 'next/server';
 import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
-import { validatePlaylistDraft, type DraftProblem, type ArtRefusal } from '@/lib/community/rules';
+import {
+  validatePlaylistDraft, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, type DraftProblem, type ArtRefusal,
+} from '@/lib/community/rules';
+import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { cleanText } from '@/lib/community/clean-text';
 import { checkArt, verifySongs } from '@/lib/community/checks';
 import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, BANNED } from '@/lib/community/http';
@@ -52,7 +55,7 @@ export async function POST(req: Request) {
     if (!communityStoreConfigured()) {
       return NOT_CONFIGURED();
     }
-    const parsed = await readCappedRequestJson(req, 64 * 1024);
+    const parsed = await readCappedRequestJson(req, MAX_PLAYLIST_BODY_BYTES);
     if (!parsed.ok) return parsed.response;
     const auth = await authenticate(req, parsed.body);
     if (!auth.ok) return auth.response;
@@ -60,7 +63,9 @@ export async function POST(req: Request) {
       return BANNED();
     }
     const raw = (parsed.body && typeof parsed.body === 'object' ? parsed.body : {}) as { draft?: unknown };
-    const v = validatePlaylistDraft(raw.draft);
+    // A secret key in the title or description is refused here (`{ kind: 'secret' }`,
+    // the text never echoed) before anything is stored or sent to Podcast Index.
+    const v = validatePlaylistDraft(raw.draft, textHoldsSecret);
     if (!v.ok) return NextResponse.json({ error: 'not publishable', problems: v.problems }, { status: 400 });
 
     const [art, songs] = await Promise.all([
@@ -75,6 +80,8 @@ export async function POST(req: Request) {
 
     const row = await createPlaylist(auth.pubkey, {
       ...v.draft,
+      // Each feedUrl is the one Podcast Index holds, never the client's (rules.ts).
+      songs: withIndexFeedUrls(v.draft.songs, (s) => songs.feedUrls.get(s.feedGuid)),
       title: cleanText(v.draft.title),
       description: cleanText(v.draft.description),
     });

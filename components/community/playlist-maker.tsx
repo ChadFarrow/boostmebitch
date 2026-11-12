@@ -16,6 +16,7 @@ import {
   NoSignerError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
 } from '@/lib/community/client';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
+import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { PlaylistPublished } from './playlist-published';
 import { AddSongsSheet } from './add-songs-sheet';
 
@@ -51,17 +52,23 @@ function problemText(p: Refusal, labels: Labels): string {
     case 'duplicate-song': return `${song(p.itemGuid)} is in the playlist twice.`;
     case 'bad-song': return 'One song in the playlist is not valid. Remove it.';
     case 'art-not-https': return 'The picture link must start with https://';
+    case 'art-bad-link': return 'The picture link is not a valid address.';
+    // Never quotes the text: the key must not be printed again anywhere.
+    case 'secret': return `The ${p.field} holds what looks like a secret key or a wallet connection. Remove it: a playlist is public.`;
     case 'art': return ART_WORDS[p.reason] ?? ART_WORDS['not-image'];
     case 'song-not-found': return `${song(p.itemGuid)} was not found. Remove it and try again.`;
     case 'not-music': return `${song(p.itemGuid)} is not a music track. Remove it and try again.`;
   }
 }
 
-/** Why PUBLISH is off, in one short line; null when it is on. */
+/**
+ * Why PUBLISH is off, in one short line; null when it is on. A secret key in the
+ * title or description comes first: it must be removed before anything is sent.
+ */
 function whyNot(d: PlaylistDraft): string | null {
-  const v = validatePlaylistDraft(d);
+  const v = validatePlaylistDraft(d, textHoldsSecret);
   if (v.ok) return null;
-  const order: DraftProblem['kind'][] = ['too-few-songs', 'title-missing'];
+  const order: DraftProblem['kind'][] = ['secret', 'too-few-songs', 'title-missing'];
   const first = order.map((k) => v.problems.find((p) => p.kind === k)).find(Boolean) ?? v.problems[0];
   return problemText(first, {}).replace(/\.$/, '');
 }
@@ -137,7 +144,10 @@ export function PlaylistMaker() {
       if (!live) return;
       if (!p) { setLoadError('We could not load that playlist.'); setFormNpub(npub); return; }
       if (p.ownerPubkey !== pubkey) { setLoadError('Only the person who made this playlist can edit it.'); setFormNpub(npub); return; }
-      if (cached) apply({ ...cached, editingId: id, expectedUpdatedAt: p.updatedAt });
+      // A restored draft keeps the version it was MADE against. If the playlist changed
+      // elsewhere since, SAVE then gets the 409 "changed elsewhere" warning; taking the
+      // server's version here would overwrite that change with no word.
+      if (cached) apply({ ...cached, editingId: id, expectedUpdatedAt: cached.expectedUpdatedAt ?? p.updatedAt });
       else {
         setTitle(p.title); setDescription(p.description); setArtUrl(p.artUrl ?? '');
         setSongs(p.songs); setEditingId(p.id); setExpectedUpdatedAt(p.updatedAt);
@@ -196,7 +206,7 @@ export function PlaylistMaker() {
     : 'Could not reach the server. Try again.');
 
   const submit = useCallback(async () => {
-    const v = validatePlaylistDraft(draft);
+    const v = validatePlaylistDraft(draft, textHoldsSecret);
     if (!v.ok || !npub || !pubkey) return;
     setBusy(true); setNote(null); setRefusals([]);
     try {
@@ -228,7 +238,10 @@ export function PlaylistMaker() {
         return;
       }
       if (res.status === 400 && Array.isArray(body?.problems)) setRefusals(body.problems);
-      else if (res.status === 409 && editingId) {
+      // The route's body cap (MAX_PLAYLIST_BODY_BYTES): a retry sends the same bytes.
+      else if (res.status === 400 && body?.error === 'payload too large') {
+        setNote('This playlist is too large to save. Remove some songs and try again.');
+      } else if (res.status === 409 && editingId) {
         // Changed elsewhere: keep the user's form, take the new version number.
         const cur = await fetchPlaylist(editingId);
         if (cur) setExpectedUpdatedAt(cur.updatedAt);

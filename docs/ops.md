@@ -518,6 +518,7 @@ The Preview environment already holds the rest.
 | `GITHUB_BUG_TOKEN` | the bug report; sensitive, so it is pasted by hand |
 | `NOSTR_INDEX_URL`, `NOSTR_INDEX_KEY` | beta reads like production; the app sends no write to the index |
 | `PLAYLIST_DB_URL`, `PLAYLIST_DB_CA` | same; `lib/playlist-db.ts` is read-only |
+| `COMMUNITY_DB_URL`, `NEXT_PUBLIC_COMMUNITY_PLAYLISTS`, `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN`, `ADMIN_NPUBS` (and `COMMUNITY_DB_CA`) | community playlists on the TEST store; see "Community playlists database" below |
 
 The `boostmebuddy` project also builds `beta` as an ordinary preview, as it does
 every branch. That preview has no domain, and it is harmless.
@@ -617,3 +618,24 @@ upgrade rather than forcing it.
 | `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` | `on` turns every community-playlist route and surface on; anything else answers 404 |
 | `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` | Origin of the public feed URLs. Default `https://www.boostmebuddy.com`; local tests set `http://localhost:3123` |
 | `COMMUNITY_PI_NOTIFY` | `on` lets new and changed community feeds be sent to Podcast Index. It also needs `VERCEL_ENV=production` and the feed origin `https://www.boostmebuddy.com`. Leave it unset: Podcast Index is off for now |
+
+### Where each setting goes: beta now, both production sites at launch
+
+**`NEXT_PUBLIC_*` values are compiled into the build.** Changing one in Vercel changes nothing until the project is deployed again, so redeploy after every change to the switch or the feed origin. The server-only values (`COMMUNITY_DB_URL`, `ADMIN_NPUBS`) also need a new deployment to reach the functions.
+
+**Beta (now).** The `boostmebitch` project, Preview environment, every variable scoped to the branch `beta` (as the table above shows), so a PR preview gets none of them and the feature is off there:
+
+1. Run `npm run community:schema` against the TEST database first.
+2. Set `COMMUNITY_DB_URL` to the TEST database (never the production one: beta playlists are test data), `COMMUNITY_DB_CA` if that server uses TLS, `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=https://beta.boostmebitch.com` (test playlists get addresses on beta, where they exist), `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`, and `ADMIN_NPUBS`.
+3. Redeploy `beta` (`npm run beta -- rebuild` and the push it prints, or a redeploy in Vercel).
+
+**Launch (when Chad turns it on).** BOTH projects' Production environment, because every feed address is on `www.boostmebuddy.com` and both deploys write to one store:
+
+1. Run `npm run community:schema` against the PRODUCTION database.
+2. Merge and deploy `buddy-sign-cors` to the `boostmebuddy` project first. Without it a site-signed note for a playlist song fails on the bitch deploy (the payment is unaffected).
+3. On BOTH projects set `COMMUNITY_DB_URL` (the production database, the same value on both), `COMMUNITY_DB_CA` if needed, `ADMIN_NPUBS`, and `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`. Leave `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` UNSET: the default is `https://www.boostmebuddy.com`.
+4. Deploy `boostmebuddy` before `boostmebitch`. `/feeds/playlists/*` is served by the `boostmebuddy` project, so a playlist published on the bitch deploy before Buddy serves its address is a dead link.
+
+**After launch, the switch on Buddy is part of every feed's address.** Turning `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` OFF on `boostmebuddy` makes every `/feeds/playlists/*` answer 404, so every podcast app subscribed to a playlist loses it. That breaks the permanent-address contract the feed path carries, and nothing turns it back except the switch. There is no switch that stops new playlists and keeps the feeds; turn it off on Buddy only to end the feature.
+
+**Never set `COMMUNITY_PI_NOTIFY`** until the Podcast Index list in `docs/feeds.md` ("Community playlists", Known limits) is done: the ban-with-`deleteAll` notification, the `add/byfeedurl` method, and that our key may add feeds.

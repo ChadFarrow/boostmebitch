@@ -95,3 +95,20 @@ export function looksLikeSecretKey(raw: string): boolean {
   const token = raw.trim().replace(/^nostr:/i, '').toLowerCase();
   return token.startsWith('nsec1') || token.startsWith('ncryptsec1');
 }
+
+/**
+ * True when FREE TEXT that will be published holds a secret anywhere in it: a
+ * secret key (`looksLikeSecretKey` on every run of letters and digits — a bech32
+ * key is one such run, so `key=nsec1…` and `x:nsec1…` are found where a
+ * whitespace split would miss them) or an NWC connection string, which is a
+ * spending credential.
+ *
+ * For text whose whole point is to be public: a community playlist's title and
+ * description go into an RSS feed anyone can read and Podcast Index may copy, so
+ * the maker refuses them (and says why) and both write routes refuse them again,
+ * without echoing the text. Like `looksLikeSecretKey`, it never decodes.
+ */
+export function textHoldsSecret(text: string): boolean {
+  if (/nostr\+walletconnect:/i.test(text)) return true;
+  return text.split(/[^a-z0-9]+/i).some((run) => run !== '' && looksLikeSecretKey(run));
+}
