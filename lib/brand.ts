@@ -222,8 +222,12 @@ export const DEFAULT_SENDER_NAME = BRAND.senderName;
  * outright rather than trimming it — see the anonymity note in CLAUDE.md's boost
  * flow: the promise covers the payment, not just the Nostr note.
  */
-export function resolveSenderName(typed: string, anonymous: boolean): string {
-  return (anonymous ? '' : typed.trim()) || DEFAULT_SENDER_NAME;
+export function resolveSenderName(
+  typed: string,
+  anonymous: boolean,
+  brand: Brand = BRAND,
+): string {
+  return (anonymous ? '' : typed.trim()) || brand.senderName;
 }
 
 /**

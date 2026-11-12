@@ -454,6 +454,22 @@ check(
 section('must still work — inputs a correct implementation leaves alone');
 // ---------------------------------------------------------------------------
 
+// A boost note for a song played from a PLAYLIST: the banner (its `art` query
+// carries the feed host, as the real banner does), the track's landing link, then
+// `🎧 Heard on …` and the playlist's own link. The playlist link must never
+// answer; the tag hint is spelled with a capital host so only the normalised
+// match finds the track, and naive()'s first-"fountain.fm"-substring fallback
+// lands on the banner instead.
+check(
+  'playlist note: the track link answers, not the banner or the playlist link',
+  [
+    ['i', 'podcast:item:guid:aa047faf-4872-42a7-93cc-4e9b9712a25c', 'https://FOUNTAIN.fm/track/3nQSt6pDku7j6oqhEIlV'],
+    ['i', 'podcast:guid:33d1729a-d124-5880-8f99-5ac4df73de73', 'https://fountain.fm/album/mFVQFD0HEislfOMNUHRW'],
+    ['r', 'https://www.boostmebuddy.com/?podcast=list-g'],
+  ],
+  'https://www.boostmebuddy.com/api/og/boost.png?art=https%3A%2F%2Ffeeds.fountain.fm%2Fa.jpg&title=Song\n\nSong boosted 100 sats\nhttps://fountain.fm/track/3nQSt6pDku7j6oqhEIlV\n\n🎧 Heard on Road Trip by nostr:npub1maker\nhttps://www.boostmebuddy.com/?podcast=list-g',
+  'https://fountain.fm/track/3nQSt6pDku7j6oqhEIlV',
+);
 check('no tags, no body', [], '', null, { alsoNaive: true });
 check('body with no URL at all', MMO_TAGS, 'just a sentence about a podcast', null, { alsoNaive: true });
 check(

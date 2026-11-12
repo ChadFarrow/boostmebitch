@@ -15,7 +15,7 @@ import { bech32 } from '@scure/base';
 import { generateSecretKey, finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { getToken, validateEventMethodTag } from 'nostr-tools/nip98';
 import { verifyNip98, adminPubkeys, authMessage } from '../lib/community/auth.ts';
-import { communityPlaylistToPodcast, fnvHash } from '../lib/util.ts';
+import { communityPlaylistToPodcast, fnvHash, playlistBoostContext, heardOnLines } from '../lib/util.ts';
 import { composeCover, noteSvg } from '../lib/community/cover-compose.ts';
 import sharp from 'sharp';
 import { BRANDS } from '../lib/brand.ts';
@@ -311,6 +311,39 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   check('grid with a missing tile -> 1400 x 1400', gm.width === 1400 && gm.height === 1400);
   const rep = [...(await sharp(g).extract({ left: 1000, top: 300, width: 1, height: 1 }).raw().toBuffer())];
   check('a missing tile repeats the previous one', rep[0] > 200 && rep[1] < 60);
+}
+
+{
+  // Note context for a song played from a playlist (Task 15).
+  const HOSTED = 'https://www.boostmebuddy.com/feeds/playlists/';
+  const list = { id: 1, podcastGuid: 'list-g', title: 'Road Trip', medium: 'musicL',
+    url: HOSTED + 'abc.xml', nostrNpubs: [{ npub: 'npub1maker', pubkey: 'pk' }] };
+  const song = { id: 9, title: 'Song', podcastGuid: 'album-g', feedTitle: 'The Album', feedId: 77, feedImage: 'https://x/a.jpg' };
+  const ctx = playlistBoostContext(list, song, HOSTED);
+  check('context: container is the playlist', ctx.container === list);
+  check('context: show is the track\'s own feed', ctx.show.podcastGuid === 'album-g' && ctx.show.title === 'The Album');
+  check('context: show carries NO container npubs', ctx.show.nostrNpubs === undefined);
+  check('context: hosted true for the hosted prefix', ctx.hosted === true);
+  const own = playlistBoostContext(list, { ...song, podcastGuid: 'list-g' }, HOSTED);
+  check('context: same guid -> no container, show is podcast', own.container === null && own.show === list && own.hosted === false);
+  const noEp = playlistBoostContext(list, undefined, HOSTED);
+  check('context: no episode -> no container', noEp.container === null && noEp.show === list);
+  const album = { id: 2, podcastGuid: 'al', title: 'Alb', medium: 'music', url: HOSTED + 'x.xml' };
+  const alb = playlistBoostContext(album, song, HOSTED);
+  check('context: a music album with a foreign guid is NOT a container', alb.container === null && alb.show === album && alb.hosted === false);
+  const ext = playlistBoostContext({ ...list, url: 'https://example.com/pl.xml' }, song, HOSTED);
+  check('context: hosted false for a foreign feed url', ext.container !== null && ext.hosted === false);
+  const noUrl = playlistBoostContext({ ...list, url: undefined }, song, HOSTED);
+  check('context: hosted false with no url', noUrl.hosted === false);
+
+  const j = (v) => JSON.stringify(v);
+  check('heardOn: with maker', j(heardOnLines(list, 'npub1maker', 'https://www.boostmebuddy.com')) ===
+    j(['🎧 Heard on Road Trip by nostr:npub1maker', 'https://www.boostmebuddy.com/?podcast=list-g']));
+  check('heardOn: without maker', j(heardOnLines(list, null, 'https://o.example')) ===
+    j(['🎧 Heard on Road Trip', 'https://o.example/?podcast=list-g']));
+  check('heardOn: no guid -> no link line', j(heardOnLines({ ...list, podcastGuid: undefined }, 'npub1m', 'https://o.example')) ===
+    j(['🎧 Heard on Road Trip by nostr:npub1m']));
+  check('heardOn: guid is URI-encoded', heardOnLines({ ...list, podcastGuid: 'a b&c' }, null, 'https://o.example')[1] === 'https://o.example/?podcast=a%20b%26c');
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }

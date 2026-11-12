@@ -417,6 +417,11 @@ eq('a typed name is used', resolveSenderName('  Alice  ', false), 'Alice');
 eq('an empty name falls back', resolveSenderName('   ', false), DEFAULT_SENDER_NAME);
 eq('anonymous DISCARDS the typed name', resolveSenderName('Alice', true), DEFAULT_SENDER_NAME);
 eq('anonymous with no name', resolveSenderName('', true), DEFAULT_SENDER_NAME);
+// The third argument names the brand, so a hosted-playlist note says "Boost Me Buddy"'s
+// own word on a deploy whose BRAND is the other one. Default unchanged.
+eq('buddy brand: anonymous', resolveSenderName('', true, BRANDS.buddy), 'boostmebuddy.com user');
+eq('buddy brand: typed name kept', resolveSenderName('Chad', false, BRANDS.buddy), 'Chad');
+eq('no third argument = the active brand', resolveSenderName('', true), DEFAULT_SENDER_NAME);
 
 // ---------------------------------------------------------------------------
 // TOTAL naive replay. Every ID_VECTORS entry must fail against the obvious

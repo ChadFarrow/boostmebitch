@@ -62,6 +62,49 @@ export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * How a boost note describes a song played from a PLAYLIST. Pure; the note
+ * builder wires it. `container` is the playlist (`podcast`) only when it is a
+ * list medium AND the episode names a DIFFERENT feed — any other pairing is the
+ * ordinary case, `container: null`, `show === podcast`. `show` is then the
+ * track's OWN feed via `queueShowFor`, an allowlist rewrite that carries none of
+ * the playlist's facts (`nostrNpubs` stays undefined: the curator is tagged
+ * through `container`, never copied onto the album).
+ * `hosted` is true for a playlist this deploy serves, whose note uses the
+ * brand's own wording.
+ */
+export function playlistBoostContext(
+  podcast: Podcast,
+  episode: Episode | undefined,
+  hostedFeedPrefix: string,
+): { container: Podcast | null; show: Podcast; hosted: boolean } {
+  const container = episode?.podcastGuid
+    && isPlaylistMedium(podcast)
+    && podcast.podcastGuid
+    && episode.podcastGuid !== podcast.podcastGuid
+    ? podcast
+    : null;
+  const show = container && episode ? queueShowFor(episode, podcast) : podcast;
+  return { container, show, hosted: !!container?.url?.startsWith(hostedFeedPrefix) };
+}
+
+/**
+ * The "heard on" lines of a boost note: the credit line, then the playlist's
+ * landing link (only when it has a guid). The link is the same shape as
+ * `siteLandingUrl` in `lib/nostr/boost-notes.ts`, encoding included.
+ */
+export function heardOnLines(
+  container: Podcast,
+  makerNpub: string | null,
+  linkOrigin: string,
+): string[] {
+  const lines = [`🎧 Heard on ${container.title}${makerNpub ? ` by nostr:${makerNpub}` : ''}`];
+  if (container.podcastGuid) {
+    lines.push(`${linkOrigin}/?podcast=${encodeURIComponent(container.podcastGuid)}`);
+  }
+  return lines;
+}
+
+/**
  * Feeds whose rows are TRACKS rather than episodes: a row tap plays instead of
  * opening a detail page, the header cover is a play button, playback
  * auto-advances, and chapters/transcripts are suppressed.
