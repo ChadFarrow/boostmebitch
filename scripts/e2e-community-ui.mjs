@@ -3,7 +3,8 @@
 // Needs a dev server started with, on the command line (never in .env.local):
 //   COMMUNITY_DB_URL=postgres://postgres:test@localhost:54329/postgres
 //   (the local Postgres, with the schema applied: `npm run community:schema`)
-//   ADMIN_NPUBS=<any npub> NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
+//   ADMIN_NPUBS=npub1nzwqkakt2cuhrlwfhme3asrvx4s0xfyadm57tkpu2a39t9hqtahs7fsn89 (the test-only admin key of
+//   e2e-community-api.mjs; section 11 signs in with it) NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
 //   NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 npm run dev -- -p 3123
 // APP_URL overrides the server.
 //
@@ -63,7 +64,7 @@ page.on(async (m) => {
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   (() => {
     const waiting = new Map(); let n = 0;
-    window.__bmbResolve = (rid, r) => { const p = waiting.get(rid); waiting.delete(rid); r.err ? p.reject(new Error(r.err)) : p.resolve(r.out); };
+    window.__bmbResolve = (rid, r) => { const p = waiting.get(rid); waiting.delete(rid); if (!p) return; r.err ? p.reject(new Error(r.err)) : p.resolve(r.out); };
     const call = (fn, ...args) => new Promise((resolve, reject) => {
       const rid = 'r' + (++n); waiting.set(rid, { resolve, reject });
       window.bmbSigner(JSON.stringify({ rid, fn, args }));
@@ -135,6 +136,7 @@ if (OFF) {
   t.equal('no stored rows, no EDIT', await js(`document.querySelectorAll('a[data-edit-playlist]').length`), 0);
   t.equal('the page never asked the store', await js(`window.__fetched.filter((u) => u.includes('/api/community-playlists')).length`), 0);
   t.ok('off: no horizontal overflow', await overflowFree());
+  t.equal('off: /admin is a 404', (await fetch(`${APP}/admin`)).status, 404);
   console.log(`\n${t.count - t.fails}/${t.count} passed`);
   await exit(t.fails ? 1 : 0);
 }
@@ -524,6 +526,132 @@ await click(`[...document.querySelectorAll('[role=dialog] button')].find((b) => 
 t.ok('confirmed: the page says it is gone', await waitFor(`document.body.innerText.includes('playlist deleted')`, 20000));
 t.equal('and the feed answers 410', (await fetch(feedUrl)).status, 410);
 t.equal('the edit slot is gone', await js(`localStorage.getItem(${JSON.stringify(editKey(id))})`), null);
+
+// ---- 11. /admin: delete, ban, unban (390 x 844) --------------------------------
+console.log('--- 11. /admin ---');
+// TEST-ONLY admin key, the same one scripts/e2e-community-api.mjs uses; the dev server's ADMIN_NPUBS is its npub.
+const ADMIN_SK = Uint8Array.from(Buffer.from('07'.repeat(32), 'hex'));
+const adminPk = getPublicKey(ADMIN_SK);
+const sk3 = generateSecretKey();
+IP = `10.81.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+await send('Network.setExtraHTTPHeaders', { headers: { 'x-real-ip': IP } });
+const nodeIp = `10.82.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+const communityFeed = (pid) => `${APP}/feeds/playlists/${pid}.xml`;
+const apiPublish = async (key, title) => {
+  const url = `${APP}/api/community-playlists`;
+  const payload = { draft: draft({ title }) };
+  const token = await getToken(url, 'POST', (e) => finalizeEvent(e, key), true, payload);
+  const r = await fetch(url, { method: 'POST', headers: { Authorization: token, 'Content-Type': 'application/json', 'x-real-ip': nodeIp }, body: JSON.stringify(payload) });
+  const j = await r.json().catch(() => ({}));
+  return { status: r.status, id: j.id, j };
+};
+const tag = Math.random().toString(36).slice(2, 7);
+const A1 = `e2e admin A1 ${tag}`, A2 = `e2e admin A2 ${tag}`, B1 = `e2e admin B1 ${tag}`;
+const pa1 = await apiPublish(sk, A1); await wait(1100);
+const pa2 = await apiPublish(sk, A2); await wait(1100);
+const pb1 = await apiPublish(sk3, B1);
+t.ok('three playlists seeded for the admin run', [pa1, pa2, pb1].every((x) => x.status === 201 && x.id), JSON.stringify([pa1.status, pa2.status, pb1.status, pa1.j]));
+const as = async (key, hex) => {
+  cur = { sk: key, pk: hex };
+  await js(`localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
+    localStorage.setItem('bmb:npub', ${JSON.stringify(nip19.npubEncode(hex))}); localStorage.setItem('bmb:signer', 'nip07'); 1`);
+};
+const inDialog = (label) => `[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})`;
+const rowBtn = (pid, label) => `[...document.querySelector('[data-admin-playlist="${pid}"]').querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})`;
+const adminIds = () => js(`[...document.querySelectorAll('[data-admin-playlist]')].map((e) => e.getAttribute('data-admin-playlist'))`);
+
+// signed out
+await js(`localStorage.removeItem('bmb:npub'); localStorage.removeItem('bmb:signer'); 1`);
+await go('/admin');
+t.ok('/admin signed out: the page says SIGN IN', await waitFor(`document.querySelector('main')?.innerText.includes('SIGN IN')`, 15000));
+t.ok('and the SIGN IN button is there', await click(byText('SIGN IN')));
+t.ok('/admin signed out: no horizontal overflow', await overflowFree());
+
+// a non-admin
+await as(sk, pk);
+await go('/admin');
+t.ok('a non-admin sees: This account is not an admin.', await waitFor(`document.querySelector('main')?.innerText.includes('This account is not an admin.')`, 20000));
+t.ok('and no DELETE button', await js(`!${byText('DELETE')}`));
+
+// the admin
+await as(ADMIN_SK, adminPk);
+await go('/admin');
+t.ok('the admin sees the rows', await waitFor(`document.querySelectorAll('[data-admin-playlist]').length >= 3`, 30000));
+const ids = await adminIds();
+t.ok('rows are newest first (B1, A2, A1 in that order)', ids.indexOf(pb1.id) < ids.indexOf(pa2.id) && ids.indexOf(pa2.id) < ids.indexOf(pa1.id), ids.join(','));
+const rowText = await js(`document.querySelector('[data-admin-playlist="${pa1.id}"]').innerText`);
+t.ok('a row: title, 12 songs, a short npub', rowText.includes(A1) && rowText.includes('12 songs') && rowText.includes('npub1'), rowText);
+t.ok('a row: DELETE and BAN MAKER', await js(`!!${rowBtn(pa1.id, 'DELETE')} && !!${rowBtn(pa1.id, 'BAN MAKER')}`));
+// A localhost cover is refused by the proxy in dev (safeFetch) and the thumb falls back, so the request is the proof.
+t.ok('a row: the cover is asked of /api/art first', await waitFor(`performance.getEntriesByType('resource').some((e) => e.name.includes('/api/art?url=') && e.name.includes(${JSON.stringify(encodeURIComponent(pa1.id))}))`, 15000));
+t.ok('the Banned list is there', (await body()).includes('Banned'));
+t.ok('admin: no horizontal overflow', await overflowFree());
+t.equal('admin: every control at least 24 x 24', await tooSmall('main button, main a', 24, 24), []);
+
+// DELETE asks first
+await click(rowBtn(pa1.id, 'DELETE'));
+t.ok('DELETE asks first', await waitFor(`document.querySelector('[role=dialog]')?.innerText.includes('Delete this playlist?')`));
+t.equal('and nothing is deleted yet', [(await fetch(communityFeed(pa1.id))).status, (await adminIds()).includes(pa1.id)], [200, true]);
+t.equal('the dialog buttons are at least 24 x 24', await tooSmall('[role=dialog] button', 24, 24), []);
+await click(inDialog('CANCEL'));
+t.ok('CANCEL closes it', await waitFor(`!document.querySelector('[role=dialog]')`));
+t.equal('and the playlist is still there', (await fetch(communityFeed(pa1.id))).status, 200);
+await click(rowBtn(pa1.id, 'DELETE'));
+await waitFor(`document.querySelector('[role=dialog]')`);
+await click(inDialog('DELETE'));
+t.ok('confirmed: the row is gone', await waitFor(`!document.querySelector('[data-admin-playlist="${pa1.id}"]')`, 20000));
+t.equal('and its feed answers 410', (await fetch(communityFeed(pa1.id))).status, 410);
+t.ok('and the other rows stay', (await adminIds()).includes(pa2.id));
+
+// BAN AND DELETE ALL
+await click(rowBtn(pa2.id, 'BAN MAKER'));
+t.ok('BAN asks about the other playlists', await waitFor(`document.querySelector('[role=dialog]')?.innerText.includes("Also delete this person's other playlists?")`));
+t.ok('with BAN AND DELETE ALL, BAN ONLY and CANCEL', await js(`['BAN AND DELETE ALL', 'BAN ONLY', 'CANCEL'].every((l) => [...document.querySelectorAll('[role=dialog] button')].some((b) => b.textContent.trim() === l))`));
+t.equal('the three buttons are at least 24 x 24', await tooSmall('[role=dialog] button', 24, 24), []);
+await click(inDialog('BAN AND DELETE ALL'));
+t.ok('the maker is in the Banned list', await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 1`, 20000));
+t.ok('the maker playlists are gone from the admin list', !(await adminIds()).includes(pa2.id));
+t.ok('the other maker is untouched', (await adminIds()).includes(pb1.id));
+t.equal('the banned maker feed answers 410', (await fetch(communityFeed(pa2.id))).status, 410);
+t.equal('a banned row has UNBAN at least 24 x 24', [!!(await js(`!!${byText('UNBAN')}`)), await tooSmall('[data-admin-ban] button', 24, 24)], [true, []]);
+await go('/playlists');
+t.ok('/playlists lists the surviving playlist', await waitFor(`document.body.innerText.includes(${JSON.stringify(B1)})`, 60000));
+t.ok('and not the banned maker playlists', await js(`!document.body.innerText.includes(${JSON.stringify(A1)}) && !document.body.innerText.includes(${JSON.stringify(A2)})`));
+const apiList = await fetch(`${APP}/api/community-playlists`, { headers: { 'x-real-ip': nodeIp } }).then((r) => r.json());
+t.ok('and the public list agrees', !apiList.playlists.some((p) => p.title === A1 || p.title === A2) && apiList.playlists.some((p) => p.title === B1));
+
+// the banned maker cannot publish
+await as(sk, pk);
+await seed(draft({ title: `e2e admin A3 ${tag}` }), labels);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await click(byText('PUBLISH'));
+t.ok('the banned maker PUBLISH shows This account cannot publish playlists.', await waitFor(`document.querySelector('main')?.innerText.includes('This account cannot publish playlists.')`, 30000));
+
+// UNBAN
+await as(ADMIN_SK, adminPk);
+await go('/admin');
+t.ok('the admin opens the Banned list', await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 1`, 30000));
+await click(byText('UNBAN'));
+t.ok('UNBAN empties the Banned list', await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 0`, 20000));
+await as(sk, pk);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await click(byText('PUBLISH'));
+t.ok('after UNBAN the maker can publish', await waitFor(`document.querySelector('[data-testid=published]')`, 30000));
+const feed3 = await js(`document.querySelector('#feed-address').value`);
+
+// clean up what this section made
+await as(ADMIN_SK, adminPk);
+await go('/admin');
+await waitFor(`document.querySelectorAll('[data-admin-playlist]').length >= 2`, 30000);
+for (const pid of [/([0-9a-f-]{36})\.xml$/.exec(feed3)?.[1], pb1.id]) {
+  await click(rowBtn(pid, 'DELETE'));
+  await waitFor(`document.querySelector('[role=dialog]')`);
+  await click(inDialog('DELETE'));
+  await waitFor(`!document.querySelector('[data-admin-playlist="${pid}"]')`, 20000);
+}
+t.equal('cleanup: both test playlists deleted', [(await fetch(feed3)).status, (await fetch(communityFeed(pb1.id))).status], [410, 410]);
 
 console.log(`\n${t.count - t.fails}/${t.count} passed`);
 await exit(t.fails ? 1 : 0);
