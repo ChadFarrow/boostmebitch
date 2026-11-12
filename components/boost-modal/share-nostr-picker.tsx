@@ -25,7 +25,8 @@ interface Props {
   noteNoun: string;
   /**
    * The brand whose site account posts the note when the site signs it —
-   * Buddy's for a song from a playlist BMB hosts (`noteBrandFor`), so the line
+   * Buddy's for a song from a playlist BMB hosts on the Buddy origin
+   * (`noteBrandFor`), so the line
    * names the account that will actually sign. Defaults to this deploy's.
    */
   brand?: Brand;

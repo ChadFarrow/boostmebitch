@@ -231,18 +231,26 @@ export function resolveSenderName(
 }
 
 /**
- * The brand a boost NOTE wears. A note for a song played from a playlist BMB hosts
- * (`playlistBoostContext(...).hosted`) is Buddy's on EITHER deploy — its links, its
- * picture, its default sender name, its `client` tag and the key that signs it when the
- * site does. Every other note is the deploy's own.
+ * The brand a boost NOTE wears — THE decision; both modals, the note builder's
+ * default, the site-sign route choice and the summary receipt all take it from here.
+ *
+ * Buddy's words ONLY for a song played from a playlist BMB hosts
+ * (`playlistBoostContext(...).hosted`) whose feeds live on the PRODUCTION Buddy origin
+ * (`feedOrigin` is `COMMUNITY_FEED_ORIGIN`): its links, its picture, its default sender
+ * name, its `client` tag and the key that signs it when the site does, on EITHER deploy.
+ * A test store's playlist (beta's `https://beta.boostmebitch.com`, a local server) keeps
+ * the deploy's own words: under Buddy's words a site-signed note would go to Buddy's
+ * PRODUCTION signing route and carry Buddy's real key beside a link to a playlist that
+ * exists only on the test origin. Every other note is the deploy's own.
  *
  * Only the NOTE. The boostagram (TLV 7629169, `app_name`, `sender_name`) keeps naming
  * the deploy that paid, because an artist's aggregator reads it to say which site that
- * was. `active` is a parameter so `check:brand` can pin both deploys: `hosted ? buddy :
- * bmb` is right on one of them and prints the other brand's words on the other.
+ * was. `feedOrigin` has no default so no caller can leave it out, and `active` is a
+ * parameter so `check:brand` can pin both deploys: `hosted ? buddy : bmb` is right on
+ * one of them and prints the other brand's words on the other.
  */
-export function noteBrandFor(hosted: boolean, active: Brand = BRAND): Brand {
-  return hosted ? BRANDS.buddy : active;
+export function noteBrandFor(hosted: boolean, feedOrigin: string, active: Brand = BRAND): Brand {
+  return hosted && feedOrigin === BRANDS.buddy.origin ? BRANDS.buddy : active;
 }
 
 /**

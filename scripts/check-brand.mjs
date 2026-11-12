@@ -424,22 +424,47 @@ eq('buddy brand: typed name kept', resolveSenderName('Chad', false, BRANDS.buddy
 eq('no third argument = the active brand', resolveSenderName('', true), DEFAULT_SENDER_NAME);
 
 // noteBrandFor: which brand a boost NOTE wears. A note for a song from a playlist BMB
-// hosts is Buddy's on EITHER deploy; every other note is the deploy's own. Both deploys
-// are tested, because the wrong version that matters most — `hosted ? buddy : bmb` —
-// is right on the bitch deploy and prints the other brand's words in a kind:1 on the
-// family-friendly one, which no edit can take back.
-eq('hosted playlist, bitch deploy: Buddy', noteBrandFor(true, BRANDS.bmb), BRANDS.buddy);
-eq('hosted playlist, buddy deploy: Buddy', noteBrandFor(true, BRANDS.buddy), BRANDS.buddy);
-eq('any other note, bitch deploy: the deploy\'s own', noteBrandFor(false, BRANDS.bmb), BRANDS.bmb);
-eq('any other note, buddy deploy: the deploy\'s own, never the bitch words', noteBrandFor(false, BRANDS.buddy), BRANDS.buddy);
-eq('no second argument = the active brand', noteBrandFor(false), BRAND);
+// hosts ON THE PRODUCTION BUDDY ORIGIN is Buddy's on EITHER deploy; every other note is
+// the deploy's own. Both deploys are tested, because the wrong version that matters
+// most — `hosted ? buddy : bmb` — is right on the bitch deploy and prints the other
+// brand's words in a kind:1 on the family-friendly one, which no edit can take back.
+// The feed origin is tested because the version before it — `hosted ? buddy : active` —
+// sent a BETA playlist's site-signed note to Buddy's PRODUCTION key, beside a link to
+// beta.boostmebitch.com (final review C1).
+const BUDDY_FEEDS = BRANDS.buddy.origin;
+const BETA_FEEDS = 'https://beta.boostmebitch.com';
+const LOCAL_FEEDS = 'http://localhost:3123';
+const NOTE_BRAND_VECTORS = [
+  ['hosted on the Buddy origin, bitch deploy: Buddy', [true, BUDDY_FEEDS, BRANDS.bmb], BRANDS.buddy],
+  ['hosted on the Buddy origin, buddy deploy: Buddy', [true, BUDDY_FEEDS, BRANDS.buddy], BRANDS.buddy],
+  ['hosted on the beta test origin, bitch deploy: the deploy\'s own, never Buddy', [true, BETA_FEEDS, BRANDS.bmb], BRANDS.bmb, 'c1'],
+  ['hosted on a local test origin, bitch deploy: the deploy\'s own', [true, LOCAL_FEEDS, BRANDS.bmb], BRANDS.bmb, 'c1'],
+  ['hosted on a test origin, buddy deploy: the deploy\'s own (Buddy)', [true, BETA_FEEDS, BRANDS.buddy], BRANDS.buddy],
+  ['a near miss of the Buddy origin (no www) is a test origin', [true, 'https://boostmebuddy.com', BRANDS.bmb], BRANDS.bmb, 'c1'],
+  ['a near miss of the Buddy origin (trailing slash) is a test origin', [true, `${BUDDY_FEEDS}/`, BRANDS.bmb], BRANDS.bmb, 'c1'],
+  ['not hosted, on the Buddy origin, bitch deploy: the deploy\'s own', [false, BUDDY_FEEDS, BRANDS.bmb], BRANDS.bmb],
+  ['not hosted, buddy deploy: the deploy\'s own, never the bitch words', [false, BUDDY_FEEDS, BRANDS.buddy], BRANDS.buddy],
+];
+for (const [label, args, want] of NOTE_BRAND_VECTORS) eq(label, noteBrandFor(...args), want);
+eq('no third argument = the active brand', noteBrandFor(false, BUDDY_FEEDS), BRAND);
+// Can fail: the version before the feed origin, `hosted ? buddy : active`.
+{
+  const before = (hosted, _feedOrigin, active) => (hosted ? BRANDS.buddy : active);
+  const c1 = NOTE_BRAND_VECTORS.filter((v) => v[3] === 'c1');
+  ok(`all ${c1.length} test-origin vectors fail against \`hosted ? buddy : active\` (can fail)`,
+    c1.length === 4 && c1.every(([, args, want]) => before(...args) !== want));
+}
 
-// The two modals: the NOTE takes `noteBrandFor(ctx.hosted)` and a sender name in that
-// brand; every BOOSTAGRAM keeps the deploy's own `app_name` and sender name, because an
-// artist's aggregator reads them to say which site paid (TLV 7629169 never changes).
+// The two modals: the NOTE takes `noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN)` and a
+// sender name in that brand; every BOOSTAGRAM keeps the deploy's own `app_name` and
+// sender name, because an artist's aggregator reads them to say which site paid (TLV
+// 7629169 never changes). The note builder's default makes the same call.
+ok('lib/nostr/boost-notes.ts defaults to noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN)',
+  /args\.brand \?\? noteBrandFor\(ctx\.hosted, COMMUNITY_FEED_ORIGIN\)/.test(readFileSync(join(REPO, 'lib/nostr/boost-notes.ts'), 'utf8')));
 for (const rel of ['components/boost-modal/index.tsx', 'components/boost-all-modal.tsx']) {
   const src = readFileSync(join(REPO, rel), 'utf8');
-  ok(`${rel} picks the note's brand with noteBrandFor(ctx.hosted)`, /noteBrandFor\(ctx\.hosted\)/.test(src));
+  ok(`${rel} picks the note's brand with noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN)`,
+    /noteBrandFor\(ctx\.hosted, COMMUNITY_FEED_ORIGIN\)/.test(src));
   ok(`${rel} names the note's sender in the note's brand`,
     /resolveSenderName\(name, anonymous, noteBrand\)/.test(src));
   ok(`${rel} keeps the boostagram's sender name in the deploy's brand`,

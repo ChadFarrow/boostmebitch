@@ -47,7 +47,7 @@ a real account.
 | `npm run e2e:twosigners` | Two stub NIP-46 responders on ONE key over a local relay: one answers `no permission` at once (Amber, for a client it never paired), the other answers correctly 700 ms later (Clave). Pins that the paired signer's result wins, that a real refusal still lands, and that the approval notice still appears when only the imposter answers. See docs/signers.md, "Two signer apps, one key". |
 | `npm run e2e:communityapi` | The community-playlist routes (`/api/playlists`, the `.xml` feeds) over HTTP against the real local Postgres: create, list, edit, delete, refusals, the 6-writes-a-minute limit. |
 | `npm run e2e:communityui` | The maker, the Published view, `/playlists`, edit and delete, in headless Chrome at 390 x 844 (`scrollWidth <= clientWidth`, every control at least 24 x 24). Uses a LOCAL relay and a fake NIP-07 signer. |
-| `npm run e2e:communitynote` | The boost NOTE for a song played from a playlist, through the real modal: a playlist stored on the dev server (Buddy's words, the album as the show, the Heard-on line and link, the maker's `p` tag, the receipt's URL hints on Buddy), the same as Anonymous while Buddy's routes cannot be read (the note fails, never this deploy's key), Anonymous signed by a LOCAL Buddy server with a throwaway key (that key is the author; a receipt from a key other than Buddy's own is not quoted), and one of the seven community feeds (BoostMeBitch words, the Heard-on line). Asserts the boostagram still carries `BoostMeBitch`. It starts the Buddy server itself; see below. |
+| `npm run e2e:communitynote` | The boost NOTE for a song played from a playlist, through the real modal. **Two runs, two server feed origins** (see below). With `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=https://www.boostmebuddy.com`: a playlist stored on the dev server (Buddy's words, the album as the show, the Heard-on line and link, the maker's `p` tag, the receipt's URL hints on Buddy), the same as Anonymous while Buddy's routes cannot be read (the note fails, never this deploy's key), Anonymous signed by a LOCAL Buddy server with a throwaway key (that key is the author; a receipt from a key other than Buddy's own is not quoted), and one of the seven community feeds (BoostMeBitch words, the Heard-on line). Asserts the boostagram still carries `BoostMeBitch`. It starts the Buddy server itself; see below. With the localhost origin, `-- --test-origin`: a test store's playlist (as on beta) keeps BoostMeBitch words and its Heard-on link on the test origin, and neither "My feed" nor Anonymous asks Buddy's routes (final review C1). |
 
 ### The community-playlist e2e scripts
 
@@ -64,6 +64,12 @@ and a dev server started with its env on the command line, never in `.env.local`
 - **Write limit.** The server allows 6 writes a minute per address. Each run sends its own random
   `x-real-ip`, so repeated runs never wait.
 - **No public relay for events.** No EVENT reaches a public relay (checked by the assertion 'no event of any kind went to a public relay'). Feed reads and profile reads still reach the public network.
+- **`e2e:communitynote` needs the 3123 server's feed origin to fit the run.** Only a playlist on
+  the PRODUCTION Buddy origin gets Buddy's words (`noteBrandFor`), so the Buddy run needs the
+  server restarted with `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=https://www.boostmebuddy.com`: the store
+  then mints addresses there and the server reads them from its own store, never over HTTP (it
+  may ask that host for a cover, which answers 404). `--test-origin` needs the localhost origin.
+  Each run checks the origin and stops with the command to use.
 - **`e2e:communitynote` runs TWO dev servers, and starts the second one itself.** You start the
   3123 server above. The script starts the Buddy deploy as
   `NEXT_PUBLIC_BRAND=buddy SITE_NOSTR_SK=<a key generated per run> next dev -p <free port>`, in a
@@ -71,7 +77,8 @@ and a dev server started with its env on the command line, never in `.env.local`
   `.next` or `node_modules`, which is a link). Two `next dev` in one folder share one `.next` and
   compile two different `NEXT_PUBLIC_BRAND`s into the same files, and a copy with no env file can
   sign with no key but the throwaway one. The script stops the server and deletes the copy on
-  every exit. **No production signing key is ever used**: the page's requests to Buddy's routes
+  every exit, a Ctrl-C included: it installs its SIGINT/SIGTERM handlers before the copy, since
+  `cdp.mjs` installs its own only once Chrome starts. The `--test-origin` run starts no Buddy server. **No production signing key is ever used**: the page's requests to Buddy's routes
   go to this script over a CDP binding, and it POSTs them to the local Buddy server (`localhost`
   is not an origin PR 4 allows, so the page cannot ask even a local Buddy itself).
 - **`e2e:communitynote` sends no money and no public event, and checks both.** The wallet is a

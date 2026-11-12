@@ -249,15 +249,16 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const senderName = resolveSenderName(name, anonymous);
 
   // The NOTE's words, which are not always the boostagram's. A song played from
-  // a playlist BMB hosts is shared in Buddy's words on either deploy — links,
-  // picture, `client` tag, default sender name, and Buddy's key when the site
-  // signs (`noteBrandFor`, lib/brand.ts). The boostagram above and below never
-  // changes: its `app_name` and `sender_name` name the deploy that paid.
+  // a playlist BMB hosts on the production Buddy origin is shared in Buddy's
+  // words on either deploy — links, picture, `client` tag, default sender name,
+  // and Buddy's key when the site signs (`noteBrandFor`, lib/brand.ts); a test
+  // store's playlist (beta) keeps this deploy's. The boostagram above and below
+  // never changes: its `app_name` and `sender_name` name the deploy that paid.
   const ctx = useMemo(
     () => playlistBoostContext(podcast, episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH),
     [podcast, episode],
   );
-  const noteBrand = noteBrandFor(ctx.hosted);
+  const noteBrand = noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN);
 
   // Where a recipient can boost this user back, resolved from their profile's
   // lightning address. Empty until it resolves, and never gated on — see the

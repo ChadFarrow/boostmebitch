@@ -48,9 +48,9 @@ interface PublishArgs {
   };
   /**
    * The brand the NOTE wears — its links, its picture, its `client` tag, and the
-   * deploy whose key signs it on the site path. `noteBrandFor(ctx.hosted)`
-   * (lib/brand.ts): Buddy for a song from a playlist BMB hosts, on either deploy;
-   * otherwise `BRAND`. Omitted, the builder makes the same decision itself. The
+   * deploy whose key signs it on the site path. `noteBrandFor(ctx.hosted,
+   * COMMUNITY_FEED_ORIGIN)` (lib/brand.ts): Buddy for a song from a playlist BMB
+   * hosts on the production Buddy origin, on either deploy; otherwise `BRAND`. Omitted, the builder makes the same decision itself. The
    * boostagram is never touched.
    */
   brand?: Brand;
@@ -81,8 +81,9 @@ function noteContext(args: PublishArgs): NoteContext {
   const ctx = playlistBoostContext(args.podcast, args.episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH);
   // The caller's brand when it gave one; otherwise the same decision the modals
   // make, so a future publisher that forgets `brand` still writes Buddy's words
-  // for a playlist BMB hosts rather than the other brand's.
-  const brand = args.brand ?? noteBrandFor(ctx.hosted);
+  // for a playlist on the Buddy origin rather than the other brand's — and never
+  // for a test store's playlist (final review C1).
+  const brand = args.brand ?? noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN);
   return {
     show: ctx.show,
     container: ctx.container,
@@ -195,7 +196,7 @@ export function siteLandingUrl(feedGuid: string, itemGuid?: string, origin: stri
  * The receipt is minted and signed by the note brand's deploy, which writes
  * these hints into a kind:9735 under its key, permanently. For this deploy's own
  * brand they are the share URL on this origin, as always (`showShareUrl`). For
- * the other brand — a song from a playlist BMB hosts — they are that brand's
+ * the other brand — a song from a playlist BMB hosts on the Buddy origin — they are that brand's
  * deep links, so a Buddy-signed receipt never carries a boostmebitch.com (or a
  * dev server's) URL. Both modals build their snapshot's refs here.
  */
@@ -263,7 +264,8 @@ function boostArtUrls(podcast: Podcast, episode?: Episode): string[] {
  * `/api/og/boost.png` forever for exactly that reason.
  *
  * The DEFAULT only. A boost note takes its origin from its brand
- * (`PublishArgs.brand`), which is Buddy's for a song from a playlist BMB hosts.
+ * (`PublishArgs.brand`), which is Buddy's for a song from a playlist BMB hosts
+ * on the production Buddy origin (`noteBrandFor`).
  */
 const SITE_ORIGIN = BRAND.origin;
 
@@ -597,7 +599,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   const receipts = quotedReceipts(args);
   for (const r of receipts) tags.push(['q', r.id, r.relays[0] ?? '', r.pubkey]);
   // ON PURPOSE (spec decision 17): a note for a song from a playlist BMB hosts
-  // carries Buddy's `wireName` here, on either deploy, while the boostagram's
+  // on the Buddy origin carries Buddy's `wireName` here, on either deploy, while the boostagram's
   // `app_name` keeps naming the deploy that PAID. Writing `BRAND.wireName` (or
   // the boostagram's `app_name`) for such a note would put the other brand's
   // words under Buddy's key — a kind:1 that can never be edited.
@@ -676,7 +678,7 @@ export async function publishBoostNote(
  * still succeeds even if the note can't be posted.
  *
  * A note in ANOTHER brand's words (`args.brand`, Buddy's for a song from a
- * playlist BMB hosts) is signed by THAT deploy, through its own route, so this
+ * playlist BMB hosts on the Buddy origin) is signed by THAT deploy, through its own route, so this
  * deploy never holds the other's `SITE_NOSTR_SK` (CLAUDE.md, Names). It needs
  * that deploy to answer this origin with CORS (`lib/cross-brand-cors.ts` on the
  * Buddy deploy). When it cannot be reached the note fails here, like any

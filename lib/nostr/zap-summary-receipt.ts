@@ -59,16 +59,18 @@ export async function mintSummaryReceipt(args: {
   /** Who authors the request — the same answer as who signs the note. */
   as: 'self' | 'site';
   /**
-   * The NOTE's brand (`PublishArgs.brand`). Its deploy mints the receipt and its
-   * site key is the one the request names, so the note and the receipt it
-   * quotes come from ONE deploy: a site-signed note may only quote a receipt
-   * its own key signed (site-sign's `q` rule). Defaults to this deploy's.
+   * The NOTE's brand (`PublishArgs.brand`), from `noteBrandFor` at the call site.
+   * Its deploy mints the receipt and its site key is the one the request names,
+   * so the note and the receipt it quotes come from ONE deploy: a site-signed
+   * note may only quote a receipt its own key signed (site-sign's `q` rule).
+   * REQUIRED: a default here (it was `BRAND`) is a second brand decision that can
+   * disagree with the note's.
    */
-  brand?: Brand;
+  brand: Brand;
 }): Promise<QuotedZapReceipt | null> {
   try {
     if (!Number.isFinite(args.paidSats) || args.paidSats <= 0) return null;
-    const brand = args.brand ?? BRAND;
+    const { brand } = args;
     const site = siteHexPubkey(brand);
     if (!site) return null;
     const relays = [...new Set(args.relays.filter((r) => r.startsWith('wss://')))].slice(0, 8);

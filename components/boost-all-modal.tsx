@@ -110,15 +110,16 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // host share, summary. Component scope because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
 
-  // The NOTE's words — Buddy's for an episode played from a playlist BMB hosts,
-  // on either deploy (`noteBrandFor`, lib/brand.ts) — and the show it names,
+  // The NOTE's words — Buddy's for an episode played from a playlist BMB hosts on
+  // the production Buddy origin, on either deploy (`noteBrandFor`, lib/brand.ts) —
+  // and the show it names,
   // which for a playlist episode is its OWN feed. The boostagrams never change:
   // `app_name` and `sender_name` name the deploy that paid.
   const ctx = useMemo(
     () => playlistBoostContext(podcast, episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH),
     [podcast, episode],
   );
-  const noteBrand = noteBrandFor(ctx.hosted);
+  const noteBrand = noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN);
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
   // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
