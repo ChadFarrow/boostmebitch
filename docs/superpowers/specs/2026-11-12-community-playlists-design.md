@@ -72,6 +72,14 @@ These are settled. Do not revisit them in the plan.
     Podcast Index — not from beta, and not from production either — until Chad
     turns that on separately. Both are switches, not code changes (see Launch
     switches).
+20. **A listener can favorite a whole community playlist, and single songs in
+    it** (Chad, 2026-11-12), from the playlist row, the open playlist's header,
+    and each song's menu — the same hearts every other playlist has
+    (`<FavHeart>` needs the playlist's `podcastGuid`; `<FavEpisodeHeart>` saves a
+    song under the song's OWN feed, never the playlist). Until Podcast Index is
+    told about these feeds (decision 19), other apps that read the kind:10333
+    favorites list cannot resolve a favorited BMB playlist; BMB can, through its
+    own guid lookup.
 
 ## Goals
 
