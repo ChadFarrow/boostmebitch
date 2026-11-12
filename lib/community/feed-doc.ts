@@ -4,8 +4,13 @@
 import { createHash } from 'node:crypto';
 import type { StoredPlaylist } from './rules';
 
+// XML 1.0 forbids these: C0 controls except tab/LF/CR, U+FFFE/U+FFFF, and lone
+// surrogates. One in a listener's title would make the public feed ill-formed.
+const XML_FORBIDDEN = /[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
 export function escapeXml(s: string): string {
   return s
+    .replace(XML_FORBIDDEN, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -35,7 +40,7 @@ export function buildPlaylistFeedXml(
   const description = p.description || o.fallbackDescription;
   const items = p.songs
     .map((s) => `    <podcast:remoteItem feedGuid="${e(s.feedGuid)}" itemGuid="${e(s.itemGuid)}"`
-      + (s.feedUrl ? ` feedUrl="${e(s.feedUrl)}"` : '') + '/>')
+      + (s.feedUrl ? ` feedUrl="${e(s.feedUrl)}"` : '') + ' medium="music"/>')
     .join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">

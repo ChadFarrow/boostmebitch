@@ -133,6 +133,11 @@ const docVectors = [
     const raw = /<title>([\s\S]*?)<\/title>/.exec(channelSlice(xml))[1];
     return !/[<>"']/.test(raw) && !/&(?!(amp|lt|gt|quot|apos);)/.test(raw);
   } },
+  { kind: 'medium on every item', build: (b) => b(stored, opts), test: (xml) =>
+    (xml.match(/<podcast:remoteItem [^>]*medium="music"\/>/g) ?? []).length === 12
+    && (xml.match(/medium="music"/g) ?? []).length === 12 },
+  { kind: 'xml-illegal chars stripped', build: (b) => b({ ...stored, title: 'a\x01b\x1Fc\uD800d' }, opts), test: (xml) =>
+    !/[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF]/.test(xml) && titleOf(xml) === 'abcd' },
   { kind: 'npub', build: (b) => b(stored, opts), test: (xml) => {
     const n = parseFeedNpubs(xml); return !!n && n.length === 1 && n[0].npub === ownerNpub;
   } },
@@ -158,6 +163,14 @@ const naiveBuild = (p, o) => buildPlaylistFeedXml(p, o)
   .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 for (const v of docVectors) {
   check('feed doc: ' + v.kind, v.test(v.build(buildPlaylistFeedXml)));
+}
+// The escapeXml before the control-character strip: same doc, title escaped the old way.
+const oldEscape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+const oldEscapeBuild = (p, o) => buildPlaylistFeedXml({ ...p, title: 'TT' }, o)
+  .replaceAll('TT', oldEscape(p.title));
+{
+  const v = docVectors.find((x) => x.kind === 'xml-illegal chars stripped');
+  check('feed doc: illegal chars vector fails against old escapeXml (can fail)', !v.test(v.build(oldEscapeBuild)));
 }
 // Only the escaping vectors must fail against the naive builder.
 for (const v of docVectors.filter((x) => ['items', 'title well-formed'].includes(x.kind))) {
