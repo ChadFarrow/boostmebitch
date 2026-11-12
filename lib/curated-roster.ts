@@ -144,7 +144,7 @@ export interface CuratedHits {
  */
 export async function searchCuratedPlaylists(query: string, limit: number): Promise<CuratedHits> {
   const [curated, own] = await Promise.all([searchRoster(query, limit), searchCommunityStore(query, limit)]);
-  return { feeds: [...curated.feeds, ...own], answered: curated.answered };
+  return { feeds: [...curated.feeds, ...own].slice(0, limit), answered: curated.answered };
 }
 
 /** Stored community playlists whose title matches. Never throws: a database that is down is `[]`. */

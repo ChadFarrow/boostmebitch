@@ -16,6 +16,8 @@ import { generateSecretKey, finalizeEvent, getPublicKey, verifyEvent } from 'nos
 import { getToken, validateEventMethodTag } from 'nostr-tools/nip98';
 import { verifyNip98, adminPubkeys, authMessage } from '../lib/community/auth.ts';
 import { communityPlaylistToPodcast, fnvHash } from '../lib/util.ts';
+import { composeCover, noteSvg } from '../lib/community/cover-compose.ts';
+import sharp from 'sharp';
 import { BRANDS } from '../lib/brand.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -28,6 +30,7 @@ for (const [f, opts] of [
   ['lib/curated-playlists.ts', undefined],
   ['lib/community/rules.ts', undefined],
   ['lib/community/clean-text.ts', { allowBare: true }],
+  ['lib/community/cover-compose.ts', { allowBare: true }],
 ]) {
   const p = importFreeProblems(f, opts);
   if (p.length) { explainImportFree(f, p); failed++; } else ok(f + ' import-free');
@@ -289,6 +292,25 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const got = communityPlaylistToPodcast(summary);
   check('communityPlaylistToPodcast: exact shape', JSON.stringify(got) === JSON.stringify(want));
   check('communityPlaylistToPodcast: id is negative', got.id < 0);
+}
+
+{
+  // The no-art cover: reached with an empty tile list, no font needed.
+  check('noteSvg has no <text>', !/<text/i.test(noteSvg()));
+  const jpg = await composeCover([null, null, null, null]);
+  const m = await sharp(jpg).metadata();
+  check('empty tile list -> 1400 x 1400 JPEG', m.format === 'jpeg' && m.width === 1400 && m.height === 1400);
+  const px = async (x, y) => [...(await sharp(jpg).extract({ left: x, top: y, width: 1, height: 1 }).raw().toBuffer())];
+  const corner = await px(5, 5);
+  check('note canvas corner is #0A0A08', Math.abs(corner[0] - 10) < 6 && Math.abs(corner[1] - 10) < 6 && Math.abs(corner[2] - 8) < 6);
+  const stem = await px(625, 700); // inside the first stem
+  check('note stem is #FAE500', stem[0] > 230 && stem[1] > 210 && stem[2] < 40);
+  const red = await sharp({ create: { width: 700, height: 700, channels: 3, background: '#ff0000' } }).png().toBuffer();
+  const g = await composeCover([red, null, red]);
+  const gm = await sharp(g).metadata();
+  check('grid with a missing tile -> 1400 x 1400', gm.width === 1400 && gm.height === 1400);
+  const rep = [...(await sharp(g).extract({ left: 1000, top: 300, width: 1, height: 1 }).raw().toBuffer())];
+  check('a missing tile repeats the previous one', rep[0] > 200 && rep[1] < 60);
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }

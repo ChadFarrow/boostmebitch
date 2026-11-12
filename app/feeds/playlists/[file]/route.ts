@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl, communityCoverUrl, coverVersion } from '@/lib/curated-playlists';
 import { buildPlaylistFeedXml } from '@/lib/community/feed-doc';
-import { buildGridCover, coverFromArtUrl } from '@/lib/community/cover';
+import { buildCover } from '@/lib/community/cover';
 import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
 import { UUID_RE } from '@/lib/community/http';
 import { withErrorHandling } from '@/lib/api-handler';
@@ -14,8 +14,9 @@ export const runtime = 'nodejs';
 // The public feed and cover of a community playlist: /feeds/playlists/<uuid>.xml and .jpg.
 // The store is the authority; these answers are built from it on every cold read.
 
+// No Cache-Control on a 404 or 410: only a 200 is cached.
 const text = (status: number) => new NextResponse(status === 410 ? 'gone' : 'not found', {
-  status, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=60, s-maxage=60' },
+  status, headers: { 'content-type': 'text/plain; charset=utf-8' },
 });
 
 export async function GET(req: Request, ctx: { params: Promise<{ file: string }> }) {
@@ -45,9 +46,17 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
         },
       });
     }
-    const jpg = (p.artUrl ? await coverFromArtUrl(p.artUrl) : null) ?? await buildGridCover(p.songs.slice(0, 4));
-    return new NextResponse(new Uint8Array(jpg), {
-      headers: { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=3600, s-maxage=86400' },
+    // A random `?v=` must not reach the expensive path: only the current version is built.
+    const v = new URL(req.url).searchParams.get('v');
+    if (v !== null && v !== String(coverVersion(p.updatedAt))) return text(404);
+    const c = await buildCover(p.artUrl, p.songs);
+    return new NextResponse(new Uint8Array(c.jpg), {
+      headers: {
+        'content-type': 'image/jpeg',
+        // A cover that fell back because something failed must not stay cached for a day.
+        'cache-control': c.failed ? 'public, max-age=60, s-maxage=300' : 'public, max-age=3600, s-maxage=86400',
+        'x-cover-source': c.source,
+      },
     });
   }, 'could not build the playlist file');
 }

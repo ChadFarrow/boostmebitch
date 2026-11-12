@@ -30,6 +30,7 @@ export async function notifyPodcastIndex(feedUrl: string, kind: 'new' | 'update'
     const p = await fetch(`${PI}/hub/pubnotify?url=${q}`, {
       headers: authHeaders(), cache: 'no-store', signal: AbortSignal.timeout(8_000),
     });
+    if (!p.ok) console.warn('[community-pi] hub/pubnotify answered', p.status);
     await p.body?.cancel().catch(() => {});
   } catch (e) {
     console.warn('[community-pi] notify failed:', e instanceof Error ? e.message : e);

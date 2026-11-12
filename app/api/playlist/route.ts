@@ -113,11 +113,11 @@ export async function GET(req: Request) {
     // A community playlist's feed is OURS: read the songs from the store, never
     // over HTTP (in dev the feed origin is a private address `safeFetch` refuses,
     // and in production it would be a round trip to ourselves).
-    const communityId = COMMUNITY_PLAYLISTS_ON ? communityIdFromFeedUrl(url) : null;
+    const communityId = communityIdFromFeedUrl(url);
     let channel: Awaited<ReturnType<typeof getPlaylistChannel>>;
     let piRecord: Podcast | null = null;
     if (communityId) {
-      const own = communityStoreConfigured() ? await getPlaylist(communityId) : null;
+      const own = COMMUNITY_PLAYLISTS_ON && communityStoreConfigured() ? await getPlaylist(communityId) : null;
       if (!own || own === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 });
       channel = {
         podcast: communityPlaylistToPodcast(summaryOf(own)),

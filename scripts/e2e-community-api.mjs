@@ -190,6 +190,7 @@ check('feed has 12 remoteItems, the owner npub and medium musicL',
 const coverRes = await fetch(`${APP}/feeds/playlists/${id}.jpg`);
 const coverBuf = Buffer.from(await coverRes.arrayBuffer());
 // JPEG size: the first SOF marker holds height then width.
+const nopeCC = (r) => r.headers.get('cache-control');
 const jpegSize = (b) => {
   for (let i = 2; i + 9 < b.length;) {
     if (b[i] !== 0xff) { i++; continue; }
@@ -200,6 +201,10 @@ const jpegSize = (b) => {
   return null;
 };
 const dims = jpegSize(coverBuf);
+check('cover of the playlist with a valid art link -> x-cover-source: art', coverRes.headers.get('x-cover-source') === 'art', coverRes.headers.get('x-cover-source'));
+const badV = await fetch(`${APP}/feeds/playlists/${id}.jpg?v=1`);
+check('cover with a stale ?v= -> 404 with no Cache-Control', badV.status === 404 && !badV.headers.get('cache-control'), `${badV.status} ${badV.headers.get('cache-control')}`);
+check('404 feed answer carries no Cache-Control', !nopeCC(await fetch(`${APP}/feeds/playlists/nope.xml`)));
 check('GET cover .jpg -> 200 image/jpeg, 1400 x 1400',
   coverRes.status === 200 && coverRes.headers.get('content-type') === 'image/jpeg' && dims?.[0] === 1400 && dims?.[1] === 1400
   && /s-maxage=86400/.test(coverRes.headers.get('cache-control') ?? ''), `${coverRes.status} ${dims}`);
@@ -298,6 +303,7 @@ if (p2.body?.id) created.push(p2.body.id);
 check('second key POST -> 201', p2.status === 201, show(p2));
 const gridRes = await fetch(`${APP}/feeds/playlists/${p2.body?.id}.jpg`);
 const gridDims = jpegSize(Buffer.from(await gridRes.arrayBuffer()));
+check('cover of a playlist with no art link (song grid) -> x-cover-source: grid', gridRes.headers.get('x-cover-source') === 'grid', gridRes.headers.get('x-cover-source'));
 check('cover of a playlist with no art link (song grid) -> 200 JPEG 1400 x 1400',
   gridRes.status === 200 && gridRes.headers.get('content-type') === 'image/jpeg' && gridDims?.[0] === 1400 && gridDims?.[1] === 1400,
   `${gridRes.status} ${gridDims}`);
@@ -329,7 +335,7 @@ check('DELETE by a non-owner -> 403', delOther.status === 403, show(delOther));
 const del = await call('DELETE', `${PLAYLISTS}/${id}`, { sk: owner });
 check('owner DELETE -> 200 { deleted: true }', del.status === 200 && del.body?.deleted === true, show(del));
 const feedGone = await fetch(`${APP}/feeds/playlists/${id}.xml`);
-check('feed .xml after delete -> 410', feedGone.status === 410, String(feedGone.status));
+check('feed .xml after delete -> 410 with no Cache-Control', feedGone.status === 410 && !feedGone.headers.get('cache-control'), String(feedGone.status));
 const coverGone = await fetch(`${APP}/feeds/playlists/${id}.jpg`);
 check('cover .jpg after delete -> 410', coverGone.status === 410, String(coverGone.status));
 const viaGone = await call('GET', `/api/playlist?url=${encodeURIComponent(post.body.feedUrl)}`);

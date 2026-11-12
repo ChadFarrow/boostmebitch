@@ -102,7 +102,7 @@ npm run dev / build / start / lint
 | `check:cache` | `createBoundedCache` — the age, entry AND byte bounds both RSS caches share | an entry cap is not a memory bound |
 | `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load, forever |
 | `check:playlistdb` | `dbRowToEpisode` — another app's DB row as a track we render, with no payee | a mapped column type-checks and pays the wrong payee |
-| `check:community` | `validatePlaylistDraft`, `artVerdict`, `buildPlaylistFeedXml`, `verifyNip98`… | a feed no app can parse, or a write by someone who does not own it |
+| `check:community` | `validatePlaylistDraft`, `artVerdict`, `cleanText`, `buildPlaylistFeedXml`, `verifyNip98`… | a feed no app parses, or a write by a non-owner |
 | `check:favbackup` | `lib/favorites-export.ts` — what a backup file must prove before we republish it | a tampered file republishes a list nobody signed |
 | `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening: feeds hang, publishes reach nobody |
 | `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show, or an ended one never leaves |
@@ -131,7 +131,7 @@ Each **imports the real module** via `node --experimental-strip-types`: a copy p
 
 **And make the replay TOTAL, not a hand-written second list** — `check-assetlinks.mjs` named six of twenty-nine, so a section sat green against nothing. Vectors are recorded as **calls** (`{ kind, args }`) and the replay walks the list, so a vector cannot be added without being proved; the must-still-work half is exempted one vector at a time with `{ alsoNaive: true }`, never by default. **An exemption is a CLAIM that `naive()` still agrees, and `scripts/replay-vectors.mjs` asserts it** — the loops it replaced skipped it, and three exemptions were hiding faults.
 
-**`npm run check:claudemd`** guards this file's size (budget in the script), and **`check:conformance`** runs the spec's 31 vectors against the favorites merge (needs `../PC20-Nostr` or `PC20_NOSTR_DIR`). Neither pins a function. **`npm run check` runs every `check:*`** (conformance reported, never gating).
+**`npm run check:claudemd`** guards this file's size (budget in the script), and **`check:conformance`** runs the spec's 31 vectors against the favorites merge (needs `../PC20-Nostr` or `PC20_NOSTR_DIR`). Neither pins a pure function. **`npm run check` runs every `check:*`** (conformance reported, never gating); **run it with typecheck/lint/build before shipping.**
 
 **Stop the dev server before `npm run build`, and `rm -rf .next` before starting `dev` again** — the collision runs BOTH ways, and the dev-side symptom is a React Refresh error that reads as an application bug.
 
@@ -143,7 +143,7 @@ Each **imports the real module** via `node --experimental-strip-types`: a copy p
 
 Podcast Index credentials must never reach the browser. Enforced by file conventions, not bundler config.
 
-**Server-only:** `lib/pi.ts` (`node:crypto`, `process.env`), imported by `app/api/*` and by `app/page.tsx`'s `generateMetadata` — both server-side, but the rule is not "API routes only"; the BoostBox proxy `app/api/lightning/boostbox/route.ts` (`BOOSTBOX_URL`/`BOOSTBOX_API_KEY`); `app/api/gifs/route.ts` (`GIPHY_API_KEY`); `lib/safe-fetch.ts`; `lib/rate-limit.ts` (per-IP, first line of every API route); **`lib/playlist-db.ts`** (`pg`, `PLAYLIST_DB_URL` — read-only, reverts to PI on failure); `lib/community/store.ts`, `checks.ts`, `http.ts`, `cover.ts`, `pi-notify.ts`.
+**Server-only:** `lib/pi.ts` (`node:crypto`, `process.env`), imported by `app/api/*` and by `app/page.tsx`'s `generateMetadata` — both server-side, but the rule is not "API routes only"; the BoostBox proxy `app/api/lightning/boostbox/route.ts` (`BOOSTBOX_URL`/`BOOSTBOX_API_KEY`); `app/api/gifs/route.ts` (`GIPHY_API_KEY`); `lib/safe-fetch.ts`; `lib/rate-limit.ts` (per-IP, first line of every API route); **`lib/playlist-db.ts`** (`pg`, `PLAYLIST_DB_URL` — read-only, reverts to PI on failure); `lib/community/` except import-free leaves.
 
 **Browser-only:** `lib/store.ts`, `lib/v4v/nwc.ts`/`webln.ts`/`lnaddr.ts`/`spark.ts`/`boostbox.ts`, `lib/nostr/`, `lib/storage.ts`, `lib/podcast-meta.ts` — they touch `window.*`, storage, IndexedDB, or WASM. SSR guards exist but assume client context.
 
