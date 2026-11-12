@@ -49,9 +49,14 @@ const PLAYLIST_CACHE = {
  * A community playlist read from OUR store: its maker edits it and then reads
  * this page back to label the rows, and a delete must take it off the CDN, so it
  * is shared-cached 30 s, not the five minutes a remote feed gets.
+ *
+ * **Keep the `max-age`.** Without it the browser asks again on every visit:
+ * `/playlists` counts each row with one of these, so a few visits in a minute
+ * spent the per-IP allowance and the playlist the listener then opened came
+ * back 429, empty (measured by e2e:communityui, section 7a).
  */
 const COMMUNITY_PLAYLIST_CACHE = {
-  'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60',
+  'Cache-Control': 'public, max-age=30, s-maxage=30, stale-while-revalidate=60',
 };
 
 /**
