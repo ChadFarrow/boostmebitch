@@ -10,9 +10,10 @@ import {
   escapeXml, communityFeedGuid, buildPlaylistFeedXml,
 } from '../lib/community/feed-doc.ts';
 import { channelSlice, parsePlaylistRemoteItems, parseFeedNpubs, decodeXmlText } from '../lib/feed-xml.ts';
-import { npubEncode } from 'nostr-tools/nip19';
+import { npubEncode, noteEncode, nprofileEncode, nsecEncode } from 'nostr-tools/nip19';
+import { bech32 } from '@scure/base';
 import { generateSecretKey, finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
-import { getToken } from 'nostr-tools/nip98';
+import { getToken, validateEventMethodTag } from 'nostr-tools/nip98';
 import { verifyNip98, adminPubkeys, authMessage } from '../lib/community/auth.ts';
 import { BRANDS } from '../lib/brand.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
@@ -246,7 +247,29 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const set = adminPubkeys(npub + ', junk');
   check('admins: one valid of two', set.size === 1 && set.has(pub));
   check('admins: empty / undefined', adminPubkeys('').size === 0);
-  check('admins: a note1 is not an admin', adminPubkeys('note1' + 'q'.repeat(58)).size === 0);
+  const others = [noteEncode(pub), nprofileEncode({ pubkey: pub }), nsecEncode(sk)].join(',');
+  check('admins: note/nprofile/nsec are not admins', adminPubkeys(others).size === 0);
+  const shortNpub = bech32.encode('npub', bech32.toWords(new Uint8Array(31).fill(7)), 1000);
+  const longNpub = bech32.encode('npub', bech32.toWords(new Uint8Array(33).fill(7)), 1000);
+  check('admins: wrong-length npub dropped', adminPubkeys(shortNpub + ',' + longNpub).size === 0);
+  {
+    // Can fail: without the type / length guards these would be accepted.
+    const loose = (env) => new Set(env.split(',').map((t) => { try { return decodeAny(t); } catch { return null; } }).filter(Boolean));
+    const decodeAny = (t) => { const w = bech32.decode(t, 1000); const d = bech32.fromWords(w.words); return d.length ? Buffer.from(d).toString('hex') : null; };
+    check('admins: type vector fails against loose (can fail)', loose(others).size !== 0);
+    check('admins: length vector fails against loose (can fail)', loose(shortNpub + ',' + longNpub).size !== 0);
+  }
+  {
+    const evM = finalizeEvent({ kind: 27235, created_at: Math.round(Date.now() / 1000), content: '', tags: [['u', URL1], ['method']] }, sk);
+    const hM = 'Nostr ' + btoa(JSON.stringify(evM));
+    let res; let threw = false;
+    try { res = await verifyNip98(hM, URL1, 'POST', null); } catch { threw = true; }
+    check('nip98: method tag with no value does not throw', !threw && !res.ok && ['method', 'malformed'].includes(res.reason));
+    // Can fail: the library's check throws on this token.
+    let libThrew = false;
+    try { validateEventMethodTag(evM, 'POST'); } catch { libThrew = true; }
+    check('nip98: method-tag vector fails against library check (can fail)', libThrew);
+  }
   check('authMessage clock', authMessage('clock') === 'Your device clock is off. Set it to automatic time and try again.');
   check('authMessage other', authMessage('url') === 'Sign-in check failed. Sign in again and retry.');
 }
