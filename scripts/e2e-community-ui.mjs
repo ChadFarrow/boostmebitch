@@ -49,16 +49,179 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       const rid = 'r' + (++n); waiting.set(rid, { resolve, reject });
       window.bmbSigner(JSON.stringify({ rid, fn, args }));
     });
-    window.nostr = { getPublicKey: () => call('getPublicKey'), signEvent: (e) => call('signEvent', e) };
+    window.nostr = { getPublicKey: () => call('getPublicKey'), signEvent: (e) => window.__silent ? new Promise(() => {}) : call('signEvent', e) };
   })();
 ` });
 
 const t = checker();
+const SONG_SOURCE = 'https://v4vmusic.com/playlist/334bb12d-1f72-4c0e-88e1-266bd1e2dff9.xml';
+const ART_TOO_SMALL = 'https://headstarts.uk/msp/hear-my-roar/hearmyroar%20logo.jpg';
+const KEY = `bmb:playlist_draft:${npub}`;
 await send('Page.navigate', { url: APP });
 await wait(500);
 await js(`(() => { localStorage.clear(); return 1; })()`);
 
-// ---- lines are appended below by the tasks that add the screens -----------
+
+// ---- helpers ---------------------------------------------------------------
+const phone = () => send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+const waitFor = async (expr, ms = 20000) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (await js(`!!(${expr})`)) return true; await wait(250); }
+  return false;
+};
+const go = async (path) => { await send('Page.navigate', { url: `${APP}${path}` }); await wait(1500); };
+const body = () => js(`document.body.innerText`);
+const overflowFree = () => js(`document.documentElement.scrollWidth <= document.documentElement.clientWidth`);
+const tooSmall = (sel, w = 24, h = 24) => js(`[...document.querySelectorAll(${JSON.stringify(sel)})].filter((e) => { const r = e.getBoundingClientRect(); return r.width < ${w} || r.height < ${h}; }).map((e) => e.textContent.trim() || e.getAttribute('aria-label'))`);
+const click = (finder) => js(`(() => { const b = ${finder}; if (b) b.click(); return !!b; })()`);
+const byText = (label) => `[...document.querySelectorAll('main button, main a')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})`;
+const setValue = (sel, v) => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)});
+  const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(v)});
+  el.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
+const rows = () => js(`document.querySelectorAll('[data-song-row]').length`);
+const stored = () => js(`localStorage.getItem(${JSON.stringify(KEY)})`).then((v) => (v ? JSON.parse(v) : null));
+const seed = (draft, labels = {}) => js(`(() => { localStorage.setItem(${JSON.stringify(KEY)}, JSON.stringify({
+  draft: ${JSON.stringify(draft)}, editingId: null, expectedUpdatedAt: null, labels: ${JSON.stringify(labels)} })); return 1; })()`);
+const signedIn = () => js(`(() => { localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
+  localStorage.setItem('bmb:npub', ${JSON.stringify(npub)}); localStorage.setItem('bmb:signer', 'nip07'); return 1; })()`);
+
+// ---- twelve real songs from the app's own resolver ---------------------------
+const src = await fetch(`${APP}/api/playlist?url=${encodeURIComponent(SONG_SOURCE)}&limit=40`).then((r) => r.json()).catch(() => ({}));
+const real = (src.episodes ?? []).filter((e) => !e.unresolved && e.guid && e.podcastGuid).slice(0, 12);
+t.ok('twelve real songs to seed with', real.length === 12, `got ${real.length}`);
+const songs = real.map((e) => ({ feedGuid: e.podcastGuid, itemGuid: e.guid }));
+const labels = Object.fromEntries(real.map((e) => [e.guid, { title: e.title, ...(e.feedTitle ? { artist: e.feedTitle } : {}) }]));
+const draft = (over = {}) => ({ title: 'e2e community playlist', description: 'made by e2e-community-ui', artUrl: null, songs, ...over });
+
+await phone();
+
+// ---- 1. home: the button, next to BROWSE PLAYLISTS ---------------------------
+console.log('--- 1. home: MAKE PLAYLIST next to BROWSE PLAYLISTS (390 x 844) ---');
+await go('/');
+t.ok('home shows + MAKE PLAYLIST', await waitFor(`document.body.innerText.includes('+ MAKE PLAYLIST')`), 'not found');
+const pair = await js(`(() => { const f = (t) => [...document.querySelectorAll('a')].find((a) => a.textContent.trim() === t)?.getBoundingClientRect();
+  const a = f('♫ BROWSE PLAYLISTS'), b = f('+ MAKE PLAYLIST'); return a && b ? { sameRow: Math.abs(a.top - b.top) < 4, gap: b.left - a.right } : null; })()`);
+t.ok('both buttons on one row', pair?.sameRow === true, JSON.stringify(pair));
+t.ok('home: no horizontal overflow', await overflowFree());
+t.equal('home: both buttons at least 24 x 24', await tooSmall('section[aria-labelledby="home-playlists-heading"] a'), []);
+
+// ---- 2. signed out: the maker asks for sign-in --------------------------------
+console.log('--- 2. signed out ---');
+await go('/playlists/make');
+t.ok('signed out: the page says SIGN IN', await waitFor(`document.body.innerText.includes('SIGN IN')`));
+await click(byText('SIGN IN'));
+await wait(600);
+t.ok('SIGN IN opens the sign-in dialog', await js(`!!document.querySelector('[role="dialog"]')`));
+t.ok('signed out: no horizontal overflow', await overflowFree());
+
+// ---- 3. signed in: the saved draft comes back ----------------------------------
+console.log('--- 3. signed in: the saved draft ---');
+await go('/');
+await signedIn();
+await seed(draft(), labels);
+await go('/playlists/make');
+t.ok('the form appears', await waitFor(`document.querySelector('#pl-title')`));
+await wait(500);
+t.equal('the saved title is back', await js(`document.querySelector('#pl-title').value`), 'e2e community playlist');
+t.equal('twelve rows', await rows(), 12);
+t.ok('a row shows the saved title, no fetch', (await body()).includes(real[0].title));
+const txt = await body();
+for (const w of ['TITLE', 'DESCRIPTION', 'PLAYLIST ART LINK', '+ ADD SONGS', 'PUBLISH',
+  'Square, 1400–3000 px. Empty: BMB makes the cover from the first four songs.',
+  'Only you can change this playlist.']) t.ok(`copy: ${w}`, txt.includes(w), 'missing');
+t.ok('footer names the signer', /Signed in as \S+/.test(txt));
+t.equal('row buttons are labelled', await js(`['Move up','Move down','Remove'].map((l) => document.querySelectorAll('[aria-label="' + l + '"]').length)`), [12, 12, 12]);
+t.equal('row buttons are at least 32 x 32', await tooSmall('[data-song-row] button', 32, 32), []);
+t.equal('every button on the page is at least 24 x 24', await tooSmall('main button, main a', 24, 24), []);
+t.ok('maker: no horizontal overflow', await overflowFree());
+t.ok('PUBLISH is on with 12 songs and a title', await js(`!${byText('PUBLISH')}.disabled`));
+
+console.log('--- 4. the reason PUBLISH is off ---');
+await setValue('#pl-title', '');
+await wait(300);
+t.ok('no title: PUBLISH is off', await js(`${byText('PUBLISH')}.disabled`));
+t.ok('and it says Add a title', (await js(`document.querySelector('[data-testid=why-blocked]')?.innerText`)) === 'Add a title');
+await setValue('#pl-title', 'shit mix');
+await wait(300);
+t.ok('profanity: shows what will publish', (await body()).includes('Will publish as: **** mix'));
+await setValue('#pl-title', 'e2e community playlist');
+await click(`document.querySelectorAll('[aria-label="Remove"]')[0]`);
+await click(`document.querySelectorAll('[aria-label="Remove"]')[0]`);
+await wait(300);
+t.equal('two removed: ten left, PUBLISH on', await js(`[document.querySelectorAll('[data-song-row]').length, !${byText('PUBLISH')}.disabled]`), [10, true]);
+await click(`document.querySelectorAll('[aria-label="Remove"]')[0]`);
+await wait(300);
+t.equal('nine songs: PUBLISH off, says Add 1 more', await js(`[${byText('PUBLISH')}.disabled, document.querySelector('[data-testid=why-blocked]')?.innerText]`), [true, 'Add 1 more song']);
+const first = real[3].guid; // the one now second
+await click(`document.querySelectorAll('[aria-label="Move down"]')[0]`);
+await wait(300);
+t.ok('down moves a row', (await js(`document.querySelectorAll('[data-song-row]')[1].innerText`)).includes(real[3].title));
+await wait(300);
+const saved = await stored();
+t.equal('the draft on disk has nine songs and the new order', [saved?.draft.songs.length, saved?.draft.songs[1].itemGuid], [9, first]);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`);
+await wait(500);
+t.equal('after a reload: same title and nine rows', [await js(`document.querySelector('#pl-title').value`), await rows()], ['e2e community playlist', 9]);
+
+console.log('--- 5. the server says no ---');
+await seed(draft({ songs: [...songs.slice(0, 11), { feedGuid: songs[0].feedGuid, itemGuid: 'no-such-song-guid-e2e' }] }), { ...labels, 'no-such-song-guid-e2e': { title: 'Ghost Song' } });
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await click(byText('PUBLISH'));
+t.ok('a song that is not found is named', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('Ghost Song')`, 30000));
+t.ok('the page stays on the maker', await js(`!document.querySelector('[data-testid=published]')`));
+await seed(draft({ artUrl: ART_TOO_SMALL }), labels);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await click(byText('PUBLISH'));
+t.ok('a small picture is refused in words', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('The picture must be at least 1400 × 1400 px.')`, 30000));
+t.ok('with the cover preview still on screen', await js(`!!document.querySelector('[data-testid=cover-preview]')`));
+
+console.log('--- 6. a silent signer ---');
+await seed(draft(), labels);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await js(`window.__silent = true; window.__bmbSignTimeoutMs = 400; 1`);
+await click(byText('PUBLISH'));
+t.ok('no answer: the page says so', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('signer did not answer')`, 10000));
+t.ok('and PUBLISH is on again', await js(`!${byText('PUBLISH')}.disabled`));
+await js(`window.__silent = false; delete window.__bmbSignTimeoutMs; 1`);
+
+console.log('--- 7. publish, edit, save, delete ---');
+await click(byText('PUBLISH'));
+t.ok('a 201 shows the Published view', await waitFor(`document.querySelector('[data-testid=published]')`, 30000));
+const pub = await body();
+t.ok('with the track count', pub.includes('♫ PLAYLIST · 12 TRACKS'));
+for (const w of ['PLAY', 'EDIT', 'SHARE', 'COPY', 'Paste this address into any Podcasting 2.0 app to follow the playlist. It updates when you edit it.'])
+  t.ok(`published: ${w}`, pub.includes(w), 'missing');
+const feedUrl = await js(`document.querySelector('#feed-address').value`);
+const id = /feeds\/playlists\/([0-9a-f-]{36})\.xml$/.exec(feedUrl)?.[1];
+t.ok('the feed address is the playlist feed', !!id, feedUrl);
+t.equal('the feed answers 200', (await fetch(feedUrl)).status, 200);
+t.equal('the saved draft is gone', await stored(), null);
+t.ok('published: no horizontal overflow', await overflowFree());
+t.equal('published: controls at least 24 x 24', await tooSmall('main button, main a, main input', 24, 24), []);
+
+await click(byText('EDIT'));
+t.ok('EDIT opens the maker in edit mode', await waitFor(`document.querySelector('#pl-title') && !!${byText('SAVE')}`));
+await wait(1500);
+t.equal('prefilled: title, twelve rows, DELETE offered', [await js(`document.querySelector('#pl-title').value`), await rows(), await js(`!!${byText('DELETE')}`)], ['e2e community playlist', 12, true]);
+t.ok('rows carry their titles in edit mode', await waitFor(`document.querySelector('[data-song-row]')?.innerText.includes(${JSON.stringify(real[0].title)})`, 15000));
+await setValue('#pl-title', 'e2e community playlist v2');
+await click(byText('SAVE'));
+t.ok('SAVE shows the Published view with the new title', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('e2e community playlist v2')`, 30000));
+await click(byText('EDIT'));
+await waitFor(`!!${byText('DELETE')}`);
+await click(byText('DELETE'));
+t.ok('DELETE asks first', await waitFor(`document.querySelector('[role=dialog]')?.innerText.includes('Delete this playlist?')`));
+t.equal('and nothing is deleted yet', (await fetch(feedUrl)).status, 200);
+await click(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent.trim() === 'DELETE')`);
+t.ok('confirmed: the page says it is gone', await waitFor(`document.body.innerText.includes('playlist deleted')`, 20000));
+t.equal('and the feed answers 410', (await fetch(feedUrl)).status, 410);
+t.equal('the saved draft is gone', await stored(), null);
+
 
 console.log(`\n${t.count - t.fails}/${t.count} passed`);
 await exit(t.fails ? 1 : 0);

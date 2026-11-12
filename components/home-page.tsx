@@ -17,6 +17,7 @@ import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 
 import { loadCollection } from '@/lib/playlist-collection';
+import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
 import type { Podcast } from '@/lib/types';
 import { NO_SELECTION, applyStoreView, backOr, currentEntryView, syncEntry, viewForEntry } from '@/lib/view-history';
 import type { HomeView } from '@/lib/view-history';
@@ -758,7 +759,9 @@ export function HomePage() {
           <p className="max-w-xl text-sm leading-relaxed text-bone/80">
             Curated Podcasting 2.0 playlists. A boost pays the artist.
           </p>
-          <div className="mt-4">
+          {/* gap-1.5, not gap-2: at 390px the two buttons are 358.03px with 8px between them
+              and the row is 358px, so gap-2 wrapped the second one by 0.03px. */}
+          <div className="mt-4 flex flex-wrap gap-1.5">
             <Link
               href="/playlists"
               className="btn-ghost btn-compact"
@@ -766,6 +769,16 @@ export function HomePage() {
             >
               ♫ BROWSE PLAYLISTS
             </Link>
+            {/* Signed out it still links: the maker page asks for sign-in itself. */}
+            {COMMUNITY_PLAYLISTS_ON && (
+              <Link
+                href="/playlists/make"
+                className="btn-bolt-soft btn-compact"
+                title="Make a playlist of your own"
+              >
+                + MAKE PLAYLIST
+              </Link>
+            )}
           </div>
         </section>
       )}
