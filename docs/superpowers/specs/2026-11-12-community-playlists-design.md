@@ -1,7 +1,7 @@
 # Community Playlists — listeners make musicL playlists on BMB
 
 **Date:** 2026-11-12
-**Status:** Draft — waiting for Chad's approval
+**Status:** Approved by Chad, 2026-11-12
 
 ## Intent
 
@@ -59,6 +59,13 @@ These are settled. Do not revisit them in the plan.
 16. **A boost note from a playlist song tags the maker and says which playlist it
     was heard on, with a link to it**, and keeps everything it says today about
     the track (see Boost notes from a playlist song).
+17. **A boost note from a song in a BMB-made playlist uses Boost Me Buddy's words
+    for everything, on both deploys**, because these playlists live on
+    boostmebuddy.com and the note should be family-friendly (see Boost notes from
+    a playlist song).
+18. **Build and test on the beta site first.** Each piece lands as a PR, is added
+    to beta.boostmebitch.com with `npm run beta -- add <PR>`, and is tested there
+    by Chad before anything merges to `main`.
 
 ## Goals
 
@@ -301,6 +308,36 @@ playlist and the boost is shared to Nostr:
 - A note is a signed kind:1 that can never be edited, so the line's wording is
   part of the review.
 
+### Buddy wording (decision 17)
+
+For a boost from a song in a **BMB-made** playlist, every brand-specific part of
+the Nostr note is the Buddy one, whichever deploy sent it:
+
+- the BMB landing link (`bmbLandingUrl`) and the "Heard on" playlist link — on
+  `https://www.boostmebuddy.com`;
+- the note picture — `/api/og/boost.png` on the Buddy origin (the same permanent
+  path and parameters; the Buddy deploy serves the same route);
+- the default sender name — `boostmebuddy.com user`;
+- the `client` tag — `BoostMeBuddy`;
+- the author of a signed-out or Anonymous (site-signed) note — the Buddy site
+  identity (`BRAND.siteNpub` of Buddy).
+
+Only the Nostr note changes. The boostagram (TLV `7629169`, `app_name`) still
+names the deploy that actually paid, which `lib/brand.ts` requires.
+
+A call made in this session for the site-signed case: the bitch deploy asks the
+**Buddy deploy's** `/api/nostr/site-sign` route (already public, rate-limited)
+to sign, so the bitch deploy never holds the Buddy `SITE_NOSTR_SK` — the
+one-key-per-deploy rule in CLAUDE.md stays true. The builder must check what that
+route validates (origins, lengths) before relying on it. Which brand each note
+takes must be pinned by a check (`check:brand` or `check:notelink`), because a
+mistake publishes the other brand's words in a kind:1 that cannot be edited.
+
+Boosts from ChadF's playlists and the existing seven community feeds keep the
+deploy's own brand.
+
+### Which playlists get the "Heard on" line
+
 A call made in this session: this applies to a boost from **any** playlist
 container — ChadF's, the existing seven community feeds, and BMB-made ones — not
 only to BMB-made playlists. A playlist feed with no npub gets the "Heard on" line
@@ -311,7 +348,9 @@ and no tag. The boostagram (TLV) is out of scope; only the Nostr note changes.
 - Newest first in Community playlists, above the existing seven.
 - **Beta and PR previews never write to the production store.** They use a
   separate test store, never submit to Podcast Index, and give test playlists
-  addresses on their own origin. Only the two production deploys share the
+  addresses on their own origin. Every link a boost note carries for a
+  test-store playlist (the "Heard on" link, the landing link) points at that test
+  origin too, never at boostmebuddy.com, where the playlist does not exist. Only the two production deploys share the
   production store and write boostmebuddy.com addresses. (beta.boostmebitch.com
   serves the `beta` branch with real data otherwise — see
   `2026-11-02-beta-site-design.md`.)
