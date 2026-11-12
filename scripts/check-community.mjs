@@ -331,6 +331,14 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const album = { id: 2, podcastGuid: 'al', title: 'Alb', medium: 'music', url: HOSTED + 'x.xml' };
   const alb = playlistBoostContext(album, song, HOSTED);
   check('context: a music album with a foreign guid is NOT a container', alb.container === null && alb.show === album && alb.hosted === false);
+  const bare = { id: -5, title: 'Preview List', medium: 'musicL', url: HOSTED + 'p.xml', nostrNpubs: [{ npub: 'npub1maker', pubkey: 'pk' }] };
+  const bc = playlistBoostContext(bare, song, HOSTED);
+  check('context: a guid-less playlist is still the container', bc.container === bare);
+  check('context: guid-less playlist -> show is the song\'s own feed',
+    bc.show.podcastGuid === 'album-g' && bc.show.title === 'The Album' && bc.show.nostrNpubs === undefined && bc.show !== bare);
+  check('context: guid-less playlist hosted per url', bc.hosted === true);
+  check('context: guid-less playlist, foreign url -> not hosted', playlistBoostContext({ ...bare, url: 'https://e.com/x.xml' }, song, HOSTED).hosted === false);
+  check('context: guid-less music album is NOT a container', playlistBoostContext({ ...bare, medium: 'music' }, song, HOSTED).container === null);
   const ext = playlistBoostContext({ ...list, url: 'https://example.com/pl.xml' }, song, HOSTED);
   check('context: hosted false for a foreign feed url', ext.container !== null && ext.hosted === false);
   const noUrl = playlistBoostContext({ ...list, url: undefined }, song, HOSTED);
