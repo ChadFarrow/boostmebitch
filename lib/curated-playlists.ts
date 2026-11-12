@@ -86,3 +86,40 @@ export const COMMUNITY_PLAYLIST_URLS: readonly string[] = [
   // collection is not named after a host.
   'https://cdn.kolomona.com/podcasts/lightning-thrashes/playlists/001-to-060-lightning-thrashes-playlist.xml',
 ];
+
+/**
+ * Community playlists: BMB-hosted musicL feeds that listeners publish. The leaf
+ * may not import `lib/brand.ts`, so the default is the buddy origin as a literal;
+ * `check:community` asserts it equals `BRANDS.buddy.origin` when the env is unset.
+ */
+export const COMMUNITY_FEED_ORIGIN: string =
+  process.env.NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN || 'https://www.boostmebuddy.com';
+
+export const COMMUNITY_FEED_PATH = '/feeds/playlists/';
+
+/** The one feature switch every community-playlist surface and route reads. */
+export const COMMUNITY_PLAYLISTS_ON: boolean = process.env.NEXT_PUBLIC_COMMUNITY_PLAYLISTS === 'on';
+
+export function communityFeedUrl(id: string): string {
+  return `${COMMUNITY_FEED_ORIGIN}${COMMUNITY_FEED_PATH}${id}.xml`;
+}
+
+export function communityCoverUrl(id: string, version: number): string {
+  return `${COMMUNITY_FEED_ORIGIN}${COMMUNITY_FEED_PATH}${id}.jpg?v=${version}`;
+}
+
+/** Cache-busting version for a cover: whole seconds of `updatedAt`. */
+export function coverVersion(updatedAt: string): number {
+  return Math.floor(Date.parse(updatedAt) / 1000);
+}
+
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
+/** The id when `url` is exactly `<origin>/feeds/playlists/<uuid>.xml`, else null. */
+export function communityIdFromFeedUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  const prefix = `${COMMUNITY_FEED_ORIGIN}${COMMUNITY_FEED_PATH}`;
+  if (!url.startsWith(prefix)) return null;
+  const m = new RegExp(`^(${UUID})\\.xml$`, 'i').exec(url.slice(prefix.length));
+  return m ? m[1] : null;
+}
