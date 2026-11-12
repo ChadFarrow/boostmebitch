@@ -47,18 +47,22 @@ interface Row {
   description: string;
   art_url: string | null;
   songs: unknown;
+  podcast_guid: string;
   created_at: Date;
   updated_at: Date;
 }
 
-const COLS = 'id, owner_pubkey, title, description, art_url, songs, created_at, updated_at';
+const COLS = 'id, owner_pubkey, title, description, art_url, songs, podcast_guid, created_at, updated_at';
 
 // `timestamptz` has microsecond precision and a JS Date has milliseconds, so a
 // round trip through Date would break the `updated_at = $n` compare. The
 // timestamps are therefore selected as text-safe ISO strings by the app writing
 // them with millisecond precision only (see `now()` below): every value this
 // module stores is already a whole millisecond.
-function toStored(r: Row): StoredPlaylist {
+/** A stored playlist with the feed guid saved when it was created. */
+export type StoredRow = StoredPlaylist & { podcastGuid: string };
+
+function toStored(r: Row): StoredRow {
   const songs = (Array.isArray(r.songs) ? r.songs : []) as PlaylistSong[];
   return {
     id: r.id,
@@ -67,48 +71,54 @@ function toStored(r: Row): StoredPlaylist {
     description: r.description,
     artUrl: r.art_url,
     songs,
+    podcastGuid: r.podcast_guid,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
   };
 }
 
-export async function createPlaylist(owner: string, d: PlaylistDraft): Promise<StoredPlaylist> {
+/** `'banned'` when the owner is banned at the moment of the write (the test is inside the INSERT). */
+export async function createPlaylist(owner: string, d: PlaylistDraft): Promise<StoredRow | 'banned'> {
   const id = crypto.randomUUID();
   const guid = communityFeedGuid(communityFeedUrl(id));
-  // date_trunc keeps the stored time at whole milliseconds so it survives a JS Date.
   const { rows } = await db().query<Row>(
     `insert into community_playlists
        (id, owner_pubkey, title, description, art_url, songs, podcast_guid, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $6::jsonb, $7,
-             date_trunc('milliseconds', now()), date_trunc('milliseconds', now()))
+     select $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::jsonb, $7::text,
+            date_trunc('milliseconds', now()), date_trunc('milliseconds', now())
+      where not exists (select 1 from community_bans where pubkey = $2::text)
      returning ${COLS}`,
     [id, owner, d.title, d.description, d.artUrl, JSON.stringify(d.songs), guid],
   );
-  return toStored(rows[0]!);
+  return rows[0] ? toStored(rows[0]) : 'banned';
 }
 
 export async function updatePlaylist(
   id: string,
   d: PlaylistDraft,
   expectedUpdatedAt: string,
-): Promise<StoredPlaylist | 'gone' | 'stale'> {
+): Promise<StoredRow | 'gone' | 'stale' | 'banned'> {
   const expected = new Date(expectedUpdatedAt);
   if (Number.isNaN(expected.getTime())) return 'stale';
   // updated_at moves strictly forward, so two quick edits never share a value.
+  // The ban test is part of the UPDATE: a ban that lands after a route's own
+  // isBanned read still stops this write.
   const { rows } = await db().query<Row>(
     `update community_playlists
         set title = $2, description = $3, art_url = $4, songs = $5::jsonb,
             updated_at = greatest(date_trunc('milliseconds', now()), updated_at + interval '1 millisecond')
       where id = $1 and deleted_at is null and updated_at = $6
+        and not exists (select 1 from community_bans b where b.pubkey = community_playlists.owner_pubkey)
       returning ${COLS}`,
     [id, d.title, d.description, d.artUrl, JSON.stringify(d.songs), expected],
   );
   if (rows[0]) return toStored(rows[0]);
   const cur = await getPlaylist(id);
-  return cur === 'gone' || cur === null ? 'gone' : 'stale';
+  if (cur === 'gone' || cur === null) return 'gone';
+  return (await isBanned(cur.ownerPubkey)) ? 'banned' : 'stale';
 }
 
-export async function getPlaylist(id: string): Promise<StoredPlaylist | 'gone' | null> {
+export async function getPlaylist(id: string): Promise<StoredRow | 'gone' | null> {
   const { rows } = await db().query<Row & { deleted_at: Date | null }>(
     `select ${COLS}, deleted_at from community_playlists where id = $1`,
     [id],
@@ -118,7 +128,7 @@ export async function getPlaylist(id: string): Promise<StoredPlaylist | 'gone' |
   return r.deleted_at ? 'gone' : toStored(r);
 }
 
-export async function listPlaylists(o: { limit: number; owner?: string }): Promise<StoredPlaylist[]> {
+export async function listPlaylists(o: { limit: number; owner?: string }): Promise<StoredRow[]> {
   const limit = Math.max(1, Math.min(200, Math.floor(o.limit)));
   const args: unknown[] = [limit];
   let where = 'deleted_at is null';
@@ -133,7 +143,7 @@ export async function listPlaylists(o: { limit: number; owner?: string }): Promi
   return rows.map(toStored);
 }
 
-export async function findPlaylistByGuid(podcastGuid: string): Promise<StoredPlaylist | null> {
+export async function findPlaylistByGuid(podcastGuid: string): Promise<StoredRow | null> {
   const { rows } = await db().query<Row>(
     `select ${COLS} from community_playlists where podcast_guid = $1 and deleted_at is null`,
     [podcastGuid],

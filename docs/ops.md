@@ -604,3 +604,15 @@ build-time source-map and stringifier issues against the CSS being compiled,
 which here is our own `app/globals.css` and Tailwind's output, not anything a
 feed or a visitor supplies. Left in place deliberately; revisit with the Next 16
 upgrade rather than forcing it.
+
+## Community playlists database
+
+`lib/community/store.ts` is the one writer of the community-playlist tables. Run `npm run community:schema` (it runs `psql "$COMMUNITY_DB_URL" -f scripts/community-schema.sql`) once on each database. The script is idempotent: a second run changes nothing, and it also moves the timestamp defaults of a table made by an older copy of the file. **Run it on the test database and on the production database BEFORE you set `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`**: with the switch on and no tables, every write fails.
+
+| Variable | Use |
+|---|---|
+| `COMMUNITY_DB_URL` | Postgres connection string. Unset: the list route answers `{ playlists: [] }` and the other routes answer 503 `playlists are not configured` |
+| `COMMUNITY_DB_CA` | Optional root CA (PEM, or one line with `\n`) for a TLS server. Unset: the URL decides, so a local non-TLS Postgres works |
+| `ADMIN_NPUBS` | npubs (comma or space separated) that may use `/api/community-playlists/admin` |
+| `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` | `on` turns every community-playlist route and surface on; anything else answers 404 |
+| `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` | Origin of the public feed URLs. Default `https://www.boostmebuddy.com`; local tests set `http://localhost:3123` |

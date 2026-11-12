@@ -7,6 +7,10 @@
 // and the schema applied (`npm run community:schema`). APP_URL overrides the server.
 // It signs NIP-98 headers the way the browser will, so it needs only nostr-tools.
 // Prints `ok`/`FAIL` lines; exits non-zero on any FAIL. It deletes what it makes.
+// It sends a new x-real-ip every 5 requests (the rate limiter reads that header first on a
+// local server), so the run never waits on the 6-writes-a-minute limit.
+// It also depends on three third-party image URLs below (Fountain and headstarts.uk); if one
+// moves, the art lines fail for that reason and not because of the routes.
 import { randomBytes } from 'node:crypto';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { getToken } from 'nostr-tools/nip98';
@@ -41,9 +45,13 @@ const show = (r) => `status ${r.status} body ${JSON.stringify(r.body)}`;
 
 const newKey = () => Uint8Array.from(randomBytes(32));
 
+// A fresh fake client address every 5 requests, to stay under the per-IP write limit.
+let sent = 0;
+const nextIp = () => `10.99.${Math.floor(sent++ / 5) % 250}.${Math.floor(sent / 1250) + 1}`;
+
 /** One request. `sk` signs a NIP-98 header; `ageSeconds` backdates it. */
 async function call(method, path, { sk, body, ageSeconds = 0, headers = {} } = {}) {
-  const h = { ...headers };
+  const h = { ...headers, 'x-real-ip': nextIp() };
   if (body !== undefined) h['content-type'] = 'application/json';
   if (sk) {
     h.authorization = await getToken(`${APP}${path.split('?')[0]}`, method, (e) => {
@@ -99,6 +107,15 @@ const wrongUrl = await call('POST', PLAYLISTS, {
   headers: { authorization: await getToken(`${APP}/somewhere/else`, 'POST', (e) => finalizeEvent(e, owner), true, { draft: draft() }) },
 });
 check('POST with a token for another URL -> 401', wrongUrl.status === 401, show(wrongUrl));
+
+// A token signed for body A must not carry body B.
+const bodyA = { draft: draft({ title: 'body A' }) };
+const bodyB = { draft: draft({ title: 'body B' }) };
+const swapped = await call('POST', PLAYLISTS, {
+  body: bodyB,
+  headers: { authorization: await getToken(`${APP}${PLAYLISTS}`, 'POST', (e) => finalizeEvent(e, owner), true, bodyA) },
+});
+check('POST signed for body A but sent with body B -> 401', swapped.status === 401, show(swapped));
 
 // ── validation ──────────────────────────────────────────────────────────────
 const few = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ songs: songs.slice(0, 9) }) } });
@@ -187,6 +204,34 @@ check('admin unban -> 200', unban.status === 200 && unban.body?.ok === true, sho
 const putAfter = await call('PUT', `${PLAYLISTS}/${id}`, { sk: owner, body: { draft: draft({ title: 'fourth' }), expectedUpdatedAt: put3.body.playlist.updatedAt } });
 check('owner PUT after unban -> 200', putAfter.status === 200, show(putAfter));
 
+// A token made for one method must not work for another.
+const putToken = await getToken(`${APP}${PLAYLISTS}/${id}`, 'PUT', (e) => finalizeEvent(e, owner), true);
+const wrongMethod = await call('DELETE', `${PLAYLISTS}/${id}`, { headers: { authorization: putToken } });
+check('a token signed for PUT sent as DELETE -> 401', wrongMethod.status === 401, show(wrongMethod));
+const stillThere = await call('GET', `${PLAYLISTS}/${id}`);
+check('and the playlist is still there', stillThere.status === 200, show(stillThere));
+
+const badExpected = await call('PUT', `${PLAYLISTS}/${id}`, { sk: owner, body: { draft: draft(), expectedUpdatedAt: 'not a date' } });
+check('PUT with an unparseable expectedUpdatedAt -> 400 bad expectedUpdatedAt',
+  badExpected.status === 400 && badExpected.body?.error === 'bad expectedUpdatedAt', show(badExpected));
+
+// An unchanged cover link is not fetched again; the song list is checked only for new songs.
+const keepArt = await call('GET', `${PLAYLISTS}/${id}`);
+const withArt = await call('PUT', `${PLAYLISTS}/${id}`, {
+  sk: owner, body: { draft: draft({ artUrl: ART_OK, title: 'with art' }), expectedUpdatedAt: keepArt.body.playlist.updatedAt },
+});
+check('PUT setting the cover -> 200', withArt.status === 200 && withArt.body?.playlist?.artUrl === ART_OK, show(withArt));
+const sameArt = await call('PUT', `${PLAYLISTS}/${id}`, {
+  sk: owner, body: { draft: draft({ artUrl: ART_OK, title: 'same art' }), expectedUpdatedAt: withArt.body.playlist.updatedAt },
+});
+check('PUT keeping the same cover -> 200', sameArt.status === 200, show(sameArt));
+const newSong = await call('PUT', `${PLAYLISTS}/${id}`, {
+  sk: owner,
+  body: { draft: draft({ songs: [...songs, { feedGuid: songs[0].feedGuid, itemGuid: `made-up-${Date.now()}` }] }), expectedUpdatedAt: sameArt.body.playlist.updatedAt },
+});
+check('PUT adding a made-up song -> 400 song-not-found',
+  newSong.status === 400 && newSong.body?.problems?.some((p) => p.kind === 'song-not-found'), show(newSong));
+
 // ── a second playlist: admin delete and ban + deleteAll ─────────────────────
 const p2 = await call('POST', PLAYLISTS, { sk: other, body: { draft: draft({ title: 'other one' }) } });
 if (p2.body?.id) created.push(p2.body.id);
@@ -202,6 +247,16 @@ check('admin ban with deleteAll -> 200, deleted 1', banAll.status === 200 && ban
 await call('POST', `${PLAYLISTS}/admin`, { sk: ADMIN_SK, body: { action: 'unban', pubkey: getPublicKey(other) } });
 const badAction = await call('POST', `${PLAYLISTS}/admin`, { sk: ADMIN_SK, body: { action: 'nope' } });
 check('admin POST with an unknown action -> 400', badAction.status === 400, show(badAction));
+
+// ── admin delete through DELETE /[id] ──
+const p4 = await call('POST', PLAYLISTS, { sk: other, body: { draft: draft({ title: 'admin will delete' }) } });
+if (p4.body?.id) created.push(p4.body.id);
+const nonAdminDel = await call('DELETE', `${PLAYLISTS}/${p4.body?.id}`, { sk: newKey() });
+check('DELETE by a stranger who is not an admin -> 403', nonAdminDel.status === 403, show(nonAdminDel));
+const adminDel2 = await call('DELETE', `${PLAYLISTS}/${p4.body?.id}`, { sk: ADMIN_SK });
+check('DELETE by an admin of another listener\'s playlist -> 200', adminDel2.status === 200 && adminDel2.body?.deleted === true, show(adminDel2));
+const p4gone = await call('GET', `${PLAYLISTS}/${p4.body?.id}`);
+check('and that playlist -> 410', p4gone.status === 410, show(p4gone));
 
 // ── delete ──────────────────────────────────────────────────────────────────
 const delOther = await call('DELETE', `${PLAYLISTS}/${id}`, { sk: other });

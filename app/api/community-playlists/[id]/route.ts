@@ -6,7 +6,7 @@ import { validatePlaylistDraft, type DraftProblem, type ArtRefusal } from '@/lib
 import { cleanText } from '@/lib/community/clean-text';
 import { checkArt, verifySongs } from '@/lib/community/checks';
 import { adminPubkeys } from '@/lib/community/auth';
-import { authenticate, NOT_FOUND, UUID_RE } from '@/lib/community/http';
+import { authenticate, NOT_FOUND, NOT_CONFIGURED, BANNED, UUID_RE } from '@/lib/community/http';
 import {
   communityStoreConfigured, deletePlaylist, getPlaylist, isBanned, updatePlaylist,
 } from '@/lib/community/store';
@@ -20,10 +20,9 @@ type Problem =
   | { kind: 'song-not-found'; itemGuid: string }
   | { kind: 'not-music'; itemGuid: string };
 
-const unavailable = () =>
-  NextResponse.json({ error: 'community playlists are not available' }, { status: 503 });
+const unavailable = NOT_CONFIGURED;
 const gone = () => NextResponse.json({ error: 'gone' }, { status: 410 });
-const forbidden = (error = 'forbidden') => NextResponse.json({ error }, { status: 403 });
+const forbidden = () => NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
 export async function GET(req: Request, ctx: Ctx) {
   const limited = rateLimit(req, 'community-playlists:one', 120);
@@ -42,7 +41,7 @@ export async function GET(req: Request, ctx: Ctx) {
 }
 
 export async function PUT(req: Request, ctx: Ctx) {
-  const limited = rateLimit(req, 'community-playlists:write', 20);
+  const limited = rateLimit(req, 'community-playlists:write', 6);
   if (limited) return limited;
   if (!COMMUNITY_PLAYLISTS_ON) return NOT_FOUND();
   const notJson = requireJsonBody(req);
@@ -59,19 +58,26 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (cur === null) return NOT_FOUND();
     if (cur === 'gone') return gone();
     if (cur.ownerPubkey !== auth.pubkey) return forbidden();
-    if (await isBanned(auth.pubkey)) return forbidden('This account cannot publish playlists.');
+    if (await isBanned(auth.pubkey)) return BANNED();
 
     const raw = (parsed.body && typeof parsed.body === 'object' ? parsed.body : {}) as
       { draft?: unknown; expectedUpdatedAt?: unknown };
     if (typeof raw.expectedUpdatedAt !== 'string') {
       return NextResponse.json({ error: 'missing expectedUpdatedAt' }, { status: 400 });
     }
+    if (Number.isNaN(Date.parse(raw.expectedUpdatedAt))) {
+      return NextResponse.json({ error: 'bad expectedUpdatedAt' }, { status: 400 });
+    }
     const v = validatePlaylistDraft(raw.draft);
     if (!v.ok) return NextResponse.json({ error: 'not publishable', problems: v.problems }, { status: 400 });
 
+    // Only what changed costs a lookup: songs the stored playlist already holds
+    // passed the check when they were saved, and an unchanged cover link is not fetched again.
+    const had = new Set(cur.songs.map((s) => `${s.feedGuid}\n${s.itemGuid}`));
+    const added = v.draft.songs.filter((s) => !had.has(`${s.feedGuid}\n${s.itemGuid}`));
     const [art, songs] = await Promise.all([
-      v.draft.artUrl ? checkArt(v.draft.artUrl) : Promise.resolve({ ok: true as const }),
-      verifySongs(v.draft.songs),
+      v.draft.artUrl && v.draft.artUrl !== cur.artUrl ? checkArt(v.draft.artUrl) : Promise.resolve({ ok: true as const }),
+      added.length ? verifySongs(added) : Promise.resolve({ notFound: [], notMusic: [] }),
     ]);
     const problems: Problem[] = [];
     if (!art.ok) problems.push({ kind: 'art', reason: art.reason });
@@ -85,13 +91,14 @@ export async function PUT(req: Request, ctx: Ctx) {
       raw.expectedUpdatedAt,
     );
     if (out === 'gone') return gone();
+    if (out === 'banned') return BANNED();
     if (out === 'stale') return NextResponse.json({ error: 'changed elsewhere' }, { status: 409 });
     return NextResponse.json({ playlist: out }, { headers: NO_STORE });
   }, 'could not save the playlist');
 }
 
 export async function DELETE(req: Request, ctx: Ctx) {
-  const limited = rateLimit(req, 'community-playlists:write', 20);
+  const limited = rateLimit(req, 'community-playlists:delete', 20);
   if (limited) return limited;
   if (!COMMUNITY_PLAYLISTS_ON) return NOT_FOUND();
   return withErrorHandling(async () => {

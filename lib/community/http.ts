@@ -1,11 +1,18 @@
 import { NextResponse } from 'next/server';
 import { nip19 } from 'nostr-tools';
 import { verifyNip98, authMessage } from './auth';
-import { communityFeedGuid } from './feed-doc';
-import type { CommunityPlaylistSummary, StoredPlaylist } from './rules';
+import type { CommunityPlaylistSummary } from './rules';
+import type { StoredRow } from './store';
 import { communityFeedUrl, communityCoverUrl, coverVersion } from '../curated-playlists';
 
 // SERVER-ONLY glue the three community-playlist routes share.
+
+/** The one 503 every route answers when no database is set. */
+export const NOT_CONFIGURED = () =>
+  NextResponse.json({ error: 'playlists are not configured' }, { status: 503 });
+
+export const BANNED = () =>
+  NextResponse.json({ error: 'This account cannot publish playlists.' }, { status: 403 });
 
 export const NOT_FOUND = () => NextResponse.json({ error: 'not found' }, { status: 404 });
 
@@ -37,14 +44,14 @@ export async function authenticate(
   return { ok: false, response: NextResponse.json({ error: authMessage(r.reason) }, { status: 401 }) };
 }
 
-export function summaryOf(p: StoredPlaylist): CommunityPlaylistSummary {
+export function summaryOf(p: StoredRow): CommunityPlaylistSummary {
   const feedUrl = communityFeedUrl(p.id);
   return {
     id: p.id,
     title: p.title,
     description: p.description,
     feedUrl,
-    podcastGuid: communityFeedGuid(feedUrl),
+    podcastGuid: p.podcastGuid,
     ownerPubkey: p.ownerPubkey,
     ownerNpub: nip19.npubEncode(p.ownerPubkey),
     coverUrl: communityCoverUrl(p.id, coverVersion(p.updatedAt)),

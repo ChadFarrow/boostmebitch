@@ -4,7 +4,7 @@ import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } f
 import { rateLimit } from '@/lib/rate-limit';
 import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
 import { adminPubkeys } from '@/lib/community/auth';
-import { authenticate, summaryOf, NOT_FOUND, UUID_RE } from '@/lib/community/http';
+import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, UUID_RE } from '@/lib/community/http';
 import {
   banPubkey, communityStoreConfigured, deletePlaylist, deletePlaylistsByOwner, listBans,
   listPlaylists, unbanPubkey,
@@ -12,8 +12,7 @@ import {
 
 export const runtime = 'nodejs';
 
-const unavailable = () =>
-  NextResponse.json({ error: 'community playlists are not available' }, { status: 503 });
+const unavailable = NOT_CONFIGURED;
 const forbidden = () => NextResponse.json({ error: 'forbidden' }, { status: 403 });
 
 /** A pubkey given as 64 hex characters or as an npub; null when it is neither. */

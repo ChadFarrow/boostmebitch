@@ -5,7 +5,7 @@ import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlist
 import { validatePlaylistDraft, type DraftProblem, type ArtRefusal } from '@/lib/community/rules';
 import { cleanText } from '@/lib/community/clean-text';
 import { checkArt, verifySongs } from '@/lib/community/checks';
-import { authenticate, summaryOf, NOT_FOUND } from '@/lib/community/http';
+import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, BANNED } from '@/lib/community/http';
 import { communityStoreConfigured, createPlaylist, isBanned, listPlaylists } from '@/lib/community/store';
 
 export const runtime = 'nodejs';
@@ -42,21 +42,21 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, 'community-playlists:write', 20);
+  const limited = rateLimit(req, 'community-playlists:write', 6);
   if (limited) return limited;
   if (!COMMUNITY_PLAYLISTS_ON) return NOT_FOUND();
   const notJson = requireJsonBody(req);
   if (notJson) return notJson;
   return withErrorHandling(async () => {
     if (!communityStoreConfigured()) {
-      return NextResponse.json({ error: 'community playlists are not available' }, { status: 503 });
+      return NOT_CONFIGURED();
     }
     const parsed = await readCappedRequestJson(req, 64 * 1024);
     if (!parsed.ok) return parsed.response;
     const auth = await authenticate(req, parsed.body);
     if (!auth.ok) return auth.response;
     if (await isBanned(auth.pubkey)) {
-      return NextResponse.json({ error: 'This account cannot publish playlists.' }, { status: 403 });
+      return BANNED();
     }
     const raw = (parsed.body && typeof parsed.body === 'object' ? parsed.body : {}) as { draft?: unknown };
     const v = validatePlaylistDraft(raw.draft);
@@ -77,6 +77,8 @@ export async function POST(req: Request) {
       title: cleanText(v.draft.title),
       description: cleanText(v.draft.description),
     });
+    // A ban that landed after the isBanned read above is caught inside the INSERT.
+    if (row === 'banned') return BANNED();
     return NextResponse.json({ id: row.id, feedUrl: communityFeedUrl(row.id) }, { status: 201, headers: NO_STORE });
   }, 'could not publish the playlist');
 }
