@@ -237,6 +237,7 @@ const favKey = `bmb:favepisodes:${npub}`;
 const favs = Object.fromEntries(real.slice(6, 12).map((e, i) => [e.guid, {
   itemGuid: e.guid, feedGuid: e.podcastGuid, title: e.title, podcastTitle: e.feedTitle ?? 'Artist', medium: 'music', addedAt: 1000 + i }]));
 favs['ep-podcast-guid'] = { itemGuid: 'ep-podcast-guid', feedGuid: 'feed-podcast-guid', title: 'A Podcast Episode', medium: 'podcast', addedAt: 5000 };
+favs['undef-with-enclosure'] = { itemGuid: 'undef-with-enclosure', feedGuid: 'feed-x', title: 'Undefined Medium Episode', enclosureUrl: 'https://example.com/a.mp3', addedAt: 5002 };
 favs['no-feed-guid'] = { itemGuid: 'no-feed-guid', title: 'Orphan Track', medium: 'music', addedAt: 5001 };
 await go('/');
 await js(`localStorage.setItem(${JSON.stringify(favKey)}, ${JSON.stringify(JSON.stringify(favs))}); 1`);
@@ -255,6 +256,11 @@ await setValue('[role=dialog] input[type=search]', 'nsec1' + 'q'.repeat(58));
 await wait(700);
 t.ok('an nsec is refused in words', await js(`!!document.querySelector('[data-testid=search-secret]')`));
 t.equal('and no search request left', await js(`window.__searchCalls`), 0);
+await js(`window.__fetch429 = true; if (!window.__origFetch) { window.__origFetch = window.fetch; window.fetch = (...a) => (window.__fetch429 && String(a[0]).includes('/api/search') ? Promise.resolve(new Response('{}', { status: 429 })) : window.__origFetch(...a)); } 1`);
+await setValue('[role=dialog] input[type=search]', 'bitcoin');
+t.ok('a 429 says the search failed, not that nothing matched', await waitFor(`document.querySelector('[role=dialog]').innerText.includes('Search failed. Try again.') && !document.querySelector('[role=dialog]').innerText.includes('No albums found')`, 10000));
+await js(`window.__fetch429 = false; 1`);
+await setValue('[role=dialog] input[type=search]', '');
 await setValue('[role=dialog] input[type=search]', 'bitcoin');
 t.ok('SEARCH lists albums', await waitFor(`document.querySelectorAll('[data-album-row]').length > 0`, 30000));
 t.equal('the secret message is gone', await js(`!!document.querySelector('[data-testid=search-secret]')`), false);
@@ -277,12 +283,12 @@ t.ok('a row has an ADDED label', (await js(`document.querySelector('[data-added]
 await click(dlgBtn('FAVORITES'));
 t.ok('FAVORITES lists the six saved songs, no podcast, no orphan', await waitFor(`document.querySelectorAll('[data-add-row]').length === 6`, 10000), await body());
 const favText = await js(`document.querySelector('[role=dialog]').innerText`);
-t.ok('no podcast episode and no orphan listed', !favText.includes('A Podcast Episode') && !favText.includes('Orphan Track'));
+t.ok('no podcast episode and no orphan listed', !favText.includes('A Podcast Episode') && !favText.includes('Orphan Track') && !favText.includes('Undefined Medium Episode'));
 t.equal('each favorite has + ADD', await js(`document.querySelectorAll('[data-add-row] button[aria-label^="Add "]').length`), 6);
 t.equal('favorites: every control at least 24 x 24', await tooSmall('[role=dialog] button', 24, 24), []);
 for (let i = 0; i < 6; i++) { await js(`document.querySelector('[data-add-row] button[aria-label^="Add "]').click(); 1`); await wait(150); }
 t.equal('the header reads 12 in sheet playlist', await js(`document.querySelector('[data-testid=add-count]').innerText`), '12 in sheet playlist');
-t.equal('twelve ADDED in favorites', await js(`document.querySelectorAll('[data-added]').length`), 6);
+t.equal('six ADDED in favorites', await js(`document.querySelectorAll('[data-added]').length`), 6);
 await click(dlgBtn('DONE'));
 await wait(400);
 t.ok('DONE closes the sheet', await js(`!document.querySelector('[role=dialog]')`));
@@ -295,7 +301,33 @@ await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')`); await wait(500);
 await click(byText('+ ADD SONGS')); await waitFor(dlg());
 await click(dlgBtn('FAVORITES')); await wait(300);
-t.ok('empty favorites say so', (await js(`document.querySelector('[role=dialog]').innerText`)).includes('No saved songs yet. Tap ♡ on a song to save it.'));
+t.ok('empty favorites say so, once the read answered', await waitFor(`document.querySelector('[role=dialog]').innerText.includes('No saved songs yet. Tap ♡ on a song to save it.')`, 30000));
+
+// A song already in the playlist reads ADDED; remove it in the maker and the sheet offers + ADD again.
+await js(`localStorage.setItem(${JSON.stringify(favKey)}, ${JSON.stringify(JSON.stringify({ [real[0].guid]: favs[real[0].guid] ?? { itemGuid: real[0].guid, feedGuid: real[0].podcastGuid, title: real[0].title, medium: 'music', addedAt: 1 } }))}); 1`);
+await seed(draft({ songs: [songs[0]] }), labels);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await click(byText('+ ADD SONGS')); await waitFor(dlg());
+await click(dlgBtn('FAVORITES'));
+t.ok('a song already in the playlist shows ADDED', await waitFor(`document.querySelectorAll('[data-added]').length === 1`, 20000));
+await click(dlgBtn('DONE')); await wait(300);
+await click(`document.querySelectorAll('[aria-label="Remove"]')[0]`); await wait(300);
+await click(byText('+ ADD SONGS')); await waitFor(dlg());
+await click(dlgBtn('FAVORITES')); await wait(300);
+t.equal('after removing it, the sheet offers + ADD again', await js(`[document.querySelectorAll('[data-added]').length, document.querySelectorAll('[data-add-row] button[aria-label^="Add "]').length]`), [0, 1]);
+
+// An unanswered favorites read is not "no saved songs": relays that never answer.
+await js(`localStorage.removeItem(${JSON.stringify(favKey)}); localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify(['ws://127.0.0.1:1']))}); 1`);
+await seed(draft(), labels);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(300);
+await click(byText('+ ADD SONGS')); await waitFor(dlg());
+await click(dlgBtn('FAVORITES'));
+const sawLoading = await waitFor(`document.querySelector('[data-testid=fav-loading]') || document.querySelector('[data-testid=fav-degraded]')`, 20000);
+const unanswered = await js(`document.querySelector('[role=dialog]').innerText`);
+t.ok('an unanswered read says loading or could-not-read, never "No saved songs yet"', sawLoading && !unanswered.includes('No saved songs yet'), unanswered);
+await signedIn();
 
 console.log('--- 8. edit from the server, two slots, a stale version ---');
 await js(`localStorage.removeItem(${JSON.stringify(KEY)}); 1`);

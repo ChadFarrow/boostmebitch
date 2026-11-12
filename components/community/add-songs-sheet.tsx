@@ -73,6 +73,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
   const genRef = useRef(0);
   useEffect(() => {
     // An nsec is refused before any fetch: a key sent to a server cannot be recalled.
+    setOpenError(null);
     if (!q.trim() || secret) {
       genRef.current++;
       setAlbums(null); setSearching(false); setSearchError(false);
@@ -83,6 +84,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
       setSearching(true); setSearchError(false);
       try {
         const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&type=music`);
+        if (!r.ok) throw new Error(`search ${r.status}`);
         const data = await r.json();
         if (gen !== genRef.current) return;
         setAlbums(Array.isArray(data?.feeds) ? (data.feeds as Podcast[]) : []);
@@ -102,6 +104,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
       if (!res.podcast || !res.episodes) { setOpenError('Could not open that album. Try again.'); return; }
       if (!isMusicMedium(res.podcast)) { setOpenError('That feed is not a music album.'); return; }
       setAlbum({ podcast: res.podcast, episodes: res.episodes });
+      setOpenError(null);
     } catch {
       setOpenError('Could not open that album. Try again.');
     } finally {
@@ -113,11 +116,15 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
   const favSongs = useMemo(
     () => Object.values(favoriteEpisodes)
-      .filter((f) => f.itemGuid && f.feedGuid && (f.medium === undefined || f.medium.toLowerCase() === 'music'))
+      // A favorite of unknown medium is a track only in the shape <FavTrackHeart> writes: it sets no
+      // enclosureUrl, where <FavEpisodeHeart> always does.
+      .filter((f) => f.itemGuid && f.feedGuid && (f.medium === undefined ? !f.enclosureUrl : f.medium.toLowerCase() === 'music'))
       .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0)),
     [favoriteEpisodes],
   );
 
+  // An empty library is a claim: make it only once the read has answered.
+  const sync = useApp((s) => s.favoritesSync);
   const albumGuid = album?.podcast.podcastGuid;
   return (
     <ModalShell onClose={onClose} label="Add songs" className="w-full max-w-2xl h-full" clearsPlayer={false}>
@@ -186,7 +193,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
 
         {tab === 'search' && album && (
           <>
-            <button type="button" className="btn-mini" onClick={() => setAlbum(null)}>← RESULTS</button>
+            <button type="button" className="btn-mini" onClick={() => { setAlbum(null); setOpenError(null); }}>← RESULTS</button>
             <h3 className="mt-3 truncate font-display text-lg">{album.podcast.title}</h3>
             <p className="mt-1 text-xs text-muted">Pick songs one at a time. A whole album cannot go in.</p>
             {album.episodes.length === 0 && <p className="mt-3 text-sm text-muted">This album has no songs.</p>}
@@ -194,19 +201,23 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
               {album.episodes.map((e) => {
                 const feedGuid = e.podcastGuid ?? albumGuid;
                 const ok = !!e.guid && !!feedGuid;
+                const artist = album.podcast.author ?? album.podcast.title;
+                const image = e.image ?? album.podcast.image;
+                // The album's URL is the item's feed only when the item belongs to that album.
+                const feedUrl = album.podcast.url && feedGuid === albumGuid ? album.podcast.url : undefined;
                 return (
                   <SongRow
                     key={e.id}
                     title={e.title}
-                    artist={album.podcast.author ?? album.podcast.title}
-                    image={e.image ?? album.podcast.image}
+                    artist={artist}
+                    image={image}
                     added={ok && has(feedGuid!, e.guid!)}
                     onAdd={ok ? () => onAdd(
-                      { feedGuid: feedGuid!, itemGuid: e.guid!, ...(album.podcast.url ? { feedUrl: album.podcast.url } : {}) },
+                      { feedGuid: feedGuid!, itemGuid: e.guid!, ...(feedUrl ? { feedUrl } : {}) },
                       {
                         title: e.title,
-                        ...((album.podcast.author ?? album.podcast.title) ? { artist: album.podcast.author ?? album.podcast.title } : {}),
-                        ...((e.image ?? album.podcast.image) ? { image: e.image ?? album.podcast.image } : {}),
+                        ...(artist ? { artist } : {}),
+                        ...(image ? { image } : {}),
                       },
                     ) : undefined}
                   />
@@ -218,7 +229,13 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
 
         {tab === 'favorites' && (
           favSongs.length === 0 ? (
-            <p className="text-sm text-muted">No saved songs yet. Tap ♡ on a song to save it.</p>
+            sync === 'idle' || sync === 'loading' ? (
+              <p className="text-sm text-muted" data-testid="fav-loading">Loading your saved songs…</p>
+            ) : sync === 'degraded' ? (
+              <p className="text-sm text-muted" data-testid="fav-degraded">Your saved songs could not be read. Try again later.</p>
+            ) : (
+              <p className="text-sm text-muted">No saved songs yet. Tap ♡ on a song to save it.</p>
+            )
           ) : (
             <ul className="divide-y divide-bone/15" aria-label="Saved songs">
               {favSongs.map((f) => (
