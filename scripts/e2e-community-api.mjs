@@ -302,6 +302,8 @@ check('/api/playlist?url=<feedUrl> answers the 12 songs in order, from the store
   && viaPlaylist.body.podcast?.medium === 'musicL', show(viaPlaylist).slice(0, 300));
 check('/api/playlist for a stored playlist is cached 30 s, not the remote-playlist 300 s (an edit shows soon)',
   /(^|, )s-maxage=30(,|$)/.test(viaPlaylist.headers.get('cache-control') ?? ''), viaPlaylist.headers.get('cache-control'));
+check('...and the browser keeps it too (max-age), or /playlists re-asks on every visit and meets the rate limit',
+  /(^|, )max-age=30(,|$)/.test(viaPlaylist.headers.get('cache-control') ?? ''), viaPlaylist.headers.get('cache-control'));
 
 const g = got.body.playlist;
 const byGuid = await call('GET', `/api/by-guid?guid=${g.podcastGuid}`);
