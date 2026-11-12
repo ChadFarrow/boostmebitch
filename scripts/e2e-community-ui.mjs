@@ -4,8 +4,12 @@
 //   COMMUNITY_DB_URL=postgres://postgres:test@localhost:54329/postgres
 //   ADMIN_NPUBS=<any npub> NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
 //   NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 npm run dev -- -p 3123
-// `--off` runs ONLY the switch-off half, against a server started without NEXT_PUBLIC_COMMUNITY_PLAYLISTS.
 // and the schema applied (`npm run community:schema`). APP_URL overrides the server.
+//
+// The switch-OFF half is a second run against a second server, in two commands:
+//   1. the same dev server command WITHOUT NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
+//   2. node scripts/e2e-community-ui.mjs --off
+// (`node scripts/e2e-community-api.mjs --off` is the API half, same server.)
 // The signer is a throwaway key behind a fake NIP-07 `window.nostr`, and relays point
 // at a LOCAL relay, so nothing reaches a public relay.
 import { createRelay } from './local-relay.mjs';
@@ -224,6 +228,7 @@ await js(`window.__silent = true; window.__bmbSignTimeoutMs = 400; 1`);
 await click(byText('PUBLISH'));
 t.ok('no answer: the page says so', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('signer did not answer')`, 10000));
 t.ok('and PUBLISH is on again', await js(`!${byText('PUBLISH')}.disabled`));
+t.equal('and the 12 rows are still on the page', await rows(), 12);
 t.equal('and the draft is still in localStorage', (await stored())?.draft.description, 'still here after a timeout');
 await js(`window.__silent = false; delete window.__bmbSignTimeoutMs; 1`);
 
