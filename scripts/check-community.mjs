@@ -11,6 +11,9 @@ import {
 } from '../lib/community/feed-doc.ts';
 import { channelSlice, parsePlaylistRemoteItems, parseFeedNpubs, decodeXmlText } from '../lib/feed-xml.ts';
 import { npubEncode } from 'nostr-tools/nip19';
+import { generateSecretKey, finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
+import { getToken } from 'nostr-tools/nip98';
+import { verifyNip98, adminPubkeys, authMessage } from '../lib/community/auth.ts';
 import { BRANDS } from '../lib/brand.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -179,6 +182,74 @@ for (const v of docVectors.filter((x) => ['items', 'title well-formed'].includes
   check('feed doc: ' + v.kind + ' fails against naive (can fail)', !passes);
 }
 check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
+
+// ---- NIP-98 (lib/community/auth.ts) ----
+{
+  const sk = generateSecretKey();
+  const pub = getPublicKey(sk);
+  const URL1 = 'https://example.test/api/community/playlists';
+  const body = { title: 'T', songs: [{ feedGuid: 'a', itemGuid: 'b' }] };
+  const bodyText = JSON.stringify(body);
+  const sign = (over = {}) => (e) => finalizeEvent({ ...e, ...over }, sk);
+  const tok = (url, method, b, over) => getToken(url, method, sign(over), true, b);
+  const good = await tok(URL1, 'POST', body);
+  const reason = async (h, url = URL1, m = 'POST', t = bodyText) => {
+    const x = await verifyNip98(h, url, m, t);
+    return x.ok ? 'ok' : x.reason;
+  };
+  let x = await verifyNip98(good, URL1, 'POST', bodyText);
+  check('nip98: valid POST with body', x.ok && x.pubkey === pub);
+  check('nip98: url mismatch', (await reason(good, 'https://example.test/other')) === 'url');
+  check('nip98: url with trailing ? ok', (await reason(good, URL1 + '?')) === 'ok');
+  check('nip98: method mismatch', (await reason(good, URL1, 'PUT')) === 'method');
+  check('nip98: body changed after signing', (await reason(good, URL1, 'POST', JSON.stringify({ ...body, title: 'X' }))) === 'payload');
+  check('nip98: same content, other whitespace, verifies', (await reason(good, URL1, 'POST', JSON.stringify(body, null, 2))) === 'ok');
+  const noPayload = await tok(URL1, 'POST', undefined);
+  check('nip98: body sent but token has no payload tag', (await reason(noPayload)) === 'payload');
+  check('nip98: no body, no payload tag ok', (await reason(noPayload, URL1, 'POST', null)) === 'ok');
+  check('nip98: unparseable body text', (await reason(good, URL1, 'POST', '{nope')) === 'payload');
+  const old = await tok(URL1, 'POST', body, { created_at: Math.round(Date.now() / 1000) - 120 });
+  check('nip98: 120 s old', (await reason(old)) === 'clock');
+  const future = await tok(URL1, 'POST', body, { created_at: Math.round(Date.now() / 1000) + 120 });
+  check('nip98: 120 s in the future', (await reason(future)) === 'clock');
+  const k1 = await tok(URL1, 'POST', body, { kind: 1 });
+  check('nip98: kind 1 refused', (await reason(k1)) !== 'ok');
+  const ev = JSON.parse(atob(good.slice(6)));
+  ev.sig = (ev.sig[0] === '0' ? '1' : '0') + ev.sig.slice(1);
+  const badSig = 'Nostr ' + btoa(JSON.stringify(ev));
+  check('nip98: tampered sig', (await reason(badSig)) === 'signature');
+  check('nip98: null header', (await reason(null)) === 'missing');
+  check('nip98: empty header', (await reason('')) === 'missing');
+  check('nip98: garbage header', (await reason('Nostr !!!')) === 'malformed');
+  check('nip98: no scheme', (await reason('Bearer abc')) === 'malformed');
+  check('nip98: json but not an event', (await reason('Nostr ' + btoa('{"a":1}'))) === 'malformed');
+
+  // Naive verifier: signature only. The url, method, payload and clock vectors must fail against it.
+  const naive = async (h) => {
+    try {
+      const e = JSON.parse(atob(h.slice(6)));
+      return verifyEvent(e) ? 'ok' : 'signature';
+    } catch { return 'malformed'; }
+  };
+  const vecs = [
+    ['url', good, 'url', URL1 + 'x', 'POST', bodyText],
+    ['method', good, 'method', URL1, 'PUT', bodyText],
+    ['payload', good, 'payload', URL1, 'POST', JSON.stringify({ ...body, title: 'X' })],
+    ['clock', old, 'clock', URL1, 'POST', bodyText],
+  ];
+  for (const [n, h, want, u, m, t] of vecs) {
+    check('nip98: ' + n + ' vector passes real', (await reason(h, u, m, t)) === want);
+    check('nip98: ' + n + ' vector fails against naive (can fail)', (await naive(h)) !== want);
+  }
+
+  const npub = npubEncode(pub);
+  const set = adminPubkeys(npub + ', junk');
+  check('admins: one valid of two', set.size === 1 && set.has(pub));
+  check('admins: empty / undefined', adminPubkeys('').size === 0);
+  check('admins: a note1 is not an admin', adminPubkeys('note1' + 'q'.repeat(58)).size === 0);
+  check('authMessage clock', authMessage('clock') === 'Your device clock is off. Set it to automatic time and try again.');
+  check('authMessage other', authMessage('url') === 'Sign-in check failed. Sign in again and retry.');
+}
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }
 console.log('\nall ok');
