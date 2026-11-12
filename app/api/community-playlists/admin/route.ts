@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { nip19 } from 'nostr-tools';
 import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
+import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
+import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
 import { adminPubkeys } from '@/lib/community/auth';
 import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, UUID_RE } from '@/lib/community/http';
 import {
@@ -73,6 +74,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'invalid id' }, { status: 400 });
       }
       const done = await deletePlaylist(b.id, auth.pubkey);
+      if (done) notifyPodcastIndexAfter(communityFeedUrl(b.id), 'update');
       return NextResponse.json({ ok: true, deleted: done ? 1 : 0 }, { headers: NO_STORE });
     }
     return NextResponse.json({ error: 'invalid action' }, { status: 400 });

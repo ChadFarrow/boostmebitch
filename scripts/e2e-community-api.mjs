@@ -9,6 +9,8 @@
 // Prints `ok`/`FAIL` lines; exits non-zero on any FAIL. It deletes what it makes.
 // It sends a new x-real-ip every 5 requests (the rate limiter reads that header first on a
 // local server), so the run never waits on the 6-writes-a-minute limit.
+// `--off` runs only the switch-OFF half: start the server WITHOUT
+// NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on for it, then restart with it on for the full run.
 // It also depends on three third-party image URLs below (Fountain and headstarts.uk); if one
 // moves, the art lines fail for that reason and not because of the routes.
 import { randomBytes } from 'node:crypto';
@@ -67,6 +69,19 @@ async function call(method, path, { sk, body, ageSeconds = 0, headers = {} } = {
   }
   const json = await res.json().catch(() => null);
   return { status: res.status, body: json, headers: res.headers };
+}
+
+
+// ── the switch OFF half ─────────────────────────────────────────────────────
+if (process.argv.includes('--off')) {
+  const l = await call('GET', PLAYLISTS);
+  check('switch off: GET list -> 404', l.status === 404, show(l));
+  const x = await fetch(`${APP}/feeds/playlists/00000000-0000-4000-8000-000000000000.xml`);
+  check('switch off: GET feed .xml -> 404', x.status === 404, String(x.status));
+  const j = await fetch(`${APP}/feeds/playlists/00000000-0000-4000-8000-000000000000.jpg`);
+  check('switch off: GET cover .jpg -> 404', j.status === 404, String(j.status));
+  console.log(`${count - fails}/${count} passed`);
+  process.exit(fails ? 1 : 0);
 }
 
 // ── set-up: 12 real songs ───────────────────────────────────────────────────
@@ -162,7 +177,52 @@ const missing = await call('GET', `${PLAYLISTS}/00000000-0000-4000-8000-00000000
 check('GET unknown id -> 404', missing.status === 404, show(missing));
 const notUuid = await call('GET', `${PLAYLISTS}/not-a-uuid`);
 check('GET a non-uuid id -> 404', notUuid.status === 404, show(notUuid));
-// Task 6 (feed route, cover, guid lookup, search): skipped until Task 6.
+
+// ── feed, cover, short-circuit, guid lookup, search lane ────────────────────
+const feedRes = await fetch(`${APP}/feeds/playlists/${id}.xml`);
+const feedXml = await feedRes.text();
+check('GET feed .xml -> 200 rss+xml with the cache header',
+  feedRes.status === 200 && /^application\/rss\+xml; charset=utf-8$/i.test(feedRes.headers.get('content-type') ?? '')
+  && /s-maxage=60/.test(feedRes.headers.get('cache-control') ?? ''), `${feedRes.status} ${feedRes.headers.get('content-type')}`);
+check('feed has 12 remoteItems, the owner npub and medium musicL',
+  (feedXml.match(/<podcast:remoteItem/g) ?? []).length === 12 && feedXml.includes(npubEncode(ownerPub))
+  && feedXml.includes('<podcast:medium>musicL'), feedXml.slice(0, 300));
+const coverRes = await fetch(`${APP}/feeds/playlists/${id}.jpg`);
+const coverBuf = Buffer.from(await coverRes.arrayBuffer());
+// JPEG size: the first SOF marker holds height then width.
+const jpegSize = (b) => {
+  for (let i = 2; i + 9 < b.length;) {
+    if (b[i] !== 0xff) { i++; continue; }
+    const m = b[i + 1];
+    if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return [b.readUInt16BE(i + 7), b.readUInt16BE(i + 5)];
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  return null;
+};
+const dims = jpegSize(coverBuf);
+check('GET cover .jpg -> 200 image/jpeg, 1400 x 1400',
+  coverRes.status === 200 && coverRes.headers.get('content-type') === 'image/jpeg' && dims?.[0] === 1400 && dims?.[1] === 1400
+  && /s-maxage=86400/.test(coverRes.headers.get('cache-control') ?? ''), `${coverRes.status} ${dims}`);
+const nope = await fetch(`${APP}/feeds/playlists/nope.xml`);
+check('GET feed with a bad name -> 404', nope.status === 404, String(nope.status));
+const unknownXml = await fetch(`${APP}/feeds/playlists/00000000-0000-4000-8000-000000000000.xml`);
+check('GET feed for an unknown uuid -> 404', unknownXml.status === 404, String(unknownXml.status));
+
+const viaPlaylist = await call('GET', `/api/playlist?url=${encodeURIComponent(post.body.feedUrl)}&limit=100`);
+check('/api/playlist?url=<feedUrl> answers the 12 songs in order, from the store',
+  viaPlaylist.status === 200 && viaPlaylist.body?.total === 12
+  && viaPlaylist.body.episodes?.length === 12
+  && viaPlaylist.body.episodes.every((e, i) => e.guid === songs[i].itemGuid && e.podcastGuid === songs[i].feedGuid)
+  && viaPlaylist.body.podcast?.medium === 'musicL', show(viaPlaylist).slice(0, 300));
+
+const g = got.body.playlist;
+const byGuid = await call('GET', `/api/by-guid?guid=${g.podcastGuid}`);
+check('/api/by-guid answers the playlist for its podcastGuid',
+  byGuid.status === 200 && byGuid.body?.podcast?.podcastGuid === g.podcastGuid
+  && byGuid.body.podcast.medium === 'musicL' && byGuid.body.podcast.url === post.body.feedUrl, show(byGuid).slice(0, 300));
+const searched = await call('GET', `/api/search?q=${encodeURIComponent('yeah')}&type=playlist`);
+check('/api/search?type=playlist finds it by title',
+  searched.status === 200 && JSON.stringify(searched.body).includes(g.podcastGuid), show(searched).slice(0, 300));
 
 // ── edit ────────────────────────────────────────────────────────────────────
 const v1 = got.body.playlist.updatedAt;
@@ -236,6 +296,11 @@ check('PUT adding a made-up song -> 400 song-not-found',
 const p2 = await call('POST', PLAYLISTS, { sk: other, body: { draft: draft({ title: 'other one' }) } });
 if (p2.body?.id) created.push(p2.body.id);
 check('second key POST -> 201', p2.status === 201, show(p2));
+const gridRes = await fetch(`${APP}/feeds/playlists/${p2.body?.id}.jpg`);
+const gridDims = jpegSize(Buffer.from(await gridRes.arrayBuffer()));
+check('cover of a playlist with no art link (song grid) -> 200 JPEG 1400 x 1400',
+  gridRes.status === 200 && gridRes.headers.get('content-type') === 'image/jpeg' && gridDims?.[0] === 1400 && gridDims?.[1] === 1400,
+  `${gridRes.status} ${gridDims}`);
 const adminDel = await call('POST', `${PLAYLISTS}/admin`, { sk: ADMIN_SK, body: { action: 'delete', id: p2.body?.id } });
 check('admin delete by id -> 200 { ok, deleted: 1 }', adminDel.status === 200 && adminDel.body?.deleted === 1, show(adminDel));
 const p2gone = await call('GET', `${PLAYLISTS}/${p2.body?.id}`);
@@ -263,6 +328,12 @@ const delOther = await call('DELETE', `${PLAYLISTS}/${id}`, { sk: other });
 check('DELETE by a non-owner -> 403', delOther.status === 403, show(delOther));
 const del = await call('DELETE', `${PLAYLISTS}/${id}`, { sk: owner });
 check('owner DELETE -> 200 { deleted: true }', del.status === 200 && del.body?.deleted === true, show(del));
+const feedGone = await fetch(`${APP}/feeds/playlists/${id}.xml`);
+check('feed .xml after delete -> 410', feedGone.status === 410, String(feedGone.status));
+const coverGone = await fetch(`${APP}/feeds/playlists/${id}.jpg`);
+check('cover .jpg after delete -> 410', coverGone.status === 410, String(coverGone.status));
+const viaGone = await call('GET', `/api/playlist?url=${encodeURIComponent(post.body.feedUrl)}`);
+check('/api/playlist?url=<feedUrl> after delete -> 404', viaGone.status === 404, show(viaGone));
 const after = await call('GET', `${PLAYLISTS}/${id}`);
 check('GET after delete -> 410', after.status === 410, show(after));
 const listAfter = await call('GET', `${PLAYLISTS}?owner=${ownerPub}`);

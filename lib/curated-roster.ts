@@ -1,8 +1,10 @@
 import { getPublisherAlbumUrls } from '@/lib/musicl-resolver';
 import { resolveFeedUrls } from '@/lib/feed-resolve';
 import { createBoundedCache } from '@/lib/bounded-cache';
-import { feedUrlKey, filterPlaylistsByQuery } from '@/lib/util';
-import { MUSICL_PUBLISHER_URL, COMMUNITY_PLAYLIST_URLS } from '@/lib/curated-playlists';
+import { feedUrlKey, filterPlaylistsByQuery, communityPlaylistToPodcast } from '@/lib/util';
+import { MUSICL_PUBLISHER_URL, COMMUNITY_PLAYLIST_URLS, COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
+import { communityStoreConfigured, listPlaylists } from '@/lib/community/store';
+import { summaryOf } from '@/lib/community/http';
 import type { Podcast } from '@/lib/types';
 
 /**
@@ -141,6 +143,22 @@ export interface CuratedHits {
  * would. Never throws: every failure is an empty, unanswered lane.
  */
 export async function searchCuratedPlaylists(query: string, limit: number): Promise<CuratedHits> {
+  const [curated, own] = await Promise.all([searchRoster(query, limit), searchCommunityStore(query, limit)]);
+  return { feeds: [...curated.feeds, ...own], answered: curated.answered };
+}
+
+/** Stored community playlists whose title matches. Never throws: a database that is down is `[]`. */
+async function searchCommunityStore(query: string, limit: number): Promise<Podcast[]> {
+  if (!COMMUNITY_PLAYLISTS_ON || !communityStoreConfigured()) return [];
+  try {
+    const rows = await listPlaylists({ limit: 200 });
+    return filterPlaylistsByQuery(rows.map((r) => communityPlaylistToPodcast(summaryOf(r))), query, limit);
+  } catch {
+    return [];
+  }
+}
+
+async function searchRoster(query: string, limit: number): Promise<CuratedHits> {
   const hit = roster.get(ROSTER_KEY, Date.now());
   if (!hit || hit.ageMs >= CURATED_FRESH_MS) {
     // Deduped: concurrent searches on a cold or stale roster share one refresh.

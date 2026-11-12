@@ -616,3 +616,4 @@ upgrade rather than forcing it.
 | `ADMIN_NPUBS` | npubs (comma or space separated) that may use `/api/community-playlists/admin` |
 | `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` | `on` turns every community-playlist route and surface on; anything else answers 404 |
 | `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` | Origin of the public feed URLs. Default `https://www.boostmebuddy.com`; local tests set `http://localhost:3123` |
+| `COMMUNITY_PI_NOTIFY` | `on` lets new and changed community feeds be sent to Podcast Index. It also needs `VERCEL_ENV=production` and the feed origin `https://www.boostmebuddy.com`. Leave it unset: Podcast Index is off for now |

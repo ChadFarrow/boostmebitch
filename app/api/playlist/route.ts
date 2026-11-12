@@ -4,7 +4,10 @@ import { rateLimit } from '@/lib/rate-limit';
 import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
 import { resolvePlaylistTracks } from '@/lib/playlist-db';
 import { batchEpisodes, episodeKey, MAX_BATCH } from '@/lib/pi-batch';
-import { fnvHash, mergeRssOverPi, playsAsTracks } from '@/lib/util';
+import { fnvHash, mergeRssOverPi, playsAsTracks, communityPlaylistToPodcast } from '@/lib/util';
+import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
+import { summaryOf } from '@/lib/community/http';
 import type { Episode, PlayGroup, Podcast } from '@/lib/types';
 import type { PlaylistItemRef } from '@/lib/feed-xml';
 
@@ -107,7 +110,23 @@ export async function GET(req: Request) {
   const limit = Math.min(Math.max(rawLimit, 1), MAX_BATCH);
 
   return withErrorHandling(async () => {
-    const [channel, piRecord] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
+    // A community playlist's feed is OURS: read the songs from the store, never
+    // over HTTP (in dev the feed origin is a private address `safeFetch` refuses,
+    // and in production it would be a round trip to ourselves).
+    const communityId = COMMUNITY_PLAYLISTS_ON ? communityIdFromFeedUrl(url) : null;
+    let channel: Awaited<ReturnType<typeof getPlaylistChannel>>;
+    let piRecord: Podcast | null = null;
+    if (communityId) {
+      const own = communityStoreConfigured() ? await getPlaylist(communityId) : null;
+      if (!own || own === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 });
+      channel = {
+        podcast: communityPlaylistToPodcast(summaryOf(own)),
+        refs: own.songs.map((s) => ({ feedGuid: s.feedGuid, itemGuid: s.itemGuid })),
+        sourceFeedUrl: undefined,
+      };
+    } else {
+      [channel, piRecord] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
+    }
     if (!channel) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
     // The feed's own title, medium, art and value block win — the document was

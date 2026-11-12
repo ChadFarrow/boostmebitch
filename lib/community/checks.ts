@@ -7,19 +7,31 @@ import { artVerdict, type ArtRefusal, type PlaylistSong } from './rules';
 // SERVER-ONLY. The two checks a draft passes before it is stored: the cover
 // art is fetched and measured, and every song is looked up in Podcast Index.
 
+/**
+ * Fetch an image through the SSRF-safe fetcher, capped at 12 MB and 10 s. Throws
+ * on an unsafe address, a non-200, a timeout or a body that is too large. The one
+ * fetch helper both the art check and the cover builder (cover.ts) use.
+ */
+export async function fetchImageBytes(url: string): Promise<Buffer> {
+  const res = await safeFetch(url, {
+    headers: { accept: 'image/*' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`image fetch ${res.status}`);
+  }
+  return Buffer.from(await readCappedBytes(res, 12 * 1024 * 1024));
+}
+
+/** Decode limit shared by the art check and the cover builder. */
+export const IMAGE_PIXEL_LIMIT = 24_000_000;
+
 /** Fetch the cover and judge it. A cover that cannot be read is `not-image`. */
 export async function checkArt(url: string): Promise<{ ok: true } | { ok: false; reason: ArtRefusal }> {
   try {
-    const res = await safeFetch(url, {
-      headers: { accept: 'image/*' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {});
-      return { ok: false, reason: 'not-image' };
-    }
-    const buf = await readCappedBytes(res, 12 * 1024 * 1024);
-    const m = await sharp(Buffer.from(buf), { limitInputPixels: 24_000_000 }).metadata();
+    const buf = await fetchImageBytes(url);
+    const m = await sharp(buf, { limitInputPixels: IMAGE_PIXEL_LIMIT }).metadata();
     return artVerdict({ format: m.format, width: m.width, height: m.height, hasAlpha: m.hasAlpha });
   } catch {
     // Unsafe address, timeout, too large, undecodable: none of them is a usable cover.

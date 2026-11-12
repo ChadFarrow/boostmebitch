@@ -6,6 +6,7 @@ import { validatePlaylistDraft, type DraftProblem, type ArtRefusal } from '@/lib
 import { cleanText } from '@/lib/community/clean-text';
 import { checkArt, verifySongs } from '@/lib/community/checks';
 import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, BANNED } from '@/lib/community/http';
+import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
 import { communityStoreConfigured, createPlaylist, isBanned, listPlaylists } from '@/lib/community/store';
 
 export const runtime = 'nodejs';
@@ -79,6 +80,7 @@ export async function POST(req: Request) {
     });
     // A ban that landed after the isBanned read above is caught inside the INSERT.
     if (row === 'banned') return BANNED();
+    notifyPodcastIndexAfter(communityFeedUrl(row.id), 'new');
     return NextResponse.json({ id: row.id, feedUrl: communityFeedUrl(row.id) }, { status: 201, headers: NO_STORE });
   }, 'could not publish the playlist');
 }

@@ -15,6 +15,7 @@ import { bech32 } from '@scure/base';
 import { generateSecretKey, finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { getToken, validateEventMethodTag } from 'nostr-tools/nip98';
 import { verifyNip98, adminPubkeys, authMessage } from '../lib/community/auth.ts';
+import { communityPlaylistToPodcast, fnvHash } from '../lib/util.ts';
 import { BRANDS } from '../lib/brand.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -272,6 +273,22 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   }
   check('authMessage clock', authMessage('clock') === 'Your device clock is off. Set it to automatic time and try again.');
   check('authMessage other', authMessage('url') === 'Sign-in check failed. Sign in again and retry.');
+}
+
+{
+  const summary = {
+    id: 'a', title: 'T', description: 'D', feedUrl: 'https://x.test/feeds/playlists/a.xml', podcastGuid: 'g',
+    ownerPubkey: 'pk', ownerNpub: 'npub1z', coverUrl: 'https://x.test/feeds/playlists/a.jpg?v=1', songCount: 10,
+    createdAt: '', updatedAt: '',
+  };
+  const want = {
+    id: -fnvHash(summary.feedUrl), podcastGuid: 'g', title: 'T', description: 'D', image: summary.coverUrl,
+    artwork: summary.coverUrl, url: summary.feedUrl, medium: 'musicL', isPreview: true,
+    nostrNpubs: [{ npub: 'npub1z', pubkey: 'pk' }],
+  };
+  const got = communityPlaylistToPodcast(summary);
+  check('communityPlaylistToPodcast: exact shape', JSON.stringify(got) === JSON.stringify(want));
+  check('communityPlaylistToPodcast: id is negative', got.id < 0);
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }
