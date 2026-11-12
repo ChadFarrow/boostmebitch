@@ -78,7 +78,7 @@ const KEYS = {
   streamSummaries: 'bmb:stream_summaries', // '1' when the listener also opted into kind:33369 running totals. Absent = OFF. Requires streamReceipts — a summary is derived FROM receipts.
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
-  playlistDraftPrefix: 'bmb:playlist_draft', // + ':<npub>' — the community-playlist maker's unsent draft, with the song labels. A user's unsent WORK, so a setting: deliberately absent from EVICTABLE_PREFIXES.
+  playlistDraftPrefix: 'bmb:playlist_draft', // + ':<npub>' (new playlist) and ':<npub>:<id>' (editing that playlist) — the community-playlist maker's unsent draft, with the song labels. A user's unsent WORK, so a setting: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
   newMarksPrefix: 'bmb:newmarks',     // + ':<npub>' — `{ checkedAt, marks: { [podcastGuid]: datePublished }, rows, uncovered, failed }`: the "new episodes" list on /favorites AND what this device has already shown you of it. The rows are the persisted thing and the marks describe them — holding the rows in React state alone made the CHECK consume the list rather than the reader. Seconds, because that is the unit Podcast Index's `since` takes back. A user-facing READ MARKER, not a cache — nothing on any wire records what this device showed somebody — so deliberately absent from EVICTABLE_PREFIXES, same class as bmb:listen_queue and bmb:ep_order. Evicting it does not cost a refetch, it re-announces a week of episodes as new. Pruned to the current favorites on every write (lib/util.ts `pruneMarks`).
   listenQueuePrefix: 'bmb:listen_queue', // + ':<npub>' — the "Up Next" cross-show listen queue. An ORDERED ARRAY, never a keyed object: the order IS the data. A user DECISION, not a network-regenerable cache — deliberately absent from EVICTABLE_PREFIXES, same class as bmb:ep_order and bmb:list_unlock. Items are trimmed at ENQUEUE (lib/util.ts `trimForQueue`) and capped at LISTEN_QUEUE_CAP. No migration from any global key: there has never been one.
@@ -438,6 +438,11 @@ const isMemoryOnly = (key: string) => memoryMirror.has(key);
 // Per-identity storage keys: signed-out users share a single `:guest` bucket;
 // signed-in users get one bucket per npub. Centralized so the convention
 // lives in exactly one place.
+/** Two slots per account: the new-playlist draft, and one per playlist being edited. */
+function draftKey(npub: string, editId?: string) {
+  return editId ? `${KEYS.playlistDraftPrefix}:${npub}:${editId}` : `${KEYS.playlistDraftPrefix}:${npub}`;
+}
+
 function identityKey(prefix: string, npub: string | null | undefined) {
   return `${prefix}:${npub ?? 'guest'}`;
 }
@@ -1174,8 +1179,8 @@ export const storage = {
    * The read keeps only what the page can use: a bad shape reads as no draft.
    */
   playlistDraft: {
-    get: (npub: string): PlaylistDraftCache | null => {
-      const raw = safeGet(identityKey(KEYS.playlistDraftPrefix, npub));
+    get: (npub: string, editId?: string): PlaylistDraftCache | null => {
+      const raw = safeGet(draftKey(npub, editId));
       if (!raw) return null;
       try {
         const v = JSON.parse(raw);
@@ -1217,10 +1222,10 @@ export const storage = {
       }
     },
     /** Returns whether the value reached DISK. */
-    set: (npub: string, v: PlaylistDraftCache): boolean =>
-      safeSet(identityKey(KEYS.playlistDraftPrefix, npub), JSON.stringify(v)),
+    set: (npub: string, v: PlaylistDraftCache, editId?: string): boolean =>
+      safeSet(draftKey(npub, editId), JSON.stringify(v)),
     /** A REMOVAL, for `listenQueue.clear`'s reason. */
-    clear: (npub: string) => safeRemove(identityKey(KEYS.playlistDraftPrefix, npub)),
+    clear: (npub: string, editId?: string) => safeRemove(draftKey(npub, editId)),
   },
 
   /** User's publish-relay override (manual, rare). null = no override set. */

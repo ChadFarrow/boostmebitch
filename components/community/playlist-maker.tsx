@@ -1,20 +1,25 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useApp } from '@/lib/store';
-import { storage } from '@/lib/storage';
+import { storage, type PlaylistDraftCache } from '@/lib/storage';
 import { ModalShell } from '@/components/modal-shell';
+import { RowThumb } from '@/components/chapter-ui';
+import { artCandidates } from '@/lib/util';
 import { cleanText } from '@/lib/community/clean-text';
 import {
-  MIN_SONGS, validatePlaylistDraft,
+  MAX_TITLE_LEN, MIN_SONGS, validatePlaylistDraft,
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
-  SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
+  NoSignerError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
 } from '@/lib/community/client';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { PlaylistPublished } from './playlist-published';
+
+// The resolver's page size (`MAX_BATCH` in lib/pi-batch.ts, which is server-only and cannot be imported here).
+const RESOLVE_PAGE = 100;
 
 type Labels = Record<string, { title: string; artist?: string; image?: string }>;
 
@@ -66,7 +71,9 @@ export function PlaylistMaker() {
   const identity = useApp((s) => s.identity);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
 
-  const [ready, setReady] = useState(false);
+  // The account the form on screen belongs to. A draft is written only while this equals
+  // the signed-in npub, so one account's form is never saved under another's key.
+  const [formNpub, setFormNpub] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [artUrl, setArtUrl] = useState('');
@@ -74,6 +81,9 @@ export function PlaylistMaker() {
   const [labels, setLabels] = useState<Labels>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expectedUpdatedAt, setExpectedUpdatedAt] = useState<string | null>(null);
+  // Set by a user change, never by a load: only then is a draft written.
+  const [dirty, setDirty] = useState(false);
+  const [unsaved, setUnsaved] = useState(false);
   // The flag Task 10's <AddSongsSheet> reads. Nothing in the UI adds a song until it exists.
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -81,7 +91,9 @@ export function PlaylistMaker() {
   const [note, setNote] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleted, setDeleted] = useState(false);
+  const [deleted, setDeleted] = useState<'deleted' | 'gone' | null>(null);
+  const [mounted, setMounted] = useState(false);
+  const [gaveUp, setGaveUp] = useState(false);
   const [published, setPublished] = useState<{
     id: string; feedUrl: string; title: string; tracks: number; summary: CommunityPlaylistSummary | null;
   } | null>(null);
@@ -89,56 +101,78 @@ export function PlaylistMaker() {
   const npub = identity?.npub ?? null;
   const pubkey = identity?.pubkey ?? null;
   const name = identity?.profile?.display_name || identity?.profile?.name || (npub ? `${npub.slice(0, 12)}…` : '');
+  const ready = !!npub && formNpub === npub;
+
+  // A stored npub with no identity yet is a restore in flight, not a signed-out visitor.
+  useEffect(() => {
+    setMounted(true);
+    const timer = setTimeout(() => setGaveUp(true), 8000);
+    return () => clearTimeout(timer);
+  }, []);
+  const restoring = mounted && !identity && !gaveUp && !!storage.npub.get();
 
   // ---- load: the saved draft, or the stored playlist in edit mode ----------
-  const loadedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!npub || loadedFor.current === npub) return;
-    loadedFor.current = npub;
+    // An account switch: nothing of the last account's form survives.
+    setFormNpub(null); setTitle(''); setDescription(''); setArtUrl(''); setSongs([]); setLabels({});
+    setEditingId(null); setExpectedUpdatedAt(null); setDirty(false); setUnsaved(false); setRefusals([]);
+    setNote(null); setLoadError(null); setDeleted(null); setPublished(null); setConfirmDelete(false);
+    if (!npub) return;
     let live = true;
     const id = new URLSearchParams(window.location.search).get('id');
-    const cached = storage.playlistDraft.get(npub);
-    const apply = (c: NonNullable<typeof cached>) => {
+    const apply = (c: PlaylistDraftCache) => {
       setTitle(c.draft.title); setDescription(c.draft.description); setArtUrl(c.draft.artUrl ?? '');
       setSongs(c.draft.songs); setLabels(c.labels); setEditingId(c.editingId); setExpectedUpdatedAt(c.expectedUpdatedAt);
     };
     (async () => {
-      if (id && cached?.editingId !== id) {
-        const p = await fetchPlaylist(id);
-        if (!live) return;
-        if (!p) { setLoadError('We could not load that playlist.'); setReady(true); return; }
-        if (p.ownerPubkey !== pubkey) { setLoadError('Only the person who made this playlist can edit it.'); setReady(true); return; }
+      if (!id) {
+        const cached = storage.playlistDraft.get(npub);
+        if (cached) apply(cached);
+        setFormNpub(npub);
+        return;
+      }
+      const cached = storage.playlistDraft.get(npub, id);
+      const p = await fetchPlaylist(id);
+      if (!live) return;
+      if (!p) { setLoadError('We could not load that playlist.'); setFormNpub(npub); return; }
+      if (p.ownerPubkey !== pubkey) { setLoadError('Only the person who made this playlist can edit it.'); setFormNpub(npub); return; }
+      if (cached) apply({ ...cached, editingId: id, expectedUpdatedAt: p.updatedAt });
+      else {
         setTitle(p.title); setDescription(p.description); setArtUrl(p.artUrl ?? '');
         setSongs(p.songs); setEditingId(p.id); setExpectedUpdatedAt(p.updatedAt);
-        setReady(true);
-        // Titles for the rows: one read of the playlist through the app's own resolver.
-        try {
-          const r = await fetch(`/api/playlist?url=${encodeURIComponent(communityFeedUrl(p.id))}&limit=500`);
+      }
+      setFormNpub(npub);
+      if (cached && Object.keys(cached.labels).length) return;
+      // Titles for the rows: the app's own resolver, one page of RESOLVE_PAGE at a time.
+      const l: Labels = {};
+      try {
+        let offset: number | null = 0;
+        while (offset !== null && live) {
+          const r: Response = await fetch(`/api/playlist?url=${encodeURIComponent(communityFeedUrl(p.id))}&limit=${RESOLVE_PAGE}&offset=${offset}`);
           const j = r.ok ? await r.json() : null;
-          const l: Labels = {};
-          for (const e of (j?.episodes ?? []) as Array<{ guid?: string; title?: string; feedTitle?: string; image?: string; feedImage?: string; unresolved?: boolean }>) {
+          if (!j) break;
+          for (const e of (j.episodes ?? []) as Array<{ guid?: string; title?: string; feedTitle?: string; image?: string; feedImage?: string; unresolved?: boolean }>) {
             if (e.guid && e.title && !e.unresolved) {
               l[e.guid] = { title: e.title, ...(e.feedTitle ? { artist: e.feedTitle } : {}), ...((e.image || e.feedImage) ? { image: e.image || e.feedImage } : {}) };
             }
           }
-          if (live) setLabels(l);
-        } catch { /* rows keep a plain name */ }
-        return;
-      }
-      if (cached && (id ? cached.editingId === id : cached.editingId === null)) apply(cached);
-      setReady(true);
+          offset = typeof j.nextOffset === 'number' ? j.nextOffset : null;
+        }
+      } catch { /* rows keep a plain name */ }
+      if (live) setLabels(l);
     })();
-    return () => { live = false; loadedFor.current = null; };
+    return () => { live = false; };
   }, [npub, pubkey]);
 
-  // ---- save the draft on every change --------------------------------------
+  // ---- save the draft after a user change ----------------------------------
   useEffect(() => {
-    if (!npub || !ready || published || deleted || loadError) return;
-    storage.playlistDraft.set(npub, {
+    if (!npub || !ready || !dirty || published || deleted || loadError) return;
+    const ok = storage.playlistDraft.set(npub, {
       draft: { title, description, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
       editingId, expectedUpdatedAt, labels,
-    });
-  }, [npub, ready, published, deleted, loadError, title, description, artUrl, songs, labels, editingId, expectedUpdatedAt]);
+    }, editingId ?? undefined);
+    setUnsaved(!ok);
+  }, [npub, ready, dirty, published, deleted, loadError, title, description, artUrl, songs, labels, editingId, expectedUpdatedAt]);
 
   const draft: PlaylistDraft = useMemo(
     () => ({ title, description, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
@@ -146,28 +180,45 @@ export function PlaylistMaker() {
   );
   const blocked = whyNot(draft);
   const cleaned = cleanText(title);
+  const cleanedDesc = cleanText(description);
 
-  const move = (i: number, by: -1 | 1) => setSongs((s) => {
+  const edit = <T,>(set: (v: T) => void) => (v: T) => { setDirty(true); set(v); };
+  const move = (i: number, by: -1 | 1) => { setDirty(true); setSongs((s) => {
     const j = i + by;
     if (j < 0 || j >= s.length) return s;
     const n = s.slice(); [n[i], n[j]] = [n[j], n[i]]; return n;
-  });
-  const remove = (i: number) => setSongs((s) => s.filter((_, k) => k !== i));
+  }); };
+  const remove = (i: number) => { setDirty(true); setSongs((s) => s.filter((_, k) => k !== i)); };
+
+  const failure = (e: unknown) => (e instanceof SignTimeoutError || e instanceof NoSignerError
+    ? (e instanceof NoSignerError ? e.message : 'Your signer did not answer. Open it and try again.')
+    : 'Could not reach the server. Try again.');
 
   const submit = useCallback(async () => {
     const v = validatePlaylistDraft(draft);
     if (!v.ok || !npub || !pubkey) return;
     setBusy(true); setNote(null); setRefusals([]);
     try {
-      const res = editingId && expectedUpdatedAt
-        ? await savePlaylist(editingId, v.draft, expectedUpdatedAt)
-        : await publishPlaylist(v.draft);
+      let res: Response;
+      if (editingId) {
+        // An edit never POSTs. A missing `expectedUpdatedAt` is read from the server first.
+        let expected = expectedUpdatedAt;
+        if (!expected) {
+          expected = (await fetchPlaylist(editingId))?.updatedAt ?? null;
+          if (!expected) { setNote('We could not read the playlist. Try again.'); return; }
+          setExpectedUpdatedAt(expected);
+        }
+        res = await savePlaylist(editingId, v.draft, expected);
+      } else {
+        res = await publishPlaylist(v.draft);
+      }
       const body = await res.json().catch(() => null) as
-        { id?: string; feedUrl?: string; problems?: Refusal[]; playlist?: { id: string; updatedAt: string } } | null;
+        { id?: string; feedUrl?: string; error?: string; problems?: Refusal[]; playlist?: { id: string; updatedAt: string } } | null;
       if (res.ok) {
         const id = body?.id ?? body?.playlist?.id ?? editingId;
         if (!id) { setNote('Something went wrong. Try again.'); return; }
-        storage.playlistDraft.clear(npub);
+        storage.playlistDraft.clear(npub, editingId ?? undefined);
+        setDirty(false); setUnsaved(false);
         const list = await fetchCommunityPlaylists(pubkey);
         const summary = list?.find((p) => p.id === id) ?? null;
         setEditingId(id);
@@ -176,16 +227,20 @@ export function PlaylistMaker() {
         return;
       }
       if (res.status === 400 && Array.isArray(body?.problems)) setRefusals(body.problems);
-      else if (res.status === 409) setNote('This playlist was changed somewhere else. Reload the page to see the new version.');
-      else if (res.status === 401) setNote('Your sign-in was refused. Sign in again.');
-      else if (res.status === 403) setNote('This account cannot change this playlist.');
-      else if (res.status === 410) setNote('This playlist was deleted.');
+      else if (res.status === 409 && editingId) {
+        // Changed elsewhere: keep the user's form, take the new version number.
+        const cur = await fetchPlaylist(editingId);
+        if (cur) setExpectedUpdatedAt(cur.updatedAt);
+        setNote('This playlist changed elsewhere. Your edits are kept; SAVE again to overwrite.');
+      } else if (res.status === 410) {
+        storage.playlistDraft.clear(npub, editingId ?? undefined);
+        setDirty(false); setDeleted('gone');
+      } else if (res.status === 401) setNote('Your sign-in was refused. Sign in again.');
+      else if (res.status === 403 || res.status === 503) setNote(body?.error ? `The server said: ${body.error}.` : 'The server refused this.');
       else if (res.status === 429) setNote('Too many changes. Wait a minute and try again.');
       else setNote('Could not save the playlist. Try again.');
     } catch (e) {
-      setNote(e instanceof SignTimeoutError
-        ? 'Your signer did not answer. Open it and try again.'
-        : 'Could not reach the server. Try again.');
+      setNote(failure(e));
     } finally {
       setBusy(false);
     }
@@ -196,15 +251,25 @@ export function PlaylistMaker() {
     setConfirmDelete(false); setBusy(true); setNote(null);
     try {
       const res = await deleteOwnPlaylist(editingId);
-      if (res.ok) { storage.playlistDraft.clear(npub); setDeleted(true); }
+      // 410: already deleted, which is what was asked for.
+      if (res.ok || res.status === 410) { storage.playlistDraft.clear(npub, editingId); setDirty(false); setDeleted('deleted'); }
       else setNote('Could not delete the playlist. Try again.');
     } catch (e) {
-      setNote(e instanceof SignTimeoutError ? 'Your signer did not answer. Open it and try again.' : 'Could not reach the server. Try again.');
+      setNote(failure(e));
     } finally { setBusy(false); }
   }
 
   // ---- screens ---------------------------------------------------------------
   if (!COMMUNITY_PLAYLISTS_ON) return null;
+
+  if (!identity && restoring) {
+    return (
+      <section>
+        <h1 className="headline text-3xl sm:text-4xl">new playlist</h1>
+        <p className="mt-3 text-sm text-muted" role="status">Signing in…</p>
+      </section>
+    );
+  }
 
   if (!identity) {
     return (
@@ -216,11 +281,22 @@ export function PlaylistMaker() {
     );
   }
 
+  if (!ready) {
+    return (
+      <section>
+        <h1 className="headline text-3xl sm:text-4xl">new playlist</h1>
+        <p className="mt-3 text-sm text-muted" role="status">Loading…</p>
+      </section>
+    );
+  }
+
   if (deleted) {
     return (
       <section>
         <h1 className="headline text-3xl sm:text-4xl">playlist deleted</h1>
-        <p className="mt-3 text-sm text-bone/80">The playlist is gone. Its feed address no longer works.</p>
+        <p className="mt-3 text-sm text-bone/80">
+          {deleted === 'gone' ? 'This playlist was deleted.' : 'The playlist is gone.'} Its feed address no longer works.
+        </p>
         <Link href="/playlists" className="btn-ghost btn-compact mt-4 inline-flex">♫ BROWSE PLAYLISTS</Link>
       </section>
     );
@@ -261,13 +337,11 @@ export function PlaylistMaker() {
 
       <div className="mt-4 h-32 w-32 border border-bone/30 bg-ink/40" aria-hidden data-testid="cover-preview">
         {art ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={art} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+          <RowThumb src={artCandidates(art, null, 320)[0]} fallback={art} className="h-full w-full object-cover" />
         ) : (
           <div className="grid h-full w-full grid-cols-2 grid-rows-2">
             {[0, 1, 2, 3].map((k) => (grid[k]
-              // eslint-disable-next-line @next/next/no-img-element
-              ? <img key={k} src={grid[k]!} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+              ? <RowThumb key={k} src={artCandidates(grid[k], null, 160)[0]} fallback={grid[k]!} className="h-full w-full object-cover" />
               : <div key={k} className="bg-bone/10" />))}
           </div>
         )}
@@ -276,19 +350,22 @@ export function PlaylistMaker() {
       <div className="mt-5 max-w-xl space-y-4">
         <div>
           <label htmlFor="pl-title" className="block text-xs font-mono uppercase tracking-wider text-muted">TITLE</label>
-          <input id="pl-title" className="input mt-1" value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} />
+          <input id="pl-title" className="input mt-1" value={title} maxLength={MAX_TITLE_LEN} onChange={(e) => edit(setTitle)(e.target.value)} />
           {title && cleaned !== title && (
             <p className="mt-1 text-xs text-muted">Will publish as: {cleaned}</p>
           )}
         </div>
         <div>
           <label htmlFor="pl-desc" className="block text-xs font-mono uppercase tracking-wider text-muted">DESCRIPTION</label>
-          <textarea id="pl-desc" className="input mt-1" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
+          <textarea id="pl-desc" className="input mt-1" rows={3} value={description} onChange={(e) => edit(setDescription)(e.target.value)} />
+          {description && cleanedDesc !== description && (
+            <p className="mt-1 text-xs text-muted">Will publish as: {cleanedDesc}</p>
+          )}
         </div>
         <div>
           <label htmlFor="pl-art" className="block text-xs font-mono uppercase tracking-wider text-muted">PLAYLIST ART LINK</label>
           <input id="pl-art" className="input mt-1" inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false}
-            aria-describedby="pl-art-hint" value={artUrl} onChange={(e) => setArtUrl(e.target.value)} />
+            aria-describedby="pl-art-hint" value={artUrl} onChange={(e) => edit(setArtUrl)(e.target.value)} />
           <p id="pl-art-hint" className="mt-1 text-xs text-muted">
             Square, 1400–3000 px. Empty: BMB makes the cover from the first four songs.
           </p>
@@ -321,7 +398,8 @@ export function PlaylistMaker() {
         </div>
       )}
 
-      <div className="sticky z-20 mt-6 max-w-xl border-t border-bone/15 bg-ink py-3" style={{ bottom: 'var(--dock-b, 0px)' }}>
+      {/* In normal flow, not pinned: a bar pinned to the dock sits under the mini-player. */}
+      <div className="mt-6 max-w-xl border-t border-bone/15 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" className="btn-bolt btn-compact" disabled={!!blocked || busy} onClick={submit}>
             {busy ? '…' : editingId ? 'SAVE' : 'PUBLISH'}
@@ -332,6 +410,7 @@ export function PlaylistMaker() {
           {blocked && <span className="text-xs text-muted" data-testid="why-blocked">{blocked}</span>}
         </div>
         <p className="mt-2 text-xs text-muted">Signed in as {name}. Only you can change this playlist.</p>
+        {unsaved && <p className="mt-1 text-xs text-muted" data-testid="unsaved">This draft is not being saved on this device.</p>}
       </div>
 
       {confirmDelete && (

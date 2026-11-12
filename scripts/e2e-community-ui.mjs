@@ -10,6 +10,7 @@
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
+import { getToken } from 'nostr-tools/nip98';
 
 const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
 await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
@@ -17,6 +18,13 @@ await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the 
 const sk = generateSecretKey();
 const pk = getPublicKey(sk);
 const npub = nip19.npubEncode(pk);
+// A second throwaway key, for "someone else opens my playlist". The fake signer answers with `cur`.
+const sk2 = generateSecretKey();
+const pk2 = getPublicKey(sk2);
+const npub2 = nip19.npubEncode(pk2);
+let cur = { sk, pk };
+// A fresh fake client address per run, so the 6-writes-a-minute limit never makes a run wait.
+const IP = `10.77.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
 const relay = createRelay({ port: 0, log: null });
 const PORT = await relay.ready;
 
@@ -26,7 +34,8 @@ const { page } = await launchChrome({
 });
 const { send } = page;
 const js = page.jsOrThrow;
-await send('Page.enable'); await send('Runtime.enable');
+await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable');
+await send('Network.setExtraHTTPHeaders', { headers: { 'x-real-ip': IP } });
 
 // A window.nostr indistinguishable from an extension, reached over a CDP binding.
 await send('Runtime.addBinding', { name: 'bmbSigner' });
@@ -35,8 +44,8 @@ page.on(async (m) => {
   const { rid, fn, args } = JSON.parse(m.params.payload);
   let out, err = null;
   try {
-    if (fn === 'getPublicKey') out = pk;
-    else if (fn === 'signEvent') out = finalizeEvent(args[0], sk);
+    if (fn === 'getPublicKey') out = cur.pk;
+    else if (fn === 'signEvent') out = finalizeEvent(args[0], cur.sk);
     else err = `no such method ${fn}`;
   } catch (e) { err = String(e?.message ?? e); }
   await js(`window.__bmbResolve(${JSON.stringify(rid)}, ${JSON.stringify({ out, err })})`);
@@ -57,6 +66,7 @@ const t = checker();
 const SONG_SOURCE = 'https://v4vmusic.com/playlist/334bb12d-1f72-4c0e-88e1-266bd1e2dff9.xml';
 const ART_TOO_SMALL = 'https://headstarts.uk/msp/hear-my-roar/hearmyroar%20logo.jpg';
 const KEY = `bmb:playlist_draft:${npub}`;
+const editKey = (id) => `${KEY}:${id}`;
 await send('Page.navigate', { url: APP });
 await wait(500);
 await js(`(() => { localStorage.clear(); return 1; })()`);
@@ -109,8 +119,8 @@ t.equal('home: both buttons at least 24 x 24', await tooSmall('section[aria-labe
 // ---- 2. signed out: the maker asks for sign-in --------------------------------
 console.log('--- 2. signed out ---');
 await go('/playlists/make');
-t.ok('signed out: the page says SIGN IN', await waitFor(`document.body.innerText.includes('SIGN IN')`));
-await click(byText('SIGN IN'));
+t.ok('signed out: the page says SIGN IN', await waitFor(`document.querySelector('main')?.innerText.includes('SIGN IN')`));
+t.ok('and the SIGN IN button is there to press', await click(byText('SIGN IN')));
 await wait(600);
 t.ok('SIGN IN opens the sign-in dialog', await js(`!!document.querySelector('[role="dialog"]')`));
 t.ok('signed out: no horizontal overflow', await overflowFree());
@@ -183,10 +193,12 @@ console.log('--- 6. a silent signer ---');
 await seed(draft(), labels);
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await setValue('#pl-desc', 'still here after a timeout');
 await js(`window.__silent = true; window.__bmbSignTimeoutMs = 400; 1`);
 await click(byText('PUBLISH'));
 t.ok('no answer: the page says so', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('signer did not answer')`, 10000));
 t.ok('and PUBLISH is on again', await js(`!${byText('PUBLISH')}.disabled`));
+t.equal('and the draft is still in localStorage', (await stored())?.draft.description, 'still here after a timeout');
 await js(`window.__silent = false; delete window.__bmbSignTimeoutMs; 1`);
 
 console.log('--- 7. publish, edit, save, delete ---');
@@ -204,24 +216,72 @@ t.equal('the saved draft is gone', await stored(), null);
 t.ok('published: no horizontal overflow', await overflowFree());
 t.equal('published: controls at least 24 x 24', await tooSmall('main button, main a, main input', 24, 24), []);
 
-await click(byText('EDIT'));
-t.ok('EDIT opens the maker in edit mode', await waitFor(`document.querySelector('#pl-title') && !!${byText('SAVE')}`));
-await wait(1500);
+
+// Node-side PUT as the owner: makes the page's version number stale.
+const putAsOwner = async (draftBody, expected) => {
+  const url = `${APP}/api/community-playlists/${id}`;
+  const payload = { draft: draftBody, expectedUpdatedAt: expected };
+  const token = await getToken(url, 'PUT', (e) => finalizeEvent(e, sk), true, payload);
+  return fetch(url, { method: 'PUT', headers: { authorization: token, 'content-type': 'application/json', 'x-real-ip': IP }, body: JSON.stringify(payload) });
+};
+const serverVersion = async () => (await (await fetch(`${APP}/api/community-playlists/${id}`)).json()).playlist;
+const openEdit = async () => {
+  await go(`/playlists/make?id=${id}`);
+  return waitFor(`document.querySelector('#pl-title') && !!${byText('SAVE')}`, 20000);
+};
+
+console.log('--- 8. edit from the server, two slots, a stale version ---');
+await js(`localStorage.removeItem(${JSON.stringify(KEY)}); 1`);
+await seed(draft({ title: 'other draft' }), labels);
+t.ok('?id=<id> loads with no draft on disk', await openEdit());
+t.ok('titles come from the server', await waitFor(`document.querySelector('[data-song-row]')?.innerText.includes(${JSON.stringify(real[0].title)})`, 20000));
 t.equal('prefilled: title, twelve rows, DELETE offered', [await js(`document.querySelector('#pl-title').value`), await rows(), await js(`!!${byText('DELETE')}`)], ['e2e community playlist', 12, true]);
-t.ok('rows carry their titles in edit mode', await waitFor(`document.querySelector('[data-song-row]')?.innerText.includes(${JSON.stringify(real[0].title)})`, 15000));
+t.equal('loading wrote no edit draft', await js(`localStorage.getItem(${JSON.stringify(editKey(id))})`), null);
 await setValue('#pl-title', 'e2e community playlist v2');
+await wait(400);
+t.equal('a change writes the edit slot', JSON.parse(await js(`localStorage.getItem(${JSON.stringify(editKey(id))})`))?.draft.title, 'e2e community playlist v2');
+t.equal('and leaves the new-draft slot alone', (await stored())?.draft.title, 'other draft');
 await click(byText('SAVE'));
 t.ok('SAVE shows the Published view with the new title', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('e2e community playlist v2')`, 30000));
+t.equal('the edit slot is cleared after a save', await js(`localStorage.getItem(${JSON.stringify(editKey(id))})`), null);
 await click(byText('EDIT'));
-await waitFor(`!!${byText('DELETE')}`);
+await waitFor(`!!${byText('SAVE')}`);
+await setValue('#pl-title', 'e2e community playlist v3');
+await click(byText('SAVE'));
+t.ok('a second SAVE works', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('e2e community playlist v3')`, 30000));
+
+await click(byText('EDIT'));
+await waitFor(`!!${byText('SAVE')}`);
+const cur1 = await serverVersion();
+const put = await putAsOwner({ title: 'changed by script', description: cur1.description, artUrl: cur1.artUrl, songs: cur1.songs }, cur1.updatedAt);
+t.equal('the script PUT lands', put.status, 200);
+await setValue('#pl-title', 'my edit');
+await click(byText('SAVE'));
+t.ok('a 409 shows the warning', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('This playlist changed elsewhere. Your edits are kept; SAVE again to overwrite.')`, 20000));
+t.equal('and keeps the form', await js(`document.querySelector('#pl-title').value`), 'my edit');
+await wait(500);
+await click(byText('SAVE'));
+t.ok('the next SAVE succeeds', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('my edit')`, 30000));
+t.equal('the server has the user edit', (await serverVersion()).title, 'my edit');
+
+console.log('--- 9. someone else ---');
+cur = { sk: sk2, pk: pk2 };
+await js(`localStorage.setItem('bmb:npub', ${JSON.stringify(npub2)}); 1`);
+await go(`/playlists/make?id=${id}`);
+t.ok('another key is refused in words', await waitFor(`document.querySelector('main')?.innerText.includes('Only the person who made this playlist can edit it.')`, 20000));
+t.ok('and sees no SAVE', await js(`!${byText('SAVE')}`));
+cur = { sk, pk };
+await js(`localStorage.setItem('bmb:npub', ${JSON.stringify(npub)}); 1`);
+
+console.log('--- 10. delete ---');
+t.ok('the owner opens it again', await openEdit());
 await click(byText('DELETE'));
 t.ok('DELETE asks first', await waitFor(`document.querySelector('[role=dialog]')?.innerText.includes('Delete this playlist?')`));
 t.equal('and nothing is deleted yet', (await fetch(feedUrl)).status, 200);
 await click(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent.trim() === 'DELETE')`);
 t.ok('confirmed: the page says it is gone', await waitFor(`document.body.innerText.includes('playlist deleted')`, 20000));
 t.equal('and the feed answers 410', (await fetch(feedUrl)).status, 410);
-t.equal('the saved draft is gone', await stored(), null);
-
+t.equal('the edit slot is gone', await js(`localStorage.getItem(${JSON.stringify(editKey(id))})`), null);
 
 console.log(`\n${t.count - t.fails}/${t.count} passed`);
 await exit(t.fails ? 1 : 0);

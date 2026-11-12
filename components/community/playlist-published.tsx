@@ -3,8 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/store';
 import { CopyLinkButton } from '@/components/copy-link-button';
-import { useFlash } from '@/lib/use-flash';
-import { siteLandingUrl } from '@/lib/nostr/boost-notes';
+import { RowThumb } from '@/components/chapter-ui';
+import { artCandidates } from '@/lib/util';
 import { communityPlaylistToPodcast } from '@/lib/util';
 import type { CommunityPlaylistSummary } from '@/lib/community/rules';
 
@@ -31,7 +31,6 @@ export function PlaylistPublished({
   const router = useRouter();
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
-  const [copied, flashCopied] = useFlash<boolean>(1800);
 
   function play() {
     if (!summary) return;
@@ -41,19 +40,13 @@ export function PlaylistPublished({
     router.push('/');
   }
 
-  async function copyFeed() {
-    try {
-      await navigator.clipboard.writeText(feedUrl);
-      flashCopied(true);
-    } catch { /* a blocked clipboard: the address is on screen to select */ }
-  }
-
   return (
     <section aria-labelledby="published-heading" data-testid="published">
       <div className="flex gap-4 items-start">
         {summary && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={summary.coverUrl} alt="" width={96} height={96} className="h-24 w-24 shrink-0 object-cover border border-bone/30" />
+          <div className="h-24 w-24 shrink-0 border border-bone/30">
+            <RowThumb src={artCandidates(summary.coverUrl, null, 160)[0]} fallback={summary.coverUrl} className="h-full w-full object-cover" />
+          </div>
         )}
         <div className="min-w-0">
           <h1 id="published-heading" className="font-display text-2xl break-words">{title}</h1>
@@ -69,7 +62,8 @@ export function PlaylistPublished({
         <button type="button" className="btn-ghost btn-compact" onClick={onEdit}>EDIT</button>
         {summary && (
           <CopyLinkButton
-            url={siteLandingUrl(summary.podcastGuid)}
+            // The current origin, not BRAND.origin: a beta or preview link must open the beta.
+            url={`${location.origin}/?podcast=${encodeURIComponent(summary.podcastGuid)}`}
             title="Copy the link to this playlist"
             className="btn-ghost btn-compact"
           />
@@ -82,9 +76,7 @@ export function PlaylistPublished({
         </label>
         <div className="mt-1 flex gap-2">
           <input id="feed-address" readOnly value={feedUrl} className="input" onFocus={(e) => e.currentTarget.select()} />
-          <button type="button" className="btn-ghost btn-compact shrink-0" onClick={copyFeed}>
-            {copied ? 'COPIED' : 'COPY'}
-          </button>
+          <CopyLinkButton url={feedUrl} word="COPY" title="Copy the feed address" className="btn-ghost btn-compact shrink-0" />
         </div>
         <p className="mt-2 max-w-xl text-xs leading-relaxed text-muted">
           Paste this address into any Podcasting 2.0 app to follow the playlist. It updates when you edit it.
