@@ -1,10 +1,14 @@
-// Pins the community-playlist rules: validatePlaylistDraft, artVerdict, cleanText
+// Pins the community-playlist rules: validatePlaylistDraft (with the secret-key test it is
+// handed, textHoldsSecret), withIndexFeedUrls, artVerdict, cleanText, the feed document
 // and the feed URL helpers in lib/curated-playlists.ts. Imports the real modules.
 import {
   COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH, COMMUNITY_PLAYLISTS_ON,
   communityFeedUrl, communityCoverUrl, communityIdFromFeedUrl, coverVersion,
 } from '../lib/curated-playlists.ts';
-import { validatePlaylistDraft, artVerdict } from '../lib/community/rules.ts';
+import {
+  validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
+} from '../lib/community/rules.ts';
+import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
 import {
   escapeXml, communityFeedGuid, buildPlaylistFeedXml,
@@ -39,46 +43,156 @@ for (const [f, opts] of [
 const songs = (n) => Array.from({ length: n }, (_, i) => ({ feedGuid: 'f' + i, itemGuid: 'i' + i }));
 const draft = (o = {}) => ({ title: 'T', description: '', artUrl: '', songs: songs(10), ...o });
 const kinds = (r) => (r.ok ? [] : r.problems.map((p) => p.kind));
+// Every route and the maker hand the rules the REAL secret test; so does every vector here.
+const V = (raw) => validatePlaylistDraft(raw, textHoldsSecret);
 
-let r = validatePlaylistDraft({ title: '  ', description: '', artUrl: '', songs: [] });
+let r = V({ title: '  ', description: '', artUrl: '', songs: [] });
 check('blank title + no songs', !r.ok && kinds(r).includes('title-missing')
   && r.problems.some((p) => p.kind === 'too-few-songs' && p.have === 0));
-r = validatePlaylistDraft(draft({ songs: songs(9) }));
+r = V(draft({ songs: songs(9) }));
 check('9 songs too few', !r.ok && r.problems.some((p) => p.kind === 'too-few-songs' && p.have === 9));
-check('10 songs ok', validatePlaylistDraft(draft()).ok);
-check('500 songs ok', validatePlaylistDraft(draft({ songs: songs(500) })).ok);
-r = validatePlaylistDraft(draft({ songs: songs(501) }));
+check('10 songs ok', V(draft()).ok);
+check('500 songs ok', V(draft({ songs: songs(500) })).ok);
+r = V(draft({ songs: songs(501) }));
 check('501 songs too many', !r.ok && r.problems.some((p) => p.kind === 'too-many-songs' && p.have === 501));
-r = validatePlaylistDraft(draft({ songs: [...songs(10), { feedGuid: 'f0', itemGuid: 'i0' }] }));
+r = V(draft({ songs: [...songs(10), { feedGuid: 'f0', itemGuid: 'i0' }] }));
 check('duplicate song', !r.ok && r.problems.some((p) => p.kind === 'duplicate-song' && p.itemGuid === 'i0'));
 check('same itemGuid, other feed is not a duplicate',
-  validatePlaylistDraft(draft({ songs: [...songs(10), { feedGuid: 'other', itemGuid: 'i0' }] })).ok);
-check('http art refused', kinds(validatePlaylistDraft(draft({ artUrl: 'http://x/a.png' }))).includes('art-not-https'));
-r = validatePlaylistDraft(draft({ artUrl: '' }));
+  V(draft({ songs: [...songs(10), { feedGuid: 'other', itemGuid: 'i0' }] })).ok);
+check('http art refused', kinds(V(draft({ artUrl: 'http://x/a.png' }))).includes('art-not-https'));
+r = V(draft({ artUrl: '' }));
 check('empty art -> null', r.ok && r.draft.artUrl === null);
-r = validatePlaylistDraft(draft({ artUrl: 'https://x/a.png' }));
+r = V(draft({ artUrl: 'https://x/a.png' }));
 check('https art kept', r.ok && r.draft.artUrl === 'https://x/a.png');
-check('121-char title', kinds(validatePlaylistDraft(draft({ title: 'a'.repeat(121) }))).includes('title-too-long'));
-check('120-char title ok', validatePlaylistDraft(draft({ title: 'a'.repeat(120) })).ok);
-check('120-emoji title ok', validatePlaylistDraft(draft({ title: '😀'.repeat(120) })).ok);
-check('121-emoji title refused', kinds(validatePlaylistDraft(draft({ title: '😀'.repeat(121) }))).includes('title-too-long'));
-check('1001-char description', kinds(validatePlaylistDraft(draft({ description: 'a'.repeat(1001) }))).includes('description-too-long'));
-check('1000-emoji description ok', validatePlaylistDraft(draft({ description: '😀'.repeat(1000) })).ok);
-r = validatePlaylistDraft(draft({ title: '  Hi  ', description: ' d ' }));
+check('121-char title', kinds(V(draft({ title: 'a'.repeat(121) }))).includes('title-too-long'));
+check('120-char title ok', V(draft({ title: 'a'.repeat(120) })).ok);
+check('120-emoji title ok', V(draft({ title: '😀'.repeat(120) })).ok);
+check('121-emoji title refused', kinds(V(draft({ title: '😀'.repeat(121) }))).includes('title-too-long'));
+check('1001-char description', kinds(V(draft({ description: 'a'.repeat(1001) }))).includes('description-too-long'));
+check('1000-emoji description ok', V(draft({ description: '😀'.repeat(1000) })).ok);
+r = V(draft({ title: '  Hi  ', description: ' d ' }));
 check('trims', r.ok && r.draft.title === 'Hi' && r.draft.description === 'd');
-r = validatePlaylistDraft(draft({ songs: [{ feedGuid: '', itemGuid: 'x' }, ...songs(10)] }));
+r = V(draft({ songs: [{ feedGuid: '', itemGuid: 'x' }, ...songs(10)] }));
 check('empty feedGuid is bad-song index 0', !r.ok && r.problems.some((p) => p.kind === 'bad-song' && p.index === 0));
-r = validatePlaylistDraft(draft({ songs: [...songs(10), { feedGuid: 'f', itemGuid: 'x'.repeat(2049) }] }));
+r = V(draft({ songs: [...songs(10), { feedGuid: 'f', itemGuid: 'x'.repeat(2049) }] }));
 check('long itemGuid bad-song', !r.ok && r.problems.some((p) => p.kind === 'bad-song' && p.index === 10));
-r = validatePlaylistDraft(draft({ songs: [...songs(10), { feedGuid: 'f'.repeat(121), itemGuid: 'x' }] }));
+r = V(draft({ songs: [...songs(10), { feedGuid: 'f'.repeat(121), itemGuid: 'x' }] }));
 check('long feedGuid bad-song', !r.ok && r.problems.some((p) => p.kind === 'bad-song' && p.index === 10));
-r = validatePlaylistDraft(draft({ songs: [{ feedGuid: 'a', itemGuid: 'b', feedUrl: 'javascript:1' }, ...songs(9)] }));
+r = V(draft({ songs: [{ feedGuid: 'a', itemGuid: 'b', feedUrl: 'javascript:1' }, ...songs(9)] }));
 check('non-http feedUrl dropped', r.ok && r.draft.songs[0].feedUrl === undefined);
-r = validatePlaylistDraft(draft({ songs: [{ feedGuid: 'a', itemGuid: 'b', feedUrl: 'https://x/f.xml' }, ...songs(9)] }));
+r = V(draft({ songs: [{ feedGuid: 'a', itemGuid: 'b', feedUrl: 'https://x/f.xml' }, ...songs(9)] }));
 check('https feedUrl kept', r.ok && r.draft.songs[0].feedUrl === 'https://x/f.xml');
-check('garbage rejected', !validatePlaylistDraft(null).ok && !validatePlaylistDraft('x').ok);
-r = validatePlaylistDraft({ title: 5, description: 5, artUrl: 5, songs: 'x' });
+check('garbage rejected', !V(null).ok && !V('x').ok);
+r = V({ title: 5, description: 5, artUrl: 5, songs: 'x' });
 check('wrong types report problems', !r.ok && r.problems.length > 0);
+
+// ---- a secret key in the title or description (the playlist is PUBLIC) -------
+// The maker and both write routes refuse it before anything is stored or sent on.
+// `textHoldsSecret` runs `looksLikeSecretKey` on every run of letters and digits (a
+// bech32 key is one such run), so a key glued to other text is still found.
+{
+  const NSEC = nsecEncode(generateSecretKey());
+  const hits = [
+    NSEC, `my mix ${NSEC}`, `nostr:${NSEC}`, `(${NSEC})`, `"${NSEC}"`, `key=${NSEC}`, `x:${NSEC}`,
+    NSEC.toUpperCase(), 'nsec1qqqq', `ncryptsec1${'q'.repeat(40)}`,
+    `nostr+walletconnect://${'ab'.repeat(32)}?relay=wss://r.example&secret=${'cd'.repeat(32)}`,
+    `songs\nNOSTR+WALLETCONNECT://x`,
+  ];
+  const misses = [
+    '', 'Insect1 mix', 'nsec', 'nsec 1', npubEncode('ab'.repeat(32)), nprofileEncode({ pubkey: 'ab'.repeat(32) }),
+    'Summer songs 2026', 'wallet connect mix', 'nostr:npub1abc',
+  ];
+  for (const h of hits) check(`secret found: ${JSON.stringify(h.slice(0, 24))}…`, textHoldsSecret(h));
+  for (const m of misses) check(`not a secret: ${JSON.stringify(m.slice(0, 24))}`, !textHoldsSecret(m));
+  // Can fail: the old rules had no test at all, and the bug report's whitespace split
+  // (lib/bug-report.ts) misses a key glued to other text.
+  const none = () => false;
+  const wsSplit = (t) => t.split(/[\s,;]+/).some((x) => looksLikeSecretKey(x.replace(/^[^a-z0-9]+/i, '')));
+  check('secret vectors fail against no test (can fail)', hits.every((h) => !none(h)));
+  check('glued-key vectors fail against a whitespace split (can fail)', !wsSplit(`key=${NSEC}`) && !wsSplit(`x:${NSEC}`));
+
+  let s = V(draft({ title: `mix ${NSEC}` }));
+  check('secret in the title -> { kind: secret, field: title }',
+    !s.ok && s.problems.some((p) => p.kind === 'secret' && p.field === 'title'));
+  s = V(draft({ description: `paste ${NSEC} here` }));
+  check('secret in the description -> { kind: secret, field: description }',
+    !s.ok && s.problems.some((p) => p.kind === 'secret' && p.field === 'description'));
+  s = V(draft({ title: NSEC, description: NSEC }));
+  check('secret in both -> two problems', !s.ok && s.problems.filter((p) => p.kind === 'secret').length === 2);
+  check('a refusal does not carry the key', !JSON.stringify(V(draft({ title: NSEC })).problems ?? []).includes(NSEC.slice(5)));
+  check('an npub title is publishable', V(draft({ title: npubEncode('ab'.repeat(32)) })).ok);
+  // Can fail: the old validator, which took no secret test.
+  check('secret-title vector fails against the old validator (can fail)',
+    validatePlaylistDraft(draft({ title: `mix ${NSEC}` }), none).ok);
+}
+
+// ---- links: length caps and a real host -------------------------------------
+{
+  const atCap = 'https://x.example/' + 'a'.repeat(MAX_URL_LEN - 'https://x.example/'.length);
+  check('MAX_URL_LEN is 2048', MAX_URL_LEN === 2048 && atCap.length === 2048);
+  check('art link of exactly 2048 characters ok', V(draft({ artUrl: atCap })).ok);
+  check('art link of 2049 characters -> art-bad-link', kinds(V(draft({ artUrl: atCap + 'a' }))).includes('art-bad-link'));
+  check('bare https:// -> art-bad-link', kinds(V(draft({ artUrl: 'https://' }))).includes('art-bad-link'));
+  check('https:// plus a path and no host -> art-bad-link', kinds(V(draft({ artUrl: 'https://?x=1' }))).includes('art-bad-link'));
+  check('http art is still art-not-https, not art-bad-link',
+    JSON.stringify(kinds(V(draft({ artUrl: 'http://x/a.png' })))) === JSON.stringify(['art-not-https']));
+  // Can fail: the old test was a prefix regex.
+  const oldArtOk = (u) => /^https:\/\//i.test(u);
+  check('bare-https vector fails against the old prefix test (can fail)', oldArtOk('https://'));
+
+  let s = V(draft({ songs: [{ feedGuid: 'a', itemGuid: 'b', feedUrl: atCap + 'a' }, ...songs(9)] }));
+  check('a client feedUrl over 2048 characters is dropped', s.ok && s.draft.songs[0].feedUrl === undefined);
+  s = V(draft({ songs: [{ feedGuid: 'a', itemGuid: 'b', feedUrl: 'https://' }, ...songs(9)] }));
+  check('a client feedUrl with no host is dropped', s.ok && s.draft.songs[0].feedUrl === undefined);
+}
+
+// ---- the public feed carries Podcast Index's feedUrl, never the client's ------
+// withIndexFeedUrls is what both write routes store; `urlFor` answers what the index
+// holds for a song (or, for a song an edit kept, what was stored when it was checked).
+{
+  const client = [
+    { feedGuid: 'g1', itemGuid: 'i1', feedUrl: 'https://forged.example/evil.xml', title: 'extra field' },
+    { feedGuid: 'g2', itemGuid: 'i2', feedUrl: 'https://forged.example/two.xml' },
+    { feedGuid: 'g3', itemGuid: 'i3' },
+    { feedGuid: 'g4', itemGuid: 'i4' },
+    { feedGuid: 'g5', itemGuid: 'i5' },
+  ];
+  const index = {
+    g1: 'https://feeds.artist.example/album.xml',
+    g3: 'javascript:alert(1)',
+    g4: 'https://feeds.artist.example/' + 'a'.repeat(2048),
+    g5: 'https://feeds.artist.example/five.xml?a=1&b=2',
+  };
+  const out = withIndexFeedUrls(client, (s) => index[s.feedGuid]);
+  const want = [
+    { feedGuid: 'g1', itemGuid: 'i1', feedUrl: 'https://feeds.artist.example/album.xml' },
+    { feedGuid: 'g2', itemGuid: 'i2' },
+    { feedGuid: 'g3', itemGuid: 'i3' },
+    { feedGuid: 'g4', itemGuid: 'i4' },
+    { feedGuid: 'g5', itemGuid: 'i5', feedUrl: 'https://feeds.artist.example/five.xml?a=1&b=2' },
+  ];
+  check('withIndexFeedUrls: the index URL replaces the client one; none, a script link or an over-long one -> no feedUrl; nothing else copied',
+    JSON.stringify(out) === JSON.stringify(want));
+  check('withIndexFeedUrls: order kept', out.map((s) => s.itemGuid).join() === 'i1,i2,i3,i4,i5');
+  // Can fail: the old route stored the client's songs as validated.
+  const naiveStore = (songs) => songs.map(({ feedGuid, itemGuid, feedUrl }) => (feedUrl ? { feedGuid, itemGuid, feedUrl } : { feedGuid, itemGuid }));
+  check('forged-feedUrl vector fails against storing the client value (can fail)', JSON.stringify(naiveStore(client)) !== JSON.stringify(want));
+}
+
+// ---- the body cap fits MAX_SONGS ---------------------------------------------
+{
+  // 500 songs shaped like real ones: a UUID feed guid, a permalink item guid, a feed URL.
+  const real = Array.from({ length: MAX_SONGS }, (_, i) => ({
+    feedGuid: '917393e3-1b1e-5cef-ace4-edaa54e1f810',
+    itemGuid: `https://music.example.com/artist-name/album-name-here/track-${i}-a-longish-song-title-goes-here`,
+    feedUrl: 'https://feeds.example.com/artist-name/album-name-here/feed.xml',
+  }));
+  const body = { draft: { title: 'a'.repeat(120), description: 'd'.repeat(1000), artUrl: 'https://x.example/a.jpg', songs: real }, expectedUpdatedAt: new Date().toISOString() };
+  const bytes = Buffer.byteLength(JSON.stringify(body));
+  check(`a full 500-song write body (${Math.round(bytes / 1024)} KB) fits MAX_PLAYLIST_BODY_BYTES with room`, bytes * 1.5 < MAX_PLAYLIST_BODY_BYTES);
+  // Can fail: the old cap.
+  check('the 500-song body is over the old 64 KB cap (can fail)', bytes > 64 * 1024);
+}
 
 const A = (o) => artVerdict(o);
 check('png 1400 ok', A({ format: 'png', width: 1400, height: 1400, hasAlpha: false }).ok);
@@ -128,8 +242,12 @@ const stored = {
 };
 const opts = {
   feedUrl: communityFeedUrl(id), coverUrl: communityCoverUrl(id, 1),
-  ownerNpub, fallbackDescription: 'Fallback & co',
+  ownerNpub, fallbackDescription: 'Fallback & co', podcastGuid: communityFeedGuid(communityFeedUrl(id)),
 };
+// The guid saved with the row when it was created. It is the feed's identity for good:
+// a deploy whose feed origin differs from the one the row was made under must not mint a
+// second one (the recomputed guid below is what the builder used to print).
+const STORED_GUID = '3f2a1b0c-9d8e-5f7a-8b6c-5d4e3f2a1b0c';
 const titleOf = (xml) => decodeXmlText(/<title>([\s\S]*?)<\/title>/.exec(channelSlice(xml))[1]);
 const docVectors = [
   { kind: 'items', build: (b) => b(stored, opts), test: (xml) => {
@@ -159,6 +277,8 @@ const docVectors = [
     (xml.match(/feedUrl=/g) ?? []).length === 1 && xml.includes('feedUrl="https://x.example/f.xml?a=1&amp;b=2"') },
   { kind: 'rfc822 lastBuildDate', build: (b) => b(stored, opts), test: (xml) =>
     xml.includes('<lastBuildDate>Thu, 12 Nov 2026 00:00:00 GMT</lastBuildDate>') },
+  { kind: 'stored podcast:guid', build: (b) => b(stored, { ...opts, podcastGuid: STORED_GUID }), test: (xml) =>
+    xml.includes(`<podcast:guid>${STORED_GUID}</podcast:guid>`) && !xml.includes(communityFeedGuid(opts.feedUrl)) },
   { kind: 'channel fields', build: (b) => b(stored, opts), test: (xml) =>
     xml.includes('xmlns:podcast="https://podcastindex.org/namespace/1.0"') && xml.includes('xmlns:itunes=')
     && xml.includes('<podcast:medium>musicL</podcast:medium>')
@@ -185,6 +305,12 @@ for (const v of docVectors.filter((x) => ['items', 'title well-formed'].includes
   let passes;
   try { passes = v.test(v.build(naiveBuild)); } catch { passes = false; }
   check('feed doc: ' + v.kind + ' fails against naive (can fail)', !passes);
+}
+{
+  // Can fail: the old builder recomputed the guid from the feed URL it was handed.
+  const v = docVectors.find((x) => x.kind === 'stored podcast:guid');
+  const recompute = (p, o) => buildPlaylistFeedXml(p, { ...o, podcastGuid: communityFeedGuid(o.feedUrl) });
+  check('feed doc: stored-guid vector fails against recomputing from the URL (can fail)', !v.test(v.build(recompute)));
 }
 check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
 
