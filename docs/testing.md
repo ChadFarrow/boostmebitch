@@ -47,10 +47,11 @@ a real account.
 | `npm run e2e:twosigners` | Two stub NIP-46 responders on ONE key over a local relay: one answers `no permission` at once (Amber, for a client it never paired), the other answers correctly 700 ms later (Clave). Pins that the paired signer's result wins, that a real refusal still lands, and that the approval notice still appears when only the imposter answers. See docs/signers.md, "Two signer apps, one key". |
 | `npm run e2e:communityapi` | The community-playlist routes (`/api/playlists`, the `.xml` feeds) over HTTP against the real local Postgres: create, list, edit, delete, refusals, the 6-writes-a-minute limit. |
 | `npm run e2e:communityui` | The maker, the Published view, `/playlists`, edit and delete, in headless Chrome at 390 x 844 (`scrollWidth <= clientWidth`, every control at least 24 x 24). Uses a LOCAL relay and a fake NIP-07 signer. |
+| `npm run e2e:communitynote` | The boost NOTE for a song played from a playlist, through the real modal: a playlist stored on the dev server (Buddy's words, the album as the show, the Heard-on line and link, the maker's `p` tag), the same as Anonymous while Buddy's route has no CORS (the note fails, never this deploy's key), and one of the seven community feeds (BoostMeBitch words, the Heard-on line). Asserts the boostagram still carries `BoostMeBitch`. Section 3, Anonymous signed by Buddy production, runs only when Buddy's route sends CORS (PR 4) or with `--force-buddy`; `--offline` never asks Buddy. |
 
-### The community-playlist e2e pair
+### The community-playlist e2e scripts
 
-Both need the local Postgres on port 54329 (`bmb-community-pg`, schema from `npm run community:schema`)
+All three need the local Postgres on port 54329 (`bmb-community-pg`, schema from `npm run community:schema`)
 and a dev server started with its env on the command line, never in `.env.local`:
 
     COMMUNITY_DB_URL=postgres://postgres:test@localhost:54329/postgres ADMIN_NPUBS=<any npub> \
@@ -63,6 +64,14 @@ and a dev server started with its env on the command line, never in `.env.local`
 - **Write limit.** The server allows 6 writes a minute per address. Each run sends its own random
   `x-real-ip`, so repeated runs never wait.
 - **No public relay for events.** No EVENT reaches a public relay (checked by the assertion 'no event of any kind went to a public relay'). Feed reads and profile reads still reach the public network.
+- **`e2e:communitynote` sends no money and no public event, and checks both.** The wallet is a
+  stub NIP-47 service on the local relay, and `/api/item-value` answers one keysend stub node.
+  Every page WebSocket except the dev server's own is REDIRECTED to the local relay, because
+  `publishBoostNoteViaSite` publishes to the hard-coded `DEFAULT_RELAYS`. The dev server's own
+  signing routes are refused in the page, because `.env.local` holds the real site key.
+  Section 3 cannot let the page ask Buddy itself: `localhost` is not an origin PR 4 allows. The
+  script POSTs the page's request to Buddy and hands back the answer, so Buddy production signs
+  a test note that reaches only the local relay.
 
 ### Two things about the harness that look like detail and are not
 

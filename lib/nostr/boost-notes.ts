@@ -1,9 +1,10 @@
 import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult, ValueTimeSplit } from '../types';
-import { boostNoteTrack, httpUrl, type BoostNoteTrack } from '../util';
+import { boostNoteTrack, heardOnLines, httpUrl, playlistBoostContext, type BoostNoteTrack } from '../util';
 import type { QuotedZapReceipt } from './zap-summary-receipt';
-import { BRAND, clientTag } from '../brand';
+import { BRAND, clientTag, type Brand } from '../brand';
+import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '../curated-playlists';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
 import { noteMentionTags, type MentionNpub, inlineMentions, withMentionRun } from './mention-tags';
@@ -45,15 +46,54 @@ interface PublishArgs {
     split: Pick<ValueTimeSplit, 'title' | 'artist' | 'remoteItem'>;
     results: BoostResult[];
   };
+  /**
+   * The brand the NOTE wears — its links, its picture, its `client` tag, and the
+   * deploy whose key signs it on the site path. `noteBrandFor(ctx.hosted)`
+   * (lib/brand.ts): Buddy for a song from a playlist BMB hosts, on either deploy;
+   * otherwise `BRAND`, which is also the default. The boostagram is never touched.
+   */
+  brand?: Brand;
+  /**
+   * The name the NOTE prints as the sender, in `brand`'s words
+   * (`resolveSenderName(name, anonymous, brand)`). Defaults to the boostagram's
+   * `sender_name`, which keeps the deploy's own default for the payment.
+   */
+  senderName?: string;
+}
+
+/**
+ * What one note is about, decided once per note: `show` names the feed the song
+ * belongs to (for a playlist song, its OWN album, never the playlist), `container`
+ * is the playlist it was heard on (or null), and `heardOrigin` is where that
+ * playlist's link points — the community feed origin for a playlist BMB hosts
+ * (a test store's playlist lives on the test origin, never on boostmebuddy.com),
+ * the note brand's origin for any other.
+ */
+interface NoteContext {
+  show: Podcast;
+  container: Podcast | null;
+  brand: Brand;
+  heardOrigin: string;
+}
+
+function noteContext(args: PublishArgs): NoteContext {
+  const ctx = playlistBoostContext(args.podcast, args.episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH);
+  const brand = args.brand ?? BRAND;
+  return {
+    show: ctx.show,
+    container: ctx.container,
+    brand,
+    heardOrigin: ctx.hosted ? COMMUNITY_FEED_ORIGIN : brand.origin,
+  };
 }
 
 /** The note's track, decided against the guids this note tags as its own. */
-function noteTrack(args: PublishArgs): BoostNoteTrack | null {
+function noteTrack(args: PublishArgs, nc: NoteContext): BoostNoteTrack | null {
   if (!args.track) return null;
   return boostNoteTrack({
     split: args.track.split,
     trackResults: args.track.results,
-    showGuid: args.podcast.podcastGuid,
+    showGuid: nc.show.podcastGuid,
     episodeGuid: args.episode?.guid,
   });
 }
@@ -121,9 +161,9 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  * kind:1 — an unfurler that doesn't follow the redirect gets no card at all,
  * and every note already published carries whichever host we chose forever.
  */
-function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
+function bmbLandingUrl(podcast: Podcast, episode: Episode | undefined, origin: string): string | null {
   if (!podcast.podcastGuid) return null;
-  return siteLandingUrl(podcast.podcastGuid, episode?.guid);
+  return siteLandingUrl(podcast.podcastGuid, episode?.guid, origin);
 }
 
 /**
@@ -134,9 +174,13 @@ function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  * which on a dev server is `localhost`. **One builder, so the encoding cannot
  * differ between copies** — the track hints encoded the feed guid while this
  * did not.
+ *
+ * `origin` is the NOTE's brand origin: a boost note for a song from a playlist
+ * BMB hosts links to Buddy on either deploy. The likes and comments that import
+ * this pass nothing and keep the deploy's own.
  */
-export function siteLandingUrl(feedGuid: string, itemGuid?: string): string {
-  const url = `${SITE_ORIGIN}/?podcast=${encodeURIComponent(feedGuid)}`;
+export function siteLandingUrl(feedGuid: string, itemGuid?: string, origin: string = SITE_ORIGIN): string {
+  const url = `${origin}/?podcast=${encodeURIComponent(feedGuid)}`;
   return itemGuid ? `${url}&episode=${encodeURIComponent(itemGuid)}` : url;
 }
 
@@ -184,6 +228,9 @@ function boostArtUrls(podcast: Podcast, episode?: Episode): string[] {
  * boostmebuddy.com must deep-link back to boostmebuddy.com, and a kind:1 cannot
  * be edited, so the choice is permanent per note. Both origins keep serving
  * `/api/og/boost.png` forever for exactly that reason.
+ *
+ * The DEFAULT only. A boost note takes its origin from its brand
+ * (`PublishArgs.brand`), which is Buddy's for a song from a playlist BMB hosts.
  */
 const SITE_ORIGIN = BRAND.origin;
 
@@ -214,11 +261,15 @@ const SITE_ORIGIN = BRAND.origin;
  * the deploy, and correct forever after — the note cannot be edited, so that is
  * the only version of "later" that exists. Preview a design change by fetching
  * the local route directly, not by publishing a note.
+ *
+ * `origin` is the note brand's, never a dev or test origin: the site-sign route
+ * of the deploy that signs refuses an `imeta` on any origin but its own.
  */
 function boostBannerUrl(
   podcast: Podcast,
   episode: Episode | undefined,
   boostagram: Boostagram,
+  origin: string,
 ): string {
   const params = new URLSearchParams();
   // `art`, then `art2`, then `art3` — the route tries them in order and keeps
@@ -231,7 +282,7 @@ function boostBannerUrl(
   if (episode?.title) params.set('ep', episode.title);
   const sats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
   if (sats > 0) params.set('sats', String(sats));
-  return `${SITE_ORIGIN}/api/og/boost.png?${params.toString()}`;
+  return `${origin}/api/og/boost.png?${params.toString()}`;
 }
 
 /**
@@ -329,8 +380,22 @@ export function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
 }
 
 
-function formatContent(args: PublishArgs, withTrack = true): string {
-  const { podcast, episode, boostagram } = args;
+/**
+ * `🎧 Heard on <playlist>[ by nostr:<maker>]` and, when the playlist has a guid,
+ * its link on `heardOrigin` — for a song played from a playlist, and nothing
+ * otherwise. The maker is the first npub the playlist declares, the same one
+ * `noteNpubs` already `p`-tags through the container.
+ */
+function noteHeardOn(nc: NoteContext): string[] {
+  if (!nc.container) return [];
+  return heardOnLines(nc.container, nc.container.nostrNpubs?.[0]?.npub ?? null, nc.heardOrigin);
+}
+
+function formatContent(args: PublishArgs, nc: NoteContext, withTrack: boolean, heard: string[]): string {
+  const { episode, boostagram } = args;
+  // The song's OWN feed for a playlist song (the container rule): the header,
+  // both landing links and everything else that says "the show" name the album.
+  const { show } = nc;
   const totalSats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
 
   const lines: string[] = ['⚡ Boost ⚡', ''];
@@ -340,17 +405,23 @@ function formatContent(args: PublishArgs, withTrack = true): string {
   // Attribute the sender by their "From" name when set. Load-bearing for
   // site-signed notes (signed-out users): the note is authored by the site's
   // identity, so without this their name appears nowhere. Natural for the
-  // self-signed case too ("ChadF boosted …").
-  const sender = boostagram.sender_name?.trim();
-  lines.push(`${sender ? `${sender} boosted` : 'Boosted'} ${totalSats} sats → ${podcast.title}`);
+  // self-signed case too ("ChadF boosted …"). The NOTE's own name when the
+  // caller gave one: its default is the note brand's, which for a playlist BMB
+  // hosts is not the boostagram's.
+  const sender = (args.senderName ?? boostagram.sender_name)?.trim();
+  lines.push(`${sender ? `${sender} boosted` : 'Boosted'} ${totalSats} sats → ${show.title}`);
   if (episode?.title) lines.push(`📻 ${episode.title}`);
   // The song the boost paid, right under the episode it played in. Only when a
   // track leg settled — see boostNoteTrack.
-  const track = withTrack ? noteTrack(args) : null;
+  const track = withTrack ? noteTrack(args, nc) : null;
   if (track?.line) lines.push(track.line);
-  const link = podcastLandingUrl(podcast, episode);
+  // Where it was heard, after every line about the track. Its link is never the
+  // note's unfurl: `episodeLinkInNote` takes only a podcast app's URL
+  // (`check:notelink`).
+  lines.push(...heard);
+  const link = podcastLandingUrl(show, episode);
   if (link) lines.push('', link);
-  const bmbLink = bmbLandingUrl(podcast, episode);
+  const bmbLink = bmbLandingUrl(show, episode, nc.brand.origin);
   if (bmbLink && bmbLink !== link) lines.push(bmbLink);
   return lines.join('\n');
 }
@@ -377,13 +448,19 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // fountain.fm show or episode page, on every boost note it publishes). It is
   // a hint for a reader that does not index the guid; nothing here parses it
   // back. `bmbLandingUrl` is the same restorable deep link the `r` tag carries.
+  //
+  // For a song played from a playlist, `show` is the song's OWN feed, so the
+  // FIRST `podcast:guid:` is the album: `nip73GuidsFromTags` (discover.ts) reads
+  // the first one as the note's show, and the card's "→ show" line names it.
+  const nc = noteContext(args);
+  const { show, container, brand } = nc;
   const tags: string[][] = [];
-  const showHint = bmbLandingUrl(podcast);
-  const itemHint = episode ? bmbLandingUrl(podcast, episode) : null;
-  if (podcast.podcastGuid) {
+  const showHint = bmbLandingUrl(show, undefined, brand.origin);
+  const itemHint = episode ? bmbLandingUrl(show, episode, brand.origin) : null;
+  if (show.podcastGuid) {
     tags.push(showHint
-      ? ['i', `podcast:guid:${podcast.podcastGuid}`, showHint]
-      : ['i', `podcast:guid:${podcast.podcastGuid}`]);
+      ? ['i', `podcast:guid:${show.podcastGuid}`, showHint]
+      : ['i', `podcast:guid:${show.podcastGuid}`]);
     tags.push(['k', 'podcast:guid']);
   }
   if (episode?.guid) {
@@ -397,27 +474,39 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // identifier, and both kinds are already declared above — a second pair would
   // say nothing new. A track whose guid IS the note's own adds no tag (a musicL
   // playlist row); see boostNoteTrack. Placed here, sized below.
-  const track = noteTrack(args);
+  const track = noteTrack(args, nc);
   const trackAt = tags.length;
   const trackTags = (withHints: boolean): string[][] => {
     if (!track) return [];
     const out: string[][] = [];
-    const feed = track.feedGuid ?? podcast.podcastGuid;
+    const feed = track.feedGuid ?? show.podcastGuid;
     if (track.feedGuid) {
-      const hint = withHints ? siteLandingUrl(track.feedGuid) : null;
+      const hint = withHints ? siteLandingUrl(track.feedGuid, undefined, brand.origin) : null;
       out.push(hint ? ['i', `podcast:guid:${track.feedGuid}`, hint] : ['i', `podcast:guid:${track.feedGuid}`]);
     }
     if (track.itemGuid) {
-      const hint = withHints && feed ? siteLandingUrl(feed, track.itemGuid) : null;
+      const hint = withHints && feed ? siteLandingUrl(feed, track.itemGuid, brand.origin) : null;
       out.push(hint && hint.length <= 512
         ? ['i', `podcast:item:guid:${track.itemGuid}`, hint]
         : ['i', `podcast:item:guid:${track.itemGuid}`]);
     }
     return out;
   };
-  const linkUrl = podcastLandingUrl(podcast, episode);
+  // The playlist the song was heard on keeps its own `podcast:guid:` tag, AFTER
+  // the song's: the playlist page's discussion (`fetchPodcastNotes`, which asks
+  // `#i` for the playlist's guid and, for a playlist, nothing else) still finds
+  // the note, while every reader of the FIRST tag gets the album. No `k`: the
+  // song's own feed already declared `podcast:guid`. The hint is where the
+  // Heard-on line points.
+  if (container?.podcastGuid) {
+    const hint = siteLandingUrl(container.podcastGuid, undefined, nc.heardOrigin);
+    tags.push(hint.length <= 512
+      ? ['i', `podcast:guid:${container.podcastGuid}`, hint]
+      : ['i', `podcast:guid:${container.podcastGuid}`]);
+  }
+  const linkUrl = podcastLandingUrl(show, episode);
   if (linkUrl) tags.push(['r', linkUrl]);
-  const bmbUrl = bmbLandingUrl(podcast, episode);
+  const bmbUrl = bmbLandingUrl(show, episode, brand.origin);
   if (bmbUrl && bmbUrl !== linkUrl) tags.push(['r', bmbUrl]);
   // <podcast:txt purpose="nostr"> — tag the show/track artist so the boost
   // lands in their mentions instead of being a post about them they never see.
@@ -430,6 +519,10 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // Sender-chosen @mentions join them here, but only on the self-signed path —
   // noteMentionTags owns that rule and returns the two lists separately,
   // because a mention the site may not TAG is still written into the body.
+  //
+  // `podcast`, never `show`: for a playlist song `podcast` is the playlist, so
+  // its maker is tagged here (and the album's facts carry no npub of the
+  // playlist's — see ownShowOf).
   const { tagged, inBody } = noteMentionTags(
     noteNpubs(podcast, episode),
     args.mentions,
@@ -448,7 +541,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // tag is the soft failure: the body still names the banner, and every client
   // that scans text still renders it. Keep the two numbers together if either
   // moves.
-  const banner = boostBannerUrl(podcast, episode, boostagram);
+  const banner = boostBannerUrl(show, episode, boostagram, brand.origin);
   if (`url ${banner}`.length <= 512) {
     tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
   }
@@ -465,7 +558,10 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // leg failed, and then the receipt is the one telling the truth.
   const receipts = quotedReceipts(args);
   for (const r of receipts) tags.push(['q', r.id, r.relays[0] ?? '', r.pubkey]);
-  tags.push(clientTag(boostagram.app_name));
+  // The boostagram's `app_name` names the deploy that PAID and never changes;
+  // a note in another brand's words names that brand instead, so a Buddy note
+  // never says "via BoostMeBitch".
+  tags.push(brand.id === BRAND.id ? clientTag(boostagram.app_name) : clientTag(brand.wireName));
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
   // Sized last, against everything else the note carries: the hints go first,
@@ -487,17 +583,30 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     // are one decision: a mention put where the sender typed it must NOT also
     // appear in the trailing run, or the note names the same person twice.
     content: (() => {
-      const build = (withTrack: boolean) => {
-        const body = withArt(args.contentOverride ?? formatContent(args, withTrack), banner);
+      const build = (withTrack: boolean, withHeardOn: boolean) => {
+        const heard = withHeardOn ? noteHeardOn(nc) : [];
+        // Boost-all's summary replaces the body, so its Heard-on lines go under
+        // it — the same convergence `withArt` and the mention run use.
+        const text = args.contentOverride != null
+          ? (heard.length ? `${args.contentOverride}\n\n${heard.join('\n')}` : args.contentOverride)
+          : formatContent(args, nc, withTrack, heard);
+        const body = withArt(text, banner);
         const { content: inlined, remaining } = inlineMentions(body, inBody);
-        return withMentionRun(withZapReceipts(inlined, receipts), remaining);
+        // A feed npub the body already names — the playlist's maker, in the
+        // Heard-on line — is not named a second time in the trailing run. Its
+        // `p` tag is unaffected.
+        const run = remaining.filter((m) => !inlined.includes(`nostr:${m.npub}`));
+        return withMentionRun(withZapReceipts(inlined, receipts), run);
       };
-      // The track line is the one optional line, so it is the one that goes
-      // when a long message, many mentions and long links fill the body: the
-      // route refuses the WHOLE note past its cap. Measured on both paths so a
-      // note never differs by which key signs it.
-      const full = build(true);
-      return full.length > SITE_SIGN_MAX_CONTENT ? build(false) : full;
+      // The optional lines go, in this order, when a long message, many
+      // mentions and long links fill the body: the route refuses the WHOLE note
+      // past its cap. The track line first; then the Heard-on lines, which the
+      // playlist's own `i` tag still records. Measured on both paths so a note
+      // never differs by which key signs it.
+      let content = build(true, true);
+      if (content.length > SITE_SIGN_MAX_CONTENT) content = build(false, true);
+      if (content.length > SITE_SIGN_MAX_CONTENT) content = build(false, false);
+      return content;
     })(),
   };
 }
@@ -518,6 +627,14 @@ export async function publishBoostNote(
  * to DEFAULT_RELAYS. Throws on a 503 (feature not configured) / 400 / network
  * error — callers (maybePublishNote) already swallow publish failures, so a boost
  * still succeeds even if the note can't be posted.
+ *
+ * A note in ANOTHER brand's words (`args.brand`, Buddy's for a song from a
+ * playlist BMB hosts) is signed by THAT deploy, through its own route, so this
+ * deploy never holds the other's `SITE_NOSTR_SK` (CLAUDE.md, Names). It needs
+ * that deploy to answer this origin with CORS (`lib/cross-brand-cors.ts` on the
+ * Buddy deploy). When it cannot be reached the note fails here, like any
+ * site-sign failure — there is NO fallback to this deploy's route: that would
+ * publish Buddy's words under the other brand's key.
  */
 export async function publishBoostNoteViaSite(
   args: PublishArgs,
@@ -526,7 +643,9 @@ export async function publishBoostNoteViaSite(
   // the site's NIP-05-verified identity, so the sender's @mentions lose their
   // `p` tags here. The feed's own npubs keep theirs.
   const template = buildBoostNoteTemplate(args, false);
-  const res = await fetch('/api/nostr/site-sign', {
+  const brand = args.brand ?? BRAND;
+  const route = brand.id === BRAND.id ? '/api/nostr/site-sign' : `${brand.origin}/api/nostr/site-sign`;
+  const res = await fetch(route, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(template),

@@ -21,7 +21,7 @@
 // reactive.
 
 import { nip19, type Event } from 'nostr-tools';
-import { BRAND } from '@/lib/brand';
+import { BRAND, type Brand } from '@/lib/brand';
 import { activeNostr } from './signer';
 import { publishSignedEvent } from './publish';
 import { zapRequestTags, type Nip73Refs, type SummarySpec } from './zap-request';
@@ -40,9 +40,9 @@ export interface QuotedZapReceipt {
 }
 
 /** The site's pubkey in hex, from the per-brand pinned npub. */
-export function siteHexPubkey(): string | null {
+export function siteHexPubkey(brand: Brand = BRAND): string | null {
   try {
-    const d = nip19.decode(BRAND.siteNpub);
+    const d = nip19.decode(brand.siteNpub);
     return d.type === 'npub' ? d.data : null;
   } catch {
     return null;
@@ -58,10 +58,18 @@ export async function mintSummaryReceipt(args: {
   relays: string[];
   /** Who authors the request — the same answer as who signs the note. */
   as: 'self' | 'site';
+  /**
+   * The NOTE's brand (`PublishArgs.brand`). Its deploy mints the receipt and its
+   * site key is the one the request names, so the note and the receipt it
+   * quotes come from ONE deploy: a site-signed note may only quote a receipt
+   * its own key signed (site-sign's `q` rule). Defaults to this deploy's.
+   */
+  brand?: Brand;
 }): Promise<QuotedZapReceipt | null> {
   try {
     if (!Number.isFinite(args.paidSats) || args.paidSats <= 0) return null;
-    const site = siteHexPubkey();
+    const brand = args.brand ?? BRAND;
+    const site = siteHexPubkey(brand);
     if (!site) return null;
     const relays = [...new Set(args.relays.filter((r) => r.startsWith('wss://')))].slice(0, 8);
     if (relays.length === 0) return null;
@@ -82,7 +90,13 @@ export async function mintSummaryReceipt(args: {
       payload = { spec: { amountMsat, relays, refs: args.refs } };
     }
 
-    const res = await fetch('/api/nostr/zap-receipt-sign', {
+    // Another brand's deploy is asked across origins (it answers this one with
+    // CORS); when it cannot be reached this is `null` like any other failure,
+    // never this deploy's route — its key is not the one the request names.
+    const route = brand.id === BRAND.id
+      ? '/api/nostr/zap-receipt-sign'
+      : `${brand.origin}/api/nostr/zap-receipt-sign`;
+    const res = await fetch(route, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

@@ -231,6 +231,21 @@ export function resolveSenderName(
 }
 
 /**
+ * The brand a boost NOTE wears. A note for a song played from a playlist BMB hosts
+ * (`playlistBoostContext(...).hosted`) is Buddy's on EITHER deploy — its links, its
+ * picture, its default sender name, its `client` tag and the key that signs it when the
+ * site does. Every other note is the deploy's own.
+ *
+ * Only the NOTE. The boostagram (TLV 7629169, `app_name`, `sender_name`) keeps naming
+ * the deploy that paid, because an artist's aggregator reads it to say which site that
+ * was. `active` is a parameter so `check:brand` can pin both deploys: `hosted ? buddy :
+ * bmb` is right on one of them and prints the other brand's words on the other.
+ */
+export function noteBrandFor(hosted: boolean, active: Brand = BRAND): Brand {
+  return hosted ? BRANDS.buddy : active;
+}
+
+/**
  * The NIP-89 `client` tag, in wire form.
  *
  * ONE DEFINITION, because there are now four publishers of it and the failure

@@ -41,7 +41,7 @@ if (problems.length) {
   process.exit(1);
 }
 
-const { BRANDS, BRAND, brandIdFrom, siteTitle, DEFAULT_SENDER_NAME, resolveSenderName, clientTag } =
+const { BRANDS, BRAND, brandIdFrom, siteTitle, DEFAULT_SENDER_NAME, resolveSenderName, clientTag, noteBrandFor } =
   await import('../lib/brand.ts');
 
 let failures = 0;
@@ -422,6 +422,32 @@ eq('anonymous with no name', resolveSenderName('', true), DEFAULT_SENDER_NAME);
 eq('buddy brand: anonymous', resolveSenderName('', true, BRANDS.buddy), 'boostmebuddy.com user');
 eq('buddy brand: typed name kept', resolveSenderName('Chad', false, BRANDS.buddy), 'Chad');
 eq('no third argument = the active brand', resolveSenderName('', true), DEFAULT_SENDER_NAME);
+
+// noteBrandFor: which brand a boost NOTE wears. A note for a song from a playlist BMB
+// hosts is Buddy's on EITHER deploy; every other note is the deploy's own. Both deploys
+// are tested, because the wrong version that matters most — `hosted ? buddy : bmb` —
+// is right on the bitch deploy and prints the other brand's words in a kind:1 on the
+// family-friendly one, which no edit can take back.
+eq('hosted playlist, bitch deploy: Buddy', noteBrandFor(true, BRANDS.bmb), BRANDS.buddy);
+eq('hosted playlist, buddy deploy: Buddy', noteBrandFor(true, BRANDS.buddy), BRANDS.buddy);
+eq('any other note, bitch deploy: the deploy\'s own', noteBrandFor(false, BRANDS.bmb), BRANDS.bmb);
+eq('any other note, buddy deploy: the deploy\'s own, never the bitch words', noteBrandFor(false, BRANDS.buddy), BRANDS.buddy);
+eq('no second argument = the active brand', noteBrandFor(false), BRAND);
+
+// The two modals: the NOTE takes `noteBrandFor(ctx.hosted)` and a sender name in that
+// brand; every BOOSTAGRAM keeps the deploy's own `app_name` and sender name, because an
+// artist's aggregator reads them to say which site paid (TLV 7629169 never changes).
+for (const rel of ['components/boost-modal/index.tsx', 'components/boost-all-modal.tsx']) {
+  const src = readFileSync(join(REPO, rel), 'utf8');
+  ok(`${rel} picks the note's brand with noteBrandFor(ctx.hosted)`, /noteBrandFor\(ctx\.hosted\)/.test(src));
+  ok(`${rel} names the note's sender in the note's brand`,
+    /resolveSenderName\(name, anonymous, noteBrand\)/.test(src));
+  ok(`${rel} keeps the boostagram's sender name in the deploy's brand`,
+    /resolveSenderName\(name, anonymous\)/.test(src));
+  const appNames = [...src.matchAll(/app_name:\s*([^,\n]+)/g)].map((m) => m[1].trim());
+  ok(`${rel}: every boostagram app_name is BRAND.wireName`,
+    appNames.length > 0 && appNames.every((v) => v === 'BRAND.wireName'), `got ${JSON.stringify(appNames)}`);
+}
 
 // ---------------------------------------------------------------------------
 // TOTAL naive replay. Every ID_VECTORS entry must fail against the obvious
