@@ -17,6 +17,7 @@ import {
 } from '@/lib/community/client';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { PlaylistPublished } from './playlist-published';
+import { AddSongsSheet } from './add-songs-sheet';
 
 // The resolver's page size (`MAX_BATCH` in lib/pi-batch.ts, which is server-only and cannot be imported here).
 const RESOLVE_PAGE = 100;
@@ -84,7 +85,7 @@ export function PlaylistMaker() {
   // Set by a user change, never by a load: only then is a draft written.
   const [dirty, setDirty] = useState(false);
   const [unsaved, setUnsaved] = useState(false);
-  // The flag Task 10's <AddSongsSheet> reads. Nothing in the UI adds a song until it exists.
+  // Opens <AddSongsSheet>.
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusals, setRefusals] = useState<Refusal[]>([]);
@@ -412,6 +413,19 @@ export function PlaylistMaker() {
         <p className="mt-2 text-xs text-muted">Signed in as {name}. Only you can change this playlist.</p>
         {unsaved && <p className="mt-1 text-xs text-muted" data-testid="unsaved">This draft is not being saved on this device.</p>}
       </div>
+
+      {addOpen && (
+        <AddSongsSheet
+          songs={songs}
+          playlistTitle={title}
+          onClose={() => setAddOpen(false)}
+          onAdd={(song, label) => {
+            setDirty(true);
+            setSongs((s) => (s.some((x) => x.feedGuid === song.feedGuid && x.itemGuid === song.itemGuid) ? s : [...s, song]));
+            setLabels((l) => ({ ...l, [song.itemGuid]: label }));
+          }}
+        />
+      )}
 
       {confirmDelete && (
         <ModalShell onClose={() => setConfirmDelete(false)} label="Delete this playlist" className="w-full max-w-sm" closeButton>

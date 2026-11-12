@@ -230,6 +230,73 @@ const openEdit = async () => {
   return waitFor(`document.querySelector('#pl-title') && !!${byText('SAVE')}`, 20000);
 };
 
+
+console.log('--- 7b. add songs: SEARCH and FAVORITES (390 x 844) ---');
+// A fresh, empty draft, a title, and favorites seeded the way the signed-in cache is stored.
+const favKey = `bmb:favepisodes:${npub}`;
+const favs = Object.fromEntries(real.slice(6, 12).map((e, i) => [e.guid, {
+  itemGuid: e.guid, feedGuid: e.podcastGuid, title: e.title, podcastTitle: e.feedTitle ?? 'Artist', medium: 'music', addedAt: 1000 + i }]));
+favs['ep-podcast-guid'] = { itemGuid: 'ep-podcast-guid', feedGuid: 'feed-podcast-guid', title: 'A Podcast Episode', medium: 'podcast', addedAt: 5000 };
+favs['no-feed-guid'] = { itemGuid: 'no-feed-guid', title: 'Orphan Track', medium: 'music', addedAt: 5001 };
+await go('/');
+await js(`localStorage.setItem(${JSON.stringify(favKey)}, ${JSON.stringify(JSON.stringify(favs))}); 1`);
+await js(`localStorage.removeItem(${JSON.stringify(KEY)}); 1`);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await setValue('#pl-title', 'sheet playlist');
+const dlg = (sel) => `document.querySelector('[role=dialog]')${sel ? '.querySelector(' + JSON.stringify(sel) + ')' : ''}`;
+const dlgBtn = (label) => `[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})`;
+t.ok('+ ADD SONGS opens the sheet', await click(byText('+ ADD SONGS')) && await waitFor(dlg()));
+t.ok('the header reads 0 in sheet playlist', await waitFor(`document.querySelector('[data-testid=add-count]')?.innerText === '0 in sheet playlist'`));
+t.ok('the one-at-a-time line is shown', (await js(`document.querySelector('[role=dialog]').innerText`)).includes('Pick songs one at a time. A whole album cannot go in.'));
+// a pasted secret key is refused and never fetched
+await js(`window.__searchCalls = 0; const f = window.fetch; window.fetch = (...a) => { if (String(a[0]).includes('/api/search')) window.__searchCalls++; return f(...a); }; 1`);
+await setValue('[role=dialog] input[type=search]', 'nsec1' + 'q'.repeat(58));
+await wait(700);
+t.ok('an nsec is refused in words', await js(`!!document.querySelector('[data-testid=search-secret]')`));
+t.equal('and no search request left', await js(`window.__searchCalls`), 0);
+await setValue('[role=dialog] input[type=search]', 'bitcoin');
+t.ok('SEARCH lists albums', await waitFor(`document.querySelectorAll('[data-album-row]').length > 0`, 30000));
+t.equal('the secret message is gone', await js(`!!document.querySelector('[data-testid=search-secret]')`), false);
+t.ok('the sheet: no horizontal overflow', await overflowFree() && await js(`(() => { const c = document.querySelector('[role=dialog]'); return c.scrollWidth <= c.clientWidth; })()`));
+t.equal('the sheet: every control at least 24 x 24', await tooSmall('[role=dialog] button, [role=dialog] input', 24, 24), []);
+// open an album that has songs
+let opened = false;
+const nAlbums = await js(`document.querySelectorAll('[data-album-row]').length`);
+for (let i = 0; i < Math.min(nAlbums, 12) && !opened; i++) {
+  await js(`document.querySelectorAll('[data-album-row]')[${i}].click(); 1`);
+  opened = await waitFor(`document.querySelectorAll('[data-add-row] button[aria-label^="Add "]').length >= 6 || ${dlgBtn('← RESULTS')}`, 20000)
+    && await js(`document.querySelectorAll('[data-add-row] button[aria-label^="Add "]').length >= 6`);
+  if (!opened) { await click(dlgBtn('← RESULTS')); await wait(300); }
+}
+t.ok('an album opens with at least 6 addable songs', opened);
+for (let i = 0; i < 6; i++) { await js(`document.querySelector('[data-add-row] button[aria-label^="Add "]').click(); 1`); await wait(150); }
+t.equal('6 rows flipped to ADDED', await js(`document.querySelectorAll('[data-added]').length`), 6);
+t.equal('the header reads 6 in sheet playlist', await js(`document.querySelector('[data-testid=add-count]').innerText`), '6 in sheet playlist');
+t.ok('a row has an ADDED label', (await js(`document.querySelector('[data-added]').innerText`)).includes('✓ ADDED'));
+await click(dlgBtn('FAVORITES'));
+t.ok('FAVORITES lists the six saved songs, no podcast, no orphan', await waitFor(`document.querySelectorAll('[data-add-row]').length === 6`, 10000), await body());
+const favText = await js(`document.querySelector('[role=dialog]').innerText`);
+t.ok('no podcast episode and no orphan listed', !favText.includes('A Podcast Episode') && !favText.includes('Orphan Track'));
+t.equal('each favorite has + ADD', await js(`document.querySelectorAll('[data-add-row] button[aria-label^="Add "]').length`), 6);
+t.equal('favorites: every control at least 24 x 24', await tooSmall('[role=dialog] button', 24, 24), []);
+for (let i = 0; i < 6; i++) { await js(`document.querySelector('[data-add-row] button[aria-label^="Add "]').click(); 1`); await wait(150); }
+t.equal('the header reads 12 in sheet playlist', await js(`document.querySelector('[data-testid=add-count]').innerText`), '12 in sheet playlist');
+t.equal('twelve ADDED in favorites', await js(`document.querySelectorAll('[data-added]').length`), 6);
+await click(dlgBtn('DONE'));
+await wait(400);
+t.ok('DONE closes the sheet', await js(`!document.querySelector('[role=dialog]')`));
+t.equal('the maker shows twelve rows', await rows(), 12);
+await click(byText('PUBLISH'));
+t.ok('PUBLISH succeeds with those 12', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('♫ PLAYLIST · 12 TRACKS')`, 30000), await body());
+// empty favorites copy
+await js(`localStorage.removeItem(${JSON.stringify(favKey)}); localStorage.removeItem(${JSON.stringify(KEY)}); 1`);
+await go('/playlists/make');
+await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+await click(byText('+ ADD SONGS')); await waitFor(dlg());
+await click(dlgBtn('FAVORITES')); await wait(300);
+t.ok('empty favorites say so', (await js(`document.querySelector('[role=dialog]').innerText`)).includes('No saved songs yet. Tap ♡ on a song to save it.'));
+
 console.log('--- 8. edit from the server, two slots, a stale version ---');
 await js(`localStorage.removeItem(${JSON.stringify(KEY)}); 1`);
 await seed(draft({ title: 'other draft' }), labels);
