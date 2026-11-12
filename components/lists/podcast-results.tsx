@@ -18,6 +18,7 @@ export function PodcastRow({
   showV4VStamp,
   meta,
   piUnasked,
+  action,
 }: {
   podcast: Podcast;
   selected: boolean;
@@ -49,6 +50,12 @@ export function PodcastRow({
    * and the honest claim is simply that we do not know.
    */
   piUnasked?: boolean;
+  /**
+   * An extra control for this row (`/playlists`' EDIT link). Rendered as a
+   * SIBLING of the opening button, beside the heart, never inside it: a button
+   * may not contain another interactive element.
+   */
+  action?: React.ReactNode;
 }) {
   return (
     // The row's opening control is a real <button>, with <FavHeart> as its
@@ -118,7 +125,8 @@ export function PodcastRow({
           this heart wraps it exactly like this (see <FavoriteItemRows> and
           <Podroll>); this one did not, and it is the row the favorites page is
           almost entirely made of. */}
-      <div className="flex-shrink-0 self-center">
+      <div className="flex-shrink-0 self-center flex items-center gap-2">
+        {action}
         <FavHeart podcast={podcast} />
       </div>
     </li>
@@ -132,6 +140,7 @@ export function PodcastResults({
   empty,
   meta,
   piUnasked,
+  action,
 }: {
   feeds: Podcast[];
   selected: number | null;
@@ -139,7 +148,9 @@ export function PodcastResults({
   /** Per-row extra text for the secondary line — see `<PodcastRow>`'s `meta`. */
   meta?: (p: Podcast) => React.ReactNode;
   /** Podcast Index was never asked — see `<PodcastRow>`'s `piUnasked`. */
-  piUnasked?: boolean;
+  piUnasked?: boolean | ((p: Podcast) => boolean);
+  /** Per-row extra control — see `<PodcastRow>`'s `action`. */
+  action?: (p: Podcast) => React.ReactNode;
   /**
    * What to say when there are no rows.
    *
@@ -180,7 +191,8 @@ export function PodcastResults({
           onSelect={onSelect}
           showV4VStamp
           meta={meta?.(p)}
-          piUnasked={piUnasked}
+          piUnasked={typeof piUnasked === 'function' ? piUnasked(p) : piUnasked}
+          action={action?.(p)}
         />
       ))}
     </ul>

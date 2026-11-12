@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { PodcastResults } from '@/components/lists';
 import { useApp } from '@/lib/store';
@@ -10,6 +11,7 @@ import {
   loadCollection,
   playlistTrackCount,
 } from '@/lib/playlist-collection';
+import { communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { isPlaylistMedium } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -36,6 +38,13 @@ const PLAYLISTS_ORIGIN = { path: '/playlists', label: 'playlists' };
  */
 const MAX_COUNTED_ROWS = 12;
 const COUNT_CONCURRENCY = 3;
+/**
+ * Of those 12, how many are held back for playlists made on BMB. The cap is
+ * claimed eagerly by whichever section answers first, and ChadF's section can
+ * fill all 12 before the store answers — which left the newest listener-made
+ * playlist with no count. Reserved, so arrival order cannot decide it.
+ */
+const COUNT_RESERVED_OWN = 4;
 
 const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
   {
@@ -51,7 +60,7 @@ const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
     // feed. Every visitor read a false attribution about that row — the same
     // class of wrong claim splitting the collections was meant to prevent, just
     // pointing the other way. What is true of ALL of them is the host.
-    blurb: 'Built on other hosts, and mostly by other people in the V4V community.',
+    blurb: 'Made by listeners on BMB, and by other people in the V4V community.',
   },
 ];
 
@@ -113,6 +122,7 @@ export function PlaylistsPage() {
   const [counts, setCounts] = useState<Record<string, number>>({});
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
+  const identity = useApp((s) => s.identity);
   const router = useRouter();
 
   const patch = useCallback((i: number, next: Partial<SectionState>) => {
@@ -192,11 +202,15 @@ export function PlaylistsPage() {
     // URL only as a worker reached it left the rest unclaimed, so the next run
     // re-asked about requests still in flight — measured at 30 requests for 17
     // rows, worse than the uncapped version it replaced.
-    const budget = MAX_COUNTED_ROWS - askedRef.current.size;
-    if (budget <= 0) return;
-    const urls = urlKey.split('\n')
-      .filter((u) => !askedRef.current.has(u))
-      .slice(0, budget);
+    const isOwn = (u: string) => !!communityIdFromFeedUrl(u);
+    const asked = [...askedRef.current];
+    const ownLeft = COUNT_RESERVED_OWN - asked.filter(isOwn).length;
+    const restLeft = MAX_COUNTED_ROWS - COUNT_RESERVED_OWN - asked.filter((u) => !isOwn(u)).length;
+    const fresh = urlKey.split('\n').filter((u) => !askedRef.current.has(u));
+    const urls = [
+      ...fresh.filter(isOwn).slice(0, Math.max(0, ownLeft)),
+      ...fresh.filter((u) => !isOwn(u)).slice(0, Math.max(0, restLeft)),
+    ];
     if (!urls.length) return;
     for (const u of urls) askedRef.current.add(u);
 
@@ -311,7 +325,18 @@ export function PlaylistsPage() {
                 feeds={rows}
                 selected={null}
                 onSelect={openPlaylist}
-                piUnasked={state.noPi}
+                // A playlist read from our own store was never asked about Podcast
+                // Index either, so `isPreview` says nothing about PI for it.
+                piUnasked={(p) => state.noPi || !!communityIdFromFeedUrl(p.url)}
+                action={(p) => {
+                  const id = communityIdFromFeedUrl(p.url);
+                  if (!id || !identity || p.nostrNpubs?.[0]?.pubkey !== identity.pubkey) return null;
+                  return (
+                    <Link href={`/playlists/make?id=${id}`} className="btn-mini" data-edit-playlist>
+                      EDIT
+                    </Link>
+                  );
+                }}
                 meta={(p) => {
                   const n = p.url ? counts[p.url] : undefined;
                   return n === undefined ? null : `${n.toLocaleString()} tracks`;

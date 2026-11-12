@@ -147,7 +147,11 @@ function HeartButton({
  * rather than a rule. `id <= 0` means nothing ever resolved this feed.
  */
 function declaredMedium(podcast?: Podcast | null): string | undefined {
-  if (!podcast || podcast.id <= 0) return undefined;
+  if (!podcast) return undefined;
+  // `id <= 0` is the publisher STUB, and only the stub — a community playlist
+  // is also negative-id (never a Podcast Index record) but its `musicL` is a
+  // real declaration, and dropping it filed the favorite as a plain podcast.
+  if (podcast.id <= 0 && podcast.medium === 'publisher') return undefined;
   return podcast.medium;
 }
 

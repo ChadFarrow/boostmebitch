@@ -24,8 +24,9 @@ const pk2 = getPublicKey(sk2);
 const npub2 = nip19.npubEncode(pk2);
 let cur = { sk, pk };
 // A fresh fake client address per run, so the 6-writes-a-minute limit never makes a run wait.
-const IP = `10.77.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
-const relay = createRelay({ port: 0, log: null });
+let IP = `10.77.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+const published = []; // every event that reached the LOCAL relay
+const relay = createRelay({ port: 0, log: null, onEvent: (e) => published.push(e) });
 const PORT = await relay.ready;
 
 const { page } = await launchChrome({
@@ -217,6 +218,97 @@ t.ok('published: no horizontal overflow', await overflowFree());
 t.equal('published: controls at least 24 x 24', await tooSmall('main button, main a, main input', 24, 24), []);
 
 
+console.log('--- 7a. /playlists: listed first, EDIT on your own, hearts (390 x 844) ---');
+// Recorders, installed for every later document: each EVENT frame the page sends, with the
+// socket it went to; and a switch (localStorage) that fakes the store's answer.
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+  (() => {
+    window.__ws = [];
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (d) { try { if (String(d).startsWith('["EVENT"')) window.__ws.push({ url: this.url, kind: JSON.parse(d)[1].kind }); } catch {} return send.call(this, d); };
+    const f = window.fetch;
+    window.fetch = (...a) => {
+      let mode = null; try { mode = localStorage.getItem('__e2eStore'); } catch {}
+      if (mode && String(a[0]) === '/api/community-playlists') {
+        if (mode === 'down') return Promise.resolve(new Response('{}', { status: 503 }));
+        if (mode === 'dupe') return Promise.resolve(new Response(JSON.stringify({ playlists: [{ id: '11111111-1111-4111-8111-111111111111', title: 'DUPE STORED', description: '', feedUrl: 'https://v4vmusic.com/playlist/508a029b-020f-4334-9704-e0a9a5f800fb.xml', podcastGuid: 'dupe-guid', ownerPubkey: 'a'.repeat(64), ownerNpub: 'npub1dupe', coverUrl: '', songCount: 1, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }] }), { status: 200 }));
+      }
+      return f(...a);
+    };
+  })();
+` });
+const community = `[...document.querySelectorAll('section')].find((s) => s.querySelector('h2')?.textContent === 'Community playlists')`;
+const comRows = `[...${community}.querySelectorAll('li')]`;
+const plGuid = (await (await fetch(`${APP}/api/community-playlists`)).json()).playlists.find((p) => p.id === id)?.podcastGuid;
+t.ok('the stored playlist has a podcastGuid', !!plGuid, String(plGuid));
+await js(`localStorage.setItem('bmb:fav_privacy:${npub}', 'public'); 1`);
+await go('/playlists');
+t.ok('Community lists the new playlist', await waitFor(`${community} && ${comRows}.some((l) => l.innerText.includes('e2e community playlist'))`, 30000));
+t.ok('...first', await js(`${comRows}[0].innerText.includes('e2e community playlist')`));
+t.ok('the blurb is the new one', await js(`${community}.innerText.includes('Made by listeners on BMB, and by other people in the V4V community.')`));
+t.equal('exactly one EDIT in the section, on that row', await js(`[${comRows}.filter((l) => l.querySelector('a[data-edit-playlist]')).length, ${comRows}[0].querySelector('a[data-edit-playlist]')?.getAttribute('href')]`), [1, `/playlists/make?id=${id}`]);
+t.ok('EDIT is a sibling of the row button, never inside it', await js(`!document.querySelector('li button a[data-edit-playlist], li button [data-edit-playlist]')`));
+t.ok('the stored row prints no NOT IN PI', await js(`!${comRows}[0].innerText.includes('NOT IN PI')`));
+t.ok('the stored row shows its track count', await waitFor(`${comRows}[0].innerText.includes('12 tracks')`, 30000));
+t.ok('/playlists: no horizontal overflow', await overflowFree());
+t.equal('EDIT is at least 24 x 24', await tooSmall('a[data-edit-playlist]', 24, 24), []);
+t.equal('the row heart is at least 24 x 24', await tooSmall('li button[aria-label$="podcast"]', 24, 24), []);
+t.ok("ChadF's playlists still lists its own", await js(`!!document.querySelector('section h2') && [...document.querySelectorAll('section')].some((s) => s.querySelector('h2')?.textContent === "ChadF's playlists")`));
+// someone else sees the row and no EDIT
+cur = { sk: sk2, pk: pk2 };
+await js(`localStorage.setItem('bmb:npub', ${JSON.stringify(npub2)}); 1`);
+await go('/playlists');
+t.ok('another key still sees the row', await waitFor(`${community} && ${comRows}.some((l) => l.innerText.includes('e2e community playlist'))`, 30000));
+t.equal('...with no EDIT anywhere', await js(`document.querySelectorAll('a[data-edit-playlist]').length`), 0);
+cur = { sk, pk };
+await js(`localStorage.setItem('bmb:npub', ${JSON.stringify(npub)}); 1`);
+
+// the store cannot be reached: the curated rows stay, and the page says something is missing
+await js(`localStorage.setItem('__e2eStore', 'down'); 1`);
+await go('/playlists');
+t.ok('store down: the curated rows are still listed', await waitFor(`${community} && ${comRows}.length >= 1 && !${community}.innerText.includes('loading playlists')`, 40000));
+t.ok('store down: the partial line and a RETRY', await js(`${community}.innerText.includes("1 more couldn't be loaded just now") && !![...${community}.querySelectorAll('button')].find((b) => b.textContent.includes('RETRY'))`));
+t.ok('store down: no stored row, no EDIT', await js(`!${community}.innerText.includes('e2e community playlist') && !document.querySelector('a[data-edit-playlist]')`));
+// a stored playlist and a curated one with the same feed URL: one row
+await js(`localStorage.setItem('__e2eStore', 'dupe'); 1`);
+await go('/playlists');
+t.ok('same feed URL: the stored row shows', await waitFor(`${community} && ${comRows}.some((l) => l.innerText.includes('DUPE STORED'))`, 40000));
+await waitFor(`!${community}.innerText.includes('loading playlists')`, 40000);
+t.equal('same feed URL: it appears once, and the count line equals the rows', await js(`(() => { const n = ${comRows}.length; const m = /^(\\d+)(?: of \\d+)? playlists$/mi.exec(${community}.innerText); return [${comRows}.filter((l) => l.innerText.includes('DUPE STORED')).length, m && Number(m[1]) === n && n <= 7]; })()`), [1, true]);
+t.ok('same feed URL: that row has no EDIT', await js(`!${comRows}[0].querySelector('a[data-edit-playlist]')`));
+await js(`localStorage.removeItem('__e2eStore'); 1`);
+
+// favorites, local relay only
+await go('/playlists');
+await waitFor(`${community} && ${comRows}.some((l) => l.innerText.includes('e2e community playlist'))`, 30000);
+const favGuids = (k) => js(`Object.keys(JSON.parse(localStorage.getItem(${JSON.stringify(k + ':' + npub)}) || '{}'))`);
+const favEntry = (k, key) => js(`JSON.parse(localStorage.getItem(${JSON.stringify(k + ':' + npub)}) || '{}')[${JSON.stringify(key)}] ?? null`);
+t.ok('the row heart (podcast) renders for a stored playlist', await js(`!!${comRows}[0].querySelector('button[aria-label="Favorite podcast"]')`));
+await click(`${comRows}[0].querySelector('button[aria-label="Favorite podcast"]')`);
+t.ok('row heart: favorites[<playlist podcastGuid>] is set', await waitFor(`JSON.parse(localStorage.getItem('bmb:favorites:${npub}') || '{}')[${JSON.stringify(plGuid)}]`, 15000), JSON.stringify(await favGuids('bmb:favorites')));
+t.ok('the favorite is the playlist: its url and the musicL medium', await js(`(() => { const f = JSON.parse(localStorage.getItem('bmb:favorites:${npub}'))[${JSON.stringify(plGuid)}]; return f.url === ${JSON.stringify(feedUrl)} && /^musicl$/i.test(f.medium ?? ''); })()`), JSON.stringify(await favEntry('bmb:favorites', plGuid)));
+t.ok('a kind:10333 reached the LOCAL relay naming the playlist', await waitFor(`1`) && (await (async () => { for (let i = 0; i < 40; i++) { if (published.some((e) => e.kind === 10333 && JSON.stringify(e.tags).includes(plGuid))) return true; await wait(250); } return false; })()));
+// open the row: the track list plays, 12 rows, header heart is pressed
+await click(`${comRows}[0].querySelector(':scope > button')`);
+t.ok('opening the row shows its 12 tracks', await waitFor(`document.querySelectorAll('button[aria-label^="More actions for"]').length === 12`, 40000), String(await js(`document.querySelectorAll('button[aria-label^="More actions for"]').length`)));
+t.ok('the header heart is on the open playlist and is pressed', await js(`document.querySelectorAll('button[aria-label="Unfavorite podcast"]').length === 1`));
+await click(`document.querySelector('button[aria-label="Unfavorite podcast"]')`);
+t.ok('header heart off: the playlist favorite is gone', await waitFor(`!JSON.parse(localStorage.getItem('bmb:favorites:${npub}') || '{}')[${JSON.stringify(plGuid)}]`, 15000));
+await click(`document.querySelector('button[aria-label="Favorite podcast"]')`);
+t.ok('header heart on: favorites[<playlist podcastGuid>] is set again', await waitFor(`JSON.parse(localStorage.getItem('bmb:favorites:${npub}') || '{}')[${JSON.stringify(plGuid)}]`, 15000));
+// a song's own heart, in its row menu
+t.ok('the row menu opens', await click(`document.querySelectorAll('button[aria-label^="More actions for"]')[0]`) && await waitFor(`document.querySelector('[role=menu] button[aria-label="Favorite episode"]')`, 10000));
+await click(`document.querySelector('[role=menu] button[aria-label="Favorite episode"]')`);
+t.ok('a song heart: favoriteEpisodes[<itemGuid>] is set', await waitFor(`JSON.parse(localStorage.getItem('bmb:favepisodes:${npub}') || '{}')[${JSON.stringify(real[0].guid)}]`, 15000));
+const songFav = await favEntry('bmb:favepisodes', real[0].guid);
+t.equal("the song's feedGuid is its OWN feed, never the playlist's", [songFav?.feedGuid === real[0].podcastGuid, songFav?.feedGuid !== plGuid], [true, true]);
+t.ok('the playlist favorite is still there beside it', !!(await favEntry('bmb:favorites', plGuid)));
+t.ok('the song favorite reached the LOCAL relay', await (async () => { for (let i = 0; i < 40; i++) { if (published.some((e) => e.kind === 10333 && JSON.stringify(e.tags).includes(real[0].guid))) return true; await wait(250); } return false; })());
+const outside = await js(`window.__ws.filter((w) => !/^ws:\\/\\/127\\.0\\.0\\.1:/.test(w.url))`);
+t.equal('no event of any kind went to a public relay', outside, []);
+t.ok('the local relay is the only one that took EVENTs', await js(`window.__ws.length > 0 && window.__ws.every((w) => w.url.startsWith('ws://127.0.0.1:${PORT}'))`));
+
+
 // Node-side PUT as the owner: makes the page's version number stale.
 const putAsOwner = async (draftBody, expected) => {
   const url = `${APP}/api/community-playlists/${id}`;
@@ -329,6 +421,10 @@ const unanswered = await js(`document.querySelector('[role=dialog]').innerText`)
 t.ok('an unanswered read says loading or could-not-read, never "No saved songs yet"', sawLoading && !unanswered.includes('No saved songs yet'), unanswered);
 await signedIn();
 
+// A second fake client address for the edit half: the 6-writes-a-minute limit is a window, so a
+// run that takes its time before the edits can still land its seventh write inside one.
+IP = `10.78.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+await send('Network.setExtraHTTPHeaders', { headers: { 'x-real-ip': IP } });
 console.log('--- 8. edit from the server, two slots, a stale version ---');
 await js(`localStorage.removeItem(${JSON.stringify(KEY)}); 1`);
 await seed(draft({ title: 'other draft' }), labels);

@@ -1,7 +1,8 @@
 import { loadPlaylistPage, tripPiBreaker } from '@/lib/podcast-meta';
 import type { Podcast } from '@/lib/types';
-import { mapLimit, PI_FANOUT } from '@/lib/util';
-import { COMMUNITY_COLLECTION_URL, COMMUNITY_PLAYLIST_URLS } from '@/lib/curated-playlists';
+import { communityPlaylistToPodcast, mapLimit, PI_FANOUT } from '@/lib/util';
+import { COMMUNITY_COLLECTION_URL, COMMUNITY_PLAYLIST_URLS, COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
+import { fetchCommunityPlaylists } from '@/lib/community/client';
 
 /**
  * The curated playlist collection: which feed it comes from, and how to read it.
@@ -94,7 +95,7 @@ export interface Collection {
 
 export async function loadCollection(feedUrl: string): Promise<Collection | null> {
   try {
-    if (feedUrl === COMMUNITY_COLLECTION_URL) return await loadUrlList(COMMUNITY_PLAYLIST_URLS);
+    if (feedUrl === COMMUNITY_COLLECTION_URL) return await loadCommunity();
     // A non-http(s) value is not a publisher feed, and refusing it HERE is what
     // keeps a missed sentinel branch honest. Sent to `/api/publisher` instead,
     // `safeFetch` rejects the scheme, `fetchFeedXml` SWALLOWS the throw,
@@ -128,6 +129,49 @@ export async function loadCollection(feedUrl: string): Promise<Collection | null
   } catch {
     return null;
   }
+}
+
+/**
+ * The Community collection: playlists made on BMB first (newest first), then the
+ * curated URL list.
+ *
+ * **A store that cannot be reached is a SHORTFALL, not an empty store.**
+ * `fetchCommunityPlaylists` answers `null` for a failure and `[]` for "nobody has
+ * made one", and only the second is a fact. On `null` this adds one to `listed`
+ * for the playlists we could not count, so the page's own "N of M" line and
+ * RETRY say so, while the curated rows stay readable.
+ *
+ * **One feed URL, one row.** A stored playlist whose feed address is also in the
+ * curated list keeps the stored row and the curated entry is not resolved. Rows
+ * are keyed by `p.id`, so two rows for one feed would make the second
+ * unreachable, and the count would claim two playlists.
+ *
+ * The stored rows are built from our own database, so they need no Podcast Index
+ * call and are never counted against `couldNotAskPi`.
+ */
+async function loadCommunity(): Promise<Collection | null> {
+  let stored: Podcast[] = [];
+  let storeUnreachable = false;
+  if (COMMUNITY_PLAYLISTS_ON) {
+    const list = await fetchCommunityPlaylists();
+    if (list) stored = list.map(communityPlaylistToPodcast);
+    else storeUnreachable = true;
+  }
+  const have = new Set(stored.map((p) => p.url));
+  const curated = [...new Set(COMMUNITY_PLAYLIST_URLS)].filter((u) => !have.has(u));
+  const rest = await loadUrlList(curated);
+  const extra = storeUnreachable ? 1 : 0;
+  if (!rest) {
+    // The curated half failed outright. With stored rows in hand the page can
+    // still show them, with the curated ones counted as missing.
+    if (!stored.length) return null;
+    return { feeds: stored, listed: stored.length + curated.length + extra, couldNotAskPi: false };
+  }
+  return {
+    feeds: [...stored, ...rest.feeds],
+    listed: stored.length + rest.listed + extra,
+    couldNotAskPi: rest.couldNotAskPi,
+  };
 }
 
 /**
