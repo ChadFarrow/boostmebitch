@@ -20,7 +20,8 @@
 - Ownership: a Nostr key. Every write carries a NIP-98 event; only the owner edits; owner or admin deletes; a banned key cannot publish or edit.
 - Admins: server-only env `ADMIN_NPUBS` (comma-separated npubs).
 - Store: server-only env `COMMUNITY_DB_URL` (optional `COMMUNITY_DB_CA`). Unset ⇒ every write route answers 503 `playlists are not configured` and the listing answers an empty list.
-- Beta and previews: test DB, no Podcast Index calls, feed origin `https://beta.boostmebitch.com`. Podcast Index is told only when `VERCEL_ENV === 'production'` and the feed origin is `BRANDS.buddy.origin`.
+- Beta and previews: test DB, feed origin `https://beta.boostmebitch.com`.
+- **Launch switches (spec decision 19), both off unless set:** `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on` shows the feature (MAKE PLAYLIST, `/playlists/make`, `/admin`, stored rows in Community playlists and the search lane; the API and `/feeds/playlists/*` routes answer 404 when off) — set only on boostmebitch Preview (beta) for now. `COMMUNITY_PI_NOTIFY=on` allows Podcast Index calls — set nowhere for now; even when set, PI is told only when `VERCEL_ENV === 'production'` and the feed origin is `BRANDS.buddy.origin`.
 - Boost notes: the boostagram (TLV `7629169`, `app_name`) never changes. Notes from a song in a **BMB-hosted** playlist use `BRANDS.buddy` for links, picture origin, sender name, `client` tag and site signer.
 - Repo rules that bite here: `rateLimit` first, `requireJsonBody`, `readCappedRequestJson`, `withErrorHandling` fallback strings, `Cache-Control` on 200s only; `safeFetch` + `readCappedBytes` for any remote image; `httpUrl` at parse boundaries; `lib/util.ts` keeps type-only imports; all `bmb:*` access through `lib/storage.ts`; controls ≥ 24 × 24; overlays through `<ModalShell>`.
 - Each PR in this plan is added to beta (`npm run beta -- add <PR>`) and tested there by Chad before it merges. Every push asks Chad (the push hook). Leave the checkout on a clean branch, never commit to `main`.
@@ -52,6 +53,7 @@
   - `communityFeedUrl(id: string): string` → `${COMMUNITY_FEED_ORIGIN}/feeds/playlists/${id}.xml`
   - `communityCoverUrl(id: string, version: number): string` → `${COMMUNITY_FEED_ORIGIN}/feeds/playlists/${id}.jpg?v=${version}`
   - `communityIdFromFeedUrl(url: string | undefined): string | null` → the id when `url` is exactly `<COMMUNITY_FEED_ORIGIN>/feeds/playlists/<uuid>.xml`, else null
+  - `COMMUNITY_PLAYLISTS_ON: boolean` = `process.env.NEXT_PUBLIC_COMMUNITY_PLAYLISTS === 'on'` (the one feature switch every surface and route reads)
 - Produces (`lib/community/rules.ts`):
   - `MIN_SONGS = 10`, `MAX_SONGS = 500`, `MAX_TITLE_LEN = 120`, `MAX_DESCRIPTION_LEN = 1000` (characters, counted with `[...s].length`), `ART_MIN_PX = 1400`, `ART_MAX_PX = 3000`
   - `interface PlaylistSong { feedGuid: string; itemGuid: string; feedUrl?: string }`
@@ -72,6 +74,7 @@
   - a 121-char title → `title-too-long`; a 120-emoji title → ok (characters, not UTF-16 units)
   - `artVerdict({ format: 'png', width: 1400, height: 1400, hasAlpha: false })` ok; 3000×3000 jpeg ok; 1399 → `too-small`; 3001 → `too-large`; 1400×1500 → `not-square`; `webp` → `format`; png with `hasAlpha: true` → `alpha`; `{}` → `not-image`
   - `cleanText('fuck this')` → `'**** this'`; `cleanText('Scunthorpe classics')`, `cleanText('assassin')`, `cleanText('Cocktail hour')` unchanged
+  - with the env unset, `COMMUNITY_PLAYLISTS_ON === false`;
   - `communityFeedUrl('0b5e…')` and `communityIdFromFeedUrl` round-trip; `communityIdFromFeedUrl('https://www.boostmebuddy.com/feeds/playlists/x.xml')` (not a uuid) → null; another origin → null
 - [ ] **Step 2: Run** `npm run check:community` — Expected: FAIL (modules missing)
 - [ ] **Step 3: Implement** the three modules with the signatures above; `npm i obscenity` (exact version saved in `package.json`).
@@ -161,6 +164,7 @@
 **Interfaces:**
 - Consumes: Tasks 1–4; `rateLimit`, `requireJsonBody`, `readCappedRequestJson(req, 64 * 1024)`, `withErrorHandling`, `NO_STORE` (`lib/api-handler.ts`); `safeFetch`; `readCappedBytes(res, 12 * 1024 * 1024)`; `sharp(...).metadata()`; `batchEpisodes`, `batchPodcasts` (`lib/pi-batch.ts`); `nip19.npubEncode`
 - Produces (all `export const runtime = 'nodejs'`):
+  - Every route here answers 404 `{ error: 'not found' }` first thing when `!COMMUNITY_PLAYLISTS_ON` (after `rateLimit`)
   - `GET /api/community-playlists[?owner=<hex>]` → 200 `{ playlists: CommunityPlaylistSummary[] }` (max 200; `Cache-Control: public, s-maxage=30, stale-while-revalidate=300` without `owner`, `NO_STORE` with it); store unset → `{ playlists: [] }`
   - `POST /api/community-playlists` body `{ draft: PlaylistDraft }` → 201 `{ id, feedUrl }`; 400 `{ error: 'not publishable', problems: (DraftProblem | { kind: 'art'; reason: ArtRefusal } | { kind: 'song-not-found'; itemGuid } | { kind: 'not-music'; itemGuid })[] }`; 401 `{ error: authMessage(reason) }`; 403 `{ error: 'This account cannot publish playlists.' }` when banned; 503 when the store is unset. The stored title/description are `cleanText(...)` of the validated ones.
   - `GET /api/community-playlists/[id]` → 200 `{ playlist: StoredPlaylist }` | 404 | 410
@@ -199,12 +203,13 @@
   - `GET /feeds/playlists/<uuid>.xml` → 200 `application/rss+xml; charset=utf-8`, `Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=600`; 410 for deleted; 404 otherwise (any other `file` shape → 404)
   - `GET /feeds/playlists/<uuid>.jpg` → 200 `image/jpeg` 1400 × 1400, `Cache-Control: public, max-age=3600, s-maxage=86400`; it serves the stored art link (fetched with `checkArt`'s path, re-encoded to JPEG) and, when there is none or it fails, `buildGridCover(songs.slice(0, 4))`
   - `buildGridCover(songs: PlaylistSong[]): Promise<Buffer>` — `batchEpisodes` → `episode.image ?? episode.feedImage`, each fetched with `safeFetch` + `readCappedBytes`, `sharp` cover-resized to 700 × 700, composited 2 × 2 on a 1400 × 1400 `#0A0A08` canvas; a missing tile repeats the previous one; no art at all → the plain canvas with a centred ♫ drawn in `#FAE500` (SVG composite)
-  - `notifyPodcastIndex(feedUrl: string, kind: 'new' | 'update'): Promise<void>` — no-op unless `process.env.VERCEL_ENV === 'production' && COMMUNITY_FEED_ORIGIN === 'https://www.boostmebuddy.com'`; `new` → PI `add/byfeedurl` with the existing PI auth helper in `lib/pi.ts` (confirm the key may add feeds; log and continue if refused), both → `GET https://api.podcastindex.org/api/1.0/hub/pubnotify?url=<enc>`; never throws, never awaited by the response (use `after()` from `next/server` if available in this Next version, else fire-and-forget with a `.catch`)
+  - `/feeds/playlists/*` answers 404 when `!COMMUNITY_PLAYLISTS_ON`
+  - `notifyPodcastIndex(feedUrl: string, kind: 'new' | 'update'): Promise<void>` — no-op unless `process.env.COMMUNITY_PI_NOTIFY === 'on' && process.env.VERCEL_ENV === 'production' && COMMUNITY_FEED_ORIGIN === 'https://www.boostmebuddy.com'` (off everywhere for now — spec decision 19); `new` → PI `add/byfeedurl` with the existing PI auth helper in `lib/pi.ts` (confirm the key may add feeds; log and continue if refused), both → `GET https://api.podcastindex.org/api/1.0/hub/pubnotify?url=<enc>`; never throws, never awaited by the response (use `after()` from `next/server` if available in this Next version, else fire-and-forget with a `.catch`)
   - `cover version` in `communityCoverUrl` = `Date.parse(updatedAt) / 1000 | 0`
   - `communityPlaylistToPodcast(s: CommunityPlaylistSummary): Podcast` in `lib/util.ts` → `{ id: -fnvHash(s.feedUrl), podcastGuid: s.podcastGuid, title: s.title, description: s.description, image: s.coverUrl, artwork: s.coverUrl, url: s.feedUrl, medium: 'musicL', isPreview: true, nostrNpubs: [{ npub: s.ownerNpub, pubkey: s.ownerPubkey }] }` — the one shape both the server (search lane) and the browser (Task 11) use; pin it in `check:community`
   - The POST route calls `notifyPodcastIndex(feedUrl, 'new')`; PUT, DELETE and admin delete call it with `'update'`
 
-- [ ] **Step 1: Add the failing e2e assertions:** after the 201, `GET /feeds/playlists/<id>.xml` → 200, the body parses with the same checks as Task 2 (re-implement the minimal parse in the e2e: count `<podcast:remoteItem` = 12, contains the owner npub, `<podcast:medium>musicL`); `GET …/<id>.jpg` → 200 `image/jpeg`; `GET /feeds/playlists/nope.xml` → 404; after DELETE the `.xml` → 410; the guid restore route answers the playlist for its `podcastGuid`; `GET /api/search?q=<title>&type=playlist` includes it
+- [ ] **Step 1: Add the failing e2e assertions:** with the dev server started WITHOUT `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`, `GET /api/community-playlists` and `GET /feeds/playlists/<any uuid>.xml` → 404 (run this half first, then restart with it on); after the 201, `GET /feeds/playlists/<id>.xml` → 200, the body parses with the same checks as Task 2 (re-implement the minimal parse in the e2e: count `<podcast:remoteItem` = 12, contains the owner npub, `<podcast:medium>musicL`); `GET …/<id>.jpg` → 200 `image/jpeg`; `GET /feeds/playlists/nope.xml` → 404; after DELETE the `.xml` → 410; the guid restore route answers the playlist for its `podcastGuid`; `GET /api/search?q=<title>&type=playlist` includes it
 - [ ] **Step 2: Run** `npm run e2e:communityapi` — Expected: FAIL on the new lines
 - [ ] **Step 3: Implement** the route, `cover.ts`, `pi-notify.ts` (and its calls from the Task 5 write routes), `communityPlaylistToPodcast`, the guid fallback and the search-lane merge; update the docs named above.
 - [ ] **Step 4: Run** `npm run e2e:communityapi && npm run check && npm run typecheck && npm run lint` — Expected: all pass; then stop the dev server and `npm run build` — Expected: exit 0; `rm -rf .next`
@@ -212,7 +217,7 @@
 
 ### Task 7: Ship PR 1 to beta
 
-- [ ] **Step 1: Chad's setup (blocks the beta test, not the PR).** Add a line to `~/Vibe/project-notes/notes/TODO.md` and tell Chad, in one message, exactly: create two Postgres databases (production, test); run `npm run community:schema` against each; on the **boostmebitch** Vercel project set `COMMUNITY_DB_URL` (Production = production DB, Preview = test DB), `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` (Preview = `https://beta.boostmebitch.com`), `ADMIN_NPUBS` (all environments); on **boostmebuddy** set `COMMUNITY_DB_URL` (Production = production DB) and `ADMIN_NPUBS`. Secrets are his to type (memory: settings and secrets need Chad).
+- [ ] **Step 1: Chad's setup (blocks the beta test, not the PR).** Add a line to `~/Vibe/project-notes/notes/TODO.md` and tell Chad, in one message, exactly: create two Postgres databases (production, test); run `npm run community:schema` against each; for now only the test database is needed: on the **boostmebitch** Vercel project, Preview environment, set `COMMUNITY_DB_URL` (test DB), `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=https://beta.boostmebitch.com`, `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on` and `ADMIN_NPUBS`. Production (both projects) gets nothing until Chad launches; `COMMUNITY_PI_NOTIFY` is set nowhere. Secrets are his to type (memory: settings and secrets need Chad).
 - [ ] **Step 2: Push and open the PR** (`gh pr create`, body per `.github/pull_request_template.md`, listing what `e2e:communityapi` verified and what it did not), then `npm run beta -- add <PR>` and give Chad the printed push command.
 - [ ] **Step 3: Stop the local Postgres** (`docker stop bmb-community-pg && colima stop`).
 
@@ -243,7 +248,7 @@
 **Files:**
 - Create: `app/playlists/make/page.tsx` (server: `<AppHeader />` + `<PlaylistMaker />`, `metadata` with `BRAND.displayName`)
 - Create: `components/community/playlist-maker.tsx`
-- Modify: `components/home-page.tsx` (the Playlists section from PR #533: wrap the link row in `flex flex-wrap gap-2`, add `<Link href="/playlists/make" className="btn-bolt-soft btn-compact">+ MAKE PLAYLIST</Link>`; signed out it still links — the page asks for sign-in)
+- Modify: `components/home-page.tsx` (the Playlists section from PR #533: wrap the link row in `flex flex-wrap gap-2`, add `<Link href="/playlists/make" className="btn-bolt-soft btn-compact">+ MAKE PLAYLIST</Link>` only when `COMMUNITY_PLAYLISTS_ON`; signed out it still links — the page asks for sign-in). `/playlists/make` calls `notFound()` when the switch is off.
 
 **Interfaces:**
 - Consumes: Task 8; `useApp` (`identity`, `setSignInOpen`); `cleanText` (Task 1, runs in the browser); `validatePlaylistDraft`, `MIN_SONGS`; `<AddSongsSheet>` (Task 10)
@@ -283,7 +288,7 @@
 **Interfaces:**
 - Consumes: `fetchCommunityPlaylists()` (Task 8); `communityPlaylistToPodcast` (Task 6, `lib/util.ts`)
 - Produces:
-  - `loadCollection(COMMUNITY_COLLECTION_URL)` → stored playlists first (newest first), then the existing seven; `listed` counts both; a store that cannot be reached leaves the seven and sets the partial line
+  - `loadCollection(COMMUNITY_COLLECTION_URL)` → stored playlists first (newest first, only when `COMMUNITY_PLAYLISTS_ON`), then the existing seven; `listed` counts both; a store that cannot be reached leaves the seven and sets the partial line
   - Community blurb: `Made by listeners on BMB, and by other people in the V4V community.`
   - `PodcastRow`/`PodcastResults` gain `action?: (p: Podcast) => ReactNode`, rendered as a sibling of the row button (never inside it); `/playlists` passes an `EDIT` `btn-mini` link to `/playlists/make?id=<id>` for rows whose `nostrNpubs[0].pubkey === identity.pubkey` and whose `url` passes `communityIdFromFeedUrl`
 
@@ -312,7 +317,7 @@
 ### Task 13: /admin
 
 **Files:**
-- Create: `app/admin/page.tsx` (`<AppHeader />` + `<AdminPlaylists />`, `robots: { index: false }`)
+- Create: `app/admin/page.tsx` (`<AppHeader />` + `<AdminPlaylists />`, `robots: { index: false }`; `notFound()` when `!COMMUNITY_PLAYLISTS_ON`, since playlists are its only section)
 - Create: `components/community/admin-playlists.tsx`
 - Modify: `scripts/e2e-community-ui.mjs`, `docs/ui.md`, `CLAUDE.md` (doc table: `app/admin/` → ui.md)
 
@@ -384,6 +389,7 @@ Beta has no Buddy deploy, so this small PR must reach **Buddy production** befor
 - Produces:
   - `PublishArgs` gains `brand?: Brand` and `senderName?: string`; `siteLandingUrl(feedGuid, itemGuid?, origin = SITE_ORIGIN)`; `boostBannerUrl(..., origin)`; `buildBoostNoteTemplate` uses `ctx.show` for the header line, the landing links, the banner and the FIRST `i` tags (song's own feed, then its item); when `ctx.container` is set, the container's `podcast:guid` `i` tag is kept as an extra tag after them, so the playlist's own discussion still finds the note (read what `components/episode-nostr-feed.tsx` and `lib/nostr/interactions.ts` query before you move a tag); appends `heardOnLines(ctx.container, makerNpub, ctx.hosted ? COMMUNITY_FEED_ORIGIN : brand.origin)` after the track lines when `ctx.container` is set, uses `clientTag(brand.wireName)` when `brand !== BRAND` (else `boostagram.app_name` as today) and `args.senderName ?? boostagram.sender_name` for the sender; `noteNpubs` is unchanged (it already tags the container's npub)
   - `publishBoostNoteViaSite` posts to `${brand.origin}/api/nostr/site-sign` when `brand !== BRAND`; `mintSummaryReceipt(..., brand = BRAND)` posts to `${brand.origin}/api/nostr/zap-receipt-sign` and quotes `brand.siteNpub`
+  - With the switch off nothing in this task changes behavior except the Heard-on line and the album header, which apply to every playlist (they do not depend on BMB-made playlists existing)
   - Both modals compute `ctx = playlistBoostContext(podcast, episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH)`, `noteBrand = ctx.hosted ? BRANDS.buddy : BRAND`, pass `brand: noteBrand` and `senderName: resolveSenderName(name, anonymous, noteBrand)`; the boostagram object is not touched
 - [ ] **Step 1: Write the failing e2e** `scripts/e2e-community-note.mjs`: a local relay (`createRelay` from `scripts/local-relay.mjs`, `bmb:relays` pointed at it), the stub NIP-47 wallet from `scripts/e2e-nwc-relay.mjs`, a throwaway signer; open a stored playlist, boost its first song for 100 sats with "Share to Nostr" as self, then read the kind:1 from the local relay and assert: header names the song's own album, `📻 <song>` present, `🎧 Heard on <playlist> by nostr:<maker npub>`, the link on `COMMUNITY_FEED_ORIGIN`, a `p` tag with the maker pubkey, `client` = `BoostMeBuddy`, `imeta` URL on `https://www.boostmebuddy.com/api/og/boost.png?`; repeat as Anonymous and assert the event's `pubkey` is Buddy's site key (decode `BRANDS.buddy.siteNpub`) — this half needs PR 4 on Buddy production and a reachable network; skip it with a printed reason when `--offline`; a boost from one of the seven existing community feeds → `client` = `BoostMeBitch`, Heard-on line present, no Buddy words.
 - [ ] **Step 2: Implement.**

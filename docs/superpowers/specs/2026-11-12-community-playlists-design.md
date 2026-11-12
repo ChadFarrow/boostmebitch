@@ -66,6 +66,12 @@ These are settled. Do not revisit them in the plan.
 18. **Build and test on the beta site first.** Each piece lands as a PR, is added
     to beta.boostmebitch.com with `npm run beta -- add <PR>`, and is tested there
     by Chad before anything merges to `main`.
+19. **Beta only, and no Podcast Index, for now** (Chad, 2026-11-12). The feature
+    shows only on beta.boostmebitch.com until Chad turns it on for the main
+    sites, even after its code merges to `main`; and no playlist is sent to
+    Podcast Index — not from beta, and not from production either — until Chad
+    turns that on separately. Both are switches, not code changes (see Launch
+    switches).
 
 ## Goals
 
@@ -259,11 +265,26 @@ need it". BMB has **no admin page and no notion of an admin today**. Decided
 
 ## Podcast Index
 
-New playlists should be findable in other apps, so on first publish the feed is
-submitted to Podcast Index, and on each edit PI is notified (`/hub/pubnotify` —
-MSP-2.0's `api/pubnotify.ts` already does this). The builder must confirm BMB's PI
-key may add feeds. A failure here never fails the publish. Tests never submit to
-the real index.
+**Off for now (decision 19).** When Chad turns it on: on first publish the feed
+is submitted to Podcast Index, and on each edit or delete PI is notified
+(`/hub/pubnotify` — MSP-2.0's `api/pubnotify.ts` already does this). The builder
+must confirm BMB's PI key may add feeds. A failure here never fails the publish.
+Tests never submit to the real index.
+
+## Launch switches
+
+Two environment switches, both OFF unless set:
+
+- `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on` — shows the feature: the MAKE PLAYLIST
+  button, `/playlists/make`, `/admin`, BMB-made rows in Community playlists and in
+  the search lane, and the API and feed routes (which answer 404 when it is off).
+  Set only on the boostmebitch project's Preview environment (beta) for now.
+- `COMMUNITY_PI_NOTIFY=on` — lets the server tell Podcast Index. Set nowhere for
+  now, and it only acts on the production Buddy feed origin even when set.
+
+A call made in this session: playlists made on beta are test data. Their
+addresses are on beta.boostmebitch.com. At launch, Chad decides whether to copy
+them to the production store; a copy gets new boostmebuddy.com addresses.
 
 ## Constraints from this repo
 
