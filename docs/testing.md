@@ -62,7 +62,7 @@ and a dev server started with its env on the command line, never in `.env.local`
 - **Network.** The UI script seeds its 12 songs from live Podcast Index data, so it needs the internet.
 - **Write limit.** The server allows 6 writes a minute per address. Each run sends its own random
   `x-real-ip`, so repeated runs never wait.
-- **No public relay.** The UI script points the app at a local relay; nothing reaches a public one.
+- **No public relay for events.** No EVENT reaches a public relay (checked by the `__ws` assertions in `e2e-community-ui.mjs`, near line 355). Feed reads and profile reads still reach the public network.
 
 ### Two things about the harness that look like detail and are not
 

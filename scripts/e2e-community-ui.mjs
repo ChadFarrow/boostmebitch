@@ -2,16 +2,18 @@
 //
 // Needs a dev server started with, on the command line (never in .env.local):
 //   COMMUNITY_DB_URL=postgres://postgres:test@localhost:54329/postgres
+//   (the local Postgres, with the schema applied: `npm run community:schema`)
 //   ADMIN_NPUBS=<any npub> NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
 //   NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 npm run dev -- -p 3123
-// and the schema applied (`npm run community:schema`). APP_URL overrides the server.
+// APP_URL overrides the server.
 //
 // The switch-OFF half is a second run against a second server, in two commands:
 //   1. the same dev server command WITHOUT NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
 //   2. node scripts/e2e-community-ui.mjs --off
 // (`node scripts/e2e-community-api.mjs --off` is the API half, same server.)
 // The signer is a throwaway key behind a fake NIP-07 `window.nostr`, and relays point
-// at a LOCAL relay, so nothing reaches a public relay.
+// at a LOCAL relay. No EVENT reaches a public relay (checked at the `__ws` assertions near
+// line 355). Feed reads and profile reads still reach the public network.
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
@@ -224,6 +226,7 @@ await seed(draft(), labels);
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')`); await wait(500);
 await setValue('#pl-desc', 'still here after a timeout');
+// 400 ms, not the brief's 5 s: same code path in signedFetch, shorter run.
 await js(`window.__silent = true; window.__bmbSignTimeoutMs = 400; 1`);
 await click(byText('PUBLISH'));
 t.ok('no answer: the page says so', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('signer did not answer')`, 10000));
