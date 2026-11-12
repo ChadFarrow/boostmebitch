@@ -5,12 +5,12 @@ import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, receiptRefUrls } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { getErrorMessage, hasValueRecipients, payableValue, playlistBoostContext, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableValue, playlistBoostContext, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
 import { BRAND, noteBrandFor, resolveSenderName } from '@/lib/brand';
 import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
@@ -244,11 +244,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     let paidSats = 0;
     // The show and item the summary receipt names. Value-block legs are never
     // zaps (see payOne), so this is the only NIP-73 pair a boost-all signs.
+    // Its URL hints are in the NOTE's brand — the deploy that signs the receipt.
     const hostRefs: Nip73Refs = {
       podcastGuid: podcast.podcastGuid,
       episodeGuid: episode.guid,
-      podcastUrl: showShareUrl(podcast.podcastGuid) ?? undefined,
-      episodeUrl: showShareUrl(podcast.podcastGuid, episode.guid) ?? undefined,
+      ...receiptRefUrls(noteBrand, podcast.podcastGuid, episode.guid),
     };
 
     for (let i = 0; i < splits.length; i++) {

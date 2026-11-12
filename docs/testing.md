@@ -47,7 +47,7 @@ a real account.
 | `npm run e2e:twosigners` | Two stub NIP-46 responders on ONE key over a local relay: one answers `no permission` at once (Amber, for a client it never paired), the other answers correctly 700 ms later (Clave). Pins that the paired signer's result wins, that a real refusal still lands, and that the approval notice still appears when only the imposter answers. See docs/signers.md, "Two signer apps, one key". |
 | `npm run e2e:communityapi` | The community-playlist routes (`/api/playlists`, the `.xml` feeds) over HTTP against the real local Postgres: create, list, edit, delete, refusals, the 6-writes-a-minute limit. |
 | `npm run e2e:communityui` | The maker, the Published view, `/playlists`, edit and delete, in headless Chrome at 390 x 844 (`scrollWidth <= clientWidth`, every control at least 24 x 24). Uses a LOCAL relay and a fake NIP-07 signer. |
-| `npm run e2e:communitynote` | The boost NOTE for a song played from a playlist, through the real modal: a playlist stored on the dev server (Buddy's words, the album as the show, the Heard-on line and link, the maker's `p` tag), the same as Anonymous while Buddy's route has no CORS (the note fails, never this deploy's key), and one of the seven community feeds (BoostMeBitch words, the Heard-on line). Asserts the boostagram still carries `BoostMeBitch`. Section 3, Anonymous signed by Buddy production, runs only when Buddy's route sends CORS (PR 4) or with `--force-buddy`; `--offline` never asks Buddy. |
+| `npm run e2e:communitynote` | The boost NOTE for a song played from a playlist, through the real modal: a playlist stored on the dev server (Buddy's words, the album as the show, the Heard-on line and link, the maker's `p` tag, the receipt's URL hints on Buddy), the same as Anonymous while Buddy's routes cannot be read (the note fails, never this deploy's key), Anonymous signed by a LOCAL Buddy server with a throwaway key (that key is the author; a receipt from a key other than Buddy's own is not quoted), and one of the seven community feeds (BoostMeBitch words, the Heard-on line). Asserts the boostagram still carries `BoostMeBitch`. It starts the Buddy server itself; see below. |
 
 ### The community-playlist e2e scripts
 
@@ -64,14 +64,28 @@ and a dev server started with its env on the command line, never in `.env.local`
 - **Write limit.** The server allows 6 writes a minute per address. Each run sends its own random
   `x-real-ip`, so repeated runs never wait.
 - **No public relay for events.** No EVENT reaches a public relay (checked by the assertion 'no event of any kind went to a public relay'). Feed reads and profile reads still reach the public network.
+- **`e2e:communitynote` runs TWO dev servers, and starts the second one itself.** You start the
+  3123 server above. The script starts the Buddy deploy as
+  `NEXT_PUBLIC_BRAND=buddy SITE_NOSTR_SK=<a key generated per run> next dev -p <free port>`, in a
+  COPY of the working tree under `$TMPDIR` (git's tracked and untracked files; never `.env*`,
+  `.next` or `node_modules`, which is a link). Two `next dev` in one folder share one `.next` and
+  compile two different `NEXT_PUBLIC_BRAND`s into the same files, and a copy with no env file can
+  sign with no key but the throwaway one. The script stops the server and deletes the copy on
+  every exit. **No production signing key is ever used**: the page's requests to Buddy's routes
+  go to this script over a CDP binding, and it POSTs them to the local Buddy server (`localhost`
+  is not an origin PR 4 allows, so the page cannot ask even a local Buddy itself).
 - **`e2e:communitynote` sends no money and no public event, and checks both.** The wallet is a
   stub NIP-47 service on the local relay, and `/api/item-value` answers one keysend stub node.
   Every page WebSocket except the dev server's own is REDIRECTED to the local relay, because
-  `publishBoostNoteViaSite` publishes to the hard-coded `DEFAULT_RELAYS`. The dev server's own
-  signing routes are refused in the page, because `.env.local` holds the real site key.
-  Section 3 cannot let the page ask Buddy itself: `localhost` is not an origin PR 4 allows. The
-  script POSTs the page's request to Buddy and hands back the answer, so Buddy production signs
-  a test note that reaches only the local relay.
+  `publishBoostNoteViaSite` publishes to the hard-coded `DEFAULT_RELAYS`. The second guard is
+  `--host-resolver-rules`: every `wss://` host named in `lib/`, `components/` or `app/`, and the
+  production hosts of both brands, resolve to NOTFOUND, and section 0 proves an unredirected
+  socket to each cannot open. **`Network.setBlockedURLs` does NOT block a WebSocket** (measured
+  against the local relay), so it is set for HTTP only. The 3123 server's own signing routes are
+  refused in the page, because `.env.local` holds the real site key. The script closes Chrome
+  with CDP `Browser.close` before `cdp.mjs`'s SIGTERM. An orphan `chrome_crashpad_handler`
+  (parent PID 1) still outlived one of two runs that did so, and two of three that did not, so
+  look for one with `ps` after any `e2e:*` run.
 
 ### Two things about the harness that look like detail and are not
 

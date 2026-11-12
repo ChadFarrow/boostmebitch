@@ -8,58 +8,157 @@
 //   NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123
 //   npm run dev -- -p 3123
 // then:
-//   npm run e2e:communitynote               # section 3 runs only if Buddy's route sends CORS
-//   npm run e2e:communitynote -- --offline  # never asks Buddy production anything
-//   npm run e2e:communitynote -- --force-buddy  # section 3 even without CORS (this script's
-//                                               # POST needs none); still local-relay only
+//   npm run e2e:communitynote
 // APP_URL overrides the server.
 //
+// THE SECOND SERVER — the Buddy deploy — is started BY THIS SCRIPT, never by hand and never
+// production. A BMB-hosted playlist's site-signed note is signed by the Buddy deploy, so the
+// test needs one, and it must sign with a key nobody else has:
+//   NEXT_PUBLIC_BRAND=buddy SITE_NOSTR_SK=<a key generated per run> next dev -p <free port>
+// It runs in a COPY of this working tree (git's tracked and untracked files, never `.env*`,
+// `.next` or `node_modules`, which is linked): two `next dev` in one folder share one `.next`
+// and compile two different `NEXT_PUBLIC_BRAND`s into the same files. The copy holds no env
+// file, so the only key it can sign with is the throwaway one. It and the copy are removed
+// at the end, and on any exit.
+//
 // What it boosts, 100 sats each, through the shipping modal:
-//   1. the first song of a playlist stored on THIS server (BMB-hosted), shared as "My feed";
-//   2. the same, shared as "Anonymous", while Buddy's signing route cannot be read (the
-//      state until PR 4, branch `buddy-sign-cors`, is on Buddy production) — simulated in
-//      the page, so it runs offline: the note must FAIL, never fall back to this deploy's key;
-//   3. the same as "Anonymous", signed by Buddy production for real. SKIPPED with
-//      `--offline`, and by default while Buddy's route answers without CORS. The page's
-//      origin (localhost) is not one PR 4 allows, so the page's request is handed to this
-//      script over a CDP binding and POSTed to Buddy from here, and Buddy's answer goes back;
-//   4. the first song of one of the seven existing community feeds (Lightning Thrashes),
-//      shared as "My feed": the deploy's own words, with the Heard-on line.
+//   1. the first song of a playlist stored on the 3123 server (BMB-hosted), as "My feed";
+//   2. the same, as "Anonymous", while Buddy's routes cannot be read from the page (a browser
+//      on the bitch deploy until PR 4, branch `buddy-sign-cors`, is live on Buddy): the note
+//      must FAIL, never fall back to this deploy's key;
+//   3. the same, as "Anonymous", signed by the LOCAL Buddy server. The page's origin is not
+//      one PR 4 allows, so the page's request to Buddy is handed to this script over a CDP
+//      binding and POSTed to the local Buddy server; production is never asked;
+//   4. the first song of one of the seven existing community feeds (Lightning Thrashes), as
+//      "My feed": the deploy's own words, with the Heard-on line.
 //
 // NOTHING LEAVES THIS MACHINE FOR MONEY OR FOR NOSTR, and each half is checked, not intended:
 //  - The wallet is a stub NIP-47 service on a local relay (copied from e2e-nwc-relay.mjs),
 //    and `/api/item-value` is answered here with one keysend stub node, so every leg is a
 //    `pay_keysend` to the stub. There is no real wallet to pay from.
-//  - Every WebSocket the page opens to anything but the local relay (or the dev server's
-//    own HMR socket) is REDIRECTED to the local relay and recorded. `publishBoostNoteViaSite`
+//  - Every WebSocket the page opens to anything but the local relay (or the dev server's own
+//    HMR socket) is REDIRECTED to the local relay and recorded. `publishBoostNoteViaSite`
 //    publishes to the hard-coded DEFAULT_RELAYS, so without this a site-signed note would
-//    land on damus.io and friends. 'no EVENT went to a public relay' reads that record.
-//  - The dev server's OWN signing routes (/api/nostr/site-sign and /zap-receipt-sign) are
+//    land on damus.io and friends.
+//  - SECOND GUARD, for a socket the redirect misses: Chrome resolves every public relay host
+//    named anywhere in lib/, components/ or app/, and the production hosts of both brands, to
+//    NOTFOUND (`--host-resolver-rules`). Measured: `Network.setBlockedURLs` does NOT stop a
+//    WebSocket, so it is set too (for HTTP) but is not this guard. The script proves the
+//    guard first: an unredirected socket to each relay host must fail to open.
+//  - The 3123 server's OWN signing routes (/api/nostr/site-sign and /zap-receipt-sign) are
 //    refused in the page and must never be asked: .env.local holds the real BoostMeBitch
 //    site key. A Buddy-worded note signed by it is the failure this task forbids.
-// Feed and Podcast Index reads still reach the public network through the dev server.
+// Feed and Podcast Index reads still reach the public network through the 3123 server.
+import { spawn, execFileSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44 } from 'nostr-tools';
 import { getToken } from 'nostr-tools/nip98';
 import { BRANDS } from '../lib/brand.ts';
 
-const OFFLINE = process.argv.includes('--offline');
-const FORCE_BUDDY = !OFFLINE && process.argv.includes('--force-buddy');
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
 await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
 
 const BUDDY = BRANDS.buddy;
 const BITCH = BRANDS.bmb;
-const BUDDY_SITE_PK = nip19.decode(BUDDY.siteNpub).data;
 const BITCH_SITE_PK = nip19.decode(BITCH.siteNpub).data;
+const BUDDY_REAL_PK = nip19.decode(BUDDY.siteNpub).data;
 const SONG_SOURCE = 'https://v4vmusic.com/playlist/334bb12d-1f72-4c0e-88e1-266bd1e2dff9.xml';
 const COMMUNITY_FEED = 'https://cdn.kolomona.com/podcasts/lightning-thrashes/playlists/001-to-060-lightning-thrashes-playlist.xml';
 const STUB_NODE = `02${'ab'.repeat(32)}`;
+// A `wss://` publish relay that exists nowhere: the summary receipt is minted only for
+// `wss://` relays, so the hosted sections use this one and the redirect delivers it locally.
+const FAKE_WSS = 'wss://relay.e2e.invalid';
 
 const t = checker();
 const section = (s) => console.log(`\n--- ${s} ---`);
 const ip = () => `10.93.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+
+// ---- the hosts no socket and no request from the page may reach ------------------------
+const scanHosts = () => {
+  const hosts = new Set();
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) { walk(p); continue; }
+      if (!/\.(ts|tsx)$/.test(name)) continue;
+      for (const m of readFileSync(p, 'utf8').matchAll(/wss:\/\/([a-z0-9.-]+\.[a-z]{2,})/gi)) hosts.add(m[1].toLowerCase());
+    }
+  };
+  for (const d of ['lib', 'components', 'app']) walk(join(REPO, d));
+  return [...hosts].sort();
+};
+const RELAY_HOSTS = scanHosts();
+const PRODUCTION_HOSTS = ['www.boostmebuddy.com', 'boostmebuddy.com', 'www.boostmebitch.com', 'boostmebitch.com', 'beta.boostmebitch.com'];
+const NOTFOUND_HOSTS = [...RELAY_HOSTS, ...PRODUCTION_HOSTS, new URL(FAKE_WSS).host];
+
+// ---- the local Buddy server, in a copy of this working tree --------------------------------
+const buddySk = generateSecretKey();
+const BUDDY_TEST_PK = getPublicKey(buddySk);
+const freePort = () => new Promise((resolve, reject) => {
+  const s = net.createServer();
+  s.once('error', reject);
+  s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
+});
+const BUDDY_PORT = Number(process.env.BUDDY_PORT) || await freePort();
+const LOCAL_BUDDY = `http://localhost:${BUDDY_PORT}`;
+const buddyDir = mkdtempSync(join(tmpdir(), `bmb-e2e-buddy-${process.env.CLAUDE_CODE_SESSION_ID || 'local'}-`));
+const files = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { cwd: REPO, encoding: 'utf8' })
+  .split('\0')
+  .filter((f) => f && !/(^|\/)\.env/.test(f) && !f.startsWith('.next/') && !f.startsWith('node_modules/') && existsSync(join(REPO, f)));
+for (const f of files) {
+  mkdirSync(dirname(join(buddyDir, f)), { recursive: true });
+  copyFileSync(join(REPO, f), join(buddyDir, f));
+}
+symlinkSync(join(REPO, 'node_modules'), join(buddyDir, 'node_modules'));
+const buddyLog = join(buddyDir, 'e2e-buddy-server.log');
+const logFd = openSync(buddyLog, 'w');
+const buddy = spawn(process.execPath, [join(buddyDir, 'node_modules/next/dist/bin/next'), 'dev', '-p', String(BUDDY_PORT)], {
+  cwd: buddyDir,
+  // A minimal environment: nothing of this shell's, no key but the throwaway one.
+  env: {
+    PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR ?? tmpdir(),
+    NEXT_TELEMETRY_DISABLED: '1',
+    NEXT_PUBLIC_BRAND: 'buddy',
+    SITE_NOSTR_SK: Buffer.from(buddySk).toString('hex'),
+  },
+  detached: true,
+  stdio: ['ignore', logFd, logFd],
+});
+let buddyStopped = false;
+const stopBuddySync = () => {
+  if (buddyStopped) return;
+  buddyStopped = true;
+  try { process.kill(-buddy.pid, 'SIGKILL'); } catch { /* gone */ }
+  try { rmSync(buddyDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* best effort */ }
+};
+process.on('exit', stopBuddySync);
+const stopBuddy = async () => {
+  if (buddyStopped) return;
+  const gone = new Promise((r) => buddy.once('exit', r));
+  try { process.kill(-buddy.pid, 'SIGTERM'); } catch { /* gone */ }
+  await Promise.race([gone, wait(8000)]);
+  stopBuddySync();
+};
+let browserPage = null;
+// CDP `Browser.close` first, as the machine's rules ask: the SIGTERM `cdp.mjs` sends
+// left Chrome's crashpad handler running as an orphan. It can still outlive a run, so
+// look for one with `ps` afterwards (docs/testing.md).
+const finish = async (code) => {
+  if (browserPage) {
+    try { await Promise.race([browserPage.send('Browser.close'), wait(3000)]); } catch { /* the socket closes with it */ }
+    await wait(1000);
+  }
+  await stopBuddy();
+  await exit(code);
+};
+console.log(`  local Buddy server: ${LOCAL_BUDDY} (NEXT_PUBLIC_BRAND=buddy, a throwaway SITE_NOSTR_SK), in ${buddyDir}`);
 
 // ---- the local relay: notes, the wallet's requests and replies ------------------------
 const published = [];
@@ -115,7 +214,7 @@ const userSk = generateSecretKey();
 const userPk = getPublicKey(userSk);
 const userNpub = nip19.npubEncode(userPk);
 
-// ---- a playlist stored on this server, made by the maker -----------------------------
+// ---- a playlist stored on the 3123 server, made by the maker ---------------------------
 const nodeIp = ip();
 const src = await fetch(`${APP}/api/playlist?url=${encodeURIComponent(SONG_SOURCE)}&limit=40`, { headers: { 'x-real-ip': nodeIp } })
   .then((r) => r.json()).catch(() => ({}));
@@ -138,7 +237,7 @@ const created = await (async () => {
   return { status: r.status, ...(await r.json().catch(() => ({}))) };
 })();
 t.ok('the maker stored a playlist (201)', created.status === 201 && created.id && created.feedUrl, JSON.stringify(created));
-if (!created.id) await exit(1);
+if (!created.id) await finish(1);
 const HOSTED_ORIGIN = new URL(created.feedUrl).origin;
 const stored = await fetch(`${APP}/api/playlist?url=${encodeURIComponent(created.feedUrl)}&limit=5`, { headers: { 'x-real-ip': nodeIp } }).then((r) => r.json());
 const PL_GUID = stored.podcast?.podcastGuid;
@@ -146,18 +245,41 @@ const song = stored.episodes?.[0];
 t.ok('the stored playlist reads back with a guid and its first song', !!PL_GUID && song?.guid === real[0].guid, JSON.stringify({ PL_GUID, first: song?.guid }));
 console.log(`  stored playlist ${created.id} on ${HOSTED_ORIGIN}; first song "${song?.title}" from "${song?.feedTitle}"`);
 
+// ---- the local Buddy server is up, and signs as the throwaway key -----------------------
+{
+  let up = false;
+  for (let i = 0; i < 240 && !up; i++) {
+    const r = await fetch(`${LOCAL_BUDDY}/.well-known/nostr.json?name=_`, { signal: AbortSignal.timeout(30000) }).catch(() => null);
+    if (r?.ok) {
+      const j = await r.json().catch(() => ({}));
+      up = true;
+      t.equal("the local Buddy server's site key is the throwaway one", j.names?._, BUDDY_TEST_PK);
+    } else {
+      if (buddy.exitCode !== null) break;
+      await wait(500);
+    }
+  }
+  if (!up) {
+    t.fail('the local Buddy server came up', readFileSync(buddyLog, 'utf8').slice(-2000));
+    await finish(1);
+  }
+  t.ok('...and it is not the real Buddy key', BUDDY_TEST_PK !== BUDDY_REAL_PK);
+}
+
 // ---- the browser ------------------------------------------------------------------------
 const { page } = await launchChrome({
   name: `communitynote-${process.env.CLAUDE_CODE_SESSION_ID || 'local'}`,
-  args: ['--disable-gpu'],
+  args: ['--disable-gpu', `--host-resolver-rules=${NOTFOUND_HOSTS.map((h) => `MAP ${h} ~NOTFOUND`).join(', ')}`],
 });
+browserPage = page;
 const { send, on } = page;
 const js = page.jsOrThrow;
-await send('Page.enable'); await send('Runtime.enable');
+await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable');
+await send('Network.setBlockedURLs', { urls: NOTFOUND_HOSTS.flatMap((h) => [`*://${h}/*`, `*://${h}:*`]) });
 
 // A window.nostr indistinguishable from an extension, over a CDP binding (e2e-favorites.mjs).
 await send('Runtime.addBinding', { name: 'bmbSigner' });
-// The Buddy hand-off for section 3: the page's request, POSTed to Buddy from here.
+// The Buddy hand-off: the page's request to Buddy, POSTed to the LOCAL Buddy server.
 await send('Runtime.addBinding', { name: 'bmbBuddy' });
 // What the page did, kept HERE: a page record would be wiped by every navigation.
 await send('Runtime.addBinding', { name: 'bmbRecord' });
@@ -185,15 +307,16 @@ on(async (m) => {
   if (name === 'bmbBuddy') {
     const { rid, url, body } = JSON.parse(payload);
     let out;
-    // Only Buddy's two signing routes, and never with --offline.
-    if (OFFLINE || !/^https:\/\/www\.boostmebuddy\.com\/api\/nostr\/(site-sign|zap-receipt-sign)$/.test(url)) {
-      out = { status: 599, text: '{"error":"e2e: not handed to Buddy"}' };
+    const m2 = /^https:\/\/www\.boostmebuddy\.com(\/api\/nostr\/(?:site-sign|zap-receipt-sign))$/.exec(url);
+    if (!m2) {
+      out = { status: 599, text: '{"error":"e2e: not a Buddy signing route"}' };
     } else {
-      buddyAsked.push({ url, body });
+      // Production is never asked: the path goes to the local Buddy server.
       try {
-        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(15000) });
+        const r = await fetch(`${LOCAL_BUDDY}${m2[1]}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(60000) });
         out = { status: r.status, text: await r.text() };
       } catch (e) { out = { status: 599, text: JSON.stringify({ error: String(e?.message ?? e) }) }; }
+      buddyAsked.push({ path: m2[1], body, status: out.status, text: out.text });
     }
     await js(`window.__bmbBuddyResolve(${JSON.stringify(rid)}, ${JSON.stringify(out)})`);
   }
@@ -231,6 +354,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     const LOCAL = ${JSON.stringify(LOCAL)};
     const record = (r) => { try { window.bmbRecord(JSON.stringify(r)); } catch {} };
     const Real = window.WebSocket;
+    window.__RealWebSocket = Real; // for the guard's self-test only
     class Redirecting extends Real {
       constructor(url, protocols) {
         const asked = String(url);
@@ -253,7 +377,8 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     window.WebSocket = Redirecting;
 
     // The signing routes: this deploy's are refused; Buddy's are unreadable ('nocors',
-    // what a browser sees until PR 4 is live) or handed to the script ('proxy').
+    // what a browser on the bitch deploy sees until PR 4 is live) or handed to the
+    // script, which asks the LOCAL Buddy server ('proxy').
     const buddyWaiting = new Map(); let b = 0;
     window.__bmbBuddyResolve = (rid, r) => { const p = buddyWaiting.get(rid); buddyWaiting.delete(rid); if (p) p(r); };
     const real = window.fetch;
@@ -293,8 +418,8 @@ const dialogText = () => js(`document.querySelector('[role="dialog"]')?.innerTex
 const pressInDialog = (re) => js(`(() => {
   const b = [...(document.querySelector('[role="dialog"]')?.querySelectorAll('button') ?? [])].find((x) => ${re}.test(x.innerText) && !x.disabled);
   if (!b) return false; b.click(); return true; })()`);
-const seed = (shareAs) => js(`(() => {
-  localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([LOCAL]))});
+const seed = (shareAs, relays) => js(`(() => {
+  localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify(relays))});
   localStorage.setItem('bmb:npub', ${JSON.stringify(userNpub)});
   localStorage.setItem('bmb:signer', 'nip07');
   localStorage.setItem('bmb:nwc_uri', ${JSON.stringify(NWC_URI)});
@@ -307,22 +432,30 @@ const tag1 = (e, name) => tagsOf(e, name)[0] ?? null;
 const BUDDY_WORDS = /boostmebuddy|boost ?me ?buddy/i;
 const BITCH_WORDS = /boostmebitch|boost ?me ?bitch/i;
 const wordsIn = (e) => `${e?.content ?? ''}\n${JSON.stringify(e?.tags ?? [])}`;
+const parse = (s) => { try { return JSON.parse(s ?? 'null'); } catch { return null; } };
 /** The note as published, for the log: the body, then the tags. */
 const show = (e) => {
   if (!e) return;
   for (const l of e.content.split('\n')) console.log(`    | ${l}`);
   for (const x of e.tags) console.log(`    # ${JSON.stringify(x)}`);
 };
+/** Every URL hint a summary-receipt request carries: a site spec's refs, or a signed 9734's `i` tags. */
+const receiptHints = (body) => {
+  const b = parse(body);
+  if (b?.spec) return [b.spec.refs?.podcastUrl, b.spec.refs?.episodeUrl].filter(Boolean);
+  if (b?.request) return (b.request.tags ?? []).filter((x) => x[0] === 'i' && x[2]).map((x) => x[2]);
+  return [];
+};
 
 /**
  * Open `feedUrl` as a playlist, press BOOST on the row titled `title`, send 100 sats with
  * the share picker on `shareAs`. `buddy` is how the page treats Buddy's signing routes:
- * 'nocors' (unreadable) or 'proxy' (handed to this script). Returns once the publish
- * status settles (published, or failed).
+ * 'nocors' (unreadable) or 'proxy' (handed to the local Buddy server). Returns once the
+ * publish status settles (published, or failed).
  */
-async function boostSong(feedUrl, title, shareAs, buddy = 'nocors') {
+async function boostSong(feedUrl, title, shareAs, { buddy = 'nocors', relays = [LOCAL] } = {}) {
   await go('/');
-  await seed(shareAs);
+  await seed(shareAs, relays);
   await js(`localStorage.setItem('__e2eBuddy', ${JSON.stringify(buddy)}); 1`);
   await go(`/?playlist=${encodeURIComponent(feedUrl)}`);
   const row = `[...document.querySelectorAll('ul.divide-y > li')].find((li) => li.innerText.includes(${JSON.stringify(title)}))`;
@@ -337,7 +470,7 @@ async function boostSong(feedUrl, title, shareAs, buddy = 'nocors') {
     i.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
   t.ok('Send 100 sats is live', await until(`[...document.querySelectorAll('[role="dialog"] button')].some((b) => /send 100 sat/i.test(b.innerText) && !b.disabled)`, 30000), await dialogText());
   await pressInDialog('/send 100 sat/i');
-  const settled = await until(`/Published to|Publish failed/.test(document.querySelector('[role="dialog"]')?.innerText ?? '')`, 45000);
+  const settled = await until(`/Published to|Publish failed/.test(document.querySelector('[role="dialog"]')?.innerText ?? '')`, 60000);
   t.ok('the note publish settles (published or failed)', settled, await dialogText());
   return settled;
 }
@@ -346,11 +479,26 @@ const newNote = async (before, ms = 8000) => {
   return published.slice(before).filter((e) => e.kind === 1 && tagsOf(e, 't').some((x) => x[1] === 'boostagram')).at(-1) ?? null;
 };
 
+// ---- 0. the second guard holds before anything is published -------------------------------
+section('0. the second guard: an unredirected socket to any public relay cannot open');
+await go('/');
+{
+  const results = await js(`Promise.all(${JSON.stringify(RELAY_HOSTS)}.map((h) => new Promise((r) => {
+    let w; try { w = new window.__RealWebSocket('wss://' + h); } catch { r([h, 'threw']); return; }
+    const t = setTimeout(() => { try { w.close(); } catch {} r([h, 'timeout']); }, 6000);
+    w.onopen = () => { clearTimeout(t); w.close(); r([h, 'OPEN']); };
+    w.onerror = () => { clearTimeout(t); r([h, 'error']); };
+  })))`);
+  console.log(`  ${RELAY_HOSTS.length} relay hosts named in lib/, components/, app/: ${RELAY_HOSTS.join(', ')}`);
+  t.equal('none of them opens', results.filter(([, r]) => r === 'OPEN').map(([h]) => h), []);
+}
+
 // ---- 1. a BMB-hosted playlist, "My feed" -------------------------------------------------
 section('1. a song from a playlist BMB hosts, shared to my feed: Buddy\'s words, the album, the Heard-on line');
 let before = published.length;
 let paidBefore = wallet.payments.length;
-await boostSong(created.feedUrl, song.title, 'self');
+let signBefore = rec.sign.length;
+await boostSong(created.feedUrl, song.title, 'self', { relays: [FAKE_WSS] });
 const n1 = await newNote(before);
 t.ok('a kind:1 boost note reached the LOCAL relay', !!n1);
 show(n1);
@@ -370,11 +518,15 @@ t.equal('client = BoostMeBuddy', tag1(n1, 'client'), ['client', BUDDY.wireName])
 t.ok(`imeta is on ${BUDDY.origin}/api/og/boost.png?`, tag1(n1, 'imeta')?.[1]?.startsWith(`url ${BUDDY.origin}/api/og/boost.png?`), JSON.stringify(tag1(n1, 'imeta')));
 t.ok('the banner in the body is on Buddy', n1?.content.includes(`${BUDDY.origin}/api/og/boost.png?`), n1?.content);
 t.ok("the default sender name is Buddy's", n1?.content.includes(`${BUDDY.senderName} boosted 100 sats`), n1?.content);
-t.ok('every r tag is an http(s) URL, the deep link on Buddy', tagsOf(n1, 'r').some((x) => x[1].startsWith(`${BUDDY.origin}/?podcast=${encodeURIComponent(song.podcastGuid)}`)), JSON.stringify(tagsOf(n1, 'r')));
+t.ok('the deep link r tag is on Buddy', tagsOf(n1, 'r').some((x) => x[1].startsWith(`${BUDDY.origin}/?podcast=${encodeURIComponent(song.podcastGuid)}`)), JSON.stringify(tagsOf(n1, 'r')));
 const iTags = tagsOf(n1, 'i').map((x) => x[1]);
 t.equal("the FIRST i tags are the song's own feed, then its item", iTags.slice(0, 2), [`podcast:guid:${song.podcastGuid}`, `podcast:item:guid:${song.guid}`]);
 t.ok("the playlist's own podcast:guid i tag is kept, after them", iTags.indexOf(`podcast:guid:${PL_GUID}`) > 1, JSON.stringify(iTags));
 t.ok('no word of the other brand anywhere in the note', !BITCH_WORDS.test(wordsIn(n1)), wordsIn(n1));
+const asked1 = rec.sign.slice(signBefore);
+t.equal("the summary receipt was asked of Buddy's route, and only there", asked1.map((x) => x.url), [`${BUDDY.origin}/api/nostr/zap-receipt-sign`]);
+const hints1 = receiptHints(asked1[0]?.body);
+t.ok(`its request is the listener's own 9734, with URL hints on ${BUDDY.origin} only`, hints1.length > 0 && hints1.every((h) => h.startsWith(`${BUDDY.origin}/`)), JSON.stringify(hints1));
 const pay1 = wallet.payments.slice(paidBefore);
 t.equal('one payment, a keysend to the stub node', pay1.map((p) => [p.method, p.params?.pubkey]), [['pay_keysend', STUB_NODE]]);
 const bg1 = boostagramOf(pay1[0]);
@@ -382,18 +534,20 @@ t.equal('the boostagram still says app_name BoostMeBitch', bg1?.app_name, BITCH.
 t.equal("the boostagram's sender name is the deploy's own", bg1?.sender_name, BITCH.senderName);
 t.equal("the boostagram's remote_feed_guid is the song's album", bg1?.remote_feed_guid, song.podcastGuid);
 
-// ---- 2. "Anonymous", while Buddy's route cannot be read ------------------------------------
-section("2. Anonymous, Buddy's signing route unreadable (no CORS yet): the note fails, never the bitch key");
+// ---- 2. "Anonymous", while Buddy's routes cannot be read -----------------------------------
+section("2. Anonymous, Buddy's routes unreadable from the page (no CORS yet): the note fails, never the bitch key");
 before = published.length;
 paidBefore = wallet.payments.length;
-const signBefore = rec.sign.length;
-await boostSong(created.feedUrl, song.title, 'site');
+signBefore = rec.sign.length;
+await boostSong(created.feedUrl, song.title, 'site', { relays: [FAKE_WSS] });
 t.ok('the payment still went out', wallet.payments.length - paidBefore === 1, `payments +${wallet.payments.length - paidBefore}`);
 t.ok('the modal says the publish failed', /Publish failed/.test(await dialogText()), await dialogText());
 const asked2 = rec.sign.slice(signBefore);
-t.equal('the page asked Buddy\'s site-sign route, and only that', asked2.map((x) => x.url), [`${BUDDY.origin}/api/nostr/site-sign`]);
-const tmpl2 = (() => { try { return JSON.parse(asked2[0]?.body ?? 'null'); } catch { return null; } })();
-t.equal('the template it sent says client BoostMeBuddy', tag1(tmpl2, 'client'), ['client', BUDDY.wireName]);
+t.equal("the page asked Buddy's two routes, and only those", asked2.map((x) => x.url), [`${BUDDY.origin}/api/nostr/zap-receipt-sign`, `${BUDDY.origin}/api/nostr/site-sign`]);
+const hints2 = receiptHints(asked2[0]?.body);
+t.ok(`the receipt spec's URL hints are on ${BUDDY.origin} only`, hints2.length === 2 && hints2.every((h) => h.startsWith(`${BUDDY.origin}/`)), JSON.stringify(hints2));
+const tmpl2 = parse(asked2[1]?.body);
+t.equal('the note template says client BoostMeBuddy', tag1(tmpl2, 'client'), ['client', BUDDY.wireName]);
 t.ok("the template's imeta passes Buddy's own banner rule", tag1(tmpl2, 'imeta')?.[1]?.startsWith(`url ${BUDDY.origin}/api/og/boost.png?`), JSON.stringify(tag1(tmpl2, 'imeta')));
 t.ok("the template names Buddy's anonymous sender", tmpl2?.content?.includes(`${BUDDY.senderName} boosted 100 sats`), tmpl2?.content);
 t.ok('the template is within the route limits (2000 / 40 / 4096)',
@@ -401,38 +555,31 @@ t.ok('the template is within the route limits (2000 / 40 / 4096)',
   && (tmpl2?.tags ?? []).flat().reduce((s, x) => s + x.length, 0) <= 4096);
 await wait(2500);
 t.equal('no boost note reached any relay', published.slice(before).filter((e) => e.kind === 1).length, 0);
-t.ok('nothing signed by the bitch site key, ever', !published.some((e) => e.pubkey === BITCH_SITE_PK));
 const bg2 = boostagramOf(wallet.payments.at(-1));
-t.ok('the anonymous boostagram drops sender_id and keeps the deploy\'s default name', bg2 && bg2.sender_id === undefined && bg2.sender_name === BITCH.senderName && bg2.app_name === BITCH.wireName, JSON.stringify(bg2));
+t.ok("the anonymous boostagram drops sender_id and keeps the deploy's default name", bg2 && bg2.sender_id === undefined && bg2.sender_name === BITCH.senderName && bg2.app_name === BITCH.wireName, JSON.stringify(bg2));
 
-// ---- 3. "Anonymous", signed by Buddy production -------------------------------------------
-section('3. Anonymous, signed by Buddy production (needs PR 4 live there)');
-let skip3 = OFFLINE ? '--offline' : null;
-if (!skip3) {
-  const probe = await fetch(`${BUDDY.origin}/api/nostr/site-sign`, {
-    method: 'OPTIONS',
-    headers: { Origin: BITCH.origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' },
-    signal: AbortSignal.timeout(10000),
-  }).catch((e) => ({ error: e }));
-  const allow = probe.headers?.get?.('access-control-allow-origin');
-  if (probe.error) skip3 = `${BUDDY.origin} could not be reached (${probe.error.message})`;
-  else if (allow !== BITCH.origin && !FORCE_BUDDY) skip3 = `${BUDDY.origin}/api/nostr/site-sign answers ${probe.status} with no CORS for ${BITCH.origin} — PR 4 (buddy-sign-cors) is not live there yet`;
-  else if (allow !== BITCH.origin) console.log(`  --force-buddy: no CORS for ${BITCH.origin} on Buddy yet; asking it from this script anyway`);
-}
-if (skip3) {
-  console.log(`  SKIP  ${skip3}`);
-} else {
-  before = published.length;
-  await boostSong(created.feedUrl, song.title, 'site', 'proxy');
-  const n3 = await newNote(before, 15000);
-  show(n3);
-  t.equal('Buddy was asked once, for the note', buddyAsked.map((x) => x.url), [`${BUDDY.origin}/api/nostr/site-sign`]);
-  t.ok('the note reached the LOCAL relay', !!n3);
-  t.equal("its author is Buddy's site key", n3?.pubkey, BUDDY_SITE_PK);
-  t.equal('client = BoostMeBuddy', tag1(n3, 'client'), ['client', BUDDY.wireName]);
-  t.ok(`🎧 Heard on ${PLAYLIST_TITLE}`, n3?.content.includes(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`), n3?.content);
-  t.ok('no word of the other brand anywhere in it', !BITCH_WORDS.test(wordsIn(n3)), wordsIn(n3));
-}
+// ---- 3. "Anonymous", signed by the LOCAL Buddy server --------------------------------------
+section('3. Anonymous, signed by the local Buddy server (a throwaway key): Buddy signs, nothing else does');
+before = published.length;
+const buddyBefore = buddyAsked.length;
+await boostSong(created.feedUrl, song.title, 'site', { buddy: 'proxy', relays: [FAKE_WSS] });
+const n3 = await newNote(before, 15000);
+show(n3);
+const asked3 = buddyAsked.slice(buddyBefore);
+t.equal('the local Buddy server was asked for the receipt, then the note', asked3.map((x) => [x.path, x.status]), [['/api/nostr/zap-receipt-sign', 200], ['/api/nostr/site-sign', 200]]);
+const receipt3 = parse(asked3[0]?.text)?.event;
+t.ok('it answered with a 9735 signed by its throwaway key', receipt3?.kind === 9735 && receipt3?.pubkey === BUDDY_TEST_PK, JSON.stringify(receipt3 && { kind: receipt3.kind, pubkey: receipt3.pubkey }));
+t.ok(`...whose URL hints are on ${BUDDY.origin} only`, (receipt3?.tags ?? []).filter((x) => x[0] === 'i' && x[2]).every((x) => x[2].startsWith(`${BUDDY.origin}/`))
+  && (receipt3?.tags ?? []).some((x) => x[0] === 'i' && x[2]), JSON.stringify(receipt3?.tags));
+t.ok('the note reached the LOCAL relay', !!n3);
+t.equal("its author is the local Buddy server's throwaway key", n3?.pubkey, BUDDY_TEST_PK);
+t.ok("a receipt signed by a key other than Buddy's own is NOT quoted (no q tag, no nevent)", !!n3 && !tagsOf(n3, 'q').length && !n3.content.includes('nostr:nevent'), wordsIn(n3));
+t.ok('nor published', !published.some((e) => e.kind === 9735));
+t.equal('client = BoostMeBuddy', tag1(n3, 'client'), ['client', BUDDY.wireName]);
+t.ok(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:<maker npub>`, n3?.content.includes(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`), n3?.content);
+t.ok('no word of the other brand anywhere in it', !BITCH_WORDS.test(wordsIn(n3)), wordsIn(n3));
+const sent3 = rec.events.filter((e) => e.id === n3?.id);
+t.ok('the page published it to DEFAULT_RELAYS, and each went to the local relay instead', sent3.length > 0 && sent3.every((e) => e.asked.startsWith('wss://') && e.to.startsWith(LOCAL)), JSON.stringify(sent3));
 
 // ---- 4. one of the seven existing community feeds, "My feed" ------------------------------
 section("4. a song from an existing community feed (Lightning Thrashes): the deploy's own words, with the Heard-on line");
@@ -466,11 +613,12 @@ t.ok('every EVENT the page sent went to the local relay', events.length > 0 && e
 t.equal('no socket of any kind reached a public relay', sockets.filter((s) => !s.to.startsWith(LOCAL) && !s.to.includes(new URL(APP).host)), []);
 const notes = events.filter((e) => e.kind === 1);
 console.log(`  (${sockets.length} sockets, ${events.length} EVENT frames, ${notes.length} of them kind:1, asked for: ${[...new Set(notes.map((e) => e.asked))].join(', ')})`);
-console.log(`  (the page asked for ${new Set(sockets.filter((s) => s.to !== s.asked).map((s) => s.asked)).size} public relay URL(s); each went to the local relay instead)`);
+console.log(`  (the page asked for ${new Set(sockets.filter((s) => s.to !== s.asked).map((s) => s.asked)).size} other relay URL(s); each went to the local relay instead)`);
 t.equal("this deploy's own signing routes were never asked", signAsked.filter((x) => x.url.startsWith(APP)).map((x) => x.url), []);
+t.ok('nothing signed by either REAL site key, ever', !published.some((e) => e.pubkey === BITCH_SITE_PK || e.pubkey === BUDDY_REAL_PK));
 t.ok('every payment was a keysend to the stub node', wallet.payments.length > 0 && wallet.payments.every((p) => p.method === 'pay_keysend' && p.params?.pubkey === STUB_NODE), JSON.stringify(wallet.payments.map((p) => [p.method, p.params?.pubkey])));
 
-// ---- tidy: the maker deletes the stored playlist --------------------------------------------
+// ---- tidy: the maker deletes the stored playlist; the Buddy server and its copy go --------
 {
   const url = `${APP}/api/community-playlists/${created.id}`;
   const token = await getToken(url, 'DELETE', signAs(makerSk), true);
@@ -478,6 +626,6 @@ t.ok('every payment was a keysend to the stub node', wallet.payments.length > 0 
   t.equal('the maker deleted the stored playlist', r.status, 200);
 }
 
-console.log(`\n${t.fails ? `${t.fails} of ${t.count} checks FAILED.` : `All ${t.count} checks passed.`}${skip3 ? ` (section 3 skipped: ${skip3})` : ''}`);
+console.log(`\n${t.fails ? `${t.fails} of ${t.count} checks FAILED.` : `All ${t.count} checks passed.`}`);
 try { walletWs.close(); relay.close(); } catch { /* already gone */ }
-await exit(t.fails ? 1 : 0);
+await finish(t.fails ? 1 : 0);

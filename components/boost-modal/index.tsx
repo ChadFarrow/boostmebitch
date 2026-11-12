@@ -5,10 +5,10 @@ import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost, ValueBlock, ValueRecipient, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, receiptRefUrls, type QuotedZapReceipt } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, playlistBoostContext, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, playlistBoostContext, redirectLegs, retryableLegs, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
 import { BRAND, noteBrandFor, resolveSenderName, type Brand } from '@/lib/brand';
 import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
@@ -590,11 +590,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       mentions,
       maySignAsSelf,
       liveStreamId,
+      // The URL hints in the NOTE's brand: the receipt is signed by that
+      // brand's deploy, so a Buddy receipt must not carry this origin's links.
       hostRefs: {
         podcastGuid: showGuid,
         episodeGuid: itemGuid,
-        podcastUrl: showShareUrl(showGuid) ?? undefined,
-        episodeUrl: showShareUrl(showGuid, itemGuid) ?? undefined,
+        ...receiptRefUrls(noteBrand, showGuid, itemGuid),
       },
       noteSplit,
       noteArtist,

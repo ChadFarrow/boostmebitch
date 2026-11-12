@@ -447,6 +447,12 @@ for (const rel of ['components/boost-modal/index.tsx', 'components/boost-all-mod
   const appNames = [...src.matchAll(/app_name:\s*([^,\n]+)/g)].map((m) => m[1].trim());
   ok(`${rel}: every boostagram app_name is BRAND.wireName`,
     appNames.length > 0 && appNames.every((v) => v === 'BRAND.wireName'), `got ${JSON.stringify(appNames)}`);
+  // `senderName` is `resolveSenderName(name, anonymous)` — the deploy's own default.
+  // `sender_name: noteSenderName` would print Buddy's default in a boostagram the
+  // other deploy paid, which an artist's aggregator shows verbatim.
+  const senderNames = [...src.matchAll(/sender_name:\s*([^,\n]+)/g)].map((m) => m[1].trim());
+  ok(`${rel}: every boostagram sender_name is senderName`,
+    senderNames.length > 0 && senderNames.every((v) => v === 'senderName'), `got ${JSON.stringify(senderNames)}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ import {
   MAX_MENTION_NPUBS,
   inlineMentions,
   mentionParts,
+  withMentionRun,
 } from '../lib/nostr/mention-tags.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -477,6 +478,48 @@ console.log('\nmentionParts composes BOTH halves, and asks who is signing');
     console.error(`  FAIL  "${v.label}" passes against naive() too — the vector proves nothing.`);
   }
   console.log(`  ${mVectors.length} vector(s) replayed, ${mExempt} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nwithMentionRun names each person once');
+// ---------------------------------------------------------------------------
+{
+  // The trailing run, alone. `naive()` is the body this function had until the
+  // playlist Heard-on line: append every npub it is handed. A boost note for a
+  // song from a playlist names the maker in `🎧 Heard on … by nostr:npub…` AND
+  // hands the maker in as a feed npub, so the naive run printed the same
+  // `nostr:npub…` twice in a signed kind:1 that cannot be edited.
+  const wVectors = [];
+  const wcheck = (label, content, npubs, expected, { alsoNaive = false } = {}) => {
+    compare(label, withMentionRun(content, npubs), expected);
+    wVectors.push({ label, args: [content, npubs], alsoNaive });
+  };
+  const MAKER = { npub: 'npub1h67jdyalvcjmcf0hd0must5t7mee5ujesa59m3xhn9074kn744es3cwgyn', pubkey: 'be'.repeat(32) };
+  const ARTIST = { npub: 'npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m', pubkey: '82'.repeat(32) };
+
+  wcheck('a person the body already names is not named again',
+    `⚡ Boost ⚡\n\n🎧 Heard on Road Trip by nostr:${MAKER.npub}`, [MAKER, ARTIST],
+    `⚡ Boost ⚡\n\n🎧 Heard on Road Trip by nostr:${MAKER.npub}\n\nnostr:${ARTIST.npub}`);
+  wcheck('every person already named: the body is unchanged',
+    `hi nostr:${MAKER.npub}`, [MAKER],
+    `hi nostr:${MAKER.npub}`);
+  // Must-still-work: nobody named yet — one per line, in the order given.
+  wcheck('nobody named yet: every npub, one per line, in order',
+    'hello', [ARTIST, MAKER],
+    `hello\n\nnostr:${ARTIST.npub}\nnostr:${MAKER.npub}`, { alsoNaive: true });
+  wcheck('no npubs: the body is unchanged',
+    'hello', [],
+    'hello', { alsoNaive: true });
+
+  const wNaive = (content, npubs) => (npubs.length ? `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join('\n')}` : content);
+  replayVectors({
+    vectors: wVectors,
+    invoke: (impl, v) => {
+      try { return JSON.stringify(impl === 'real' ? withMentionRun(...v.args) : wNaive(...v.args)); }
+      catch (e) { return `threw ${(e && e.message) || e}`; }
+    },
+    fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); },
+  });
 }
 
 // ---------------------------------------------------------------------------

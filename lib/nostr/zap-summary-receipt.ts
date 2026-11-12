@@ -103,7 +103,10 @@ export async function mintSummaryReceipt(args: {
     });
     if (!res.ok) return null;
     const { event } = (await res.json()) as { event?: Event };
-    if (!event || event.kind !== 9735) return null;
+    // Only a receipt signed by the key the request named — the brand's own site
+    // key — is quoted. A note citing a receipt from any other key would claim an
+    // attestation that brand never made (and site-sign's `q` rule refuses one).
+    if (!event || event.kind !== 9735 || event.pubkey !== site) return null;
 
     const published = await publishSignedEvent(event, relays);
     // A receipt nobody holds is not worth quoting: the quote would point every
