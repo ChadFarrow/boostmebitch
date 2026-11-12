@@ -11,7 +11,7 @@ import {
   loadCollection,
   playlistTrackCount,
 } from '@/lib/playlist-collection';
-import { communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { isPlaylistMedium } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -43,6 +43,10 @@ const COUNT_CONCURRENCY = 3;
  * claimed eagerly by whichever section answers first, and ChadF's section can
  * fill all 12 before the store answers — which left the newest listener-made
  * playlist with no count. Reserved, so arrival order cannot decide it.
+ *
+ * Reserved ONLY while it can be used: 0 with the switch off (nothing is ever
+ * stored, and ChadF's section must keep every slot), and once the Community
+ * section has loaded, only as many as there are stored rows.
  */
 const COUNT_RESERVED_OWN = 4;
 
@@ -55,12 +59,14 @@ const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
   {
     url: COMMUNITY_COLLECTION_URL,
     heading: COMMUNITY_COLLECTION_TITLE,
-    // NOT "made by other people": entry 2 of COMMUNITY_PLAYLIST_URLS is ChadF's
-    // own, made on v4vmusic rather than by the tooling that writes the publisher
-    // feed. Every visitor read a false attribution about that row — the same
-    // class of wrong claim splitting the collections was meant to prevent, just
-    // pointing the other way. What is true of ALL of them is the host.
-    blurb: 'Made by listeners on BMB, and by other people in the V4V community.',
+    // With the switch off the list is the curated seven only, and NOT "made by
+    // other people": entry 2 of COMMUNITY_PLAYLIST_URLS is ChadF's own, made on
+    // v4vmusic rather than by the tooling that writes the publisher feed, so
+    // the true claim is the host. With it on, stored playlists are made by
+    // listeners on BMB, and the curated seven are still "other people".
+    blurb: COMMUNITY_PLAYLISTS_ON
+      ? 'Made by listeners on BMB, and by other people in the V4V community.'
+      : 'Built on other hosts, and mostly by other people in the V4V community.',
   },
 ];
 
@@ -91,10 +97,12 @@ interface SectionState {
   noPi: boolean;
   loading: boolean;
   failed: boolean;
+  /** Community only: the store of BMB-made playlists could not be read. */
+  storeDown: boolean;
 }
 
 const INITIAL: SectionState = {
-  playlists: null, listed: 0, noPi: false, loading: true, failed: false,
+  playlists: null, listed: 0, noPi: false, loading: true, failed: false, storeDown: false,
 };
 
 /**
@@ -143,6 +151,7 @@ export function PlaylistsPage() {
       playlists: collection.feeds,
       listed: collection.listed,
       noPi: collection.couldNotAskPi,
+      storeDown: collection.storeDown === true,
     });
   }, [patch]);
 
@@ -192,20 +201,33 @@ export function PlaylistsPage() {
     [sections],
   );
   const askedRef = useRef<Set<string>>(new Set());
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
+
+  /**
+   * How many count slots are held for stored rows RIGHT NOW. Part of the effect's
+   * key, so a freed slot goes to the other rows the moment it is known.
+   */
+  const communityState = sections[SECTIONS.findIndex((x) => x.url === COMMUNITY_COLLECTION_URL)];
+  const ownRows = (communityState.playlists ?? []).filter((p) => communityIdFromFeedUrl(p.url)).length;
+  const communityLoaded = !communityState.loading;
+  const reserved = !COMMUNITY_PLAYLISTS_ON
+    ? 0
+    : communityLoaded ? Math.min(ownRows, COUNT_RESERVED_OWN) : COUNT_RESERVED_OWN;
 
   useEffect(() => {
     if (!urlKey) return;
     // **The cap is a TOTAL for the page, not a per-run one**, and the claim is
-    // made EAGERLY. Both matter because this effect legitimately runs more than
-    // once: the two collections resolve in separate tasks, so `urlKey` grows,
-    // and React's development StrictMode invokes every effect twice. Claiming a
-    // URL only as a worker reached it left the rest unclaimed, so the next run
-    // re-asked about requests still in flight — measured at 30 requests for 17
-    // rows, worse than the uncapped version it replaced.
+    // made EAGERLY (see above). Cancellation is the PAGE's unmount, not this
+    // effect's cleanup: a re-run for a freed slot must not abandon the URLs an
+    // earlier run claimed and had not reached yet.
     const isOwn = (u: string) => !!communityIdFromFeedUrl(u);
     const asked = [...askedRef.current];
-    const ownLeft = COUNT_RESERVED_OWN - asked.filter(isOwn).length;
-    const restLeft = MAX_COUNTED_ROWS - COUNT_RESERVED_OWN - asked.filter((u) => !isOwn(u)).length;
+    const ownLeft = (COMMUNITY_PLAYLISTS_ON ? COUNT_RESERVED_OWN : 0) - asked.filter(isOwn).length;
+    const restLeft = MAX_COUNTED_ROWS - reserved - asked.filter((u) => !isOwn(u)).length;
     const fresh = urlKey.split('\n').filter((u) => !askedRef.current.has(u));
     const urls = [
       ...fresh.filter(isOwn).slice(0, Math.max(0, ownLeft)),
@@ -214,22 +236,20 @@ export function PlaylistsPage() {
     if (!urls.length) return;
     for (const u of urls) askedRef.current.add(u);
 
-    let live = true;
     let next = 0;
     const worker = async () => {
-      while (live) {
+      while (aliveRef.current) {
         const url = urls[next++];
         if (!url) return;
         const total = await playlistTrackCount(url);
-        if (!live || total === null) continue;
+        if (!aliveRef.current || total === null) continue;
         setCounts((prev) => (prev[url] === total ? prev : { ...prev, [url]: total }));
       }
     };
     void Promise.allSettled(
       Array.from({ length: Math.min(COUNT_CONCURRENCY, urls.length) }, worker),
     );
-    return () => { live = false; };
-  }, [urlKey]);
+  }, [urlKey, reserved]);
 
   /**
    * Open a playlist: set the store, THEN navigate to `/`.
@@ -309,6 +329,16 @@ export function PlaylistsPage() {
               </p>
             )}
 
+            {/* The store half is missing: say WHICH half, not "1 more". */}
+            {!state.loading && !state.failed && state.storeDown && (
+              <p className="text-xs text-muted mb-3 px-1 flex flex-wrap items-center gap-3" data-testid="store-down">
+                <span>Playlists made on BMB couldn&apos;t be loaded just now.</span>
+                <button type="button" onClick={() => void load(i)} className="btn-ghost btn-compact">
+                  ↻ RETRY
+                </button>
+              </p>
+            )}
+
             {/* Above the list, not instead of it: a retry that fails still
                 leaves the previously loaded rows readable underneath. */}
             {state.failed && (
@@ -332,7 +362,7 @@ export function PlaylistsPage() {
                   const id = communityIdFromFeedUrl(p.url);
                   if (!id || !identity || p.nostrNpubs?.[0]?.pubkey !== identity.pubkey) return null;
                   return (
-                    <Link href={`/playlists/make?id=${id}`} className="btn-mini" data-edit-playlist>
+                    <Link href={`/playlists/make?id=${id}`} className="btn-mini" data-edit-playlist aria-label={`Edit ${p.title}`}>
                       EDIT
                     </Link>
                   );

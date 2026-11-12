@@ -125,7 +125,7 @@ export function PodcastRow({
           this heart wraps it exactly like this (see <FavoriteItemRows> and
           <Podroll>); this one did not, and it is the row the favorites page is
           almost entirely made of. */}
-      <div className="flex-shrink-0 self-center flex items-center gap-2">
+      <div className={`flex-shrink-0 self-center${action ? ' flex items-center gap-2' : ''}`}>
         {action}
         <FavHeart podcast={podcast} />
       </div>

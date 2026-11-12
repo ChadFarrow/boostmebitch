@@ -91,6 +91,11 @@ export interface Collection {
    * paid for on the BOOST button.
    */
   couldNotAskPi: boolean;
+  /**
+   * Community only: the store of playlists made on BMB could not be read, so
+   * that half is MISSING — said by name, never folded into `listed`.
+   */
+  storeDown?: boolean;
 }
 
 export async function loadCollection(feedUrl: string): Promise<Collection | null> {
@@ -135,42 +140,43 @@ export async function loadCollection(feedUrl: string): Promise<Collection | null
  * The Community collection: playlists made on BMB first (newest first), then the
  * curated URL list.
  *
- * **A store that cannot be reached is a SHORTFALL, not an empty store.**
+ * **A store that cannot be reached is a missing HALF, not an empty store.**
  * `fetchCommunityPlaylists` answers `null` for a failure and `[]` for "nobody has
- * made one", and only the second is a fact. On `null` this adds one to `listed`
- * for the playlists we could not count, so the page's own "N of M" line and
- * RETRY say so, while the curated rows stay readable.
+ * made one", and only the second is a fact. On `null` this sets `storeDown`, so
+ * the page names what is missing (and offers RETRY) rather than folding it into
+ * a count; `listed` stays true to what was counted.
  *
- * **One feed URL, one row.** A stored playlist whose feed address is also in the
- * curated list keeps the stored row and the curated entry is not resolved. Rows
- * are keyed by `p.id`, so two rows for one feed would make the second
- * unreachable, and the count would claim two playlists.
+ * **The two reads run in parallel** — they share nothing, and the store answers
+ * in milliseconds while the curated list pays for Podcast Index.
+ *
+ * **One feed URL, one row.** A curated entry whose URL a stored playlist holds is
+ * dropped after the merge and is not counted in `listed`. Rows are keyed by
+ * `p.id`, so two rows for one feed would make the second unreachable.
  *
  * The stored rows are built from our own database, so they need no Podcast Index
  * call and are never counted against `couldNotAskPi`.
  */
 async function loadCommunity(): Promise<Collection | null> {
-  let stored: Podcast[] = [];
-  let storeUnreachable = false;
-  if (COMMUNITY_PLAYLISTS_ON) {
-    const list = await fetchCommunityPlaylists();
-    if (list) stored = list.map(communityPlaylistToPodcast);
-    else storeUnreachable = true;
-  }
+  const curated = [...new Set(COMMUNITY_PLAYLIST_URLS)];
+  const [list, rest] = await Promise.all([
+    COMMUNITY_PLAYLISTS_ON ? fetchCommunityPlaylists() : Promise.resolve([]),
+    loadUrlList(curated),
+  ]);
+  const storeDown = list === null;
+  const stored = (list ?? []).map(communityPlaylistToPodcast);
   const have = new Set(stored.map((p) => p.url));
-  const curated = [...new Set(COMMUNITY_PLAYLIST_URLS)].filter((u) => !have.has(u));
-  const rest = await loadUrlList(curated);
-  const extra = storeUnreachable ? 1 : 0;
+  const dupes = curated.filter((u) => have.has(u)).length;
   if (!rest) {
     // The curated half failed outright. With stored rows in hand the page can
     // still show them, with the curated ones counted as missing.
     if (!stored.length) return null;
-    return { feeds: stored, listed: stored.length + curated.length + extra, couldNotAskPi: false };
+    return { feeds: stored, listed: stored.length + curated.length - dupes, couldNotAskPi: false, storeDown };
   }
   return {
-    feeds: [...stored, ...rest.feeds],
-    listed: stored.length + rest.listed + extra,
+    feeds: [...stored, ...rest.feeds.filter((f) => !have.has(f.url))],
+    listed: stored.length + rest.listed - dupes,
     couldNotAskPi: rest.couldNotAskPi,
+    storeDown,
   };
 }
 

@@ -17,7 +17,7 @@ import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 
 import { loadCollection } from '@/lib/playlist-collection';
-import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
+import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import type { Podcast } from '@/lib/types';
 import { NO_SELECTION, applyStoreView, backOr, currentEntryView, syncEntry, viewForEntry } from '@/lib/view-history';
 import type { HomeView } from '@/lib/view-history';
@@ -906,6 +906,9 @@ export function HomePage() {
                 feeds={feeds}
                 selected={null}
                 onSelect={handleSelect}
+                // A stored community playlist is `isPreview` because it is not a
+                // Podcast Index record, not because PI was asked and missed it.
+                piUnasked={(p) => !!communityIdFromFeedUrl(p.url)}
                 empty={emptyState}
               />
             ) : null}

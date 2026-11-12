@@ -4,6 +4,7 @@
 //   COMMUNITY_DB_URL=postgres://postgres:test@localhost:54329/postgres
 //   ADMIN_NPUBS=<any npub> NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
 //   NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 npm run dev -- -p 3123
+// `--off` runs ONLY the switch-off half, against a server started without NEXT_PUBLIC_COMMUNITY_PLAYLISTS.
 // and the schema applied (`npm run community:schema`). APP_URL overrides the server.
 // The signer is a throwaway key behind a fake NIP-07 `window.nostr`, and relays point
 // at a LOCAL relay, so nothing reaches a public relay.
@@ -12,6 +13,7 @@ import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { getToken } from 'nostr-tools/nip98';
 
+const OFF = process.argv.includes('--off'); // run against a dev server started WITHOUT the switch
 const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
 await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
 
@@ -106,6 +108,29 @@ const labels = Object.fromEntries(real.map((e) => [e.guid, { title: e.title, ...
 const draft = (over = {}) => ({ title: 'e2e community playlist', description: 'made by e2e-community-ui', artUrl: null, songs, ...over });
 
 await phone();
+
+if (OFF) {
+  console.log('--- OFF. switch off: the old page, byte for byte in what it claims (390 x 844) ---');
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    (() => { window.__fetched = []; const f = window.fetch; window.fetch = (...a) => { window.__fetched.push(String(a[0])); return f(...a); }; })();
+  ` });
+  await js(`localStorage.setItem('bmb:fav_privacy:${npub}', 'public'); 1`);
+  await go('/playlists');
+  const section = (h) => `[...document.querySelectorAll('section')].find((s) => s.querySelector('h2')?.textContent === ${JSON.stringify(h)})`;
+  t.ok('the Community section is there', await waitFor(`${section('Community playlists')}`, 30000));
+  t.ok('the old blurb', await js(`${section('Community playlists')}.innerText.includes('Built on other hosts, and mostly by other people in the V4V community.')`));
+  t.ok('not the new blurb', await js(`!document.body.innerText.includes('Made by listeners on BMB')`));
+  await waitFor(`!document.body.innerText.includes('loading playlists')`, 60000);
+  const rowsAll = `[...document.querySelectorAll('section li')].filter((l) => l.innerText.includes('PLAYLIST'))`;
+  const countable = await js(`${rowsAll}.length`);
+  t.ok('there are more than 12 playlist rows to count', countable > 12, String(countable));
+  t.ok('every one of the 12 count slots is used', await waitFor(`${rowsAll}.filter((l) => l.innerText.includes(' tracks')).length === 12`, 90000), String(await js(`${rowsAll}.filter((l) => l.innerText.includes(' tracks')).length`)));
+  t.equal('no stored rows, no EDIT', await js(`document.querySelectorAll('a[data-edit-playlist]').length`), 0);
+  t.equal('the page never asked the store', await js(`window.__fetched.filter((u) => u.includes('/api/community-playlists')).length`), 0);
+  t.ok('off: no horizontal overflow', await overflowFree());
+  console.log(`\n${t.count - t.fails}/${t.count} passed`);
+  await exit(t.fails ? 1 : 0);
+}
 
 // ---- 1. home: the button, next to BROWSE PLAYLISTS ---------------------------
 console.log('--- 1. home: MAKE PLAYLIST next to BROWSE PLAYLISTS (390 x 844) ---');
@@ -219,6 +244,9 @@ t.equal('published: controls at least 24 x 24', await tooSmall('main button, mai
 
 
 console.log('--- 7a. /playlists: listed first, EDIT on your own, hearts (390 x 844) ---');
+// A fresh fake address: /api/playlist allows 30 a minute, and this page counts rows as well as opening one.
+IP = `10.79.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+await send('Network.setExtraHTTPHeaders', { headers: { 'x-real-ip': IP } });
 // Recorders, installed for every later document: each EVENT frame the page sends, with the
 // socket it went to; and a switch (localStorage) that fakes the store's answer.
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `
@@ -247,9 +275,12 @@ t.ok('Community lists the new playlist', await waitFor(`${community} && ${comRow
 t.ok('...first', await js(`${comRows}[0].innerText.includes('e2e community playlist')`));
 t.ok('the blurb is the new one', await js(`${community}.innerText.includes('Made by listeners on BMB, and by other people in the V4V community.')`));
 t.equal('exactly one EDIT in the section, on that row', await js(`[${comRows}.filter((l) => l.querySelector('a[data-edit-playlist]')).length, ${comRows}[0].querySelector('a[data-edit-playlist]')?.getAttribute('href')]`), [1, `/playlists/make?id=${id}`]);
+t.equal('EDIT is named for its playlist', await js(`${comRows}[0].querySelector('a[data-edit-playlist]')?.getAttribute('aria-label')`), 'Edit e2e community playlist');
 t.ok('EDIT is a sibling of the row button, never inside it', await js(`!document.querySelector('li button a[data-edit-playlist], li button [data-edit-playlist]')`));
 t.ok('the stored row prints no NOT IN PI', await js(`!${comRows}[0].innerText.includes('NOT IN PI')`));
+t.ok('a curated row PI has not indexed still stamps NOT IN PI (the stamp is not suppressed everywhere)', await waitFor(`${comRows}.some((l) => !l.querySelector('a[data-edit-playlist]') && !l.innerText.includes('e2e community playlist') && l.innerText.includes('NOT IN PI'))`, 30000));
 t.ok('the stored row shows its track count', await waitFor(`${comRows}[0].innerText.includes('12 tracks')`, 30000));
+t.ok('counted rows == min(12, countable rows), not fewer', await waitFor(`(() => { const r = [...document.querySelectorAll('section li')].filter((l) => l.innerText.includes('PLAYLIST')); return r.length >= 1 && r.filter((l) => l.innerText.includes(' tracks')).length === Math.min(12, r.length); })()`, 90000), await js(`[...document.querySelectorAll('section li')].filter((l) => l.innerText.includes(' tracks')).length + ' of ' + [...document.querySelectorAll('section li')].length`));
 t.ok('/playlists: no horizontal overflow', await overflowFree());
 t.equal('EDIT is at least 24 x 24', await tooSmall('a[data-edit-playlist]', 24, 24), []);
 t.equal('the row heart is at least 24 x 24', await tooSmall('li button[aria-label$="podcast"]', 24, 24), []);
@@ -259,6 +290,7 @@ cur = { sk: sk2, pk: pk2 };
 await js(`localStorage.setItem('bmb:npub', ${JSON.stringify(npub2)}); 1`);
 await go('/playlists');
 t.ok('another key still sees the row', await waitFor(`${community} && ${comRows}.some((l) => l.innerText.includes('e2e community playlist'))`, 30000));
+t.ok('the page is signed in as key 2 (account button names it)', await waitFor(`[...document.querySelectorAll('[aria-label^="Account:"]')].some((b) => b.getAttribute('aria-label').includes(${JSON.stringify(npub2.slice(0, 6) + '…' + npub2.slice(-6))}))`, 20000), await js(`[...document.querySelectorAll('[aria-label^="Account:"]')].map((b) => b.getAttribute('aria-label')).join('|')`));
 t.equal('...with no EDIT anywhere', await js(`document.querySelectorAll('a[data-edit-playlist]').length`), 0);
 cur = { sk, pk };
 await js(`localStorage.setItem('bmb:npub', ${JSON.stringify(npub)}); 1`);
@@ -267,7 +299,8 @@ await js(`localStorage.setItem('bmb:npub', ${JSON.stringify(npub)}); 1`);
 await js(`localStorage.setItem('__e2eStore', 'down'); 1`);
 await go('/playlists');
 t.ok('store down: the curated rows are still listed', await waitFor(`${community} && ${comRows}.length >= 1 && !${community}.innerText.includes('loading playlists')`, 40000));
-t.ok('store down: the partial line and a RETRY', await js(`${community}.innerText.includes("1 more couldn't be loaded just now") && !![...${community}.querySelectorAll('button')].find((b) => b.textContent.includes('RETRY'))`));
+t.ok('store down: the line names the missing half, with a RETRY', await js(`${community}.innerText.includes("Playlists made on BMB couldn't be loaded just now.") && !![...${community}.querySelectorAll('[data-testid=store-down] button')].find((b) => b.textContent.includes('RETRY'))`));
+t.ok('store down: not folded into a count ("1 more")', await js(`!/\\d+ more couldn't be loaded/.test(${community}.innerText) && !/\\d+ of \\d+ playlists/i.test(${community}.innerText)`));
 t.ok('store down: no stored row, no EDIT', await js(`!${community}.innerText.includes('e2e community playlist') && !document.querySelector('a[data-edit-playlist]')`));
 // a stored playlist and a curated one with the same feed URL: one row
 await js(`localStorage.setItem('__e2eStore', 'dupe'); 1`);
@@ -287,7 +320,11 @@ t.ok('the row heart (podcast) renders for a stored playlist', await js(`!!${comR
 await click(`${comRows}[0].querySelector('button[aria-label="Favorite podcast"]')`);
 t.ok('row heart: favorites[<playlist podcastGuid>] is set', await waitFor(`JSON.parse(localStorage.getItem('bmb:favorites:${npub}') || '{}')[${JSON.stringify(plGuid)}]`, 15000), JSON.stringify(await favGuids('bmb:favorites')));
 t.ok('the favorite is the playlist: its url and the musicL medium', await js(`(() => { const f = JSON.parse(localStorage.getItem('bmb:favorites:${npub}'))[${JSON.stringify(plGuid)}]; return f.url === ${JSON.stringify(feedUrl)} && /^musicl$/i.test(f.medium ?? ''); })()`), JSON.stringify(await favEntry('bmb:favorites', plGuid)));
-t.ok('a kind:10333 reached the LOCAL relay naming the playlist', await waitFor(`1`) && (await (async () => { for (let i = 0; i < 40; i++) { if (published.some((e) => e.kind === 10333 && JSON.stringify(e.tags).includes(plGuid))) return true; await wait(250); } return false; })()));
+const waitPublished = async (needle) => { for (let i = 0; i < 40; i++) { const e = published.filter((x) => x.kind === 10333 && JSON.stringify(x.tags).includes(needle)).at(-1); if (e) return e; await wait(250); } return null; };
+const favEvent = await waitPublished(plGuid);
+t.ok('a kind:10333 reached the LOCAL relay naming the playlist', !!favEvent);
+const iAt = (favEvent?.tags ?? []).findIndex((x) => x[0] === 'i' && x[1] === `podcast:guid:${plGuid}`);
+t.ok("its `i` tag sits in a run whose medium tag is musicL", iAt > 0 && favEvent.tags[iAt - 1][0] === 'medium' && /^musicl$/i.test(favEvent.tags[iAt - 1][1]), JSON.stringify(favEvent?.tags));
 // open the row: the track list plays, 12 rows, header heart is pressed
 await click(`${comRows}[0].querySelector(':scope > button')`);
 t.ok('opening the row shows its 12 tracks', await waitFor(`document.querySelectorAll('button[aria-label^="More actions for"]').length === 12`, 40000), String(await js(`document.querySelectorAll('button[aria-label^="More actions for"]').length`)));
@@ -302,8 +339,9 @@ await click(`document.querySelector('[role=menu] button[aria-label="Favorite epi
 t.ok('a song heart: favoriteEpisodes[<itemGuid>] is set', await waitFor(`JSON.parse(localStorage.getItem('bmb:favepisodes:${npub}') || '{}')[${JSON.stringify(real[0].guid)}]`, 15000));
 const songFav = await favEntry('bmb:favepisodes', real[0].guid);
 t.equal("the song's feedGuid is its OWN feed, never the playlist's", [songFav?.feedGuid === real[0].podcastGuid, songFav?.feedGuid !== plGuid], [true, true]);
+t.equal("the song favorite carries no medium or feedUrl copied from the playlist", [songFav?.medium ?? null, songFav?.feedUrl ?? null].map((v) => v === null || (v !== feedUrl && !/^musicl$/i.test(String(v)))), [true, true]);
 t.ok('the playlist favorite is still there beside it', !!(await favEntry('bmb:favorites', plGuid)));
-t.ok('the song favorite reached the LOCAL relay', await (async () => { for (let i = 0; i < 40; i++) { if (published.some((e) => e.kind === 10333 && JSON.stringify(e.tags).includes(real[0].guid))) return true; await wait(250); } return false; })());
+t.ok('the song favorite reached the LOCAL relay', !!(await waitPublished(real[0].guid)));
 const outside = await js(`window.__ws.filter((w) => !/^ws:\\/\\/127\\.0\\.0\\.1:/.test(w.url))`);
 t.equal('no event of any kind went to a public relay', outside, []);
 t.ok('the local relay is the only one that took EVENTs', await js(`window.__ws.length > 0 && window.__ws.every((w) => w.url.startsWith('ws://127.0.0.1:${PORT}'))`));
