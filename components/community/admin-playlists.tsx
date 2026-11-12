@@ -38,7 +38,8 @@ export function AdminPlaylists() {
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const [mounted, setMounted] = useState(false);
   const [gaveUp, setGaveUp] = useState(false);
-  const [load, setLoad] = useState<Load>({ s: 'loading' });
+  // The loaded list belongs to ONE account: another pubkey reads as loading, never as the last admin's list.
+  const [loaded, setLoaded] = useState<{ pubkey: string; load: Load } | null>(null);
   const [names, setNames] = useState<Map<string, string>>(new Map());
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [busy, setBusy] = useState(false);
@@ -51,6 +52,8 @@ export function AdminPlaylists() {
   }, []);
   const restoring = mounted && !identity && !gaveUp && !!storage.npub.get();
   const pubkey = identity?.pubkey ?? null;
+  const load: Load = loaded && loaded.pubkey === pubkey ? loaded.load : { s: 'loading' };
+  const setLoad = useCallback((l: Load) => { if (pubkey) setLoaded({ pubkey, load: l }); }, [pubkey]);
 
   const read = useCallback(async (): Promise<Load> => {
     try {
@@ -68,8 +71,8 @@ export function AdminPlaylists() {
   useEffect(() => {
     if (!pubkey) return;
     let live = true;
-    setLoad({ s: 'loading' }); setNote(null);
-    void read().then((l) => { if (live) setLoad(l); });
+    setLoaded(null); setNote(null); setConfirm(null); setNames(new Map());
+    void read().then((l) => { if (live) setLoaded({ pubkey, load: l }); });
     return () => { live = false; };
   }, [pubkey, read]);
 
@@ -97,14 +100,23 @@ export function AdminPlaylists() {
     setBusy(true); setNote(null);
     try {
       const r = await signedFetch(ADMIN_PATH, 'POST', body);
-      if (!r.ok) { setNote('That did not work. Nothing was changed.'); return; }
+      if (!r.ok) {
+        // The server may have acted before it failed (a delete-all can stop part way): show what is there now.
+        const fresh = await read();
+        if (fresh.s === 'ok') setLoad(fresh);
+        setNote('It may not have worked.');
+        return;
+      }
       const j = (await r.json().catch(() => ({}))) as { deleted?: number };
       const fresh = await read();
       if (fresh.s === 'ok') setLoad(fresh);
       setNote(fresh.s === 'ok' ? done(j) : `${done(j)} The list could not be reloaded.`);
     } catch (e) {
-      setNote(e instanceof SignTimeoutError ? 'The signer did not answer. Nothing was changed.'
-        : e instanceof NoSignerError ? 'No signer is connected.' : 'That did not work. Nothing was changed.');
+      if (e instanceof SignTimeoutError) { setNote('The signer did not answer. Nothing was sent.'); return; }
+      if (e instanceof NoSignerError) { setNote('No signer is connected.'); return; }
+      const fresh = await read();
+      if (fresh.s === 'ok') setLoad(fresh);
+      setNote('It may not have worked.');
     } finally {
       setBusy(false); setConfirm(null);
     }
@@ -169,7 +181,7 @@ export function AdminPlaylists() {
                     {shortNpub(p.ownerNpub)}{names.get(p.ownerPubkey) ? ` · ${names.get(p.ownerPubkey)}` : ''}
                   </p>
                   <p className="text-xs font-mono text-muted">
-                    {p.songCount} songs · {timeAgo(Math.floor(Date.parse(p.createdAt) / 1000))}
+                    {p.songCount} {p.songCount === 1 ? 'song' : 'songs'} · {timeAgo(Math.floor(Date.parse(p.createdAt) / 1000))}
                   </p>
                 </div>
               </div>
@@ -218,7 +230,8 @@ export function AdminPlaylists() {
       {confirm?.kind === 'ban' && (
         <ModalShell onClose={() => setConfirm(null)} label="Ban this maker" className="w-full max-w-sm" closeButton>
           <div className="p-5">
-            <h2 className="font-display text-xl">Ban {confirm.who}?</h2>
+            <h2 className="font-display text-xl break-words">Ban {confirm.who}?</h2>
+            <p className="mt-1 text-xs font-mono text-muted break-all">{shortNpub(npubOf(confirm.pubkey))}</p>
             <p className="mt-2 text-sm text-bone/80">Also delete this person&apos;s other playlists?</p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button type="button" className="btn-bolt btn-compact" disabled={busy}

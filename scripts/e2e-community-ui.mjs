@@ -546,7 +546,7 @@ const apiPublish = async (key, title) => {
   return { status: r.status, id: j.id, j };
 };
 const tag = Math.random().toString(36).slice(2, 7);
-const A1 = `e2e admin A1 ${tag}`, A2 = `e2e admin A2 ${tag}`, B1 = `e2e admin B1 ${tag}`;
+const A1 = `e2e admin A1 ${tag}`, A2 = `e2e admin A2 ${tag}`, A4 = `e2e admin A4 ${tag}`, B1 = `e2e admin B1 ${tag}`;
 const pa1 = await apiPublish(sk, A1); await wait(1100);
 const pa2 = await apiPublish(sk, A2); await wait(1100);
 const pb1 = await apiPublish(sk3, B1);
@@ -603,37 +603,64 @@ t.ok('confirmed: the row is gone', await waitFor(`!document.querySelector('[data
 t.equal('and its feed answers 410', (await fetch(communityFeed(pa1.id))).status, 410);
 t.ok('and the other rows stay', (await adminIds()).includes(pa2.id));
 
-// BAN AND DELETE ALL
+// The maker has TWO playlists left (A2 and A4): the two ban buttons must differ in what they do to the other one.
+const pa4 = await apiPublish(sk, A4);
+t.ok('a second playlist for the maker', pa4.status === 201 && !!pa4.id, JSON.stringify(pa4.j));
+await go('/admin');
+await waitFor(`document.querySelector('[data-admin-playlist="${pa4.id}"]')`, 30000);
+const publishRefused = async (title) => {
+  await as(sk, pk);
+  await seed(draft({ title }), labels);
+  await go('/playlists/make');
+  await waitFor(`document.querySelector('#pl-title')`); await wait(500);
+  await click(byText('PUBLISH'));
+  return waitFor(`document.querySelector('main')?.innerText.includes('This account cannot publish playlists.')`, 30000);
+};
+const unbanFirst = async () => {
+  await as(ADMIN_SK, adminPk);
+  await go('/admin');
+  if (!(await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 1`, 30000))) return false;
+  await click(byText('UNBAN'));
+  return waitFor(`document.querySelectorAll('[data-admin-ban]').length === 0`, 20000);
+};
+const onPlaylists = async (titles) => {
+  await go('/playlists');
+  await waitFor(`document.body.innerText.includes(${JSON.stringify(B1)})`, 60000);
+  return js(`${JSON.stringify(titles)}.map((x) => document.body.innerText.includes(x))`);
+};
+
+// (a) BAN ONLY: both of the maker's playlists stay
 await click(rowBtn(pa2.id, 'BAN MAKER'));
 t.ok('BAN asks about the other playlists', await waitFor(`document.querySelector('[role=dialog]')?.innerText.includes("Also delete this person's other playlists?")`));
 t.ok('with BAN AND DELETE ALL, BAN ONLY and CANCEL', await js(`['BAN AND DELETE ALL', 'BAN ONLY', 'CANCEL'].every((l) => [...document.querySelectorAll('[role=dialog] button')].some((b) => b.textContent.trim() === l))`));
+t.ok('the dialog names the maker by short npub too', await js(`document.querySelector('[role=dialog]').innerText.includes('npub1')`));
 t.equal('the three buttons are at least 24 x 24', await tooSmall('[role=dialog] button', 24, 24), []);
-await click(inDialog('BAN AND DELETE ALL'));
-t.ok('the maker is in the Banned list', await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 1`, 20000));
-t.ok('the maker playlists are gone from the admin list', !(await adminIds()).includes(pa2.id));
-t.ok('the other maker is untouched', (await adminIds()).includes(pb1.id));
-t.equal('the banned maker feed answers 410', (await fetch(communityFeed(pa2.id))).status, 410);
-t.equal('a banned row has UNBAN at least 24 x 24', [!!(await js(`!!${byText('UNBAN')}`)), await tooSmall('[data-admin-ban] button', 24, 24)], [true, []]);
-await go('/playlists');
-t.ok('/playlists lists the surviving playlist', await waitFor(`document.body.innerText.includes(${JSON.stringify(B1)})`, 60000));
-t.ok('and not the banned maker playlists', await js(`!document.body.innerText.includes(${JSON.stringify(A1)}) && !document.body.innerText.includes(${JSON.stringify(A2)})`));
-const apiList = await fetch(`${APP}/api/community-playlists`, { headers: { 'x-real-ip': nodeIp } }).then((r) => r.json());
-t.ok('and the public list agrees', !apiList.playlists.some((p) => p.title === A1 || p.title === A2) && apiList.playlists.some((p) => p.title === B1));
+await click(inDialog('BAN ONLY'));
+t.ok('BAN ONLY: the maker is in the Banned list', await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 1`, 20000));
+t.equal('BAN ONLY: both playlists stay in the admin list', [(await adminIds()).includes(pa2.id), (await adminIds()).includes(pa4.id)], [true, true]);
+t.equal('BAN ONLY: both feeds still answer 200', [(await fetch(communityFeed(pa2.id))).status, (await fetch(communityFeed(pa4.id))).status], [200, 200]);
+t.equal('BAN ONLY: both stay on /playlists', await onPlaylists([A2, A4]), [true, true]);
+t.equal('a banned row has UNBAN at least 24 x 24', await tooSmall('[data-admin-ban] button', 24, 24), []);
+t.ok('BAN ONLY: the maker PUBLISH is refused', await publishRefused(`e2e admin A3 ${tag}`));
+t.ok('UNBAN after BAN ONLY', await unbanFirst());
 
-// the banned maker cannot publish
-await as(sk, pk);
-await seed(draft({ title: `e2e admin A3 ${tag}` }), labels);
-await go('/playlists/make');
-await waitFor(`document.querySelector('#pl-title')`); await wait(500);
-await click(byText('PUBLISH'));
-t.ok('the banned maker PUBLISH shows This account cannot publish playlists.', await waitFor(`document.querySelector('main')?.innerText.includes('This account cannot publish playlists.')`, 30000));
-
-// UNBAN
-await as(ADMIN_SK, adminPk);
+// (b) BAN AND DELETE ALL, from the row of ONE of the two: both go
 await go('/admin');
-t.ok('the admin opens the Banned list', await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 1`, 30000));
-await click(byText('UNBAN'));
-t.ok('UNBAN empties the Banned list', await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 0`, 20000));
+await waitFor(`document.querySelector('[data-admin-playlist="${pa4.id}"]')`, 30000);
+await click(rowBtn(pa2.id, 'BAN MAKER'));
+await waitFor(`document.querySelector('[role=dialog]')`);
+await click(inDialog('BAN AND DELETE ALL'));
+t.ok('BAN AND DELETE ALL: the maker is in the Banned list', await waitFor(`document.querySelectorAll('[data-admin-ban]').length === 1`, 20000));
+t.equal('BOTH of the maker playlists are gone from the admin list', [(await adminIds()).includes(pa2.id), (await adminIds()).includes(pa4.id)], [false, false]);
+t.ok('the other maker is untouched', (await adminIds()).includes(pb1.id));
+t.equal('BOTH feeds answer 410', [(await fetch(communityFeed(pa2.id))).status, (await fetch(communityFeed(pa4.id))).status], [410, 410]);
+t.equal('/playlists shows neither, and still the other maker', await onPlaylists([A2, A4, B1]), [false, false, true]);
+const apiList = await fetch(`${APP}/api/community-playlists`, { headers: { 'x-real-ip': nodeIp } }).then((r) => r.json());
+t.ok('and the public list agrees', !apiList.playlists.some((p) => [A1, A2, A4].includes(p.title)) && apiList.playlists.some((p) => p.title === B1));
+t.ok('BAN AND DELETE ALL: the maker PUBLISH is refused', await publishRefused(`e2e admin A3 ${tag}`));
+
+// UNBAN: publishing works again
+t.ok('UNBAN after BAN AND DELETE ALL', await unbanFirst());
 await as(sk, pk);
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')`); await wait(500);
