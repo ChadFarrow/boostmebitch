@@ -6,6 +6,11 @@ import {
 } from '../lib/curated-playlists.ts';
 import { validatePlaylistDraft, artVerdict } from '../lib/community/rules.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
+import {
+  escapeXml, communityFeedGuid, buildPlaylistFeedXml,
+} from '../lib/community/feed-doc.ts';
+import { channelSlice, parsePlaylistRemoteItems, parseFeedNpubs, decodeXmlText } from '../lib/feed-xml.ts';
+import { npubEncode } from 'nostr-tools/nip19';
 import { BRANDS } from '../lib/brand.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -94,6 +99,73 @@ check('other origin -> null', communityIdFromFeedUrl(`https://evil.example/feeds
 check('undefined -> null', communityIdFromFeedUrl(undefined) === null);
 check('suffix junk -> null', communityIdFromFeedUrl(communityFeedUrl(id) + '?x=1') === null);
 check('coverVersion', coverVersion('2026-11-12T00:00:00.000Z') === 1794441600);
+
+// ---- The feed document ------------------------------------------------------
+// Vectors are parsed back with the REAL readers in lib/feed-xml.ts, so a
+// document that only our own builder can read fails here.
+const PC20 = '917393e3-1b1e-5cef-ace4-edaa54e1f810';
+check('guid: PC20 vector', communityFeedGuid('https://mp3s.nashownotes.com/pc20rss.xml') === PC20);
+check('guid: trailing slash', communityFeedGuid('https://mp3s.nashownotes.com/pc20rss.xml/') === PC20);
+check('guid: http scheme', communityFeedGuid('http://mp3s.nashownotes.com/pc20rss.xml') === PC20);
+
+const TITLE = `Tom & Jerry's <"mix"> ]]> 🎵 שלום`;
+const ownerNpub = npubEncode('ab'.repeat(32));
+const docSongs = Array.from({ length: 12 }, (_, i) => ({
+  feedGuid: 'feed-' + i, itemGuid: i === 3 ? 'https://x.example/?a=1&b=2' : i === 5 ? 'say "hi" it\'s' : 'item-' + i,
+  ...(i === 0 ? { feedUrl: 'https://x.example/f.xml?a=1&b=2' } : {}),
+}));
+const stored = {
+  id, ownerPubkey: 'ab'.repeat(32), createdAt: '2026-11-01T00:00:00.000Z',
+  updatedAt: '2026-11-12T00:00:00.000Z', title: TITLE, description: 'A & B <c>', artUrl: null, songs: docSongs,
+};
+const opts = {
+  feedUrl: communityFeedUrl(id), coverUrl: communityCoverUrl(id, 1),
+  ownerNpub, fallbackDescription: 'Fallback & co',
+};
+const titleOf = (xml) => decodeXmlText(/<title>([\s\S]*?)<\/title>/.exec(channelSlice(xml))[1]);
+const docVectors = [
+  { kind: 'items', build: (b) => b(stored, opts), test: (xml) => {
+    const refs = parsePlaylistRemoteItems(channelSlice(xml));
+    return refs.length === 12 && refs.every((x, i) => x.feedGuid === docSongs[i].feedGuid && x.itemGuid === docSongs[i].itemGuid);
+  } },
+  { kind: 'title', build: (b) => b(stored, opts), test: (xml) => titleOf(xml) === TITLE },
+  { kind: 'title well-formed', build: (b) => b(stored, opts), test: (xml) => {
+    const raw = /<title>([\s\S]*?)<\/title>/.exec(channelSlice(xml))[1];
+    return !/[<>"']/.test(raw) && !/&(?!(amp|lt|gt|quot|apos);)/.test(raw);
+  } },
+  { kind: 'npub', build: (b) => b(stored, opts), test: (xml) => {
+    const n = parseFeedNpubs(xml); return !!n && n.length === 1 && n[0].npub === ownerNpub;
+  } },
+  { kind: 'description', build: (b) => b(stored, opts), test: (xml) =>
+    decodeXmlText(/<description>([\s\S]*?)<\/description>/.exec(channelSlice(xml))[1]) === 'A & B <c>' },
+  { kind: 'fallback description', build: (b) => b({ ...stored, description: '' }, opts), test: (xml) =>
+    decodeXmlText(/<description>([\s\S]*?)<\/description>/.exec(channelSlice(xml))[1]) === 'Fallback & co' },
+  { kind: 'no value/item/author', build: (b) => b(stored, opts), test: (xml) =>
+    !/<podcast:value/.test(xml) && !/<item/.test(xml) && !/<itunes:author/.test(xml) },
+  { kind: 'feedUrl only when known', build: (b) => b(stored, opts), test: (xml) =>
+    (xml.match(/feedUrl=/g) ?? []).length === 1 && xml.includes('feedUrl="https://x.example/f.xml?a=1&amp;b=2"') },
+  { kind: 'rfc822 lastBuildDate', build: (b) => b(stored, opts), test: (xml) =>
+    xml.includes('<lastBuildDate>Thu, 12 Nov 2026 00:00:00 GMT</lastBuildDate>') },
+  { kind: 'channel fields', build: (b) => b(stored, opts), test: (xml) =>
+    xml.includes('xmlns:podcast="https://podcastindex.org/namespace/1.0"') && xml.includes('xmlns:itunes=')
+    && xml.includes('<podcast:medium>musicL</podcast:medium>')
+    && xml.includes(`<podcast:guid>${communityFeedGuid(opts.feedUrl)}</podcast:guid>`)
+    && xml.includes(`<itunes:image href="${opts.coverUrl}"/>`)
+    && xml.includes('<language>en</language>') },
+];
+// The obvious wrong builder: the same document with nothing escaped.
+const naiveBuild = (p, o) => buildPlaylistFeedXml(p, o)
+  .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+for (const v of docVectors) {
+  check('feed doc: ' + v.kind, v.test(v.build(buildPlaylistFeedXml)));
+}
+// Only the escaping vectors must fail against the naive builder.
+for (const v of docVectors.filter((x) => ['items', 'title well-formed'].includes(x.kind))) {
+  let passes;
+  try { passes = v.test(v.build(naiveBuild)); } catch { passes = false; }
+  check('feed doc: ' + v.kind + ' fails against naive (can fail)', !passes);
+}
+check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }
 console.log('\nall ok');
