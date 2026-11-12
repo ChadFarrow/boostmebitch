@@ -46,6 +46,20 @@ const PLAYLIST_CACHE = {
 };
 
 /**
+ * A community playlist read from OUR store: its maker edits it and then reads
+ * this page back to label the rows, and a delete must take it off the CDN, so it
+ * is shared-cached 30 s, not the five minutes a remote feed gets.
+ *
+ * **Keep the `max-age`.** Without it the browser asks again on every visit:
+ * `/playlists` counts each row with one of these, so a few visits in a minute
+ * spent the per-IP allowance and the playlist the listener then opened came
+ * back 429, empty (measured by e2e:communityui, section 7a).
+ */
+const COMMUNITY_PLAYLIST_CACHE = {
+  'Cache-Control': 'public, max-age=30, s-maxage=30, stale-while-revalidate=60',
+};
+
+/**
  * Digits only — NOT `Number()`, and NOT `parseInt`.
  *
  * `Number('0x64')` is 100 and `Number('1e3')` is 1000; `parseInt('64abc')` is
@@ -141,6 +155,7 @@ export async function GET(req: Request) {
     // exactly the feed whose favorite heart would otherwise stay hidden.
     const podcast = piRecord ? mergeRssOverPi(piRecord, channel.podcast) : channel.podcast;
     const { refs } = channel;
+    const pageCache = communityId ? COMMUNITY_PLAYLIST_CACHE : PLAYLIST_CACHE;
     // The show the playlist was built from. Its episode markers are bare titles
     // — "Saddle Up" — so without this the heading above a run of tracks is a
     // word with no stated relationship to anything. Resolved AFTER the channel,
@@ -171,7 +186,7 @@ export async function GET(req: Request) {
           nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow: await sourceShowPromise,
           playGroups,
         },
-        { headers: PLAYLIST_CACHE },
+        { headers: pageCache },
       );
     }
 
@@ -266,7 +281,7 @@ export async function GET(req: Request) {
           // be cached — the retry has to actually reach PI again. `notFound`
           // rows ARE cacheable: PI answered.
           //
-          couldNotAsk > 0 ? NO_STORE : PLAYLIST_CACHE,
+          couldNotAsk > 0 ? NO_STORE : pageCache,
       },
     );
   }, 'playlist fetch failed');

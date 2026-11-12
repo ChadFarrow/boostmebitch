@@ -20,9 +20,10 @@ const text = (status: number) => new NextResponse(status === 410 ? 'gone' : 'not
 });
 
 export async function GET(req: Request, ctx: { params: Promise<{ file: string }> }) {
-  if (!COMMUNITY_PLAYLISTS_ON) return text(404);
+  // First line, as on every route: the limit holds whether the feature is on or off.
   const limited = rateLimit(req, 'community-feed', 240);
   if (limited) return limited;
+  if (!COMMUNITY_PLAYLISTS_ON) return text(404);
   const { file } = await ctx.params;
   const m = /^(.+)\.(xml|jpg)$/.exec(file);
   if (!m || !UUID_RE.test(m[1])) return text(404);
@@ -38,6 +39,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
         coverUrl: communityCoverUrl(id, coverVersion(p.updatedAt)),
         ownerNpub: nip19.npubEncode(p.ownerPubkey),
         fallbackDescription: `A community playlist on ${BRAND.displayName}.`,
+        // The guid saved when the row was made, never one recomputed from today's origin.
+        podcastGuid: p.podcastGuid,
       });
       return new NextResponse(xml, {
         headers: {
@@ -46,15 +49,22 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
         },
       });
     }
-    // A random `?v=` must not reach the expensive path: only the current version is built.
-    const v = new URL(req.url).searchParams.get('v');
-    if (v !== null && v !== String(coverVersion(p.updatedAt))) return text(404);
+    // Only the exact current address (`?v=<current>`, nothing else) reaches the
+    // expensive path. Any other query — an old version a podcast app cached with an
+    // older feed, none, or extra junk — is sent to the current address. 307, not a
+    // permanent redirect: the current version moves with every edit, and a cached
+    // permanent answer would pin today's target. No Cache-Control: a 200 only.
+    const current = coverVersion(p.updatedAt);
+    if (new URL(req.url).search !== `?v=${current}`) {
+      return NextResponse.redirect(communityCoverUrl(id, current), 307);
+    }
     const c = await buildCover(p.artUrl, p.songs);
     return new NextResponse(new Uint8Array(c.jpg), {
       headers: {
         'content-type': 'image/jpeg',
-        // A cover that fell back because something failed must not stay cached for a day.
-        'cache-control': c.failed ? 'public, max-age=60, s-maxage=300' : 'public, max-age=3600, s-maxage=86400',
+        // A cover that fell back because something failed must not stay cached long,
+        // and no cover stays a day: a deleted playlist's cover must leave the CDN soon.
+        'cache-control': c.failed ? 'public, max-age=60, s-maxage=300' : 'public, max-age=3600, s-maxage=3600',
         'x-cover-source': c.source,
       },
     });

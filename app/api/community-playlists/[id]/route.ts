@@ -3,7 +3,10 @@ import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } f
 import { rateLimit } from '@/lib/rate-limit';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
-import { validatePlaylistDraft, type DraftProblem, type ArtRefusal } from '@/lib/community/rules';
+import {
+  validatePlaylistDraft, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, type DraftProblem, type ArtRefusal, type PlaylistSong,
+} from '@/lib/community/rules';
+import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { cleanText } from '@/lib/community/clean-text';
 import { checkArt, verifySongs } from '@/lib/community/checks';
 import { adminPubkeys } from '@/lib/community/auth';
@@ -51,7 +54,7 @@ export async function PUT(req: Request, ctx: Ctx) {
     const { id } = await ctx.params;
     if (!UUID_RE.test(id)) return NOT_FOUND();
     if (!communityStoreConfigured()) return unavailable();
-    const parsed = await readCappedRequestJson(req, 64 * 1024);
+    const parsed = await readCappedRequestJson(req, MAX_PLAYLIST_BODY_BYTES);
     if (!parsed.ok) return parsed.response;
     const auth = await authenticate(req, parsed.body);
     if (!auth.ok) return auth.response;
@@ -69,16 +72,17 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (Number.isNaN(Date.parse(raw.expectedUpdatedAt))) {
       return NextResponse.json({ error: 'bad expectedUpdatedAt' }, { status: 400 });
     }
-    const v = validatePlaylistDraft(raw.draft);
+    const v = validatePlaylistDraft(raw.draft, textHoldsSecret);
     if (!v.ok) return NextResponse.json({ error: 'not publishable', problems: v.problems }, { status: 400 });
 
     // Only what changed costs a lookup: songs the stored playlist already holds
     // passed the check when they were saved, and an unchanged cover link is not fetched again.
-    const had = new Set(cur.songs.map((s) => `${s.feedGuid}\n${s.itemGuid}`));
-    const added = v.draft.songs.filter((s) => !had.has(`${s.feedGuid}\n${s.itemGuid}`));
+    const key = (s: PlaylistSong) => `${s.feedGuid}\n${s.itemGuid}`;
+    const had = new Map(cur.songs.map((s) => [key(s), s]));
+    const added = v.draft.songs.filter((s) => !had.has(key(s)));
     const [art, songs] = await Promise.all([
       v.draft.artUrl && v.draft.artUrl !== cur.artUrl ? checkArt(v.draft.artUrl) : Promise.resolve({ ok: true as const }),
-      added.length ? verifySongs(added) : Promise.resolve({ notFound: [], notMusic: [] }),
+      added.length ? verifySongs(added) : Promise.resolve({ notFound: [], notMusic: [], feedUrls: new Map<string, string>() }),
     ]);
     const problems: Problem[] = [];
     if (!art.ok) problems.push({ kind: 'art', reason: art.reason });
@@ -86,9 +90,15 @@ export async function PUT(req: Request, ctx: Ctx) {
     for (const itemGuid of songs.notMusic) problems.push({ kind: 'not-music', itemGuid });
     if (problems.length) return NextResponse.json({ error: 'not publishable', problems }, { status: 400 });
 
+    // A kept song keeps the feedUrl stored when it was checked; an added one takes
+    // Podcast Index's. The client's is never stored (rules.ts, withIndexFeedUrls).
+    const stored = withIndexFeedUrls(v.draft.songs, (s) => {
+      const kept = had.get(key(s));
+      return kept ? kept.feedUrl : songs.feedUrls.get(s.feedGuid);
+    });
     const out = await updatePlaylist(
       id,
-      { ...v.draft, title: cleanText(v.draft.title), description: cleanText(v.draft.description) },
+      { ...v.draft, songs: stored, title: cleanText(v.draft.title), description: cleanText(v.draft.description) },
       raw.expectedUpdatedAt,
     );
     if (out === 'gone') return gone();

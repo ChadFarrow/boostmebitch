@@ -16,7 +16,7 @@
 import { randomBytes } from 'node:crypto';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { getToken } from 'nostr-tools/nip98';
-import { npubEncode } from 'nostr-tools/nip19';
+import { npubEncode, nsecEncode } from 'nostr-tools/nip19';
 
 const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
 const PLAYLISTS = '/api/community-playlists';
@@ -80,6 +80,14 @@ if (process.argv.includes('--off')) {
   check('switch off: GET feed .xml -> 404', x.status === 404, String(x.status));
   const j = await fetch(`${APP}/feeds/playlists/00000000-0000-4000-8000-000000000000.jpg`);
   check('switch off: GET cover .jpg -> 404', j.status === 404, String(j.status));
+  // The limiter is the route's first line, before the switch: 240 a minute from one
+  // address, then 429, whether the feature is on or off.
+  const flood = `10.98.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+  let last = 0;
+  for (let i = 0; i < 241; i++) {
+    last = (await fetch(`${APP}/feeds/playlists/00000000-0000-4000-8000-000000000000.xml`, { headers: { 'x-real-ip': flood } })).status;
+  }
+  check('switch off: the 241st feed request in a minute from one address -> 429 (rateLimit runs first)', last === 429, String(last));
   console.log(`${count - fails}/${count} passed`);
   process.exit(fails ? 1 : 0);
 }
@@ -151,9 +159,57 @@ check('POST with a 200 px cover -> 400 { kind: art, reason: too-small }',
 const httpArt = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ artUrl: 'http://example.com/a.jpg' }) } });
 check('POST with an http cover -> 400 art-not-https',
   httpArt.status === 400 && httpArt.body?.problems?.some((p) => p.kind === 'art-not-https'), show(httpArt));
+const bareArt = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ artUrl: 'https://' }) } });
+if (bareArt.status === 201) created.push(bareArt.body.id);
+check('POST with a bare https:// cover -> 400 art-bad-link',
+  bareArt.status === 400 && bareArt.body?.problems?.some((p) => p.kind === 'art-bad-link'), show(bareArt));
+const longArt = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ artUrl: `https://example.com/${'a'.repeat(2048)}.jpg` }) } });
+if (longArt.status === 201) created.push(longArt.body.id);
+check('POST with a cover link over 2048 characters -> 400 art-bad-link',
+  longArt.status === 400 && longArt.body?.problems?.some((p) => p.kind === 'art-bad-link'), show(longArt));
+
+// ── a secret key in the title or description is refused, and not echoed ────
+// A throwaway key made for this line: it belongs to nobody.
+const NSEC = nsecEncode(newKey());
+const nsecTitle = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ title: `my mix ${NSEC}` }) } });
+if (nsecTitle.status === 201) created.push(nsecTitle.body.id);
+check('POST with an nsec in the title -> 400 { kind: secret, field: title }',
+  nsecTitle.status === 400 && nsecTitle.body?.problems?.some((p) => p.kind === 'secret' && p.field === 'title'), show(nsecTitle));
+check('...and the answer does not carry the key', !JSON.stringify(nsecTitle.body ?? {}).includes(NSEC.slice(5, 20)), show(nsecTitle));
+const nsecDesc = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ description: `songs I like. key=nostr:${NSEC.toUpperCase()}` }) } });
+if (nsecDesc.status === 201) created.push(nsecDesc.body.id);
+check('POST with an upper-case nostr:NSEC inside a word of the description -> 400 { kind: secret, field: description }',
+  nsecDesc.status === 400 && nsecDesc.body?.problems?.some((p) => p.kind === 'secret' && p.field === 'description'), show(nsecDesc));
+const nwcDesc = await call('POST', PLAYLISTS, {
+  sk: owner, body: { draft: draft({ description: `nostr+walletconnect://${'ab'.repeat(32)}?relay=wss://r.example&secret=${'cd'.repeat(32)}` }) },
+});
+if (nwcDesc.status === 201) created.push(nwcDesc.body.id);
+check('POST with a wallet connection string in the description -> 400 { kind: secret }',
+  nwcDesc.status === 400 && nwcDesc.body?.problems?.some((p) => p.kind === 'secret' && p.field === 'description'), show(nwcDesc));
+const npubTitle = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ title: npubEncode(ownerPub).slice(0, 60), songs: songs.slice(0, 9) }) } });
+check('an npub in the title is not a secret (the draft is refused for its 9 songs only)',
+  npubTitle.status === 400 && !npubTitle.body?.problems?.some((p) => p.kind === 'secret')
+  && npubTitle.body?.problems?.some((p) => p.kind === 'too-few-songs'), show(npubTitle));
+
+// ── the body cap fits 500 songs ─────────────────────────────────────────────
+// 500 entries with 300-character item guids, one of them twice: the rules refuse the
+// duplicate before Podcast Index is asked, which proves the body was read and parsed.
+const big = Array.from({ length: 499 }, (_, i) => ({ feedGuid: songs[0].feedGuid, itemGuid: `e2e-big-${i}-${'x'.repeat(290)}` }));
+big.push(big[0]);
+const bigBody = { draft: draft({ songs: big }) };
+const bigBytes = JSON.stringify(bigBody).length;
+const bigRes = await call('POST', PLAYLISTS, { sk: owner, body: bigBody });
+check(`a 500-song body of ${Math.round(bigBytes / 1024)} KB is read, not refused for its size (400 duplicate-song)`,
+  bigBytes > 150 * 1024 && bigRes.status === 400 && bigRes.body?.problems?.some((p) => p.kind === 'duplicate-song'), show(bigRes).slice(0, 300));
+const hugeRes = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ description: 'x'.repeat(300 * 1024) }) } });
+check('a 300 KB body -> 400 payload too large', hugeRes.status === 400 && hugeRes.body?.error === 'payload too large', show(hugeRes).slice(0, 300));
 
 // ── create, read, list ──────────────────────────────────────────────────────
-const post = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ title: 'fuck yeah', artUrl: ART_OK }) } });
+// The first song carries a feedUrl the client made up: the public feed must carry the
+// address Podcast Index holds for that feed, or none, never this one.
+const FORGED = 'https://forged.e2e.invalid/not-the-artist.xml';
+const forgedSongs = songs.map((s, i) => (i === 0 ? { ...s, feedUrl: FORGED } : s));
+const post = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ title: 'fuck yeah', artUrl: ART_OK, songs: forgedSongs }) } });
 const id = post.body?.id;
 if (id) created.push(id);
 check('POST 12 songs and a good cover -> 201 { id, feedUrl }',
@@ -164,6 +220,8 @@ const got = await call('GET', `${PLAYLISTS}/${id}`);
 check('GET playlist -> title is masked', got.status === 200 && got.body?.playlist?.title === '**** yeah', show(got));
 check('GET playlist -> 12 songs, art kept, owner set',
   got.body?.playlist?.songs?.length === 12 && got.body.playlist.artUrl === ART_OK && got.body.playlist.ownerPubkey === ownerPub);
+check('the stored song 0 does not keep the client\'s made-up feedUrl', got.body?.playlist?.songs?.[0]?.feedUrl !== FORGED,
+  JSON.stringify(got.body?.playlist?.songs?.[0]));
 const list = await call('GET', PLAYLISTS);
 const first = list.body?.playlists?.[0];
 check('list -> the new id is first', first?.id === id, show(list));
@@ -187,6 +245,18 @@ check('GET feed .xml -> 200 rss+xml with the cache header',
 check('feed has 12 remoteItems, the owner npub and medium musicL',
   (feedXml.match(/<podcast:remoteItem/g) ?? []).length === 12 && feedXml.includes(npubEncode(ownerPub))
   && feedXml.includes('<podcast:medium>musicL'), feedXml.slice(0, 300));
+check('the client\'s made-up feedUrl is NOT in the public feed', !feedXml.includes('forged.e2e.invalid'),
+  (feedXml.match(/<podcast:remoteItem [^>]*>/) ?? [''])[0]);
+{
+  // What Podcast Index holds for song 0's feed, read the way the app reads it.
+  const pi = await call('GET', `/api/by-guid?guid=${encodeURIComponent(songs[0].feedGuid)}`);
+  const piUrl = pi.body?.podcast?.url;
+  const item0 = (feedXml.match(/<podcast:remoteItem [^>]*>/) ?? [''])[0];
+  check('song 0\'s remoteItem carries Podcast Index\'s feedUrl for its feed (or none when PI has none)',
+    piUrl ? item0.includes(`feedUrl="${piUrl.replace(/&/g, '&amp;')}"`) : !item0.includes('feedUrl='), `${item0} / PI: ${piUrl}`);
+}
+check('the feed\'s podcast:guid is the stored one', feedXml.includes(`<podcast:guid>${got.body?.playlist?.podcastGuid}</podcast:guid>`),
+  (feedXml.match(/<podcast:guid>[^<]*<\/podcast:guid>/) ?? [''])[0]);
 const coverRes = await fetch(`${APP}/feeds/playlists/${id}.jpg`);
 const coverBuf = Buffer.from(await coverRes.arrayBuffer());
 // JPEG size: the first SOF marker holds height then width.
@@ -202,12 +272,23 @@ const jpegSize = (b) => {
 };
 const dims = jpegSize(coverBuf);
 check('cover of the playlist with a valid art link -> x-cover-source: art', coverRes.headers.get('x-cover-source') === 'art', coverRes.headers.get('x-cover-source'));
-const badV = await fetch(`${APP}/feeds/playlists/${id}.jpg?v=1`);
-check('cover with a stale ?v= -> 404 with no Cache-Control', badV.status === 404 && !badV.headers.get('cache-control'), `${badV.status} ${badV.headers.get('cache-control')}`);
+// The current cover address, as the listing names it. Any other query is redirected to it,
+// temporarily (the version moves with every edit), with no Cache-Control.
+const currentCover = first?.coverUrl ?? '';
+for (const [label, q] of [['a stale ?v=', '?v=1'], ['no query', ''], ['?v=<current> plus junk', `${new URL(currentCover || APP).search}&x=1`]]) {
+  const r = await fetch(`${APP}/feeds/playlists/${id}.jpg${q}`, { redirect: 'manual' });
+  check(`cover with ${label} -> 307 to the current ?v= address, no Cache-Control`,
+    r.status === 307 && r.headers.get('location') === currentCover && !r.headers.get('cache-control'),
+    `${r.status} ${r.headers.get('location')} ${r.headers.get('cache-control')}`);
+}
+const atCurrent = await fetch(currentCover, { redirect: 'manual' });
+check('cover at the current ?v= -> 200 (no redirect)', atCurrent.status === 200, String(atCurrent.status));
+await atCurrent.arrayBuffer().catch(() => {});
 check('404 feed answer carries no Cache-Control', !nopeCC(await fetch(`${APP}/feeds/playlists/nope.xml`)));
 check('GET cover .jpg -> 200 image/jpeg, 1400 x 1400',
-  coverRes.status === 200 && coverRes.headers.get('content-type') === 'image/jpeg' && dims?.[0] === 1400 && dims?.[1] === 1400
-  && /s-maxage=86400/.test(coverRes.headers.get('cache-control') ?? ''), `${coverRes.status} ${dims}`);
+  coverRes.status === 200 && coverRes.headers.get('content-type') === 'image/jpeg' && dims?.[0] === 1400 && dims?.[1] === 1400, `${coverRes.status} ${dims}`);
+check('the cover is shared-cached for an hour, not a day (a deleted cover must not stay)',
+  /(^|, )s-maxage=3600(,|$)/.test(coverRes.headers.get('cache-control') ?? ''), coverRes.headers.get('cache-control'));
 const nope = await fetch(`${APP}/feeds/playlists/nope.xml`);
 check('GET feed with a bad name -> 404', nope.status === 404, String(nope.status));
 const unknownXml = await fetch(`${APP}/feeds/playlists/00000000-0000-4000-8000-000000000000.xml`);
@@ -219,6 +300,10 @@ check('/api/playlist?url=<feedUrl> answers the 12 songs in order, from the store
   && viaPlaylist.body.episodes?.length === 12
   && viaPlaylist.body.episodes.every((e, i) => e.guid === songs[i].itemGuid && e.podcastGuid === songs[i].feedGuid)
   && viaPlaylist.body.podcast?.medium === 'musicL', show(viaPlaylist).slice(0, 300));
+check('/api/playlist for a stored playlist is cached 30 s, not the remote-playlist 300 s (an edit shows soon)',
+  /(^|, )s-maxage=30(,|$)/.test(viaPlaylist.headers.get('cache-control') ?? ''), viaPlaylist.headers.get('cache-control'));
+check('...and the browser keeps it too (max-age), or /playlists re-asks on every visit and meets the rate limit',
+  /(^|, )max-age=30(,|$)/.test(viaPlaylist.headers.get('cache-control') ?? ''), viaPlaylist.headers.get('cache-control'));
 
 const g = got.body.playlist;
 const byGuid = await call('GET', `/api/by-guid?guid=${g.podcastGuid}`);
@@ -233,9 +318,22 @@ check('/api/search?type=playlist finds it by title',
 const v1 = got.body.playlist.updatedAt;
 const byOther = await call('PUT', `${PLAYLISTS}/${id}`, { sk: other, body: { draft: draft({ title: 'hijack' }), expectedUpdatedAt: v1 } });
 check('PUT by a second key -> 403', byOther.status === 403, show(byOther));
-const put1 = await call('PUT', `${PLAYLISTS}/${id}`, { sk: owner, body: { draft: draft({ title: 'second' }), expectedUpdatedAt: v1 } });
+// Song 1 is already stored: an edit may not swap its feedUrl for a made-up one either.
+const storedFeedUrl1 = got.body?.playlist?.songs?.[1]?.feedUrl;
+const put1 = await call('PUT', `${PLAYLISTS}/${id}`, {
+  sk: owner, body: { draft: draft({ title: 'second', songs: songs.map((s, i) => (i === 1 ? { ...s, feedUrl: FORGED } : s)) }), expectedUpdatedAt: v1 },
+});
 check('PUT by the owner with a fresh expectedUpdatedAt -> 200',
   put1.status === 200 && put1.body?.playlist?.title === 'second' && put1.body.playlist.updatedAt !== v1, show(put1));
+check('a PUT keeps a stored song\'s feedUrl, not the client\'s made-up one',
+  put1.body?.playlist?.songs?.[1]?.feedUrl === storedFeedUrl1, JSON.stringify(put1.body?.playlist?.songs?.[1]));
+const nsecPut = await call('PUT', `${PLAYLISTS}/${id}`, {
+  sk: owner, body: { draft: draft({ title: 'second', description: `paste: ${NSEC}` }), expectedUpdatedAt: put1.body?.playlist?.updatedAt },
+});
+check('PUT with an nsec in the description -> 400 { kind: secret }, nothing saved',
+  nsecPut.status === 400 && nsecPut.body?.problems?.some((p) => p.kind === 'secret' && p.field === 'description'), show(nsecPut));
+// A RED run (old code) saves it: put the version back so the rest of the edit half still runs.
+if (nsecPut.status === 200) put1.body.playlist.updatedAt = nsecPut.body.playlist.updatedAt;
 const put2 = await call('PUT', `${PLAYLISTS}/${id}`, { sk: owner, body: { draft: draft({ title: 'third' }), expectedUpdatedAt: v1 } });
 check('PUT with the old expectedUpdatedAt -> 409 changed elsewhere',
   put2.status === 409 && put2.body?.error === 'changed elsewhere', show(put2));

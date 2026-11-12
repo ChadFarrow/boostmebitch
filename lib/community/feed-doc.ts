@@ -32,9 +32,16 @@ export function communityFeedGuid(feedUrl: string): string {
   return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
 }
 
+/**
+ * `o.podcastGuid` is the guid STORED with the row when it was created
+ * (`community_playlists.podcast_guid`), never one recomputed here from
+ * `o.feedUrl`: it is the feed's identity for good — favorites, the by-guid
+ * lookup and Podcast Index hold it — so a deploy whose feed origin differs from
+ * the one the row was made under must not print a second one.
+ */
 export function buildPlaylistFeedXml(
   p: StoredPlaylist,
-  o: { feedUrl: string; coverUrl: string; ownerNpub: string; fallbackDescription: string },
+  o: { feedUrl: string; coverUrl: string; ownerNpub: string; fallbackDescription: string; podcastGuid: string },
 ): string {
   const e = escapeXml;
   const description = p.description || o.fallbackDescription;
@@ -50,7 +57,7 @@ export function buildPlaylistFeedXml(
     <link>${e(o.feedUrl)}</link>
     <language>en</language>
     <lastBuildDate>${new Date(p.updatedAt).toUTCString()}</lastBuildDate>
-    <podcast:guid>${communityFeedGuid(o.feedUrl)}</podcast:guid>
+    <podcast:guid>${e(o.podcastGuid)}</podcast:guid>
     <podcast:medium>musicL</podcast:medium>
     <podcast:txt purpose="npub">${e(o.ownerNpub)}</podcast:txt>
     <itunes:image href="${e(o.coverUrl)}"/>

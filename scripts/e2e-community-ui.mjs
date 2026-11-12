@@ -190,6 +190,27 @@ t.ok('and it says Add a title', (await js(`document.querySelector('[data-testid=
 await setValue('#pl-title', 'shit mix');
 await wait(300);
 t.ok('profanity: shows what will publish', (await body()).includes('Will publish as: **** mix'));
+// A secret key in the title or the description: refused on screen, before anything is sent.
+// A throwaway key made for this line; it belongs to nobody.
+const NSEC = nip19.nsecEncode(generateSecretKey());
+await js(`window.__cpWrites = 0; const f0 = window.fetch; window.fetch = (u, i) => { if (String(u).includes('/api/community-playlists') && i?.method && i.method !== 'GET') window.__cpWrites++; return f0(u, i); }; 1`);
+await setValue('#pl-title', `my mix ${NSEC}`);
+await wait(300);
+t.equal('an nsec in the title: PUBLISH is off and the reason names the title',
+  await js(`[${byText('PUBLISH')}.disabled, document.querySelector('[data-testid=why-blocked]')?.innerText ?? '']`).then(([d, w]) => [d, /title/i.test(w) && /secret key/i.test(w)]),
+  [true, true]);
+await click(byText('PUBLISH'));
+await wait(300);
+t.equal('...and pressing it sends nothing', await js(`window.__cpWrites`), 0);
+await setValue('#pl-title', 'e2e community playlist');
+await setValue('#pl-desc', `my songs, key=nostr:${NSEC.toUpperCase()}`);
+await wait(300);
+t.equal('an nsec glued into the description: PUBLISH is off and the reason names the description',
+  await js(`[${byText('PUBLISH')}.disabled, document.querySelector('[data-testid=why-blocked]')?.innerText ?? '']`).then(([d, w]) => [d, /description/i.test(w) && /secret key/i.test(w)]),
+  [true, true]);
+await setValue('#pl-desc', 'made by e2e-community-ui');
+await wait(300);
+t.ok('without it, PUBLISH is on again', await js(`!${byText('PUBLISH')}.disabled`));
 await setValue('#pl-title', 'e2e community playlist');
 await click(`document.querySelectorAll('[aria-label="Remove"]')[0]`);
 await click(`document.querySelectorAll('[aria-label="Remove"]')[0]`);
@@ -223,6 +244,20 @@ await waitFor(`document.querySelector('#pl-title')`); await wait(500);
 await click(byText('PUBLISH'));
 t.ok('a small picture is refused in words', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('The picture must be at least 1400 × 1400 px.')`, 30000));
 t.ok('with the cover preview still on screen', await js(`!!document.querySelector('[data-testid=cover-preview]')`));
+// A body the server will not read: 500 songs with long item guids pass every rule on the
+// page, and the route answers 400 `payload too large`. The page must say so, not "try again".
+{
+  const huge = Array.from({ length: 500 }, (_, i) => ({ feedGuid: songs[0].feedGuid, itemGuid: `e2e-huge-${i}-${'x'.repeat(600)}` }));
+  await seed(draft({ songs: huge }), {});
+  await go('/playlists/make');
+  await waitFor(`document.querySelectorAll('[data-song-row]').length === 500`, 30000);
+  t.ok('a 500-song draft over the size cap: PUBLISH is on (every rule on the page passes)', await js(`!${byText('PUBLISH')}.disabled`));
+  await click(byText('PUBLISH'));
+  t.ok('the server\'s "payload too large" is shown as: too large, remove some songs',
+    await waitFor(`/too large/i.test(document.querySelector('[data-testid=refusals]')?.innerText ?? '') && /remove some songs/i.test(document.querySelector('[data-testid=refusals]')?.innerText ?? '')`, 30000),
+    await js(`document.querySelector('[data-testid=refusals]')?.innerText ?? '(no refusal box)'`));
+  t.ok('...not the generic "Try again" line', !(await js(`document.querySelector('[data-testid=refusals]')?.innerText ?? ''`)).includes('Could not save the playlist'));
+}
 
 console.log('--- 6. a silent signer ---');
 await seed(draft(), labels);
@@ -507,6 +542,28 @@ await wait(500);
 await click(byText('SAVE'));
 t.ok('the next SAVE succeeds', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('my edit')`, 30000));
 t.equal('the server has the user edit', (await serverVersion()).title, 'my edit');
+
+console.log('--- 8b. a draft restored after a change elsewhere ---');
+// A third fake address: this half writes three more times.
+IP = `10.76.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+await send('Network.setExtraHTTPHeaders', { headers: { 'x-real-ip': IP } });
+await click(byText('EDIT'));
+await waitFor(`!!${byText('SAVE')}`);
+await setValue('#pl-title', 'draft made before the change');
+await wait(400);
+t.equal('the edit slot holds the draft', JSON.parse(await js(`localStorage.getItem(${JSON.stringify(editKey(id))})`) ?? 'null')?.draft.title, 'draft made before the change');
+const cur2 = await serverVersion();
+const put2 = await putAsOwner({ title: 'changed elsewhere again', description: cur2.description, artUrl: cur2.artUrl, songs: cur2.songs }, cur2.updatedAt);
+t.equal('meanwhile a script PUT lands', put2.status, 200);
+t.ok('reopening the edit page restores the draft', await openEdit() && await waitFor(`document.querySelector('#pl-title')?.value === 'draft made before the change'`, 10000));
+await click(byText('SAVE'));
+t.ok('SAVE of the restored draft gets the 409 warning, not a silent overwrite',
+  await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('This playlist changed elsewhere. Your edits are kept; SAVE again to overwrite.')`, 20000),
+  await js(`document.querySelector('[data-testid=refusals]')?.innerText ?? document.querySelector('main')?.innerText.slice(0, 200)`));
+t.equal('...and the other edit is still on the server', (await serverVersion()).title, 'changed elsewhere again');
+await wait(500);
+if (await js(`!!${byText('SAVE')}`)) await click(byText('SAVE'));
+t.ok('the next SAVE overwrites, as the warning said', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('draft made before the change')`, 30000));
 
 console.log('--- 9. someone else ---');
 cur = { sk: sk2, pk: pk2 };
