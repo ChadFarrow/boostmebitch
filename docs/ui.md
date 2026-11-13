@@ -1417,6 +1417,8 @@ because `nowPlayingArt` only withholds *chapter and track* art when the gate
 shuts: an episode cover that is itself a huge GIF would still be fetched whole
 while the buffer is in trouble.
 
+**And the `artOk` condition makes the big cover change THREE times per track, so it holds the painted picture (`hold`).** Reported from the beta site on 2026-11-13: *"when I skip to the next track, the art loads, but then it also flashes just once."* Measured there with ⏭ in an ordinary album: the next track's published file on the first commit (the gate still open from the last track), its proxied copy once `waiting` shut the gate, and the published file again when the buffer reopened it. `<PodcastCover>` renders `<img key={current}>`, so each change was a new element, empty until its file arrived — **372 ms of an empty cover on the last swap**, which is the flash. With `hold` the incoming `<img>` loads invisibly on top of the painted one and takes its place on `load`; both are keyed by URL in one parent, so React keeps that decoded element rather than re-creating it. It fetches nothing new, and a failure still walks the ladder while the held picture stays up. **The gate's behaviour is unchanged** — the proxied copy still shows first and the published file still replaces it — it simply never shows an empty box between them. Only the big cover passes it: a list tile is a new row per item and has nothing to hold. Pinned by `npm run e2e:coverhold`, which samples every animation frame after ⏭ (53 empty frames before, 0 after).
+
 ### The lock screen is the third surface, and it has no element
 
 `MediaMetadata`'s `artwork` fetch is issued by the browser on our behalf. It

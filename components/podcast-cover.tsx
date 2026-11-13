@@ -29,6 +29,7 @@ function PodcastCoverImpl({
   lowPriority,
   localSrc,
   preferOriginal,
+  hold,
 }: {
   image?: string | null;
   artwork?: string | null;
@@ -119,6 +120,24 @@ function PodcastCoverImpl({
    * `artOk` exists for.
    */
   preferOriginal?: boolean;
+  /**
+   * Keep the last picture PAINTED until the next one has loaded.
+   *
+   * Without it a new URL is a new `<img>` (the `key` below), empty until its
+   * file arrives — and on the big now-playing cover the URL changes up to three
+   * times per track: the next track's published file while the art gate is
+   * still open from the last one, its proxied copy once `waiting` shuts the
+   * gate, the published file again when the buffer reopens it. Reported from
+   * the beta site as "the art loads, but then it also flashes just once";
+   * measured as 372 ms of an empty cover on the last swap.
+   *
+   * With it, the incoming `<img>` loads invisibly on top of the painted one and
+   * takes its place on `load`. Nothing is fetched that was not fetched before,
+   * and a failure still walks the ladder — the held picture stays up meanwhile.
+   * For the one surface that paints the cover large and changes it in place; a
+   * list tile is a new row per item and has nothing to hold.
+   */
+  hold?: boolean;
 }) {
   // Proxied copies first, then the ORIGINAL third-party URLs behind them.
   //
@@ -156,7 +175,42 @@ function PodcastCoverImpl({
   // The cost: a URL that failed is not retried while this cover stays mounted.
   // The set grows only by URLs that failed here, so it stays a handful.
   const [failed, setFailed] = useState<ReadonlySet<string>>(NO_FAILURES);
+  // `hold` only: the last URL whose picture finished loading here.
+  const [shown, setShown] = useState<string | null>(null);
   const current = candidates.find((u) => !failed.has(u));
+  const fail = (u: string) => setFailed((prev) => (prev.has(u) ? prev : new Set(prev).add(u)));
+  if (current && hold) {
+    const fitClass = `${className ?? ''} ${fit === 'contain' ? 'object-contain' : 'object-cover'}`;
+    // The painted picture stays until the incoming one has LOADED. Both are
+    // keyed by URL in one parent, so when the incoming one takes over React
+    // keeps that same decoded element — moving it, never re-creating it — and
+    // there is no frame without a picture. The attributes are the plain
+    // branch's below, for its reasons.
+    const held = shown && shown !== current && !failed.has(shown) ? shown : null;
+    const attrs = {
+      loading: 'lazy' as const,
+      decoding: 'async' as const,
+      ...(lowPriority ? { fetchPriority: 'low' as const } : {}),
+    };
+    return (
+      <span className="relative block h-full w-full">
+        {held && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img key={held} src={held} alt="" {...attrs} className={fitClass} onError={() => fail(held)} />
+        )}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          key={current}
+          src={current}
+          alt=""
+          {...attrs}
+          className={held ? `${fitClass} absolute inset-0 opacity-0 pointer-events-none` : fitClass}
+          onLoad={() => setShown(current)}
+          onError={() => fail(current)}
+        />
+      </span>
+    );
+  }
   if (current) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
@@ -182,7 +236,7 @@ function PodcastCoverImpl({
         // where chapter art competes with the audio enclosure on one connection.
         {...(lowPriority ? { fetchPriority: 'low' as const } : {})}
         className={`${className ?? ''} ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
-        onError={() => setFailed((prev) => (prev.has(current) ? prev : new Set(prev).add(current)))}
+        onError={() => fail(current)}
       />
     );
   }
@@ -219,7 +273,7 @@ function PodcastCoverImpl({
  * inputs had not changed.
  *
  * `image`, `artwork`, `localSrc`, `title`, `seed`, `className`, `w`, `fit`,
- * `lowPriority` and `preferOriginal` are all strings, numbers or booleans, so the default shallow
+ * `lowPriority`, `preferOriginal` and `hold` are all strings, numbers or booleans, so the default shallow
  * comparison is exactly right here — there is no object or callback prop for a
  * caller to hand over a fresh reference of by accident, which is the usual way a
  * `memo` becomes decoration. A new prop has to keep that true.
