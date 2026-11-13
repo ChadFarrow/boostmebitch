@@ -976,6 +976,8 @@ export function liveShowToEpisode(s: LiveShow): Episode {
     liveStartTime: s.liveStartTime,
     datePublished: s.liveStartTime,
     value: s.value ?? null,
+    // The watcher opens the Split Kit socket from this field alone.
+    liveValue: s.liveValue,
   };
 }
 

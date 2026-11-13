@@ -683,6 +683,17 @@ export interface LiveShow {
   /** Scheduled or actual start, unix seconds. */
   liveStartTime?: number;
   value?: ValueBlock | null;
+  /**
+   * The item's `<podcast:liveValue>` push channel (The Split Kit), as the RSS
+   * parser read it — `uri` already through `httpUrl`.
+   *
+   * Carried because the live-value watcher opens the socket from the PLAYING
+   * episode and nowhere else (`attachSocket`), and `/api/live-value` does not
+   * hand it back. Without it, PLAY on a `/live` card followed the show by RSS
+   * polling only — no Split Kit target, no track art, the host paid for every
+   * song — while the same item played from its show page connected.
+   */
+  liveValue?: { uri: string; protocol: string };
   feedId: number;
   feedTitle?: string;
   feedImage?: string;

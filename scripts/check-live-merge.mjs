@@ -31,7 +31,7 @@
 // Vectors are recorded as CALLS and the replay walks the list, so a vector
 // cannot be added without also being proved against naive(). A vector both
 // implementations agree on is reported as proving nothing.
-import { mergeLiveOverPi } from '../lib/util.ts';
+import { liveShowToEpisode, mergeLiveOverPi } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -177,8 +177,33 @@ for (const v of VECTORS) {
   else ok('neither argument is mutated');
 }
 
+// THE SPLIT KIT SOCKET MUST SURVIVE THE TRIP TO THE PLAYER. The watcher opens
+// it from the PLAYING episode's `liveValue` and from nowhere else, and the
+// route builds each `LiveShow` field by field — so a field it does not name is
+// gone. Measured 2026-11-13 on Homegrown Hits: PLAY on the /live card never
+// connected to Split Kit, while PLAY on the same item's show page did.
+{
+  const lv = { uri: 'https://curiohoster.com/event?event_id=1873a383-d918-44e1-b6ff-c3598189dab6', protocol: 'socket.io' };
+  const ep = liveShowToEpisode({
+    guid: 'homegrownhits-158', title: 'Homegrown Hits Episode 158',
+    enclosureUrl: 'https://ex.test/s.mp3', liveStatus: 'live', feedId: 6611624,
+    verified: true, liveValue: lv,
+  });
+  if (JSON.stringify(ep.liveValue) !== JSON.stringify(lv)) {
+    fail('liveShowToEpisode drops liveValue — PLAY on /live cannot open the Split Kit socket.');
+  } else {
+    ok('liveShowToEpisode carries liveValue to the episode the player stores');
+  }
+}
+
 // The one thing a behavioural pin cannot see: the route no longer calling it.
 const src = await (await import('node:fs/promises')).readFile('app/api/live-shows/route.ts', 'utf8');
+if (!/liveValue:\s*e\.liveValue/.test(src)) {
+  fail('app/api/live-shows/route.ts no longer copies liveValue into each LiveShow —\n'
+    + '          PLAY on /live cannot open the Split Kit socket.');
+} else {
+  ok('app/api/live-shows/route.ts copies liveValue into each LiveShow');
+}
 if (!src.includes('mergeLiveOverPi')) {
   fail('app/api/live-shows/route.ts no longer calls mergeLiveOverPi — an unreadable\n'
     + '          feed can end a live broadcast again.');
