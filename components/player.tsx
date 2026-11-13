@@ -319,9 +319,9 @@ export function Player() {
   const sampleLiveLag = (el: HTMLMediaElement) => {
     if (!isLiveRef.current || !liveAnchor.current) return;
     const { behindSec, anchor } = liveLag(liveAnchor.current, performance.now() / 1000, el.currentTime);
+    if (behindSec === null) return; // a re-attach put the play head before its start
     liveAnchor.current = anchor;
-    const shown = behindToShow(behindSec);
-    setLiveBehindSec((prev) => (prev === shown ? prev : shown));
+    setLiveBehindSec((shown) => behindToShow(behindSec, shown));
   };
   /** ⏭ GO LIVE — the same reconnect a resume from pause makes (below). */
   const goLive = () => setReloadNonce((n) => n + 1);

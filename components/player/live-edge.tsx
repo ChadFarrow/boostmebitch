@@ -16,7 +16,12 @@ import { LiveBadge } from '../live-badge';
  * The button stops propagation because the mini-bar is a pointer hit area
  * that opens the fullscreen player; a GO LIVE that also opened it would be two
  * actions for one press. In the mini-bar it is `min-h-6` with no vertical
- * padding — 24 px, WCAG 2.5.8's floor, without growing the bar.
+ * padding — 24 px, WCAG 2.5.8's floor — and `-my-0.5` gives 4 px of that back
+ * to the row, so the row stays the ~21 px of the `● LIVE` stamp and the bar does
+ * not grow when the button appears (it did, 84 → 87 px; `e2e:livecatchup`
+ * measures it). The title button above uses the same trick. In the fullscreen
+ * row the button is `.btn-mini`'s ~26 px, and the row grows ~5 px inside the
+ * live pane's slack.
  *
  * **In the mini-bar the `N s behind` is `hidden sm:inline`.** At 390 px the
  * whole row is ~235 px in a ~215 px column, and the play/pause button covered
@@ -47,7 +52,7 @@ export function LiveEdge({
           <button
             type="button"
             data-go-live
-            className={`btn-mini shrink-0 whitespace-nowrap text-bone ${variant === 'mini' ? 'min-h-6 py-0' : ''}`}
+            className={`btn-mini shrink-0 whitespace-nowrap text-bone ${variant === 'mini' ? 'min-h-6 py-0 -my-0.5' : ''}`}
             title="Reconnect at the live edge"
             aria-label={`Go live — ${behindSec} seconds behind`}
             onClick={(e) => {

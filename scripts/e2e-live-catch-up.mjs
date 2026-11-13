@@ -43,10 +43,25 @@ t.equal('ran ahead: re-anchored where the play head is', ahead.anchor, { wallSec
 t.equal('ran ahead, then a gap counts in full', liveLag(ahead.anchor, 30, 125).behindSec, 8);
 const kept = liveLag({ wallSec: 0, mediaSec: 100 }, 40, 128);
 t.equal('behind: the anchor is kept', kept.anchor, { wallSec: 0, mediaSec: 100 });
+// A re-attach (hls.js `recoverMediaError` → `load()`) puts `currentTime` at 0
+// for a moment. A play head before its own anchor is not a measurement: an
+// hour in, the naive subtraction reads "3600 s behind".
+const reset = liveLag({ wallSec: 0, mediaSec: 100 }, 50, 0);
+t.equal('play head before its anchor: no measurement', reset.behindSec, null);
+t.equal('play head before its anchor: the anchor is kept', reset.anchor, { wallSec: 0, mediaSec: 100 });
 t.equal('4.9 s shows nothing', behindToShow(4.9), 0);
 t.equal('5 s shows', behindToShow(5), 5);
 t.equal('10.2 s shows 10', behindToShow(10.2), 10);
 t.equal('10.6 s shows 11', behindToShow(10.6), 11);
+// HYSTERESIS. `currentTime` inside a timeupdate is where the event was queued,
+// so a lag that settles on 5.0 s or on N.5 s jitters across the line every
+// tick: the button blinked under the thumb, and the number flipped N ↔ N+1.
+t.equal('shown at 5: 4.6 s keeps it', behindToShow(4.6, 5), 5);
+t.equal('shown at 5: under 4 s hides it', behindToShow(3.9, 5), 0);
+t.equal('shown at 10: 10.6 s keeps 10', behindToShow(10.6, 10), 10);
+t.equal('shown at 10: 10.8 s moves to 11', behindToShow(10.8, 10), 11);
+t.equal('shown at 10: 9.2 s moves to 9', behindToShow(9.2, 10), 9);
+t.equal('nothing shown: 4.9 s still shows nothing', behindToShow(4.9, 0), 0);
 
 if (process.env.UNIT_ONLY) {
   console.log(t.fails ? `\n${t.fails} check(s) FAILED.` : '\nAll unit checks passed.');
@@ -177,10 +192,16 @@ if (!await playing()) {
 }
 t.pass('the live item plays from the local stream');
 
+/** The mini-bar's height: GO LIVE appearing must not grow it (the docblock claims so). */
+const barHeight = () => js(`Math.round(document.querySelector('${MINI_BAR}').getBoundingClientRect().height * 10) / 10`);
+/** A connection the browser opened reaches this process a moment after the click. */
+const connectionsReach = async (n) => { for (let i = 0; i < 40 && connections < n; i++) await wait(150); return connections === n; };
+
 // 1. On time: the row says so, and offers nothing.
 await wait(8000);
 t.ok('on time: the mini-bar row reads "streaming now"', /streaming now/.test(await edgeText('mini') ?? ''), await edgeText('mini'));
 t.ok('on time: no GO LIVE', !await js(`!!${goLive('mini')}`));
+const deskBar = await barHeight();
 
 // 2. A 12 s gap: the row names the delay and offers GO LIVE.
 await gap(12);
@@ -201,13 +222,14 @@ const uncovered = (b) => b.go && b.toggle && b.go.r <= b.toggle.l;
 const desk = await miniBoxes();
 t.ok('GO LIVE is at least 24 × 24 px', desk.go && desk.go.w >= 24 && desk.go.h >= 24, JSON.stringify(desk.go));
 t.ok('GO LIVE ends before the play/pause button', uncovered(desk), JSON.stringify(desk));
+t.equal('GO LIVE does not grow the mini-bar', await barHeight(), deskBar);
 
 // 3. GO LIVE reconnects, and does not open the fullscreen player.
 const before = connections;
 await js(`${goLive('mini')}?.click()`);
-await wait(1500);
+t.ok('GO LIVE opens a new connection', await connectionsReach(before + 1), `connections ${before} → ${connections}`);
+await wait(500);
 t.ok('GO LIVE does not open the fullscreen player', !await js(`!!document.querySelector('button[aria-label="Close fullscreen player"]')`));
-t.ok('GO LIVE opens a new connection', connections === before + 1, `connections ${before} → ${connections}`);
 t.ok('after GO LIVE: the row reads "streaming now" again',
   await until(`/streaming now/.test(${EDGE('mini')}?.textContent ?? '')`, 6000), await edgeText('mini'));
 t.ok('after GO LIVE: it plays', await playing());
@@ -216,15 +238,17 @@ t.ok('after GO LIVE: it plays', await playing());
 //    player shows it and reconnects too.
 await js(`document.querySelector('button[aria-label^="Open fullscreen player"]')?.click()`);
 await until(`!!${EDGE('full')}`, 10000);
-await gap(10);
+// 12 s like step 2, not 10: a gap soon after a fresh connect starts with more
+// of the 54 KB burst still buffered, so the silence is shorter than the gap.
+await gap(12);
 const n2 = await behindIn('full');
-t.ok('fullscreen, after a 10 s gap: "N s behind" with N in 7..12', n2 >= 7 && n2 <= 12, await edgeText('full'));
+t.ok('fullscreen, after a 12 s gap: "N s behind" with N in 8..14', n2 >= 8 && n2 <= 14, await edgeText('full'));
 await shot('desktop-fullscreen-behind.png');
 const before2 = connections;
 await js(`${goLive('full')}?.click()`);
 t.ok('fullscreen GO LIVE: "streaming now" again',
   await until(`/streaming now/.test(${EDGE('full')}?.textContent ?? '')`, 6000), await edgeText('full'));
-t.ok('fullscreen GO LIVE: a new connection', connections === before2 + 1, `connections ${before2} → ${connections}`);
+t.ok('fullscreen GO LIVE: a new connection', await connectionsReach(before2 + 1), `connections ${before2} → ${connections}`);
 await js(`document.querySelector('button[aria-label="Close fullscreen player"]')?.click()`);
 await wait(800);
 
@@ -239,12 +263,14 @@ await until(`${A}?.paused === true`, 5000);
 t.ok('paused: no delay and no GO LIVE', !/behind/.test(await edgeText('mini') ?? '') && !await js(`!!${goLive('mini')}`), await edgeText('mini'));
 const before3 = connections;
 await js(`document.querySelector('${MINI_BAR} button[aria-label="Play"]')?.click()`);
-t.ok('play after a pause reconnects', await playing() && connections === before3 + 1, `connections ${before3} → ${connections}`);
+t.ok('play after a pause reconnects', await playing() && await connectionsReach(before3 + 1), `connections ${before3} → ${connections}`);
 
 // 6. A phone. CDP device emulation, never --window-size (see global.md).
 await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
 await wait(1000);
+const phoneBar = await barHeight();
 await gap(10);
+t.equal('390 px: GO LIVE does not grow the mini-bar', await barHeight(), phoneBar);
 t.ok('390 px: the delay shows in the mini-bar', (await behindIn('mini')) >= 5, await edgeText('mini'));
 await shot('phone-mini-behind.png');
 const phone = await miniBoxes();
