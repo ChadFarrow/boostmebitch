@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
-import { artCandidates } from '@/lib/util';
+import { artCandidates, playsAsTracks } from '@/lib/util';
 import { logPlayback } from '@/lib/playback-log';
 import type { Episode, Podcast } from '@/lib/types';
 
@@ -59,14 +59,9 @@ export function useMediaSession({
       ['pause', () => setPlaying(false)],
       ['previoustrack', () => useApp.getState().playPrev()],
       ['nexttrack', () => useApp.getState().playNext()],
-      // Through `skipBy`, not `seekTo(getState().positionSec + d)`: these are
-      // RELATIVE jumps and had the same stale-base bug the in-app buttons would
-      // have had — hold down the lock-screen skip and every repeat recomputed
-      // from the same ~4Hz-old position, so a run of them moved one interval.
-      // `seekto` below goes through `seekTo`, because it is absolute — and it
-      // must mark intent, or the restore undoes a lock-screen rewind.
-      ['seekbackward', (d) => skipBy(-(d.seekOffset || 10))],
-      ['seekforward', (d) => skipBy(d.seekOffset || 10)],
+      // `seekto` goes through `seekTo`, because it is absolute — and it must
+      // mark intent, or the restore undoes a lock-screen rewind. The two
+      // RELATIVE skips are registered by the effect below, per item.
       ['seekto', (d) => { if (d.seekTime != null) seekTo(d.seekTime); }],
     ];
     // Each action is written to the playback log first: a lock-screen ⏭ that
@@ -82,6 +77,43 @@ export function useMediaSession({
       }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The skip-interval buttons — for a PODCAST only. A track gets ⏮/⏭.
+  //
+  // iOS draws the ±10 s buttons whenever the page has a `seekbackward` or
+  // `seekforward` handler, and draws ⏮/⏭ only when it has neither, so the track
+  // handlers above were registered all along and never shown. Asked for from
+  // the lock screen on 2026-11-13, over a favorites shuffle: "instead of skip
+  // forward and back 10 or 30 seconds? Can we have previous and next when
+  // listening to music?" So an item that plays as tracks (`playsAsTracks`:
+  // music and musicL, the shuffle's tracks) clears both, and a podcast keeps
+  // them — a skip is how you get past an ad, and ⏮/⏭ there would leave the
+  // episode. The scrub bar (`seekto`) stays for both. Pinned by
+  // `npm run e2e:lockbuttons`, which records what the page hands the OS.
+  //
+  // Through `skipBy`, not `seekTo(getState().positionSec + d)`: these are
+  // RELATIVE jumps and had the same stale-base bug the in-app buttons would
+  // have had — hold down the lock-screen skip and every repeat recomputed from
+  // the same ~4Hz-old position, so a run of them moved one interval.
+  const tracks = !!current && playsAsTracks(current.podcast) && !current.episode.liveStatus;
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    const ms = navigator.mediaSession;
+    const skips: [MediaSessionAction, MediaSessionActionHandler][] = [
+      ['seekbackward', (d) => skipBy(-(d.seekOffset || 10))],
+      ['seekforward', (d) => skipBy(d.seekOffset || 10)],
+    ];
+    for (const [action, handler] of skips) {
+      try {
+        ms.setActionHandler(action, tracks ? null : (d) => { logPlayback('ms', { action }); handler(d); });
+      } catch { /* unsupported action — skip */ }
+    }
+    return () => {
+      for (const [action] of skips) {
+        try { ms.setActionHandler(action, null); } catch { /* skip */ }
+      }
+    };
+  }, [tracks]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reflect play/pause to the OS so the lock-screen button shows the right state.
   useEffect(() => {

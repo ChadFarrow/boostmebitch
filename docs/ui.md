@@ -1532,6 +1532,24 @@ a private cache under the shared one introduces no staleness class the CDN was
 not already permitted, so a publisher who replaces a cover still reaches
 everyone inside the window the week-long shared cache already allowed.
 
+### The lock-screen buttons: ⏮/⏭ for a track, skips for a podcast
+
+**iOS draws the ±10 s skip buttons whenever the page has a `seekbackward` or
+`seekforward` handler, and ⏮/⏭ only when it has neither.** `useMediaSession`
+registered all of them for every item, so the track handlers were there all
+along and never drawn. Asked for from the lock screen on 2026-11-13, over a
+favorites shuffle: *"instead of skip forward and back 10 or 30 seconds? Can we
+have previous and next when listening to music?"*
+
+So the two seek handlers are registered PER ITEM: an item that plays as tracks
+(`playsAsTracks` — music and musicL, the favorites shuffle's tracks) clears
+them, and a podcast or a live item keeps them. A skip is how a podcast listener
+gets past an ad, and ⏮/⏭ there would leave the episode. `previoustrack`,
+`nexttrack` and the scrub bar (`seekto`) are registered for both, as before.
+Pinned by `npm run e2e:lockbuttons`, which records what the page hands
+`navigator.mediaSession.setActionHandler` — no browser here draws a lock screen,
+and that call is the whole of what iOS reads. Not verified on a phone.
+
 ## Reduced motion
 
 **The reader's OS-level "reduce motion" setting is honoured, and it takes two
