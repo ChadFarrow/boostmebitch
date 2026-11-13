@@ -1457,6 +1457,21 @@ export function FullscreenPlayer({
                 )}
               </div>
             )}
+            {/* WHILE THE BLOCK IS UNREAD THE ROW HOLDS ITS PLACE. A favorites
+                shuffle track (and a playlist row) starts with no value block
+                and asks `/api/item-value` as it plays, so on every ⏭ the row
+                above unmounted and came back, and the list under it jumped
+                61px up and down (Chad, beta, 2026-11-13). Same box, same
+                height; no count, because the last track's would be wrong.
+                Pinned by `e2e:shuffle` section 8. */}
+            {!hasValue && boost.reason === 'pending' && (
+              <div className="-mt-1 border-t border-bone/10" data-splits-pending>
+                <p className="flex w-full items-center gap-2 h-11 text-xs text-muted" aria-busy="true">
+                  <BoltIcon className="w-3.5 h-3.5 text-bolt/40" />
+                  <span>Checking splits…</span>
+                </p>
+              </div>
+            )}
 
             {/* THE SHUFFLE replaces the album panel while it owns the track.
                 `episodeQueue` is the list of whatever show was opened last,

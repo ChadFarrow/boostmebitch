@@ -25,6 +25,10 @@
 //      duplicate, all after the track playing.
 //   7. No horizontal overflow at 320, 390 and 1280. The control clears 24×24,
 //      shows its whole word, and does not cover the heading's label.
+//   8. ⏭ in the open now-playing screen does not move the shuffle list. Each
+//      shuffled track starts with its value block unread, and the splits row
+//      above the list unmounted until `/api/item-value` answered, so the list
+//      jumped up 44px and back on every track (Chad, desktop, beta, 2026-11-13).
 //
 // Signed out: no key, so nothing reaches a relay. The shuffle's own requests are
 // answered here; anything else goes to the dev server untouched.
@@ -106,6 +110,7 @@ const pageErrors = [];
 
 // What the shuffle asks, and how this run answers.
 let batchMode = 'ok';            // 'ok' | '429' | 'slow'
+let itemValueDelay = 0;          // ms before /api/item-value answers (section 8)
 const seen = { get: 0, batch: 0, itemValue: [] };
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const fulfillJson = (requestId, body, responseCode = 200) => send('Fetch.fulfillRequest', {
@@ -166,6 +171,7 @@ page.on(async (m) => {
     }
     if (u.pathname === '/api/item-value') {
       seen.itemValue.push({ itemGuid: q.get('itemGuid'), feedGuid: q.get('feedGuid'), feedId: q.get('feedId') });
+      if (itemValueDelay) await wait(itemValueDelay);
       await fulfillJson(requestId, {
         read: true,
         value: { model: { type: 'lightning', method: 'keysend' }, recipients: [{ name: `artist ${q.get('itemGuid')}`, type: 'node', address: '02artist', split: 100 }] },
@@ -415,6 +421,61 @@ for (const [name, width, mobile] of [['320', 320, true], ['390', 390, true], ['1
   t.ok(`${name}: SHUFFLE is at least 24×24`, m.w >= 24 && m.h >= 24, JSON.stringify(m));
   t.ok(`${name}: its word is whole`, m.clip === false, JSON.stringify(m));
   t.ok(`${name}: it does not cover the heading's label`, m.gap !== null && m.gap >= 0, JSON.stringify(m));
+}
+await send('Emulation.clearDeviceMetricsOverride');
+
+// ---------------------------------------------------------------------------
+console.log('\n8. ⏭ on the now-playing screen does not move the shuffle list');
+// At desktop size the list sits in the pinned header right under the splits row
+// (Chad's screenshot, 1920 wide); at phone size the same component is one
+// scroll. The answer is held so the window between the press and the value
+// block is long enough to see, and the placeholder must be SEEN in it, or the
+// check could pass because the answer simply came back too fast.
+const SPLITS_ROW = `[...document.querySelectorAll('button[aria-expanded]')].find((b) => /^Splits to /.test(b.textContent.trim()))`;
+const listTop = `Math.round(document.querySelector('[data-shuffle-panel]').getBoundingClientRect().top)`;
+for (const [name, width, height, mobile] of [['1440', 1440, 900, false], ['390', 390, 844, true]]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: mobile ? 3 : 1, mobile });
+  await open();
+  await pressShuffle();
+  await waitSrc((s) => /[?&]n(=|%3D)\d+/.test(s));
+  await js(`document.querySelector('[aria-label^="Open fullscreen player"]')?.click()`);
+  await until(`!!document.querySelector('[data-shuffle-panel]')`, 5000);
+  t.ok(`${name}: the first track's splits row is up`, await until(`!!${SPLITS_ROW}`, 5000));
+  // The overlay slides up when it opens; sampling during that measured the
+  // slide (1176 → 306), not the list. Wait until the list holds still.
+  for (let last = null, i = 0; i < 40; i++) {
+    const now = await js(listTop);
+    if (now === last) break;
+    last = now; await wait(150);
+  }
+  itemValueDelay = 1200;
+  await js(`(() => {
+    const s = window.__panelTops = []; window.__sawPending = false; window.__sampling = true;
+    const tick = () => {
+      const el = document.querySelector('[data-shuffle-panel]');
+      if (el) s.push(Math.round(el.getBoundingClientRect().top));
+      if (document.querySelector('[data-splits-pending]')?.textContent.includes('Checking splits')) window.__sawPending = true;
+      if (window.__sampling) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick); return true; })()`);
+  // The now-playing screen's own ⏭: the "Next in shuffle" button nearest the
+  // list, not the mini bar's (which is mounted under the overlay too).
+  const pressedNext = await js(`(() => {
+    let box = document.querySelector('[data-shuffle-panel]'), b = null;
+    while (box && !b) { box = box.parentElement; b = box?.querySelector('button[aria-label="Next in shuffle"]'); }
+    if (!b || b.disabled) return false; b.click(); return true; })()`);
+  t.ok(`${name}: ⏭ on the now-playing screen lands`, pressedNext);
+  await wait(1800);
+  const r = JSON.parse(await js(`(() => { window.__sampling = false;
+    return JSON.stringify({ tops: window.__panelTops, sawPending: window.__sawPending }); })()`));
+  itemValueDelay = 0;
+  t.ok(`${name}: the row said "Checking splits…" while the block loaded`, r.sawPending);
+  t.ok(`${name}: the splits row is back for the new track`, await until(`!!${SPLITS_ROW}`, 3000));
+  const lo = Math.min(...r.tops), hi = Math.max(...r.tops);
+  t.ok(`${name}: the shuffle list did not move while the value block loaded`,
+    r.tops.length > 20 && hi - lo <= 1, JSON.stringify({ frames: r.tops.length, lo, hi, moves: [...new Set(r.tops)] }));
+  await js(`document.querySelector('[aria-label="Close fullscreen player"]')?.click()`);
+  await wait(300);
 }
 await send('Emulation.clearDeviceMetricsOverride');
 
