@@ -245,6 +245,7 @@ const stored = {
 const opts = {
   feedUrl: communityFeedUrl(id), coverUrl: communityCoverUrl(id, 1),
   ownerNpub, fallbackDescription: 'Fallback & co', podcastGuid: communityFeedGuid(communityFeedUrl(id)),
+  generator: `${BRANDS.buddy.displayName} (${BRANDS.buddy.origin})`,
 };
 // The guid saved with the row when it was created. It is the feed's identity for good:
 // a deploy whose feed origin differs from the one the row was made under must not mint a
@@ -287,6 +288,9 @@ const docVectors = [
     && xml.includes(`<podcast:guid>${communityFeedGuid(opts.feedUrl)}</podcast:guid>`)
     && xml.includes(`<itunes:image href="${opts.coverUrl}"/>`)
     && xml.includes('<language>en</language>') },
+  { kind: 'generator names Boost Me Buddy', build: (b) => b(stored, opts), test: (xml) =>
+    (channelSlice(xml).match(/<generator>/g) ?? []).length === 1
+    && xml.includes('<generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>') },
 ];
 // The obvious wrong builder: the same document with nothing escaped.
 const naiveBuild = (p, o) => buildPlaylistFeedXml(p, o)

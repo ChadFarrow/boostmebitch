@@ -311,6 +311,8 @@ check('GET feed .xml -> 200 rss+xml with the cache header',
 check('feed has 12 remoteItems, the owner npub and medium musicL',
   (feedXml.match(/<podcast:remoteItem/g) ?? []).length === 12 && feedXml.includes(npubEncode(ownerPub))
   && feedXml.includes('<podcast:medium>musicL'), feedXml.slice(0, 300));
+check('the feed names where it was made: <generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>',
+  feedXml.includes('<generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>'), (feedXml.match(/<generator>[^<]*<\/generator>/) ?? ['none'])[0]);
 check('the client\'s made-up feedUrl is NOT in the public feed', !feedXml.includes('forged.e2e.invalid'),
   (feedXml.match(/<podcast:remoteItem [^>]*>/) ?? [''])[0]);
 {

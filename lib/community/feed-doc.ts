@@ -41,7 +41,7 @@ export function communityFeedGuid(feedUrl: string): string {
  */
 export function buildPlaylistFeedXml(
   p: StoredPlaylist,
-  o: { feedUrl: string; coverUrl: string; ownerNpub: string; fallbackDescription: string; podcastGuid: string },
+  o: { feedUrl: string; coverUrl: string; ownerNpub: string; fallbackDescription: string; podcastGuid: string; generator: string },
 ): string {
   const e = escapeXml;
   const description = p.description || o.fallbackDescription;
@@ -57,6 +57,7 @@ export function buildPlaylistFeedXml(
     <link>${e(o.feedUrl)}</link>
     <language>en</language>
     <lastBuildDate>${new Date(p.updatedAt).toUTCString()}</lastBuildDate>
+    <generator>${e(o.generator)}</generator>
     <podcast:guid>${e(o.podcastGuid)}</podcast:guid>
     <podcast:medium>musicL</podcast:medium>
     <podcast:txt purpose="npub">${e(o.ownerNpub)}</podcast:txt>
