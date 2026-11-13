@@ -3,11 +3,10 @@
 import { useEffect, useState } from 'react';
 import type { Episode } from '@/lib/types';
 import { livePlayedKey, livePlayedSnapshot, subscribeLivePlayed, type PlayedTrack } from '@/lib/live-played';
-import { useApp } from '@/lib/store';
 import { liveTargetSnapshot, subscribeLiveTarget } from '@/lib/v4v/live-value';
 import { splitTargetLabel } from './live-now-playing';
 import { FavTrackHeart } from './fav-heart';
-import { RowThumb } from './chapter-ui';
+import { PodcastCover } from './podcast-cover';
 import { fmtClock } from '@/lib/format';
 
 /**
@@ -59,8 +58,8 @@ export function LivePlayedTracks({
   className = '',
 }: {
   episode?: Episode;
-  /** The show's own art, for a block that ships none — the same one-left-edge
-   *  argument `<RowThumb>` carries. */
+  /** The show's own art, for a block that ships none — so a row keeps its left
+   *  edge. */
   fallbackImg?: string;
   className?: string;
 }) {
@@ -80,14 +79,6 @@ export function LivePlayedTracks({
   // it is up NO row should claim to be playing.
   const [target, setTarget] = useState(liveTargetSnapshot);
   useEffect(() => subscribeLiveTarget(() => setTarget(liveTargetSnapshot())), []);
-
-  // Feed-supplied artwork must never outrank the enclosure, and this list is
-  // behind no tab: it is the first thing in the fullscreen player's scroll body
-  // and it sits above the episode page's tabs, so <RowThumb>'s lazy/low/async —
-  // "the whole mitigation" only for a list someone has to open — is not enough
-  // on its own. <Player> publishes the same one verdict both art surfaces use.
-  // The show's own art still renders, so a row keeps its left edge.
-  const artOk = useApp((s) => s.artOk);
 
   if (!guid || !played.length) return null;
   // Derived through the log's own key function, never off `bucketKey` directly:
@@ -120,9 +111,24 @@ export function LivePlayedTracks({
               className={`flex items-center gap-1 rounded ${on ? 'bg-bolt/10' : ''}`}
             >
               <div className="flex-1 min-w-0 flex gap-3 items-center py-1.5">
-                <RowThumb
-                  src={artOk ? p.split.image : undefined}
-                  fallback={fallbackImg}
+                {/* The record's own art, PROXIED at thumbnail size and NOT behind
+                    <Player>'s `artOk` gate — the rule `nowPlayingArt` already
+                    applies to the same block image on the hero and the mini-bar.
+                    The gate reopens at 20 s of audio buffered ahead, and a live
+                    stream holds about 2 (measured on Homegrown Hits in Chrome:
+                    2.3 s, every sample), so behind it every row showed the show
+                    art for the whole broadcast while the hero showed the record.
+                    What the gate guards against is a raw original on the audio's
+                    connection — HGH ships 30 MB chapter GIFs — and the proxy
+                    answers with a few KB instead, from this app's own origin. The
+                    show's art is the second candidate, so a row with no block
+                    art, or one the proxy cannot read, keeps its left edge. */}
+                <PodcastCover
+                  image={p.split.image}
+                  artwork={fallbackImg}
+                  title={splitTargetLabel(p.split, 'Untitled track')}
+                  w={160}
+                  lowPriority
                   className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
                 />
                 <span className="min-w-0 flex-1">
