@@ -10,7 +10,7 @@ import { artCandidates } from '@/lib/util';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import { cleanText } from '@/lib/community/clean-text';
 import {
-  MAX_TITLE_LEN, MIN_SONGS, validatePlaylistDraft,
+  ART_MIN_PX, MAX_TITLE_LEN, MIN_SONGS, validatePlaylistDraft,
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
@@ -34,11 +34,8 @@ type Refusal =
   | { kind: 'not-music'; itemGuid: string };
 
 const ART_WORDS: Record<ArtRefusal, string> = {
-  'not-square': 'The picture must be square.',
-  'too-small': 'The picture must be at least 1400 × 1400 px.',
-  'too-large': 'The picture must be at most 3000 × 3000 px.',
+  'too-small': `The picture must be at least ${ART_MIN_PX} px on its shortest side.`,
   format: 'Use a PNG or JPEG picture.',
-  alpha: 'The picture must not be transparent.',
   'not-image': 'That link is not a picture we can read.',
 };
 
@@ -382,7 +379,7 @@ export function PlaylistMaker() {
           <input id="pl-art" className="input mt-1" inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false}
             aria-describedby="pl-art-hint" value={artUrl} onChange={(e) => edit(setArtUrl)(e.target.value)} />
           <p id="pl-art-hint" className="mt-1 text-xs text-muted">
-            Square, 1400–3000 px. Empty: BMB makes the cover from the first four songs.
+            Square is preferred, 1400–3000 px. Empty: BMB makes the cover from the first four songs.
           </p>
         </div>
       </div>

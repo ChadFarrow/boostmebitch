@@ -188,7 +188,7 @@ t.equal('the rows are numbered 1 to 12', await numbers(), Array.from({ length: 1
 t.ok('a row shows the saved title, no fetch', (await body()).includes(real[0].title));
 const txt = await body();
 for (const w of ['TITLE', 'DESCRIPTION', 'PLAYLIST ART LINK', '+ ADD SONGS', 'PUBLISH',
-  'Square, 1400–3000 px. Empty: BMB makes the cover from the first four songs.',
+  'Square is preferred, 1400–3000 px. Empty: BMB makes the cover from the first four songs.',
   'Only you can change this playlist.']) t.ok(`copy: ${w}`, txt.includes(w), 'missing');
 t.ok('footer names the signer', /Signed in as \S+/.test(txt));
 t.equal('row buttons are labelled', await js(`['Move up','Move down','Remove'].map((l) => document.querySelectorAll('[aria-label="' + l + '"]').length)`), [12, 12, 12]);
@@ -351,7 +351,7 @@ await seed(draft({ artUrl: ART_TOO_SMALL }), labels);
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')`); await wait(500);
 await click(byText('PUBLISH'));
-t.ok('a small picture is refused in words', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('The picture must be at least 1400 × 1400 px.')`, 30000));
+t.ok('a small picture is refused in words', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('The picture must be at least 300 px on its shortest side.')`, 30000));
 t.ok('with the cover preview still on screen', await js(`!!document.querySelector('[data-testid=cover-preview]')`));
 // A body the server will not read: 500 songs with long item guids pass every rule on the
 // page, and the route answers 400 `payload too large`. The page must say so, not "try again".
