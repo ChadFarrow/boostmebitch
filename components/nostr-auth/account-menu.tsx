@@ -4,6 +4,7 @@ import { useMenuKeys } from '../use-menu-keys';
 import { useRouter } from 'next/navigation';
 import { subscribeBunkerHealth, subscribeBunkerRestore, bunkerRefusal, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
+import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
 import { MutedAccountsSection } from './muted-accounts';
 import { ExportKeySection } from './export-key';
@@ -192,13 +193,40 @@ function ListUnlockSection({ npub }: { npub: string }) {
 export function AccountMenu({
   identity,
   onSignOut,
+  overlay = false,
+  triggerClassName = '',
 }: {
   identity: NostrIdentity;
   onSignOut: () => void;
+  /**
+   * Drawn on the now-playing screen (`<NowPlayingAccountMenu>`) rather than in
+   * the header. Asked for from that screen on 2026-11-13: *"if I click my
+   * avatar in the top right, I'd like it to open the same menu that it does on
+   * the home screen."* The same menu, with two differences: no theme link — a
+   * palette switch inside the player was asked to go (see <AuthControl>'s
+   * `overlay`) — and "my boosts" closes the player first, or the page it opens
+   * would load hidden under it.
+   */
+  overlay?: boolean;
+  /** Sizing from the host's bar (the player's `BAR_CHIP_LG`). */
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [reporting, setReporting] = useState(false);
+  // `overlay` only: where the panel's top goes, just under the button. In the
+  // header the button is the last thing on the right, so `right-0` lines the
+  // panel up with the screen; in the player's bar the ✕ (and SIGN IN) sit to
+  // its right, and a 358px panel anchored to the button ran off the LEFT edge
+  // of a 390px phone (measured, e2e:npmenu). So there the panel is `fixed`,
+  // 16px from the right edge, at this height. The player's root carries a
+  // transform, which makes it the containing block for `fixed` — and it covers
+  // the whole viewport, so the button's viewport coordinates are the right ones.
+  const [overlayTop, setOverlayTop] = useState<number | null>(null);
+  const measureOverlayTop = useCallback(() => {
+    if (overlay && triggerRef.current) setOverlayTop(Math.round(triggerRef.current.getBoundingClientRect().bottom + 8));
+  }, [overlay]);
+  useEffect(() => { measureOverlayTop(); }, [measureOverlayTop, open]);
   const [signerStale, setSignerStale] = useState(false);
   // Subscribed ONCE here and passed down, like `signerStale` and for the same
   // reason: the banner's disabled Reconnect and the notice's sentence are two
@@ -255,8 +283,8 @@ export function AccountMenu({
     <div ref={wrapperRef} className="relative">
       <button
         ref={triggerRef}
-        onClick={() => setOpen((o) => !o)}
-        className="btn-ghost group flex items-center gap-2"
+        onClick={() => { measureOverlayTop(); setOpen((o) => !o); }}
+        className={`btn-ghost group flex items-center gap-2 ${overlay ? 'px-2 py-1 text-xs' : ''} ${triggerClassName}`}
         aria-haspopup="menu"
         aria-expanded={open}
         // The visible name is `hidden` below `sm:` — display:none is out of
@@ -320,7 +348,10 @@ export function AccountMenu({
           is already opaque. A zero-height box paints nothing, so the fill
           costs nothing while idle. */}
       {!open && (
-        <div className="absolute right-0 top-full mt-2 w-[min(360px,calc(100vw-2rem))] z-30 flex flex-col gap-2 bg-ink">
+        <div
+          className={`${overlay ? 'fixed right-4' : 'absolute right-0 top-full mt-2'} w-[min(360px,calc(100vw-2rem))] z-30 flex flex-col gap-2 bg-ink`}
+          style={overlay ? { top: overlayTop ?? 64 } : undefined}
+        >
           <BunkerApprovalNotice />
           {/* The restore's own window, which the two signals above cannot
               describe: the approval notice needs the signer to have ANSWERED,
@@ -337,7 +368,8 @@ export function AccountMenu({
         <div
           ref={menuRef}
           role="menu"
-          className="absolute right-0 top-full mt-2 w-[min(360px,calc(100vw-2rem))] card bg-ink p-4 z-30 shadow-xl"
+          className={`${overlay ? 'fixed right-4' : 'absolute right-0 top-full mt-2'} w-[min(360px,calc(100vw-2rem))] card bg-ink p-4 z-30 shadow-xl`}
+          style={overlay ? { top: overlayTop ?? 64 } : undefined}
         >
           <div className="border-b border-bone/15 pb-3 mb-3">
             <div className="text-sm">{name || 'Anon'}</div>
@@ -354,7 +386,11 @@ export function AccountMenu({
                   have to hand, and nobody has their own npub to hand. This is
                   where the rest of their identity already is. */}
               <button
-                onClick={() => { setOpen(false); router.push(`/npub/${identity.npub}`); }}
+                onClick={() => {
+                  setOpen(false);
+                  if (overlay) useApp.getState().setPlayerExpanded(false);
+                  router.push(`/npub/${identity.npub}`);
+                }}
                 className="btn-ghost text-[10px] py-1 px-2"
               >
                 my boosts
@@ -407,7 +443,7 @@ export function AccountMenu({
               >
                 report a bug
               </button>
-              <ThemeMenuLink />
+              {!overlay && <ThemeMenuLink />}
             </div>
           </div>
         </div>
