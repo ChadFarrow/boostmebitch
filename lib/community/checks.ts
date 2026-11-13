@@ -32,7 +32,7 @@ export async function checkArt(url: string): Promise<{ ok: true } | { ok: false;
   try {
     const buf = await fetchImageBytes(url);
     const m = await sharp(buf, { limitInputPixels: IMAGE_PIXEL_LIMIT }).metadata();
-    return artVerdict({ format: m.format, width: m.width, height: m.height, hasAlpha: m.hasAlpha });
+    return artVerdict({ format: m.format, width: m.width, height: m.height });
   } catch {
     // Unsafe address, timeout, too large, undecodable: none of them is a usable cover.
     return { ok: false, reason: 'not-image' };
