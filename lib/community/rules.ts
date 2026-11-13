@@ -5,8 +5,13 @@ export const MIN_SONGS = 10;
 export const MAX_SONGS = 500;
 export const MAX_TITLE_LEN = 120;
 export const MAX_DESCRIPTION_LEN = 1000;
-export const ART_MIN_PX = 1400;
-export const ART_MAX_PX = 3000;
+/**
+ * The shortest side a cover link may have. Square art of 1400 to 3000 px is only
+ * preferred (Chad, 2026-11-12): these feeds are not sent to Apple, whose directory
+ * sets that rule, and apps crop or fit a cover that is not square. The feed names
+ * the listener's link itself, so this site serves no listener's picture to apps.
+ */
+export const ART_MIN_PX = 300;
 /** The longest art link or song `feedUrl` stored: the cap every sibling URL parameter carries. */
 export const MAX_URL_LEN = 2048;
 /**
@@ -134,21 +139,18 @@ export function withIndexFeedUrls(
   });
 }
 
-export type ArtRefusal = 'not-image' | 'format' | 'not-square' | 'too-small' | 'too-large' | 'alpha';
+export type ArtRefusal = 'not-image' | 'format' | 'too-small';
 
+/** A cover link is a PNG or JPEG whose shortest side is at least ART_MIN_PX. Any shape and transparency pass. */
 export function artVerdict(meta: {
   format?: string;
   width?: number;
   height?: number;
-  hasAlpha?: boolean;
 }): { ok: true } | { ok: false; reason: ArtRefusal } {
-  const { format, width, height, hasAlpha } = meta;
+  const { format, width, height } = meta;
   if (!format || !width || !height) return { ok: false, reason: 'not-image' };
   if (format !== 'jpeg' && format !== 'png') return { ok: false, reason: 'format' };
-  if (width !== height) return { ok: false, reason: 'not-square' };
-  if (width < ART_MIN_PX) return { ok: false, reason: 'too-small' };
-  if (width > ART_MAX_PX) return { ok: false, reason: 'too-large' };
-  if (hasAlpha) return { ok: false, reason: 'alpha' };
+  if (Math.min(width, height) < ART_MIN_PX) return { ok: false, reason: 'too-small' };
   return { ok: true };
 }
 

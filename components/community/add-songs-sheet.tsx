@@ -8,6 +8,7 @@ import { RowThumb } from '@/components/chapter-ui';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { loadFeed } from '@/lib/podcast-meta';
 import { artCandidates, isMusicMedium } from '@/lib/util';
+import { SongPreviewButton } from '@/components/community/song-preview-button';
 import type { Episode, Podcast } from '@/lib/types';
 import type { PlaylistSong } from '@/lib/community/rules';
 
@@ -28,12 +29,13 @@ function Thumb({ image, fallback }: { image?: string; fallback?: string }) {
   return <RowThumb src={src} fallback={alt} className="w-10 h-10 rounded object-cover flex-shrink-0 border border-bone/15" />;
 }
 
-function SongRow({ title, artist, image, added, onAdd }: {
+function SongRow({ title, artist, image, added, onAdd, preview }: {
   title: string; artist?: string; image?: string; added: boolean; onAdd?: () => void;
+  preview?: { feedGuid: string; itemGuid: string; episode?: Episode; podcast?: Podcast };
 }) {
   return (
-    <li className="flex items-center gap-3 py-2" data-add-row>
-      <Thumb image={image} />
+    <li className="flex flex-wrap items-center gap-3 py-2" data-add-row>
+      {preview ? <SongPreviewButton {...preview} title={title} image={image} /> : <Thumb image={image} />}
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm">{title}</p>
         {artist && <p className="truncate text-xs text-muted">{artist}</p>}
@@ -211,6 +213,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
                     title={e.title}
                     artist={artist}
                     image={image}
+                    preview={ok ? { feedGuid: feedGuid!, itemGuid: e.guid!, episode: e, podcast: album.podcast } : undefined}
                     added={ok && has(feedGuid!, e.guid!)}
                     onAdd={ok ? () => onAdd(
                       { feedGuid: feedGuid!, itemGuid: e.guid!, ...(feedUrl ? { feedUrl } : {}) },
@@ -244,6 +247,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
                   title={f.title ?? 'Song'}
                   artist={f.podcastTitle}
                   image={f.image}
+                  preview={{ feedGuid: f.feedGuid!, itemGuid: f.itemGuid }}
                   added={has(f.feedGuid!, f.itemGuid)}
                   onAdd={() => onAdd(
                     { feedGuid: f.feedGuid!, itemGuid: f.itemGuid, ...(f.feedUrl ? { feedUrl: f.feedUrl } : {}) },

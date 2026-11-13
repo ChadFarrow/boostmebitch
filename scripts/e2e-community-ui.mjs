@@ -17,7 +17,7 @@
 // 'no event of any kind went to a public relay'). Feed reads and profile reads still reach the
 // public network.
 import { createRelay } from './local-relay.mjs';
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { checker, exit, launchChrome, MINI_BAR, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { getToken } from 'nostr-tools/nip98';
 
@@ -42,6 +42,7 @@ const PORT = await relay.ready;
 const { page } = await launchChrome({
   name: `communityui-${process.env.CLAUDE_CODE_SESSION_ID || 'local'}`,
   args: ['--disable-gpu'],
+  autoplay: true, // the song preview plays real audio with no user gesture inside the headless tab
 });
 const { send } = page;
 const js = page.jsOrThrow;
@@ -168,6 +169,12 @@ console.log('--- 3. signed in: the saved draft ---');
 await go('/');
 await signedIn();
 await seed(draft(), labels);
+// For the preview lines: songs 0 and 1 sit in the LISTEN QUEUE (so a preview that advanced would
+// start song 1), and song 2 is a saved favorite (the Add songs sheet's FAVORITES tab).
+const queueItem = (e) => ({ episode: e, podcast: { id: e.feedId ?? 0, podcastGuid: e.podcastGuid, title: e.feedTitle ?? e.title, image: e.feedImage, medium: 'music' } });
+await js(`(() => { localStorage.setItem('bmb:listen_queue:${npub}', ${JSON.stringify(JSON.stringify([queueItem(real[0]), queueItem(real[1])]))});
+  localStorage.setItem('bmb:fav_privacy:${npub}', 'public');
+  localStorage.setItem('bmb:favepisodes:${npub}', ${JSON.stringify(JSON.stringify({ [real[2].guid]: { itemGuid: real[2].guid, feedGuid: real[2].podcastGuid, title: real[2].title, podcastTitle: real[2].feedTitle, image: real[2].image || real[2].feedImage, medium: 'music', addedAt: 1 } }))}); return 1; })()`);
 await go('/playlists/make');
 t.ok('the form appears', await waitFor(`document.querySelector('#pl-title')`));
 await wait(500);
@@ -183,7 +190,7 @@ t.equal('the rows are numbered 1 to 12', await numbers(), Array.from({ length: 1
 t.ok('a row shows the saved title, no fetch', (await body()).includes(real[0].title));
 const txt = await body();
 for (const w of ['TITLE', 'DESCRIPTION', 'PLAYLIST ART LINK', '+ ADD SONGS', 'PUBLISH',
-  'Square, 1400–3000 px. Empty: BMB makes the cover from the first four songs.',
+  'Square is preferred, 1400–3000 px. Empty: BMB makes the cover from the first four songs.',
   'Only you can change this playlist.']) t.ok(`copy: ${w}`, txt.includes(w), 'missing');
 t.ok('footer names the signer', /Signed in as \S+/.test(txt));
 t.equal('row buttons are labelled', await js(`['Move up','Move down','Remove'].map((l) => document.querySelectorAll('[aria-label="' + l + '"]').length)`), [12, 12, 12]);
@@ -191,6 +198,99 @@ t.equal('row buttons are at least 32 x 32', await tooSmall('[data-song-row] butt
 t.equal('every button on the page is at least 24 x 24', await tooSmall('main button, main a', 24, 24), []);
 t.ok('maker: no horizontal overflow', await overflowFree());
 t.ok('PUBLISH is on with 12 songs and a title', await js(`!${byText('PUBLISH')}.disabled`));
+
+console.log('--- 3b. the song list is readable, and each song previews alone ---');
+const alphaOf = (sel) => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return null; const c = getComputedStyle(el).backgroundColor;
+  const m = /^rgba?\\(([^)]*)\\)$/.exec(c); if (m) { const p = m[1].split(/[ ,\\/]+/).filter(Boolean); return p.length > 3 ? Number(p[3]) : 1; }
+  const m2 = /\\/\\s*([\\d.]+%?)/.exec(c) || /,\\s*([\\d.]+)\\s*\\)$/.exec(c); if (m2) return m2[1].endsWith('%') ? parseFloat(m2[1]) / 100 : Number(m2[1]); return c === 'transparent' ? 0 : 1; })()`);
+const panelAlpha = await alphaOf('[data-songs-panel]');
+t.ok('the song list sits on a panel with a background alpha of at least 0.85', panelAlpha !== null && panelAlpha >= 0.85, String(panelAlpha));
+t.ok('the panel holds the list and the song count', await js(`(() => { const p = document.querySelector('[data-songs-panel]'); return !!p && !!p.querySelector('ol[aria-label="Songs"]') && /\\d+ songs?/.test(p.innerText); })()`));
+t.ok('the artist line is bone/70, not muted', await js(`(() => { const a = document.querySelector('[data-song-row] p.text-xs'); return !!a && a.classList.contains('text-bone/70') && !a.classList.contains('text-muted'); })()`));
+const previewBtn = (title, scope = 'main') => `[...document.querySelectorAll(${JSON.stringify(scope + ' [data-song-preview]')})].find((b) => b.getAttribute('aria-label') === ${JSON.stringify(title)})`;
+const mini = () => js(`document.querySelector(${JSON.stringify(MINI_BAR)})?.innerText ?? ''`);
+const audioPlaying = `(() => { const a = document.querySelector('audio'); return a && !a.paused && a.currentTime > 0; })()`;
+const plog = () => js(`(localStorage.getItem('bmb:plog:device') || '').slice(-1700)`);
+const audioState = () => js(`(() => { const a = document.querySelector('audio'); return a ? { paused: a.paused, t: a.currentTime, d: a.duration, ended: a.ended, err: a.error?.code ?? null, rs: a.readyState, seekable: a.seekable.length ? a.seekable.end(0) : 0, src: a.currentSrc.slice(0, 90) } : null; })()`);
+t.equal('every row has a preview button with a play label', await js(`[...document.querySelectorAll('[data-song-row] [data-song-preview]')].map((b) => b.getAttribute('aria-label'))`), real.map((e) => `Play ${e.title}`));
+t.ok('each preview button shows a visible play glyph', await js(`[...document.querySelectorAll('[data-song-row] [data-song-preview]')].every((b) => b.textContent.includes('▶'))`));
+t.equal('preview buttons are 40 x 40', await js(`[...document.querySelectorAll('[data-song-row] [data-song-preview]')].filter((b) => { const r = b.getBoundingClientRect(); return Math.round(r.width) !== 40 || Math.round(r.height) !== 40; }).length`), 0);
+t.equal('preview buttons are at least 24 x 24', await tooSmall('[data-song-preview]', 24, 24), []);
+// Song 0 is already the CURRENT item here (the listen queue cued it), so the first tap is a toggle on a loaded song.
+t.ok('tap the cover: it plays', await click(previewBtn(`Play ${real[0].title}`)));
+t.ok('the mini-player shows that song', await waitFor(`document.querySelector(${JSON.stringify(MINI_BAR)})?.innerText.includes(${JSON.stringify(real[0].title)})`, 40000), await mini());
+t.ok('and the button now says Pause', await waitFor(`${previewBtn(`Pause ${real[0].title}`)}`, 20000));
+t.ok('with a pause glyph over the cover', await js(`${previewBtn(`Pause ${real[0].title}`)}?.textContent.includes('❚❚')`));
+t.ok('the audio is playing', await waitFor(`(() => { const a = document.querySelector('audio'); return a && !a.paused && a.currentTime > 0; })()`, 40000), JSON.stringify(await audioState()));
+t.ok('tap again: it pauses', await click(previewBtn(`Pause ${real[0].title}`)) && await waitFor(`document.querySelector('audio')?.paused === true && ${previewBtn(`Play ${real[0].title}`)}`, 15000), JSON.stringify(await audioState()));
+t.ok('the mini-player still shows the song', (await mini()).includes(real[0].title));
+t.ok('the preview of a song does not play it at a saved place: it starts at the beginning', (await audioState())?.t < 30);
+// "just the song": play it again, then jump to the last half second. Songs 0 and 1 are in the listen
+// queue, so a player that advanced would now be playing song 1.
+t.ok('tap again: it plays', await click(previewBtn(`Play ${real[0].title}`)) && await waitFor(`document.querySelector('audio') && !document.querySelector('audio').paused`, 20000));
+t.ok('the audio has a length', await waitFor(`Number.isFinite(document.querySelector('audio')?.duration) && document.querySelector('audio').duration > 2`, 30000), JSON.stringify(await audioState()));
+// The mini-player's own seek slider (setting `audio.currentTime` directly is overwritten by the player's position sync).
+await js(`(() => { const a = document.querySelector('audio'); const r = document.querySelector('input[aria-label="Seek"]'); const v = String(a.duration - 0.6);
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(r, v); r.dispatchEvent(new Event('input', { bubbles: true })); r.dispatchEvent(new Event('change', { bubbles: true })); return 1; })()`);
+t.ok('the song reaches its end', await waitFor(`document.querySelector('audio')?.ended === true || (document.querySelector('audio')?.paused && document.querySelector('audio').currentTime >= document.querySelector('audio').duration - 0.2)`, 30000), JSON.stringify(await audioState()) + await plog());
+await wait(2500);
+const after = await mini();
+t.ok('after the end the mini-player still shows the same song', after.includes(real[0].title), after);
+t.ok('...and not the next song in the queue', !after.includes(real[1].title) || real[1].title === real[0].title, after);
+t.ok('...and the audio is paused, not restarted', (await audioState())?.paused === true, JSON.stringify(await audioState()));
+t.ok('...and the button says Play again', await js(`!!${previewBtn(`Play ${real[0].title}`)}`));
+await js(`localStorage.removeItem('bmb:listen_queue:${npub}'); 1`);
+
+t.ok('a song that is not loaded yet: tap its cover', await click(previewBtn(`Play ${real[4].title}`)));
+t.ok('the mini-player switches to it', await waitFor(`document.querySelector(${JSON.stringify(MINI_BAR)})?.innerText.includes(${JSON.stringify(real[4].title)})`, 40000), await mini());
+t.ok('and its button says Pause', await waitFor(`${previewBtn(`Pause ${real[4].title}`)}`, 20000));
+await waitFor(audioPlaying, 40000); // let it really start before the next one: pausing a load in flight leaves the player's own stall guard armed
+t.ok('and the first song says Play again', await js(`!!${previewBtn(`Play ${real[0].title}`)}`));
+console.log('--- 3c. the Add songs sheet previews too ---');
+t.ok('open Add songs', await click(byText('+ ADD SONGS')) && await waitFor(`document.querySelector('[role=dialog]')?.innerText.includes('Add songs')`, 10000));
+await click(`[...document.querySelectorAll('[role=dialog] [role=tab]')].find((b) => b.textContent.trim() === 'FAVORITES')`);
+t.ok('FAVORITES lists the saved song', await waitFor(`document.querySelector('[role=dialog] [aria-label="Saved songs"] [data-add-row]')`, 30000));
+t.ok('the favorite row has a preview button', await waitFor(`${previewBtn(`Play ${real[2].title}`, '[role=dialog]')}`, 10000));
+t.ok('FAVORITES: tap its cover', await click(previewBtn(`Play ${real[2].title}`, '[role=dialog]')));
+t.ok('FAVORITES: the mini-player shows that song (resolved by guid)', await waitFor(`document.querySelector(${JSON.stringify(MINI_BAR)})?.innerText.includes(${JSON.stringify(real[2].title)})`, 40000), await mini());
+t.ok('FAVORITES: the button says Pause', await waitFor(`${previewBtn(`Pause ${real[2].title}`, '[role=dialog]')}`, 20000));
+await waitFor(audioPlaying, 40000);
+t.ok('the sheet: no horizontal overflow', await overflowFree());
+t.equal('the sheet preview buttons are at least 24 x 24', await tooSmall('[role=dialog] [data-song-preview]', 24, 24), []);
+await click(previewBtn(`Pause ${real[2].title}`, '[role=dialog]'));
+await click(`[...document.querySelectorAll('[role=dialog] [role=tab]')].find((b) => b.textContent.trim() === 'SEARCH')`);
+const q = (real[3].feedTitle || real[3].title).slice(0, 40);
+await setValue('[role=dialog] input[type=search]', q);
+t.ok('SEARCH: an album is listed', await waitFor(`document.querySelector('[role=dialog] [data-album-row]')`, 40000));
+await click(`document.querySelector('[role=dialog] [data-album-row]')`);
+t.ok('SEARCH: the album lists tracks with preview buttons', await waitFor(`document.querySelector('[role=dialog] [aria-label="Songs in this album"] [data-song-preview]')`, 40000));
+const trackLabel = await js(`document.querySelector('[role=dialog] [aria-label="Songs in this album"] [data-song-preview]').getAttribute('aria-label')`);
+const trackTitle = trackLabel.replace(/^Play /, '');
+t.ok('SEARCH: tap a track cover', await click(`document.querySelector('[role=dialog] [aria-label="Songs in this album"] [data-song-preview]')`));
+t.ok('SEARCH: the mini-player shows that track', await waitFor(`document.querySelector(${JSON.stringify(MINI_BAR)})?.innerText.includes(${JSON.stringify(trackTitle)})`, 40000), `${trackTitle} / ${await mini()}`);
+await waitFor(audioPlaying, 40000);
+t.ok('SEARCH: its button says Pause', await waitFor(`document.querySelector('[role=dialog] [aria-label="Songs in this album"] [data-song-preview]')?.getAttribute('aria-label') === ${JSON.stringify('Pause ' + trackTitle)}`, 20000), `${trackLabel} / ${await js(`document.querySelector('[role=dialog] [aria-label="Songs in this album"] [data-song-preview]')?.getAttribute('aria-label')`)} / ${JSON.stringify(await audioState())} / ${await plog()}`);
+t.ok('the album: no horizontal overflow', await overflowFree());
+t.ok('the song of the album plays under its OWN feed, not a playlist', await js(`!document.querySelector(${JSON.stringify(MINI_BAR)})?.innerText.includes('e2e community playlist')`));
+await click(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent.trim() === 'DONE')`);
+await wait(500);
+
+console.log('--- 3d. a song that cannot load says so ---');
+await js(`localStorage.removeItem('bmb:favepisodes:${npub}'); 1`);
+await seed(draft({ songs: [{ feedGuid: real[0].podcastGuid, itemGuid: 'no-such-song-guid-e2e' }, ...songs.slice(0, 9)] }), labels);
+await go('/playlists/make');
+t.ok('the draft is back', await waitFor(`document.querySelectorAll('[data-song-row]').length === 10`, 20000));
+t.ok('tap the broken song', await click(`document.querySelector('[data-song-row] [data-song-preview]')`));
+t.ok('it says: Could not load this song.', await waitFor(`document.querySelector('[data-song-row] [data-preview-error]')?.innerText.includes('Could not load this song.')`, 40000));
+t.ok('the line is a polite live region', await js(`document.querySelector('[data-song-row] [data-preview-error]')?.getAttribute('aria-live') === 'polite'`));
+t.ok('and the button is back to Play', await js(`document.querySelector('[data-song-row] [data-song-preview]').getAttribute('aria-label').startsWith('Play ') && document.querySelector('[data-song-row] [data-song-preview]').textContent.includes('▶')`));
+t.ok('and nothing started playing', await js(`!document.querySelector('audio') || document.querySelector('audio').paused`), JSON.stringify(await audioState()));
+t.ok('the failed row: no horizontal overflow', await overflowFree());
+await seed(draft(), labels);
+await go('/playlists/make');
+t.ok('the form is back', await waitFor(`document.querySelector('#pl-title')`));
+await wait(500);
+t.equal('twelve rows again', await rows(), 12);
 
 console.log('--- 4. the reason PUBLISH is off ---');
 await setValue('#pl-title', '');
@@ -253,7 +353,7 @@ await seed(draft({ artUrl: ART_TOO_SMALL }), labels);
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')`); await wait(500);
 await click(byText('PUBLISH'));
-t.ok('a small picture is refused in words', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('The picture must be at least 1400 × 1400 px.')`, 30000));
+t.ok('a small picture is refused in words', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('The picture must be at least 300 px on its shortest side.')`, 30000));
 t.ok('with the cover preview still on screen', await js(`!!document.querySelector('[data-testid=cover-preview]')`));
 // A body the server will not read: 500 songs with long item guids pass every rule on the
 // page, and the route answers 400 `payload too large`. The page must say so, not "try again".

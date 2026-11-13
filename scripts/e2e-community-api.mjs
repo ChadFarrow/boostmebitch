@@ -30,7 +30,7 @@ const SONG_SOURCE = 'https://v4vmusic.com/playlist/334bb12d-1f72-4c0e-88e1-266bd
 // Cover art, found in that playlist's resolved tracks (2026-11-12). Checked with sharp.
 // Accepted: a Fountain-hosted JPEG, 2000x2000, no alpha.
 const ART_OK = 'https://feeds.fountain.fm/a43Ic3kG9KZNwtwOqTWP/files/COVER_ART---DEFAULT---54639a46-e3df-4612-8b81-f18785109ae2.jpg';
-// Refused: headstarts.uk JPEG, 1476x1472 (not square).
+// Accepted since 2026-11-12 (square is only preferred): headstarts.uk JPEG, 1476x1472.
 const ART_NOT_SQUARE = 'https://headstarts.uk/msp/the_fifty_four_plates/grey_state/grey_state_album_cover.jpg';
 // Refused: headstarts.uk JPEG, 200x200 (too small).
 const ART_TOO_SMALL = 'https://headstarts.uk/msp/hear-my-roar/hearmyroar%20logo.jpg';
@@ -150,9 +150,6 @@ const fake = await call('POST', PLAYLISTS, {
 });
 check('POST with a made-up itemGuid -> 400 song-not-found',
   fake.status === 400 && fake.body?.problems?.some((p) => p.kind === 'song-not-found'), show(fake));
-const badArt1 = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ artUrl: ART_NOT_SQUARE }) } });
-check('POST with a non-square cover -> 400 { kind: art, reason: not-square }',
-  badArt1.status === 400 && badArt1.body?.problems?.some((p) => p.kind === 'art' && p.reason === 'not-square'), show(badArt1));
 const badArt2 = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ artUrl: ART_TOO_SMALL }) } });
 check('POST with a 200 px cover -> 400 { kind: art, reason: too-small }',
   badArt2.status === 400 && badArt2.body?.problems?.some((p) => p.kind === 'art' && p.reason === 'too-small'), show(badArt2));
@@ -271,6 +268,8 @@ const jpegSize = (b) => {
   return null;
 };
 const dims = jpegSize(coverBuf);
+// The cover version, as lib/curated-playlists.ts `coverVersion` makes it (this script imports nothing from the app).
+const coverVersionOf = (updatedAt) => Math.floor(Date.parse(updatedAt) / 1000);
 check('cover of the playlist with a valid art link -> x-cover-source: art', coverRes.headers.get('x-cover-source') === 'art', coverRes.headers.get('x-cover-source'));
 // The current cover address, as the listing names it. Any other query is redirected to it,
 // temporarily (the version moves with every edit), with no Cache-Control.
@@ -388,9 +387,23 @@ const sameArt = await call('PUT', `${PLAYLISTS}/${id}`, {
   sk: owner, body: { draft: draft({ artUrl: ART_OK, title: 'same art' }), expectedUpdatedAt: withArt.body.playlist.updatedAt },
 });
 check('PUT keeping the same cover -> 200', sameArt.status === 200, show(sameArt));
+const squareless = await call('PUT', `${PLAYLISTS}/${id}`, {
+  sk: owner, body: { draft: draft({ artUrl: ART_NOT_SQUARE, title: 'not square' }), expectedUpdatedAt: sameArt.body.playlist.updatedAt },
+});
+check('PUT with a cover that is not square (1476 x 1472) -> 200', squareless.status === 200 && squareless.body?.playlist?.artUrl === ART_NOT_SQUARE, show(squareless));
+{
+  const x = await (await fetch(`${APP}/feeds/playlists/${id}.xml`)).text();
+  const esc = ART_NOT_SQUARE.replace(/&/g, '&amp;');
+  check('the feed names that link itself as itunes:image and image url', x.includes(`<itunes:image href="${esc}"/>`) && x.includes(`<url>${esc}</url>`),
+    (x.match(/<itunes:image [^>]*>/) ?? [''])[0]);
+  const c = await fetch(`${APP}/feeds/playlists/${id}.jpg?v=${coverVersionOf(squareless.body.playlist.updatedAt)}`);
+  const d = jpegSize(Buffer.from(await c.arrayBuffer()));
+  check('our own cover of it is still a 1400 x 1400 crop (x-cover-source: art)',
+    c.status === 200 && c.headers.get('x-cover-source') === 'art' && d?.[0] === 1400 && d?.[1] === 1400, `${c.status} ${c.headers.get('x-cover-source')} ${d}`);
+}
 const newSong = await call('PUT', `${PLAYLISTS}/${id}`, {
   sk: owner,
-  body: { draft: draft({ songs: [...songs, { feedGuid: songs[0].feedGuid, itemGuid: `made-up-${Date.now()}` }] }), expectedUpdatedAt: sameArt.body.playlist.updatedAt },
+  body: { draft: draft({ songs: [...songs, { feedGuid: songs[0].feedGuid, itemGuid: `made-up-${Date.now()}` }] }), expectedUpdatedAt: squareless.body.playlist.updatedAt },
 });
 check('PUT adding a made-up song -> 400 song-not-found',
   newSong.status === 400 && newSong.body?.problems?.some((p) => p.kind === 'song-not-found'), show(newSong));

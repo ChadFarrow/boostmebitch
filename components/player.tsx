@@ -19,7 +19,7 @@ import { useShowSpeed } from './player/use-show-speed';
 import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
-import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
+import { epKey, valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
@@ -1539,6 +1539,12 @@ export function Player() {
           onEnded={() => {
             if (pendingLocalSrc.current) { logPlayback('advance', { via: 'pending' }); return; }
             forgetRestoreBaseline();
+            // A playlist-maker PREVIEW is one song: stop here, never advance.
+            if (current && useApp.getState().previewKey === epKey(current.episode)) {
+              logPlayback('advance', { via: 'preview' });
+              setPlaying(false);
+              return;
+            }
             if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
               const key = downloadManager.deletableAfterPlay(current.episode);
               if (key) void downloadManager.remove(key);

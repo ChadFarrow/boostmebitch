@@ -696,6 +696,12 @@ moving on its own, and drives the **real seek bar** for the deliberate half, bec
 writing `currentTime` is precisely what must not count. Run it against either earlier
 build and it fails at the step that build could not do.
 
+### The song preview button (`components/community/song-preview-button.tsx`)
+
+The 40x40 cover of a song row in the playlist maker and in the Add songs sheet (SEARCH tracks and FAVORITES) is a `<button>` with a permanent ▶ / ❚❚ glyph over the art (`data-song-art`, `data-song-preview`; a control must look like one). It plays ONLY that song, from 0, and stops at its end. `playPreview` (`lib/store.ts`) sets `previewKey` to the song's `epKey`; `<Player>`'s `onEnded` stops when `previewKey` names the item that ended, BEFORE `handlePlaybackEnded` and `playNext`. Without it a song that is in the listen queue, or in the loaded `episodeQueue`, would walk into the next item, and a song of a `music` feed passes `playsAsTracks`. `play` and `cue` clear the key. A tap on the song that is already current is `togglePlay`; when that song is paused it first sets `previewKey` too (the listen queue cues its head as current, so a preview of it must also stop at the end). The podcast handed to the player is the SONG'S OWN feed (the passed one only when its `podcastGuid` equals the song's feed guid, else `resolvePodcastByGuid`, else a minimal one built from the episode), never the playlist or the draft, and never with a value block copied on: the player asks `/api/item-value`, so BOOST pays that song's artist. A song that does not resolve, or has no `enclosureUrl`, shows "Could not load this song." (`aria-live="polite"`) on its row.
+
+The maker's song list sits on a panel (`data-songs-panel`, `bg-ink/90`) because the page background is a photo; artist lines are `text-bone/70`, not `text-muted`.
+
 ### The player offers a way back when the element has lost the place
 
 Reported 2026-09-21: *"I was listening to this downloaded episode but when I went

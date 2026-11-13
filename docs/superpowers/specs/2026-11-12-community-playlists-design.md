@@ -37,9 +37,11 @@ These are settled. Do not revisit them in the plan.
 7. **Songs come from two places:** a music search (album → its songs, one ADD
    per song) and the listener's own favorited songs.
 8. **Playlist art:** an optional field labelled **PLAYLIST ART LINK** — an image
-   URL the listener pastes. It must be square, 1400 × 1400 to 3000 × 3000 px.
-   With no link, or when the link breaks, BMB makes the cover itself from the
-   first four songs' covers (a 2 × 2 grid).
+   URL the listener pastes. Square, 1400 × 1400 to 3000 × 3000 px, is
+   preferred, not required (Chad, 2026-11-12: these feeds do not go to Apple,
+   and BMB must not host listeners' pictures). The feed names the link itself.
+   With no link, BMB makes the cover itself from the first four songs' covers
+   (a 2 × 2 grid); BMB's own pages also fall back to it when the link breaks.
 9. **Where it shows:** in the existing **Community playlists** section of
    `/playlists`, **immediately** on publish — no approval step.
 10. **"ChadF's playlists" stays its own separate section**, unchanged.
@@ -128,7 +130,7 @@ A five-screen phone mockup (Chad's, private) shows this flow. In words:
    first.
 2. **New playlist** (its own route) — the cover preview (the 2 × 2 grid until a
    link is given), TITLE (required), DESCRIPTION (optional), PLAYLIST ART LINK
-   (optional, with the hint "Square, 1400–3000 px. Empty: BMB makes the cover from
+   (optional, with the hint "Square is preferred, 1400–3000 px. Empty: BMB makes the cover from
    the first four songs."), then the song list with ↑ ↓ × per row and a
    `+ ADD SONGS` button, and a PUBLISH button pinned above the dock with "Signed in
    as [name]. Only you can change this playlist."
@@ -201,10 +203,10 @@ authority:
   collapse, but never publish a duplicate silently.
 - Art link: optional. If present it must be `https://`, pass `httpUrl`, and be
   fetched once through `safeFetch` with a byte cap (`lib/capped-body.ts`); the
-  image must decode (sharp), be **square**, between **1400 × 1400 and 3000 × 3000**,
-  **PNG or JPEG**, and have **no alpha channel** (Apple's Show Cover page,
-  podcasters.apple.com/support/5514, read 2026-11-12). A refusal names the reason
-  on screen.
+  image must decode (sharp), be **PNG or JPEG**, and be at least **300 px** on its
+  shortest side. Any shape and transparency pass (changed 2026-11-12: Apple's
+  square, no-alpha rule, podcasters.apple.com/support/5514, applies to Apple's
+  directory only). A refusal names the reason on screen.
 
 ## Storage and ownership
 

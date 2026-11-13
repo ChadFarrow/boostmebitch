@@ -37,6 +37,15 @@ interface AppState {
    *  if it never resumes — see lib/resume-position.ts). An explicit start, 0
    *  included, always wins: a chapter tap or a `?t=` link names its second. */
   play: (episode: Episode, podcast: Podcast, startSec?: number) => void;
+  /**
+   * Play ONE song from its start and stop at its end — the playlist maker's
+   * preview. `previewKey` is that song's `epKey`; `<Player>`'s `ended` handler
+   * stops instead of advancing when it names the item that ended, so the
+   * preview never walks into an album, the draft or the listen queue.
+   * `play` and `cue` clear it.
+   */
+  playPreview: (episode: Episode, podcast: Podcast) => void;
+  previewKey: string | null;
   /** `play` without starting playback — the item is loaded, paused, at its
    *  saved place. For a surface that opens the now-playing screen on an item
    *  (a HISTORY row) without making the press an autoplay. */
@@ -743,15 +752,26 @@ export const useApp = create<AppState>((set, get) => ({
   positionSec: 0,
   episodeQueue: [],
 
+  previewKey: null,
   play: (episode, podcast, startSec) =>
     set({
       current: { episode, podcast },
       isPlaying: true,
       positionSec: startSec ?? savedStartSec(episode, podcast),
       videoMode: false,
+      previewKey: null,
+    }),
+  playPreview: (episode, podcast) =>
+    set({
+      current: { episode, podcast },
+      isPlaying: true,
+      positionSec: 0,
+      videoMode: false,
+      previewKey: epKey(episode),
     }),
   cue: (episode, podcast) =>
     set({
+      previewKey: null,
       current: { episode, podcast },
       isPlaying: false,
       positionSec: savedStartSec(episode, podcast),
