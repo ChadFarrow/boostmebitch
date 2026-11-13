@@ -132,7 +132,7 @@ be loaded"). Nothing is hidden silently.
   list, and ⏮ can go back.
 - `handlePlaybackEnded`: if the shuffle owns `current`, it steps to the next track, or at the last
   track sets `isPlaying: false` and returns `true`, so the end never falls through to whatever
-  `episodeQueue` holds. (What plays when Up Next has items: see "Up Next during a shuffle".)
+  `episodeQueue` holds. (Up Next items wait: see "Up Next during a shuffle".)
 - **Every action that sets `current` from outside the shuffle clears it:** `play`, `cue`,
   `playFromQueue` and `revealQueue`. They are how the listener picks something else, and a stale list
   must not wake up later when one of its tracks plays again. The shuffle's own actions
@@ -168,15 +168,12 @@ each row shows the track title and its album title, the active row is highlighte
 
 ## Up Next during a shuffle
 
-*Pending Chad's answer (2026-11-12).* When the listener adds a track to Up Next while a shuffle
-plays:
+**Decided by Chad on 2026-11-12: it waits.** A track added to Up Next while a shuffle plays does not
+interrupt it. The shuffle plays to its end and stops; Up Next plays when the listener starts it from
+the Listen tab. This is what an album does today, so no existing rule changes.
 
-- **A (designer's pick):** it waits. The shuffle plays to its end and stops; Up Next plays when the
-  listener starts it from the Listen tab. This is what an album does today, so no existing rule
-  changes.
-- **B:** it plays next. At the end of the current shuffle track, Up Next plays and drains; when it
-  is empty, the shuffle continues where it left off. This needs a saved place in the shuffle list
-  and a new rule in `handlePlaybackEnded`.
+The alternative — Up Next plays next and the shuffle resumes after it — was declined. It needed a
+saved place in the shuffle list and a new rule in `handlePlaybackEnded`.
 
 ## Left to the builder
 
