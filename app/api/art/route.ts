@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
 import { readCappedBytes } from '@/lib/capped-body';
+import { firstFrameEnd, firstGifFrame } from '@/lib/gif-first-frame';
 import { artTypeVerdict, artWidth } from '@/lib/util';
 
 /**
@@ -49,6 +50,75 @@ export const runtime = 'nodejs';
  * raw URL — the proxy would look installed and do nothing for the worst cases.
  */
 const MAX_ART_BYTES = 12 * 1024 * 1024;
+
+/**
+ * FRAME ONE OF A GIF, read only as far as it needs — and a GIF OVER the
+ * ceiling is not refused. `readCappedBytes` throws as soon as `Content-Length`
+ * says more than MAX_ART_BYTES, so a 24 MB animated cover (Baia Silko on
+ * mmmusic.show, 23,981,650 bytes) answered 502 before a byte was decoded. The
+ * lock screen lists ONE artwork entry, the proxied one, so it showed no
+ * picture (iPhone, beta, 2026-11-13, #553), and every in-app cover fell back
+ * to the raw 24 MB file — the opposite of what this route is for.
+ *
+ * Frame one sits at the front of the file (byte 110,262 of that one), so the
+ * read scans the prefix at doubling sizes — 64 KB, 128 KB, … — and stops the
+ * moment `firstFrameEnd` finds the frame's end: a handful of scans, never one
+ * per chunk, and never more than MAX_ART_BYTES read. The upstream fetch has a
+ * 10 s budget that covers the BODY too, so reading 12 MB from a slow host
+ * would fail where 110 KB does not. `/api/og/boost.png` cuts the same way
+ * (`firstGifFrame`), from a prefix it reads whole.
+ *
+ * Returns the bytes to decode, or `null` (→ 502, the ladder's raw tail):
+ * - frame one found → that frame plus a trailer, nothing re-encoded;
+ * - the walk does not recognize the file (`null` scan) or the file ends
+ *   mid-frame → the WHOLE file if it fit under the ceiling, because a parse
+ *   failure means our walk did not know it, not that sharp cannot;
+ * - over the ceiling with no frame found → `null`, as before.
+ */
+async function readGifFrameOne(res: Response, maxBytes: number): Promise<Uint8Array | null> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  let nextScan = 64 * 1024;
+  let walkable = true;
+  const joined = () => {
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) { out.set(c, at); at += c.byteLength; }
+    return out;
+  };
+  if (!res.body) {
+    const all = new Uint8Array(await res.arrayBuffer());
+    const bytes = all.byteLength > maxBytes ? all.subarray(0, maxBytes) : all;
+    return firstGifFrame(bytes) ?? (all.byteLength > maxBytes ? null : bytes);
+  }
+  const reader = res.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (!done) {
+        const room = maxBytes - total;
+        const take = value.byteLength >= room ? value.subarray(0, room) : value;
+        chunks.push(take);
+        total += take.byteLength;
+        if (value.byteLength >= room) truncated = true;
+      }
+      const atEnd = done || truncated;
+      if (walkable && (atEnd || total >= nextScan)) {
+        const bytes = joined();
+        const scan = firstFrameEnd(bytes);
+        if (scan !== null && scan !== 'more') return firstGifFrame(bytes);
+        // Not a structure the walk knows: stop scanning, finish as a plain
+        // capped read and let the decoder judge the whole file.
+        if (scan === null) walkable = false;
+        while (nextScan <= total) nextScan *= 2;
+      }
+      if (atEnd) return truncated ? null : joined();
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
 
 /** The 2048-char bound the guid routes carry on a URL parameter. (The chapters
  *  and transcript proxy allows 2000.) */
@@ -97,7 +167,13 @@ export async function GET(req: Request) {
 
   let out: Buffer;
   try {
-    const bytes = await readCappedBytes(upstream, MAX_ART_BYTES);
+    // `image/gif` is the label `/api/og/boost.png` cuts on too. A GIF served
+    // under another label takes the capped path, exactly as before.
+    const isGif = /^image\/gif\b/i.test(upstream.headers.get('content-type') ?? '');
+    const bytes = isGif
+      ? await readGifFrameOne(upstream, MAX_ART_BYTES)
+      : await readCappedBytes(upstream, MAX_ART_BYTES);
+    if (!bytes) throw new Error('no frame within the ceiling');
     out = await sharp(Buffer.from(bytes), {
       // An animated cover is a real thing on music feeds — 20-36 MB GIFs have
       // been measured on one. Take frame one: this is a static tile, and

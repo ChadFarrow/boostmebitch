@@ -65,6 +65,7 @@
     "seed:relay": "node --experimental-strip-types scripts/seed-local-relay.mjs",
     "e2e:favorites": "node scripts/e2e-favorites.mjs",
     "e2e:keyboard": "node scripts/e2e-keyboard.mjs",
+    "e2e:artgif": "node scripts/e2e-art-gif.mjs",
     "e2e:artgate": "node scripts/e2e-artgate.mjs",
     "e2e:artbytes": "node scripts/e2e-artbytes.mjs",
     "e2e:coverladder": "node scripts/e2e-cover-ladder.mjs",

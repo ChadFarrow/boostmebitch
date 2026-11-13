@@ -1417,6 +1417,8 @@ because `nowPlayingArt` only withholds *chapter and track* art when the gate
 shuts: an episode cover that is itself a huge GIF would still be fetched whole
 while the buffer is in trouble.
 
+**A GIF over the 12 MB ceiling is cut, not refused (2026-11-13, #553).** The route read every body with `readCappedBytes`, which throws as soon as `Content-Length` says more than `MAX_ART_BYTES` — so Baia Silko (Single), whose cover on mmmusic.show is a **23,981,650-byte animated GIF**, answered 502 "decode failed" before a byte was decoded. The lock screen lists ONE entry, so it showed no picture; every in-app tile fell back to the raw 24 MB file. Frame one of that GIF ends at byte **110,262**. A response labelled `image/gif` now goes through `readGifFrameOne` (`app/api/art/route.ts`), which scans the prefix at doubling sizes (64 KB, 128 KB, …) and stops the moment `firstFrameEnd` (`lib/gif-first-frame.ts`, pinned by `check:gif`) finds the frame's end — never more than 12 MB, and fast enough for the upstream fetch's 10 s budget, which covers the body too. Measured: **73,440 bytes of WebP in 0.76 s** at `w=1024`. A file the walk does not recognize, or one that ends mid-frame, is decoded whole if it fit under the ceiling; with no frame inside 12 MB it is still a 502 and the ladder's raw tail. `/api/og/boost.png` cuts with the same `firstGifFrame`. Pinned by `npm run e2e:artgif`, whose fixtures are real public files because `safeFetch` refuses a private address.
+
 ### The lock screen is the third surface, and it has no element
 
 `MediaMetadata`'s `artwork` fetch is issued by the browser on our behalf. It
