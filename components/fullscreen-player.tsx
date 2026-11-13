@@ -81,6 +81,8 @@ import {
   exitFullscreen,
   FAST_PLAYBACK_RATES,
   isHlsUrl,
+  epKey,
+  shuffleIndexOf,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -527,7 +529,9 @@ export function FullscreenPlayer({
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
   const episodeQueue = useApp((s) => s.episodeQueue);
+  const shuffle = useApp((s) => s.shuffle);
   const play = useApp((s) => s.play);
+  const playFromShuffle = useApp((s) => s.playFromShuffle);
   const togglePlay = useApp((s) => s.togglePlay);
   const [valueOpen, setValueOpen] = useState(false);
 
@@ -750,6 +754,8 @@ export function FullscreenPlayer({
 
   const { episode, podcast } = current;
   const isMusic = isMusicMedium(podcast);
+  // -1 with no shuffle, or when it does not hold this track.
+  const shuffleIdx = shuffleIndexOf(shuffle?.items ?? null, episode);
   // Not `isMusic`: a playlist's tracks count too, and from /downloads the show has
   // no medium, so only the download record can say.
   const musicItem = isMusicItem(current);
@@ -1451,7 +1457,51 @@ export function FullscreenPlayer({
               </div>
             )}
 
-            {isMusic && episodeQueue.length > 1 && (
+            {/* THE SHUFFLE replaces the album panel while it owns the track.
+                `episodeQueue` is the list of whatever show was opened last,
+                which during a shuffle is an album the listener browsed past —
+                and a tap there would `play` it under THIS track's show. Each
+                row here carries its own show, so a tap is `playFromShuffle`. */}
+            {shuffleIdx >= 0 && shuffle ? (
+              <div data-shuffle-panel className="border-t border-bone/10 pt-5">
+                <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
+                  Shuffle · {shuffle.items.length} tracks
+                </p>
+                <ul className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+                  {shuffle.items.map((t, i) => {
+                    const active = i === shuffleIdx;
+                    const key = epKey(t.episode);
+                    return (
+                      <li key={key} data-key={key} aria-current={active ? 'true' : undefined}>
+                        {/* The active row draws ❚❚, so it pauses — the album
+                            panel's rule below. */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (active) togglePlay();
+                            else playFromShuffle(i);
+                          }}
+                          className={`w-full flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
+                            active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                          }`}
+                        >
+                          <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
+                            {active && isPlaying ? '❚❚' : i + 1}
+                          </span>
+                          <span className="truncate flex-1 min-w-0">
+                            {t.episode.title}
+                            {t.podcast.title ? <span className="text-muted"> · {t.podcast.title}</span> : null}
+                          </span>
+                          {t.episode.duration ? (
+                            <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.episode.duration)}</span>
+                          ) : null}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : isMusic && episodeQueue.length > 1 && (
               <div className="border-t border-bone/10 pt-5">
                 <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
                   Album · {episodeQueue.length} tracks
