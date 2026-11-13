@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { finalizeEvent, verifyEvent } from 'nostr-tools/pure';
 import type { Event } from 'nostr-tools';
-import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE, withCors, corsPreflight } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { siteSecretKey, sitePubkey } from '@/lib/nostr/site-key';
 import { summaryReceiptTemplate, summaryRequestTemplateFromSpec, validateSummaryRequest } from '@/lib/nostr/zap-request';
@@ -32,7 +32,7 @@ import { summaryReceiptTemplate, summaryRequestTemplateFromSpec, validateSummary
 
 const MAX_REQUEST_BYTES = 16 * 1024;
 
-export async function POST(req: Request) {
+async function handlePost(req: Request) {
   const limited = rateLimit(req, 'zap-receipt-sign', 30);
   if (limited) return limited;
   const notJson = requireJsonBody(req);
@@ -78,4 +78,14 @@ export async function POST(req: Request) {
       { headers: NO_STORE },
     );
   }, 'zap-receipt-sign failed');
+}
+
+// Cross-brand CORS (lib/cross-brand-cors.ts): the Bitch site's browser calls
+// this route on the Buddy deploy. Headers go on EVERY answer, errors included.
+export async function POST(req: Request) {
+  return withCors(req, await handlePost(req));
+}
+
+export function OPTIONS(req: Request) {
+  return corsPreflight(req);
 }
