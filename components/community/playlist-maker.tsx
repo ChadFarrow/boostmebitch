@@ -391,6 +391,16 @@ export function PlaylistMaker() {
           const l = labels[s.itemGuid];
           return (
             <li key={`${s.feedGuid}:${s.itemGuid}`} className="flex items-center gap-2 py-2" data-song-row>
+              {/* The track number is the row's place in the playlist, so it follows a move. */}
+              <span className="w-6 shrink-0 text-right font-mono text-xs tabular-nums text-muted" data-song-number>{i + 1}</span>
+              {/* The song's own cover, through /api/art with the raw URL behind it
+                  (CLAUDE.md: artwork goes through /api/art). An unknown cover keeps
+                  the same box, so the rows stay aligned. */}
+              <div className="h-10 w-10 shrink-0 overflow-hidden bg-bone/10" data-song-art>
+                {l?.image && (
+                  <RowThumb src={artCandidates(l.image, null, 160)[0]} fallback={l.image} className="h-full w-full object-cover" />
+                )}
+              </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm">{l?.title ?? 'Song'}</p>
                 {l?.artist && <p className="truncate text-xs text-muted">{l.artist}</p>}
