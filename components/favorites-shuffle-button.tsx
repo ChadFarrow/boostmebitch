@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import type { FavoriteEpisode } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { shuffleOrder } from '@/lib/util';
+import { sameCurrentTrack, shuffleOrder } from '@/lib/util';
 import { loadPendingShuffleTracks, readShuffleTracks } from '@/lib/favorites-shuffle';
 
 /**
@@ -41,17 +41,21 @@ export function FavoritesShuffleButton({ rows }: { rows: FavoriteEpisode[] }) {
       if (tracks.length && id !== null) {
         // A no-op if this shuffle has since been replaced or ended.
         s.extendShuffle(id, shuffleOrder(tracks));
-      } else if (tracks.length && s.current === before) {
+      } else if (tracks.length && sameCurrentTrack(s.current, before)) {
         // A cold cache: nothing could start in the press. Start now, unless the
         // listener has picked something else while it loaded — then the press
         // is stale, and taking the player from them would be the surprise.
+        // Compared by track, never by object: a payee refresh replaces
+        // `current` with no choice made (`sameCurrentTrack`).
         // On iOS this start may need a second ▶; that is the cold case's cost.
         started = s.startShuffle(shuffleOrder(tracks)) !== null;
       } else if (tracks.length) {
         stale = true;
       }
       setBusy(false);
-      setNote(stale ? null : noteFor(started, read.skipped + skipped));
+      // `skipped` here includes every pending row that did not load. When
+      // nothing started, those are LOOKUPS that failed, not unplayable tracks.
+      setNote(stale ? null : noteFor(started, read.skipped + skipped, skipped > 0));
     });
   }
 
@@ -79,8 +83,15 @@ export function FavoritesShuffleButton({ rows }: { rows: FavoriteEpisode[] }) {
   );
 }
 
-function noteFor(started: boolean, skipped: number): string | null {
-  if (!started) return 'No playable tracks in this list.';
+/**
+ * The line under the heading. "No playable tracks" is a claim about the LIST,
+ * so it is made only when nothing failed to load; a batch that answered 429, or
+ * a Podcast Index breaker that sent nothing, is a lookup failure, and calling a
+ * 232-track library unplayable over it is the false claim `<EmptyLibrary>`
+ * already paid for once.
+ */
+function noteFor(started: boolean, skipped: number, lookupFailed = false): string | null {
+  if (!started && !lookupFailed) return 'No playable tracks in this list.';
   if (skipped > 0) return `${skipped} ${skipped === 1 ? 'track' : 'tracks'} could not be loaded.`;
   return null;
 }

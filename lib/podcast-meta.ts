@@ -427,26 +427,6 @@ const episodeMem = new Map<string, Episode | null>();
  * required — PI can't look an item up without its podcast — so an entry whose
  * parent feed is unknown resolves to null rather than firing a doomed request.
  */
-/**
- * The cached record for one item, read SYNCHRONOUSLY: memory, then `bmb:epmeta`
- * (promoted into memory, as `resolveEpisodeByGuid` does). `undefined` means
- * "not cached", `null` means "asked, and Podcast Index had none". It never
- * fetches.
- *
- * It exists for the favorites shuffle, which must set `current` inside the
- * press — iOS ties `play()` to the gesture, and an `await` over real I/O loses
- * it — and which must not fall back to one GET per track after a failed batch.
- */
-export function cachedEpisodeByGuid(feedGuid: string, itemGuid: string): Episode | null | undefined {
-  const key = `${feedGuid}:${itemGuid}`;
-  if (episodeMem.has(key)) return episodeMem.get(key) ?? null;
-  const cached = storage.episodeMeta.get(key);
-  if (!cached) return undefined;
-  episodeMem.set(key, cached);
-  capMem(episodeMem);
-  return cached;
-}
-
 export async function resolveEpisodeByGuid(
   feedGuid: string,
   itemGuid: string,
@@ -492,6 +472,26 @@ export async function resolveEpisodeByGuid(
     // Transient, not an absence — see resolveVia's catch.
     return null;
   }
+}
+
+/**
+ * The cached record for one item, read SYNCHRONOUSLY: memory, then `bmb:epmeta`
+ * (promoted into memory, as `resolveEpisodeByGuid` does). `undefined` means
+ * "not cached", `null` means "asked, and Podcast Index had none". It never
+ * fetches.
+ *
+ * It exists for the favorites shuffle, which must set `current` inside the
+ * press — iOS ties `play()` to the gesture, and an `await` over real I/O loses
+ * it — and which must not fall back to one GET per track after a failed batch.
+ */
+export function cachedEpisodeByGuid(feedGuid: string, itemGuid: string): Episode | null | undefined {
+  const key = `${feedGuid}:${itemGuid}`;
+  if (episodeMem.has(key)) return episodeMem.get(key) ?? null;
+  const cached = storage.episodeMeta.get(key);
+  if (!cached) return undefined;
+  episodeMem.set(key, cached);
+  capMem(episodeMem);
+  return cached;
 }
 
 /**

@@ -304,6 +304,51 @@ export function shuffleIndexOf(
  * drives the streaming key, the share URL and the boost note, and the next
  * field added to a record must not ride onto it by default.
  */
+/**
+ * A favorite single as an `Episode`, from what the favorite itself stores — or
+ * null when it stores no enclosure.
+ *
+ * THE USUAL PHONE HAS NO CACHED RECORD. `bmb:epmeta` is written only when
+ * something resolves an episode, the hydrator resolves a favorite only while
+ * `bmb:favepisodes` lacks it, and the cells expire in 7 days. Waiting for the
+ * batch door then starts the first track outside the press, which iOS can
+ * refuse. The favorite keeps the enclosure it was hearted with, so the track
+ * plays with no request at all.
+ *
+ * The id is `-fnvHash` of the pair, as `lib/playlist-db.ts` gives a row with no
+ * Podcast Index id: `<Player>`'s source effect keys on `episode.id`, so ids
+ * must differ per track or the audio never reloads between them. No value
+ * block — `<Player>` reads the payee from the track's own feed.
+ */
+export function episodeFromFavorite(fav: FavoriteEpisode): Episode | null {
+  if (!fav.enclosureUrl || !fav.itemGuid) return null;
+  return {
+    id: -fnvHash(`${fav.feedGuid ?? ''}:${fav.itemGuid}`),
+    guid: fav.itemGuid,
+    podcastGuid: fav.feedGuid,
+    // 0 is "not known" to every reader (`feedId > 0` gates each lookup).
+    feedId: fav.feedId ?? 0,
+    title: fav.title ?? '',
+    enclosureUrl: fav.enclosureUrl,
+    image: fav.image,
+    datePublished: fav.datePublished,
+  };
+}
+
+/**
+ * Is the same track still in the player? The shuffle's cold-load guard asks it,
+ * by `epKey`, never by object: `refreshCurrentValue`, `markCurrentValueUnread`
+ * and `syncCurrentValue` REPLACE `current` with no choice made, and an identity
+ * test drops a shuffle the listener asked for — a press that did nothing.
+ */
+export function sameCurrentTrack(
+  a: { episode: Pick<Episode, 'guid' | 'feedId' | 'id'> } | null,
+  b: { episode: Pick<Episode, 'guid' | 'feedId' | 'id'> } | null,
+): boolean {
+  if (!a || !b) return a === b;
+  return epKey(a.episode) === epKey(b.episode);
+}
+
 export function shuffleTrackFor(fav: FavoriteEpisode, episode: Episode): QueueItem | null {
   if (!isPlayableRow(episode)) return null;
   const image = episode.feedImage ?? fav.image;

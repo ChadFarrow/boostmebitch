@@ -94,6 +94,9 @@ import {
   shuffleIndexOf,
   shuffleOrder,
   shuffleTrackFor,
+  episodeFromFavorite,
+  fnvHash,
+  sameCurrentTrack,
   trimForQueue,
 } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
@@ -493,6 +496,57 @@ checkTrack('the favorite fills what the record does not say, the payee lookup in
 checkTrack('an empty enclosure is no track', [FAV, { ...PI_RECORD, enclosureUrl: '' }], null);
 checkTrack('an unresolved record is no track', [FAV, { ...PI_RECORD, unresolved: 'not-found' }], null);
 
+// THE REAL-DEVICE CASE (final review, 2026-11-12). `bmb:epmeta` is written only
+// when something resolves an episode, the hydrator resolves a favorite only
+// while `bmb:favepisodes` lacks it, and the cells expire in 7 days — so on a
+// phone the cache is usually EMPTY and the first track could not start inside
+// the press. The favorite stores its own `enclosureUrl`; built from that, a
+// track plays with no request. Its id is synthetic and per item, because
+// `<Player>`'s source effect keys on `episode.id`: one shared id would never
+// reload the audio between tracks. `-fnvHash` of the pair is what
+// `lib/playlist-db.ts` gives a row with no Podcast Index id.
+const fromFavShape = (e) => (e === null ? null : {
+  id: e.id, guid: e.guid, podcastGuid: e.podcastGuid, feedId: e.feedId, title: e.title,
+  enclosureUrl: e.enclosureUrl, value: e.value,
+});
+function checkFromFav(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, fromFavShape(episodeFromFavorite(...args)), expected);
+  vectors.push({ label, kind: 'fromfav', args, alsoNaive });
+}
+checkFromFav('a favorite with an enclosure is a playable episode under a per-item id', [FAV], {
+  id: -fnvHash('feed-1:item-1'), guid: 'item-1', podcastGuid: 'feed-1', feedId: 7, title: 'Song',
+  enclosureUrl: 'https://x/old.mp3', value: undefined,
+});
+checkFromFav('a second favorite gets a DIFFERENT id',
+  [{ ...FAV, itemGuid: 'item-2' }], {
+    id: -fnvHash('feed-1:item-2'), guid: 'item-2', podcastGuid: 'feed-1', feedId: 7, title: 'Song',
+    enclosureUrl: 'https://x/old.mp3', value: undefined,
+  });
+checkFromFav('no enclosure is no episode', [{ ...FAV, enclosureUrl: undefined }], null);
+checkFromFav('no title is still an episode, titled by nothing rather than undefined',
+  [{ ...FAV, title: undefined }], {
+    id: -fnvHash('feed-1:item-1'), guid: 'item-1', podcastGuid: 'feed-1', feedId: 7, title: '',
+    enclosureUrl: 'https://x/old.mp3', value: undefined,
+  });
+
+// The cold-load guard: did the listener pick something else while the misses
+// loaded? `refreshCurrentValue`, `markCurrentValueUnread` and
+// `syncCurrentValue` REPLACE `current` with no choice made, so comparing the
+// object drops a shuffle the listener asked for and the press does nothing.
+const EP_A = { guid: 'a', id: 1, title: 'A', enclosureUrl: 'https://x/a.mp3' };
+const CUR_A = { episode: EP_A, podcast: { id: 1, title: 'show' } };
+function checkSame(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, sameCurrentTrack(...args), expected);
+  vectors.push({ label, kind: 'same', args, alsoNaive });
+}
+checkSame('nothing playing, then nothing playing', [null, null], true, { alsoNaive: true });
+checkSame('the same object', [CUR_A, CUR_A], true, { alsoNaive: true });
+checkSame('the same track with its payee refreshed is the same track',
+  [CUR_A, { ...CUR_A, episode: { ...EP_A, value: { model: {}, recipients: [] } } }], true);
+checkSame('another track is another choice',
+  [CUR_A, { ...CUR_A, episode: { ...EP_A, guid: 'b', id: 2 } }], false, { alsoNaive: true });
+checkSame('something started where nothing played', [null, CUR_A], false, { alsoNaive: true });
+
 // ---------------------------------------------------------------------------
 section('The cap is a number this repo states, not one a caller passes');
 // ---------------------------------------------------------------------------
@@ -560,6 +614,10 @@ section('Every vector above is replayed against the obvious wrong version');
     shuffle && shuffle.length ? shuffle.findIndex((i) => i.episode.guid === ep.guid) : -1;
   // The record as it came, and the favorite as the show.
   const naiveTrack = (fav, episode) => ({ episode, podcast: { ...fav, medium: 'music' } });
+  // The favorite as it stands, with the id every such row would share.
+  const naiveFromFav = (fav) => ({ ...fav, id: 0, guid: fav.itemGuid, podcastGuid: fav.feedGuid });
+  // Identity, which a payee refresh breaks.
+  const naiveSame = (a, b) => a === b;
 
   const call = (impl, v) => {
     try {
@@ -602,6 +660,10 @@ section('Every vector above is replayed against the obvious wrong version');
           return JSON.stringify((real ? shuffleIndexOf : naiveShuffleIndex)(...v.args));
         case 'track':
           return JSON.stringify(trackShape((real ? shuffleTrackFor : naiveTrack)(...v.args)));
+        case 'fromfav':
+          return JSON.stringify(fromFavShape((real ? episodeFromFavorite : naiveFromFav)(...v.args)));
+        case 'same':
+          return JSON.stringify((real ? sameCurrentTrack : naiveSame)(...v.args));
         default: throw new Error(`unknown vector kind ${v.kind}`);
       }
       // A wrong implementation is allowed to throw where the real one returns.

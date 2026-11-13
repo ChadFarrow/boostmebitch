@@ -1,10 +1,17 @@
 // The favorites shuffle's loader (docs/ui.md, "The favorites shuffle").
 //
 // TWO HALVES, AND THE SPLIT IS THE DESIGN. `readShuffleTracks` is synchronous:
-// it reads only what the episode cache already holds, so the press can set
-// `current` before it returns — iOS ties `play()` to the gesture, and an
-// `await` over real I/O loses it. `loadPendingShuffleTracks` fetches the rest
-// AFTER the first track is playing, through the batch door only.
+// it reads only what the device already holds, so the press can set `current`
+// before it returns — iOS ties `play()` to the gesture, and an `await` over
+// real I/O loses it. `loadPendingShuffleTracks` fetches the rest AFTER the
+// first track is playing, through the batch door only.
+//
+// WHAT THE DEVICE HOLDS is usually the FAVORITE, not a cached record. Nothing
+// writes `bmb:epmeta` for a favorite the hydrator already knows, and the cells
+// expire in 7 days, so on a phone the cache is normally empty (final review,
+// 2026-11-12). A cached record is preferred — it is fresher — and a favorite
+// that stored its enclosure is the fallback that keeps the press synchronous.
+// Only a favorite with neither goes to the network.
 //
 // NEVER ONE GET PER TRACK. `resolveEpisodeByGuid` falls back to a GET per item,
 // and after a failed batch (the route allows 30 requests a minute per IP, and
@@ -14,18 +21,18 @@
 
 import type { FavoriteEpisode, QueueItem } from './types';
 import { cachedEpisodeByGuid, warmEpisodeCache } from './podcast-meta';
-import { shuffleTrackFor } from './util';
+import { episodeFromFavorite, shuffleTrackFor } from './util';
 
 export interface ShuffleRead {
-  /** Playable now, from the cache. */
+  /** Playable now, with no request. */
   tracks: QueueItem[];
-  /** Not cached yet: ask the batch door. */
+  /** Neither cached nor carrying an enclosure: ask the batch door. */
   pending: FavoriteEpisode[];
   /** Cannot play: no feed guid, Podcast Index had none, or no enclosure. */
   skipped: number;
 }
 
-/** What the cache can play right now, with no request. */
+/** What this device can play right now, with no request. */
 export function readShuffleTracks(rows: readonly FavoriteEpisode[]): ShuffleRead {
   const tracks: QueueItem[] = [];
   const pending: FavoriteEpisode[] = [];
@@ -33,10 +40,13 @@ export function readShuffleTracks(rows: readonly FavoriteEpisode[]): ShuffleRead
   for (const fav of rows) {
     // An entry with no parent ref cannot be looked up on any device.
     if (!fav.feedGuid || !fav.itemGuid) { skipped += 1; continue; }
-    const episode = cachedEpisodeByGuid(fav.feedGuid, fav.itemGuid);
-    if (episode === undefined) { pending.push(fav); continue; }
+    const cached = cachedEpisodeByGuid(fav.feedGuid, fav.itemGuid);
+    const episode = cached ?? episodeFromFavorite(fav);
     const track = episode ? shuffleTrackFor(fav, episode) : null;
     if (track) tracks.push(track);
+    // `undefined` is "never asked": worth one batch. `null` is Podcast Index's
+    // answer, and the favorite had no enclosure of its own either.
+    else if (cached === undefined) pending.push(fav);
     else skipped += 1;
   }
   return { tracks, pending, skipped };

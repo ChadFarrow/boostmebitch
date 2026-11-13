@@ -9,6 +9,8 @@
 // WHAT IT PINS:
 //
 //   1. SHUFFLE is on the music items section only, and only with two rows or more.
+//   2b. With NOTHING cached — the usual phone — a favorite that stored its
+//      enclosure still starts inside the press, with no request at all.
 //   2. With every record cached the press sends no episode request and the first
 //      track starts. The panel lists a permutation of the singles. ⏭ and ⏮ move
 //      through it, a real `ended` advances, the last track stops, and ⏭ is off.
@@ -76,6 +78,10 @@ const record = (i) => ({
   value: { model: { type: 'lightning', method: 'keysend' }, recipients: [{ name: 'STALE', type: 'node', address: '02stale', split: 100 }] },
 });
 const nOf = (key) => SINGLES.findIndex((s) => s.itemGuid === key);
+// What a phone usually holds: the favorite with the enclosure it was hearted
+// with, and NO `bmb:epmeta` cell — nothing in the app writes one for a favorite
+// it already knows, and the cells expire in 7 days.
+const WITH_AUDIO = SINGLES.map((s, i) => ({ ...s, enclosureUrl: `${APP}/api/e2e-audio.wav?n=${i}` }));
 
 const ALBUM_GUID = guid('album', 0);
 const ALBUM_ID = 900001;
@@ -282,6 +288,21 @@ t.ok('the last track ends and playback stops', await until(`document.querySelect
 t.equal('…on the last track, not on an album', await srcN(), nOf(order[N - 1]));
 
 // ---------------------------------------------------------------------------
+console.log('\n2b. Nothing cached: the favorite plays from its own enclosure');
+await open({ items: WITH_AUDIO, cached: [] });
+seen.get = 0; seen.batch = 0;
+t.ok('the press lands', await pressShuffle());
+t.ok('a single starts', await waitSrc((s) => /[?&]n(=|%3D)\d+/.test(s)));
+t.equal('…with no episode request of any kind', { get: seen.get, batch: seen.batch }, { get: 0, batch: 0 });
+t.equal('the control is not left busy', await js(`${SHUFFLE_BTN}?.disabled`), false);
+p = await panel();
+t.equal('all eight are in the shuffle', (p.keys ?? []).slice().sort(), SINGLES.map((s) => s.itemGuid).sort());
+await pressMini('/^Next/');
+const n2b = nOf(p.keys?.[1]);
+t.ok('⏭ loads the next track\'s audio (a per-item id, so the source reloads)',
+  await waitSrc(new Function('s', `return /[?&]n(=|%3D)${n2b}(\\D|$)/.test(s)`)));
+
+// ---------------------------------------------------------------------------
 console.log('\n3. An album opened mid-shuffle');
 await open();
 await pressShuffle();
@@ -333,6 +354,16 @@ t.equal('only the three rows the filter shows', (p.keys ?? []).slice().sort(), [
 // ---------------------------------------------------------------------------
 console.log('\n6. A cold cache');
 batchMode = '429';
+// Nothing cached and no enclosure stored: nothing can start, and the batch
+// fails. The list is not unplayable — the lookup failed — and the note says so.
+await open({ cached: [] });
+seen.get = 0; seen.batch = 0;
+await pressShuffle();
+t.ok('a failed lookup is not called an unplayable list',
+  await until(`/8 tracks could not be loaded/i.test(document.querySelector('[data-shuffle-note]')?.textContent ?? '')`, 8000),
+  await js(`document.querySelector('[data-shuffle-note]')?.textContent ?? '(no note)'`));
+t.equal('…and no GET per track', seen.get, 0);
+
 await open({ cached: [0, 1, 2, 3] });
 seen.get = 0; seen.batch = 0;
 await pressShuffle();
