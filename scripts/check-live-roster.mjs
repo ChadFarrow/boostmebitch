@@ -28,7 +28,7 @@
 // Vectors are recorded as CALLS and the replay walks the list, so a vector
 // cannot be added without also being proved against naive(). A vector both
 // implementations agree on is reported as proving nothing.
-import { liveRosterFeedOrder } from '../lib/util.ts';
+import { liveRosterFeedOrder, piLiveStatus } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -258,6 +258,47 @@ const read = (await import('node:fs/promises')).readFile;
       + '          Map insertion order, i.e. Podcast Index\'s response order.');
   } else {
     ok('the cap is not applied to Map insertion order');
+  }
+}
+
+// ── `piLiveStatus`: which /episodes/live rows reach the ranking at all ──────
+// Measured 2026-11-13: Podcast Index sent 40 rows and NOT ONE carried `status`
+// (or `startTime`/`endTime`). The filter before this kept only rows whose
+// status was 'live' or 'pending', so it dropped all 40 and the roster this file
+// ranks was empty — `rosterRows: 40, rosterStatus: 0`. The row below is the
+// wire shape, field for field.
+{
+  const wireRow = {
+    id: 1609535, title: 'Homegrown Hits Episode 158', link: '', guid: 'homegrownhits-158',
+    datePublished: 1794531884, datePublishedPretty: 'November 12, 2026 8:04pm', dateCrawled: 1794531884,
+    enclosureUrl: 'https://stream.bowlafterbowl.com/listen/bowlafterbowl/stream.mp3',
+    enclosureType: 'audio/mpeg', enclosureLength: 0, explicit: 0, image: '', feedItunesId: null,
+    feedImage: '', feedId: 6611624, feedTitle: 'Homegrown Hits', feedLanguage: 'en', categories: null,
+  };
+  const strict = (raw) => {
+    const s = typeof raw === 'string' ? raw.toLowerCase() : undefined;
+    return s === 'live' || s === 'pending' ? s : null;
+  };
+  const cases = [
+    ['THE ONE THAT MATTERS: the real wire row, which has no status at all', wireRow.status, 'live', true],
+    ['an empty string is PI\'s spelling of absent', '', 'live', true],
+    ['an explicit ended row stays off the page', 'ended', null, false],
+    ['live is kept, case folded', 'LIVE', 'live', false],
+    ['pending is kept', 'pending', 'pending', false],
+    ['an unknown word is not a status we can act on', 'archived', null, false],
+  ];
+  for (const [name, raw, want, provesFix] of cases) {
+    const got = piLiveStatus(raw);
+    if (got !== want) fail(`piLiveStatus: ${name} — got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+    else if (provesFix && strict(raw) === want) fail(`piLiveStatus: ${name} — the strict filter agrees, so this proves nothing`);
+    else ok(`piLiveStatus: ${name}`);
+  }
+  const src = await read('lib/pi.ts', 'utf8');
+  if (!/piLiveStatus\(e\.status\)/.test(src)) {
+    fail('lib/pi.ts no longer reads a roster row\'s status through piLiveStatus —\n'
+      + '          an absent status can empty the whole roster again.');
+  } else {
+    ok('getGlobalLiveItemsDetailed reads each row\'s status through piLiveStatus');
   }
 }
 

@@ -948,6 +948,29 @@ export function mergeLiveOverPi(
 }
 
 /**
+ * The live items one show page lists (`/api/feed`): the publisher's RSS when it
+ * was read, Podcast Index's rows only when it was not.
+ *
+ * **Never a union in which PI wins a guid.** That is what `/api/feed` did, and
+ * it was harmless only because the roster was always empty (`piLiveStatus`).
+ * A PI row is the plain episode shape: no `liveValue`, no `value`, no
+ * `liveEndTime`. Winning the guid would have stripped the Split Kit socket and
+ * the payee off a show page that connects today, and a PI row the RSS no
+ * longer lists is a broadcast that ended — PI lags in both directions.
+ *
+ * The same asymmetry as {@link mergeLiveOverPi}, without its id swap: a live
+ * item's id stays the RSS parser's `-fnvHash(guid)`, the same id
+ * `liveShowToEpisode` gives it, so the show page and `/live` hand the player
+ * one episode, not two.
+ */
+export function feedLiveItems(
+  piRows: Episode[],
+  rssRead: { ok: boolean; items: Episode[] },
+): Episode[] {
+  return rssRead.ok ? rssRead.items : piRows;
+}
+
+/**
  * A {@link LiveShow} as the `Episode` the player stores.
  *
  * The same bridge `streamToEpisode` builds for a Nostr broadcast, and for the
@@ -1068,6 +1091,31 @@ export const MAX_UNBOUNDED_LIVE_SECS = 24 * 60 * 60;
  *  See `liveBroadcastIsOver` — an overrun is ordinary, a forgotten flag is not,
  *  and this is the line between them. */
 export const LIVE_OVERRUN_GRACE_SECS = 6 * 60 * 60;
+
+/**
+ * The status of one Podcast Index `/episodes/live` row, or `null` to drop it.
+ *
+ * **AN ABSENT STATUS IS `'live'`, because the row is on that endpoint.** Measured
+ * 2026-11-13: PI sent 40 rows and NOT ONE carried `status`, `startTime` or
+ * `endTime` — the payload is the ordinary episode shape (`id`, `title`, `guid`,
+ * `datePublished`, `enclosureUrl`, `feedId`, …) and nothing else. The filter
+ * this replaced kept a row only when `status` was `'live'` or `'pending'`, so it
+ * dropped all 40 (`rosterRows: 40, rosterStatus: 0`), the roster named no feed,
+ * and `/live` listed only the visitor's own favorites and podping's few — while
+ * Homegrown Hits, Bowl After Bowl and thirty-odd others were on air.
+ *
+ * Reading absent as live is safe for the reason the roster is only a roster:
+ * every feed it names is re-read, and `mergeLiveOverPi` lets the publisher's
+ * own RSS decide what is on air whenever that read succeeds.
+ *
+ * A status PI DOES send is still obeyed, so an `'ended'` row stays off the page
+ * if the field ever comes back. Case is folded; whitespace is not a status.
+ */
+export function piLiveStatus(raw: unknown): 'live' | 'pending' | null {
+  if (typeof raw !== 'string' || !raw.trim()) return 'live';
+  const s = raw.trim().toLowerCase();
+  return s === 'live' || s === 'pending' ? s : null;
+}
 
 /**
  * A `<podcast:liveItem>` timestamp in unix seconds, or `undefined` when the

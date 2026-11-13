@@ -31,7 +31,7 @@
 // Vectors are recorded as CALLS and the replay walks the list, so a vector
 // cannot be added without also being proved against naive(). A vector both
 // implementations agree on is reported as proving nothing.
-import { liveShowToEpisode, mergeLiveOverPi } from '../lib/util.ts';
+import { feedLiveItems, liveShowToEpisode, mergeLiveOverPi } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -193,6 +193,41 @@ for (const v of VECTORS) {
     fail('liveShowToEpisode drops liveValue — PLAY on /live cannot open the Split Kit socket.');
   } else {
     ok('liveShowToEpisode carries liveValue to the episode the player stores');
+  }
+}
+
+// ── `feedLiveItems`: the SHOW PAGE's live list (`/api/feed`) ────────────────
+// The route used to union PI's rows with the RSS rows and let PI win a guid.
+// That was harmless only while the roster was always empty; once it is not, a
+// PI row (no `liveValue`, no payee) replaces the RSS row that carries both, and
+// the show page stops connecting to Split Kit — the one door that worked.
+{
+  const lv = { uri: 'https://curiohoster.com/event?event_id=1873a383-d918-44e1-b6ff-c3598189dab6', protocol: 'socket.io' };
+  const pi = [piRow('homegrownhits-158'), piRow('g-pi-only-ended')];
+  const rss = rssRow('homegrownhits-158', { liveValue: lv });
+  const piWins = (piRows, read) => {
+    const seen = new Set();
+    return [...piRows, ...read.items].filter((e) => !(e.guid && seen.has(e.guid)) && (seen.add(e.guid), true));
+  };
+  const read = { ok: true, items: [rss] };
+  const got = feedLiveItems(pi, read);
+  const old = piWins(pi, read);
+  if (got.length !== 1 || JSON.stringify(got[0].liveValue) !== JSON.stringify(lv) || !got[0].value) {
+    fail('feedLiveItems: with the RSS read, the RSS row (liveValue + payee) must be the only live item');
+  } else if (old[0].liveValue) {
+    fail('feedLiveItems: the PI-wins union agrees on this vector, so it proves nothing');
+  } else {
+    ok('feedLiveItems: a read RSS decides — its row keeps liveValue and payee, a PI-only row is dropped');
+  }
+  const unread = feedLiveItems(pi, { ok: false, items: [] });
+  if (unread.length !== 2) fail('feedLiveItems: an unreadable feed must keep PI\'s rows, never end the show');
+  else ok('feedLiveItems: an unreadable feed keeps PI\'s rows');
+  const feedSrc = await (await import('node:fs/promises')).readFile('app/api/feed/route.ts', 'utf8');
+  if (!/feedLiveItems\(\s*piLive\s*,/.test(feedSrc)) {
+    fail('app/api/feed/route.ts no longer picks its live items through feedLiveItems —\n'
+      + '          a PI row can replace the RSS row and strip the Split Kit socket.');
+  } else {
+    ok('app/api/feed/route.ts picks its live items through feedLiveItems');
   }
 }
 
