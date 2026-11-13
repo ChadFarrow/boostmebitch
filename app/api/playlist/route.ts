@@ -4,7 +4,10 @@ import { rateLimit } from '@/lib/rate-limit';
 import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
 import { resolvePlaylistTracks } from '@/lib/playlist-db';
 import { batchEpisodes, episodeKey, MAX_BATCH } from '@/lib/pi-batch';
-import { fnvHash, mergeRssOverPi, playsAsTracks } from '@/lib/util';
+import { fnvHash, mergeRssOverPi, playsAsTracks, communityPlaylistToPodcast } from '@/lib/util';
+import { COMMUNITY_FEEDS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
+import { summaryOf } from '@/lib/community/http';
 import type { Episode, PlayGroup, Podcast } from '@/lib/types';
 import type { PlaylistItemRef } from '@/lib/feed-xml';
 
@@ -40,6 +43,20 @@ const PLAYLIST_RATE_LIMIT = 30;
  */
 const PLAYLIST_CACHE = {
   'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=600',
+};
+
+/**
+ * A community playlist read from OUR store: its maker edits it and then reads
+ * this page back to label the rows, and a delete must take it off the CDN, so it
+ * is shared-cached 30 s, not the five minutes a remote feed gets.
+ *
+ * **Keep the `max-age`.** Without it the browser asks again on every visit:
+ * `/playlists` counts each row with one of these, so a few visits in a minute
+ * spent the per-IP allowance and the playlist the listener then opened came
+ * back 429, empty (measured by e2e:communityui, section 7a).
+ */
+const COMMUNITY_PLAYLIST_CACHE = {
+  'Cache-Control': 'public, max-age=30, s-maxage=30, stale-while-revalidate=60',
 };
 
 /**
@@ -107,7 +124,23 @@ export async function GET(req: Request) {
   const limit = Math.min(Math.max(rawLimit, 1), MAX_BATCH);
 
   return withErrorHandling(async () => {
-    const [channel, piRecord] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
+    // A community playlist's feed is OURS: read the songs from the store, never
+    // over HTTP (in dev the feed origin is a private address `safeFetch` refuses,
+    // and in production it would be a round trip to ourselves).
+    const communityId = communityIdFromFeedUrl(url);
+    let channel: Awaited<ReturnType<typeof getPlaylistChannel>>;
+    let piRecord: Podcast | null = null;
+    if (communityId) {
+      const own = COMMUNITY_FEEDS_ON && communityStoreConfigured() ? await getPlaylist(communityId) : null;
+      if (!own || own === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 });
+      channel = {
+        podcast: communityPlaylistToPodcast(summaryOf(own)),
+        refs: own.songs.map((s) => ({ feedGuid: s.feedGuid, itemGuid: s.itemGuid })),
+        sourceFeedUrl: undefined,
+      };
+    } else {
+      [channel, piRecord] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
+    }
     if (!channel) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
     // The feed's own title, medium, art and value block win — the document was
@@ -122,6 +155,7 @@ export async function GET(req: Request) {
     // exactly the feed whose favorite heart would otherwise stay hidden.
     const podcast = piRecord ? mergeRssOverPi(piRecord, channel.podcast) : channel.podcast;
     const { refs } = channel;
+    const pageCache = communityId ? COMMUNITY_PLAYLIST_CACHE : PLAYLIST_CACHE;
     // The show the playlist was built from. Its episode markers are bare titles
     // — "Saddle Up" — so without this the heading above a run of tracks is a
     // word with no stated relationship to anything. Resolved AFTER the channel,
@@ -152,7 +186,7 @@ export async function GET(req: Request) {
           nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow: await sourceShowPromise,
           playGroups,
         },
-        { headers: PLAYLIST_CACHE },
+        { headers: pageCache },
       );
     }
 
@@ -247,7 +281,7 @@ export async function GET(req: Request) {
           // be cached — the retry has to actually reach PI again. `notFound`
           // rows ARE cacheable: PI answered.
           //
-          couldNotAsk > 0 ? NO_STORE : PLAYLIST_CACHE,
+          couldNotAsk > 0 ? NO_STORE : pageCache,
       },
     );
   }, 'playlist fetch failed');

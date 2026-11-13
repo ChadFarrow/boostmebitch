@@ -3,6 +3,7 @@ import type {
   BoostResult, StoredBoostLeg, ChapterEntry, ValueTimeSplit, LiveShow,
   QueueItem, HistoryItem, StoredBoost,
 } from './types';
+import type { CommunityPlaylistSummary } from './community/rules';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
 // Case-insensitive — PI doesn't normalize the tag. Drives album-specific UI
@@ -4417,4 +4418,24 @@ export async function probeThenBatch<T, R>(
   settled.forEach((r, i) => {
     if (r.ok) out[key(rest[i]!)] = r.value;
   });
+}
+
+/**
+ * A community playlist as the `Podcast` every list row and the player expect.
+ * The one shape both the server (search lane, guid lookup) and the browser use.
+ * The id is negative (`-fnvHash(feedUrl)`): the repo's mark for "not a PI record".
+ */
+export function communityPlaylistToPodcast(s: CommunityPlaylistSummary): Podcast {
+  return {
+    id: -fnvHash(s.feedUrl),
+    podcastGuid: s.podcastGuid,
+    title: s.title,
+    description: s.description,
+    image: s.coverUrl,
+    artwork: s.coverUrl,
+    url: s.feedUrl,
+    medium: 'musicL',
+    isPreview: true,
+    nostrNpubs: [{ npub: s.ownerNpub, pubkey: s.ownerPubkey }],
+  };
 }

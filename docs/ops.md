@@ -518,6 +518,7 @@ The Preview environment already holds the rest.
 | `GITHUB_BUG_TOKEN` | the bug report; sensitive, so it is pasted by hand |
 | `NOSTR_INDEX_URL`, `NOSTR_INDEX_KEY` | beta reads like production; the app sends no write to the index |
 | `PLAYLIST_DB_URL`, `PLAYLIST_DB_CA` | same; `lib/playlist-db.ts` is read-only |
+| `COMMUNITY_DB_URL`, `NEXT_PUBLIC_COMMUNITY_PLAYLISTS`, `ADMIN_NPUBS` (and `COMMUNITY_DB_CA`) | community playlists on the REAL store, the one production reads; see "Community playlists database" below |
 
 The `boostmebuddy` project also builds `beta` as an ordinary preview, as it does
 every branch. That preview has no domain, and it is harmless.
@@ -604,3 +605,37 @@ build-time source-map and stringifier issues against the CSS being compiled,
 which here is our own `app/globals.css` and Tailwind's output, not anything a
 feed or a visitor supplies. Left in place deliberately; revisit with the Next 16
 upgrade rather than forcing it.
+
+## Community playlists database
+
+`lib/community/store.ts` is the one writer of the community-playlist tables. Run `npm run community:schema` (it runs `psql "$COMMUNITY_DB_URL" -f scripts/community-schema.sql`) once on each database. The script is idempotent: a second run changes nothing, and it also moves the timestamp defaults of a table made by an older copy of the file. **Run it on the test database and on the production database BEFORE you set `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`**: with the switch on and no tables, every write fails.
+
+| Variable | Use |
+|---|---|
+| `COMMUNITY_DB_URL` | Postgres connection string. Unset: the list route answers `{ playlists: [] }` and the other routes answer 503 `playlists are not configured` |
+| `COMMUNITY_DB_CA` | Optional root CA (PEM, or one line with `\n`) for a TLS server. Unset: the URL decides, so a local non-TLS Postgres works |
+| `ADMIN_NPUBS` | npubs (comma or space separated) that may use `/api/community-playlists/admin` |
+| `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` | `on` turns every community-playlist route and surface on; anything else answers 404, except the reads `COMMUNITY_FEEDS` keeps |
+| `COMMUNITY_FEEDS` | Server only. `on` keeps a published playlist working with the feature off: its feed and cover (`/feeds/playlists/*`), playing it from its feed URL, and finding it by guid. The maker, the list, search, admin and every write stay 404 |
+| `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` | Origin of the public feed URLs. Default `https://www.boostmebuddy.com`; local tests set `http://localhost:3123` |
+| `COMMUNITY_PI_NOTIFY` | `on` lets new and changed community feeds be sent to Podcast Index. It also needs `VERCEL_ENV=production` and the feed origin `https://www.boostmebuddy.com`. Leave it unset: Podcast Index is off for now |
+
+### Where each setting goes: beta and production now, launch later
+
+**There is one database, and it is real.** Beta writes the playlists, and production serves them, from the same `COMMUNITY_DB_URL`. Chad decided on 2026-11-12 that a playlist made on beta must keep working on the main site at launch, with no move and no redirect. So beta's playlists are real data: never wipe that database, and never point beta at a test one.
+
+**`NEXT_PUBLIC_*` values are compiled into the build.** Changing one in Vercel changes nothing until the project is deployed again, so redeploy after every change to the switch or the feed origin. The server-only values (`COMMUNITY_DB_URL`, `COMMUNITY_FEEDS`, `ADMIN_NPUBS`) also need a new deployment to reach the functions.
+
+**Production (now).** BOTH projects' Production environment, because every feed address is on `www.boostmebuddy.com` (served by `boostmebuddy`) and a link to a playlist can open on either site:
+
+1. `COMMUNITY_DB_URL` (the same value on both, and the same database beta uses), `COMMUNITY_DB_CA` if needed, and `COMMUNITY_FEEDS=on`.
+2. Leave `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` and `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` UNSET: the feature is off, and the feed origin defaults to `https://www.boostmebuddy.com`.
+3. `buddy-sign-cors` must be deployed on `boostmebuddy`: beta's notes for these playlists are Buddy notes, signed by Buddy's site key from the bitch origin. Without it a site-signed note for a playlist song fails (the payment is unaffected).
+
+**Beta (now).** The `boostmebitch` project, Preview environment, every variable scoped to the branch `beta`, so a PR preview gets none of them and the feature is off there: `COMMUNITY_DB_URL` (the real database), `COMMUNITY_DB_CA` if needed, `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on` and `ADMIN_NPUBS`. Leave `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` UNSET, so beta publishes every playlist at its final Buddy address. Then redeploy `beta` (`npm run beta -- rebuild` and the push it prints, or a redeploy in Vercel).
+
+**Launch (when Chad turns it on).** On BOTH production projects add `ADMIN_NPUBS` and `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`, then deploy `boostmebuddy` before `boostmebitch`. Nothing moves: every feed already has its final address. `COMMUNITY_FEEDS` may stay; the feature switch covers it.
+
+**The feeds are part of every playlist's address.** With both `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` and `COMMUNITY_FEEDS` off on `boostmebuddy`, every `/feeds/playlists/*` answers 404, so every podcast app subscribed to a playlist loses it. To stop new playlists and keep the feeds, turn the feature switch off and leave `COMMUNITY_FEEDS=on`.
+
+**Never set `COMMUNITY_PI_NOTIFY`** until the Podcast Index list in `docs/feeds.md` ("Community playlists", Known limits) is done: the ban-with-`deleteAll` notification, the `add/byfeedurl` method, and that our key may add feeds.
