@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment, getRssEpisodesNewerThan } from '@/lib/pi';
+import { communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRssDetailed, getPodcast, getRssEpisodeEnrichment, getRssEpisodesNewerThan } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { isMusicMedium, compareEpisodeOrder, feedItemValue } from '@/lib/util';
+import { isMusicMedium, compareEpisodeOrder, feedItemValue, feedLiveItems } from '@/lib/util';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -101,6 +102,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'invalid url' }, { status: 400 });
   }
   if (url) {
+    // A community playlist's feed is ours and holds no episodes; never fetch it
+    // over HTTP (see /api/playlist, which reads the store instead).
+    if (communityIdFromFeedUrl(url)) return NextResponse.json({ error: 'not found' }, { status: 404 });
     return withErrorHandling(async () => {
       const parsed = await getFeedFromRss(url);
       if (!parsed) return NextResponse.json({ error: 'not found' }, { status: 404 });
@@ -158,16 +162,17 @@ export async function GET(req: Request) {
           new Set(episodes.map((e) => e.guid).filter((g): g is string => !!g)),
         ).catch(() => [] as Episode[])
       : [];
-    // PI's /episodes/live only returns currently-broadcasting items; pending
-    // liveItems live in the RSS itself, so we additionally parse the feed XML.
-    const rssLive = podcast.url
-      ? await getLiveItemsFromRss(podcast.url, id, podcast.podcastGuid).catch(() => [] as Episode[])
-      : [];
-    // Dedupe by guid across sources. PI wins on collision (it carries the
-    // canonical 'live' transition the publisher's RSS may lag on).
+    // The publisher's RSS decides which live items exist whenever it was read;
+    // PI's rows stand in only when it was not. Never a union in which PI wins
+    // a guid — a PI row carries no `liveValue` and no payee. See `feedLiveItems`.
+    const rssLiveRead = podcast.url
+      ? await getLiveItemsFromRssDetailed(podcast.url, id, podcast.podcastGuid)
+        .catch(() => ({ ok: false, items: [] as Episode[] }))
+      : { ok: false, items: [] as Episode[] };
+    // Dedupe by guid, for a feed that repeats one.
     const seenGuid = new Set<string>();
     const liveItems: Episode[] = [];
-    for (const e of [...piLive, ...rssLive]) {
+    for (const e of feedLiveItems(piLive, rssLiveRead)) {
       if (e.guid && seenGuid.has(e.guid)) continue;
       if (e.guid) seenGuid.add(e.guid);
       liveItems.push(e);
@@ -197,12 +202,14 @@ export async function GET(req: Request) {
       const rss = e.guid ? enrichMap.get(e.guid) : undefined;
       return {
         ...e,
-        // WHO GETS PAID. The feed's own block outranks PI's copy whenever the
-        // feed was read and lists this item — PI can hold a stale ITEM block
-        // while its channel block is current, and that stale block used to win
-        // here. An item with no block of its own inherits the channel's.
+        // WHO GETS PAID. Only the RSS names a payee: PI's copy is not read at all.
+        // An item with no block of its own inherits the channel's, and an unread
+        // feed leaves `value` undefined, which means NOT READ, never "none".
         // `feedItemValue` (lib/util.ts, pinned by check:musicl) has the cases.
-        value: feedItemValue(!!rssRead, rss, feedValue, e.value, podcast.value),
+        value: feedItemValue(!!rssRead, rss, feedValue, e.value),
+        // Who gets paid during a song, from the same read. `e.valueTimeSplits`
+        // is only ever RSS too: a live item, or an item PI has not crawled.
+        valueTimeSplits: rss?.valueTimeSplits ?? e.valueTimeSplits,
         // socialInteract and contentEncoded come from RSS — PI doesn't index them.
         socialInteract: e.socialInteract ?? rss?.socialInteract,
         contentEncoded: rss?.contentEncoded,
@@ -223,6 +230,9 @@ export async function GET(req: Request) {
         // RSS-only (PI indexes no <podcast:txt>), so there's no PI value to
         // prefer, same as contentEncoded.
         nostrNpubs: rss?.nostrNpubs,
+        // <podcast:funding> on the item — this track's own support link.
+        // RSS-only: PI indexes funding per FEED, not per item.
+        funding: rss?.funding,
       };
     });
     // Live first (live > pending), then regular by datePublished desc.
@@ -264,12 +274,9 @@ export async function GET(req: Request) {
     // `channelSlice` of the live feed moments ago; prefer it whenever it exists.
     if (feedMedium) podcast.medium = feedMedium;
     // Same rule for the CHANNEL value block — the show-level BOOST. A read feed
-    // is the authority when it DECLARES a block (or its absence). But a feed
-    // whose host does not emit <podcast:value> at all (Anchor, Spotify, etc.)
-    // returns undefined — keep PI's block for those, because the tag's absence
-    // is not a publisher decision.  feedValue null = tag present, empty/no
-    // recipients → the publisher took V4V down.
-    if (rssRead && feedValue !== undefined) podcast.value = feedValue;
+    // is the authority, including when it declares no block: a publisher who
+    // took V4V down is not paid through PI's leftover copy.
+    if (rssRead) podcast.value = feedValue ?? null;
     // Same reasoning for a BLANK title. PI can hold a feed it crawled badly with
     // `title: ""`, which renders as an invisible row in search results and a
     // headerless show page — "I don't see it listed", for a feed that is right

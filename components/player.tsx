@@ -8,21 +8,25 @@ import {
   type HtmlPortalNode,
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
-import { useApp } from '@/lib/store';
+import { dropRefusedPlaybackRate, isMusicItem, resolvePlaybackRate, useApp } from '@/lib/store';
 import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayHistory } from './player/use-play-history';
+import { useNowPlaying } from './player/use-now-playing';
+import { useShowSpeed } from './player/use-show-speed';
+import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
-import { artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
+import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { downloadManager } from '@/lib/downloads/download-manager';
-import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
+import { logPlayback, playbackItemId, startPlaybackLog, watchMediaElement } from '@/lib/playback-log';
+import { loadItemValue } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
@@ -42,7 +46,8 @@ import { PodcastCover } from './podcast-cover';
 import { TransportControls } from './transport-controls';
 import { SpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
-import { LiveBadge } from './live-badge';
+import { LiveEdge } from './player/live-edge';
+import { liveLag, behindToShow, type LiveAnchor } from '@/lib/live-lag';
 
 /** How long the now-playing art must hold still before the OS is told about it.
  *  Long enough that a run of ⏭ presses issues no lock-screen fetch at all —
@@ -149,6 +154,7 @@ export function Player() {
   const handlePlaybackEnded = useApp((s) => s.handlePlaybackEnded);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const playbackRate = useApp((s) => s.playbackRate);
+  const musicHold = useApp((s) => s.musicHold);
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
@@ -276,6 +282,11 @@ export function Player() {
   // below: this one also catches an HLS enclosure that never carried a
   // liveStatus, because the resume behaviour follows the transport, not the tag.
   const isLiveMedia = isHls || current?.episode.liveStatus === 'live';
+  // The speed the audio plays at, which `playbackRate` is not: that one stays what
+  // the listener SET, and music is hard-coded at 1× — an album or playlist track
+  // whole, a song inside an episode for as long as it plays (./player/use-music-hold).
+  const musicItem = isMusicItem(current);
+  const effectiveRate = isLiveMedia || musicItem || musicHold ? 1 : playbackRate;
   // isHlsRef gates the HLS-only foreground-resume nudge; isLiveRef gates the
   // resume-from-pause reconnect; isVideoRef selects the active media element
   // (video vs audio) in the other effects.
@@ -289,6 +300,31 @@ export function Player() {
   // reconnect a live stream at the live edge without duplicating the whole
   // attach/hls.js/recovery setup that effect already owns.
   const [reloadNonce, setReloadNonce] = useState(0);
+  /**
+   * How far a live item plays behind a fresh connect — the `N s behind` and
+   * `⏭ GO LIVE` of `<LiveEdge>`. The anchor is the wall clock and `currentTime`
+   * at the source's first `playing`; the source effect clears it, so every
+   * reconnect (GO LIVE, a resume from pause, a stall retry) counts from its own
+   * start. The state holds `behindToShow`'s whole seconds, written only when
+   * that number changes — 0 the whole time a stream is on time, so a healthy
+   * broadcast adds no render. Why the clock and not `buffered`: lib/live-lag.ts.
+   */
+  const liveAnchor = useRef<LiveAnchor | null>(null);
+  const [liveBehindSec, setLiveBehindSec] = useState(0);
+  const anchorLiveClock = (el: HTMLMediaElement) => {
+    if (isLiveRef.current && !liveAnchor.current) {
+      liveAnchor.current = { wallSec: performance.now() / 1000, mediaSec: el.currentTime };
+    }
+  };
+  const sampleLiveLag = (el: HTMLMediaElement) => {
+    if (!isLiveRef.current || !liveAnchor.current) return;
+    const { behindSec, anchor } = liveLag(liveAnchor.current, performance.now() / 1000, el.currentTime);
+    if (behindSec === null) return; // a re-attach put the play head before its start
+    liveAnchor.current = anchor;
+    setLiveBehindSec((shown) => behindToShow(behindSec, shown));
+  };
+  /** ⏭ GO LIVE — the same reconnect a resume from pause makes (below). */
+  const goLive = () => setReloadNonce((n) => n + 1);
   // Set when the user pauses a live item; the signal that the next resume must
   // reconnect rather than continue. Cleared by the source effect, so the FIRST
   // play of an item takes the normal path (that effect owns that play).
@@ -466,6 +502,21 @@ export function Player() {
   // idle, so the deferral that keeps them out of the first load still holds.
   useEffect(() => { warmPlayerPanes(); }, []);
 
+  // The playback diagnostic log (lib/playback-log.ts) — what "Report a bug"
+  // attaches. The page half runs for the life of the page. The element half
+  // keys on `hasCurrent` because both elements render only while something is
+  // loaded (`if (!current) return null` below), and it is declared BEFORE the
+  // source effect so the first `play()` of an item is already watched.
+  useEffect(() => startPlaybackLog(), []);
+  const hasCurrent = !!current;
+  useEffect(() => {
+    if (!hasCurrent) return;
+    const stops: (() => void)[] = [];
+    if (audio.current) stops.push(watchMediaElement(audio.current, 'a'));
+    if (video.current) stops.push(watchMediaElement(video.current, 'v'));
+    return () => { for (const stop of stops) stop(); };
+  }, [hasCurrent]);
+
   // Source the active media element when the current item changes. Audio and
   // video are mutually exclusive (one `current`), so the inactive element is
   // left srcless/paused. HLS attaches to the <video> via hls.js (or native
@@ -474,6 +525,9 @@ export function Player() {
   useEffect(() => {
     lastTick.current = -1;
     pausedLive.current = false;
+    // A new source is a fresh connect: it is the new zero for "behind".
+    liveAnchor.current = null;
+    setLiveBehindSec(0);
     setAudioErr(null);
     reconnectMsg.current = null;
     // A fresh source is a fresh verdict — clear the stall so a recovered element
@@ -490,6 +544,7 @@ export function Player() {
       const el = video.current;
       const url = videoUrl;
       if (!el || !url) return;
+      logPlayback('src', { el: 'v', kind: isHlsUrl(url) ? 'hls' : 'stream', item: current ? playbackItemId(current.episode) : undefined });
 
       // Start position: preserved when toggling audio→video mid-play (positionSec
       // holds the live position), and set by play(ep, pod, startSec). Applied on
@@ -498,16 +553,51 @@ export function Player() {
       // re-source would seek straight back to the stale offset it exists to
       // escape. Live means live — there is nothing else to resume to.
       const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
-      const seekOnLoad = () => { if (startAt > 0) el.currentTime = startAt; };
+
+      // ONE SEEK AT `loadedmetadata` IS NOT ENOUGH, and an HLS rendition got
+      // none at all. Reported from an iPhone: AUDIO → VIDEO mid-episode
+      // started the picture at 0:00. Buzzsprout publishes its video
+      // `alternateEnclosure` as an `.m3u8`, which takes the HLS branch below —
+      // written for live streams, where there is nothing to resume, so it
+      // never seeked. And Safari can accept an assignment at `loadedmetadata`
+      // and still start at 0:00. So for every video path the start position is
+      // re-checked at `loadedmetadata`, `canplay` and `playing`, and re-applied
+      // while the element is short of it. It stops for good once it has landed,
+      // after `playing` (the last chance before the listener sees the wrong
+      // place), or at the first seek it did not make — a scrub in that window
+      // is the listener's, and wins. A live item has `startAt === 0`, so it
+      // arms nothing.
+      const SEEK_EVENTS = ['loadedmetadata', 'canplay', 'playing'] as const;
+      let landed = startAt <= 0;
+      let ours = false;
+      const seekToStart = (e: Event) => {
+        if (landed) return;
+        if (Math.abs(el.currentTime - startAt) < 2) return doneSeeking();
+        ours = true;
+        el.currentTime = startAt;
+        if (e.type === 'playing') doneSeeking();
+      };
+      const onSeeking = () => {
+        if (ours) { ours = false; return; }
+        doneSeeking();
+      };
+      const doneSeeking = () => {
+        landed = true;
+        for (const ev of SEEK_EVENTS) el.removeEventListener(ev, seekToStart);
+        el.removeEventListener('seeking', onSeeking);
+      };
+      if (!landed) {
+        for (const ev of SEEK_EVENTS) el.addEventListener(ev, seekToStart);
+        el.addEventListener('seeking', onSeeking);
+      }
 
       // A plain progressive video (mp4/webm) — an alternateEnclosure rendition —
       // plays natively; only HLS needs hls.js. isHlsUrl(url) distinguishes them.
       if (!isHlsUrl(url)) {
         el.src = url;
-        el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
         if (isPlayingRef.current) playOrPark(el, () => setPlaying(false));
         return () => {
-          el.removeEventListener('loadedmetadata', seekOnLoad);
+          doneSeeking();
           el.removeAttribute('src');
           el.load();
         };
@@ -609,6 +699,9 @@ export function Player() {
             liveSyncDurationCount: 4,
             backBufferLength: 90,
             ignorePlaylistParsingErrors: true,
+            // A VOD rendition (an HLS `alternateEnclosure`) loads from where the
+            // audio was, not from fragment 0; -1 is hls.js's own default.
+            startPosition: startAt > 0 ? startAt : -1,
           });
           hls.current = inst;
           inst.loadSource(url);
@@ -689,6 +782,7 @@ export function Player() {
       }
       return () => {
         cancelled = true;
+        doneSeeking();
         reconnectMsg.current = null;
         if (recoverTimer.current) { clearTimeout(recoverTimer.current); recoverTimer.current = null; }
         if (hls.current) {
@@ -729,6 +823,7 @@ export function Player() {
       restoreTries.current = 0;
       revokeLocalSrc();
       if (src.startsWith('blob:')) localSrcRef.current = src;
+      logPlayback('src', { el: 'a', kind: src.startsWith('blob:') ? 'local' : isHlsUrl(src) ? 'hls' : 'stream', item: playbackItemId(episode) });
       el.src = src;
       if (startAt > 0) el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
       if (isPlayingRef.current) {
@@ -766,6 +861,7 @@ export function Player() {
       attach(episode.enclosureUrl);
     } else {
       pendingLocalSrc.current = true;
+      logPlayback('src.wait', { el: 'a', why: localKey === undefined ? 'hydrating' : 'local', item: playbackItemId(episode) });
       void (localKey === undefined
         ? downloadManager.resolveSource(episode)
         : downloadManager.objectUrlFor(localKey)
@@ -779,19 +875,6 @@ export function Player() {
         // `null` here is an evicted download, which the manager has already
         // forgotten. Streaming is what the listener had before they pressed it.
         attach(localSrc ?? episode.enclosureUrl);
-        // The download record's value block may be stale — payableValue reads
-        // episode.value first, so a stale copy outranks the feed's own.
-        if (localSrc && episode.feedId && episode.guid) {
-          const g = episode.guid;
-          loadEpisodeFromFeed(episode.feedId, g).then((r) => {
-            if (cancelled || !r?.episode) return;
-            useApp.getState().refreshCurrentValue(
-              g,
-              r.episode.value ?? null,
-              r.episode.valueTimeSplits,
-            );
-          });
-        }
       });
     }
     // `{ once: true }` removes the listener when it FIRES, which is not the same
@@ -826,9 +909,10 @@ export function Player() {
   }, [current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Playback speed. Hydrated here rather than at store creation, which also
-  // runs on the server.
+  // runs on the server. The show's own speed when it has one, else the global
+  // one; `useShowSpeed` re-resolves it each time `current` moves to another show.
   useEffect(() => {
-    useApp.setState({ playbackRate: storage.playbackRate.get() });
+    useApp.setState({ playbackRate: resolvePlaybackRate(useApp.getState().current) });
   }, []);
 
   // Applies the speed to the active element. Declared AFTER the source effect
@@ -838,25 +922,29 @@ export function Player() {
   // and every stall reload would drop back to 1×.
   //
   // A live item is always 1×: there is no timeline ahead of the live edge to
-  // play faster into, and hls.js would only stall against it.
+  // play faster into, and hls.js would only stall against it. Music is always 1×
+  // by the listener's wish (`effectiveRate`), and `defaultPlaybackRate` follows,
+  // so a stall reload inside a song stays at 1×.
   useEffect(() => {
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
-    const rate = isLiveMedia ? 1 : playbackRate;
+    const rate = effectiveRate;
     // A browser may refuse a speed: the spec lets it throw NotSupportedError
     // for one it cannot play, and Chrome does outside 0.0625–16. Uncaught, that
     // throw is an effect error that takes the player down with it. Fall back
-    // to 1× on the element, and in the store, so the tile does not claim a
-    // speed the audio is not playing at.
+    // to 1× on the element, and drop the stored speed that holds the refused
+    // one, so the tile does not claim a speed the audio is not playing at —
+    // never through `setPlaybackRate(1)`, which would save 1× as this show's
+    // own choice (`dropRefusedPlaybackRate`, lib/store.ts).
     try {
       el.defaultPlaybackRate = rate;
       el.playbackRate = rate;
     } catch {
       el.defaultPlaybackRate = 1;
       el.playbackRate = 1;
-      if (rate !== 1) useApp.getState().setPlaybackRate(1);
+      if (rate !== 1) dropRefusedPlaybackRate(rate);
     }
-  }, [playbackRate, isLiveMedia, current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]);
+  }, [effectiveRate, current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]);
 
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz
   // timer reading useApp.getState() — mounted from here because <Player> is the
@@ -880,6 +968,7 @@ export function Player() {
   // an episode switch (which doesn't change isPlaying) can't re-run this and call
   // play() on a not-yet-sourced element — the source effect above owns first play.
   useEffect(() => {
+    logPlayback('want', { playing: isPlaying });
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
     if (!isPlaying) {
@@ -1076,6 +1165,33 @@ export function Player() {
 
   // Above the early return (hook rules); returns null unless a live block with
   // art is being credited, so ordinary playback is untouched.
+  // WHO GETS PAID, read when it plays. A playlist row, a queue item from disk and a
+  // download carry no payee (`valueNotRead`), and only the item's own feed names
+  // one. BOOST and the streaming engine both read `current`, so they see it the
+  // moment it lands: the engine's next tick, and this surface's next render.
+  //
+  // Primitives in the deps: `refreshCurrentValue` replaces the episode object, and
+  // that must not re-ask.
+  const valueUnread = !!current && valueNotRead(current.episode);
+  const valueGuid = current?.episode.guid;
+  const valueFeedGuid = current?.episode.podcastGuid;
+  const valueFeedId = current?.episode.feedId ?? 0;
+  const valueMedium = current?.podcast.medium;
+  useEffect(() => {
+    if (!valueUnread || !valueGuid) return;
+    let cancelled = false;
+    void loadItemValue(
+      { guid: valueGuid, podcastGuid: valueFeedGuid, feedId: valueFeedId },
+      { medium: valueMedium },
+    ).then((r) => {
+      if (cancelled) return;
+      const app = useApp.getState();
+      if (r.read) app.refreshCurrentValue(valueGuid, r.value, r.valueTimeSplits);
+      else app.markCurrentValueUnread(valueGuid);
+    });
+    return () => { cancelled = true; };
+  }, [valueUnread, valueGuid, valueFeedGuid, valueFeedId, valueMedium]);
+
   const liveBlockImage = useLiveBlockImage(current?.episode.guid);
 
   // This episode's resolved <podcast:valueTimeSplit> windows. Owned here and
@@ -1176,13 +1292,21 @@ export function Player() {
   // HERE, after `nowArt`, because the metadata effect consumes it.
   useMediaSession({
     current, isPlaying, positionSec, duration, nowArt,
-    playbackRate: isLiveMedia ? 1 : playbackRate,
+    playbackRate: effectiveRate,
     setPlaying, skipBy, seekTo,
   });
 
   // Saves where each episode was left, so the next play() of it resumes there.
   // See ./player/use-resume-position and lib/resume-position.ts.
   useResumePosition({ audio, video, isVideoRef, pendingLocalSrc });
+
+  // Plays each podcast at the speed last chosen for it. Subscribes before the
+  // reveal effect below sets `current`. See ./player/use-show-speed.
+  useShowSpeed();
+
+  // Plays the songs of an episode at 1×. Subscribes before the reveal effect for
+  // the same reason. Reads the one fetch of `splits` above: no request of its own.
+  const syncMusicHold = useMusicHold(current?.episode, splits);
 
   // Puts an episode listened to for a minute into the Listen tab's HISTORY,
   // so it can be boosted later. See ./player/use-play-history.
@@ -1195,7 +1319,15 @@ export function Player() {
   // null, which is what lets this sit above that return; doing it in the store
   // initializer instead would paint a mini-bar on the client that the server
   // did not, which is a hydration mismatch.
-  useEffect(() => { useApp.getState().revealQueue(); }, []);
+  //
+  // The episode that was in the player comes FIRST: the queue's head is only
+  // the fallback, because it is not what somebody was listening to when they
+  // played a feed row or a later queue row. Each no-ops once `current` is set.
+  useNowPlaying();
+  useEffect(() => {
+    useApp.getState().revealNowPlaying();
+    useApp.getState().revealQueue();
+  }, []);
 
   if (!current) return null;
   const { episode, podcast } = current;
@@ -1247,9 +1379,15 @@ export function Player() {
   // still says which of the three it is showing.
   const miniStalled = stalled && !audioErr;
   const miniChapter = !miniStalled ? activeChapter?.title : undefined;
+  // Below `sm:` the `N s behind` of <LiveEdge> folds into this line, the way
+  // the buffering line does: at 390 px the row held `● LIVE 7 s behind
+  // ⏭ GO LIVE` and the play/pause button covered the end of GO LIVE.
+  const miniBehind = isLive && isPlaying ? liveBehindSec : 0;
   const miniSecondary = miniStalled
     ? '⋯ buffering — press play to retry'
-    : miniChapter || podcast.title;
+    : miniBehind > 0
+      ? `${miniBehind} s behind live`
+      : miniChapter || podcast.title;
 
   // The element ran dry. If a live-stream reconnect is armed, this is the moment
   // its sentence becomes true, so paint it; otherwise there is nothing to add to
@@ -1294,13 +1432,16 @@ export function Player() {
             className="w-full h-full object-contain bg-black"
             onTimeUpdate={(e) => {
               const t = e.currentTarget.currentTime;
+              syncMusicHold(t);
               const tick = Math.floor(t);
               if (tick !== lastTick.current) {
                 lastTick.current = tick;
                 setPosition(t);
                 sampleHeadroom(e.currentTarget);
+                sampleLiveLag(e.currentTarget);
               }
             }}
+            onSeeked={(e) => syncMusicHold(e.currentTarget.currentTime)}
             // A video alternateEnclosure has a finite duration (unlike a live HLS
             // stream, whose duration is Infinity) — feed the seek bar. Guard on
             // isFinite so a live stream doesn't set a bogus duration.
@@ -1322,7 +1463,7 @@ export function Player() {
             onWaiting={(e) => { if (noteStarvation(e.currentTarget)) noteLiveGap(); }}
             onStalled={(e) => { if (noteStarvation(e.currentTarget)) noteLiveGap(); }}
             onProgress={(e) => sampleHeadroom(e.currentTarget)}
-            onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); }}
+            onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); }}
             onError={(e) => onMediaError(e.currentTarget.error?.code)}
           />
         </InPortal>
@@ -1350,7 +1491,11 @@ export function Player() {
           composer with the tab bar gone from under it — and both come back down
           together when iOS leaves the visual viewport scrolled past the layout
           one. See lib/keyboard-inset.ts — <TabBar> publishes it. */}
+      {/* `data-mini-player` is how the e2e scripts find this bar (`MINI_BAR` in
+          scripts/cdp.mjs). They used `aria-label="Open fullscreen player"`, which
+          left with the `role="button"` above, and five scripts went red with it. */}
       <div
+        data-mini-player
         className="fixed left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 cursor-pointer"
         style={{ bottom: 'var(--dock-b)', transform: 'translateY(var(--kb-inset, 0px))' }}
         onClick={() => setPlayerExpanded(true)}
@@ -1376,12 +1521,18 @@ export function Player() {
               return;
             }
             if (t > 0) lastGoodPos.current = t;
+            syncMusicHold(t);
             const tick = Math.floor(t);
             if (tick !== lastTick.current) {
               lastTick.current = tick;
               setPosition(t);
               sampleHeadroom(e.currentTarget);
+              if (!isVideoRef.current) sampleLiveLag(e.currentTarget);
             }
+          }}
+          onSeeked={(e) => {
+            // The previous episode, as in `onTimeUpdate` above.
+            if (!pendingLocalSrc.current) syncMusicHold(e.currentTarget.currentTime);
           }}
           onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setAudioErr(null); }}
           // **`playsAsTracks`, not `isMusicMedium` — an ALBUM is not the only
@@ -1418,15 +1569,26 @@ export function Player() {
           // The element keeps its blob URL until the next source revokes it, so
           // a replay of this one still plays (measured in Chromium; see
           // docs/downloads.md for what is not yet measured on iOS).
+          //
+          // Each branch writes its decision to the playback log: "the next
+          // item did not play" needs to tell an advance that never happened
+          // from one the browser refused.
           onEnded={() => {
-            if (pendingLocalSrc.current) return;
+            if (pendingLocalSrc.current) { logPlayback('advance', { via: 'pending' }); return; }
             forgetRestoreBaseline();
             if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
               const key = downloadManager.deletableAfterPlay(current.episode);
               if (key) void downloadManager.remove(key);
             }
-            if (handlePlaybackEnded()) return;
-            if (current && playsAsTracks(current.podcast) && playNext()) return;
+            if (handlePlaybackEnded()) {
+              logPlayback('advance', { via: 'queue', playing: useApp.getState().isPlaying });
+              return;
+            }
+            if (current && playsAsTracks(current.podcast) && playNext()) {
+              logPlayback('advance', { via: 'tracks' });
+              return;
+            }
+            logPlayback('advance', { via: 'none' });
             // Nothing plays next, so the fullscreen player is a screen over a
             // finished episode: collapse it to the mini-bar, which still carries
             // BOOST. Only here — an advance above keeps it open on the next item.
@@ -1455,7 +1617,7 @@ export function Player() {
           // means resuming with a warm buffer restores the art in the same tick
           // rather than blanking it for another 20 s of `timeupdate`s.
           onProgress={(e) => { if (!isVideoRef.current) sampleHeadroom(e.currentTarget); }}
-          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); } }}
+          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); } }}
           onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         {/* Tighter padding and gap below sm:. At 390px the row has 358px to
@@ -1549,10 +1711,7 @@ export function Player() {
               </div>
             )}
             {isLive ? (
-              <div className="flex items-center gap-2 mt-1">
-                <LiveBadge status="live" />
-                <span className="text-[10px] text-muted">streaming now</span>
-              </div>
+              <LiveEdge variant="mini" className="mt-1" behindSec={miniBehind} onGoLive={goLive} />
             ) : (
               <>
                 <div className="flex items-center gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
@@ -1598,8 +1757,9 @@ export function Player() {
               onSkip={skipBy}
             />
             {/* Speed from lg: only, where the bar has the width (docs/ui.md,
-                "Playback speed"). A live item is always 1×, so no control. */}
-            {!isLive && <SpeedButton variant="chip" className="hidden lg:inline-flex" />}
+                "Playback speed"). A live item and a music item are always 1×, so
+                no control. */}
+            {!isLive && !musicItem && <SpeedButton variant="chip" className="hidden lg:inline-flex" />}
             {/* Compact enough for the mini-bar on desktop; hidden on the cramped
                 mobile mini-bar (the fullscreen player carries the toggle there). */}
             <VideoToggle className="hidden sm:inline-flex" />
@@ -1641,6 +1801,8 @@ export function Player() {
         videoRef={video}
         isVideo={isVideo}
         audioErr={audioErr}
+        liveBehindSec={isPlaying ? liveBehindSec : 0}
+        onGoLive={goLive}
         artOk={artUsable}
         splitArt={splitArt}
         splits={splits}

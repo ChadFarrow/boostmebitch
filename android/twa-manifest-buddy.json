@@ -15,8 +15,8 @@
   "enableNotifications": false,
   "startUrl": "/",
   "webManifestUrl": "https://www.boostmebuddy.com/manifest-buddy.json",
-  "iconUrl": "https://www.boostmebuddy.com/icons/icon-512.png",
-  "maskableIconUrl": "https://www.boostmebuddy.com/icons/icon-512-maskable.png",
+  "iconUrl": "https://www.boostmebuddy.com/icons/buddy/icon-512.png",
+  "maskableIconUrl": "https://www.boostmebuddy.com/icons/buddy/icon-512-maskable.png",
   "splashScreenFadeOutDuration": 300,
   "signingKey": {
     "path": "./android.keystore",

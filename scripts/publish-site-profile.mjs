@@ -39,7 +39,7 @@ const PROFILE = {
   // that doesn't follow the redirect shows no avatar. The nip05 identifier is
   // not a URL: it's the identity clients display as the bare domain, and
   // app/.well-known/nostr.json serves it on both hosts.
-  picture: `${BRAND.origin}/icons/icon-512.png`,
+  picture: `${BRAND.origin}${BRAND.iconDir}/icon-512.png`,
   website: BRAND.origin,
   nip05: `_@${BRAND.domain}`,
   // Not per-brand: one operator, one Lightning address, both sites.

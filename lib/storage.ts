@@ -14,15 +14,17 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue } from './util';
+import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue, withoutStoredValue, episodeWithoutValue } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
   DEFAULT_STREAM_RATE_PER_MIN,
   STREAM_AMOUNT_MAX_SATS,
+  STREAM_AMOUNT_MIN_SATS,
   STREAM_RATE_MAX_PER_MIN,
 } from './v4v/stream-ledger';
 import { coerceProfileMetadata } from './nostr/profile-metadata';
+import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 import { createObservable } from './pubsub';
 
 // Rail-pref changes need to reach live UI (account-menu summary, balance
@@ -79,6 +81,7 @@ const KEYS = {
   episodeMetaPrefix: 'bmb:epmeta',    // /api/episode-by-guid result, keyed by '<feedGuid>:<itemGuid>'
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   socialThreadPrefix: 'bmb:social',   // last DiscoveredNote[] per podcast:socialInteract URI
+  playbackLogPrefix: 'bmb:plog',      // string[] — the last PLAYBACK_LOG_CAP lines of lib/playback-log.ts, one key (`bmb:plog:device`). DEVICE-wide. A DIAGNOSTIC, so it is the FIRST namespace EVICTABLE_PREFIXES drops: losing it costs a bug report some detail and nothing else.
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
   profilePrefix: 'bmb:profile4',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion — and here, to flush negative-cache entries poisoned by a relay-stall bug — so stale misses don't pin missing profiles for the miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
@@ -121,7 +124,7 @@ const KEYS = {
   streamRate: 'bmb:stream_rate',      // remembered sats-per-minute — a positive number or absent; never 0, and never removed by the toggle
   streamMode: 'bmb:stream_mode',      // 'track' when the unit picker is on "per track"; absent/'rate' = per minute. Show-scope entry overrides the global one, same precedence as the rate.
   streamAmount: 'bmb:stream_amount',  // remembered sats-per-TRACK, kept separate from streamRate so flipping the unit never destroys the other number
-  playbackRate: 'bmb:playback_rate', // player speed from PLAYBACK_RATES; absent = 1×. A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
+  playbackRate: 'bmb:playback_rate', // player speed from PLAYBACK_RATES; absent = 1×. Also the prefix for a podcast's own speed `…:<speedShowKey>`, which overrides the global one. A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   epOrder: 'bmb:ep_order',            // per-SHOW episode order: 'oldest' when the user flipped that show to oldest-first; absent = newest-first (the feed's own order). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
@@ -129,6 +132,7 @@ const KEYS = {
   deleteAfterPlay: 'bmb:dl_delete_played', // '1' when a podcast episode's download is deleted once it plays to the end; absent = keep (the default). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
   played: 'bmb:played',               // Record<resumeKey, epoch ms> — podcast episodes this device played to the end, capped at PLAYED_CAP newest. DEVICE-wide like bmb:resume, and for the same reason not a cache.
+  nowPlaying: 'bmb:now_playing',      // QueueItem — the episode last in the player, so a reload reopens IT (paused) rather than the queue's head. DEVICE-wide like bmb:resume; the place inside it is bmb:resume's job. Not a cache: nothing can rebuild what was in the player, so deliberately absent from EVICTABLE_PREFIXES.
   playHistory: 'bmb:play_history',    // HistoryItem[] newest first — podcast episodes this device played for a minute, for the Listen tab's HISTORY (boost them later). A LOG capped at PLAY_HISTORY_CAP: the oldest goes. DEVICE-wide like bmb:resume, and not a cache: nothing on the network can rebuild what somebody listened to, so deliberately absent from EVICTABLE_PREFIXES.
 } as const;
 
@@ -327,6 +331,7 @@ const memoryMirror = new Map<string, string>();
  * numerous and cost a visible refetch, so they go last.
  */
 const EVICTABLE_PREFIXES = [
+  KEYS.playbackLogPrefix,
   KEYS.socialThreadPrefix,
   KEYS.feedNotesPrefix,
   KEYS.profilePrefix,
@@ -445,12 +450,18 @@ function saneRate(raw: string | null): number | null {
   return Math.floor(n);
 }
 
-/** `saneRate` for the per-track amount — same corrupt-reads-as-absent rule. */
+/** `saneRate` for the per-track amount — same corrupt-reads-as-absent rule.
+ *  A real amount under `STREAM_AMOUNT_MIN_SATS` (stored before the floor) is
+ *  raised to it rather than read as absent. */
 function saneAmount(raw: string | null): number | null {
   if (raw === null) return null;
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1 || n > STREAM_AMOUNT_MAX_SATS) return null;
-  return Math.floor(n);
+  return Math.max(STREAM_AMOUNT_MIN_SATS, Math.floor(n));
+}
+
+function clampAmount(sats: number): number {
+  return Math.min(STREAM_AMOUNT_MAX_SATS, Math.max(STREAM_AMOUNT_MIN_SATS, Math.floor(sats)));
 }
 
 /** Anything that isn't an explicit `'track'` reads as per-minute — the mode that
@@ -487,6 +498,14 @@ function getTimed<T>(key: string, ttlMs: number): T | null {
   } catch {
     return null;
   }
+}
+
+/** A display cache names no payee: it can hold a block from an older build for days. */
+function withoutCachedValue<T extends { value?: unknown }>(v: T | null): T | null {
+  if (!v) return v;
+  const copy = { ...v };
+  delete copy.value;
+  return copy;
 }
 
 function setTimed<T>(key: string, value: T) {
@@ -983,6 +1002,28 @@ export const storage = {
       if (rate === 1 || !(PLAYBACK_RATES as readonly number[]).includes(rate)) safeRemove(KEYS.playbackRate);
       else safeSet(KEYS.playbackRate, String(rate));
     },
+    /**
+     * One podcast's own speed, keyed by `speedShowKey`. `null` = no entry, so
+     * the show plays at the global speed. Unlike the global key, 1× IS
+     * written: a show at 1× under a global 2× is a choice, not the default.
+     * Read against the same allowlist; anything else is `null`.
+     */
+    getShow: (showKey: string): number | null => {
+      if (!showKey) return null;
+      const raw = safeGet(`${KEYS.playbackRate}:${showKey}`);
+      const n = Number(raw);
+      return raw !== null && (PLAYBACK_RATES as readonly number[]).includes(n) ? n : null;
+    },
+    setShow: (showKey: string, rate: number) => {
+      if (!showKey) return;
+      const key = `${KEYS.playbackRate}:${showKey}`;
+      if ((PLAYBACK_RATES as readonly number[]).includes(rate)) safeSet(key, String(rate));
+      else safeRemove(key);
+    },
+    /** Remove one show's entry, so it plays at the global speed again. */
+    clearShow: (showKey: string) => {
+      if (showKey) safeRemove(`${KEYS.playbackRate}:${showKey}`);
+    },
   },
 
   /** Per-device theme preference. Absent = dark (the app default). Only
@@ -1236,7 +1277,7 @@ export const storage = {
    */
   podcastMeta: {
     get: (guid: string): Podcast | null =>
-      getTimed<Podcast>(`${KEYS.podcastMetaPrefix}:${guid}`, PODCAST_META_TTL_MS),
+      withoutCachedValue(getTimed<Podcast>(`${KEYS.podcastMetaPrefix}:${guid}`, PODCAST_META_TTL_MS)),
     set: (guid: string, v: Podcast) =>
       setTimed(`${KEYS.podcastMetaPrefix}:${guid}`, v),
   },
@@ -1244,8 +1285,12 @@ export const storage = {
   /** /api/episode-by-guid result, keyed '<feedGuid>:<itemGuid>'. Same TTL and
    *  eviction class as podcastMeta — a network-regenerable display cache. */
   episodeMeta: {
-    get: (key: string): Episode | null =>
-      getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS),
+    // A record with no guid is a miss an older build stored as an answer. See
+    // `getEpisodeByGuid`. Read as absent, so the next load asks again.
+    get: (key: string): Episode | null => {
+      const cached = withoutCachedValue(getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS));
+      return cached?.guid ? cached : null;
+    },
     set: (key: string, v: Episode) =>
       setTimed(`${KEYS.episodeMetaPrefix}:${key}`, v),
   },
@@ -1606,13 +1651,13 @@ export const storage = {
       ?? saneAmount(safeGet(KEYS.streamAmount))
       ?? DEFAULT_STREAM_AMOUNT_PER_TRACK,
     setAmount: (sats: number) => {
-      const n = Math.min(STREAM_AMOUNT_MAX_SATS, Math.max(1, Math.floor(sats)));
+      const n = clampAmount(sats);
       safeSet(KEYS.streamAmount, String(n));
       streamRateObservable.notify();
     },
     setShowAmount: (showKey: string, sats: number) => {
       if (!showKey) return;
-      const n = Math.min(STREAM_AMOUNT_MAX_SATS, Math.max(1, Math.floor(sats)));
+      const n = clampAmount(sats);
       safeSet(`${KEYS.streamAmount}:${showKey}`, String(n));
       streamRateObservable.notify();
     },
@@ -1824,7 +1869,9 @@ export const storage = {
         if (!Array.isArray(parsed)) return [];
         return (parsed as QueueItem[])
           .filter((i) => !!i?.episode?.enclosureUrl && typeof i?.podcast?.id === 'number')
-          .slice(0, LISTEN_QUEUE_CAP);
+          .slice(0, LISTEN_QUEUE_CAP)
+          // A copy from disk names no payee: `<Player>` asks the feed on play.
+          .map(withoutStoredValue);
       } catch {
         return [];
       }
@@ -1882,7 +1929,9 @@ export const storage = {
           .filter((h) => !!h?.episode?.enclosureUrl
             && typeof h?.podcast?.id === 'number'
             && Number.isFinite(h?.at))
-          .slice(0, PLAY_HISTORY_CAP);
+          .slice(0, PLAY_HISTORY_CAP)
+          // A copy from disk names no payee, see `listenQueue.get`.
+          .map(withoutStoredValue);
       } catch {
         return [];
       }
@@ -1892,6 +1941,60 @@ export const storage = {
       safeSet(KEYS.playHistory, JSON.stringify(v.slice(0, PLAY_HISTORY_CAP))),
     /** A REMOVAL, not a write of `[]` — `listenQueue.clear` says why. */
     clear: () => safeRemove(KEYS.playHistory),
+  },
+
+  /**
+   * The playback diagnostic log (`lib/playback-log.ts`), oldest line first.
+   *
+   * On disk rather than in memory because the case it exists for is a page
+   * the OS stopped or discarded while the screen was off: the lines written
+   * before that are the evidence, and memory does not outlive it. Lines that
+   * fail `isPlaybackLogLine` are dropped on read, so a value from an older
+   * format cannot reach a bug report.
+   */
+  playbackLog: {
+    get: (): string[] => {
+      const raw = safeGet(`${KEYS.playbackLogPrefix}:device`);
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((l): l is string => typeof l === 'string' && isPlaybackLogLine(l))
+          .slice(-PLAYBACK_LOG_CAP);
+      } catch {
+        return [];
+      }
+    },
+    set: (lines: string[]): boolean =>
+      safeSet(`${KEYS.playbackLogPrefix}:device`, JSON.stringify(lines.slice(-PLAYBACK_LOG_CAP))),
+    clear: () => safeRemove(`${KEYS.playbackLogPrefix}:device`),
+  },
+
+  /**
+   * The episode last in the player — `revealNowPlaying` puts it back, paused,
+   * on the next load. Without it a reload landed on the listen queue's HEAD
+   * (`revealQueue`), which is not what somebody who tapped a feed row, or a
+   * later queue row, was listening to.
+   *
+   * Stored as a queue item is (`trimForQueue`), and validated on read for the
+   * queue's reason: it is the one input here that does not come from the app.
+   */
+  nowPlaying: {
+    get: (): QueueItem | null => {
+      const raw = safeGet(KEYS.nowPlaying);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw) as QueueItem;
+        // A copy from disk names no payee, see `listenQueue.get`. This one goes
+        // straight into `current` (`revealNowPlaying`), and `<Player>` then asks.
+        return parsed?.episode?.enclosureUrl && typeof parsed?.podcast?.id === 'number'
+          ? withoutStoredValue(parsed)
+          : null;
+      } catch {
+        return null;
+      }
+    },
+    set: (v: QueueItem): boolean => safeSet(KEYS.nowPlaying, JSON.stringify(v)),
   },
 
   /**
@@ -1942,7 +2045,8 @@ export const storage = {
             if (!r || typeof r !== 'object') continue;
             if (typeof r.feedId !== 'number') continue;
             if (typeof r.datePublished !== 'number') continue;
-            rows.push(r as Episode);
+            // A copy from disk names no payee, see `listenQueue.get`.
+            rows.push(episodeWithoutValue(r as Episode));
             if (rows.length >= FAV_NEW_CAP) break;
           }
         }

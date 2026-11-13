@@ -57,6 +57,20 @@ export interface ValueTimeSplit {
    * which is ordinary — a surface renders what it has and says nothing more.
    */
   artist?: string;
+  /**
+   * The remote item's OWN length in seconds, from Podcast Index or its feed. A
+   * marker's `duration` is hand-written and can be wrong by days, so this is what
+   * decides how long a song holds 1× (`musicHoldSpans`). Absent whenever no lookup
+   * knew it. **Nothing may pay by it.**
+   */
+  trackDuration?: number;
+  /**
+   * The remote feed's own `medium`, from its Podcast Index record. Absent when the
+   * lookup missed, failed or was never made. Not `remoteItem.medium`, which is what
+   * the HOST declared and which public favorites and streaming labels read; see
+   * `withFeedMediums`. **Nothing may pay by it.**
+   */
+  feedMedium?: string;
   episodeGuid?: string;
   /**
    * The feed guid that actually CONTAINS this track, when resolution learned
@@ -139,6 +153,11 @@ export interface Podcast {
   url?: string;           // RSS feed URL
   medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
   value?: ValueBlock | null;
+  /** True when Podcast Index lists a value block for this show. A DISPLAY hint for
+   *  the ⚡ V4V stamp and nothing else: it names nobody and opens no BOOST, so a
+   *  show can carry it and still have no BOOST, because only its feed names a payee.
+   *  Read it through `carriesV4V`. */
+  v4vHint?: boolean;
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
   funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
   nostrNpubs?: FeedNpub[]; // <podcast:txt purpose="nostr"> — the show's own npub(s), from RSS
@@ -200,6 +219,10 @@ export interface Episode {
   /** Podcasting 2.0 <podcast:alternateEnclosure> renditions (e.g. a video
    *  version). Parsed from RSS — PI doesn't index the tag. */
   alternateEnclosures?: AlternateEnclosure[];
+  /** This item's own `<podcast:funding>` links. The namespace allows the tag
+   *  in `<item>` as well as `<channel>`; an item without one falls back to
+   *  `podcast.funding` where it is shown. Parsed from RSS through `httpUrl`. */
+  funding?: FundingLink[];
   duration?: number;
   datePublished?: number;
   image?: string;
@@ -303,7 +326,8 @@ export interface Episode {
    *  BOOST is disabled in all three cases; only the SENTENCE differs, and that
    *  is the whole point. "Stream has no value block" over a stream we merely
    *  failed to read is a claim about somebody's money that we had not earned.
-   *  Set by `streamToEpisode` from the `StreamV4V` it is handed. */
+   *  Set by `streamToEpisode` from the `StreamV4V` it is handed, and to 'unread'
+   *  by `markCurrentValueUnread` when an ordinary item's feed did not answer. */
   liveValueState?: 'pending' | 'unread';
   /** <podcast:txt purpose="nostr"> published inside this <item> — the track's
    *  or episode's own artist, distinct from the channel-level show npub. Both
@@ -659,6 +683,17 @@ export interface LiveShow {
   /** Scheduled or actual start, unix seconds. */
   liveStartTime?: number;
   value?: ValueBlock | null;
+  /**
+   * The item's `<podcast:liveValue>` push channel (The Split Kit), as the RSS
+   * parser read it — `uri` already through `httpUrl`.
+   *
+   * Carried because the live-value watcher opens the socket from the PLAYING
+   * episode and nowhere else (`attachSocket`), and `/api/live-value` does not
+   * hand it back. Without it, PLAY on a `/live` card followed the show by RSS
+   * polling only — no Split Kit target, no track art, the host paid for every
+   * song — while the same item played from its show page connected.
+   */
+  liveValue?: { uri: string; protocol: string };
   feedId: number;
   feedTitle?: string;
   feedImage?: string;
@@ -676,3 +711,12 @@ export interface LiveShow {
    */
   verified: boolean;
 }
+
+/**
+ * What one read of a feed says about who one of its items pays (`/api/item-value`).
+ * `read: false` means the document never arrived, which is a different answer
+ * from `value: null`, a feed that names nobody.
+ */
+export type ItemPayment =
+  | { read: false }
+  | { read: true; value: ValueBlock | null; valueTimeSplits: ValueTimeSplit[] };

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Read-only Nostr + Podcast Index cache for boostmebitch. Rebuildable; relays stay authoritative.",
   "engines": {
-    "node": ">=22.6.0"
+    "node": "^24.22.1"
   },
   "scripts": {
     "start": "node --experimental-strip-types src/index.ts",

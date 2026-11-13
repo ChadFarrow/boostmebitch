@@ -106,8 +106,15 @@ for (const v of ID_VECTORS) {
 // check-assetlinks.mjs came to have a whole section asserted against nothing.
 const REQUIRED = [
   'id', 'displayName', 'shortName', 'wireName', 'domain', 'origin', 'siteNpub',
-  'senderName', 'boostSound', 'manifest', 'userAgent', 'description',
+  'senderName', 'boostSound', 'manifest', 'iconDir', 'userAgent', 'description',
   'androidPackageId', 'androidAppUrl',
+];
+
+/** Every file `app/layout.tsx`, `<AppHeader>`, the manifests and the TWA configs read out of `iconDir`. */
+const ICON_FILES = [
+  'icon.svg', 'favicon.svg', 'favicon-32.png', 'icon-192.png', 'icon-512.png',
+  'icon-192-maskable.png', 'icon-512-maskable.png', 'apple-touch-icon.png',
+  'header-mark.svg',
 ];
 
 // ---------------------------------------------------------------------------
@@ -138,6 +145,7 @@ const LITERALS = {
     senderName: 'boostmebitch.com user',
     boostSound: '/boost.mp3',
     manifest: '/manifest.json',
+    iconDir: '/icons/bmb',
     userAgent: 'boostmebitch/0.1',
     description:
       'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
@@ -155,6 +163,7 @@ const LITERALS = {
     senderName: 'boostmebuddy.com user',
     boostSound: '/boost-buddy.mp3',
     manifest: '/manifest-buddy.json',
+    iconDir: '/icons/buddy',
     userAgent: 'boostmebuddy/0.1',
     description:
       'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
@@ -221,7 +230,16 @@ for (const [key, b] of Object.entries(BRANDS)) {
     ok(`${key}.${f} names a file that exists in public/`, existsSync(join(REPO, 'public', b[f])),
       `public${b[f]} is not in the repo`);
   }
+  // Same reason, one folder: a missing icon is a blank tile on a home screen or
+  // a broken image in Helipad, and nothing at runtime reports it.
+  ok(`${key}.iconDir is a root-relative folder`, b.iconDir.startsWith('/') && !b.iconDir.endsWith('/'),
+    `got ${JSON.stringify(b.iconDir)}`);
+  for (const f of ICON_FILES) {
+    ok(`${key}.iconDir holds ${f}`, existsSync(join(REPO, 'public', b.iconDir, f)),
+      `public${b.iconDir}/${f} is not in the repo`);
+  }
 }
+ok('the two brands name different icon folders', BRANDS.buddy.iconDir !== BRANDS.bmb.iconDir);
 
 // ---------------------------------------------------------------------------
 // The family-friendly property. This is the reason the second brand exists, so
@@ -434,6 +452,48 @@ for (const v of ID_VECTORS) {
 }
 console.log(`        ${proved} vector(s) proved, ${exempt} exempted as must-still-work`);
 ok('the replay proved something', proved > 0);
+
+// ---------------------------------------------------------------------------
+// lib/cross-brand-cors.ts — which browser origins may read the Buddy deploy's
+// two signing routes. The Bitch deploy opens nothing.
+// ---------------------------------------------------------------------------
+
+console.log('\n  cross-brand CORS');
+{
+  const CORS = 'lib/cross-brand-cors.ts';
+  const cp = importFreeProblems(CORS);
+  if (cp.length) {
+    explainImportFree(CORS, cp);
+    process.exit(1);
+  }
+  const { crossBrandOrigins, corsHeaders } = await import('../lib/cross-brand-cors.ts');
+  const ALLOW = 'Access-Control-Allow-Origin';
+  eq('buddy allows exactly the two Bitch origins',
+    JSON.stringify(crossBrandOrigins('buddy')),
+    JSON.stringify(['https://www.boostmebitch.com', 'https://beta.boostmebitch.com']));
+  eq('bmb allows no origin', JSON.stringify(crossBrandOrigins('bmb')), '[]');
+  eq('buddy answers the Bitch origin with its own origin',
+    corsHeaders('https://www.boostmebitch.com', 'buddy')[ALLOW], 'https://www.boostmebitch.com');
+  eq('buddy answers the beta origin',
+    corsHeaders('https://beta.boostmebitch.com', 'buddy')[ALLOW], 'https://beta.boostmebitch.com');
+  eq('allowed answer carries the full header set',
+    JSON.stringify(corsHeaders('https://www.boostmebitch.com', 'buddy')),
+    JSON.stringify({
+      'Access-Control-Allow-Origin': 'https://www.boostmebitch.com',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'content-type',
+      'Access-Control-Max-Age': '600',
+      Vary: 'Origin',
+    }));
+  ok('a stranger origin gets no allow-origin', !(ALLOW in corsHeaders('https://evil.example', 'buddy')));
+  eq('a stranger origin still gets Vary', JSON.stringify(corsHeaders('https://evil.example', 'buddy')),
+    JSON.stringify({ Vary: 'Origin' }));
+  ok('no Origin header gets no allow-origin', !(ALLOW in corsHeaders(null, 'buddy')));
+  ok('a look-alike (suffix) origin gets none', !(ALLOW in corsHeaders('https://www.boostmebitch.com.evil.example', 'buddy')));
+  ok('http scheme gets none', !(ALLOW in corsHeaders('http://www.boostmebitch.com', 'buddy')));
+  ok('the Bitch deploy opens nothing', !(ALLOW in corsHeaders('https://www.boostmebitch.com', 'bmb')));
+}
+
 
 if (failures) {
   console.error(`\n  ${failures} failure(s) in check:brand\n`);

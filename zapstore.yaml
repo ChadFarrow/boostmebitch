@@ -50,7 +50,7 @@ description: |
 license: MIT
 website: https://www.boostmebitch.com
 
-icon: https://www.boostmebitch.com/icons/icon-512.png
+icon: https://www.boostmebitch.com/icons/bmb/icon-512.png
 
 # Captured by `node scripts/shoot-screenshots.mjs` against production, at a
 # 412x915 phone viewport with deviceScaleFactor 2. Every path here must resolve

@@ -68,7 +68,7 @@ The second signing oracle for the site's key, and it is narrower than the first.
 
 Three sources, all third-party, all fixed at the **parse boundary** rather than at the render site, so a fourth surface inherits the guard instead of re-deciding it:
 
-- **`<podcast:funding url>`** — `parseFunding` took the raw attribute, and `fundingFromPi` took PI's mirror of it. Podcast Index carries the feed author's string verbatim; it is not a filter. Two render sites (`episode-detail-view.tsx`, `lists/episode-list.tsx`).
+- **`<podcast:funding url>`** — `parseFunding` took the raw attribute, and `fundingFromPi` took PI's mirror of it. Podcast Index carries the feed author's string verbatim; it is not a filter. Two render sites: `episode-detail-view.tsx`, `lists/episode-list.tsx`. The episode page re-runs `httpUrl` at render, because a queued or history episode — which now carries its own `funding` — comes back from disk.
 - **A chapters JSON `url`** — attacker-chosen bytes at a URL the feed names, rendered as the ↗ control in `<EpisodeContents>`. Its sibling `img` deliberately stays unfiltered: it is only ever an `<img src>`, where no scheme executes, and narrowing it would drop the `data:` covers some feeds legitimately inline.
 - **BoostBox's `url`** — a third-party service response that is also **persisted into `StoredBoost.legs`**, so an unchecked value outlives the request and sits in the user's own boost history until that entry is evicted.
 
@@ -90,6 +90,7 @@ The wildcard had **no consumers**: the app contains exactly one `<Image>`, `src=
 
 **If a remote host ever genuinely needs optimizing, add that one hostname. Never restore the `**` wildcard** — and note the general lesson: when auditing outbound requests, grep the framework config, not just `fetch(`.
 
+**Cross-brand CORS on the two signing routes (`lib/cross-brand-cors.ts`, pinned by `check:brand`).** The Boost Me Bitch site (`https://www.boostmebitch.com` and `https://beta.boostmebitch.com`) posts boost notes for songs from BMB-hosted playlists in Buddy's wording, signed by Buddy's site key, so its browser POSTs to `/api/nostr/site-sign` and `/api/nostr/zap-receipt-sign` on the **Buddy deploy** (`NEXT_PUBLIC_BRAND=buddy`). Those two routes answer `OPTIONS` with 204 and put the CORS headers on **every** answer, errors included, for exactly those two origins (exact string match, never `*`, never a suffix test). The Bitch deploy (`bmb`) opens nothing. This adds no new capability: both routes were already public, unauthenticated, rate-limited and validated, and a non-browser caller never needed CORS. It only lets a page on one of those origins read the reply. `requireJsonBody`, `rateLimit`, every validation and the 503 are unchanged, and the preflight is not rate-limited because it signs nothing.
 
 ### Response headers and CSP (`next.config.mjs`)
 
@@ -196,7 +197,53 @@ Verified by driving a real browser over CDP and recording every request the page
 issued while an `nsec` sat in the box: **zero requests carrying the key, zero
 calls to `/api/search`**, warning shown, suggestion row absent.
 
+**Text that is PUBLISHED is scanned word by word: `textHoldsSecret`** (same
+file). A community playlist's title and description go into a public RSS feed,
+so both write routes refuse a key or an NWC string in them (`{ kind: 'secret',
+field }`, never echoing the text). It runs `looksLikeSecretKey` on every run of
+letters and digits rather than on whitespace-separated tokens, because a bech32
+key is one such run and `key=nsec1…` is one token to a whitespace split.
+`validatePlaylistDraft` takes it as a required parameter, so no caller forgets it.
+
 The general rule, which is in `CLAUDE.md` because it reaches files this doc
 doesn't name: **a parser's `null` is a "no" about parsing, not a decision about
 safety.** Any input accepting a Nostr identifier — npub, nprofile, hex pubkey —
 needs the explicit secret-key refusal before whatever the miss falls through to.
+
+### A private feed address in an OPML file is a credential (`looksPrivate`, `lib/opml.ts`)
+
+An OPML export from the user's current app lists paid and members-only feeds
+beside the public ones, and their **address is the key** — Patreon's `?auth=`,
+Supercast and Supporting Cast in the path. The import looks each address up by
+sending it to our server, which passes it to the read index (which STORES every
+`url:` key in `pi_podcasts`) and to Podcast Index. So `planOpmlImport` keeps a
+private-looking address back **before anything is sent**, and the panel names it
+by its host only — the rest of it is the key, and the screen is no place for it.
+
+Nothing is lost by keeping one back: Podcast Index does not list a private feed,
+and a favorite needs the `podcast:guid` it would have answered with. So the
+heuristic leans towards keeping back — userinfo, a credential-shaped query
+parameter, a known paid-feed host, a `private` path segment — and a public feed
+that trips it is listed as "looks private, not looked up", which search fixes.
+`auth` and `key` match whole names only, because as substrings they catch
+`author` and `monkey`.
+
+Pinned by `check:opml` (`naivePlan()` sends every `xmlUrl` as written) and by
+`e2e:opml`, which records every request the page makes over CDP and finds none
+carrying the fixture's Patreon key. Verified that the e2e FAILS with the filter
+disabled: five assertions go red, the request check among them.
+
+**A pasted OPML link gets the same test, and it is the link itself that is sent.**
+`opmlLinkVerdict` keeps a private-looking link on the device, and refuses anything
+that is not a whole http(s) address, which is where a secret key pasted by mistake
+stops. `/api/opml` asks again for a caller that is not this page. An address with
+its key in the path is not caught, and the heuristic above has the same gap. So
+the route is POST and `no-store`: a query string lands in platform logs and keys a
+shared cache, and a body does neither.
+
+**That route is a fourth read behind `safeFetch`, and the narrowest.** It returns
+only the `xmlUrl` and title of each outline, so a document that is not OPML comes
+back as a 422 with nothing of it. A list that names private feeds passes through
+our server when somebody pastes a link to it, but nothing there stores it, and
+the browser still keeps those feeds back from the lookup. A link's list is at an
+address its owner chose to publish, which a file is not.

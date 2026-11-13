@@ -21,7 +21,7 @@
 // Needs the network (the episode's enclosure and chapters JSON, and Podcast
 // Index through the app's routes). The browser comes from scripts/cdp.mjs:
 // CHROME_PATH, else the usual install paths; muted, on a free debug port.
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { MINI_BAR, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 
@@ -76,7 +76,7 @@ const again = async (scope, f) => {
 const titleOf = (text) => (text && text.includes(' · ') ? text.slice(text.indexOf(' · ') + 3) : null);
 const value = (scope) => js(`Number(document.querySelector(${JSON.stringify(scope)} + ' input[type="range"]').value)`);
 
-const MINI = '[aria-label="Open fullscreen player"]';
+const MINI = MINI_BAR;
 const THUMB = 12;
 
 await send('Page.enable');

@@ -172,10 +172,18 @@ export function NoteEpisodeCard({
         {/* Always both URLs — PI mirrors RSS <image> as `image` and
             <itunes:image> as `artwork` and they routinely disagree. The
             episode's own art wins when it has any, which for a music feed is
-            the track cover rather than the album's. */}
+            the track cover rather than the album's.
+
+            The second rung falls back to the show's `image` because
+            `buildPodcast` (lib/pi.ts) drops `artwork` whenever it equals `image`,
+            which most feeds do. Without it, an episode with art of its own had
+            NO show art behind it: Homegrown Hits 157's `episode-157.gif` 404s
+            on the show's server, and the card drew the initial tile where the
+            show's cover loads fine. With no item art the two rungs are one
+            URL, and `artCandidates` drops the repeat. */}
         <PodcastCover
           image={item?.image || podcast.image}
-          artwork={podcast.artwork}
+          artwork={podcast.artwork || podcast.image}
           title={item?.title ?? podcast.title}
           seed={item?.guid ?? podcast.podcastGuid ?? String(podcast.id)}
           className="w-16 h-16 sm:w-20 sm:h-20 object-cover border border-bone/20 flex-shrink-0"
@@ -291,17 +299,41 @@ export function NoteEpisodeCard({
           stops propagation itself, and it also sits OUTSIDE the tap area above
           rather than relying on that. */}
       {favoritable && item ? (
-        <div className="px-2.5 pb-2.5 flex items-center gap-2 flex-wrap">
-          <FavEpisodeHeart episode={item} podcast={podcast} size="md" />
-          {/* A SIBLING of the heart, on the same `favoritable` gate: both need
-              an item guid, and both are about this episode rather than about
-              the note. The note's own action row further up is social actions
-              gated on `identity` — a listen queue needs no identity, so it
-              would be hidden from exactly the signed-out reader who can use
-              it. */}
-          {onQueue ? <NoteQueueButton episode={item} onQueue={onQueue} /> : null}
-        </div>
+        <NoteEpisodeControls item={item} podcast={podcast} onQueue={onQueue} className="px-2.5 pb-2.5" />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The heart and the queue for the episode a note names.
+ *
+ * Shared by the card above and by a note that names an episode and draws no card
+ * (`<NoteCard>`'s one-line label), so the two offer the same two words at the same
+ * size and a reader does not have to learn which notes have them. The caller gates
+ * on the heart's guard, as the card does with `favoritable`.
+ */
+export function NoteEpisodeControls({
+  item,
+  podcast,
+  onQueue,
+  className,
+}: {
+  item: Episode;
+  podcast: Podcast;
+  onQueue?: () => Promise<boolean>;
+  className: string;
+}) {
+  return (
+    <div className={`flex items-center gap-2 flex-wrap ${className}`}>
+      <FavEpisodeHeart episode={item} podcast={podcast} size="md" />
+      {/* A SIBLING of the heart, on the same `favoritable` gate: both need
+          an item guid, and both are about this episode rather than about
+          the note. The note's own action row further up is social actions
+          gated on `identity` — a listen queue needs no identity, so it
+          would be hidden from exactly the signed-out reader who can use
+          it. */}
+      {onQueue ? <NoteQueueButton episode={item} onQueue={onQueue} /> : null}
     </div>
   );
 }

@@ -10,7 +10,7 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 The `⚡ BOOST` button on the `EpisodeList` header opens this mode (gated on `showHasValue`). The per-episode path in `Player` is unchanged.
 
-**Per-track BOOST on each row.** Every `EpisodeList` row carries a far-right `⚡ BOOST` (`boostTrack` state → `<BoostModal episode={boostTrack}>`) when `hasValueRecipients(e.value)`. `ev.stopPropagation()` keeps it off the row's play/open handler. Not music-only — any feed whose tracks carry a value block gets it.
+**Per-track BOOST on each row.** Every `EpisodeList` row carries a far-right `⚡ BOOST` (`boostTrack` state → `<BoostModal episode={boostTrack}>`) when `hasValueRecipients(e.value)`, or when nothing has read the row's feed yet (`valueNotRead`), and then the press reads it first (`boostRow`). `ev.stopPropagation()` keeps it off the row's play/open handler. Not music-only — any feed whose tracks carry a value block gets it.
 
 
 ## Which value block a boost is paid against (`payableValue`)
@@ -25,7 +25,7 @@ A Podcasting 2.0 PLAYLIST is that case. Its rows are `<podcast:remoteItem>` refe
 
 **Over-refusing costs as much as over-falling-through, so the refusal is narrow in three deliberate places.** A SHOW-level boost (no episode) always pays the feed's own block, playlist or not — the listener chose the container. An episode carrying its own block is returned untouched, which is also what keeps a *hybrid* list feed working: `/api/feed` folds the channel block into `e.value` server-side before this is ever asked. And the guid test needs BOTH guids present, because a feed PI has not indexed carries neither — refusing there would hide BOOST on exactly the independent releases this app exists to pay. A disabled BOOST button reads as a feature that does not exist, not as a bug.
 
-**What arrives as `episode.value` is decided server-side too, and Podcast Index's copy of it can be STALE.** `/api/feed` ships the feed's own block over PI's whenever it read the feed (`feedItemValue`) — see *The feed's value block outranks Podcast Index's copy* in [`feeds.md`](feeds.md) for the measured case and the three branches.
+**What arrives as `episode.value` only ever comes from an RSS document.** Podcast Index's copy is not read at all, and a row with no `value` key has not been asked about yet (`valueNotRead`) — see *Only an RSS document names a payee* in [`feeds.md`](feeds.md) for the measured cases and the branches.
 
 Where a playlist row's real block comes from is the other half, and it is server-side: see *Whose value block pays a playlist row* in [`feeds.md`](feeds.md).
 
@@ -51,7 +51,7 @@ Reported as a bug: a boost modal read `ChadF 44.6%`, `ChadF test node 44.6%`, `b
 
 ## Boost-all tracks (valueTimeSplits)
 
-Music podcasts tag each track in their RSS with a `<podcast:valueTimeSplit>` — a startTime/duration window plus a `<podcast:remoteItem feedGuid itemGuid>` pointing at the track's own album feed. **PI surfaces these as `e.timesplits[]`** — a flat top-level array on the episode, NOT nested under `e.value.valueTimeSplits` despite the field name. Each entry carries `feedGuid`/`itemGuid`/`medium` directly; `parseRawValueTimeSplits` maps that to the consumer-facing nested `ValueTimeSplit.remoteItem`.
+Music podcasts tag each track in their RSS with a `<podcast:valueTimeSplit>` — a startTime/duration window plus either a `<podcast:remoteItem feedGuid itemGuid>` pointing at the track's own album feed, or inline `<podcast:valueRecipient>` entries. **Windows come from the RSS, and an ordinary item keeps only the first kind** (`itemValueTimeSplits`). Podcast Index's flat `e.timesplits[]` is not read.
 
 The `⚡ BOOST N TRACKS` button on each episode row (`components/lists.tsx`) opens `<BoostAllModal>` (`components/boost-all-modal.tsx`). Sequential per-track sends, not parallel.
 
@@ -404,6 +404,19 @@ A boost with failed legs used to leave one way forward: press BOOST again — wh
 - **The retry stops at the first leg whose wallet relay still cannot be reached**, because each leg is its own `sendBoost` and each is a fresh dial against the Cloudflare upgrade limit. A boost with legs left to retry does not auto-close.
 
 Not covered: a host leg whose `sendBoost` THREW (no results to judge), and `<BoostAllModal>`.
+
+### A GIF on a boost (`lib/giphy.ts`, `<GifPicker>`)
+
+Both boost modals carry a **+ GIF** control. A picked GIF becomes **one URL appended to the message** (`withGif`), on its own line after the words — so the same string is the boostagram `message` (TLV `7629169`, and the LNURL comment), the note body, the live chat line and the `StoredBoost`. The note and the boostagram cannot name two different GIFs, because there is only one string. Note readers render a bare `.gif` URL as a picture; what a boostagram reader does with it is the recipient's business — do not write that down here.
+
+Four rules:
+
+- **The URL is BUILT from the GIPHY id, never copied from the API.** GIPHY returns renditions with ~100 characters of `cid`/`rid` tracking parameters; `giphyGifUrl` is ~58 characters, ends in `.gif`, and carries nothing about the session. The id is validated (`isGiphyId`) before it goes into any URL, and `parseGiphyResults` keeps only `id` and `title` — nothing GIPHY sends reaches an `src` as-is. A kind:1 cannot be edited, so the short, permanent form is the one that matters.
+- **The GIF spends the boostagram budget.** `BOOSTAGRAM_MAX` (250, set by the keysend onion — see `message-input.tsx`) covers words AND URL. The modal lowers the box's `maxLength` by `gifCost`; since `maxLength` never trims text already typed, an over-long message is **said on screen and holds the send button** (`msgTooLong`), never truncated silently. It is measured trimmed, as `withGif` sends it, and **only while a GIF is picked**: a mention pick writes `@name ` past `maxLength` through `onChange`, so a gate that also ran without a GIF held GIF-less boosts that went out before the picker existed, and blamed a GIF that was not there.
+- **`buildLnurlComment` never cuts through the URL on the message's last line (`clipProse`).** A tight `commentAllowed` used to slice the appended GIF into `…media.gi`, a dead link that still spent the allowance — the descriptor rule, applied to the message. The URL is dropped whole and the words before it survive; that is why it goes AFTER the words. **Only that shape is protected**: a link typed inside the prose is cut exactly as before, so a boost or a zap with no GIF sends the same comment it did. Widening it to every typed link changed the comment on every LNURL leg and every note zap that carried one. Pinned by `check:lnurl`, with a `naiveSlice` half.
+- **The key stays on the server.** `/api/gifs` proxies search and trending with `GIPHY_API_KEY`, rate-limited and body-capped; no key answers 503 and the picker says so. The rating comes from the brand (`giphyRating`: `g` on buddy). A pasted `nsec` is refused in the picker, rendered, before any fetch, and again in the route. The grid loads ~10 KB stills (`200w_s.gif`), not ~300 KB animations, because the episode may be streaming on the same connection; only the picked GIF animates.
+
+No `imeta` tag is written for the GIF: `/api/nostr/site-sign` allows one `imeta` (`MAX_IMETA_TAGS`), and the banner holds it. The body URL is what renders the picture anyway.
 
 ### Serving our own lightning address
 

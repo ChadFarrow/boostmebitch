@@ -4,10 +4,12 @@ import { cloneElement, useEffect, useId, useState } from 'react';
 import { useAnchoredMenu } from './use-anchored-menu';
 import { createPortal } from 'react-dom';
 import { useApp } from '@/lib/store';
+import { backOr } from '@/lib/view-history';
 import { fmt, fmtDate, fmtDuration } from '@/lib/format';
 import { useSavedPosition } from '@/lib/resume-position';
 import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
+import { useItemValue } from '@/lib/use-item-value';
 import { useChapters } from '@/lib/chapters';
 import { useResolvedSplits } from '@/lib/track-art';
 import { EpisodeContents } from './episode-contents';
@@ -96,8 +98,10 @@ function EpisodeShareButton({ episode, podcast }: { episode: Episode; podcast: N
 type InfoTab = 'notes' | 'contents' | 'transcript' | 'boosts';
 
 export function EpisodeDetailView() {
-  const episode = useApp((s) => s.selectedEpisode);
+  const selected = useApp((s) => s.selectedEpisode);
   const podcast = useApp((s) => s.selectedPodcast);
+  // A row opened from a playlist reaches this page with no payee.
+  const episode = useItemValue(selected, podcast);
   const closeEpisode = useApp((s) => s.closeEpisode);
   const play = useApp((s) => s.play);
   const requestSeek = useApp((s) => s.requestSeek);
@@ -111,6 +115,8 @@ export function EpisodeDetailView() {
     s.current && s.selectedEpisode && s.current.episode.id === s.selectedEpisode.id ? s.positionSec : 0,
   );
   const openDiscussion = useApp((s) => s.openDiscussion);
+  const identity = useApp((s) => s.identity);
+  const setSignInOpen = useApp((s) => s.setSignInOpen);
 
   const [boostFor, setBoostFor] = useState<Episode | null>(null);
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
@@ -131,6 +137,11 @@ export function EpisodeDetailView() {
     hasValueRecipients(payableValue(episode, podcast)),
   );
   const [infoTab, setInfoTab] = useState<InfoTab>('notes');
+  // Set by COMMENT, cleared by the comment box once it has scrolled into view
+  // and taken focus. A flag rather than a counter: the feed mounts only while
+  // its tab is open, so a counter still set from last time would re-focus the
+  // box on every later visit to the tab.
+  const [commentFocus, setCommentFocus] = useState(false);
   // `useId()`: this view and `<FullscreenPlayer>` can be mounted at the same
   // time, and both strips would otherwise emit the same tab ids.
   const infoTabsId = useId();
@@ -220,8 +231,25 @@ export function EpisodeDetailView() {
   const infoLabel = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
-    : t === 'boosts' ? 'Boosts'
+    // One word, not "Boosts & comments": that label is 171px of a 324px strip
+    // at 390px and cut the tab off on a three-tab episode. A show with no
+    // value block takes no boosts, so its notes are comments; the panel's
+    // own heading names both.
+    : t === 'boosts' ? (hasValue ? 'Boosts' : 'Comments')
     : 'Show notes';
+
+  // COMMENT: the Comments tab, scrolled to its box with the cursor in it. The
+  // box needs the episode guid to tag, which is also what gates the tab.
+  // Signed out there is nothing to type into, so it asks for the sign-in.
+  const canComment = !!episode.guid;
+  const openComment = () => {
+    setInfoTab('boosts');
+    if (!identity) {
+      setSignInOpen(true);
+      return;
+    }
+    setCommentFocus(true);
+  };
 
   const transcriptActiveIdx = isThisPlaying ? transcriptIndexAt(transcriptCues, positionSec) : -1;
 
@@ -243,7 +271,9 @@ export function EpisodeDetailView() {
 
   return (
     <div>
-      <button onClick={closeEpisode} className="btn-ghost text-xs mb-3">
+      {/* `backOr`: a step back through the browser history when the entry
+          behind is this show — see lib/view-history.ts. */}
+      <button onClick={() => backOr({ selectedEpisode: null }, closeEpisode)} className="btn-ghost text-xs mb-3">
         ← back to episodes
       </button>
 
@@ -298,7 +328,7 @@ export function EpisodeDetailView() {
           <button
             type="button"
             onClick={handlePlay}
-            className={`h-11 w-full ${isThisPlaying ? 'btn-bolt-soft' : 'btn'} ${hasValue ? '' : 'col-span-2'}`}
+            className={`h-11 w-full ${isThisPlaying ? 'btn-bolt-soft' : 'btn'} ${hasValue || canComment ? '' : 'col-span-2'}`}
             aria-label={isThisPlaying && isPlaying ? 'Pause' : isThisPlaying ? 'Resume' : saved ? `Resume at ${fmt(saved.t)}` : 'Play'}
           >
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : saved ? `▶ RESUME ${fmt(saved.t)}` : '▶ PLAY'}
@@ -311,6 +341,23 @@ export function EpisodeDetailView() {
               aria-label="Boost this episode"
             >
               <BoltIcon /> BOOST
+            </button>
+          )}
+          {/* A show with no value block takes no boosts, so COMMENT is the
+              second primary — the column BOOST holds on a value show, which
+              PLAY otherwise spanned. On a value show there is NO comment
+              control up here at all: BOOST is the response that show asks
+              for, and a free COMMENT beside it competes with the payment. The
+              Boosts tab drops its comment box on a value show for the same
+              reason (`commentable`). */}
+          {!hasValue && canComment && (
+            <button
+              type="button"
+              onClick={openComment}
+              className="btn-nostr h-11 w-full"
+              aria-label="Comment on this episode"
+            >
+              <span aria-hidden>💬</span> COMMENT
             </button>
           )}
         </div>
@@ -347,17 +394,24 @@ export function EpisodeDetailView() {
             <span aria-hidden className="text-lg leading-none">≋</span>,
             'STREAM',
           )}
-          {podcast.funding?.[0]?.url ? (
-            <a
-              href={podcast.funding[0].url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="tile"
-              title={podcast.funding[0].message || 'Support this show'}
-            >
-              <CoinIcon /> SUPPORT
-            </a>
-          ) : null}
+          {/* <podcast:funding>: this episode's own link when its <item> names
+              one, else the show's. Both were checked by `httpUrl` at parse. */}
+          {(() => {
+            const link = episode.funding?.[0]?.url ? episode.funding[0] : podcast.funding?.[0];
+            // Again here: a history or queue episode comes back from disk.
+            const url = httpUrl(link?.url);
+            return link && url ? (
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="tile"
+                title={link.message || 'Support this show'}
+              >
+                <CoinIcon /> SUPPORT
+              </a>
+            ) : null;
+          })()}
           {episode.socialInteract?.length ? (
             <button
               type="button"
@@ -559,7 +613,14 @@ export function EpisodeDetailView() {
                 height and yank the scroll position up when you open this tab. */}
             {activeInfo === 'boosts' && episode.guid && (
               <div className="min-h-[70vh]">
-                <EpisodeNostrFeed episodeGuid={episode.guid} episodeTitle={episode.title} />
+                <EpisodeNostrFeed
+                  episode={episode}
+                  episodeGuid={episode.guid}
+                  podcast={podcast}
+                  commentable={!hasValue}
+                  focusComment={commentFocus}
+                  onCommentFocused={() => setCommentFocus(false)}
+                />
               </div>
             )}
             </div>

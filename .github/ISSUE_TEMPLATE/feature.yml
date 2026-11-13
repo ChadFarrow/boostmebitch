@@ -1,0 +1,50 @@
+name: Feature request
+description: A new feature, or a change to how something works.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write the request first, in the words of the person who asked. Settle the open questions before any code.
+  - type: textarea
+    id: request
+    attributes:
+      label: The request
+      description: What is wanted and who asked for it. Quote the request when you have it.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What exists today
+      description: What the app does now. Name the files.
+    validations:
+      required: false
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The ways to do it, and the one you recommend.
+    validations:
+      required: false
+  - type: textarea
+    id: questions
+    attributes:
+      label: Open questions
+      description: What must be decided before the work starts.
+    validations:
+      required: false
+  - type: textarea
+    id: next-steps
+    attributes:
+      label: Next steps
+      description: The order of the work, and who does each step.
+    validations:
+      required: false
+  - type: textarea
+    id: related
+    attributes:
+      label: Related
+      description: "Issues, PRs and other repos, for example #471 or ChadFarrow/PC20-Nostr#37."
+    validations:
+      required: false

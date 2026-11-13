@@ -9,7 +9,7 @@ import {
   subscribeStreaming,
   type StreamingStatus,
 } from '@/lib/v4v/streaming';
-import { STREAM_AMOUNT_MAX_SATS, STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
+import { STREAM_AMOUNT_MAX_SATS, STREAM_AMOUNT_MIN_SATS, STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
 import { canSignUnattended } from '@/lib/nostr/signer';
 import { useApp } from '@/lib/store';
 import { ModalShell } from './modal-shell';
@@ -115,6 +115,7 @@ function RateField({
 }) {
   const [draft, setDraft] = useState(String(value));
   const max = mode === 'track' ? STREAM_AMOUNT_MAX_SATS : STREAM_RATE_MAX_PER_MIN;
+  const min = mode === 'track' ? STREAM_AMOUNT_MIN_SATS : 1;
 
   // Another surface (the other scope's control, a second wallet-modal open) can
   // change this underneath us; re-sync when it does. `mode` is a dep because
@@ -129,7 +130,7 @@ function RateField({
       setDraft(String(value));
       return;
     }
-    const clamped = Math.min(max, Math.floor(n));
+    const clamped = Math.min(max, Math.max(min, Math.floor(n)));
     setDraft(String(clamped));
     onCommit(clamped);
   }

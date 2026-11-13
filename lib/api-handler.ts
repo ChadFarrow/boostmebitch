@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { getErrorMessage } from './util';
 import { piCouldNotAskStatus } from './pi-error';
 import { readCappedText } from './capped-body';
+import { corsHeaders } from './cross-brand-cors';
+import { BRAND } from './brand';
 
 /**
  * Read a request body as text, or `null` when it is larger than `maxBytes`.
@@ -140,3 +142,20 @@ export async function withErrorHandling(
  * today are not one thing.
  */
 export const NO_STORE = { 'Cache-Control': 'no-store' } as const;
+
+/**
+ * Stamp the cross-brand CORS headers (`lib/cross-brand-cors.ts`) on ANY answer
+ * of a route, success or error, so a browser on an allowed origin can read a
+ * 400 or a 503 too. Only the Buddy deploy ever adds an allow-origin header.
+ */
+export function withCors<T extends Response>(req: Request, res: T): T {
+  for (const [k, v] of Object.entries(corsHeaders(req.headers.get('origin'), BRAND.id))) {
+    res.headers.set(k, v);
+  }
+  return res;
+}
+
+/** The answer to a CORS preflight for a route that takes POST. */
+export function corsPreflight(req: Request): NextResponse {
+  return withCors(req, new NextResponse(null, { status: 204 }));
+}

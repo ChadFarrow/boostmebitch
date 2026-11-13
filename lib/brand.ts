@@ -100,6 +100,22 @@ export interface Brand {
   boostSound: string;
   /** Which static web manifest `metadata.manifest` points at. */
   manifest: string;
+  /**
+   * The folder under `public/` holding this brand's icon set: `icon.svg` (the
+   * face bolt alone, the installed-app icon), `favicon.svg` and
+   * `favicon-32.png` (the text-free mark, for tab-sized renders where the
+   * stamp's lettering is noise), `icon-192.png`, `icon-512.png`, the two
+   * `*-maskable.png`, `apple-touch-icon.png`, and `header-mark.svg` (the
+   * desktop header's logo, `<AppHeader>`).
+   *
+   * PER BRAND, NOT SHARED. Both deploys build from this one repo, so `public/`
+   * holds both sets and this field chooses — the same shape as `boostSound` and
+   * `manifest`. The old brand-neutral files at `public/icons/*.png` and
+   * `public/icon.svg` are left in place because URLs outside this repo already
+   * point at them (a published kind:0 `picture`, the Google OAuth consent
+   * screen, a store listing); nothing in the app should name them any more.
+   */
+  iconDir: string;
   /** `User-Agent` fallback for the server-side Podcast Index calls. */
   userAgent: string;
   /** `<meta name="description">`, the OG description, and the manifest's. */
@@ -126,6 +142,7 @@ const BMB: Brand = {
   senderName: 'boostmebitch.com user',
   boostSound: '/boost.mp3',
   manifest: '/manifest.json',
+  iconDir: '/icons/bmb',
   userAgent: 'boostmebitch/0.1',
   description:
     'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
@@ -151,6 +168,7 @@ const BUDDY: Brand = {
   // was quiet under confetti, with no error anywhere.
   boostSound: '/boost-buddy.mp3',
   manifest: '/manifest-buddy.json',
+  iconDir: '/icons/buddy',
   userAgent: 'boostmebuddy/0.1',
   description:
     'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',

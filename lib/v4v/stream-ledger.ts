@@ -199,6 +199,17 @@ export const DEFAULT_STREAM_AMOUNT_PER_TRACK = 100;
 export const STREAM_AMOUNT_MAX_SATS = 100_000;
 
 /**
+ * Lower bound on a per-track amount, in sats — a PRODUCT limit, unlike the
+ * ceiling above. A per-track credit is split across the block's recipients and
+ * each leg pays a routing fee, so a few sats per track mostly funds the network
+ * rather than the artist. 100 matches the default, so nobody lands under it
+ * without typing a smaller number first. A stored amount below it (written
+ * before this floor existed) is raised to it, never dropped: dropping would
+ * fall through to the GLOBAL amount, a number the user never set for that show.
+ */
+export const STREAM_AMOUNT_MIN_SATS = 100;
+
+/**
  * How long a target must be the current one before it earns a per-track credit.
  *
  * A live show's payment target changes for things that are not songs — the host

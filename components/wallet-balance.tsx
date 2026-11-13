@@ -96,9 +96,9 @@ export function useWalletBalance(
   const [balance, setBalance] = useState<number | null>(null);
   const [budget, setBudget] = useState<NwcBudget | null>(null);
   const [unreachable, setUnreachable] = useState<string | null>(null);
-  // Bumped by `recheck`. It re-runs the whole effect, notification lease
-  // included, because a relay that failed to connect leaves the subscription
-  // holding a discarded client; a fresh one is what can recover.
+  // Bumped by `recheck`. It re-runs the whole effect, so the read asks the shared
+  // client again. A failed dial is recovered inside that read (`withNwcClient`,
+  // lib/v4v/nwc.ts), which also moves every notification lease to the new client.
   const [checkTick, setCheckTick] = useState(0);
   const recheck = useCallback(() => setCheckTick((t) => t + 1), []);
 

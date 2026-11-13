@@ -48,6 +48,13 @@ import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04 } f
 
 const APP = 'http://localhost:3000';
 const KEEP = process.argv.includes('--keep');
+// NIP46_ERROR_GRACE_MS in lib/nostr/nip46-errors.ts: an ERROR answer waits this
+// long for a result on the same id before the caller hears it, because a second
+// signer app holding the same key may be the one that answered (see
+// scripts/e2e-two-signers.mjs). Every timing below that follows a denial carries
+// it. A plain .mjs cannot import the .ts constant, so `check:nip46error` asserts
+// the value instead — change both together.
+const GRACE_MS = 5000;
 
 await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
 (and \`rm -rf .next\` first if you have just run a production build)`);
@@ -668,9 +675,11 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   check('a refusal reaches the caller', String(refused).startsWith('rejected:'), true);
   check('...carrying the signer\'s own words', /user rejected the request/.test(String(refused)), true);
   check('...after exactly one request', seen.filter((m) => m === 'sign_event').length, 1);
-  // Under the FIRST gap (2.5 s), not merely under the old 8 s one: the point is
-  // that a terminal refusal never entered the loop at all.
-  check('...and without waiting out the approval interval', refusedMs < 2000, true);
+  // The refusal waits out the error grace window — a result from another signer
+  // app could still beat it — and nothing more. Under window + 2 s rather than
+  // window + the first 2.5 s gap: the point is that a terminal refusal never
+  // entered the loop at all, and "exactly one request" above is the proof.
+  check('...and without waiting out the approval interval', refusedMs < GRACE_MS + 2000, true);
 
   console.log('\n  5g. the wait ends when the tab comes BACK, not when the timer says so');
   // THE iOS HALF OF THE RE-ISSUE, and the only place it can be exercised
@@ -696,9 +705,10 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   const wokeRaw = await js(`(async () => {
     const started = Date.now();
     const p = window.nostr.signEvent({ kind: 1, created_at: 1700000002, tags: [], content: 'clave wake probe' });
-    // Lands inside the sleep: the denial is a local relay round trip, so the
-    // wait is running long before this fires.
-    setTimeout(() => document.dispatchEvent(new Event('visibilitychange')), 400);
+    // Lands inside the sleep. The denial is a local relay round trip, but it is
+    // HELD for the error grace window before withApprovalWait sees it, so the
+    // sleep starts at about GRACE_MS — fire 400 ms into it, not 400 ms in.
+    setTimeout(() => document.dispatchEvent(new Event('visibilitychange')), ${GRACE_MS} + 400);
     try { const ev = await p; return JSON.stringify({ ok: true, ms: Date.now() - started, created_at: ev.created_at }); }
     catch (e) { return JSON.stringify({ ok: false, err: String(e) }); }
   })()`);
@@ -709,8 +719,9 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
     seen.filter((m) => m === 'sign_event').length, 2);
   const wokeIds = seenIds.filter((_, i) => seen[i] === 'sign_event');
   check('...on two DIFFERENT request ids', wokeIds[0] !== wokeIds[1], true);
-  // The whole assertion: the first gap is 2.5 s and the return beat it.
-  check('...woken by the return rather than the 2.5 s gap', woke.ms < 2000, true);
+  // The whole assertion: the first gap is 2.5 s and the return beat it. The
+  // timer arm would answer at GRACE_MS + 2.5 s.
+  check('...woken by the return rather than the 2.5 s gap', woke.ms < GRACE_MS + 2000, true);
 
   console.log('\n  5h. STOP WAITING clears the notice, and it STAYS clear');
   // THE REGRESSION TEST FOR A NOTICE THAT STUCK. Reported as: press Stop
@@ -736,13 +747,19 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
     window.__bmbStuck.catch(() => {});
     return true;
   })()`);
-  await wait(900);
+  // The first denial reaches withApprovalWait only after the error grace window.
+  await wait(GRACE_MS + 900);
   // The account menu is where <BunkerApprovalNotice> renders outside the boost
   // modal, and every read below is scoped to that menu — see accountMenuText.
   const noticeShowing = async () =>
     /waiting for you to approve/i.test(await accountMenuText() ?? '');
   check('the account menu opened', await openAccountMenu(), true);
   check('the waiting notice reaches it', await noticeShowing(), true);
+  // It names WHICH request, carrying the event kind from the adapter's label.
+  // Without it a user whose signer is set to approve everything cannot tell
+  // what is being refused, and neither can their bug report.
+  check('...and names the request it is waiting on',
+    /request: signing a note \(kind 1\)/i.test(await accountMenuText() ?? ''), true);
   // Stall the NEXT answer so the press below lands while it is on the wire.
   // Set now, before the 2.5 s gap elapses and the second ask goes out.
   replyDelayMs = 1500;
@@ -757,9 +774,10 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   check('Stop waiting was pressed while the request was unanswered', stopped, true);
   await wait(300);
   check('the notice goes at once', await noticeShowing(), false);
-  // The held denial lands inside this window. Before the fix it re-armed the
+  // The held denial lands inside this window — 1.5 s on the wire, then the
+  // error grace window before the loop sees it. Before the fix it re-armed the
   // notice here and nothing ever took it down again.
-  await wait(4000);
+  await wait(GRACE_MS + 4000);
   check('...and is STILL gone once the held answer arrives', await noticeShowing(), false);
   // The signer answered, so the transport is demonstrably alive — cancelling a
   // wait must not be dressed up as a disconnect. Readable here because the menu
@@ -779,14 +797,16 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   console.log('\n  5f. a PAIRING denied once still signs in — the handshake retries too');
   // THE SECOND HALF OF 5d, AND IT SHIPPED MISSING. withApprovalWait was applied
   // to the adapter's methods only, on the reasoning that the connect paths own
-  // their own timeouts and a retry underneath one would stall sign-in. A field
-  // report disproved it: Clave answers the handshake's `get_public_key` the same
-  // way it answers a signature, so a paired signer showed "no permission" on
-  // screen while its own Recent Activity listed that call succeeding.
+  // their own timeouts and a retry underneath one would stall sign-in. The
+  // handshake's `get_public_key` takes the same answers a signature does, so it
+  // needs the same retry.
   //
-  // `no permission` is the exact string the phone produced, and none of the five
-  // phrasings copied from clave-casa matched it — so this vector is doing two
-  // jobs: the handshake retries at all, and it retries on THAT word.
+  // `no permission` is the exact string a phone produced — and the field report
+  // that supplied it blamed Clave for it, wrongly. Clave's source has never sent
+  // it; it was Amber, holding the same key on another device, answering a
+  // client it was never paired with (scripts/e2e-two-signers.mjs). The pattern
+  // stays: with only such a signer answering, the call must still reach the
+  // approval loop rather than fail outright, and that is what this pins.
   seen.length = 0;
   seenIds.length = 0;
   denyFirst = { method: 'get_public_key', left: 1, error: 'no permission' };

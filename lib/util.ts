@@ -3,6 +3,7 @@ import type {
   BoostResult, StoredBoostLeg, ChapterEntry, ValueTimeSplit, LiveShow,
   QueueItem, HistoryItem, StoredBoost,
 } from './types';
+import type { CommunityPlaylistSummary } from './community/rules';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
 // Case-insensitive — PI doesn't normalize the tag. Drives album-specific UI
@@ -774,14 +775,13 @@ export function nextPlayableIndexBy<T>(
  *
  * **The second obvious test — "is a `<podcast:valueTimeSplit>` window open?" —
  * is worse, because it looks right.** A window means somebody other than the
- * show is paid; it does not mean a song. Bowl After Bowl's RSS holds 186
- * windows, but 129 carry inline `<podcast:valueRecipient>` entries and no
- * remote item, and `parseRawValueTimeSplits` (lib/pi.ts) filters on `feedGuid`
- * — so the app never sees the ones that really are songs. Of the windows it
- * DOES see, two declare `medium="podcast"`: a 7220-second cross-promotion to
- * the Podcasting 2.0 show at 33%. Treating an open window as a song therefore
- * labels a talk-show co-promo as music while the actual music stays invisible,
- * which is exactly backwards.
+ * show is paid; it does not mean a song. Bowl After Bowl's RSS holds 191
+ * windows, and 134 carry inline `<podcast:valueRecipient>` entries and no remote
+ * item, and `itemValueTimeSplits` (lib/pi.ts) filters on `feedGuid` — so the app
+ * never sees the ones that really are songs. Of the 57 it DOES see, two declare
+ * `medium="podcast"`: a 7220-second cross-promotion to the Podcasting 2.0 show at
+ * 33%. Treating an open window as a song therefore labels a talk-show co-promo as
+ * music while the actual music stays invisible, which is exactly backwards.
  *
  * **So the signal for a live show is Split Kit, which stamps every block it
  * pushes.** `'music'` for a song, `'chapter'` for a host segment (a promo, a
@@ -949,6 +949,29 @@ export function mergeLiveOverPi(
 }
 
 /**
+ * The live items one show page lists (`/api/feed`): the publisher's RSS when it
+ * was read, Podcast Index's rows only when it was not.
+ *
+ * **Never a union in which PI wins a guid.** That is what `/api/feed` did, and
+ * it was harmless only because the roster was always empty (`piLiveStatus`).
+ * A PI row is the plain episode shape: no `liveValue`, no `value`, no
+ * `liveEndTime`. Winning the guid would have stripped the Split Kit socket and
+ * the payee off a show page that connects today, and a PI row the RSS no
+ * longer lists is a broadcast that ended — PI lags in both directions.
+ *
+ * The same asymmetry as {@link mergeLiveOverPi}, without its id swap: a live
+ * item's id stays the RSS parser's `-fnvHash(guid)`, the same id
+ * `liveShowToEpisode` gives it, so the show page and `/live` hand the player
+ * one episode, not two.
+ */
+export function feedLiveItems(
+  piRows: Episode[],
+  rssRead: { ok: boolean; items: Episode[] },
+): Episode[] {
+  return rssRead.ok ? rssRead.items : piRows;
+}
+
+/**
  * A {@link LiveShow} as the `Episode` the player stores.
  *
  * The same bridge `streamToEpisode` builds for a Nostr broadcast, and for the
@@ -977,6 +1000,8 @@ export function liveShowToEpisode(s: LiveShow): Episode {
     liveStartTime: s.liveStartTime,
     datePublished: s.liveStartTime,
     value: s.value ?? null,
+    // The watcher opens the Split Kit socket from this field alone.
+    liveValue: s.liveValue,
   };
 }
 
@@ -1069,6 +1094,31 @@ export const MAX_UNBOUNDED_LIVE_SECS = 24 * 60 * 60;
 export const LIVE_OVERRUN_GRACE_SECS = 6 * 60 * 60;
 
 /**
+ * The status of one Podcast Index `/episodes/live` row, or `null` to drop it.
+ *
+ * **AN ABSENT STATUS IS `'live'`, because the row is on that endpoint.** Measured
+ * 2026-11-13: PI sent 40 rows and NOT ONE carried `status`, `startTime` or
+ * `endTime` — the payload is the ordinary episode shape (`id`, `title`, `guid`,
+ * `datePublished`, `enclosureUrl`, `feedId`, …) and nothing else. The filter
+ * this replaced kept a row only when `status` was `'live'` or `'pending'`, so it
+ * dropped all 40 (`rosterRows: 40, rosterStatus: 0`), the roster named no feed,
+ * and `/live` listed only the visitor's own favorites and podping's few — while
+ * Homegrown Hits, Bowl After Bowl and thirty-odd others were on air.
+ *
+ * Reading absent as live is safe for the reason the roster is only a roster:
+ * every feed it names is re-read, and `mergeLiveOverPi` lets the publisher's
+ * own RSS decide what is on air whenever that read succeeds.
+ *
+ * A status PI DOES send is still obeyed, so an `'ended'` row stays off the page
+ * if the field ever comes back. Case is folded; whitespace is not a status.
+ */
+export function piLiveStatus(raw: unknown): 'live' | 'pending' | null {
+  if (typeof raw !== 'string' || !raw.trim()) return 'live';
+  const s = raw.trim().toLowerCase();
+  return s === 'live' || s === 'pending' ? s : null;
+}
+
+/**
  * A `<podcast:liveItem>` timestamp in unix seconds, or `undefined` when the
  * source did not supply one.
  *
@@ -1156,6 +1206,19 @@ export function liveBroadcastIsOver(
  * rather than first — absent is not "starting at the epoch", and reading
  * `?? 0` as a time is how an unstamped row would win every live tie.
  *
+ * **Undated rows are ordered by `datePublished`, newest first — and in practice
+ * that is EVERY row.** Measured 2026-11-13: Podcast Index sends no `startTime`
+ * on `/episodes/live` (see `piLiveStatus`), so the whole roster is undated and
+ * the start-time ordering above never runs. The tie-break then ranked 39 feeds
+ * by `feedId`, and the 15 NEWEST feed ids went unread — whatever they were
+ * broadcasting — while broadcasts PI last touched days earlier, and which the
+ * publisher's RSS said were only `pending`, spent the budget. `datePublished`
+ * is the newest time PI recorded for the live item — on that roster every
+ * stale schedule sat at the bottom and the shows on air at the top. It is a
+ * RANK only, never a start: it does not lift an undated row above a dated one,
+ * it is never written to `liveStartTime`, and the card's "started" line does
+ * not read it. A non-positive stamp is absent (PI's `0`).
+ *
  * Ties break on `feedId` so the slice is DETERMINISTIC. Two requests a second
  * apart must not verify different halves of the same roster: `Array.prototype
  * .sort` is stable, but the input order it would be stable about is PI's, which
@@ -1168,10 +1231,11 @@ export function liveBroadcastIsOver(
  * decides what a feed id is.
  */
 export function liveRosterFeedOrder(
-  roster: readonly { feedId?: unknown; liveStatus?: string; liveStartTime?: number }[],
+  roster: readonly { feedId?: unknown; liveStatus?: string; liveStartTime?: number; datePublished?: number }[],
 ): number[] {
-  /** Per feed: 0 if any row is live, and the best start time in that band. */
-  const best = new Map<number, { band: number; start: number | undefined }>();
+  /** Per feed: 0 if any row is live, the best start time in that band, and the
+   *  newest `datePublished` among that band's rows (the undated rank). */
+  const best = new Map<number, { band: number; start: number | undefined; seen: number | undefined }>();
   for (const e of roster) {
     const id = Number(e.feedId);
     if (!Number.isInteger(id) || id <= 0) continue;
@@ -1180,14 +1244,19 @@ export function liveRosterFeedOrder(
       typeof e.liveStartTime === 'number' && Number.isFinite(e.liveStartTime)
         ? e.liveStartTime
         : undefined;
+    const seen = liveStampSecs(e.datePublished);
     const held = best.get(id);
     if (!held || band < held.band) {
-      best.set(id, { band, start });
+      best.set(id, { band, start, seen });
       continue;
     }
-    if (band > held.band || start === undefined) continue;
-    // Same band: keep the row this band sorts FIRST by, so a feed carrying both
-    // a just-started broadcast and an older one is ranked by the newer.
+    if (band > held.band) continue;
+    // Same band. The newest record time stands for the feed, as the newest
+    // start does, so a feed is not ranked by an older row PI also still holds.
+    if (seen !== undefined && (held.seen === undefined || seen > held.seen)) held.seen = seen;
+    if (start === undefined) continue;
+    // Keep the row this band sorts FIRST by, so a feed carrying both a
+    // just-started broadcast and an older one is ranked by the newer.
     if (held.start === undefined) held.start = start;
     else held.start = band === 0 ? Math.max(held.start, start) : Math.min(held.start, start);
   }
@@ -1197,8 +1266,16 @@ export function liveRosterFeedOrder(
       if (a.band !== b.band) return a.band - b.band;
       // Undated sorts last within its band, both bands.
       if (a.start === undefined || b.start === undefined) {
-        if (a.start === b.start) return aId - bId;
-        return a.start === undefined ? 1 : -1;
+        if (a.start !== b.start) return a.start === undefined ? 1 : -1;
+        // Both undated — on Podcast Index's roster, every row. The record PI
+        // touched most recently first; a row with no record time after one
+        // that has it, for the same reason an undated row follows a dated one.
+        if (a.seen !== b.seen) {
+          if (a.seen === undefined) return 1;
+          if (b.seen === undefined) return -1;
+          return b.seen - a.seen;
+        }
+        return aId - bId;
       }
       if (a.start !== b.start) return a.band === 0 ? b.start - a.start : a.start - b.start;
       return aId - bId;
@@ -1422,6 +1499,72 @@ export function mergeSearchLanes<T extends Pick<Podcast, 'id' | 'medium'>>(
   return out;
 }
 
+/**
+ * One feed URL, spelled so two spellings of the same feed compare equal.
+ *
+ * The scheme and a trailing slash are dropped — Podcast Index stores whatever
+ * the publisher submitted, so `http://` against `https://` is one feed — and
+ * the host is lower-cased by the URL parser. The path and query are KEPT as
+ * written: they are case-sensitive on a real server, and folding them would
+ * make two different feeds one. An unparseable or non-http(s) value is returned
+ * trimmed, so it can only ever equal itself; a blank one is `''`, which the
+ * caller must treat as "no URL", never as a key.
+ */
+export function feedUrlKey(url: string | undefined): string {
+  const raw = url?.trim() ?? '';
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return raw;
+    return `${u.host}${u.pathname.replace(/\/+$/, '')}${u.search}`;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * The curated-collection playlists a search may add: the ones no Podcast Index
+ * lane already returned.
+ *
+ * `lib/curated-roster.ts` holds the playlists the app's own collections list on
+ * `/playlists`, resolved PI-first and from RSS where PI holds nothing — so a
+ * playlist still being built out, which PI has not indexed, can be found by
+ * name (reported as #529). Its rows join a search AFTER both PI lanes, and two
+ * copies of one playlist are two rows for one feed.
+ *
+ * **Deduped by feed URL as well as by id, and the id alone is the trap.** A
+ * record built from RSS carries a NEGATIVE id (`-fnvHash(url)`), so it never
+ * equals the PI id of the same feed. That is every row of a roster resolved
+ * while PI was rate limiting (`couldNotAskPi`), and an id-only dedupe then
+ * lists It's A Mood twice: once from PI, once stamped NOT IN PI. The URL is the
+ * one identity both records agree on (`feedUrlKey`).
+ *
+ * Duplicates WITHIN `curated` are dropped too, first one kept, because
+ * `<PodcastResults>` keys rows by id. Order is preserved: this filters, it
+ * does not rank.
+ */
+export function curatedNotListed<T extends Pick<Podcast, 'id' | 'url'>>(
+  curated: readonly T[],
+  listed: readonly T[],
+): T[] {
+  const ids = new Set<number>();
+  const urls = new Set<string>();
+  const note = (f: T) => {
+    ids.add(f.id);
+    const k = feedUrlKey(f.url);
+    if (k) urls.add(k);
+  };
+  listed.forEach(note);
+  const out: T[] = [];
+  for (const f of curated) {
+    const k = feedUrlKey(f.url);
+    if (ids.has(f.id) || (k && urls.has(k))) continue;
+    note(f);
+    out.push(f);
+  }
+  return out;
+}
+
 // True when a value block actually has payees — the gate for showing BOOST.
 export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;
@@ -1476,45 +1619,83 @@ export function payableValue(
 }
 
 /**
- * Which value block `/api/feed` ships on an episode row: the feed's own
- * declaration, when the feed was read and lists the item, over Podcast
- * Index's copy.
+ * Whether a show gets the ⚡ V4V stamp: its feed's own block, or Podcast Index's
+ * hint. A LABEL, and it can be wrong: a show PI lists can have no BOOST, because
+ * only its feed names a payee. Nothing that pays reads this.
+ */
+export function carriesV4V(podcast: Pick<Podcast, 'value' | 'v4vHint'>): boolean {
+  return !!podcast.v4vHint || hasValueRecipients(podcast.value);
+}
+
+/**
+ * Which value block `/api/feed` ships on an episode row. Only an RSS document
+ * names a payee: Podcast Index's copy is not read at all (`buildPodcast`,
+ * `buildEpisode`), because it can be stale. Measured 2026-09-23 on Jimmy V –
+ * Jimmy V Collection (PI feed 6734639): the RSS carries one channel block and no
+ * item blocks, while PI held item blocks on 11 of 13 tracks from a 2025-10-09
+ * crawl, paying 5% to a node the feed no longer names.
  *
- * PI's copy of an ITEM block can be stale while its channel block is current.
- * Measured 2026-09-23 on Jimmy V – Jimmy V Collection (PI feed 6734639): the
- * RSS carries one channel block and no item blocks, while PI held item blocks
- * on 11 of 13 tracks from a 2025-10-09 crawl — paying 5% to a node the feed
- * no longer names and 1% to a leg it dropped. `e.value ?? podcast.value` let
- * that stale block win on every track BOOST.
+ * `rowValue` is therefore only ever a block an RSS read already put on the row:
+ * a live item, or an item PI has not crawled.
  *
- * Three cases, and the middle one is why `rssItem` is separate from `rssRead`:
- * - the feed was read AND lists the item: the feed is the authority, including
- *   ABSENCE — its item block, else its channel block, else none. PI's item
- *   block is ignored even when the feed gives none.
- * - the feed was read but the scan did not reach the item (past the item cap,
- *   or a guid PI normalized differently): nothing says PI's item block is
- *   wrong, so it keeps it; the channel fallback is the feed's, which the
- *   route also ships as `podcast.value`.
- * - the feed was not read: PI's answer, exactly as before.
+ * Three cases:
+ * - the feed was read AND lists the item: its item block, else its channel
+ *   block, else `null`, which means the feed names nobody.
+ * - the feed was read but the scan did not reach the item (past the item cap, or
+ *   a guid PI normalized differently): the row's block, else the channel's.
+ * - the feed was not read: the row's block, which is usually `undefined`. That
+ *   means NOT READ, never "none" (`valueNotRead`), so BOOST asks again when it
+ *   is pressed.
  */
 export function feedItemValue(
   rssRead: boolean,
-  rssItem: { value: ValueBlock | null | undefined } | undefined,
+  rssItem: { value: ValueBlock | null } | undefined,
   rssChannel: ValueBlock | null | undefined,
-  piItem: ValueBlock | null | undefined,
-  piChannel: ValueBlock | null | undefined,
+  rowValue: ValueBlock | null | undefined,
 ): ValueBlock | null | undefined {
-  if (!rssRead) return piItem ?? piChannel;
-  // rssChannel undefined → the host does not emit <podcast:value> at all
-  // (Anchor, Spotify, etc.). The RSS has nothing to say about value, so
-  // fall through to PI entirely — same as the !rssRead path.
-  if (rssChannel === undefined && (!rssItem || rssItem.value === undefined)) {
-    return piItem ?? piChannel;
-  }
-  // rssChannel null → the tag was present and empty — the publisher took
-  // V4V down, so PI's leftover copy must not pay.
+  if (!rssRead) return rowValue;
   if (rssItem) return rssItem.value ?? rssChannel ?? null;
-  return piItem ?? rssChannel ?? null;
+  return rowValue ?? rssChannel ?? null;
+}
+
+/**
+ * True when no RSS read has answered for this item yet, so its missing `value`
+ * says nothing about the payee. `value` has three states, and JSON keeps them
+ * apart because it drops `undefined`:
+ *
+ * - no `value`: not read. A playlist row, a stored copy, anything Podcast Index
+ *   built. `<Player>` asks the feed on play, and a row asks on the BOOST press.
+ * - `null`: the feed was read and names nobody.
+ * - a block: the feed's own.
+ *
+ * A live item is the watcher's to answer (`liveValueState`), an unresolved
+ * playlist row has nothing to boost, and an item with no guid cannot be looked up.
+ */
+export function valueNotRead(
+  episode: Pick<Episode, 'value' | 'guid' | 'liveStatus' | 'unresolved'>,
+): boolean {
+  return episode.value === undefined && !!episode.guid && !episode.liveStatus && !episode.unresolved;
+}
+
+/**
+ * A copy read back from disk (the listen queue, the play history, the new-episode
+ * rows) with its payee removed. The block on disk is as old as the enqueue, and
+ * `payableValue` reads `episode.value` first, so it would outrank the feed. The
+ * copy reads as not read, and play and BOOST ask the feed.
+ */
+export function withoutStoredValue<T extends { episode: Episode; podcast: Podcast }>(item: T): T {
+  const podcast = { ...item.podcast };
+  delete podcast.value;
+  return { ...item, episode: episodeWithoutValue(item.episode), podcast };
+}
+
+/** The episode half of {@link withoutStoredValue}, for a stored row with no show. */
+export function episodeWithoutValue(e: Episode): Episode {
+  const episode = { ...e };
+  delete episode.value;
+  delete episode.valueTimeSplits;
+  delete episode.liveValueState;
+  return episode;
 }
 
 /**
@@ -1542,12 +1723,12 @@ export interface BoostGate {
 }
 
 export function boostGate(
-  episode: Pick<Episode, 'value' | 'podcastGuid' | 'liveValueState'> | null | undefined,
+  episode: Pick<Episode, 'value' | 'podcastGuid' | 'liveValueState' | 'liveStatus' | 'unresolved'> | null | undefined,
   podcast: Pick<Podcast, 'value' | 'podcastGuid' | 'medium'> | null | undefined,
 ): BoostGate {
   const value = payableValue(episode, podcast);
   if (hasValueRecipients(value)) return { value, hasValue: true, reason: 'ok' };
-  const reason = episode?.liveValueState ?? 'none';
+  const reason = episode?.liveValueState ?? (episode && valueNotRead(episode) ? 'pending' : 'none');
   return { value, hasValue: false, reason };
 }
 
@@ -1557,7 +1738,7 @@ export function boostButtonTitle(gate: BoostGate, noun: 'Episode' | 'Stream'): s
   switch (gate.reason) {
     case 'ok': return 'Send a boost';
     case 'pending': return 'Checking for a value block…';
-    case 'unread': return 'Could not read the value block for this stream — reload to try again';
+    case 'unread': return `Could not read the value block for this ${noun.toLowerCase()} — reload to try again`;
     default: return `${noun} has no value block`;
   }
 }
@@ -1678,6 +1859,35 @@ function descriptorOnly(desc: string | undefined): string | undefined {
   return m ? m[1] : desc;
 }
 
+/**
+ * The message cut to `room` characters — but never through the URL on its last
+ * line.
+ *
+ * The prose rule the descriptor already follows: a clipped link is a dead link
+ * that still spends the budget. A picked GIF is appended as a bare URL alone on
+ * the message's last line (`withGif`, `lib/giphy.ts`), so a cut landing inside
+ * it drops the whole URL and keeps the words before it.
+ *
+ * ONLY that shape. A link typed inside the prose is cut as it always was, so a
+ * boost or a zap with no GIF sends the same comment it did before this existed.
+ * A link typed alone on the last line has the same shape and gets the same
+ * treatment — the one case the text alone cannot tell apart.
+ */
+function clipProse(message: string, room: number): string | undefined {
+  if (message.length <= room) return message;
+  const cut = message.slice(0, room);
+  // The cut ended inside a token only if the next character continues it.
+  if (/\S/.test(message[room] ?? '')) {
+    // `\S*`, not `\S+`: a cut ON the newline before the URL is the same cut one
+    // character earlier, and must not leave that newline behind.
+    const start = cut.search(/\S*$/);
+    if ((start === 0 || message[start - 1] === '\n') && /^https?:\/\/\S+$/i.test(message.slice(start))) {
+      return cut.slice(0, start).trimEnd() || undefined;
+    }
+  }
+  return cut || undefined;
+}
+
 export function buildLnurlComment(
   args: { desc?: string; message?: string },
   commentAllowed: number | undefined,
@@ -1687,9 +1897,9 @@ export function buildLnurlComment(
   const desc = descriptorOnly(args.desc?.trim() || undefined);
   const message = args.message?.trim() || undefined;
 
-  if (!desc) return message?.slice(0, budget) || undefined;
+  if (!desc) return message ? clipProse(message, budget) : undefined;
   // Whole or not at all.
-  if (desc.length > budget) return message?.slice(0, budget) || undefined;
+  if (desc.length > budget) return message ? clipProse(message, budget) : undefined;
   if (!message) return desc;
 
   const sep = ' — ';
@@ -1697,7 +1907,8 @@ export function buildLnurlComment(
   // No room for a separator plus at least one character of prose: send the
   // descriptor alone rather than a dangling em dash.
   if (room < 1) return desc;
-  return `${desc}${sep}${message.slice(0, room)}`;
+  const prose = clipProse(message, room);
+  return prose ? `${desc}${sep}${prose}` : desc;
 }
 
 /**
@@ -2293,6 +2504,129 @@ export function splitAtPosition<T extends { startTime: number; duration: number 
     if (positionSec >= start && positionSec < start + dur) return s;
   }
   return null;
+}
+
+/**
+ * The longest marker believed when nothing says how long its track is. Of 169
+ * sampled markers under it, 162 matched their track within 30 s, and all 18 `music`
+ * markers over it sit on a song of 2 to 6 minutes (docs/ui.md, "Music plays at 1×").
+ */
+export const MUSIC_HOLD_UNVERIFIED_MAX_SEC = 15 * 60;
+/** A gap this short between two holds is not talk. See `musicHoldSpans`. */
+export const MUSIC_HOLD_MERGE_GAP_SEC = 5;
+/** About one `timeupdate`, the spacing the player sees the position at. */
+const MUSIC_HOLD_TICK_SEC = 0.25;
+
+/**
+ * The remote feed mediums that mean a song. Anything else a feed can say
+ * (`podcast`, `video`, `audiobook`…) is not known to be music, so it stays at
+ * the listener's speed. `publisher` counts because it leads to the album feeds:
+ * `lib/musicl-resolver.ts` walks it that way.
+ */
+const MUSIC_HOLD_MEDIUMS: ReadonlySet<string> = new Set(['music', 'musicl', 'publisher']);
+
+/** What `musicHoldSpans` reads of a marker: raw from the feed, or resolved. */
+type MusicHoldMarker = Pick<ValueTimeSplit, 'startTime' | 'duration'> & Partial<
+  Pick<ValueTimeSplit, 'remoteStartTime' | 'trackDuration' | 'feedMedium'>
+> & { remoteItem?: { medium?: string } };
+
+/** A stretch of an episode that plays at 1×, half-open: [start, end). */
+export interface MusicHoldSpan { start: number; end: number }
+
+/** How long one marker holds 1×, in seconds. 0 means it does not hold. */
+function musicHoldLength(m: MusicHoldMarker): number {
+  const d = m.duration;
+  if (!Number.isFinite(m.startTime) || !Number.isFinite(d) || d <= 0) return 0;
+  // The lookup outranks what the host declared: the first is the feed's own
+  // record, and the second is usually not there at all.
+  const medium = (m.feedMedium ?? m.remoteItem?.medium)?.toLowerCase();
+  if (medium && !MUSIC_HOLD_MEDIUMS.has(medium)) return 0;
+  const played = (m.trackDuration ?? 0) - (m.remoteStartTime ?? 0);
+  if (Number.isFinite(played) && played > 0) return Math.min(d, played);
+  return d <= MUSIC_HOLD_UNVERIFIED_MAX_SEC ? d : 0;
+}
+
+/**
+ * The stretches of an episode that play at 1× whatever speed the listener set,
+ * sorted and merged. A "track marker" is one `<podcast:valueTimeSplit>`.
+ *
+ * **A marker's length is not trusted and its absence of a medium means nothing.**
+ * `medium` is on none of 3,461 markers measured across three music shows, and 18
+ * of the 24 over 15 minutes sit on a song of 2 to 6 minutes: Homegrown Hits 122
+ * has 5,643 minutes over a song of 3:25. So the track's own length decides how
+ * long a hold runs, and the 15-minute cap applies only when nothing knows it.
+ * Throwing a long marker away instead would play that song at speed; believing
+ * it would hold 1× through the talk to the end of the episode.
+ *
+ * **A separate rule from `splitAtPosition`, and it must stay one.** That function
+ * decides who is PAID, first match wins, and it keeps every marker as written. A
+ * song's speed is a question about the union of what is playing, so an overlap
+ * is harmless here and a wrong length is correctable; neither is true there.
+ *
+ * Two holds with a gap under `MUSIC_HOLD_MERGE_GAP_SEC` between them are one: 508
+ * of 3,144 measured gaps are that short, and at 2× the rate would go up for under
+ * 2.5 s and straight back down. A marker that holds nothing bridges nothing.
+ */
+export function musicHoldSpans(markers: readonly MusicHoldMarker[] | null | undefined): MusicHoldSpan[] {
+  if (!markers?.length) return [];
+  const spans = markers
+    .map((m) => ({ start: m.startTime, end: m.startTime + musicHoldLength(m) }))
+    .filter((s) => s.end > s.start)
+    .sort((a, b) => a.start - b.start);
+  const merged: MusicHoldSpan[] = [];
+  for (const s of spans) {
+    const last = merged[merged.length - 1];
+    if (last && s.start - last.end < MUSIC_HOLD_MERGE_GAP_SEC) {
+      last.end = Math.max(last.end, s.end);
+    } else {
+      merged.push({ ...s });
+    }
+  }
+  return merged;
+}
+
+/**
+ * Whether `positionSec` is in a hold. `leadSec` starts one early and never ends
+ * one late; see `musicHoldLeadSec`.
+ */
+export function inMusicHold(spans: readonly MusicHoldSpan[], positionSec: number, leadSec = 0): boolean {
+  if (!Number.isFinite(positionSec)) return false;
+  return spans.some((s) => positionSec + leadSec >= s.start && positionSec < s.end);
+}
+
+/**
+ * How early a hold starts: one `timeupdate` of content at the speed the listener
+ * set, so the song's first beat is not at speed. **The SET speed, never the
+ * element's current one**: at 1× the lead would shrink the moment the hold began,
+ * and the position would fall back out of it.
+ */
+export function musicHoldLeadSec(setRate: number): number {
+  return MUSIC_HOLD_TICK_SEC * setRate;
+}
+
+/**
+ * The remote feed's own medium, written beside each marker. `feeds` is
+ * `batchPodcasts`'s three-state answer: a record, `null` for a feed Podcast Index
+ * does not hold, or an absent key for one nobody could ask about. The last two
+ * say nothing, so `musicHoldSpans` falls to its cap rule.
+ *
+ * **`feedMedium`, never `remoteItem.medium`.** That field is empty on every marker
+ * and looks like the place. It is the host's own declaration: `<FavTrackHeart>`
+ * publishes it to a list other apps read, and `actionFor` labels a streaming
+ * payment with it, so a lookup written there changes both.
+ *
+ * Never drops or reorders: callers read this list positionally, and
+ * `splitAtPosition` walks it to decide who a boost pays.
+ */
+export function withFeedMediums<T extends { remoteItem?: { feedGuid?: string } }>(
+  splits: readonly T[],
+  feeds: Readonly<Record<string, { medium?: string } | null | undefined>>,
+): (T & { feedMedium?: string })[] {
+  return splits.map((s) => {
+    const guid = s.remoteItem?.feedGuid;
+    const medium = guid ? feeds[guid]?.medium : undefined;
+    return medium ? { ...s, feedMedium: medium } : s;
+  });
 }
 
 /**
@@ -3009,15 +3343,6 @@ export function deletesAfterPlay(feedMedium: string | null | undefined): boolean
 }
 
 /**
- * The playback speeds the SPEED control cycles through, in order. An ALLOWLIST,
- * not a range: `storage.playbackRate` reads anything else back as 1, so a
- * corrupt or hand-edited value plays at normal speed rather than at whatever
- * number it happens to hold. Here rather than in the component because the
- * storage accessor needs the same list and must not import a component.
- */
-export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 3.5, 5] as const;
-
-/**
  * The speeds the SPEED tile cycles through. 3.5× and 5× are NOT in it: each
  * has a tile of its own (`FAST_PLAYBACK_RATES`), because reaching 5× by
  * stepping meant six presses, and stepping past it meant a jump from 5× back
@@ -3026,17 +3351,48 @@ export const PLAYBACK_RATES = [1, 1.25, 1.5, 1.75, 2, 3.5, 5] as const;
  */
 export const SPEED_CYCLE_RATES = [1, 1.25, 1.5, 1.75, 2] as const;
 
+/**
+ * The stops on the ⋯ menu's speed slider: 1× to 2× in 0.1 steps, BESIDE the
+ * cycle rather than instead of it. Written out, not generated from 0.1:
+ * `1 + 7 * 0.1` is 1.7000000000000002, so a generated stop would be a number
+ * nobody typed, and a stored 1.7× would not match a list that says 1.7.
+ */
+export const SPEED_SLIDER_RATES = [1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2] as const;
+
 /** The speeds with a tile each, beside SPEED. */
 export const FAST_PLAYBACK_RATES = [3.5, 5] as const;
 
 /**
- * The speed after `rate` in `SPEED_CYCLE_RATES`, wrapping back to 1. From a
- * speed outside the cycle (a fast tile's) it answers 1.25, because the SPEED
- * tile shows 1× while a fast tile is on — the press steps from what it shows.
+ * Every playback speed, ascending — the union of the three lists above. An
+ * ALLOWLIST, not a range: `storage.playbackRate` reads anything else back as 1,
+ * so a corrupt or hand-edited value plays at normal speed rather than at
+ * whatever number it happens to hold. Here rather than in the component because
+ * the storage accessor needs the same list and must not import a component.
+ */
+export const PLAYBACK_RATES: readonly number[] = [
+  ...new Set<number>([...SPEED_CYCLE_RATES, ...SPEED_SLIDER_RATES, ...FAST_PLAYBACK_RATES]),
+].sort((a, b) => a - b);
+
+/**
+ * True for a speed the SPEED tile and the slider name: one from the cycle or
+ * the slider, 1× to 2×. False for a fast tile's 3.5× or 5×, which only that
+ * tile names while it is lit.
+ */
+export function isSteppedRate(rate: number): boolean {
+  return (SPEED_CYCLE_RATES as readonly number[]).includes(rate)
+    || (SPEED_SLIDER_RATES as readonly number[]).includes(rate);
+}
+
+/**
+ * The speed after `rate` in `SPEED_CYCLE_RATES`: the next stop ABOVE it,
+ * wrapping from 2× back to 1. A slider speed between two stops goes up to the
+ * next one (1.3× → 1.5×), so a press never slows playback except at the wrap.
+ * From a fast tile's speed it answers 1.25, because the SPEED tile shows 1×
+ * while a fast tile is on — the press steps from what it shows.
  */
 export function nextPlaybackRate(rate: number): number {
-  const i = Math.max(0, SPEED_CYCLE_RATES.indexOf(rate as (typeof SPEED_CYCLE_RATES)[number]));
-  return SPEED_CYCLE_RATES[(i + 1) % SPEED_CYCLE_RATES.length];
+  const from = isSteppedRate(rate) ? rate : 1;
+  return SPEED_CYCLE_RATES.find((r) => r > from) ?? SPEED_CYCLE_RATES[0];
 }
 
 // True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js
@@ -3045,6 +3401,36 @@ export function nextPlaybackRate(rate: number): number {
 // URLs in their `streaming` tag.
 export function isHlsUrl(url: string | undefined | null): boolean {
   return !!url && /\.m3u8(\?|#|$)/i.test(url);
+}
+
+/**
+ * The show a podcast episode's own speed is saved under
+ * (`bmb:playback_rate:<key>`), or `null` when the item keeps none. Podcast
+ * episodes only: a track feed, an HLS enclosure and a live or pending item answer
+ * null — all are always 1× in `<Player>`, and a speed chosen there would otherwise
+ * be saved for a show that never plays at it. The same refusals as `canResume`
+ * (lib/resume-position.ts).
+ *
+ * **The EPISODE's `podcastGuid` comes first**, as in `resumeKey`, so a
+ * `podcastL` playlist row plays at its own show's speed rather than the
+ * playlist's. For an ordinary show this is `showStorageKey(podcast)`.
+ *
+ * **No guid and no feed id is `null`, not `'0'`.** A download record with
+ * neither rebuilds as `feedId: 0` / `id: 0` (`dbRowToEpisode`), and a `'0'` key
+ * would hand every such item, from unrelated shows, one shared speed.
+ *
+ * `/downloads` rebuilds the show with no `medium`, so an album track played
+ * from there passes `playsAsTracks` as a podcast; `speedKeyFor` (lib/store.ts)
+ * asks the download record first, as `deletableAfterPlay` does.
+ */
+export function speedShowKey(
+  episode: Pick<Episode, 'podcastGuid' | 'feedId' | 'enclosureUrl' | 'liveStatus'>,
+  podcast: Pick<Podcast, 'podcastGuid' | 'id' | 'medium'>,
+): string | null {
+  if (playsAsTracks(podcast) || isHlsUrl(episode.enclosureUrl)) return null;
+  if (episode.liveStatus === 'live' || episode.liveStatus === 'pending') return null;
+  const id = episode.feedId || podcast.id;
+  return episode.podcastGuid || podcast.podcastGuid || (id ? String(id) : null);
 }
 
 /**
@@ -3384,6 +3770,42 @@ function isPodcastAppUrl(raw: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The one `podcast:item:guid:` a note is about, or null when it names no single
+ * episode.
+ *
+ * One item is the ordinary answer. Several is a note about no one episode, and
+ * picking the first would print a track the author did not single out.
+ *
+ * **Two items on two shows is one episode and the track that was playing.** A
+ * boost pressed inside a `<podcast:valueTimeSplit>` window writes the show and
+ * the episode first and then the track's feed and item (`trackTags` in
+ * lib/nostr/boost-notes.ts). Counted as "several", every such note lost its episode
+ * record, so its card named the show and offered no heart and no queue, while the
+ * sender's next boost on the same episode had both. The show count is what
+ * tells the two shapes apart: a note listing an album's tracks tags one show.
+ * Measured on 2026-11-05: BoostMeBuddy, BoostMeBitch, MSP 2.0 and Boostr_Bot all
+ * write `[show, item, show, item]`, and the first pair is the host episode.
+ *
+ * **Never answer for two items on ONE show.** MSP 2.0 and Boostr_Bot also write
+ * `[episode, album, track]`, where the one show is the TRACK's album and the
+ * episode's own show is not tagged at all. The first item and that show are not a
+ * pair, whatever the note's order suggests.
+ *
+ * `tags` is optional because a note cached before `rawEvent` existed has none.
+ * Absent answers null, which is the old answer and the safe one: a card with no
+ * item.
+ */
+export function noteOwnItemGuid(
+  episodeGuids: string[],
+  tags: string[][] | undefined,
+): string | null {
+  if (episodeGuids.length === 1) return episodeGuids[0];
+  if (episodeGuids.length !== 2 || !tags) return null;
+  const shows = tags.filter((t) => t[0] === 'i' && t[1]?.startsWith('podcast:guid:')).length;
+  return shows === 2 ? episodeGuids[0] : null;
 }
 
 /**
@@ -3996,4 +4418,24 @@ export async function probeThenBatch<T, R>(
   settled.forEach((r, i) => {
     if (r.ok) out[key(rest[i]!)] = r.value;
   });
+}
+
+/**
+ * A community playlist as the `Podcast` every list row and the player expect.
+ * The one shape both the server (search lane, guid lookup) and the browser use.
+ * The id is negative (`-fnvHash(feedUrl)`): the repo's mark for "not a PI record".
+ */
+export function communityPlaylistToPodcast(s: CommunityPlaylistSummary): Podcast {
+  return {
+    id: -fnvHash(s.feedUrl),
+    podcastGuid: s.podcastGuid,
+    title: s.title,
+    description: s.description,
+    image: s.coverUrl,
+    artwork: s.coverUrl,
+    url: s.feedUrl,
+    medium: 'musicL',
+    isPreview: true,
+    nostrNpubs: [{ npub: s.ownerNpub, pubkey: s.ownerPubkey }],
+  };
 }

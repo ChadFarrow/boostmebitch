@@ -164,9 +164,18 @@ export function mapNwcError(e: unknown): unknown {
  * `failureBlamesDestination` needs the same answer and a second copy of a
  * money-path predicate is how two callers come to disagree about what a dead
  * connection is. `nwc.ts` imports it for its lease-discard decision.
+ *
+ * `Nip47NetworkError` is a dial that failed: the SDK throws it from
+ * `_checkConnected`, ahead of any publish, and nowhere else. It is tested by CLASS
+ * because its message says "Failed to connect to wss://…", which the words below
+ * do not match, and a routing failure reading "failed to connect to peer" must not
+ * match. Missing it left a client that can never dial again in the pool, and
+ * blamed the recipient for the payer's own relay. Pinned against a real refused
+ * upgrade by `npm run check:nwcerror`.
  */
 export function isSocketSuspect(e: unknown): boolean {
   if (e instanceof nwc.Nip47PublishTimeoutError) return true;
+  if (e instanceof nwc.Nip47NetworkError) return true;
   const msg = e instanceof Error ? e.message : '';
   return /not connected|connection|websocket|socket closed/i.test(msg);
 }

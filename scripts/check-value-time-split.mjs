@@ -9,6 +9,8 @@
  *   mergeEpisodeContents — which rows of the one contents list may carry a heart
  *   streamAction      — 'auto' for a leg paying a song, 'stream' for the show
  *   boostNoteTrack    — what the public boost note says about the track it paid
+ *   musicHoldSpans    — which stretches of an episode play at 1× under a set speed
+ *   withFeedMediums   — the remote feed's medium, beside the host's declaration
  *
  * `streamAction` is the odd one out: it labels a payment rather than aiming or
  * sizing one, so breaking it costs a mislabel and not a sat. It is pinned here
@@ -48,9 +50,11 @@
  * ignored it and paid the show.
  */
 import {
-  mergeEpisodeContents, payableLeg, payableSplit, redirectLegs, splitAtPosition, splitSats,
-  splitTrackAndHost, streamAction, boostNoteTrack,
+  inMusicHold, mergeEpisodeContents, musicHoldLeadSec, musicHoldSpans, payableLeg, payableSplit,
+  redirectLegs, splitAtPosition, splitSats, splitTrackAndHost, streamAction, boostNoteTrack,
+  withFeedMediums,
 } from '../lib/util.ts';
+import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
 function check(name, actual, expected) {
@@ -65,8 +69,7 @@ function check(name, actual, expected) {
 }
 
 // ── Wire vectors ────────────────────────────────────────────────────────────
-// The real split, exactly as Podcast Index returns it in `timesplits[0]` and as
-// lib/pi.ts:parseRawValueTimeSplits reshapes it. Episode duration is 6135, so
+// The real split, in the shape `ValueTimeSplit` carries. Episode duration is 6135, so
 // this window runs to the last second of the enclosure.
 const COPENHAGEN = {
   startTime: 5854,
@@ -667,6 +670,203 @@ const NOTE_TRACK_VECTORS = [
 ];
 for (const v of NOTE_TRACK_VECTORS) check(v.name, boostNoteTrack(v.args), v.expect);
 
+// ── Music at 1× ───────────────────────────────
+// The "track marker" of docs/superpowers/specs/2026-11-02-music-plays-at-1x-design.md.
+// What makes these worth a pin is that a marker's own length is not to be
+// trusted and its medium is not on the wire: all 3,461 markers measured across
+// three music shows carry no `medium`, and 18 of the 24 over 15 minutes sit on a
+// song of 2 to 6 minutes. Ignoring a long marker plays the song at speed; trusting
+// one holds 1× through the talk for the rest of the episode. Either is the bug.
+//
+// Lifted from the feeds, with `trackDuration` as Podcast Index answered it on
+// 2026-11-02 and `feedMedium` from the remote feed's record.
+const LT111 = [
+  { startTime: 5, duration: 172, remoteStartTime: 0, remotePercentage: 100,
+    remoteItem: { feedGuid: '92ae5ede', itemGuid: 'a03b506d' }, trackDuration: 172, feedMedium: 'music' },
+  { startTime: 196, duration: 136, remoteStartTime: 0, remotePercentage: 100,
+    remoteItem: { feedGuid: '20515869', itemGuid: '8169092b' }, trackDuration: 137, feedMedium: 'music' },
+];
+// Lightning Thrashes 110: a 113-minute marker on a 300-minute episode of Bowl
+// After Bowl. `min(marker, track)` alone still holds 113 minutes of talk.
+const BOWL = {
+  startTime: 3799, duration: 6787, remoteStartTime: 0, remotePercentage: 100,
+  remoteItem: { feedGuid: '2d418249-453a-5714-8abc-5b657570b641', itemGuid: 'https://bowlafterbowl.com/episodes/episode-448/' },
+  trackDuration: 18018, feedMedium: 'podcast',
+};
+// Homegrown Hits 122: 5,643 minutes over a song of 3:25, and the next song starts
+// a second before that one ends, which is the shape 502 of 3,144 pairs have.
+const HGH122_BAD = {
+  startTime: 1862, duration: 338617, remoteStartTime: 0, remotePercentage: 99,
+  remoteItem: { feedGuid: '65f05911-f982-524e-ba2e-826550f13ca4', itemGuid: 'de0f823d-1ea2-5a25-94fb-f133a6d8c2a9' },
+  trackDuration: 205, feedMedium: 'music',
+};
+const HGH122_NEXT = {
+  startTime: 2066, duration: 363, remoteStartTime: 0, remotePercentage: 99,
+  remoteItem: { feedGuid: 'dee5f723', itemGuid: '31170f2b' }, feedMedium: 'music',
+};
+// The same marker as the episode carries it before /api/value-splits answers.
+const RAW = (m) => ({ startTime: m.startTime, duration: m.duration, remoteItem: { feedGuid: m.remoteItem.feedGuid, itemGuid: m.remoteItem.itemGuid } });
+
+const HOLD_VECTORS = [
+  // Must still work: an ordinary song, whatever is known about it.
+  { label: 'inside an ordinary song → hold', kind: 'at', args: { markers: LT111, t: 250 }, expect: true, alsoNaive: true },
+  { label: 'in the talk between two songs → no hold', kind: 'at', args: { markers: LT111, t: 186 }, expect: false, alsoNaive: true },
+  { label: 'the first second of a song → hold', kind: 'at', args: { markers: LT111, t: 196 }, expect: true, alsoNaive: true },
+  { label: 'the second a song ends → no hold', kind: 'at', args: { markers: LT111, t: 332 }, expect: false, alsoNaive: true },
+  { label: 'an unresolved song under the cap → hold', kind: 'at', args: { markers: LT111.map(RAW), t: 250 }, expect: true, alsoNaive: true },
+  { label: 'a `publisher` feed leads to albums → hold',
+    kind: 'at', args: { markers: [{ ...LT111[1], feedMedium: 'publisher' }], t: 250 }, expect: true, alsoNaive: true },
+  { label: 'a `musicL` feed is music, in any case → hold',
+    kind: 'at', args: { markers: [{ ...LT111[1], feedMedium: 'MUSICL' }], t: 250 }, expect: true, alsoNaive: true },
+  { label: 'a feed not in Podcast Index, under the cap → hold',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 240, remoteItem: { feedGuid: 'x', itemGuid: 'y' } }], t: 200 }, expect: true, alsoNaive: true },
+  { label: 'no markers at all → no hold', kind: 'at', args: { markers: [], t: 100 }, expect: false, alsoNaive: true },
+  { label: 'undefined markers → no hold', kind: 'at', args: { markers: undefined, t: 100 }, expect: false, alsoNaive: true },
+  { label: 'a live block has no length, so it never holds',
+    kind: 'at', args: { markers: [LIVE], t: 0 }, expect: false, alsoNaive: true },
+  { label: 'a negative length never holds',
+    kind: 'at', args: { markers: [{ startTime: 10, duration: -5 }], t: 8 }, expect: false, alsoNaive: true },
+
+  // The marker's length is wrong, and the track's own length is the answer.
+  { label: 'a 5,643-minute marker holds only for the song', kind: 'at', args: { markers: [HGH122_BAD], t: 2100 }, expect: false },
+  { label: 'a 5,643-minute marker still holds the song', kind: 'at', args: { markers: [HGH122_BAD], t: 1900 }, expect: true, alsoNaive: true },
+  { label: 'the second that song ends → no hold', kind: 'at', args: { markers: [HGH122_BAD], t: 2067 }, expect: false },
+  { label: 'the host trimmed the song: the marker ends first',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 60, trackDuration: 240, feedMedium: 'music' }], t: 170 }, expect: false, alsoNaive: true },
+  { label: 'remoteStartTime is part of the track the show did not play',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 240, remoteStartTime: 180, trackDuration: 240, feedMedium: 'music' }], t: 170 }, expect: false },
+
+  // Not music.
+  { label: 'a 113-minute marker on a podcast never holds', kind: 'at', args: { markers: [BOWL], t: 5000 }, expect: false },
+  { label: 'a short marker on a podcast never holds',
+    kind: 'at', args: { markers: [{ ...LT111[1], feedMedium: 'podcast' }], t: 250 }, expect: false },
+  { label: 'a `video` feed never holds',
+    kind: 'at', args: { markers: [{ ...LT111[1], feedMedium: 'video' }], t: 250 }, expect: false },
+  { label: 'the host\'s own declaration counts when no lookup answered',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 240, remoteItem: { feedGuid: 'x', itemGuid: 'y', medium: 'podcast' } }], t: 200 }, expect: false },
+  { label: 'the lookup outranks the host\'s declaration',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 240, feedMedium: 'music', remoteItem: { feedGuid: 'x', itemGuid: 'y', medium: 'podcast' } }], t: 200 }, expect: true, alsoNaive: true },
+
+  // The cap applies only when nothing says how long the track is.
+  { label: 'no track length and over 15 minutes → no hold', kind: 'at', args: { markers: [RAW(BOWL)], t: 5000 }, expect: false },
+  { label: 'no track length and exactly 15 minutes → hold',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 900 }], t: 500 }, expect: true, alsoNaive: true },
+  { label: 'a track length of 0 is no track length',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 2000, trackDuration: 0, feedMedium: 'music' }], t: 500 }, expect: false },
+  { label: 'a known length over the cap is a real long track',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 1500, trackDuration: 1500, feedMedium: 'music' }], t: 1000 }, expect: true, alsoNaive: true },
+  { label: 'remoteStartTime past the track\'s end says nothing about its length',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 2000, remoteStartTime: 300, trackDuration: 240, feedMedium: 'music' }], t: 500 }, expect: false },
+
+  // Neighbours: the rate must not go up for a moment between two songs.
+  { label: 'a 3-second gap between two songs stays at 1×',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 60 }, { startTime: 163, duration: 60 }], t: 161 }, expect: true },
+  { label: 'a 5-second gap between two songs is talk',
+    kind: 'at', args: { markers: [{ startTime: 100, duration: 60 }, { startTime: 165, duration: 60 }], t: 162 }, expect: false, alsoNaive: true },
+  { label: 'an overlap: the bad song and the next one are one hold',
+    kind: 'spans', args: { markers: [HGH122_BAD, HGH122_NEXT] }, expect: [{ start: 1862, end: 2429 }] },
+  { label: 'out of order in the feed still merges',
+    kind: 'spans', args: { markers: [HGH122_NEXT, HGH122_BAD] }, expect: [{ start: 1862, end: 2429 }] },
+  { label: 'the wire order of Lightning Thrashes 111 stays two holds',
+    kind: 'spans', args: { markers: LT111 }, expect: [{ start: 5, end: 177 }, { start: 196, end: 332 }], alsoNaive: true },
+  { label: 'a marker that holds nothing does not bridge its neighbours',
+    kind: 'spans', args: { markers: [{ startTime: 100, duration: 60 }, { ...BOWL, startTime: 160 }, { startTime: 400, duration: 60 }] },
+    expect: [{ start: 100, end: 160 }, { start: 400, end: 460 }] },
+
+  // The early start.
+  { label: 'the lead reaches a song before its first second',
+    kind: 'at', args: { markers: LT111, t: 195.6, lead: musicHoldLeadSec(2) }, expect: true },
+  { label: 'the lead stops short of the talk before it',
+    kind: 'at', args: { markers: LT111, t: 195, lead: musicHoldLeadSec(2) }, expect: false, alsoNaive: true },
+  { label: 'the lead never extends a song\'s end',
+    kind: 'at', args: { markers: LT111, t: 332, lead: musicHoldLeadSec(2) }, expect: false, alsoNaive: true },
+  { label: 'a position that is not a number never holds',
+    kind: 'at', args: { markers: LT111, t: NaN }, expect: false, alsoNaive: true },
+];
+
+// The obvious wrong version: "a window covers this second". It holds 1× through
+// the rest of Homegrown Hits 122 and through 113 minutes of another podcast.
+const naiveHold = {
+  at: ({ markers, t }) => splitAtPosition(markers, t) !== null,
+  spans: ({ markers }) => [...markers]
+    .sort((a, b) => a.startTime - b.startTime)
+    .map((m) => ({ start: m.startTime, end: m.startTime + m.duration })),
+};
+const realHold = {
+  at: ({ markers, t, lead }) => inMusicHold(musicHoldSpans(markers), t, lead),
+  spans: ({ markers }) => musicHoldSpans(markers),
+};
+// Approach A of the design, the one Chad did not pick: throw a long marker away.
+// It is right about the podcast and wrong about the song under a bad marker.
+const dropLongMarkers = {
+  at: ({ markers, t }) => splitAtPosition((markers ?? []).filter((m) => m.duration <= 900), t) !== null,
+};
+const runHold = (impl, v) => {
+  try { return JSON.stringify(impl[v.kind](v.args)); } catch (e) { return `threw ${e.message}`; }
+};
+
+console.log('\nmusicHoldSpans — which stretches play at 1×');
+for (const v of HOLD_VECTORS) check(v.label, JSON.parse(runHold(realHold, v)), v.expect);
+
+// Which approach gets the song under a 5,643-minute marker right is the reason
+// Chad picked B, so it is pinned by name rather than left to the replay below.
+check('dropping long markers loses the song under a bad marker',
+  dropLongMarkers.at({ markers: [HGH122_BAD], t: 1900 }), false);
+check('the rule keeps it', realHold.at({ markers: [HGH122_BAD], t: 1900 }), true);
+
+console.log('\nwithFeedMediums — the medium beside the declaration, never over it');
+const FEEDS = {
+  '2d418249-453a-5714-8abc-5b657570b641': { medium: 'podcast' },
+  '65f05911-f982-524e-ba2e-826550f13ca4': { medium: 'music' },
+  notinpi: null,
+  nomedium: { title: 'A feed with no medium' },
+};
+const MEDIUM_VECTORS = [
+  { label: 'a lookup that answered adds feedMedium', kind: 'one',
+    args: { split: RAW(BOWL) },
+    expect: { ...RAW(BOWL), feedMedium: 'podcast' } },
+  { label: 'the host\'s declaration stays what the host wrote: streaming and public favorites read it', kind: 'one',
+    args: { split: { ...RAW(BOWL), remoteItem: { ...RAW(BOWL).remoteItem, medium: 'music' } } },
+    expect: { ...RAW(BOWL), remoteItem: { ...RAW(BOWL).remoteItem, medium: 'music' }, feedMedium: 'podcast' } },
+  { label: 'an empty declaration stays empty', kind: 'empty-declaration',
+    args: { split: RAW(BOWL) }, expect: true },
+  { label: 'a feed Podcast Index does not hold says nothing', kind: 'one',
+    args: { split: { startTime: 1, duration: 2, remoteItem: { feedGuid: 'notinpi' } } },
+    expect: { startTime: 1, duration: 2, remoteItem: { feedGuid: 'notinpi' } } },
+  { label: 'a feed we could not ask about says nothing', kind: 'one',
+    args: { split: { startTime: 1, duration: 2, remoteItem: { feedGuid: 'absent' } } },
+    expect: { startTime: 1, duration: 2, remoteItem: { feedGuid: 'absent' } } },
+  { label: 'a record with no medium says nothing', kind: 'one',
+    args: { split: { startTime: 1, duration: 2, remoteItem: { feedGuid: 'nomedium' } } },
+    expect: { startTime: 1, duration: 2, remoteItem: { feedGuid: 'nomedium' } } },
+  { label: 'a marker with no remote item passes through', kind: 'one',
+    args: { split: { startTime: 1, duration: 2 } }, expect: { startTime: 1, duration: 2 }, alsoNaive: true },
+  // Positional: `splitAtPosition` walks this list to decide who a boost pays.
+  { label: 'no entry is dropped and the order stands, or a boost pays someone else', kind: 'list',
+    args: { splits: [RAW(HGH122_BAD), { startTime: 1, duration: 2, remoteItem: { feedGuid: 'notinpi' } }, RAW(BOWL)] },
+    expect: [1862, 1, 3799] },
+];
+const realMedium = {
+  one: ({ split }) => withFeedMediums([split], FEEDS)[0],
+  'empty-declaration': ({ split }) => withFeedMediums([split], FEEDS)[0].remoteItem.medium === undefined,
+  list: ({ splits }) => withFeedMediums(splits, FEEDS).map((s) => s.startTime),
+};
+// The obvious wrong version: `remoteItem.medium` is empty on every marker and it
+// looks like the place. <FavTrackHeart> publishes it to a list other apps read
+// and `actionFor` labels a payment with it. It also keeps only what resolved.
+const naiveMedium = {
+  one: ({ split }) => {
+    const m = FEEDS[split.remoteItem?.feedGuid]?.medium;
+    return split.remoteItem ? { ...split, remoteItem: { ...split.remoteItem, medium: m ?? 'podcast' } } : split;
+  },
+  'empty-declaration': ({ split }) => naiveMedium.one({ split }).remoteItem.medium === undefined,
+  list: ({ splits }) => splits.filter((s) => FEEDS[s.remoteItem?.feedGuid]).map((s) => s.startTime),
+};
+const runMedium = (impl, v) => {
+  try { return JSON.stringify(impl[v.kind](v.args)); } catch (e) { return `threw ${e.message}`; }
+};
+for (const v of MEDIUM_VECTORS) check(v.label, JSON.parse(runMedium(realMedium, v)), v.expect);
+
 console.log('\nnaive() — the vectors must reject the obvious wrong versions');
 
 function naiveSplitAt(splits, pos) {
@@ -823,6 +1023,21 @@ for (const v of NOTE_TRACK_VECTORS) {
     console.log(`  ✓ ${same ? 'agreed' : 'rejected'}: boostNoteTrack — ${v.name}`);
   }
 }
+
+// TOTAL replay for the music hold, through the one shared loop.
+const failHold = (m) => { console.error(`  ✗ ${m}`); failures++; };
+console.log('\nmusicHoldSpans — every vector replayed against "a window covers this second"');
+replayVectors({
+  vectors: HOLD_VECTORS,
+  invoke: (which, v) => runHold(which === 'real' ? realHold : naiveHold, v),
+  fail: failHold,
+});
+console.log('\nwithFeedMediums — every vector replayed against filling remoteItem.medium');
+replayVectors({
+  vectors: MEDIUM_VECTORS,
+  invoke: (which, v) => runMedium(which === 'real' ? realMedium : naiveMedium, v),
+  fail: failHold,
+});
 
 if (failures) {
   console.error(`\n${failures} check(s) failed`);

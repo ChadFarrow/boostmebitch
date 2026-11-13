@@ -10,9 +10,10 @@ import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
   addToHistory, epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
-  queueShowFor, trimForQueue,
+  playsAsTracks, queueShowFor, speedShowKey, trimForQueue,
 } from './util';
 import { savedStartSec } from './resume-position';
+import { downloadManager } from './downloads/download-manager';
 
 /** Which view the sign-in modal opens on. See `signInIntent` below. */
 export type SignInIntent = 'default' | 'google';
@@ -72,6 +73,7 @@ interface AppState {
   // A downloaded episode's stored block may name a payee the feed has since
   // dropped; `payableValue` reads `episode.value` first, so the stale copy
   // outranks the feed's own.
+  markCurrentValueUnread: (guid: string) => void;
   refreshCurrentValue: (guid: string, value: ValueBlock | null | undefined, vts: ValueTimeSplit[] | undefined) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
   /**
@@ -134,6 +136,14 @@ interface AppState {
    * true over an element that never started — the ❚❚-over-silence lie again.
    */
   revealQueue: () => void;
+  /**
+   * Point the player at the episode that was in it when the app was last
+   * open (`bmb:now_playing`), paused, at its saved place — `revealQueue`'s
+   * rules, and asked BEFORE it. Without this a reload always landed on the
+   * queue's head, which is not what somebody was listening to when they
+   * played a feed row or a later queue row.
+   */
+  revealNowPlaying: () => void;
   setListenQueue: (items: QueueItem[]) => void;
   /**
    * Carry a signed-out queue onto an account that has none, at sign-in.
@@ -212,10 +222,23 @@ interface AppState {
   // Player speed, one of `PLAYBACK_RATES` (lib/util.ts). Starts at 1 and is
   // hydrated from `storage.playbackRate` by <Player>'s mount, never read at
   // store creation — this module is evaluated on the server too. The setter
-  // writes through to storage. <Player> applies it to the media element and
-  // forces 1× on a live item.
+  // writes through to storage: the global speed always, and the current
+  // podcast's own speed too (`speedKeyFor`), so a show plays at what was last
+  // chosen for it and a show never touched plays at the last speed chosen
+  // anywhere. `useShowSpeed` re-resolves it when `current` moves to another
+  // show. <Player> applies it to the media element and forces 1× on a live item
+  // and a music item (`isMusicItem`), and inside a hold (`musicHold`). This stays
+  // the speed the listener SET through all of those.
   playbackRate: number;
   setPlaybackRate: (r: number) => void;
+
+  // True while the position is inside a song of an episode (`musicHoldSpans`,
+  // lib/util.ts), so the audio plays at 1× whatever `playbackRate` says. In memory
+  // only and never written through `setPlaybackRate`: a hold is not a choice, and
+  // a saved 1× would outrank the global speed for ever. <Player>'s
+  // `useMusicHold` is the only writer, and only when it changes, so the position
+  // ticks do not re-render anything that reads it.
+  musicHold: boolean;
 
   // Whether the Nostr sign-in modal is open. Lifted into the store so surfaces
   // other than the header (e.g. the fullscreen player / live chat) can open it
@@ -309,6 +332,10 @@ interface AppState {
   favorites: Record<string, FavoritePodcast>;
   isFavorite: (guid: string | undefined) => boolean;
   addFavorite: (p: FavoritePodcast) => void;
+  /** Many at once — the OPML import. One write and one render, not N. An id
+   *  already in the map is left exactly as it is. Returns whether the write
+   *  reached disk (`safeSet`'s answer), so the caller can say when it did not. */
+  addFavorites: (ps: FavoritePodcast[]) => boolean;
   removeFavorite: (guid: string) => void;
   setFavorites: (next: Record<string, FavoritePodcast>) => void;
 
@@ -757,6 +784,13 @@ export const useApp = create<AppState>((set, get) => ({
       if (vts !== undefined && ep.valueTimeSplits !== vts) { ep.valueTimeSplits = vts; changed = true; }
       return changed ? { current: { ...s.current, episode: ep } } : {};
     }),
+  // The feed did not answer, so BOOST says that rather than "no value block".
+  markCurrentValueUnread: (guid) =>
+    set((s) => {
+      if (!s.current || !guid || s.current.episode.guid !== guid) return {};
+      if (s.current.episode.value !== undefined) return {};
+      return { current: { ...s.current, episode: { ...s.current.episode, liveValueState: 'unread' } } };
+    }),
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
   // Both step through `nextPlayableIndex`, never `idx ± 1`. A playlist's queue
   // holds a row for every `<podcast:remoteItem>` including the ones Podcast
@@ -841,6 +875,17 @@ export const useApp = create<AppState>((set, get) => ({
         videoMode: false,
       };
     }),
+  revealNowPlaying: () =>
+    set((s) => {
+      if (s.current) return {};
+      const last = storage.nowPlaying.get();
+      if (!last || !isPlayableRow(last.episode) || last.episode.liveStatus) return {};
+      return {
+        current: { episode: last.episode, podcast: last.podcast },
+        positionSec: savedStartSec(last.episode, last.podcast),
+        videoMode: false,
+      };
+    }),
   // Replaces, never unions. An order nobody chose is worse than either order,
   // so a queue arriving from another account's cache does not get merged into
   // the one on screen.
@@ -918,7 +963,13 @@ export const useApp = create<AppState>((set, get) => ({
   setPlayerExpanded: (b) => set({ playerExpanded: b }),
 
   playbackRate: 1,
-  setPlaybackRate: (r) => { storage.playbackRate.set(r); set({ playbackRate: r }); },
+  setPlaybackRate: (r) => {
+    storage.playbackRate.set(r);
+    const showKey = speedKeyFor(get().current);
+    if (showKey) storage.playbackRate.setShow(showKey, r);
+    set({ playbackRate: r });
+  },
+  musicHold: false,
 
   artOk: true,
   setArtOk: (b) => set({ artOk: b }),
@@ -983,6 +1034,23 @@ export const useApp = create<AppState>((set, get) => ({
     markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes, s.favorites, s.favoriteEpisodes, landed);
     return { favorites: next };
   }),
+  // A user action like `addFavorite`, so it marks like one — but it never
+  // REPLACES an entry: an import that re-adds a show must not reset its
+  // `addedAt` or drop what another app's hint put on it.
+  addFavorites: (ps) => {
+    let landed = true;
+    set((s) => {
+      const fresh = ps.filter((p) => !s.favorites[p.podcastGuid]);
+      if (!fresh.length) return s;
+      const next = { ...s.favorites };
+      for (const p of fresh) next[p.podcastGuid] = p;
+      landed = storage.favorites.set(s.identity?.npub, next);
+      dropBaselineIfWriteFailed(landed, s.identity?.npub, 'favorites');
+      markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes, s.favorites, s.favoriteEpisodes, landed);
+      return { favorites: next };
+    });
+    return landed;
+  },
   removeFavorite: (guid) => set((s) => {
     if (!s.favorites[guid]) return s;
     const next = { ...s.favorites };
@@ -1139,4 +1207,69 @@ function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
  */
 export function clearShowSelection() {
   useApp.getState().selectPodcast(null);
+}
+
+/**
+ * The speed an item is SET to: its show's own speed when it has one, else the
+ * global speed. A track feed, an HLS enclosure and a live item have no show
+ * entry (`speedShowKey` is null), so they take the global one — and <Player>
+ * still plays a live item and a music item at 1× (`isMusicItem`), so the global
+ * speed reaches neither element and neither can change it.
+ */
+export function resolvePlaybackRate(current: { episode: Episode; podcast: Podcast } | null): number {
+  const showKey = speedKeyFor(current);
+  return (showKey ? storage.playbackRate.getShow(showKey) : null) ?? storage.playbackRate.get();
+}
+
+/**
+ * The item's medium, with its download RECORD as the witness when the show
+ * carries none. `/downloads` rebuilds the show with `dbRowToPodcast`, which has
+ * no medium — the rule `deletableAfterPlay` follows for the same reason
+ * (docs/downloads.md).
+ */
+function witnessedMedium({ episode, podcast }: { episode: Episode; podcast: Podcast }): string | undefined {
+  return podcast.medium ?? downloadManager.feedMediumFor(episode);
+}
+
+/**
+ * `speedShowKey` for the item in the player, with the witnessed medium, so an
+ * album track played from `/downloads` saves no speed for its album.
+ */
+export function speedKeyFor(current: { episode: Episode; podcast: Podcast } | null): string | null {
+  if (!current) return null;
+  const { episode, podcast } = current;
+  const medium = witnessedMedium(current);
+  return speedShowKey(episode, medium === podcast.medium ? podcast : { ...podcast, medium });
+}
+
+/**
+ * Whether the item in the player is a song on its own: an album or playlist
+ * track. Music is hard-coded at 1×, so <Player> plays it there and the callers
+ * of the speed controls hide them, as on a live item. Not `speedKeyFor() === null`,
+ * which is also true of an HLS enclosure and of an item with no ids.
+ */
+export function isMusicItem(current: { episode: Episode; podcast: Podcast } | null): boolean {
+  return !!current && playsAsTracks({ medium: witnessedMedium(current) });
+}
+
+/**
+ * `<Player>`'s answer when the element refuses `refused` (the spec lets a
+ * browser throw `NotSupportedError` for a speed it cannot play). It drops the
+ * stored speed that holds `refused` — the show's own entry, the global one, or
+ * both — and re-resolves, so the element and the tile agree on what plays.
+ *
+ * **Not `setPlaybackRate(1)`.** That writes `'1'` as the show's own choice,
+ * and an entry outranks the global speed for ever: a refusal is not a choice.
+ * If the re-resolved speed is refused too, the apply effect runs again and
+ * this drops that one, so it ends at 1×.
+ */
+export function dropRefusedPlaybackRate(refused: number): void {
+  const current = useApp.getState().current;
+  const showKey = speedKeyFor(current);
+  if (showKey && storage.playbackRate.getShow(showKey) === refused) storage.playbackRate.clearShow(showKey);
+  if (storage.playbackRate.get() === refused) storage.playbackRate.set(1);
+  const next = resolvePlaybackRate(current);
+  // A refused speed held by neither key (it cannot be today) must still leave
+  // the store, or the tile names a speed the element is not playing.
+  useApp.setState({ playbackRate: next === refused ? 1 : next });
 }

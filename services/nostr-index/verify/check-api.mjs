@@ -131,7 +131,7 @@ console.log('seed:', JSON.stringify(stats));
 ok(stats.rejected === 0, 'no seed event was rejected');
 ok(stats.deleted === 1, 'the tombstone deleted exactly one note');
 
-const app = buildApi(db, { apiKey: API_KEY, piTtlHours: 168 });
+const app = buildApi(db, { apiKey: API_KEY, piTtlHours: 168, piMissTtlHours: 1 });
 await app.ready();
 
 async function get(url) {
@@ -324,6 +324,24 @@ async function post(url, payload) {
   await db.query(`update pi_podcasts set fetched_at = now() - interval '400 days' where guid = 'found-guid'`);
   const stale = await post('/pi/podcasts', { guids: ['found-guid'] });
   ok(!('found-guid' in stale.body), 'an entry past its TTL is absent rather than served stale');
+
+  // A "not found" expires on its OWN, shorter TTL. Two hours old is inside the
+  // week a resolved row keeps and outside the hour a miss keeps: the newest
+  // episode in a playlist read "not in Podcast Index" for a week after PI
+  // crawled it, because the miss was held as long as an answer.
+  await db.query(`insert into pi_episodes (feed_guid, item_guid, data, miss, fetched_at) values ('f1', 'new-ep', null, true, now() - interval '2 hours')`);
+  await db.query(`insert into pi_episodes (feed_guid, item_guid, data, miss, fetched_at) values ('f1', 'fresh-miss', null, true, now() - interval '10 minutes')`);
+  await db.query(`update pi_episodes set fetched_at = now() - interval '2 hours' where feed_guid = 'f1' and item_guid = 'i1'`);
+  const aged = await post('/pi/episodes', { refs: [
+    { feedGuid: 'f1', itemGuid: 'new-ep' }, { feedGuid: 'f1', itemGuid: 'fresh-miss' }, { feedGuid: 'f1', itemGuid: 'i1' },
+  ] });
+  ok(!('f1:new-ep' in aged.body), 'an episode miss past the miss TTL is absent, so PI is asked again');
+  ok('f1:fresh-miss' in aged.body && aged.body['f1:fresh-miss'] === null, 'an episode miss inside the miss TTL is still an explicit null');
+  eq(aged.body['f1:i1'], { id: 9 }, 'a resolved episode of the same age is still served — the short TTL is for misses only');
+
+  await db.query(`update pi_podcasts set fetched_at = now() - interval '2 hours' where guid = 'missing-guid'`);
+  const agedFeed = await post('/pi/podcasts', { guids: ['missing-guid'] });
+  ok(!('missing-guid' in agedFeed.body), 'a feed miss past the miss TTL is absent too — a feed PI adds today must not stay "not found" for a week');
 }
 
 await app.close();

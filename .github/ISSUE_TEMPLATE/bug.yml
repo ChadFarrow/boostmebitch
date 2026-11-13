@@ -1,0 +1,58 @@
+name: Bug
+description: Something in BoostMeBitch or BoostMeBuddy does not work.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The first four headings match the in-app **Report a bug** issues (`lib/bug-report.ts`), so every bug reads the same.
+
+        **This issue is public.** Do not paste an npub, a private key, a seed phrase, an NWC string, a wallet balance or a URL query.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What the app did. Name the screen and the control.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What they expected
+      description: What the app should do instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: One step on each line.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: false
+  - type: textarea
+    id: snapshot
+    attributes:
+      label: App snapshot
+      description: The app info from an in-app report, or console and playback logs. Remove anything personal first.
+      render: text
+    validations:
+      required: false
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      description: The site or app where it happened.
+      options:
+        - boostmebitch.com
+        - boostmebuddy.com
+        - beta.boostmebitch.com
+        - Android app (com.boostmebitch)
+        - Android app (com.boostmebuddy)
+        - Local dev
+        - Other
+    validations:
+      required: false

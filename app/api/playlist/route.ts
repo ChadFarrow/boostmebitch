@@ -3,8 +3,11 @@ import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
 import { resolvePlaylistTracks } from '@/lib/playlist-db';
-import { batchEpisodes, episodeKey, fillTrackValues, MAX_BATCH } from '@/lib/pi-batch';
-import { fnvHash, hasValueRecipients, mergeRssOverPi } from '@/lib/util';
+import { batchEpisodes, episodeKey, MAX_BATCH } from '@/lib/pi-batch';
+import { fnvHash, mergeRssOverPi, playsAsTracks, communityPlaylistToPodcast } from '@/lib/util';
+import { COMMUNITY_FEEDS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
+import { summaryOf } from '@/lib/community/http';
 import type { Episode, PlayGroup, Podcast } from '@/lib/types';
 import type { PlaylistItemRef } from '@/lib/feed-xml';
 
@@ -40,6 +43,20 @@ const PLAYLIST_RATE_LIMIT = 30;
  */
 const PLAYLIST_CACHE = {
   'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=600',
+};
+
+/**
+ * A community playlist read from OUR store: its maker edits it and then reads
+ * this page back to label the rows, and a delete must take it off the CDN, so it
+ * is shared-cached 30 s, not the five minutes a remote feed gets.
+ *
+ * **Keep the `max-age`.** Without it the browser asks again on every visit:
+ * `/playlists` counts each row with one of these, so a few visits in a minute
+ * spent the per-IP allowance and the playlist the listener then opened came
+ * back 429, empty (measured by e2e:communityui, section 7a).
+ */
+const COMMUNITY_PLAYLIST_CACHE = {
+  'Cache-Control': 'public, max-age=30, s-maxage=30, stale-while-revalidate=60',
 };
 
 /**
@@ -107,7 +124,23 @@ export async function GET(req: Request) {
   const limit = Math.min(Math.max(rawLimit, 1), MAX_BATCH);
 
   return withErrorHandling(async () => {
-    const [channel, piRecord] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
+    // A community playlist's feed is OURS: read the songs from the store, never
+    // over HTTP (in dev the feed origin is a private address `safeFetch` refuses,
+    // and in production it would be a round trip to ourselves).
+    const communityId = communityIdFromFeedUrl(url);
+    let channel: Awaited<ReturnType<typeof getPlaylistChannel>>;
+    let piRecord: Podcast | null = null;
+    if (communityId) {
+      const own = COMMUNITY_FEEDS_ON && communityStoreConfigured() ? await getPlaylist(communityId) : null;
+      if (!own || own === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 });
+      channel = {
+        podcast: communityPlaylistToPodcast(summaryOf(own)),
+        refs: own.songs.map((s) => ({ feedGuid: s.feedGuid, itemGuid: s.itemGuid })),
+        sourceFeedUrl: undefined,
+      };
+    } else {
+      [channel, piRecord] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
+    }
     if (!channel) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
     // The feed's own title, medium, art and value block win — the document was
@@ -122,6 +155,7 @@ export async function GET(req: Request) {
     // exactly the feed whose favorite heart would otherwise stay hidden.
     const podcast = piRecord ? mergeRssOverPi(piRecord, channel.podcast) : channel.podcast;
     const { refs } = channel;
+    const pageCache = communityId ? COMMUNITY_PLAYLIST_CACHE : PLAYLIST_CACHE;
     // The show the playlist was built from. Its episode markers are bare titles
     // — "Saddle Up" — so without this the heading above a run of tracks is a
     // word with no stated relationship to anything. Resolved AFTER the channel,
@@ -152,7 +186,7 @@ export async function GET(req: Request) {
           nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow: await sourceShowPromise,
           playGroups,
         },
-        { headers: PLAYLIST_CACHE },
+        { headers: pageCache },
       );
     }
 
@@ -169,11 +203,17 @@ export async function GET(req: Request) {
     // failure is `null`, which reverts to asking PI for everything. Unset
     // `PLAYLIST_DB_URL` and this whole branch disappears.
     //
-    // It answers with the tracks and their value blocks HELD APART, and that
-    // separation is the money rule: `payableValue` reads `episode.value` first,
-    // so a block carried straight through here would outrank the live one
-    // `fillTrackValues` reads below. See `PlaylistDbTracks.values`.
-    const db = await resolvePlaylistTracks(page, podcast.id);
+    // It answers with tracks and NO PAYEE, and that is the money rule:
+    // `payableValue` reads `episode.value` first, so a block carried through here
+    // would outrank the track's own feed. See `PlaylistDbTracks`.
+    //
+    // **Asked only when the rows are TRACKS (`playsAsTracks`).** The database
+    // is StableKraft's track table: no show notes, no show title. That is all a
+    // song row needs, but a `podcastL` row is an EPISODE that opens the detail
+    // view, and the table holds some podcasts too — so on the Small Group Shows
+    // list it answered 20 of 114 rows with episodes that had no notes to show.
+    // A miss is harmless and a hit is not, which is the accelerator rule.
+    const db = playsAsTracks(podcast) ? await resolvePlaylistTracks(page, podcast.id) : null;
     const stillNeeded = db
       ? page.filter((ref) => !db.tracks.has(episodeKey(ref)))
       : page;
@@ -217,57 +257,20 @@ export async function GET(req: Request) {
       }
     }
 
-    // ── The value block every row's BOOST depends on ────────────────────────
-    // PI's episode record carries one only when the ITEM declares it, and most
-    // music feeds declare `<podcast:value>` once on the album's channel. So
-    // without this pass a playlist's rows arrive payable-in-principle and
-    // unpayable in fact: BOOST greys out on every track, on every playlist, and
-    // the disabled button is indistinguishable from a feature this app does not
-    // have. The container's own block is NOT the fallback — it belongs to the
-    // curator; see `payableValue` in lib/util.ts.
-    //
-    // Placed after the row loop so placeholders are already in the array and
-    // keep their positions: `fillTrackValues` fills by index and passes an
-    // unresolved row through untouched.
-    //
-    // `capped` is deliberately not read — see the cache header below for why it
-    // must not join `unaskedValues` there, which is the whole reason
-    // `fillTrackValues` reports the two separately.
-    const { episodes: valued, unasked: unaskedValues } = await fillTrackValues(episodes);
+    // ── No row carries a payee ──────────────────────────────────────────────
+    // Only a track's own album feed can name who it pays, and one page is up to
+    // MAX_BATCH rows from about as many feeds: measured on the Homegrown Hits
+    // playlist, 100 rows span 69 feeds, 7.5 s to read at FEED_FANOUT against
+    // 1.7 s for this page. So the page ships none, a row reads as not read
+    // (`valueNotRead`), and `/api/item-value` answers when it plays or its BOOST
+    // is pressed. The playlist's own block is NOT a fallback: it belongs to the
+    // curator (`payableValue`).
 
-    // ── The accelerator's own value block, as the LAST resort ───────────────
-    // Applied only to rows the live sources could not value, never over one
-    // they could. This database is a crawl and is months behind, so it is the
-    // worst answer available about who gets paid — but it is still better than
-    // no BOOST button at all on a track Podcast Index cannot resolve, which is
-    // what this page showed before the accelerator existed.
-    //
-    // Index-aligned with `page`: `episodes` pushes exactly one row per ref in
-    // order and `fillTrackValues` fills by index and returns the same length,
-    // which is the property the row loop above already depends on.
-    //
-    // `unaskedValues` is deliberately NOT decremented for a row filled here. It
-    // means "we could not ask", and we still could not — the cache header must
-    // keep saying so, or a page served while PI was unreachable freezes a
-    // months-old payee into the CDN for the window.
-    if (db?.values.size) {
-      for (let i = 0; i < valued.length; i++) {
-        if (hasValueRecipients(valued[i].value)) continue;
-        const snapshot = db.values.get(episodeKey(page[i]));
-        if (snapshot) valued[i] = { ...valued[i], value: snapshot };
-      }
-    }
-
-    // The server owns the next offset and the client uses it verbatim. Deriving
-    // it client-side from `offset + limit` would desync the moment anything on
-    // this side changes what a page contains — the ref cap, dedupe, or a future
-    // row-shedding pass — and the symptom would be skipped tracks, which is
-    // exactly the failure nobody can see.
     const nextOffset = offset + page.length < refs.length ? offset + page.length : null;
 
     return NextResponse.json(
       {
-        podcast, episodes: valued, total: refs.length, offset, nextOffset, notFound, couldNotAsk,
+        podcast, episodes, total: refs.length, offset, nextOffset, notFound, couldNotAsk,
         // Started before the page work; by here it has almost always settled.
         sourceShow: await sourceShowPromise,
         playGroups,
@@ -278,27 +281,7 @@ export async function GET(req: Request) {
           // be cached — the retry has to actually reach PI again. `notFound`
           // rows ARE cacheable: PI answered.
           //
-          // `unaskedValues` is the same rule one level down, and it is NOT added
-          // to the client-visible `couldNotAsk`: that number labels rows on
-          // screen as "couldn't be looked up", and these rows resolved fine —
-          // only their album's value block did not. Cached, they would freeze a
-          // dead BOOST button into the CDN for the window, which is the negative
-          // cache this route's three-state contract exists to refuse.
-          //
-          // **`fillTrackValues`' `capped` count is deliberately NOT in this
-          // test, and folding it in was the most expensive line on a long
-          // playlist.** It counts rows that pass skipped because their album was
-          // past its own `MAX_TRACK_VALUE_FEEDS` ceiling — a deterministic
-          // decision about a fixed list of refs in a fixed order, so the retry
-          // this `no-store` buys returns the identical body. A page whose tracks
-          // span more than sixteen albums is the ordinary shape of a
-          // greatest-hits playlist, so this route answered `no-store` on a
-          // healthy response for exactly the feeds that cost the most to build:
-          // no CDN entry, no browser entry, and every visitor and every reload
-          // paying a full page of Podcast Index lookups again. Nothing is
-          // withheld by caching it — those rows are as valued as any retry could
-          // make them.
-          couldNotAsk > 0 || unaskedValues > 0 ? NO_STORE : PLAYLIST_CACHE,
+          couldNotAsk > 0 ? NO_STORE : pageCache,
       },
     );
   }, 'playlist fetch failed');

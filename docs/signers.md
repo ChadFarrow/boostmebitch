@@ -415,6 +415,14 @@ boost note, the favorites publish and the mute publish all paid it. Reported as
 *"it works but it's slow to connect"*, which is exactly what a correct workaround
 for a self-inflicted problem feels like.
 
+> **CORRECTION (2026-11-01).** The `no permission` in that paragraph did not come
+> from Clave. Clave's source (`Shared/LightSigner.swift`) has never sent that
+> string; Amber sends it, verbatim, to any client it has no permission row for,
+> and on the reporting user's other phone Amber held the same key and listened on
+> the same relays. See "Two signer apps, one key" below. `perms` is still right
+> to send — a signer that prompts per call does queue every request for a tap —
+> but it was not what made those answers appear.
+
 The comparison that settled it: Conduit's iOS flow — tap Clave, approve, switch
 back, signed in, no pause — differs here and almost nowhere else.
 `CONDUIT_NIP46_PERMISSIONS` (`packages/core/src/protocol/remote-signer.ts`) goes
@@ -473,6 +481,14 @@ throws on the first response. Without it, sign-in does not stall — it fails.
 The signatures afterwards fail too, and that half is unchanged: the boost note,
 the favorites publish, the mute publish, each on the first approval, each
 looking like a signer that refused.
+
+> **CORRECTION (2026-11-01).** Those two screenshots were not Clave answering
+> with an error first. Clave ticked the call green because Clave answered it with
+> the key; the magenta `no permission` was **a second signer app holding the same
+> key** — Amber, on another device — answering faster, and nostr-tools keeps
+> whichever answer arrives first. See "Two signer apps, one key" below. The
+> handshake still needs `withApprovalWait` (an error answer without it fails the
+> sign-in), but the diagnosis above was wrong.
 
 **`no permission` is a sixth phrasing, observed on a device rather than read out
 of clave-casa's source**, and none of the five copied from that file matched it.
@@ -1054,6 +1070,92 @@ races above them and this module cannot see it. Closing that still means teachin
 `withDecryptTimeout` about the bunker case first, exactly as the block comment in
 `adaptToWindowNostr` says.
 
+### Two signer apps, one key: Amber's `no permission` beat Clave's answer, every time
+
+**FIXED 2026-11-01.** Reported from an iPhone: a brand-new **Sign in with Clave**
+pairing, then the account menu sat on *"Waiting for you to approve in your signer
+(asked 5×) — Request: reading your public key"* until the budget ran out. The
+same user had paired Amber with this app on an Android phone.
+
+**A NIP-46 request is addressed to the user's PUBKEY, not to an app.** Every
+signer app that holds that key and listens on the relay sees it and answers it.
+Amber answers any client it has no permission row for with
+`BunkerResponse(id, "", "no permission")` (`EventNotificationConsumer.kt`), on
+the relay the request came in on — and it listens on `relay.nostrconnect.com` and
+`relay.powr.build` because the user's Android pairing with THIS app put them in
+its relay set. So every request from the iPhone got two answers from one key.
+
+**Measured, not inferred.** Both relays keep kind:24133 for a short while, so the
+session could be read back after the fact (read-only; nothing published). For the
+iPhone pairing's client key, nearly every request had two answers from the
+user's key:
+
+| Answer | Relay | Size | Fits |
+|---|---|---|---|
+| Clave's | mostly `relay.powr.build` | 220 chars | a 65–96 byte plaintext: `{"id":…,"result":"<64-hex pubkey>"}` |
+| Amber's | mostly `relay.nostrconnect.com` | 176 chars | a 33–64 byte plaintext: `{"id":…,"result":"","error":"no permission"}` |
+
+The re-issues landed at +3 s, +5 s, +9 s, +9 s — `BUNKER_APPROVAL_GAPS_MS` — and
+each needs a "not yet" answer first, while Clave answered each request within a
+second. Clave's whole error vocabulary (`Pairing limit reached…`, `Invalid or
+missing bunker secret`, `Client not paired…`, `user rejected`) contains nothing
+`isApprovalPending` matches, and since `dc59364` it sends no "not yet" answer at
+all.
+
+**Why the faster app decided it.** nostr-tools 2.19.4's response handler runs
+`if (error) reject; else if (result) resolve; delete listeners[id]` on the FIRST
+answer for an id. Amber's service is always connected; Clave answers through the
+APNs wake. Amber won, `isApprovalPending('no permission')` said "queued", and
+`withApprovalWait` re-issued into the same race. The reconnect probe lost the same
+way: `pingBunkerAdapter` counts any rejection as "not alive", so Amber's answer to
+`ping` made the app rebuild a working Clave transport — which is why a restore
+`connect` appeared seconds after a fresh pairing.
+
+**The pairing itself survived, and that is why "it connects".** `fromURI` accepts
+the ack only when `result === secret`, and only the paired signer knows the
+secret, so Amber's error was ignored there. Every request after the ack goes
+through the first-answer-wins handler.
+
+**The fix: a result beats an error on the same id** (`holdErrorsForResult`,
+`lib/nostr/nip46-errors.ts`, pinned by `check:nip46error`; installed on
+`BunkerSigner.prototype.setupSubscription` in `bunker.ts`). It wraps the
+library's `listeners` table rather than copying its handler:
+
+- An error answer starts a `NIP46_ERROR_GRACE_MS` (5 s) timer and does not end
+  the request. A result on the same id inside the window settles it.
+- The table's `delete` is a no-op on an unsettled entry, so the library's
+  delete-after-reject — and its delete after an answer with neither field — no
+  longer drops the listener. Only a settle removes an entry.
+- With several errors, a final answer replaces a "not yet" one, so a real
+  refusal still fails FAST, in the refusing signer's words, instead of feeding the
+  re-issue loop.
+
+**Why it is safe:** every program that can author with this key produces the
+SAME correct result — the same pubkey, a valid signature by the same key, the
+same plaintext. Only an error describes the responder's own state, so only an
+error can be wrong about this client.
+
+**What it costs:** a real refusal from the only signer reaches the caller 5 s
+later. The `e2e:mutes` timings that follow a denial (5e, 5g, 5h) carry the window
+as `GRACE_MS`, held equal to the constant by `check:nip46error`.
+
+**STILL OPEN, and it is narrow:** a request Clave QUEUES for a tap (a protected
+kind on a low-trust connection) sends nothing until the tap, so with an imposter
+answering, the window ends on the imposter's `no permission` and
+`withApprovalWait` re-issues — which queues a second prompt in Clave. Holding a
+"not yet" answer open for the whole call would close it, but it needs the
+approval notice raised from the hold rather than from the re-issue loop, and it
+takes the notice's Stop-waiting control out of the path until then.
+
+**Proof:** `npm run e2e:twosigners` — one relay, two stub responders on one key,
+the imposter answering `no permission` at once and the real signer 700 ms later.
+On the code before the fix it fails at scenario 1: `connect` re-issued three
+times in nine seconds, the approval notice up, no `window.nostr`.
+
+**For a user, the workaround before the fix shipped** was to stop Amber on the
+other phone while signing in with Clave. Nothing about the pairing is wrong on
+either side.
+
 ### A follow list past 849 accounts cannot be signed by ANY remote signer
 
 **FIXED 2026-09-13 for the misdiagnosis and the message; the limit itself is
@@ -1387,6 +1489,8 @@ One `window.focus` listener in `components/nostr-auth/index.tsx`, active only wh
 - **`subscribeAmberStage(fn)`** — `'idle' | 'awaiting' | 'returned'`. `<AmberCompletion>` flips its hint copy in lockstep with `invokeAmber`. While in flight it always shows a "◆ Read clipboard manually" button + paste textarea, because `visibilitychange` is unreliable on standalone-PWA returns.
 - **`subscribeBunkerHealth(fn)`** — boolean (stale or not); adapter calls run through `trackBunkerCall` with a 30 s timeout. `<BunkerHealthBanner>` in `<AccountMenu>` offers "Signer disconnected — Reconnect". Targets the iOS-PWA-suspended-WebSocket case.
 - **`subscribeBunkerApproval(fn)`** — `{ waiting, label, attempt }`, driven by `withApprovalWait`. A **third** observable rather than a second meaning for the health flag, because the two say opposite things: stale means the transport looks dead, this means it demonstrably is not. `<BunkerApprovalNotice>` renders it, carries **Stop waiting** (`cancelBunkerApprovalWait`), and returns null when idle so a surface can mount it unconditionally.
+  - **It names the request** ("Request: signing your favorites list (kind 10333)"), via `approvalRequestText`. The adapter's `signEvent` label is `sign_event kind:<n>` for this, not a bare `sign_event`: reported as *"I have it set to fully approve, so why do I keep seeing this"*, and the notice could not say which of six methods — or which of a dozen publishers — the signer was refusing. Full Trust does not settle it (`no permission` on a Full Trust Clave connection turned out to be ANOTHER app holding the same key — "Two signer apps, one key", above), so the request is the only fact a user or a bug report can act on. The label is display text only; nothing compares it. Pinned by `e2e:mutes` 5h.
+  - **The anchored copy under the account button sits in a `bg-ink` wrapper.** The notice tints with `bg-nostr/10`, which is translucent, and floating over the page the search box and the episode title read straight through the sentence. Inside the menu and the boost modal it already sits on an opaque card.
 
 
 

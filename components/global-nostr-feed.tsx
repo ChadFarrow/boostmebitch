@@ -7,6 +7,7 @@ import {
   indexedGlobalNotes,
   useViewerReposts,
   type DiscoveredNote,
+  LocalNoteSink,
 } from '@/lib/nostr';
 import { episodeRefOf, useNoteMeta } from '@/lib/use-note-meta';
 import { storage } from '@/lib/storage';
@@ -31,7 +32,7 @@ type FeedItem =
  * version wins (it carries author profile, replies, zap target).
  */
 export function GlobalNostrFeed() {
-  const { notes, loading, err, refresh } = useNostrFeed({
+  const { notes, loading, err, refresh, addLocal } = useNostrFeed({
     cacheKey: 'global',
     fetcher: fetchAllPodcastNotes,
     // One request for the notes, their replies, quoted events and author
@@ -92,30 +93,32 @@ export function GlobalNostrFeed() {
   }, [notes, storedBoosts, mutedPubkeys]);
 
   return (
-    <FeedSection<FeedItem>
-      heading={
-        <h2 className="font-display text-2xl">
-          <span className="text-nostr">#</span> Global boost feed
-        </h2>
-      }
-      notes={merged}
-      loading={loading}
-      err={err}
-      emptyMessage="no nostr activity surfaced from these relays yet."
-      onRefresh={refresh}
-      itemKey={(item) => item.key}
-      renderNote={(item) => {
-        if (item.kind !== 'note') return <BoostCard boost={item.boost} />;
-        const ref = episodeRefOf(item.note);
-        return (
-          <NoteCard
-            note={item.note}
-            podcast={item.note.podcastGuid ? podcasts[item.note.podcastGuid] ?? null : null}
-            episode={ref ? episodes[ref.key] ?? null : null}
-            repostedIds={repostedIds}
-          />
-        );
-      }}
-    />
+    <LocalNoteSink.Provider value={addLocal}>
+      <FeedSection<FeedItem>
+        heading={
+          <h2 className="font-display text-2xl">
+            <span className="text-nostr">#</span> Global boosts &amp; comments
+          </h2>
+        }
+        notes={merged}
+        loading={loading}
+        err={err}
+        emptyMessage="no nostr activity surfaced from these relays yet."
+        onRefresh={refresh}
+        itemKey={(item) => item.key}
+        renderNote={(item) => {
+          if (item.kind !== 'note') return <BoostCard boost={item.boost} />;
+          const ref = episodeRefOf(item.note);
+          return (
+            <NoteCard
+              note={item.note}
+              podcast={item.note.podcastGuid ? podcasts[item.note.podcastGuid] ?? null : null}
+              episode={ref ? episodes[ref.key] ?? null : null}
+              repostedIds={repostedIds}
+            />
+          );
+        }}
+      />
+    </LocalNoteSink.Provider>
   );
 }

@@ -1,5 +1,5 @@
 'use client';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 
 // Renders the podcast's artwork with a deterministic colored-initial
@@ -14,6 +14,10 @@ import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 // Pass the same sizing/border classes you'd put on a bare <img>; this
 // component re-applies them to the fallback div so the layout stays stable
 // either way.
+// One shared empty set, so a cover with no failures allocates nothing.
+// `setFailed` always replaces it with a new set, so it is never mutated.
+const NO_FAILURES: ReadonlySet<string> = new Set();
+
 function PodcastCoverImpl({
   image,
   artwork,
@@ -133,13 +137,26 @@ function PodcastCoverImpl({
     const net = artCandidates(image, artwork, w, { preferOriginal });
     return localSrc ? [...net, localSrc] : net;
   }, [image, artwork, w, localSrc, preferOriginal]);
-  const [idx, setIdx] = useState(0);
-  // Re-attempt from the first candidate whenever the source URLs change. Without
-  // this, a caller that swaps `image` over time (e.g. per-chapter artwork in the
-  // player) would keep a stale failing-index: once a bad img advanced idx to the
-  // artwork fallback, the next (valid) image would be skipped for artwork.
-  useEffect(() => { setIdx(0); }, [image, artwork, w, localSrc, preferOriginal]);
-  const current = candidates[idx];
+  // The ladder records which URLs FAILED, never a position in the list.
+  //
+  // It was an index, reset to 0 by a passive effect on mount and whenever the
+  // URLs changed. A URL that fails with no round trip — blocked, offline,
+  // refused by the browser — fires `error` before that effect runs, so
+  // `onError` moved the index to 1 and the effect moved it straight back to 0.
+  // Same URL, so the same `key`, so React kept the <img> that had already
+  // failed, and a failed <img> never fires again: a broken image for good, on
+  // every surface that renders a cover. Traced on Homegrown Hits 157 with the
+  // episode art blocked, and pinned by `npm run e2e:coverladder`.
+  //
+  // A failure is a fact about a URL, so nothing can undo it and a failed URL
+  // can never be `current` again. That also covers what the reset was for: a
+  // caller that swaps `image` over time (per-chapter artwork in the player)
+  // hands over a URL that is not in the set, so it is tried at once, and a
+  // valid image is never skipped for the artwork because an earlier one failed.
+  // The cost: a URL that failed is not retried while this cover stays mounted.
+  // The set grows only by URLs that failed here, so it stays a handful.
+  const [failed, setFailed] = useState<ReadonlySet<string>>(NO_FAILURES);
+  const current = candidates.find((u) => !failed.has(u));
   if (current) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
@@ -165,7 +182,7 @@ function PodcastCoverImpl({
         // where chapter art competes with the audio enclosure on one connection.
         {...(lowPriority ? { fetchPriority: 'low' as const } : {})}
         className={`${className ?? ''} ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
-        onError={() => setIdx((i) => i + 1)}
+        onError={() => setFailed((prev) => (prev.has(current) ? prev : new Set(prev).add(current)))}
       />
     );
   }
@@ -194,8 +211,8 @@ function PodcastCoverImpl({
  * MEMOIZED, and every prop is a primitive, which is what makes it work.
  *
  * This is mounted once per row on twelve surfaces — every episode row, every
- * favorites row, every queue row — and it carries internal state: the
- * `onError` ladder's position. `<EpisodeList>` reads seven store slices
+ * favorites row, every queue row — and it carries internal state: the URLs
+ * the `onError` ladder has seen fail. `<EpisodeList>` reads seven store slices
  * including `current` and `isPlaying`, and its rows are one long inline closure
  * rather than components, so every `play()` and every pause re-renders every
  * visible row. Without this, each of those re-renders reconciled a cover whose

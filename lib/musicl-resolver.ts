@@ -118,6 +118,7 @@ interface FoundItem {
   itemXml: string;
   title?: string;
   image?: string;
+  durationText?: string;
 }
 
 function findItemByGuid(xml: string, itemGuid: string): FoundItem | null {
@@ -133,10 +134,12 @@ function findItemByGuid(xml: string, itemGuid: string): FoundItem | null {
     const image =
       (itunesImg ? readAttr(itunesImg.attrs, 'href') : undefined)
       ?? (rssImageUrl?.inner.trim() || undefined);
+    const duration = firstBlock(itemXml, 'itunes:duration');
     return {
       itemXml,
       title: title?.inner.trim(),
       image,
+      durationText: duration && !duration.selfClosing ? duration.inner.trim() : undefined,
     };
   }
   return null;
@@ -213,6 +216,9 @@ export interface ResolvedRemoteItem {
   value: ValueBlock;
   title?: string;
   image?: string;
+  /** The item's `<itunes:duration>` as the feed wrote it, seconds or a clock.
+   *  `lib/pi.ts` holds the parser, and this module must not import that file. */
+  durationText?: string;
   /**
    * True when the item was reached by WALKING a publisher feed's remoteItems —
    * i.e. the `feedGuid` the caller resolved from names the publisher, not the
@@ -241,44 +247,16 @@ export interface ResolvedRemoteItem {
  * `<podcast:value>` once, on the channel, and let every track inherit it — so a
  * reader that only looks inside `<item>` finds nothing on the majority of real
  * albums and reports a track as unpayable while its splits sit one level up.
- *
- * Split out because two callers need exactly this and only one of them may have
- * the publisher walk below it: see `resolveItemValueFromRss`.
  */
 function directHit(xml: string, itemGuid: string): ResolvedRemoteItem | null {
   const direct = findItemByGuid(xml, itemGuid);
   if (!direct) return null;
+  const { title, image, durationText } = direct;
   const itemValue = extractValueBlock(direct.itemXml);
-  if (itemValue) return { value: itemValue, title: direct.title, image: direct.image };
+  if (itemValue) return { value: itemValue, title, image, durationText };
   const channelValue = extractValueBlock(channelScope(xml));
-  if (channelValue) return { value: channelValue, title: direct.title, image: direct.image };
+  if (channelValue) return { value: channelValue, title, image, durationText };
   return null;
-}
-
-/**
- * The value block for one item of a feed we ALREADY know is that item's parent.
- *
- * **Deliberately has no publisher walk, and that is the whole reason it is a
- * separate export.** `resolveRemoteItemFromRss` falls through to fetching up to
- * `MAX_ALBUM_FEEDS` album feeds when the URL turns out to name a publisher, and
- * its own comment says why that is capped: the caller's list is feed-supplied,
- * so nested, the two fan-outs MULTIPLY. `/api/playlist` calls this once per
- * unvalued track on a page of up to 100, having resolved each track's real
- * parent feed through Podcast Index first — so there is no publisher to walk,
- * and a walk reachable from there would turn one page into thousands of
- * outbound fetches.
- *
- * Returns null when the feed does not hold the item, or holds it with no value
- * block at any level. Rides the same 5-minute `fetchFeedXml` cache, so N tracks
- * from one album cost one fetch.
- */
-export async function resolveItemValueFromRss(
-  feedUrl: string,
-  itemGuid: string,
-): Promise<ValueBlock | null> {
-  const xml = await fetchFeedXml(feedUrl);
-  if (!xml) return null;
-  return directHit(xml, itemGuid)?.value ?? null;
 }
 
 /**
@@ -350,14 +328,14 @@ export async function resolveRemoteItemFromRss(
       const itemValue = extractValueBlock(found.itemXml);
       if (itemValue) {
         return {
-          value: itemValue, title: found.title, image: found.image,
+          value: itemValue, title: found.title, image: found.image, durationText: found.durationText,
           viaPublisher: true, albumFeedGuid,
         };
       }
       const channelValue = extractValueBlock(channelScope(albumXml));
       if (channelValue) {
         return {
-          value: channelValue, title: found.title, image: found.image,
+          value: channelValue, title: found.title, image: found.image, durationText: found.durationText,
           viaPublisher: true, albumFeedGuid,
         };
       }

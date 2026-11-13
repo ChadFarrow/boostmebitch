@@ -29,6 +29,10 @@ import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { FavoritesNewEpisodes } from '@/components/favorites-new-episodes';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
+import {
+  OpmlImportControls, OpmlImportPanel, OpmlLibraryImport, useOpmlImport, type OpmlImporter,
+} from '@/components/favorites-opml';
+import { saveFile } from '@/lib/save-file';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import {
@@ -98,6 +102,9 @@ export function FavoritesPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
+  // Held HERE, above both of its triggers — see `useOpmlImport`.
+  const opml = useOpmlImport();
+
   const [view, setView] = useState(() => storage.favView.get());
   const [q, setQ] = useState('');
   // Write through on every change: these are device settings, and a favorites
@@ -107,6 +114,17 @@ export function FavoritesPage() {
     setView(next);
     storage.favView.set(next);
   }
+
+  // Counts presses of the quick buttons. The scroll has to wait for the commit,
+  // because the press is what changes how much sits below the controls: on the
+  // old, longer list the browser would clamp to a position the new list cannot
+  // hold. A counter rather than a flag, so a second press of the same button
+  // scrolls again.
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const [quickPress, setQuickPress] = useState(0);
+  useEffect(() => {
+    if (quickPress) controlsRef.current?.scrollIntoView({ block: 'start' });
+  }, [quickPress]);
 
   const feedRows = useMemo(() => Object.values(favorites), [favorites]);
   const itemRows = useMemo(() => Object.values(favoriteEpisodes), [favoriteEpisodes]);
@@ -388,6 +406,43 @@ export function FavoritesPage() {
     [tabs, total],
   );
 
+  /**
+   * One press to each of the four sections this page is mostly visited for,
+   * where the menu above takes two and says nothing until it is opened.
+   *
+   * IT SETS THE FILTER, IT DOES NOT SCROLL TO AN ANCHOR. Under `all` a jump would
+   * land just below the section above it, inside `useAutoReveal`'s 200px margin,
+   * so that section reveals twelve more rows over the landing point. Chrome's
+   * scroll anchoring hides that and Safari has none, so an iPhone would land on
+   * albums after a press of the next button down. A filter has nothing above the
+   * list to grow, and `resetKey` holds the bytes cap to twelve rows.
+   *
+   * Words from `crossSplitLabel`, for the same reason the menu takes them: the
+   * button and the heading of the section it selects must not differ. A pair with
+   * no rows gets no button, as it gets no menu entry. Every other medium, and
+   * `~unknown`, stays in the menu: this row is four words wide at 320px and the
+   * sixteen segment strip it must not grow back into is in the note above.
+   */
+  const quickButtons = tabs
+    .filter((t) => t.key === 'music' || t.key === 'podcast')
+    .flatMap((t) =>
+      (['feeds', 'items'] as const)
+        .filter((k) => (k === 'feeds' ? t.feedCount : t.itemCount) > 0)
+        .map((k) => ({ tab: t.key, kind: k, label: crossSplitLabel(t.key, t.label, k) })),
+    );
+  function pressQuick(tabKey: string, kind: 'feeds' | 'items', on: boolean) {
+    if (on) {
+      update({ tab: 'all', split: 'all' });
+    } else {
+      update({ tab: tabKey, split: kind });
+      // A press that opened on a folded heading would still leave the reader
+      // with no rows and one more control to find.
+      const fold = `favpage:${kind}`;
+      if (collapsed.has(fold)) toggleCollapsed(fold);
+    }
+    setQuickPress((n) => n + 1);
+  }
+
   const showFeeds = split !== 'items';
   const showItems = split !== 'feeds';
 
@@ -420,12 +475,12 @@ export function FavoritesPage() {
   const feedSections = showFeeds
     ? tab === 'all'
       ? mediumSections(feeds, 'feeds', halfTotals.feeds, !!query)
-      : [{ fold: 'favpage:feeds', mediumKey: tab, heading: headingFor('feeds'), rows: feeds, ofTotal: feedRows.length }]
+      : [{ fold: 'favpage:feeds', mediumKey: tab, heading: headingFor('feeds'), rows: feeds, ofTotal: halfTotals.feeds.get(tab) ?? 0 }]
     : [];
   const itemSections = showItems
     ? tab === 'all'
       ? mediumSections(items, 'items', halfTotals.items, !!query)
-      : [{ fold: 'favpage:items', mediumKey: tab, heading: headingFor('items'), rows: items, ofTotal: itemRows.length }]
+      : [{ fold: 'favpage:items', mediumKey: tab, heading: headingFor('items'), rows: items, ofTotal: halfTotals.items.get(tab) ?? 0 }]
     : [];
 
   return (
@@ -447,6 +502,39 @@ export function FavoritesPage() {
           degraded. */}
       <FavoritesSyncNotice />
       <MutesSyncNotice />
+
+      {/* Under the notices, which stay the topmost thing, and over everything
+          else. PINNED because the reader who most wants this row is deep in a
+          long section, and a row that scrolled away would send them back up
+          the whole list first. `mounted` for the reason the gate above gives:
+          `tabs` is empty on the server. */}
+      {mounted && quickButtons.length > 1 && (
+        <div
+          role="group"
+          aria-label="Go to section"
+          className="sticky top-[var(--app-header-h)] z-10 flex gap-1 py-1 bg-ink/90 backdrop-blur"
+        >
+          {quickButtons.map((b) => {
+            const on = tab === b.tab && (split === b.kind || !tabHasBothHalves);
+            return (
+              <button
+                key={`${b.tab}|${b.kind}`}
+                type="button"
+                aria-pressed={on}
+                onClick={() => pressQuick(b.tab, b.kind, on)}
+                // `.btn-ghost`, not `.btn-mini`: the mini's muted text read as
+                // disabled on a real iPhone (see the OPML link box). `px-1` and
+                // 11px are what fit EPISODES into a quarter of 320px.
+                className={`btn-ghost h-11 min-w-0 flex-1 whitespace-nowrap px-1 text-[11px] sm:flex-none sm:px-6 ${
+                  on ? 'border-bolt text-bolt hover:border-bolt' : ''
+                }`}
+              >
+                {b.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Above the loading/empty/rows split on purpose, so it is reachable in
           every one of them. A signed-in user with nothing saved yet is exactly
@@ -481,6 +569,13 @@ export function FavoritesPage() {
           library, this describes the wire. */}
       <FavoritesNewEpisodes key={identity?.npub ?? 'guest'} onOpen={openNewEpisode} />
 
+      {/* The progress and result of an OPML import started from the EMPTY
+          card. Here, above the split, because that card turns into the library
+          the moment the shows land — and the "not added" list must survive
+          that. An import started under a library draws its result in
+          <OpmlLibraryImport>'s box instead, so this one hides for it. */}
+      <OpmlImportPanel importer={opml} where="empty" />
+
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
           fell straight through to <EmptyLibrary>, which says "Nothing saved
@@ -496,7 +591,7 @@ export function FavoritesPage() {
       {!mounted || (total === 0 && checking) ? (
         <p className="text-muted text-sm py-8">loading your favorites…</p>
       ) : total === 0 ? (
-        <EmptyLibrary signedIn={!!identity} degraded={degraded} off={syncOff} />
+        <EmptyLibrary signedIn={!!identity} degraded={degraded} off={syncOff} importer={opml} />
       ) : (
         <>
           {/* ALL THREE CONTROLS ON ONE ROW. Six rows of chrome stood between
@@ -508,8 +603,12 @@ export function FavoritesPage() {
 
               The menu comes FIRST, matching where the search box's selector
               sits relative to its input: the mode is a question about the
-              whole list, and the text box narrows what the mode returned. */}
-          <div className="flex items-center gap-2">
+              whole list, and the text box narrows what the mode returned.
+
+              A quick button lands HERE, under the pinned row: 60px is that
+              row's 52px plus the page's own 8px of air. Landing on the first
+              heading instead would hide the menu that names the filter. */}
+          <div ref={controlsRef} className="flex items-center gap-2 scroll-mt-[calc(var(--app-header-h)+60px)]">
             {/* One menu naming the current one of up to sixteen (medium, half)
                 states. See `filterOptions` above for what is in it, and
                 `<SelectMenu>` for why it is a menu rather than the strip of
@@ -607,6 +706,10 @@ export function FavoritesPage() {
               ))}
             </>
           )}
+          {/* UNDER the library, not above it: rarely pressed, and the controls
+              above are judged on how fast they get you to a favorite. The
+              empty branch offers the import in its own card instead. */}
+          <OpmlLibraryImport importer={opml} />
         </>
       )}
     </div>
@@ -1338,20 +1441,10 @@ function DownloadFavorites() {
         setMsg({ tone: 'no', text: refusal ?? 'no event came back from the relays' });
         return;
       }
-      const blob = new Blob([serializeFavoritesBackup(read.event)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = favoritesBackupFilename(read.event, BRAND.domain);
-      // In the document before the click: Firefox ignores a click on a
-      // detached anchor, so the download silently never starts.
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      // Next macrotask, not immediately: revoking inside the same task can
-      // cancel a download that has not yet been handed to the browser. It
-      // touches no React state, so an unmount in between is harmless.
-      setTimeout(() => URL.revokeObjectURL(url), 0);
+      saveFile(
+        new Blob([serializeFavoritesBackup(read.event)], { type: 'application/json' }),
+        favoritesBackupFilename(read.event, BRAND.domain),
+      );
       // The COUNT, not the tag total: an `i` tag is a favorite or a
       // placement group, and `⇧ RESTORE FROM BACKUP` reads it the same way.
       const count = favoriteIds(parseFavoritesList(read.event.tags)).length;
@@ -1453,9 +1546,10 @@ function mediumSections<T extends { medium?: string }>(
  *
  * `shown` / `ofTotal`: the heading states how many rows the section HAS, never
  * how many happen to be revealed — a count that shrank to match the visible
- * slice would be a worse lie than a long list. When a filter or a tab is
- * narrowing it, it says so explicitly rather than quietly restating a smaller
- * number as if it were the whole.
+ * slice would be a worse lie than a long list. When a filter is narrowing it, it
+ * says so explicitly rather than quietly restating a smaller number as if it
+ * were the whole. `ofTotal` is the medium's own count for that half. A medium tab
+ * passed the whole library's once, so ALBUMS read `60 of 65` with no album hidden.
  */
 function Section({
   listId, heading, shown, ofTotal, collapsed, onToggle, children,
@@ -1468,7 +1562,9 @@ function Section({
   onToggle: () => void;
   children: React.ReactNode;
 }) {
-  if (!shown && ofTotal === null) return null;
+  // `!ofTotal` covers both: null under `all`, and 0 for the half a medium tab
+  // does not have, which would otherwise head an empty list `EPISODES — 0`.
+  if (!shown && !ofTotal) return null;
   return (
     <section>
       <CollapsibleHeading
@@ -1514,7 +1610,8 @@ function EmptyLibrary({
   signedIn,
   degraded,
   off,
-}: { signedIn: boolean; degraded: boolean; off: boolean }) {
+  importer,
+}: { signedIn: boolean; degraded: boolean; off: boolean; importer: OpmlImporter }) {
   return (
     <div className="card p-6 flex flex-col gap-3 items-start">
       <p className="font-display text-xl">
@@ -1531,11 +1628,24 @@ function EmptyLibrary({
           && ' Favorites are set to stay on this device, so nothing saved in another app is shown here.'}
         {!signedIn && ' Favorites are stored on this device — sign in with Nostr to sync them across apps.'}
       </p>
-      {/* Clears the selection for the same reason <AppHeader>'s wordmark does
-          on this route — see `clearShowSelection`. */}
-      <Link href="/" onClick={clearShowSelection} className="btn-ghost text-xs">
-        ← back to search
-      </Link>
+      {/* The new user this page most often meets: someone with a library in
+          ANOTHER app. Not offered on a degraded read — the list may be full
+          and unreadable, and "bring your shows over" would be the same false
+          claim the headline above refuses to make. */}
+      {!degraded && (
+        <p className="text-sm text-muted leading-relaxed max-w-prose">
+          Coming from another podcast app? Export your subscriptions there as an OPML file,
+          then import it here, or paste a link to it.
+        </p>
+      )}
+      {!degraded && <OpmlImportControls importer={importer} />}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {/* Clears the selection for the same reason <AppHeader>'s wordmark does
+            on this route — see `clearShowSelection`. */}
+        <Link href="/" onClick={clearShowSelection} className="btn-ghost text-xs">
+          ← back to search
+        </Link>
+      </div>
     </div>
   );
 }

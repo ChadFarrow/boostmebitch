@@ -5,6 +5,7 @@ import { shortNpub } from '@/lib/nostr';
 import { linkify, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
 import { PodcastCover } from './podcast-cover';
+import { giphyIdFromUrl, giphyPreviewUrl } from '@/lib/giphy';
 
 /**
  * Renders one of the user's locally-saved sent boosts. Visual sibling to
@@ -26,6 +27,13 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
     profile?.display_name?.trim() ||
     profile?.name?.trim() ||
     (identity ? shortNpub(identity.npub) : 'You');
+
+  // A GIF picked in the boost modal is the message's LAST line (`withGif`).
+  // Shown as the picture it is rather than a link; only a URL `giphyGifUrl`
+  // built is recognised, so a stored message never puts an arbitrary `src` here.
+  const lines = boost.message?.split('\n') ?? [];
+  const gifId = lines.length ? giphyIdFromUrl(lines[lines.length - 1].trim()) : null;
+  const text = gifId ? lines.slice(0, -1).join('\n').trim() : boost.message;
 
   const successLegs = boost.legs.filter((l) => l.ok);
   const sats = successLegs.length
@@ -77,10 +85,25 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
           </span>
         </div>
 
-        {boost.message && (
+        {text && (
           <p className="text-sm text-bone whitespace-pre-wrap break-words mt-1.5">
-            {linkify(boost.message, 'text-bolt')}
+            {linkify(text, 'text-bolt')}
           </p>
+        )}
+        {gifId && (
+          // eslint-disable-next-line @next/next/no-img-element -- third-party animated media
+          <img
+            src={giphyPreviewUrl(gifId)}
+            alt="GIF"
+            loading="lazy"
+            // GIPHY can take a GIF down; the stored boost names it forever.
+            // Hidden, as `<NoteCard>` hides a dead note image, rather than a
+            // broken-image icon standing in the card for good.
+            onError={(e) => {
+              e.currentTarget.style.display = 'none';
+            }}
+            className="mt-1.5 h-32 w-auto max-w-full rounded border border-line object-contain"
+          />
         )}
 
       </div>

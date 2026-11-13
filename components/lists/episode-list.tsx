@@ -12,11 +12,11 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { authorLine, hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { valueNotRead, authorLine, hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
-import { loadFeed, loadPlaylistPage } from '@/lib/podcast-meta';
+import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
@@ -153,6 +153,14 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
   );
 }
 
+type RowValueState = 'reading' | 'none' | 'unread';
+
+function rowBoostLabel(state: RowValueState | undefined): string {
+  if (state === 'reading') return 'Checking for a value block…';
+  if (state === 'unread') return 'Could not read the value block — press to try again';
+  return 'Boost this track';
+}
+
 export function EpisodeList({
   feedId,
   feedUrl,
@@ -188,6 +196,11 @@ export function EpisodeList({
   const feedGenRef = useRef(0);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
   const [boostTrack, setBoostTrack] = useState<Episode | null>(null);
+  // What a press of a not-read row's BOOST has found so far, keyed by `e.id`.
+  const [rowValue, setRowValue] = useState<Record<number, RowValueState>>({});
+  // The latest press. An answer that arrives after a newer press must not swap the
+  // payee under a modal the listener is already reading.
+  const boostPressRef = useRef(0);
   const [valueOpen, setValueOpen] = useState(false);
   // Episodes open at 10 rows and reveal PAGE_SIZE more per press of a "Load
   // more" button. The Nostr comments feed sits below this list, so a button
@@ -490,6 +503,34 @@ export function EpisodeList({
   if (!data.podcast) return <div ref={containerRef} className="text-muted text-sm py-8">not found</div>;
 
   const showHasValue = hasValueRecipients(data.podcast.value);
+
+  // A playlist row reaches the page with no payee, because only its own album feed
+  // names one and a page spans dozens of them (app/api/playlist/route.ts). The
+  // press reads that feed, then opens the modal on what it said.
+  async function boostRow(e: Episode) {
+    const press = ++boostPressRef.current;
+    if (hasValueRecipients(e.value)) { setBoostTrack(e); return; }
+    const gen = feedGenRef.current;
+    setRowValue((prev) => ({ ...prev, [e.id]: 'reading' }));
+    const answer = await loadItemValue(e, data.podcast);
+    // The list moved to another show: this answer belongs to nothing on screen.
+    if (gen !== feedGenRef.current) return;
+    if (!answer.read) {
+      setRowValue((prev) => ({ ...prev, [e.id]: 'unread' }));
+      return;
+    }
+    const read: Episode = { ...e, value: answer.value, valueTimeSplits: answer.valueTimeSplits };
+    setData((prev) => ({
+      ...prev,
+      episodes: prev.episodes.map((row) => (row.id === e.id ? read : row)),
+    }));
+    if (hasValueRecipients(answer.value)) {
+      setRowValue((prev) => { const rest = { ...prev }; delete rest[e.id]; return rest; });
+      if (press === boostPressRef.current) setBoostTrack(read);
+    } else {
+      setRowValue((prev) => ({ ...prev, [e.id]: 'none' }));
+    }
+  }
   const isMusic = isMusicMedium(data.podcast);
   const isPlaylist = isPlaylistMedium(data.podcast);
   // A row here is a TRACK on both, so it plays on tap and the header cover is a
@@ -680,7 +721,7 @@ export function EpisodeList({
         <div className="basis-full lg:basis-[26rem] lg:flex-none lg:self-center flex flex-col gap-2">
           {showHasValue && (
             <button
-              onClick={() => setShowBoostOpen(true)}
+              onClick={() => { boostPressRef.current++; setShowBoostOpen(true); }}
               className="btn-bolt h-11 w-full"
               title="Boost the show"
             >
@@ -1016,17 +1057,23 @@ export function EpisodeList({
                   </div>
                 ) : null}
               </button>
-              {hasValueRecipients(e.value) && (
+              {rowValue[e.id] === 'none' && (
+                <span role="status" className="self-center flex-shrink-0 text-xs text-muted">
+                  No value block
+                </span>
+              )}
+              {(hasValueRecipients(e.value) || valueNotRead(e)) && (
                 // Icon-only below sm: — the word cost ~100px of a ~314px row and
                 // left the title ~24px ("Vi…", "Co…"). aria-label is REQUIRED
                 // now, not decorative: `title` is not an accessible name, so
                 // without it this button reads as unlabelled once the word goes.
                 <button
                   type="button"
-                  onClick={(ev) => { ev.stopPropagation(); setBoostTrack(e); }}
+                  onClick={(ev) => { ev.stopPropagation(); void boostRow(e); }}
+                  disabled={rowValue[e.id] === 'reading'}
                   className="btn-bolt btn-compact self-center flex-shrink-0 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0"
-                  title="Boost this track"
-                  aria-label="Boost this track"
+                  title={rowBoostLabel(rowValue[e.id])}
+                  aria-label={rowBoostLabel(rowValue[e.id])}
                 >
                   <BoltIcon />
                   <span className="hidden sm:inline">BOOST</span>
@@ -1115,7 +1162,7 @@ export function EpisodeList({
         <DeferredOnScroll
           placeholder={
             <h3 className="font-display text-lg mt-8 text-muted">
-              <span className="text-nostr">#</span> Boosts &amp; chatter on Nostr
+              <span className="text-nostr">#</span> Boosts &amp; comments on Nostr
               {data.podcast.title ? (
                 <span className="text-muted text-sm"> · {data.podcast.title}</span>
               ) : null}

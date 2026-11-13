@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useAnchoredMenu } from './use-anchored-menu';
 import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
-import { useApp } from '@/lib/store';
+import { isMusicItem, useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
@@ -202,7 +202,7 @@ import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
-import { SpeedButton, FastSpeedButton } from './player/speed-button';
+import { SpeedButton, FastSpeedButton, SpeedSlider } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
@@ -210,7 +210,7 @@ import { WalletBalanceBox } from './wallet-balance';
 import { NostrIdentityChip } from './nostr-auth/identity-chip';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
-import { LiveBadge } from './live-badge';
+import { LiveEdge } from './player/live-edge';
 
 // THE TOP BAR'S CONTROLS FROM lg:, all five — ← BACK, ⋯, the balance box, the
 // identity chip and ✕ — plus <AuthControl overlay>'s SIGN IN, which carries the
@@ -458,6 +458,8 @@ export function FullscreenPlayer({
   videoRef,
   isVideo,
   audioErr,
+  liveBehindSec,
+  onGoLive,
   artOk,
   splitArt,
   splits,
@@ -491,6 +493,11 @@ export function FullscreenPlayer({
       or a failing live stream reads as a silent black box (the mini-bar's tiny
       error line is hidden behind this overlay). */
   audioErr: string | null;
+  /** Whole seconds a playing live item is behind a fresh connect, 0 when on
+   *  time or paused — <Player>'s measure, so both rows show one number. */
+  liveBehindSec: number;
+  /** ⏭ GO LIVE: <Player>'s reconnect at the live edge. */
+  onGoLive: () => void;
   /** False when audio is playing and the buffer can't afford heavy artwork —
    *  <Player>'s `artUsable`, which is the gate AND the "is anything actually
    *  playing" test, since a paused element has no enclosure to starve. Passed
@@ -655,7 +662,8 @@ export function FullscreenPlayer({
       if (notesLive) return;
       useApp.getState().refreshCurrentValue(
         guid,
-        r.episode.value ?? null,
+        // Undefined when the feed did not answer, and that leaves `value` alone.
+        r.episode.value,
         r.episode.valueTimeSplits,
       );
     }).catch(() => {
@@ -730,7 +738,13 @@ export function FullscreenPlayer({
     // episode decides which branch renders (a Nostr live stream has no cover at
     // all). Everything else that moves — a longer title, a chapter label
     // appearing — is the ResizeObserver's job.
-  }, [everOpened, open, current?.episode?.id, current?.episode?.guid]);
+    //
+    // `isVideo` too, because the cover box and the video stage are both a
+    // <div> in the same slot: without their `key`s React kept ONE node, and
+    // the cover's inline cap stayed on it as the video's width — reported
+    // from an iPhone as a video at ~57% of the screen. The keys stop the
+    // node being shared; this dep re-measures the cover on the way back.
+  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo]);
 
   // ABOVE the early return: a hook may not be called conditionally, and
   // `useSavedPosition` takes null precisely so a surface can call it over its
@@ -743,6 +757,9 @@ export function FullscreenPlayer({
 
   const { episode, podcast } = current;
   const isMusic = isMusicMedium(podcast);
+  // Not `isMusic`: a playlist's tracks count too, and from /downloads the show has
+  // no medium, so only the download record can say.
+  const musicItem = isMusicItem(current);
   const isLive = episode.liveStatus === 'live';
   const resumeTo =
     savedPos && !isLive && savedPos.t - positionSec > RESUME_GAP_SEC ? savedPos.t : null;
@@ -812,13 +829,16 @@ export function FullscreenPlayer({
         <span aria-hidden className="text-lg leading-none">≋</span>,
         'STREAM',
       )}
-      {/* SPEED, then 3.5× and 5×. Without STREAM they are a third row of
-          three; with it, 5× sits alone in a fourth (docs/ui.md). Last because
-          they are about playback, not about this show or episode. No speed
-          on a live item: <Player> holds it at 1×, since there is nothing
-          ahead of the live edge to play into. */}
-      {!isLive && <SpeedButton />}
-      {!isLive && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+      {/* SPEED, then 3.5× and 5×, then the 1×–2× slider as a full-width row
+          of its own. Without STREAM the tiles are a third row of three; with
+          it, 5× sits alone in a fourth (docs/ui.md). Last because they are
+          about playback, not about this show or episode. No speed on a live
+          item: <Player> holds it at 1×, since there is nothing ahead of the
+          live edge to play into. None on an album or playlist track either:
+          music is hard-coded at 1×. */}
+      {!isLive && !musicItem && <SpeedButton />}
+      {!isLive && !musicItem && FAST_PLAYBACK_RATES.map((r) => <FastSpeedButton key={r} rate={r} />)}
+      {!isLive && !musicItem && <SpeedSlider />}
     </>
   );
 
@@ -982,8 +1002,27 @@ export function FullscreenPlayer({
           // STREAM alone on a second row beside three empty cells. 3 + 2 reads
           // as a block. 224px is the width `useAnchoredMenu` is told about, so
           // the panel cannot hang off the left of the screen.
-          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2"
-          style={{ top: tiles.at.top, bottom: tiles.at.bottom, right: tiles.at.right }}
+          //
+          // CAPPED TO THE ROOM IT OPENS INTO, and it scrolls past that. A
+          // `fixed` panel cannot be scrolled to by the page, and the speed
+          // slider made it ~60px taller as its LAST row: on a phone in
+          // landscape (~320px of viewport) the slider sat under the screen's
+          // bottom edge with no way to reach it. The edge it grows toward
+          // keeps the safe-area inset, `max()` and never a sum (CLAUDE.md).
+          // The height is the `innerHeight` that `at` was measured against
+          // (`useAnchoredMenu` re-measures on resize, which re-renders this),
+          // so the edge and the cap come from one number.
+          className="fixed w-56 max-w-[calc(100vw-1rem)] card bg-ink p-2 z-[55] shadow-xl grid grid-cols-3 gap-2 overflow-y-auto overscroll-contain"
+          style={{
+            top: tiles.at.top,
+            bottom: tiles.at.bottom,
+            right: tiles.at.right,
+            maxHeight: `calc(${window.innerHeight - (tiles.at.top ?? tiles.at.bottom ?? 0)}px - max(0.5rem, env(safe-area-inset-${tiles.at.top !== undefined ? 'bottom' : 'top'})))`,
+          }}
+          // `useMenuKeys` focuses with `preventScroll`, which stops this
+          // panel's own scroll too: an arrow key onto a row scrolled out of
+          // the capped panel would focus something nobody can see.
+          onFocus={(e) => (e.target as HTMLElement).scrollIntoView({ block: 'nearest' })}
         >
           {secondaryTiles}
         </div>,
@@ -1015,6 +1054,7 @@ export function FullscreenPlayer({
             // on the row. `video-stage` sheds all of this in the browser's top
             // layer (see app/globals.css).
             <div
+              key="video-stage"
               ref={stageRef}
               className="video-stage relative w-full max-w-md sm:max-w-lg lg:max-w-[min(64rem,calc((100dvh-13rem)*16/9))] aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black"
             >
@@ -1130,7 +1170,7 @@ export function FullscreenPlayer({
             // fit and a vanishing cover helps no one. From sm: up
             // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
             // info column, so its height is not the constraint.
-            <div ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
+            <div key="cover" ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Whatever is playing at this second, via `nowPlayingArt`: the
                   LIVE BLOCK's art first — on a Split Kit show that's the cover
                   of the record actually playing, and it's the one thing on
@@ -1216,10 +1256,7 @@ export function FullscreenPlayer({
           <div className={`flex-1 min-h-0 sm:flex-none ${infoPane} p-4 sm:p-6 lg:p-10 flex flex-col gap-3 sm:gap-4 sm:h-full`}>
             <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
               <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <LiveBadge status="live" />
-                  <span className="text-xs text-muted">streaming now</span>
-                </div>
+                <LiveEdge variant="full" className="flex-wrap" behindSec={liveBehindSec} onGoLive={onGoLive} />
                 <h1 className="font-display text-xl sm:text-2xl lg:text-3xl leading-tight mt-2">{episode.title}</h1>
                 {podcast.title && podcast.title !== episode.title && (
                   <p className="text-sm text-muted mt-1">{podcast.title}</p>
@@ -1279,10 +1316,7 @@ export function FullscreenPlayer({
             </div>
 
             {isLive ? (
-              <div className="flex items-center gap-2">
-                <LiveBadge status="live" />
-                <span className="text-xs text-muted">streaming now</span>
-              </div>
+              <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
             ) : (
               <div className="flex flex-col gap-1.5">
                 <div className="relative flex items-center">

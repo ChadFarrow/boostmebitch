@@ -54,29 +54,30 @@ export function useResolvedSplits(episode: Episode | undefined): ValueTimeSplit[
   // never issue a request.
   const hasWindows =
     episode?.liveStatus !== 'live' && !!episode?.valueTimeSplits?.length && !!feedId && !!episodeId;
+  const key = hasWindows ? `${feedId}:${episodeId}` : null;
 
-  const [splits, setSplits] = useState<ValueTimeSplit[] | null>(null);
+  // Carries the episode it was loaded for. An effect clears nothing until after
+  // the commit, so a bare list is the PREVIOUS episode's for the first render of
+  // each new one: a wrong cover for a frame, and for `useMusicHold` the previous
+  // episode's songs applied to this one's position.
+  const [loaded, setLoaded] = useState<{ key: string; list: ValueTimeSplit[] | null } | null>(null);
 
   useEffect(() => {
-    if (!hasWindows) {
-      setSplits(null);
-      return;
-    }
+    if (!key) return;
     let cancelled = false;
-    setSplits(null);
-    loadValueSplits(feedId, episodeId)
+    loadValueSplits(feedId!, episodeId!)
       .then((list) => {
-        if (!cancelled) setSplits(list);
+        if (!cancelled) setLoaded({ key, list });
       })
       .catch(() => {
         // Neither consumer is worth surfacing an error for: the cover falls
         // back, and the track list simply doesn't appear.
-        if (!cancelled) setSplits(null);
+        if (!cancelled) setLoaded({ key, list: null });
       });
     return () => { cancelled = true; };
-  }, [hasWindows, feedId, episodeId]);
+  }, [key, feedId, episodeId]);
 
-  return splits;
+  return key && loaded?.key === key ? loaded.list : null;
 }
 
 /**

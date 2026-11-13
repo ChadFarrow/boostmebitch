@@ -37,7 +37,7 @@
 // The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
 // paths. It is muted and on a free debug port, so a leftover browser can
 // neither answer for this run nor be heard, and it is closed on any exit.
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { MINI_BAR, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 
@@ -82,10 +82,14 @@ const backToList = async () => {
   await until(`document.querySelectorAll('li button[aria-label="Play"]').length > 1`);
 };
 let title = '';
-/** Press play on the first row that is not episode 456. */
+/** Press play on the first row that is not episode 456 and CAN play. The show
+ *  lists a pending live item first before each broadcast, and its Play is
+ *  disabled ("Not started yet"): pressing it changed nothing, so every check
+ *  after this one failed on whichever days the feed carried that item. */
+const PLAYABLE = 'button[aria-label="Play"]:not([disabled])';
 const playOtherRow = () => js(`(() => {
-  const li = [...document.querySelectorAll('li')].find(l => l.querySelector('button[aria-label="Play"]') && !l.textContent.includes(${JSON.stringify(title)}));
-  if (!li) return false; li.querySelector('button[aria-label="Play"]').click(); return true; })()`);
+  const li = [...document.querySelectorAll('li')].find(l => l.querySelector('${PLAYABLE}') && !l.textContent.includes(${JSON.stringify(title)}));
+  if (!li) return false; li.querySelector('${PLAYABLE}').click(); return true; })()`);
 /** Open episode 456's page from its row. */
 const openOwnRow = () => js(`(() => { const li = [...document.querySelectorAll('li')].find(l => l.textContent.includes(${JSON.stringify(title)}));
   const b = li && [...li.querySelectorAll('button')].find(b => b.textContent.includes(${JSON.stringify(title)})); (b || li)?.click(); return !!li; })()`);
@@ -108,12 +112,20 @@ await wait(800);
 let e = await entry();
 check('bmb:resume holds ~300 s for the episode', e && e.t >= 299 && e.t < 306, JSON.stringify(e));
 
-console.log('\n2. Reload — the page offers the saved place, and playing starts there');
+console.log('\n2. Reload — the player offers the saved place, and playing starts there');
 await go(`${APP}/?podcast=${POD}&episode=${encodeURIComponent(EPISODE_GUID)}`);
 await until(`!!${playButton}`);
+// Since #486 a reload puts the episode back IN THE PLAYER, paused at its saved
+// place, so the place is on the mini-bar's seek bar and the page's button is
+// the current episode's plain "▶ RESUME" — it read "▶ RESUME 5:0x" while the
+// player came back empty. 5:0x, not 5:00: the episode kept playing for the
+// 2.5 s before the pause.
+const seekAt = `(() => { const i = document.querySelector('${MINI_BAR} input[type="range"]'); return i ? Number(i.value) : null; })()`;
+await until(`(() => { const v = ${seekAt}; return v !== null && v >= 299; })()`);
+const back = await js(seekAt);
+check('the reload puts it back in the player at ~5:0x', back !== null && back >= 299 && back < 306, `seek bar: ${back}`);
 const label = await js(`${playButton}.textContent.trim()`);
-// 5:0x, not 5:00: the episode kept playing for the 2.5 s before the pause.
-check('the button reads "▶ RESUME 5:0x"', /^▶ RESUME 5:0\d$/.test(label ?? ''), `read: ${label}`);
+check('the button reads "▶ RESUME"', label === '▶ RESUME', `read: ${label}`);
 await js(`${playButton}.click()`);
 await until(playing);
 await wait(5000);

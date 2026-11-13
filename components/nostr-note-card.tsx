@@ -1,9 +1,12 @@
 'use client';
-import { memo, useEffect, useId, useMemo, useState } from 'react';
+import { memo, useContext, useEffect, useId, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { ModalShell } from './modal-shell';
 import { useConfirm } from './confirm-dialog';
 import {
+  isPodcastComment,
+  LocalNoteSink,
+  noteFromEvent,
   resolvePublishRelays,
   shortNpub,
   type DiscoveredNote,
@@ -12,6 +15,7 @@ import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/int
 import { MessageInput } from './message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { sendZap } from '@/lib/v4v/zap';
+import { MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
@@ -21,7 +25,7 @@ import { extractImages, removeUrl, renderNostrText, timeAgo } from '@/lib/format
 import { Avatar } from './avatar';
 import { PodcastCover } from './podcast-cover';
 import { FollowButton } from './follow-button';
-import { NoteEpisodeCard } from './note-episode-card';
+import { NoteEpisodeCard, NoteEpisodeControls } from './note-episode-card';
 
 type ActionState = 'idle' | 'busy' | 'done' | 'error';
 
@@ -236,6 +240,9 @@ function NoteCardImpl({
   const [composerMentions, setComposerMentions] = useState<MentionNpub[]>([]);
   const [composerState, setComposerState] = useState<ActionState>('idle');
   const [composerErr, setComposerErr] = useState<string | null>(null);
+  // The feed this card sits in, if any. Without it a reply published here
+  // showed up only after a manual refresh. See LocalNoteSink.
+  const addLocal = useContext(LocalNoteSink);
 
   const alreadyReposted = repostedIds?.has(note.id) ?? false;
   const [repostState, setRepostState] = useState<ActionState>(
@@ -340,20 +347,25 @@ function NoteCardImpl({
     setComposerState('busy');
     setComposerErr(null);
     try {
+      const relays = resolvePublishRelays(identity);
       if (composerMode === 'reply') {
-        await publishReply({
+        const { event } = await publishReply({
           parent: note.rawEvent,
           content: composerDraft.trim(),
-          relays: resolvePublishRelays(identity),
+          relays,
           mentions: composerMentions,
         });
+        addLocal?.(noteFromEvent(event, relays, identity.profile ?? null), note.id);
       } else {
-        await publishQuoteRepost({
+        // A quote is a top-level note of its own (it inherits the NIP-73
+        // tags), so it joins the list rather than this card's thread.
+        const { event } = await publishQuoteRepost({
           parent: note.rawEvent,
           comment: composerDraft,
-          relays: resolvePublishRelays(identity),
+          relays,
           mentions: composerMentions,
         });
+        addLocal?.(noteFromEvent(event, relays, identity.profile ?? null));
       }
       setComposerState('done');
       closeComposer();
@@ -429,6 +441,12 @@ function NoteCardImpl({
           )}
           {note.isBoost && sats === null && (
             <span className="stamp text-bolt border-bolt/60">⚡ boost</span>
+          )}
+          {/* The same note without a payment. Not simply `!note.isBoost`: a
+              Fountain boost reads as unpaid until its quoted receipt lands —
+              see isPodcastComment. */}
+          {isPodcastComment(note) && (
+            <span className="stamp text-nostr border-nostr/60">💬 comment</span>
           )}
           {note.client && <span className="text-muted">via {note.client}</span>}
         </div>
@@ -564,6 +582,21 @@ function NoteCardImpl({
             }
           />
         )}
+
+        {/* The note names an episode and draws no card: a bot's announcement,
+            or a note with no app link. The ceiling on cards is about artwork
+            (docs/nostr.md), and the label above already names this episode, so
+            the two controls go under it with no second picture. `episodeGuid`
+            is the same test the card's own row passes: the heart needs an item
+            guid, and `podcast` supplies the parent. */}
+        {!unfurl && podcast && episode && episodeGuid ? (
+          <NoteEpisodeControls
+            item={episode}
+            podcast={podcast}
+            onQueue={() => queueBoostedEpisode(podcast, episodeGuid)}
+            className="mt-2"
+          />
+        ) : null}
 
         <div className="flex items-center gap-3 mt-2 text-[11px] flex-wrap">
           {identity ? (
@@ -728,7 +761,7 @@ function ZapDialog({
   const canZap = !!lud;
 
   async function onZap() {
-    if (!canZap) return;
+    if (!canZap || amount < MIN_BOOST_SATS) return;
     setState('busy');
     setErr(null);
     try {
@@ -779,16 +812,17 @@ function ZapDialog({
             <input
               id={amountId}
               type="number"
-              min={1}
+              min={MIN_BOOST_SATS}
               step={1}
               value={amount}
-              // Math.round as well as the clamp: the field accepts decimals, and
-              // a fractional sat is not a thing that can be sent.
-              onChange={(e) => setAmount(Math.max(1, Math.round(Number(e.target.value) || 0)))}
+              // Math.round: the field accepts decimals, and a fractional sat is
+              // not a thing that can be sent. No clamp to the minimum here — that
+              // would rewrite the field mid-keystroke; the send button gates it.
+              onChange={(e) => setAmount(Math.max(0, Math.round(Number(e.target.value) || 0)))}
               className="input w-full mb-3"
             />
             <div className="flex gap-2 mb-3">
-              {[21, 100, 500, 1000].map((n) => (
+              {[100, 500, 1000, 5000].map((n) => (
                 <button
                   key={n}
                   onClick={() => setAmount(n)}
@@ -807,9 +841,12 @@ function ZapDialog({
               placeholder="great post"
               className="input w-full mb-3"
             />
+            {amount < MIN_BOOST_SATS && (
+              <p className="text-[11px] text-muted mb-2">minimum {MIN_BOOST_SATS} sats</p>
+            )}
             <button
               onClick={onZap}
-              disabled={state === 'busy' || state === 'done'}
+              disabled={state === 'busy' || state === 'done' || amount < MIN_BOOST_SATS}
               className="btn-bolt w-full"
             >
               {state === 'busy' ? 'paying…' : state === 'done' ? 'zapped ⚡' : `Send ${amount} sats`}

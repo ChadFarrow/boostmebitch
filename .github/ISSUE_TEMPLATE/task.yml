@@ -1,0 +1,35 @@
+name: Task
+description: A deploy, a configuration check, an upstream library bug or an investigation.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for work that is not a bug in the app and not a new feature.
+  - type: textarea
+    id: todo
+    attributes:
+      label: What needs doing
+      description: The work, with the exact service, variable, package or version.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What goes wrong, or stays wrong, until it is done.
+    validations:
+      required: true
+  - type: textarea
+    id: done-when
+    attributes:
+      label: Done when
+      description: The check that shows the work is complete.
+    validations:
+      required: false
+  - type: textarea
+    id: related
+    attributes:
+      label: Related
+      description: Issues, PRs, advisories and other repos.
+    validations:
+      required: false

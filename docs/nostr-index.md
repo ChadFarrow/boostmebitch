@@ -134,6 +134,22 @@ database is what let this service sit stalled for hours reporting `{ok:true}`.
   cached as a resolved feed for `piTtlHours` (default a week). The app's own
   reader guards this with `feed.id == null`, which is why it never surfaced there.
 
+## A cached "not found" expires before a cached answer
+
+Both `/pi/*` routes held PI's "not found" as long as a resolved record: a week
+(`piTtlHours`). The two go stale in opposite directions. A feed rarely loses an
+episode, while an episode PI has not crawled yet is the ordinary state of a new
+one — so the newest entry of a playlist that lists each show's latest episodes
+read "not in Podcast Index" for seven days after PI had it. Measured on the
+Small Group Shows `podcastL`, 2026-10-23: `/api/episode-by-guid` found the
+Podhome episode and `/api/playlist`, which asks this service first, did not. A
+feed added to PI today has the same problem through `pi_podcasts`.
+
+A miss now expires on `piMissTtlHours` (`INDEX_PI_MISS_TTL_HOURS`, default an
+hour). Past it the row is ABSENT, never null, so the route asks PI again. The
+cost is one PI call per miss per hour, which is small: a miss is the rare
+answer, and the app's client caches its own per tab.
+
 ## The tracked set grows from the corpus, never from itself
 
 `tracked_pubkeys` scopes the kind:0 / 6 / 5 / 9735 subscriptions, and its

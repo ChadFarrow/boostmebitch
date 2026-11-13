@@ -1414,6 +1414,57 @@ below the fold. The link in the body is the author pointing at something.
 Everything else keeps the one-line label — which is suppressed when the card
 shows, because it states the same two facts with the same two click targets.
 
+**The ceiling is on artwork, not on the controls.** A note under the label that
+names a resolved episode carries the same `♡ FAVORITE` and `＋ QUEUE` as a card,
+from one component (`<NoteEpisodeControls>`). Reported as "the home feed doesn't
+always show a favorite or queue button". Measured on the signed-out feed on
+2026-11-05, 94 podcast notes, 40 with no controls:
+
+| Notes | Why | Now |
+| --- | --- | --- |
+| 12 | Episode resolved, no app link and not our note: a bot's announcement, a tagged comment | Controls under the label |
+| 5 | A track boost, tagging two items on two shows | `noteOwnItemGuid` names the first pair, the host episode |
+| 10 | A live item Podcast Index does not hold | Unchanged. See below |
+| 6 | The item is in neither Podcast Index nor the RSS | Unchanged. There is no episode to name |
+| 5 | The note tags a show and no item | Unchanged. See the show heart rule below |
+| 2 | The show is not in Podcast Index | Unchanged. No label either |
+
+**Two items on ONE show stay unanswered, and that is not caution.** MSP 2.0 and
+Boostr_Bot also write `[episode, album, track]`, where the one show is the track's
+album and the episode's own show is not tagged. Pairing the first item with that
+show asks PI about a pair that does not exist. The `[show, item, show, item]`
+shape is the one to trust: four clients write it, and on 2026-11-05 the first pair
+resolved to the host episode in 14 of 15 lookups.
+
+**No RSS fallback for an item PI does not hold, and the table is why.** Every miss
+the feed could answer was a `<podcast:liveItem>`, and `enqueueEpisode` refuses a
+broadcast. So a fallback would download a whole `/api/feed` per show for a heart
+on a live item, and that item leaves the feed when the broadcast ends, which turns
+the favorite into a row that never resolves.
+
+**A miss must stay a miss.** PI can answer a pair it does not hold with 200 and an
+empty `episode`. `getEpisodeByGuid` tested `data.episode`, which is truthy, so the
+route answered with a record holding no guid and the browser kept it in
+`bmb:epmeta` for seven days. An episode released that morning kept no controls for
+a week after PI crawled it. The route now answers 404, and `storage.episodeMeta`
+reads a stored record with no guid as absent, so the bad ones already on devices
+heal on the next load. `npm run e2e:feedbuttons` pins all of this.
+
+**The card's second art rung is the SHOW's art, whichever field holds it.**
+`<PodcastCover>` steps only through the URLs it is handed, and the card hands it
+the item's own art first. `buildPodcast` drops `artwork` whenever it equals
+`image`, which most feeds do, so `artwork={podcast.artwork}` alone left an episode
+with art of its own NO show art behind it. Homegrown Hits 157 showed it on
+2026-11-07: the feed names `episode-157.gif`, the show's server answers 404, and
+the card drew the initial tile while the show's cover loads everywhere else. A
+track boost reaches this more often now, because `noteOwnItemGuid` sends it to
+the episode rather than the show. The rung is `podcast.artwork || podcast.image`.
+The e2e answers that file with a 404 itself, through Fetch interception and NOT
+`Network.setBlockedURLs`: a block fails with no round trip, and an instant failure
+can land between `<PodcastCover>`'s ladder reset and its remount, which leaves a
+broken image with no error left to fire. That race is older than this card, and a
+404 from a server does not hit it.
+
 **The card is gated on the SHOW resolving, never on the ITEM — a presentation
 decision must not be decided by Podcast Index's coverage.** It was gated on both
 for two releases (`podcast && episode?.guid ? episodeLink : null`), and that read
@@ -1421,7 +1472,7 @@ as the feature working intermittently: one note unfurled, the note under it kept
 three lines of magenta URL, and nothing on either card said why. PI missing an
 item is ordinary, not exotic — it answers "not found" for a
 `<podcast:liveItem>` and for anything it has not crawled, and `episodeRefOf`
-never asks at all when a note tags more than one `podcast:item:guid:` (a
+never asks at all when a note tags several `podcast:item:guid:` on one show (a
 boost-all across an album's tracks, which is deliberate: that note is not about
 one episode). None of that is visible to the reader or to the author, so the
 same link on the same feature gave opposite results for reasons neither could
@@ -1823,9 +1874,10 @@ notes seconds later carrying neither. Replacing on id made that a downgrade the
 reader watches happen: an avatar and a thread that were on screen vanish, and
 only return when the last relay stage finishes. A kind:1 is immutable, so the
 copies differ only in how much enrichment ran; `richer` therefore keeps the
-newer copy but takes `author`, `replies`, `amountMsat` and `isBoost` from
-whichever copy actually has them. `isBoost` matters most — it gates
-`noteHasSubstance`, so losing it takes the whole note off the feed.
+newer copy but takes `author`, `replies`, `amountMsat`, `isBoost`, `mentioned`
+and `quotesResolved` from whichever copy actually has them. `isBoost` matters
+most — it gates `noteHasSubstance`, so losing it takes the whole note off the
+feed.
 
 ### Many authors is ONE query — `fetchProfilesFor`, never `fetchProfile` per pubkey
 
@@ -1946,7 +1998,15 @@ An announcement is absorbed only when ALL of these hold, and each was a way to h
 
 **A card can still change once on load, by design.** If the bot's note arrives in an earlier commit than the sender's — the index pass and the relay pass hold different sets — the announcement paints and is replaced when the sender's note lands. The reverse also holds: a Fountain note that later turns out to carry a DIFFERENT amount releases the announcement it had absorbed. Both directions converge on one card per payment.
 
-**An announcement that names nobody ALWAYS shows — and `chadf_boostbot` is meant to.** `chadf_boostbot` (`f3bd42a9…`) posts every boost ChadF sends through this app ("⚡ 333 sats 📱 via BoostMeBitch"), with no `sender` tag and no `amount` tag, and quotes a kind:9735 **it signed itself** (`P` = the bot). It posts every boost on purpose, and its notes must show beside ChadF's own (Chad, 2026-10-02); `check:echo` pins its real note beside ChadF's. Two things would break that, and both look like tidying: **adding a `sender` tag to that bot**, which this pass would then absorb, and **a text match here**, which would also hide a second payment, because the same message boosted twice is two boosts.
+**An announcement that names nobody ALWAYS shows.** **Do not add a text match here**: it would also hide a second payment, because the same message boosted twice is two boosts.
+
+**`chadf_boostbot` is absorbed beside ChadF's own note since 2026-11-08.** `chadf_boostbot` (`f3bd42a9…`) posts every boost ChadF's node sends ("⚡ 333 sats 📱 via BoostMeBitch"), with no `amount` tag, and quotes a kind:9735 **it signed itself** (`P` = the bot). Until 2026-11-08 it wrote no `sender` tag either, and on 2026-10-02 Chad wanted its notes to show beside his own. On 2026-11-08 he chose the other way, for OnlyBoosts' duplicate filter: the bot now writes `["sender", <ChadF's npub>]` on every note (Helipad-to-Nostr-BoostBot #22), so this pass absorbs it like any other announcement. `check:echo` pins both shapes: a real note from before that day still shows, and the same note with the tag is absorbed. Its notes for apps that post nothing of their own (PodcastGuru, Castamatic) have no partner here and still show.
+
+**Boost or comment (`isPodcastComment`, `lib/nostr/discover.ts`).** A NIP-73 note WITH a payment is a boost and gets `⚡ N SATS`; the same note WITHOUT one is a comment and gets `💬 COMMENT` — Fountain publishes both, and before the stamp a comment carried no mark at all. **The test is not `!isBoost`, and the obvious version is wrong for most of the feed.** A Fountain boost is a kind:1 wrapper with no `amount` tag whose payment is the kind:9735 it quotes in a `nostr:nevent1…` body line — 132 of the 200 notes in the global index on 2026-10-02 — and `isBoost` is only adopted off that receipt in the quoted-event stage. The relay pass paints its roots BEFORE that stage (`paintRoots` → `noteFromEvent`, empty quoted map), so `!isBoost` stamps every Fountain boost "comment" for seconds on a relay-only load, then flips it. `buildNote` therefore records `quotesResolved` — every quoted id is in the map, vacuously true when there are none — and the stamp waits on it; `richer` ORs it like `isBoost`. Three consequences, each deliberate: a wrapper whose receipt no relay returns stays **unstamped for good** (it may be a boost, so "comment" would be a claim we can't back); a note from a `bmb:feed:*` cache older than the field reads `undefined`, which is not `true`; and only a **top-level** note is stamped, because `publishReply` copies the parent's NIP-73 tags onto every reply. **A quoted kind:9735 in hand makes the note a boost even when `zapReceiptAmountMsat` reads no amount from it** — `buildNote` sets `isBoost` and leaves `amountMsat` null, so the card shows the amountless `⚡ boost` stamp. Without that, a resolved quote with `isBoost` false is exactly what `isPodcastComment` stamps COMMENT, over a payment receipt it is holding. The same note now also passes `fetchBoostsSentBy`/`fetchBoostsReceivedBy`'s `isBoost` filter, which is right: it is a boost of unknown size, and the explorer's sum reads a null amount as 0.
+
+**Writing one: `publishEpisodeComment` (`lib/nostr/interactions.ts`), from the box at the top of `<EpisodeNostrFeed>`.** Without it the only way onto an episode's list was a boost, and a show with no value block has no BOOST button — so its Comments tab was a list nobody here could add to. The tags are the boost note's NIP-73 pairs with the same `siteLandingUrl` hints, so every query that finds a boost finds the comment. Three things a boost note carries are left out, each for a reason: **`t:boostagram`/`t:value4value` and `amount`** — any one makes `buildNote` read it as a boost, a `⚡` for sats nobody sent; and **the feed's own npubs as `p` tags** — a boost tags them because it pays them, and a comment that did would notify the artist of every remark about their show (only the sender's `@` picks are tagged, through `mentionParts`). The body ends with the episode's deep link, above the mention run, because a reader in a general client otherwise sees a sentence with no subject. Self-signed only; `/api/nostr/site-sign` would refuse it anyway (no `⚡ Boost ⚡` prefix). The posted note goes on screen through `useNostrFeed`'s `addLocal`, the same union every other commit uses, so the relay copy merges into it rather than doubling it.
+
+**`<NoteCard>`'s reply and quote composers reach the same `addLocal` through `LocalNoteSink`**, a context the three feeds provide. Before it a reply published from a card appeared only after a manual REFRESH. A reply is held in `pendingReplies` and re-attached under its parent on EVERY commit, not inserted once: `richer` takes the incoming copy's `replies` whenever it has any, so a relay pass that answers before the reply reached it would carry the parent back without it. `commit` and `addLocal` are `useCallback`'d because `addLocal` is the context value, and a new function per render re-renders every card in the feed past its `memo`. The `socialInteract` thread provides no sink — it keeps its own optimistic list — so a card there sees `null` and does nothing.
 
 
 

@@ -50,7 +50,7 @@ const LIST_GUTTER = 8;
  * 250 is also what StableKraft, ITDV-Lightning and TRM-Lightning use. That is
  * the tie-break between two affordable numbers, not the reason for either.
  */
-const BOOSTAGRAM_MAX = 250;
+export const BOOSTAGRAM_MAX = 250;
 
 /**
  * Tallest the box may grow before it starts to scroll.

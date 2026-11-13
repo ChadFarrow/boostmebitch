@@ -116,10 +116,23 @@ const IDLE_CLOSE_MS = 10_000;
  * so a wallet switch disposes the old client rather than paying from it.
  */
 const pool = createLeasePool<nwc.NWCClient>({
-  create: (uri) => new nwc.NWCClient({ nostrWalletConnectUrl: uri }),
+  create: (uri) => (newestClient = new nwc.NWCClient({ nostrWalletConnectUrl: uri })),
   close: (c) => c.close(),
   idleMs: IDLE_CLOSE_MS,
 });
+
+/** The client the pool built last, so a stale lease can tell it was already replaced. */
+let newestClient: nwc.NWCClient | null = null;
+
+/**
+ * The shortest gap between two replacements of a client whose dial failed.
+ *
+ * Replacing the client means a new dial, and those are what the relay's limit
+ * counts. Without this, a boost during a `429` block would dial once per leg. It
+ * sits just above the 4.4 s the SDK's relay waits for a socket to open.
+ */
+const FAILED_DIAL_SWAP_MS = 5_000;
+let lastFailedDialSwap = 0;
 
 /** Drop the shared client now — a URI change, a disconnect, or a bad socket. */
 export function disposeNwcClient() {
@@ -130,6 +143,40 @@ function acquire(): Lease<nwc.NWCClient> {
   const uri = loadNwcUri();
   if (!uri) throw new Error('No NWC URI configured');
   return pool.acquire(uri);
+}
+
+/**
+ * Drop a client with a bad socket, and take the notification subscriptions to its
+ * replacement. Returns false when a failed dial came too soon after the last swap,
+ * so the bad client stays and this caller fails without dialing.
+ *
+ * **One failed dial kills an `NWCClient` for good, so this is the only way back.**
+ * The SDK's copy of nostr-tools (2.15.0) clears `connectionPromise` only for a
+ * socket that had opened. A socket that never opened leaves the rejected promise
+ * in place, and every later `connect()` returns it with no dial: every read and
+ * every payment then fails with "Failed to connect to wss://…" while the relay is
+ * fine. A `429`, or a phone waking before its radio is back, is all it takes, and
+ * the notification lease then holds that client for as long as the app lives.
+ * Reported from the Zapstore app, where a TWA can stay alive for days: "Cannot
+ * reach your wallet's relay" until the user pasted the same connection in again,
+ * which helped only because `saveNwcUri` happens to dispose the client.
+ *
+ * **Do not cure this inside the client.** That same dead client is what stops the
+ * SDK's notification loop, which redials every second with no backoff, from
+ * holding a `429` block open forever. So a dial is spent only when a read or a
+ * payment asks for one, and a subscription never asks.
+ */
+function replaceSuspectClient(lease: Lease<nwc.NWCClient>, e: unknown): boolean {
+  // Another caller got here first. The newer client is the one to use.
+  if (lease.value !== newestClient) return true;
+  if (e instanceof nwc.Nip47NetworkError) {
+    const now = Date.now();
+    if (now - lastFailedDialSwap < FAILED_DIAL_SWAP_MS) return false;
+    lastFailedDialSwap = now;
+  }
+  lease.discard();
+  for (const sub of notificationSubs) void attachNotifications(sub);
+  return true;
 }
 
 /**
@@ -151,8 +198,8 @@ async function withNwcClient<T>(
     return await fn(lease.value);
   } catch (e) {
     if (!isSocketSuspect(e)) throw e;
-    lease.discard();
-    if (!opts.retry) throw e;
+    const replaced = replaceSuspectClient(lease, e);
+    if (!opts.retry || !replaced) throw e;
     const fresh = acquire();
     try {
       return await fn(fresh.value);
@@ -388,23 +435,21 @@ async function readBalanceSats(): Promise<number | null> {
   return Math.floor(msat / 1000);
 }
 
-/**
- * Subscribe to NIP-47 push notifications for `payment_received` /
- * `payment_sent`. Many wallets support this; some don't. Returns an unsub
- * fn — a no-op if subscription failed, so callers can rely on it without
- * branching.
- */
-export async function subscribeNwcNotifications(
-  onNotification: (e: nwc.Nip47Notification) => void,
-): Promise<() => void> {
-  let lease: Lease<nwc.NWCClient> | null = null;
+/** One caller of `subscribeNwcNotifications`. It outlives any one client. */
+interface NotificationSub {
+  onNotification: (e: nwc.Nip47Notification) => void;
+  /** Stop the SDK loop on the current client and give its lease back. */
+  detach: () => void;
+}
+const notificationSubs = new Set<NotificationSub>();
+
+/** Put `sub` on the current client, leaving whichever one it was on. */
+async function attachNotifications(sub: NotificationSub): Promise<void> {
+  sub.detach();
   try {
-    lease = acquire();
-    const held = lease;
-    const unsub = await held.value.subscribeNotifications(onNotification, [
-      'payment_received',
-      'payment_sent',
-    ]);
+    const held = acquire();
+    let unsub: (() => void) | null = null;
+    let detached = false;
     // The LONG-LIVED lease, and the one that makes the sharing pay off: it is
     // held for the life of the subscription, so the socket stays open and every
     // balance read and every payment leg rides it instead of dialing. Two
@@ -415,15 +460,42 @@ export async function subscribeNwcNotifications(
     // subscription but NOT the relay, so releasing the lease is what eventually
     // frees the socket — after the idle window, and only if nothing else holds
     // it.
-    return () => {
-      try { unsub(); } catch { /* ignore */ }
+    sub.detach = () => {
+      if (detached) return;
+      detached = true;
+      try { unsub?.(); } catch { /* ignore */ }
       held.release();
     };
+    const stop = await held.value.subscribeNotifications(sub.onNotification, [
+      'payment_received',
+      'payment_sent',
+    ]);
+    unsub = stop;
+    // Replaced or unsubscribed during the await, so `detach` had no unsub to call.
+    if (detached) stop();
   } catch {
     // `subscribeNotifications` can reject after the socket is already open.
-    lease?.release();
-    return () => {};
+    sub.detach();
   }
+}
+
+/**
+ * Subscribe to NIP-47 push notifications for `payment_received` /
+ * `payment_sent`. Many wallets support this; some don't. Returns an unsub
+ * fn, so callers can rely on it without branching: a failed subscription
+ * just never delivers. The subscription follows the shared client when
+ * `replaceSuspectClient` replaces it.
+ */
+export async function subscribeNwcNotifications(
+  onNotification: (e: nwc.Nip47Notification) => void,
+): Promise<() => void> {
+  const sub: NotificationSub = { onNotification, detach: () => {} };
+  notificationSubs.add(sub);
+  await attachNotifications(sub);
+  return () => {
+    notificationSubs.delete(sub);
+    sub.detach();
+  };
 }
 
 export async function nwcKeysend(args: {
@@ -551,6 +623,8 @@ function makeInvoiceError(e: unknown): unknown {
 registerNwcClientHooks({
   reset() {
     budgetUnsupportedFor = null;
+    // Another wallet can be on another relay, so its first dial owes nothing.
+    lastFailedDialSwap = 0;
     disposeNwcClient();
   },
   prefetchCapabilities() {

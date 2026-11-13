@@ -373,8 +373,6 @@ export class DownloadManager {
       duration: episode.duration,
       datePublished: episode.datePublished,
       enclosureLength: episode.enclosureLength,
-      value: episode.value,
-      valueTimeSplits: episode.valueTimeSplits,
       chaptersUrl: episode.chaptersUrl,
       transcriptUrl: episode.transcriptUrl,
       transcriptType: episode.transcriptType,
@@ -537,6 +535,18 @@ export class DownloadManager {
     if (!episode || !this.hydrated) return null;
     const record = this.recordFor(episode);
     return record && deletesAfterPlay(record.feedMedium) ? record.key : null;
+  }
+
+  /**
+   * The parent feed's medium as this episode's download RECORD saved it, or
+   * `undefined` when there is no record, the record does not know (`''`, or a
+   * record from before `feedMedium`), or hydration has not landed. For the
+   * same reason as `deletableAfterPlay`: the show `/downloads` rebuilds has no
+   * medium. `speedKeyFor` (lib/store.ts) asks it.
+   */
+  feedMediumFor(episode: Episode | null | undefined): string | undefined {
+    if (!episode || !this.hydrated) return undefined;
+    return this.recordFor(episode)?.feedMedium || undefined;
   }
 
   async clearAll(): Promise<void> {

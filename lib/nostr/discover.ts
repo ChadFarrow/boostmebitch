@@ -20,6 +20,17 @@ export interface DiscoveredNote {
   amountMsat: number | null;
   client: string | null;
   isBoost: boolean;        // `t:boostagram` tag OR a positive `amount` tag
+  /**
+   * Every event this note quotes was in hand when it was built — vacuously
+   * true when it quotes none.
+   *
+   * Until it is, `isBoost` is not an answer: a Fountain wrapper's payment IS
+   * the kind:9735 it quotes, so a root paint (built before the quoted-event
+   * stage) reads it as unpaid. `isPodcastComment` waits on this for that
+   * reason. Optional only because a note cached before the field existed has
+   * none, and absent must read as "not known".
+   */
+  quotesResolved?: boolean;
   podcastGuid: string | null; // first podcast:guid: ref on the note (the show)
   episodeGuids: string[];  // any podcast:item:guid: refs on the note
   author: ProfileMetadata | null;
@@ -184,16 +195,22 @@ function buildNote(
   // a separate kind:1 narrative note that quote-references the receipt. The
   // wrapper note carries the NIP-73 podcast tags but no amount of its own,
   // so we resolve the first quoted zap receipt and adopt its amount.
+  //
+  // A quoted receipt is a payment even when none of its three amount sources
+  // can be read: the note is still a boost (the card's amountless `⚡ boost`
+  // stamp), and `isPodcastComment` would otherwise call it a COMMENT — over a
+  // receipt that is in hand. The loop goes on looking for one that does state
+  // an amount.
+  const { ids: quotedIds } = parseQuoteRefs(e);
   let viaZapReceipt = false;
   if (amountMsat === null) {
-    const { ids } = parseQuoteRefs(e);
-    for (const id of ids) {
+    for (const id of quotedIds) {
       const q = quoted.get(id);
-      if (!q) continue;
+      if (q?.kind !== 9735) continue;
+      viaZapReceipt = true;
       const m = zapReceiptAmountMsat(q);
       if (m !== null) {
         amountMsat = m;
-        viaZapReceipt = true;
         break;
       }
     }
@@ -223,6 +240,7 @@ function buildNote(
     amountMsat,
     client,
     isBoost,
+    quotesResolved: quotedIds.every((id) => quoted.has(id)),
     podcastGuid,
     episodeGuids,
     author: profile,
@@ -250,6 +268,31 @@ export function noteHasSubstance(note: DiscoveredNote): boolean {
   if (note.isBoost) return true;
   const { body, images } = extractImages(stripNostrUris(note.content));
   return body.length > 0 || images.length > 0;
+}
+
+/**
+ * A podcast COMMENT: a top-level note carrying a NIP-73 podcast tag and no
+ * payment. The same note with a payment is a boost, and the card stamps each.
+ *
+ * **It waits on `quotesResolved`, and `!isBoost` alone is the trap.** A
+ * Fountain boost is a kind:1 wrapper with no `amount` tag whose payment is the
+ * kind:9735 it quotes in a `nostr:nevent1…` body line — 132 of the 200 notes in
+ * the global index on 2026-10-02. The relay pass paints its roots BEFORE the
+ * quoted-event stage, so every one of those would read "comment" for seconds
+ * and then turn into a boost. A wrapper whose receipt no relay returns stays
+ * unlabelled for good, which is the honest answer: it may well be a boost.
+ *
+ * Top-level only, because `publishReply` copies the parent's NIP-73 tags onto
+ * every reply — without the parent test each reply in a thread is stamped.
+ */
+export function isPodcastComment(note: DiscoveredNote): boolean {
+  return (
+    !note.isBoost &&
+    note.quotesResolved === true &&
+    (note.podcastGuid !== null || note.episodeGuids.length > 0) &&
+    !!note.rawEvent &&
+    getParentEventId(note.rawEvent) === null
+  );
 }
 
 /**
