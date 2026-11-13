@@ -1,7 +1,7 @@
 import type {
   Podcast, ValueBlock, ValueRecipient, Episode, AlternateEnclosure,
   BoostResult, StoredBoostLeg, ChapterEntry, ValueTimeSplit, LiveShow,
-  QueueItem, HistoryItem, StoredBoost,
+  QueueItem, HistoryItem, StoredBoost, FavoriteEpisode,
 } from './types';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
@@ -233,6 +233,91 @@ export function trimForQueue(e: Episode): Episode {
   delete rest.description;
   delete rest.contentEncoded;
   return rest;
+}
+
+// ---------------------------------------------------------------------------
+// The favorites shuffle (docs/ui.md, "The favorites shuffle"). A THIRD list of
+// `QueueItem`s beside Up Next and `episodeQueue`, which the store asks first
+// for its own tracks. These four are its pure half, pinned by `check:queue`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fisher-Yates over a COPY. The caller's array is the favorites page's own rows,
+ * and the obvious `sort(() => random() - 0.5)` both biases the order and sorts
+ * those rows in place. `random` is injectable so the check can replay an order.
+ */
+export function shuffleOrder<T>(items: readonly T[], random: () => number = Math.random): T[] {
+  const out = items.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    const t = out[i];
+    out[i] = out[j];
+    out[j] = t;
+  }
+  return out;
+}
+
+/**
+ * Put tracks that loaded AFTER the shuffle started at random places strictly
+ * after `after` (the track playing now; -1 when none is). A track placed at or
+ * before the current one would never be reached by ⏭ or by a track ending.
+ */
+export function insertShuffled<T>(
+  list: readonly T[],
+  after: number,
+  more: readonly T[],
+  random: () => number = Math.random,
+): T[] {
+  const out = list.slice();
+  const lo = Math.max(0, after + 1);
+  for (const m of more) {
+    out.splice(lo + Math.floor(random() * (out.length - lo + 1)), 0, m);
+  }
+  return out;
+}
+
+/**
+ * Where `episode` sits in the shuffle, or -1 — the shuffle's `queueIndexOf`.
+ * The `.length` test comes first, so with no shuffle nothing else runs and
+ * every existing path is reached exactly as before. Matched by `epKey`, so an
+ * empty `<guid></guid>` cannot collide.
+ */
+export function shuffleIndexOf(
+  shuffle: readonly QueueItem[] | null,
+  episode: Pick<Episode, 'guid' | 'feedId' | 'id'>,
+): number {
+  if (!shuffle || !shuffle.length) return -1;
+  const key = epKey(episode);
+  return shuffle.findIndex((i) => epKey(i.episode) === key);
+}
+
+/**
+ * One favorite single as a track the shuffle can play, or null when it cannot.
+ *
+ * `episode` is the cached Podcast Index record (it has the real `id` the
+ * player's source effect keys on; a `FavoriteEpisode` has none). Its value
+ * block goes: `payableValue` reads `episode.value` first, so a cached block
+ * would outrank the feed, and with none `valueNotRead` is true and `<Player>`
+ * asks the track's own feed when it starts — the playlist row's path.
+ *
+ * The show is an ALLOWLIST, never a spread, for `queueShowFor`'s reason: it
+ * drives the streaming key, the share URL and the boost note, and the next
+ * field added to a record must not ride onto it by default.
+ */
+export function shuffleTrackFor(fav: FavoriteEpisode, episode: Episode): QueueItem | null {
+  if (!isPlayableRow(episode)) return null;
+  const image = episode.feedImage ?? fav.image;
+  return {
+    episode: trimForQueue(episodeWithoutValue(episode)),
+    podcast: {
+      id: episode.feedId ?? fav.feedId ?? 0,
+      podcastGuid: fav.feedGuid ?? episode.podcastGuid,
+      title: episode.feedTitle ?? fav.podcastTitle ?? '',
+      image,
+      artwork: image,
+      medium: 'music',
+    },
+  };
 }
 
 /**

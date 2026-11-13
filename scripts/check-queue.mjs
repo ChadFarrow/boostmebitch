@@ -66,6 +66,20 @@
 // "nothing sent" over sats a wallet may have paid invites the double payment
 // invariant 11 exists to stop.
 
+//
+// THE FAVORITES SHUFFLE rides here too (2026-11-12), because it is a second list
+// of the queue's own `QueueItem`s and fails the same silent ways. `shuffleOrder`
+// is Fisher-Yates on a COPY: the naive is the `sort(() => random() - 0.5)`
+// everyone writes first, which is biased and sorts the caller's array in place —
+// the favorites page's own rows. `insertShuffled` places the tracks that load
+// after the first one has started, and must never put one at or before the
+// track playing now, where it would never be reached. `shuffleIndexOf` is the
+// shuffle's `queueIndexOf`, matched by `epKey`, so `<guid></guid>` cannot
+// collide. `shuffleTrackFor` is the money half: the stored record's value block
+// goes (the player reads the payee from the track's own feed), and the show is
+// an ALLOWLIST, so nothing a favorite or a cached record carries can ride onto
+// the show that streams are keyed and boost notes are written from.
+
 import {
   addToHistory,
   boostedOnDevice,
@@ -76,6 +90,10 @@ import {
   PLAY_HISTORY_CAP,
   playsAsTracks,
   queueShowFor,
+  insertShuffled,
+  shuffleIndexOf,
+  shuffleOrder,
+  shuffleTrackFor,
   trimForQueue,
 } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
@@ -365,6 +383,114 @@ checkBoosted('an empty episode guid matches nothing',
   [[boost(100, [leg(100, true)], { episodeGuid: '' })], { guid: '' }, SHOW], { sats: 0, unsure: false });
 
 // ---------------------------------------------------------------------------
+section('The favorites shuffle: order, insertion, identity, and the track it plays');
+// ---------------------------------------------------------------------------
+// A recorded sequence, rebuilt on every call so the naive replay sees the same
+// numbers the real call did.
+const rng = (seq) => { let i = 0; return () => seq[i++ % seq.length]; };
+
+function checkOrder(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, shuffleOrder(args[0], rng(args[1])), expected);
+  vectors.push({ label, kind: 'order', args, alsoNaive });
+}
+/** Sorted, so it asserts "a permutation" and nothing about the order. */
+function checkPermutation(label, args, { alsoNaive = false } = {}) {
+  compare(label, shuffleOrder(args[0], rng(args[1])).slice().sort(), args[0].slice().sort());
+  vectors.push({ label, kind: 'perm', args, alsoNaive });
+}
+/** The caller's array after the call — the favorites page's own rows. */
+function checkUntouched(label, args, { alsoNaive = false } = {}) {
+  const items = args[0].slice();
+  shuffleOrder(items, rng(args[1]));
+  compare(label, items, args[0]);
+  vectors.push({ label, kind: 'untouched', args, alsoNaive });
+}
+function checkInsert(label, args, expected, { alsoNaive = false } = {}) {
+  const [list, after, more, seq] = args;
+  const before = list.slice();
+  compare(label, insertShuffled(list, after, more, rng(seq)), expected);
+  compare(`${label} (the list passed in is unchanged)`, list, before);
+  vectors.push({ label, kind: 'insert', args, alsoNaive });
+}
+function checkShuffleIndex(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, shuffleIndexOf(...args), expected);
+  vectors.push({ label, kind: 'sindex', args, alsoNaive });
+}
+/** The track as the player and the boost paths will see it. */
+const trackShape = (t) => (t === null ? null : {
+  episodeKeys: Object.keys(t.episode).sort(),
+  showKeys: Object.keys(t.podcast).sort(),
+  show: { id: t.podcast.id, guid: t.podcast.podcastGuid, title: t.podcast.title, image: t.podcast.image, medium: t.podcast.medium },
+});
+function checkTrack(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, trackShape(shuffleTrackFor(...args)), expected);
+  vectors.push({ label, kind: 'track', args, alsoNaive });
+}
+
+const ABCD = ['a', 'b', 'c', 'd'];
+// Fisher-Yates from the end with j = 0 every time: d<->a, c<->d, b<->c.
+checkOrder('Fisher-Yates: a random source of 0 gives one exact order', [ABCD, [0]], ['b', 'c', 'd', 'a']);
+checkOrder('Fisher-Yates: j = i every time swaps nothing', [ABCD, [0.999]], ABCD, { alsoNaive: true });
+// Derived by hand: i=5 j=3 → a b c f e d; i=4 j=0 → e b c f a d; i=3 j=3;
+// i=2 j=0 → c b e f a d; i=1 j=1.
+checkOrder('Fisher-Yates: a mixed sequence', [['a', 'b', 'c', 'd', 'e', 'f'], [0.5, 0.1, 0.9, 0.3, 0.7]],
+  ['c', 'b', 'e', 'f', 'a', 'd']);
+checkPermutation('every row comes back exactly once', [['a', 'b', 'c', 'd', 'e', 'f', 'g'], [0.3, 0.7, 0.1]],
+  { alsoNaive: true });
+checkOrder('one row is that row', [['solo'], [0.5]], ['solo'], { alsoNaive: true });
+checkOrder('no rows is no rows', [[], [0.5]], [], { alsoNaive: true });
+checkUntouched("the caller's array is not shuffled in place", [ABCD, [0]]);
+
+// The current track is at `after`. A late track must land strictly after it.
+checkInsert('a source of 0 puts each late track right after the current one',
+  [['a', 'b', 'c'], 0, ['x', 'y'], [0]], ['a', 'y', 'x', 'b', 'c']);
+checkInsert('with nothing current (-1) a late track may go first',
+  [['a', 'b', 'c'], -1, ['x', 'y'], [0]], ['y', 'x', 'a', 'b', 'c']);
+checkInsert('on the last track, late tracks still go after it',
+  [['a', 'b', 'c'], 2, ['x', 'y'], [0]], ['a', 'b', 'c', 'y', 'x']);
+checkInsert('a source near 1 appends', [['a', 'b', 'c'], 0, ['x', 'y'], [0.999]], ['a', 'b', 'c', 'x', 'y'],
+  { alsoNaive: true });
+checkInsert('nothing late is nothing changed', [['a', 'b'], 0, [], [0]], ['a', 'b'], { alsoNaive: true });
+
+const item = (episode) => ({ episode, podcast: { id: 1, title: 'album' } });
+const S = [item({ guid: 'g1', id: 1 }), item({ guid: 'g2', id: 2 }), item({ guid: 'g3', id: 3 })];
+checkShuffleIndex('no shuffle is -1', [null, { guid: 'g1', id: 1 }], -1, { alsoNaive: true });
+checkShuffleIndex('an empty shuffle is -1', [[], { guid: 'g1', id: 1 }], -1, { alsoNaive: true });
+checkShuffleIndex('found by guid', [S, { guid: 'g2', id: 2 }], 1, { alsoNaive: true });
+checkShuffleIndex('a track not in the shuffle is -1', [S, { guid: 'other', id: 9 }], -1, { alsoNaive: true });
+// `<guid></guid>`: matching on the raw guid finds the FIRST empty one.
+checkShuffleIndex('an empty guid matches on feed:id, not on the empty string',
+  [[item({ guid: '', feedId: 5, id: 1 }), item({ guid: '', feedId: 5, id: 2 })], { guid: '', feedId: 5, id: 2 }], 1);
+
+const FAV = {
+  itemGuid: 'item-1', feedGuid: 'feed-1', feedId: 7, title: 'Song', podcastTitle: 'Album (favorite)',
+  image: 'https://x/fav.png', enclosureUrl: 'https://x/old.mp3', medium: 'music', addedAt: 1,
+};
+const PI_RECORD = {
+  id: 11, guid: 'item-1', podcastGuid: 'feed-1', feedId: 7, feedTitle: 'Album (feed)',
+  feedImage: 'https://x/feed.png', title: 'Song', enclosureUrl: 'https://x/song.mp3',
+  description: 'long', contentEncoded: '<p>longer</p>',
+  value: { model: { type: 'lightning' }, recipients: [{ address: 'stale', split: 100 }] },
+  valueTimeSplits: [{ startTime: 0, duration: 10 }], liveValueState: 'unread',
+};
+// THE ONE THIS HELPER EXISTS FOR. No value block rides along — `payableValue`
+// reads `episode.value` first, so a cached block would outrank the feed's own —
+// and the show is the allowlist: nothing from the favorite rides onto it.
+checkTrack('a cached record becomes a track with no payee and an allowlisted show', [FAV, PI_RECORD], {
+  episodeKeys: ['enclosureUrl', 'feedId', 'feedImage', 'feedTitle', 'guid', 'id', 'podcastGuid', 'title'],
+  showKeys: ['artwork', 'id', 'image', 'medium', 'podcastGuid', 'title'],
+  show: { id: 7, guid: 'feed-1', title: 'Album (feed)', image: 'https://x/feed.png', medium: 'music' },
+});
+checkTrack('the favorite fills what the record does not say',
+  [FAV, { id: 12, guid: 'item-1', title: 'Song', enclosureUrl: 'https://x/song.mp3' }], {
+    episodeKeys: ['enclosureUrl', 'guid', 'id', 'title'],
+    showKeys: ['artwork', 'id', 'image', 'medium', 'podcastGuid', 'title'],
+    show: { id: 7, guid: 'feed-1', title: 'Album (favorite)', image: 'https://x/fav.png', medium: 'music' },
+  });
+checkTrack('an empty enclosure is no track', [FAV, { ...PI_RECORD, enclosureUrl: '' }], null);
+checkTrack('an unresolved record is no track', [FAV, { ...PI_RECORD, unresolved: 'not-found' }], null);
+
+// ---------------------------------------------------------------------------
 section('The cap is a number this repo states, not one a caller passes');
 // ---------------------------------------------------------------------------
 compare('LISTEN_QUEUE_CAP is 50', LISTEN_QUEUE_CAP, 50);
@@ -422,6 +548,16 @@ section('Every vector above is replayed against the obvious wrong version');
     unsure: false,
   });
 
+  // The shuffle everyone writes first: biased, and it sorts the CALLER's array.
+  const naiveOrder = (items, random) => items.sort(() => random() - 0.5);
+  // Late tracks at the end, which is right only by luck.
+  const naiveInsert = (list, _after, more) => [...list, ...more];
+  // Matched on the raw guid, which `<guid></guid>` makes ''.
+  const naiveShuffleIndex = (shuffle, ep) =>
+    shuffle && shuffle.length ? shuffle.findIndex((i) => i.episode.guid === ep.guid) : -1;
+  // The record as it came, and the favorite as the show.
+  const naiveTrack = (fav, episode) => ({ episode, podcast: { ...fav, medium: 'music' } });
+
   const call = (impl, v) => {
     try {
       const real = impl === 'real';
@@ -446,6 +582,23 @@ section('Every vector above is replayed against the obvious wrong version');
           return JSON.stringify(historyShape(real ? addToHistory(...v.args) : naiveHistory(...v.args)));
         case 'boosted':
           return JSON.stringify(real ? boostedOnDevice(...v.args) : naiveBoosted(...v.args));
+        case 'order':
+          return JSON.stringify((real ? shuffleOrder : naiveOrder)(v.args[0].slice(), rng(v.args[1])));
+        case 'perm':
+          return JSON.stringify((real ? shuffleOrder : naiveOrder)(v.args[0].slice(), rng(v.args[1])).slice().sort());
+        case 'untouched': {
+          const items = v.args[0].slice();
+          (real ? shuffleOrder : naiveOrder)(items, rng(v.args[1]));
+          return JSON.stringify(items);
+        }
+        case 'insert': {
+          const [list, after, more, seq] = v.args;
+          return JSON.stringify((real ? insertShuffled : naiveInsert)(list.slice(), after, more, rng(seq)));
+        }
+        case 'sindex':
+          return JSON.stringify((real ? shuffleIndexOf : naiveShuffleIndex)(...v.args));
+        case 'track':
+          return JSON.stringify(trackShape((real ? shuffleTrackFor : naiveTrack)(...v.args)));
         default: throw new Error(`unknown vector kind ${v.kind}`);
       }
       // A wrong implementation is allowed to throw where the real one returns.
