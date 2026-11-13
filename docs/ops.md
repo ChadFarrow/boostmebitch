@@ -509,6 +509,12 @@ on a custom domain; and it makes the bug report's `site` say
 keysend route and every boost note read. `npm run e2e:beta` drives all three at
 phone size, in both modes, and never files a report.
 
+**One player experiment rides on the same flag.** On beta only, the next track's
+file is downloaded ~30 s before the current one ends, for the iPhone background
+stall in bug #546 (`components/player/use-next-prefetch.ts`, docs/ui.md, "The next
+file is fetched early on beta"). It comes out before any merge to `main` that
+would turn it on, or when the playback log shows it does not help.
+
 **Its variables are scoped to the branch `beta`**, so PR previews do not get them.
 The Preview environment already holds the rest.
 

@@ -5,6 +5,8 @@
 // keysend route and every boost note, and beta must say exactly what the main
 // site says there. So this flag changes three things a tester sees, and nothing
 // a recipient reads: the tag in `app/layout.tsx`, `noindex`, and the bug report.
+// A fourth, temporary: the early download of the next track in
+// `components/player/use-next-prefetch.ts`, an experiment for bug #546.
 //
 // `process.env.NEXT_PUBLIC_BETA` IS WRITTEN OUT LITERALLY, ONCE, for the reason
 // `lib/brand.ts` gives: Next.js inlines the exact member expression at build

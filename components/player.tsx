@@ -12,6 +12,7 @@ import { dropRefusedPlaybackRate, isMusicItem, resolvePlaybackRate, useApp } fro
 import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
+import { useNextPrefetch } from './player/use-next-prefetch';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayHistory } from './player/use-play-history';
 import { useNowPlaying } from './player/use-now-playing';
@@ -1295,6 +1296,10 @@ export function Player() {
     playbackRate: effectiveRate,
     setPlaying, skipBy, seekTo,
   });
+
+  // BETA ONLY: the next track's file, ~30 s early — an experiment for the
+  // background stall in bug #546. See ./player/use-next-prefetch.
+  useNextPrefetch(duration, isLiveMedia);
 
   // Saves where each episode was left, so the next play() of it resumes there.
   // See ./player/use-resume-position and lib/resume-position.ts.
