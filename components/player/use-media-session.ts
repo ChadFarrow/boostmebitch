@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { artCandidates, playsAsTracks } from '@/lib/util';
 import { logPlayback } from '@/lib/playback-log';
@@ -31,6 +31,38 @@ interface Args {
   seekTo: (t: number) => void;
 }
 
+/** Every action this hook hands the OS — and clears on unmount. */
+const HANDED_OVER: MediaSessionAction[] = [
+  'play', 'pause', 'previoustrack', 'nexttrack', 'seekto', 'seekbackward', 'seekforward',
+];
+
+type Callbacks = Pick<Args, 'setPlaying' | 'skipBy' | 'seekTo'>;
+
+/**
+ * Hands the OS all seven handlers in one go: the two skips as `null` for an
+ * item that plays as tracks. Each handler writes its action to the playback
+ * log first — a lock-screen ⏭ that reached the page and a press that never
+ * arrived look the same otherwise.
+ */
+function handOver(ms: MediaSession, tracks: boolean, cb: { current: Callbacks }): void {
+  const logged = (action: MediaSessionAction, fn: MediaSessionActionHandler): MediaSessionActionHandler =>
+    (d) => { logPlayback('ms', { action }); fn(d); };
+  const set: [MediaSessionAction, MediaSessionActionHandler | null][] = [
+    ['play', logged('play', () => cb.current.setPlaying(true))],
+    ['pause', logged('pause', () => cb.current.setPlaying(false))],
+    ['previoustrack', logged('previoustrack', () => useApp.getState().playPrev())],
+    ['nexttrack', logged('nexttrack', () => useApp.getState().playNext())],
+    // `seekto` goes through `seekTo`, because it is absolute — and it must
+    // mark intent, or the restore undoes a lock-screen rewind.
+    ['seekto', logged('seekto', (d) => { if (d.seekTime != null) cb.current.seekTo(d.seekTime); })],
+    ['seekbackward', tracks ? null : logged('seekbackward', (d) => cb.current.skipBy(-(d.seekOffset || 10)))],
+    ['seekforward', tracks ? null : logged('seekforward', (d) => cb.current.skipBy(d.seekOffset || 10))],
+  ];
+  for (const [action, handler] of set) {
+    try { ms.setActionHandler(action, handler); } catch { /* unsupported action — skip */ }
+  }
+}
+
 /**
  * The OS lock-screen / notification integration: transport handlers, play state,
  * scrub bar, and metadata.
@@ -50,70 +82,68 @@ export function useMediaSession({
 
   // Wires the system media controls to the same store actions the in-app UI
   // uses, so play/pause/skip and (for podcasts) lock-screen scrubbing work with
-  // the screen off. Handlers read from the store via getState so this runs once.
-  useEffect(() => {
-    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
-    const ms = navigator.mediaSession;
-    const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
-      ['play', () => setPlaying(true)],
-      ['pause', () => setPlaying(false)],
-      ['previoustrack', () => useApp.getState().playPrev()],
-      ['nexttrack', () => useApp.getState().playNext()],
-      // `seekto` goes through `seekTo`, because it is absolute — and it must
-      // mark intent, or the restore undoes a lock-screen rewind. The two
-      // RELATIVE skips are registered by the effect below, per item.
-      ['seekto', (d) => { if (d.seekTime != null) seekTo(d.seekTime); }],
-    ];
-    // Each action is written to the playback log first: a lock-screen ⏭ that
-    // reached the page and a press that never arrived look the same otherwise.
-    for (const [action, handler] of handlers) {
-      try {
-        ms.setActionHandler(action, (d) => { logPlayback('ms', { action }); handler(d); });
-      } catch { /* unsupported action — skip */ }
-    }
-    return () => {
-      for (const [action] of handlers) {
-        try { ms.setActionHandler(action, null); } catch { /* skip */ }
-      }
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // The skip-interval buttons — for a PODCAST only. A track gets ⏮/⏭.
+  // the screen off. Every handler reads the CURRENT callbacks through a ref,
+  // because the same handler objects are handed over again and again below.
   //
-  // iOS draws the ±10 s buttons whenever the page has a `seekbackward` or
-  // `seekforward` handler, and draws ⏮/⏭ only when it has neither, so the track
-  // handlers above were registered all along and never shown. Asked for from
-  // the lock screen on 2026-11-13, over a favorites shuffle: "instead of skip
-  // forward and back 10 or 30 seconds? Can we have previous and next when
-  // listening to music?" So an item that plays as tracks (`playsAsTracks`:
-  // music and musicL, the shuffle's tracks) clears both, and a podcast keeps
-  // them — a skip is how you get past an ad, and ⏮/⏭ there would leave the
-  // episode. The scrub bar (`seekto`) stays for both. Pinned by
-  // `npm run e2e:lockbuttons`, which records what the page hands the OS.
+  // The skip-interval buttons are for a PODCAST only; a track gets ⏮/⏭. Asked
+  // for from the lock screen on 2026-11-13, over a favorites shuffle: "instead
+  // of skip forward and back 10 or 30 seconds? Can we have previous and next
+  // when listening to music?" So an item that plays as tracks (`playsAsTracks`:
+  // music and musicL, the shuffle's tracks) hands over `seekbackward` and
+  // `seekforward` as NULL, and a podcast keeps them — a skip is how you get
+  // past an ad, and ⏮/⏭ there would leave the episode. The scrub bar
+  // (`seekto`) stays for both.
+  //
+  // **AND EVERYTHING IS HANDED OVER AGAIN ON EVERY `playing` EVENT.** The first
+  // version set the handlers once, at mount and on a change of item kind, and
+  // Chad's iPhone still drew ±10 s for music (2026-11-13, #553) — the log
+  // showed only `seekto` and `pause` arriving, both in WebKit's defaults.
+  // WebKit sends iOS the page's handlers through a remote-command listener
+  // that exists only while a media element is loading or playing
+  // (`NowPlayingManager::addSupportedCommand` returns early without one), and
+  // a NEW listener starts from `defaultCommands()` — play/pause, the scrubber
+  // and ±skip, no ⏮/⏭ — never from what the page set before; `MediaSession`
+  // never re-sends. Our mount registration ran before the audio had a source.
+  // Apple's own MediaSession API test plays first and sets handlers after. The
+  // listener is created when a load starts, so by `playing` it exists; the
+  // commands are a set, so a repeat is harmless. Heard in the CAPTURE phase on
+  // `document` (media events do not bubble), as the playback log hears them,
+  // so both elements are covered with no ref. Each hand-over writes `ms.reg`
+  // to the playback log, so a bug report shows it happened after playback.
+  // Pinned by `npm run e2e:lockbuttons` section 5, which records what the page
+  // hands `setActionHandler` after the latest `playing`. Whether iOS then
+  // draws ⏮/⏭ is the phone's to show; WebKit's code says it should.
   //
   // Through `skipBy`, not `seekTo(getState().positionSec + d)`: these are
   // RELATIVE jumps and had the same stale-base bug the in-app buttons would
   // have had — hold down the lock-screen skip and every repeat recomputed from
   // the same ~4Hz-old position, so a run of them moved one interval.
   const tracks = !!current && playsAsTracks(current.podcast) && !current.episode.liveStatus;
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
+  const cb = useRef({ setPlaying, skipBy, seekTo });
+  cb.current = { setPlaying, skipBy, seekTo };
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    handOver(navigator.mediaSession, tracks, cb);
+  }, [tracks]);
+
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
-    const skips: [MediaSessionAction, MediaSessionActionHandler][] = [
-      ['seekbackward', (d) => skipBy(-(d.seekOffset || 10))],
-      ['seekforward', (d) => skipBy(d.seekOffset || 10)],
-    ];
-    for (const [action, handler] of skips) {
-      try {
-        ms.setActionHandler(action, tracks ? null : (d) => { logPlayback('ms', { action }); handler(d); });
-      } catch { /* unsupported action — skip */ }
-    }
+    const onPlaying = () => {
+      handOver(ms, tracksRef.current, cb);
+      logPlayback('ms.reg', { tracks: tracksRef.current });
+    };
+    document.addEventListener('playing', onPlaying, true);
     return () => {
-      for (const [action] of skips) {
+      document.removeEventListener('playing', onPlaying, true);
+      for (const action of HANDED_OVER) {
         try { ms.setActionHandler(action, null); } catch { /* skip */ }
       }
     };
-  }, [tracks]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // Reflect play/pause to the OS so the lock-screen button shows the right state.
   useEffect(() => {

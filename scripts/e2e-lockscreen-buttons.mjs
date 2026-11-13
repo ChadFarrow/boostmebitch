@@ -9,7 +9,7 @@
 // Right Said Fred): "instead of skip forward and back 10 or 30 seconds? Can we
 // have previous and next when listening to music?"
 //
-// iOS draws the skip-interval buttons whenever the page has a `seekbackward` or
+// WebKit hands iOS the skip-interval buttons whenever the page has a `seekbackward` or
 // `seekforward` handler, and ⏮/⏭ only when it has neither — the track handlers
 // were registered all along and never drawn. So for an item that plays as
 // tracks (`playsAsTracks`: music and musicL, the favorites shuffle's tracks)
@@ -24,6 +24,16 @@
 //   2. The lock-screen ⏭ moves to the next track, and ⏮ back.
 //   3. A podcast episode: the two seek handlers are set again.
 //   4. Back to music: cleared again — it follows the item, not the first one.
+//   5. AFTER the latest `playing` event the page has handed over ALL seven
+//      again — the five track/scrub handlers and the two skips (cleared for a
+//      track, set for a podcast). On Chad's iPhone (2026-11-13, #553) the
+//      lock screen kept ±10 s for music although sections 1-4 passed: WebKit
+//      sends iOS the page's handlers only through a remote-command listener
+//      that exists while a media element is loading or playing
+//      (NowPlayingManager::addSupportedCommand returns early without one), and
+//      a NEW listener starts from its defaults — ±skip, no ⏮/⏭ — never from
+//      what the page set before. Apple's own MediaSession API test plays
+//      first and sets handlers after. So the page re-sends on every `playing`.
 
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
@@ -66,7 +76,16 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
   const ms = navigator.mediaSession; if (!ms) return;
   const orig = ms.setActionHandler.bind(ms);
   window.__msh = {};
-  ms.setActionHandler = (action, handler) => { window.__msh[action] = handler; try { orig(action, handler); } catch { /* unsupported */ } };
+  // Every call, stamped with how many \`playing\` events had fired by then. This
+  // listener is registered before any app script, so for one event it counts
+  // first and the app's own capture listener runs after it.
+  window.__msLog = []; window.__playingN = 0;
+  document.addEventListener('playing', () => { window.__playingN += 1; }, true);
+  ms.setActionHandler = (action, handler) => {
+    window.__msh[action] = handler;
+    window.__msLog.push({ action, fn: typeof handler === 'function', after: window.__playingN });
+    try { orig(action, handler); } catch { /* unsupported */ }
+  };
 })();` });
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
@@ -119,6 +138,15 @@ await send('Page.enable');
 await send('Runtime.enable');
 
 const handlers = async () => JSON.parse(await js(`JSON.stringify(Object.fromEntries(Object.entries(window.__msh ?? {}).map(([k, v]) => [k, typeof v === 'function'])))`));
+// What the page handed over AFTER the latest \`playing\` event, last call wins.
+const sinceLastPlaying = async () => JSON.parse(await js(`JSON.stringify((() => {
+  const n = window.__playingN; const out = { playing: n };
+  for (const c of window.__msLog) if (c.after === n && n > 0) out[c.action] = c.fn;
+  return out;
+})())`));
+const ALL_FOR_A_TRACK = { play: true, pause: true, previoustrack: true, nexttrack: true, seekto: true, seekbackward: false, seekforward: false };
+const ALL_FOR_A_PODCAST = { ...ALL_FOR_A_TRACK, seekbackward: true, seekforward: true };
+const sansCount = ({ playing, ...rest }) => rest;
 const pick = (h) => ({ previoustrack: h.previoustrack, nexttrack: h.nexttrack, seekbackward: h.seekbackward, seekforward: h.seekforward, seekto: h.seekto });
 const playingSrc = (re) => until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && ${re}.test(a.currentSrc); })()`, 15000);
 async function openFeed(guid, text) {
@@ -135,6 +163,8 @@ t.ok('track 0 plays', await playingSrc('/[?&]k=0(\\D|$)/'));
 await wait(400);
 t.equal('the handlers the page gives the OS', pick(await handlers()),
   { previoustrack: true, nexttrack: true, seekbackward: false, seekforward: false, seekto: true });
+t.equal('…and ALL of them again after the track started playing (WebKit drops what came before)',
+  sansCount(await sinceLastPlaying()), ALL_FOR_A_TRACK);
 
 // ---------------------------------------------------------------------------
 console.log('\n2. The lock-screen ⏭ and ⏮ move between tracks');
@@ -151,6 +181,8 @@ t.ok('the episode plays', await playingSrc('/[?&]p=0(\\D|$)/'));
 await wait(400);
 const h3 = pick(await handlers());
 t.ok('the skip buttons are back', h3.seekbackward && h3.seekforward && h3.seekto, JSON.stringify(h3));
+t.equal('…and all seven again after the episode started playing, skips included',
+  sansCount(await sinceLastPlaying()), ALL_FOR_A_PODCAST);
 
 // ---------------------------------------------------------------------------
 console.log('\n4. Back to music: the skip buttons go again');
@@ -160,6 +192,18 @@ t.ok('track 2 plays', await playingSrc('/[?&]k=2(\\D|$)/'));
 await wait(400);
 t.equal('the handlers follow the item', pick(await handlers()),
   { previoustrack: true, nexttrack: true, seekbackward: false, seekforward: false, seekto: true });
+
+// ---------------------------------------------------------------------------
+console.log('\n5. Every `playing` re-sends them: a pause and a resume');
+await js(`document.querySelector('audio').pause()`);
+await wait(300);
+const before = (await sinceLastPlaying()).playing;
+await js(`document.querySelector('audio').play()`);
+t.ok('track 2 plays again', await playingSrc('/[?&]k=2(\\D|$)/'));
+await wait(300);
+const again = await sinceLastPlaying();
+t.ok('a new `playing` event fired', again.playing > before, JSON.stringify({ before, now: again.playing }));
+t.equal('all seven were handed over after it', sansCount(again), ALL_FOR_A_TRACK);
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails} of ${t.count} passed`);
