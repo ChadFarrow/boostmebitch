@@ -22,6 +22,7 @@
  *
  * Import-free on purpose: `npm run e2e:livecatchup` loads it under
  * `--experimental-strip-types` and checks the same function `<Player>` runs.
+ * The rest of the reasoning: docs/ui.md, "Catch up to live".
  */
 
 /** Where the clock was started: the wall time and the media time, together. */
