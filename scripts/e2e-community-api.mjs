@@ -295,6 +295,14 @@ const notUuid = await call('GET', `${PLAYLISTS}/not-a-uuid`);
 check('GET a non-uuid id -> 404', notUuid.status === 404, show(notUuid));
 
 // ── feed, cover, short-circuit, guid lookup, search lane ────────────────────
+// One address per feed: a request that reaches this route on another host (beta, the
+// bitch site) is sent to the feed origin for good, path and query kept.
+for (const ext of ['xml', 'jpg?v=1']) {
+  const r = await fetch(`${APP}/feeds/playlists/${id}.${ext}`, { redirect: 'manual', headers: { 'x-forwarded-host': 'beta.example.test', 'x-forwarded-proto': 'https' } });
+  check(`feed .${ext} on another host -> 301 to the same path on the feed origin, no Cache-Control`,
+    r.status === 301 && r.headers.get('location') === `${APP}/feeds/playlists/${id}.${ext}` && !r.headers.get('cache-control'),
+    `${r.status} ${r.headers.get('location')} ${r.headers.get('cache-control')}`);
+}
 const feedRes = await fetch(`${APP}/feeds/playlists/${id}.xml`);
 const feedXml = await feedRes.text();
 check('GET feed .xml -> 200 rss+xml with the cache header',
