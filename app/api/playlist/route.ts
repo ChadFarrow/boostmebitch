@@ -5,7 +5,7 @@ import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi'
 import { resolvePlaylistTracks } from '@/lib/playlist-db';
 import { batchEpisodes, episodeKey, MAX_BATCH } from '@/lib/pi-batch';
 import { fnvHash, mergeRssOverPi, playsAsTracks, communityPlaylistToPodcast } from '@/lib/util';
-import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { COMMUNITY_FEEDS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
 import { summaryOf } from '@/lib/community/http';
 import type { Episode, PlayGroup, Podcast } from '@/lib/types';
@@ -131,7 +131,7 @@ export async function GET(req: Request) {
     let channel: Awaited<ReturnType<typeof getPlaylistChannel>>;
     let piRecord: Podcast | null = null;
     if (communityId) {
-      const own = COMMUNITY_PLAYLISTS_ON && communityStoreConfigured() ? await getPlaylist(communityId) : null;
+      const own = COMMUNITY_FEEDS_ON && communityStoreConfigured() ? await getPlaylist(communityId) : null;
       if (!own || own === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 });
       channel = {
         podcast: communityPlaylistToPodcast(summaryOf(own)),

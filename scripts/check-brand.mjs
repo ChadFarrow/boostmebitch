@@ -453,6 +453,48 @@ for (const v of ID_VECTORS) {
 console.log(`        ${proved} vector(s) proved, ${exempt} exempted as must-still-work`);
 ok('the replay proved something', proved > 0);
 
+// ---------------------------------------------------------------------------
+// lib/cross-brand-cors.ts — which browser origins may read the Buddy deploy's
+// two signing routes. The Bitch deploy opens nothing.
+// ---------------------------------------------------------------------------
+
+console.log('\n  cross-brand CORS');
+{
+  const CORS = 'lib/cross-brand-cors.ts';
+  const cp = importFreeProblems(CORS);
+  if (cp.length) {
+    explainImportFree(CORS, cp);
+    process.exit(1);
+  }
+  const { crossBrandOrigins, corsHeaders } = await import('../lib/cross-brand-cors.ts');
+  const ALLOW = 'Access-Control-Allow-Origin';
+  eq('buddy allows exactly the two Bitch origins',
+    JSON.stringify(crossBrandOrigins('buddy')),
+    JSON.stringify(['https://www.boostmebitch.com', 'https://beta.boostmebitch.com']));
+  eq('bmb allows no origin', JSON.stringify(crossBrandOrigins('bmb')), '[]');
+  eq('buddy answers the Bitch origin with its own origin',
+    corsHeaders('https://www.boostmebitch.com', 'buddy')[ALLOW], 'https://www.boostmebitch.com');
+  eq('buddy answers the beta origin',
+    corsHeaders('https://beta.boostmebitch.com', 'buddy')[ALLOW], 'https://beta.boostmebitch.com');
+  eq('allowed answer carries the full header set',
+    JSON.stringify(corsHeaders('https://www.boostmebitch.com', 'buddy')),
+    JSON.stringify({
+      'Access-Control-Allow-Origin': 'https://www.boostmebitch.com',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'content-type',
+      'Access-Control-Max-Age': '600',
+      Vary: 'Origin',
+    }));
+  ok('a stranger origin gets no allow-origin', !(ALLOW in corsHeaders('https://evil.example', 'buddy')));
+  eq('a stranger origin still gets Vary', JSON.stringify(corsHeaders('https://evil.example', 'buddy')),
+    JSON.stringify({ Vary: 'Origin' }));
+  ok('no Origin header gets no allow-origin', !(ALLOW in corsHeaders(null, 'buddy')));
+  ok('a look-alike (suffix) origin gets none', !(ALLOW in corsHeaders('https://www.boostmebitch.com.evil.example', 'buddy')));
+  ok('http scheme gets none', !(ALLOW in corsHeaders('http://www.boostmebitch.com', 'buddy')));
+  ok('the Bitch deploy opens nothing', !(ALLOW in corsHeaders('https://www.boostmebitch.com', 'bmb')));
+}
+
+
 if (failures) {
   console.error(`\n  ${failures} failure(s) in check:brand\n`);
   process.exit(1);

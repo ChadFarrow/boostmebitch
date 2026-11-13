@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
-import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl, communityCoverUrl, coverVersion } from '@/lib/curated-playlists';
+import { COMMUNITY_FEEDS_ON, communityFeedUrl, communityCoverUrl, coverVersion } from '@/lib/curated-playlists';
 import { buildPlaylistFeedXml } from '@/lib/community/feed-doc';
 import { buildCover } from '@/lib/community/cover';
 import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
@@ -23,7 +23,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
   // First line, as on every route: the limit holds whether the feature is on or off.
   const limited = rateLimit(req, 'community-feed', 240);
   if (limited) return limited;
-  if (!COMMUNITY_PLAYLISTS_ON) return text(404);
+  // The feed and cover answer wherever published playlists are served, maker or not.
+  if (!COMMUNITY_FEEDS_ON) return text(404);
   const { file } = await ctx.params;
   const m = /^(.+)\.(xml|jpg)$/.exec(file);
   if (!m || !UUID_RE.test(m[1])) return text(404);
