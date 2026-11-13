@@ -270,7 +270,9 @@ const goneBefore = goneAsked.length;
 await endTrack();
 t.ok('…and when track 0 ends, track 2 plays', await waitK(2, 12000), `on k=${await kOf()}`);
 t.ok('track 2 is playing', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2; })()`, 10000));
-t.equal('the player never asked for dead track 1 at all', goneAsked.slice(goneBefore), []);
+// Only track 1: on beta, #550's early download fetches the file after track 2
+// (dead track 3) with a plain no-cors fetch, which is not the player's.
+t.equal('the player never asked for dead track 1 at all', goneAsked.slice(goneBefore).filter((k) => k === '1'), []);
 t.ok('the playback log says it was passed over on the probe',
   await js(`(localStorage.getItem('bmb:plog:device') ?? '').includes('skip_dead via=probe')`));
 t.equal('no error is left on screen', await errShown(), false);
