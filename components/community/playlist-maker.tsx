@@ -7,6 +7,7 @@ import { storage, type PlaylistDraftCache } from '@/lib/storage';
 import { ModalShell } from '@/components/modal-shell';
 import { RowThumb } from '@/components/chapter-ui';
 import { artCandidates } from '@/lib/util';
+import { SongPreviewButton } from '@/components/community/song-preview-button';
 import { cleanText } from '@/lib/community/clean-text';
 import {
   MAX_TITLE_LEN, MIN_SONGS, validatePlaylistDraft,
@@ -386,24 +387,21 @@ export function PlaylistMaker() {
         </div>
       </div>
 
-      <ol className="mt-6 max-w-xl divide-y divide-bone/15 border-y border-bone/15" aria-label="Songs">
+      <div className="mt-6 max-w-xl border border-bone/15 bg-ink/90 px-3" data-songs-panel>
+      <ol className="divide-y divide-bone/15" aria-label="Songs">
         {songs.map((s, i) => {
           const l = labels[s.itemGuid];
           return (
-            <li key={`${s.feedGuid}:${s.itemGuid}`} className="flex items-center gap-2 py-2" data-song-row>
+            <li key={`${s.feedGuid}:${s.itemGuid}`} className="flex flex-wrap items-center gap-2 py-2" data-song-row>
               {/* The track number is the row's place in the playlist, so it follows a move. */}
               <span className="w-6 shrink-0 text-right font-mono text-xs tabular-nums text-muted" data-song-number>{i + 1}</span>
               {/* The song's own cover, through /api/art with the raw URL behind it
                   (CLAUDE.md: artwork goes through /api/art). An unknown cover keeps
                   the same box, so the rows stay aligned. */}
-              <div className="h-10 w-10 shrink-0 overflow-hidden bg-bone/10" data-song-art>
-                {l?.image && (
-                  <RowThumb src={artCandidates(l.image, null, 160)[0]} fallback={l.image} className="h-full w-full object-cover" />
-                )}
-              </div>
+              <SongPreviewButton feedGuid={s.feedGuid} itemGuid={s.itemGuid} title={l?.title ?? 'Song'} image={l?.image} />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm">{l?.title ?? 'Song'}</p>
-                {l?.artist && <p className="truncate text-xs text-muted">{l.artist}</p>}
+                <p className="truncate text-sm text-bone">{l?.title ?? 'Song'}</p>
+                {l?.artist && <p className="truncate text-xs text-bone/70">{l.artist}</p>}
               </div>
               <button type="button" className={ICON_BTN} aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
               <button type="button" className={ICON_BTN} aria-label="Move down" disabled={i === songs.length - 1} onClick={() => move(i, 1)}>↓</button>
@@ -412,7 +410,8 @@ export function PlaylistMaker() {
           );
         })}
       </ol>
-      <p className="mt-2 text-xs text-muted">{songs.length} {songs.length === 1 ? 'song' : 'songs'}</p>
+      <p className="border-t border-bone/15 py-2 text-xs text-bone/70">{songs.length} {songs.length === 1 ? 'song' : 'songs'}</p>
+      </div>
       <button type="button" className="btn-ghost btn-compact mt-3" aria-expanded={addOpen} onClick={() => setAddOpen(true)}>+ ADD SONGS</button>
 
       {(refusals.length > 0 || note) && (
