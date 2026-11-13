@@ -1659,6 +1659,11 @@ export function Player() {
               // Nothing about a 48px thumbnail is worth a frame of audio.
               lowPriority
               w={160}
+              // The tile changes IN PLACE on every track, so it holds the old
+              // picture until the new one has loaded. Without it ⏭ left it
+              // empty for ~170 ms in WebKit — the flicker reported from beta
+              // while shuffling (e2e:coverhold section 2).
+              hold
               className="w-12 h-12 border border-bone/20 flex-shrink-0"
             />
           ) : null}

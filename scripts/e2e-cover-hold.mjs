@@ -21,7 +21,14 @@
 // every animation frame paints SOME picture in the cover box — the old one is
 // held until the next has loaded. And the gate still decides: the proxied copy
 // is on screen before the published file, and the cover ends on the published
-// file, which is how an animated cover keeps moving.
+// file, which is how an animated cover keeps moving. Section 2 asks the same of
+// the mini bar's 48px tile, which also went empty on every ⏭.
+//
+// It reads `naturalWidth`, which sees a NEW element that has not loaded — the
+// fault both sections were written against. It cannot see paint: Chrome once
+// held a loaded but undecoded picture and painted an empty frame at the swap,
+// found only with screenshots of the box (docs/ui.md). `img.decode()` is the
+// guard for that, and this script does not pin it.
 //
 // Everything the player asks for is answered here: the album, the audio (a
 // silent WAV, each answer held 700 ms so `waiting` shuts the gate every time),
@@ -133,7 +140,7 @@ await send('Runtime.enable');
 const COVER_IMGS = `[...document.images].filter((i) => { const b = i.getBoundingClientRect();
   return b.width > 200 && Math.abs(b.width - b.height) < 40 && !/hero\\.jpg/.test(i.currentSrc); })`;
 const painted = () => js(`(() => { const v = ${COVER_IMGS}.filter((i) => getComputedStyle(i).opacity !== '0');
-  const p = v.find((i) => i.complete && i.naturalWidth > 0); return p ? p.currentSrc : null; })()`);
+  const p = v.find((i) => i.naturalWidth > 0); return p ? p.currentSrc : null; })()`);
 const isRaw = (src, k) => !!src && src.startsWith(IMG(`cover-${k}`));
 const isProxied = (src, k) => !!src && src.includes('/api/art') && src.includes(encodeURIComponent(IMG(`cover-${k}`)));
 
@@ -145,7 +152,7 @@ t.ok('track 1 plays', await until(`(() => { const a = document.querySelector('au
 await js(`document.querySelector('[aria-label^="Open fullscreen player"]')?.click()`);
 t.ok('the open cover settles on track 1\'s published file',
   await until(`(() => { const v = ${COVER_IMGS}.filter((i) => getComputedStyle(i).opacity !== '0');
-    return v.some((i) => i.complete && i.naturalWidth > 0 && i.currentSrc.startsWith(${JSON.stringify(IMG('cover-0'))})); })()`, 15000),
+    return v.some((i) => i.naturalWidth > 0 && i.currentSrc.startsWith(${JSON.stringify(IMG('cover-0'))})); })()`, 15000),
   await painted());
 
 // Every animation frame from ⏭ for 5 s: which picture is PAINTED, or none.
@@ -153,7 +160,7 @@ await js(`(() => {
   window.__frames = []; const start = performance.now();
   const tick = () => {
     const v = ${COVER_IMGS}.filter((i) => getComputedStyle(i).opacity !== '0');
-    const p = v.find((i) => i.complete && i.naturalWidth > 0);
+    const p = v.find((i) => i.naturalWidth > 0);
     window.__frames.push(p ? p.currentSrc : null);
     if (performance.now() - start < 5000) requestAnimationFrame(tick);
   };
@@ -176,6 +183,36 @@ t.ok('the gate still decides: track 2\'s proxied copy shows before its published
   firstProxied >= 0 && firstRaw > firstProxied, `proxied at frame ${firstProxied}, published at ${firstRaw}`);
 t.ok('track 1\'s picture never comes back once track 2\'s is on screen',
   !frames.slice(Math.max(0, firstProxied)).some((s) => s && s.includes('cover-0')));
+
+// ---------------------------------------------------------------------------
+// THE MINI-BAR TILE. Reported again from beta after the big cover held:
+// "I also still notice the art flickering when I skip to the next track while
+// shuffling music." Measured in WebKit (Safari's engine): the 44px tile was
+// EMPTY for ~170 ms after ⏭, the new tile's file not yet loaded. It is the
+// surface a listener sees while browsing, so it must hold too.
+console.log('\n2. The mini-bar tile');
+await js(`document.querySelector('[aria-label="Close fullscreen player"]')?.click()`);
+await wait(600);
+const TILE = `[...document.querySelectorAll('[data-mini-player] img')].filter((i) => i.getBoundingClientRect().width > 20)`;
+t.ok('the tile shows track 2', await until(`${TILE}.some((i) => i.naturalWidth > 0 && i.currentSrc.includes(${JSON.stringify(encodeURIComponent(IMG('cover-1')))}))`, 15000));
+await js(`(() => {
+  window.__tile = []; const start = performance.now();
+  const tick = () => {
+    const v = ${TILE}.filter((i) => getComputedStyle(i).opacity !== '0');
+    const p = v.find((i) => i.naturalWidth > 0);
+    window.__tile.push(p ? p.currentSrc : null);
+    if (performance.now() - start < 3000) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  [...document.querySelectorAll('[data-mini-player] button')].find((b) => /^Next/.test(b.getAttribute('aria-label') ?? ''))?.click();
+  return 1;
+})()`);
+await wait(3500);
+const tile = JSON.parse(await js('JSON.stringify(window.__tile)'));
+const tileSeq = tile.filter((s, i) => i === 0 || s !== tile[i - 1]);
+console.log(`  ${tile.length} frames: ${tileSeq.map(short).join(' → ')}`);
+t.equal('no frame paints an EMPTY tile after ⏭', tile.filter((s) => s === null).length, 0);
+t.ok('the tile ends on track 3\'s picture', !!tile[tile.length - 1]?.includes(encodeURIComponent(IMG('cover-2'))), short(tile[tile.length - 1]));
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails} of ${t.count} passed`);

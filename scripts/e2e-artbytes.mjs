@@ -97,9 +97,13 @@ await wait(9000);
 const at = await js(`(() => { const a = document.querySelector('audio'); return a ? Math.round(a.currentTime) : null; })()`);
 t.ok('the play head is inside the animated chapter', at !== null && at >= INSIDE_CHAPTER, `at ${at}s`);
 
+// The tile is the mini bar's picture. It was found as the one 48x48 image, and
+// since the tile HOLDS its picture (`<PodcastCover hold>`) the 48px box with its
+// border is a wrapper and the picture fills its inside, 46x46 — the same pixels
+// on screen as the bordered <img> it replaced.
 const tile = await js(`(() => {
-  const im = [...document.images].find(i => { const r = i.getBoundingClientRect();
-    return Math.round(r.width) === 48 && Math.round(r.height) === 48; });
+  const im = [...document.querySelectorAll(${JSON.stringify(MINI_BAR)} + ' img')].find(i => { const r = i.getBoundingClientRect();
+    return r.width >= 40 && Math.abs(r.width - r.height) < 2 && getComputedStyle(i).opacity !== '0'; });
   return im ? { src: decodeURIComponent(im.currentSrc), w: im.naturalWidth } : null; })()`);
 t.ok('the 48px now-playing tile renders the PROXIED copy', !!tile && /\/api\/art\?/.test(tile.src), String(tile && tile.src));
 t.ok('...at w=160, which is 48 CSS px at a phone\'s 3x', !!tile && /[?&]w=160(&|$)/.test(tile.src), String(tile && tile.src));

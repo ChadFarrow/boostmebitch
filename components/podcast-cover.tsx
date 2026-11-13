@@ -124,18 +124,30 @@ function PodcastCoverImpl({
    * Keep the last picture PAINTED until the next one has loaded.
    *
    * Without it a new URL is a new `<img>` (the `key` below), empty until its
-   * file arrives — and on the big now-playing cover the URL changes up to three
-   * times per track: the next track's published file while the art gate is
+   * file arrives. On the big now-playing cover the URL changes up to three
+   * times per track — the next track's published file while the art gate is
    * still open from the last one, its proxied copy once `waiting` shuts the
-   * gate, the published file again when the buffer reopens it. Reported from
-   * the beta site as "the art loads, but then it also flashes just once";
-   * measured as 372 ms of an empty cover on the last swap.
+   * gate, the published file again when the buffer reopens it — and the mini
+   * bar's tile changes once per track. Reported from the beta site as "the art
+   * loads, but then it also flashes just once", and again for the tile;
+   * measured as 372 ms of an empty big cover, and ~170 ms of an empty tile in
+   * WebKit.
    *
-   * With it, the incoming `<img>` loads invisibly on top of the painted one and
-   * takes its place on `load`. Nothing is fetched that was not fetched before,
-   * and a failure still walks the ladder — the held picture stays up meanwhile.
-   * For the one surface that paints the cover large and changes it in place; a
-   * list tile is a new row per item and has nothing to hold.
+   * With it the incoming `<img>` loads invisibly on top of the painted one and
+   * takes its place on `load`; the box is a `<span>` carrying the caller's
+   * `className`, which both pictures fill. Nothing is fetched that was not
+   * fetched before, and a failure still walks the ladder while the held picture
+   * stays up.
+   *
+   * **Not a single element with a changing `src`**, though the HTML image
+   * algorithm keeps painting the current picture while a new `src` is pending.
+   * Measured 2026-11-13 with screenshots of the box: WebKit held the old
+   * picture, but Chrome painted the big cover's large original while it was
+   * still arriving — one frame was a near-empty box (7 KB of JPEG against
+   * 71 KB). Two elements hold in both engines.
+   *
+   * For a surface that changes its picture IN PLACE — the two now-playing
+   * covers. A list tile is a new row per item and has nothing to hold.
    */
   hold?: boolean;
 }) {
@@ -180,23 +192,25 @@ function PodcastCoverImpl({
   const current = candidates.find((u) => !failed.has(u));
   const fail = (u: string) => setFailed((prev) => (prev.has(u) ? prev : new Set(prev).add(u)));
   if (current && hold) {
-    const fitClass = `${className ?? ''} ${fit === 'contain' ? 'object-contain' : 'object-cover'}`;
-    // The painted picture stays until the incoming one has LOADED. Both are
-    // keyed by URL in one parent, so when the incoming one takes over React
-    // keeps that same decoded element — moving it, never re-creating it — and
-    // there is no frame without a picture. The attributes are the plain
-    // branch's below, for its reasons.
+    // The painted picture stays until the incoming one has LOADED: the incoming
+    // `<img>` loads invisibly on top and takes over on `load`. Both are keyed by
+    // URL in one parent, so React keeps that decoded element — moving it, never
+    // re-creating it — and no frame is empty. The CALLER's `className` sizes and
+    // decorates the box (the 48px tile, the big cover's rounded square) and the
+    // pictures fill it, so neither caller's layout changes. The attributes are
+    // the plain branch's below, for its reasons.
     const held = shown && shown !== current && !failed.has(shown) ? shown : null;
+    const fill = `absolute inset-0 h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'}`;
     const attrs = {
       loading: 'lazy' as const,
       decoding: 'async' as const,
       ...(lowPriority ? { fetchPriority: 'low' as const } : {}),
     };
     return (
-      <span className="relative block h-full w-full">
+      <span className={`relative block overflow-hidden ${className ?? ''}`}>
         {held && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img key={held} src={held} alt="" {...attrs} className={fitClass} onError={() => fail(held)} />
+          <img key={held} src={held} alt="" {...attrs} className={fill} onError={() => fail(held)} />
         )}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -204,8 +218,17 @@ function PodcastCoverImpl({
           src={current}
           alt=""
           {...attrs}
-          className={held ? `${fitClass} absolute inset-0 opacity-0 pointer-events-none` : fitClass}
-          onLoad={() => setShown(current)}
+          className={held ? `${fill} opacity-0 pointer-events-none` : fill}
+          // On `load` AND decoded. `decoding="async"` lets the browser leave an
+          // invisible picture undecoded, and Chrome then decoded the big cover
+          // only at the swap — one near-empty frame (measured, 7 KB of JPEG
+          // against 71 KB). `decode()` resolves when it can paint at once.
+          onLoad={(e) => {
+            const done = () => setShown(current);
+            const el = e.currentTarget;
+            if (typeof el.decode === 'function') el.decode().then(done, done);
+            else done();
+          }}
           onError={() => fail(current)}
         />
       </span>
@@ -236,7 +259,7 @@ function PodcastCoverImpl({
         // where chapter art competes with the audio enclosure on one connection.
         {...(lowPriority ? { fetchPriority: 'low' as const } : {})}
         className={`${className ?? ''} ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
-        onError={() => fail(current)}
+        onError={() => setFailed((prev) => (prev.has(current) ? prev : new Set(prev).add(current)))}
       />
     );
   }
