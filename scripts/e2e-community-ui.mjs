@@ -111,7 +111,10 @@ const src = await fetch(`${APP}/api/playlist?url=${encodeURIComponent(SONG_SOURC
 const real = (src.episodes ?? []).filter((e) => !e.unresolved && e.guid && e.podcastGuid).slice(0, 12);
 t.ok('twelve real songs to seed with', real.length === 12, `got ${real.length}`);
 const songs = real.map((e) => ({ feedGuid: e.podcastGuid, itemGuid: e.guid }));
-const labels = Object.fromEntries(real.map((e) => [e.guid, { title: e.title, ...(e.feedTitle ? { artist: e.feedTitle } : {}) }]));
+const labels = Object.fromEntries(real.map((e) => [e.guid, { title: e.title, ...(e.feedTitle ? { artist: e.feedTitle } : {}), ...((e.image || e.feedImage) ? { image: e.image || e.feedImage } : {}) }]));
+const withArt = real.filter((e) => e.image || e.feedImage).length;
+// Every row keeps a 40 x 40 art box; a row whose song has a cover shows it through /api/art.
+const rowArt = () => js(`[...document.querySelectorAll('[data-song-row]')].map((r) => { const b = r.querySelector('[data-song-art]')?.getBoundingClientRect(); const i = r.querySelector('[data-song-art] img'); return { box: !!b && Math.round(b.width) === 40 && Math.round(b.height) === 40, img: i ? i.getAttribute('src').includes('/api/art') : null }; })`);
 const draft = (over = {}) => ({ title: 'e2e community playlist', description: 'made by e2e-community-ui', artUrl: null, songs, ...over });
 
 await phone();
@@ -168,6 +171,13 @@ t.ok('the form appears', await waitFor(`document.querySelector('#pl-title')`));
 await wait(500);
 t.equal('the saved title is back', await js(`document.querySelector('#pl-title').value`), 'e2e community playlist');
 t.equal('twelve rows', await rows(), 12);
+t.ok('the songs have covers to show', withArt > 0, 'no cover in the source playlist');
+await wait(300);
+const art3 = await rowArt();
+t.ok('every row has a 40 x 40 art box', art3.every((a) => a.box), JSON.stringify(art3));
+t.equal('every song with a cover shows it through /api/art', art3.filter((a) => a.img === true).length, withArt);
+const numbers = () => js(`[...document.querySelectorAll('[data-song-row] [data-song-number]')].map((n) => n.textContent.trim())`);
+t.equal('the rows are numbered 1 to 12', await numbers(), Array.from({ length: 12 }, (_, k) => String(k + 1)));
 t.ok('a row shows the saved title, no fetch', (await body()).includes(real[0].title));
 const txt = await body();
 for (const w of ['TITLE', 'DESCRIPTION', 'PLAYLIST ART LINK', '+ ADD SONGS', 'PUBLISH',
@@ -221,6 +231,7 @@ const first = real[3].guid; // the one now second
 await click(`document.querySelectorAll('[aria-label="Move down"]')[0]`);
 await wait(300);
 t.ok('down moves a row', (await js(`document.querySelectorAll('[data-song-row]')[1].innerText`)).includes(real[3].title));
+t.equal('after a move the numbers still run 1 to 9 in order', await numbers(), Array.from({ length: 9 }, (_, k) => String(k + 1)));
 await wait(300);
 const saved = await stored();
 t.equal('the draft on disk has nine songs and the new order', [saved?.draft.songs.length, saved?.draft.songs[1].itemGuid], [9, first]);
@@ -512,6 +523,7 @@ await js(`localStorage.removeItem(${JSON.stringify(KEY)}); 1`);
 await seed(draft({ title: 'other draft' }), labels);
 t.ok('?id=<id> loads with no draft on disk', await openEdit());
 t.ok('titles come from the server', await waitFor(`document.querySelector('[data-song-row]')?.innerText.includes(${JSON.stringify(real[0].title)})`, 20000));
+t.ok('covers come from the server too', await waitFor(`document.querySelectorAll('[data-song-row] [data-song-art] img').length >= ${withArt}`, 20000), String(await js(`document.querySelectorAll('[data-song-row] [data-song-art] img').length`)));
 t.equal('prefilled: title, twelve rows, DELETE offered', [await js(`document.querySelector('#pl-title').value`), await rows(), await js(`!!${byText('DELETE')}`)], ['e2e community playlist', 12, true]);
 t.equal('loading wrote no edit draft', await js(`localStorage.getItem(${JSON.stringify(editKey(id))})`), null);
 await setValue('#pl-title', 'e2e community playlist v2');
