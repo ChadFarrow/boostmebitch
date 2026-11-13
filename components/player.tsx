@@ -19,7 +19,7 @@ import { useShowSpeed } from './player/use-show-speed';
 import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
-import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
+import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
@@ -120,6 +120,45 @@ function playOrPark(el: HTMLMediaElement, park: () => void): void {
   el.play().catch((e: unknown) => {
     if (e instanceof DOMException && e.name === 'NotAllowedError') park();
   });
+}
+
+/**
+ * What a failed `play()` does: pause the STORE — but only if the call is not
+ * stale: the element still holds the source it was called on, AND the store
+ * still holds the item it was for.
+ *
+ * It used to be `() => setPlaying(false)`, unconditionally, and a `play()`
+ * promise settles late. Two measured ways that paused the WRONG track, both
+ * after a dead file (error 4), both in Chromium with the next track at
+ * readyState 4, `paused`, under a ▶:
+ *
+ * - The dead file's own `play()` is rejected after its `error` event, by which
+ *   time the dead-track skip has moved the store on — the STORE test.
+ * - A press after the error (⏭, ▶, a row) flips `isPlaying` and the effect
+ *   below runs BEFORE the source effect, so it calls `play()` on the element
+ *   still holding the dead file, which rejects at once; the rejection lands
+ *   after the next track's source is in — the SOURCE test.
+ * - An `AbortError`: a NEWER load of the element (or a `pause()`) interrupted
+ *   this call. After a dead file `waiting` marks the element stalled, so the
+ *   next press re-sources it through `reloadNonce` — the same item, the same
+ *   URL, loaded twice — and the first `play()` was aborted by the second. The
+ *   playback log showed it: `play.err name=AbortError`, then `want playing=0`.
+ *   A newer load plays by itself and a `pause()` has already paused, so an
+ *   abort is never a reason to pause the store.
+ *
+ * The last two predate the skip: a tap on another track after a dead one
+ * loaded it paused. A refusal for the item and source on screen —
+ * `NotAllowedError`, `NotSupportedError` — still pauses, as before.
+ */
+function pauseIfStillCurrent(el: HTMLMediaElement, key: string | null): (e: unknown) => void {
+  const src = el.src;
+  return (e: unknown) => {
+    if (e instanceof DOMException && e.name === 'AbortError') return;
+    if (el.src !== src) return;
+    const now = useApp.getState().current;
+    if (key && now && epKey(now.episode) !== key) return;
+    useApp.getState().setPlaying(false);
+  };
 }
 
 /**
@@ -250,6 +289,21 @@ export function Player() {
    * and bumps the nonce; that is the one path here, and it fires once per url.
    */
   const nativeHlsFailedUrl = useRef<string | null>(null);
+  /**
+   * The DEAD-TRACK SKIP's two pieces of memory (docs/ui.md, "A dead file does
+   * not stop a list that plays on its own").
+   *
+   * `autoArrived` is the `epKey` of the item the player moved to BY ITSELF —
+   * a track ending, or a dead track skipped. Only such an item is skipped when
+   * its file is gone: one the listener picked shows the message, as it always
+   * has, because skipping their choice is a surprise and a dead list is not.
+   *
+   * `deadSkips` counts dead tracks skipped since anything last PLAYED
+   * (`onPlaying` resets it). At two the third failure stops the run with the
+   * message, so a list whose every file fails cannot burn through itself.
+   */
+  const autoArrived = useRef<string | null>(null);
+  const deadSkips = useRef(0);
   const isHls = isHlsUrl(current?.episode.enclosureUrl);
   const videoAlt = current ? pickVideoAlternate(current.episode) : undefined;
   // A LIVE STREAM PLAYS ON THE <audio> WHERE THE BROWSER CAN, UNTIL THE
@@ -828,7 +882,7 @@ export function Player() {
       if (startAt > 0) el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
       if (isPlayingRef.current) {
         primePlaybackAudioSession();
-        el.play().catch(() => setPlaying(false));
+        el.play().catch(pauseIfStillCurrent(el, epKey(episode)));
       }
     };
 
@@ -1008,8 +1062,9 @@ export function Player() {
       return;
     }
     primePlaybackAudioSession();
-    el.play().catch(() => setPlaying(false));
-  }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
+    const playingNow = useApp.getState().current;
+    el.play().catch(pauseIfStillCurrent(el, playingNow ? epKey(playingNow.episode) : null));
+  }, [isPlaying]);
 
   // Honor a seek request for the current episode (from a transcript line /
   // chapter tap in the detail view). Fires per nonce, so re-clicking the same
@@ -1396,6 +1451,57 @@ export function Player() {
     if (reconnectMsg.current) setAudioErr(reconnectMsg.current);
   }
 
+  /**
+   * Move to whatever plays next ON ITS OWN, and say which list moved: the
+   * listen queue first (it is an explicit decision and owns its own items),
+   * then a feed whose rows are tracks. `null` when nothing moved. ONE copy,
+   * shared by a track ending and a dead track being skipped, so the two can
+   * never disagree about which lists continue — see `onEnded` for why each
+   * rule is what it is.
+   */
+  function advanceOnItsOwn(): 'queue' | 'tracks' | null {
+    const via = handlePlaybackEnded()
+      ? 'queue'
+      : current && playsAsTracks(current.podcast) && playNext() ? 'tracks' : null;
+    const next = useApp.getState().current;
+    if (via && next) autoArrived.current = epKey(next.episode);
+    return via;
+  }
+
+  /**
+   * A file that is GONE does not stop a list that plays on its own.
+   *
+   * Reported from Chad's iPhone on 2026-11-13: a favorites shuffle reached
+   * Herbivore's "Winds of Change", whose audio and cover answer HTTP 410 at
+   * RSS Blue while the feed and Podcast Index still list them. Error 4, the
+   * message, and nothing more played until he came back to the app. A V4V
+   * album with a deleted track is common, and an album, a musicL playlist and
+   * Up Next all stopped there the same way.
+   *
+   * Only error 4 — the source was refused: gone, or a format the browser
+   * cannot play. Only on an item the player ARRIVED at by itself
+   * (`autoArrived`). Never offline, where every file "fails" and the place in
+   * the list is worth more than the skip. And at most twice in a row
+   * (`deadSkips`): the third dead track stops the run with the message.
+   */
+  function skipDeadTrack(code: number | undefined): boolean {
+    if (code !== 4 || isHlsRef.current || isVideoRef.current) return false;
+    const item = useApp.getState().current;
+    if (!item || item.episode.liveStatus) return false;
+    if (autoArrived.current !== epKey(item.episode)) return false;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+    if (deadSkips.current >= 2) return false;
+    deadSkips.current += 1;
+    const via = advanceOnItsOwn();
+    // MOVED, not merely "a list answered": the listen queue's last item (and a
+    // list's last track) answers by stopping on the dead item, and that must
+    // still say why nothing plays.
+    const now = useApp.getState().current;
+    const moved = !!via && !!now && epKey(now.episode) !== epKey(item.episode);
+    logPlayback('skip_dead', { via: via ?? 'none', moved, n: deadSkips.current });
+    return moved;
+  }
+
   function onMediaError(code: number | undefined) {
     // A native-HLS refusal is not the end of the road — retry the same url
     // through hls.js first. `hls.current` is null exactly when the native branch
@@ -1407,6 +1513,10 @@ export function Player() {
       nativeHlsFailedUrl.current = url;
       setAudioErr(null);
       setReloadNonce((n) => n + 1);
+      return;
+    }
+    if (skipDeadTrack(code)) {
+      setAudioErr(null);
       return;
     }
     // Fired by the <video> too, so name the right medium.
@@ -1580,11 +1690,15 @@ export function Player() {
               const key = downloadManager.deletableAfterPlay(current.episode);
               if (key) void downloadManager.remove(key);
             }
-            if (handlePlaybackEnded()) {
+            // `advanceOnItsOwn` is these two steps — the queue, then a feed of
+            // tracks — and it also records where it arrived, which is what lets
+            // a dead file there be skipped (`skipDeadTrack`).
+            const via = advanceOnItsOwn();
+            if (via === 'queue') {
               logPlayback('advance', { via: 'queue', playing: useApp.getState().isPlaying });
               return;
             }
-            if (current && playsAsTracks(current.podcast) && playNext()) {
+            if (via === 'tracks') {
               logPlayback('advance', { via: 'tracks' });
               return;
             }
@@ -1617,7 +1731,9 @@ export function Player() {
           // means resuming with a warm buffer restores the art in the same tick
           // rather than blanking it for another 20 s of `timeupdate`s.
           onProgress={(e) => { if (!isVideoRef.current) sampleHeadroom(e.currentTarget); }}
-          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); } }}
+          // `playing` also ends a run of dead tracks: something plays again,
+          // so the next dead file starts the count of three from zero.
+          onPlaying={(e) => { if (!isVideoRef.current) { deadSkips.current = 0; setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); } }}
           onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         {/* Tighter padding and gap below sm:. At 390px the row has 358px to
