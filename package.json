@@ -92,6 +92,7 @@
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:history": "node scripts/e2e-history.mjs",
     "e2e:livecatchup": "node --experimental-strip-types scripts/e2e-live-catch-up.mjs",
+    "e2e:stickyhover": "node scripts/e2e-sticky-hover.mjs",
     "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs",
     "check:fanout": "node --experimental-strip-types scripts/check-fanout.mjs",
