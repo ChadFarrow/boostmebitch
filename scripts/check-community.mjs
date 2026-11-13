@@ -11,7 +11,7 @@ import {
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
 import {
-  escapeXml, communityFeedGuid, buildPlaylistFeedXml,
+  escapeXml, communityFeedGuid, buildPlaylistFeedXml, FEED_TEMPLATE_UPDATED_AT,
 } from '../lib/community/feed-doc.ts';
 import { channelSlice, parsePlaylistRemoteItems, parseFeedNpubs, decodeXmlText } from '../lib/feed-xml.ts';
 import { npubEncode, noteEncode, nprofileEncode, nsecEncode } from 'nostr-tools/nip19';
@@ -278,8 +278,13 @@ const docVectors = [
     !/<podcast:value/.test(xml) && !/<item/.test(xml) && !/<itunes:author/.test(xml) },
   { kind: 'feedUrl only when known', build: (b) => b(stored, opts), test: (xml) =>
     (xml.match(/feedUrl=/g) ?? []).length === 1 && xml.includes('feedUrl="https://x.example/f.xml?a=1&amp;b=2"') },
-  { kind: 'rfc822 lastBuildDate', build: (b) => b(stored, opts), test: (xml) =>
-    xml.includes('<lastBuildDate>Thu, 12 Nov 2026 00:00:00 GMT</lastBuildDate>') },
+  // lastBuildDate is the later of the row's updatedAt and FEED_TEMPLATE_UPDATED_AT, so a
+  // template change reaches every feed's date and an edit after it still moves the date.
+  { kind: 'rfc822 lastBuildDate: an older row shows the template date', build: (b) => b(stored, opts), test: (xml) =>
+    xml.includes(`<lastBuildDate>${new Date(FEED_TEMPLATE_UPDATED_AT).toUTCString()}</lastBuildDate>`)
+    && Date.parse(stored.updatedAt) < Date.parse(FEED_TEMPLATE_UPDATED_AT) },
+  { kind: 'rfc822 lastBuildDate: a newer row shows its own edit', build: (b) => b({ ...stored, updatedAt: '2099-01-02T03:04:05.000Z' }, opts), test: (xml) =>
+    xml.includes('<lastBuildDate>Fri, 02 Jan 2099 03:04:05 GMT</lastBuildDate>') },
   { kind: 'stored podcast:guid', build: (b) => b(stored, { ...opts, podcastGuid: STORED_GUID }), test: (xml) =>
     xml.includes(`<podcast:guid>${STORED_GUID}</podcast:guid>`) && !xml.includes(communityFeedGuid(opts.feedUrl)) },
   { kind: 'channel fields', build: (b) => b(stored, opts), test: (xml) =>
