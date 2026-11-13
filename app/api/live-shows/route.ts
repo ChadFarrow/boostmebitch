@@ -443,6 +443,9 @@ export async function GET(req: Request) {
           liveStatus: e.liveStatus,
           liveStartTime: e.liveStartTime,
           value: e.value ?? null,
+          // The Split Kit socket. Dropping it here is how PLAY on /live never
+          // connected — see `LiveShow.liveValue`.
+          liveValue: e.liveValue,
           feedId: id,
           feedTitle: e.feedTitle ?? podcast?.title,
           feedImage: e.feedImage ?? podcast?.image ?? podcast?.artwork,

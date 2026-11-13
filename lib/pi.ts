@@ -24,7 +24,7 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 
@@ -611,13 +611,14 @@ export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> 
  * `getLiveItemsForFeed` below); `/api/live-shows` is the reader that wants the
  * rest of it.
  *
- * PI's `status` can be 'live' | 'pending' | 'ended'; we drop ended — an old
- * broadcast should not crowd either the top of an episode list or a "what is on
- * air" page. `pending` is accepted defensively rather than optimistically: PI
- * documents this endpoint as currently-broadcasting only, and measured that
- * way, but if it ever starts indexing scheduled items we get them free. The
- * publisher's own RSS is where pending items actually live today — see
- * `getLiveItemsFromRssDetailed`.
+ * **PI sends NO `status`, `startTime` or `endTime` on these rows** (measured
+ * 2026-11-13: 40 rows, the plain episode shape, not one of the three fields).
+ * An absent status therefore reads as `'live'` — the row is on the live
+ * endpoint — and a status PI does send is still obeyed, so an `'ended'` row is
+ * dropped if the field ever returns. See `piLiveStatus`. This comment used to
+ * say PI sends 'live' | 'pending' | 'ended', and the filter built on that
+ * claim emptied the roster. The publisher's own RSS is where status, times and
+ * pending items actually live — see `getLiveItemsFromRssDetailed`.
  *
  * NOT routed through `episodeFromPiRecord`. Neither it nor `buildEpisode` maps
  * `liveStatus`/`liveStartTime`, which are the only two fields that make one of
@@ -671,8 +672,10 @@ export async function getGlobalLiveItemsDetailed(): Promise<{
   const out: Episode[] = [];
   let statusRows = 0;
   for (const e of rows) {
-    const status = typeof e.status === 'string' ? e.status.toLowerCase() : undefined;
-    if (status !== 'live' && status !== 'pending') continue;
+    // `piLiveStatus`, never `status === 'live'`: PI sends NO `status` on this
+    // endpoint (measured 2026-11-13), and the strict test dropped every row.
+    const status = piLiveStatus(e.status);
+    if (!status) continue;
     statusRows += 1;
     // `liveStampSecs`, never a bare `typeof === 'number'`: Podcast Index sends
     // `0` for a number it does not hold, and a `0` end read as a time is a

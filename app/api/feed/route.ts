@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { communityIdFromFeedUrl } from '@/lib/curated-playlists';
-import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment, getRssEpisodesNewerThan } from '@/lib/pi';
+import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRssDetailed, getPodcast, getRssEpisodeEnrichment, getRssEpisodesNewerThan } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { isMusicMedium, compareEpisodeOrder, feedItemValue } from '@/lib/util';
+import { isMusicMedium, compareEpisodeOrder, feedItemValue, feedLiveItems } from '@/lib/util';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -162,16 +162,17 @@ export async function GET(req: Request) {
           new Set(episodes.map((e) => e.guid).filter((g): g is string => !!g)),
         ).catch(() => [] as Episode[])
       : [];
-    // PI's /episodes/live only returns currently-broadcasting items; pending
-    // liveItems live in the RSS itself, so we additionally parse the feed XML.
-    const rssLive = podcast.url
-      ? await getLiveItemsFromRss(podcast.url, id, podcast.podcastGuid).catch(() => [] as Episode[])
-      : [];
-    // Dedupe by guid across sources. PI wins on collision (it carries the
-    // canonical 'live' transition the publisher's RSS may lag on).
+    // The publisher's RSS decides which live items exist whenever it was read;
+    // PI's rows stand in only when it was not. Never a union in which PI wins
+    // a guid — a PI row carries no `liveValue` and no payee. See `feedLiveItems`.
+    const rssLiveRead = podcast.url
+      ? await getLiveItemsFromRssDetailed(podcast.url, id, podcast.podcastGuid)
+        .catch(() => ({ ok: false, items: [] as Episode[] }))
+      : { ok: false, items: [] as Episode[] };
+    // Dedupe by guid, for a feed that repeats one.
     const seenGuid = new Set<string>();
     const liveItems: Episode[] = [];
-    for (const e of [...piLive, ...rssLive]) {
+    for (const e of feedLiveItems(piLive, rssLiveRead)) {
       if (e.guid && seenGuid.has(e.guid)) continue;
       if (e.guid) seenGuid.add(e.guid);
       liveItems.push(e);
