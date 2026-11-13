@@ -46,7 +46,8 @@ import { PodcastCover } from './podcast-cover';
 import { TransportControls } from './transport-controls';
 import { SpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
-import { LiveBadge } from './live-badge';
+import { LiveEdge } from './player/live-edge';
+import { liveLag, behindToShow, type LiveAnchor } from '@/lib/live-lag';
 
 /** How long the now-playing art must hold still before the OS is told about it.
  *  Long enough that a run of ⏭ presses issues no lock-screen fetch at all —
@@ -299,6 +300,31 @@ export function Player() {
   // reconnect a live stream at the live edge without duplicating the whole
   // attach/hls.js/recovery setup that effect already owns.
   const [reloadNonce, setReloadNonce] = useState(0);
+  /**
+   * How far a live item plays behind a fresh connect — the `N s behind` and
+   * `⏭ GO LIVE` of `<LiveEdge>`. The anchor is the wall clock and `currentTime`
+   * at the source's first `playing`; the source effect clears it, so every
+   * reconnect (GO LIVE, a resume from pause, a stall retry) counts from its own
+   * start. The state holds `behindToShow`'s whole seconds, written only when
+   * that number changes — 0 the whole time a stream is on time, so a healthy
+   * broadcast adds no render. Why the clock and not `buffered`: lib/live-lag.ts.
+   */
+  const liveAnchor = useRef<LiveAnchor | null>(null);
+  const [liveBehindSec, setLiveBehindSec] = useState(0);
+  const anchorLiveClock = (el: HTMLMediaElement) => {
+    if (isLiveRef.current && !liveAnchor.current) {
+      liveAnchor.current = { wallSec: performance.now() / 1000, mediaSec: el.currentTime };
+    }
+  };
+  const sampleLiveLag = (el: HTMLMediaElement) => {
+    if (!isLiveRef.current || !liveAnchor.current) return;
+    const { behindSec, anchor } = liveLag(liveAnchor.current, performance.now() / 1000, el.currentTime);
+    if (behindSec === null) return; // a re-attach put the play head before its start
+    liveAnchor.current = anchor;
+    setLiveBehindSec((shown) => behindToShow(behindSec, shown));
+  };
+  /** ⏭ GO LIVE — the same reconnect a resume from pause makes (below). */
+  const goLive = () => setReloadNonce((n) => n + 1);
   // Set when the user pauses a live item; the signal that the next resume must
   // reconnect rather than continue. Cleared by the source effect, so the FIRST
   // play of an item takes the normal path (that effect owns that play).
@@ -499,6 +525,9 @@ export function Player() {
   useEffect(() => {
     lastTick.current = -1;
     pausedLive.current = false;
+    // A new source is a fresh connect: it is the new zero for "behind".
+    liveAnchor.current = null;
+    setLiveBehindSec(0);
     setAudioErr(null);
     reconnectMsg.current = null;
     // A fresh source is a fresh verdict — clear the stall so a recovered element
@@ -1350,9 +1379,15 @@ export function Player() {
   // still says which of the three it is showing.
   const miniStalled = stalled && !audioErr;
   const miniChapter = !miniStalled ? activeChapter?.title : undefined;
+  // Below `sm:` the `N s behind` of <LiveEdge> folds into this line, the way
+  // the buffering line does: at 390 px the row held `● LIVE 7 s behind
+  // ⏭ GO LIVE` and the play/pause button covered the end of GO LIVE.
+  const miniBehind = isLive && isPlaying ? liveBehindSec : 0;
   const miniSecondary = miniStalled
     ? '⋯ buffering — press play to retry'
-    : miniChapter || podcast.title;
+    : miniBehind > 0
+      ? `${miniBehind} s behind live`
+      : miniChapter || podcast.title;
 
   // The element ran dry. If a live-stream reconnect is armed, this is the moment
   // its sentence becomes true, so paint it; otherwise there is nothing to add to
@@ -1403,6 +1438,7 @@ export function Player() {
                 lastTick.current = tick;
                 setPosition(t);
                 sampleHeadroom(e.currentTarget);
+                sampleLiveLag(e.currentTarget);
               }
             }}
             onSeeked={(e) => syncMusicHold(e.currentTarget.currentTime)}
@@ -1427,7 +1463,7 @@ export function Player() {
             onWaiting={(e) => { if (noteStarvation(e.currentTarget)) noteLiveGap(); }}
             onStalled={(e) => { if (noteStarvation(e.currentTarget)) noteLiveGap(); }}
             onProgress={(e) => sampleHeadroom(e.currentTarget)}
-            onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); }}
+            onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); }}
             onError={(e) => onMediaError(e.currentTarget.error?.code)}
           />
         </InPortal>
@@ -1491,6 +1527,7 @@ export function Player() {
               lastTick.current = tick;
               setPosition(t);
               sampleHeadroom(e.currentTarget);
+              if (!isVideoRef.current) sampleLiveLag(e.currentTarget);
             }
           }}
           onSeeked={(e) => {
@@ -1580,7 +1617,7 @@ export function Player() {
           // means resuming with a warm buffer restores the art in the same tick
           // rather than blanking it for another 20 s of `timeupdate`s.
           onProgress={(e) => { if (!isVideoRef.current) sampleHeadroom(e.currentTarget); }}
-          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); } }}
+          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); } }}
           onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         {/* Tighter padding and gap below sm:. At 390px the row has 358px to
@@ -1674,10 +1711,7 @@ export function Player() {
               </div>
             )}
             {isLive ? (
-              <div className="flex items-center gap-2 mt-1">
-                <LiveBadge status="live" />
-                <span className="text-[10px] text-muted">streaming now</span>
-              </div>
+              <LiveEdge variant="mini" className="mt-1" behindSec={miniBehind} onGoLive={goLive} />
             ) : (
               <>
                 <div className="flex items-center gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
@@ -1767,6 +1801,8 @@ export function Player() {
         videoRef={video}
         isVideo={isVideo}
         audioErr={audioErr}
+        liveBehindSec={isPlaying ? liveBehindSec : 0}
+        onGoLive={goLive}
         artOk={artUsable}
         splitArt={splitArt}
         splits={splits}

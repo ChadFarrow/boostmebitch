@@ -56,7 +56,7 @@ const BASE = 'https://api.podcastindex.org/api/1.0';
  */
 const PI_TIMEOUT_MS = 8000;
 
-function authHeaders() {
+export function authHeaders() {
   const key = process.env.PODCAST_INDEX_KEY;
   const secret = process.env.PODCAST_INDEX_SECRET;
   if (!key || !secret) {

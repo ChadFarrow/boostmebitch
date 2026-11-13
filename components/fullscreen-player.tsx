@@ -212,7 +212,7 @@ import { WalletBalanceBox } from './wallet-balance';
 import { NostrIdentityChip } from './nostr-auth/identity-chip';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
-import { LiveBadge } from './live-badge';
+import { LiveEdge } from './player/live-edge';
 
 // THE TOP BAR'S CONTROLS FROM lg:, all five — ← BACK, ⋯, the balance box, the
 // identity chip and ✕ — plus <AuthControl overlay>'s SIGN IN, which carries the
@@ -460,6 +460,8 @@ export function FullscreenPlayer({
   videoRef,
   isVideo,
   audioErr,
+  liveBehindSec,
+  onGoLive,
   artOk,
   splitArt,
   splits,
@@ -493,6 +495,11 @@ export function FullscreenPlayer({
       or a failing live stream reads as a silent black box (the mini-bar's tiny
       error line is hidden behind this overlay). */
   audioErr: string | null;
+  /** Whole seconds a playing live item is behind a fresh connect, 0 when on
+   *  time or paused — <Player>'s measure, so both rows show one number. */
+  liveBehindSec: number;
+  /** ⏭ GO LIVE: <Player>'s reconnect at the live edge. */
+  onGoLive: () => void;
   /** False when audio is playing and the buffer can't afford heavy artwork —
    *  <Player>'s `artUsable`, which is the gate AND the "is anything actually
    *  playing" test, since a paused element has no enclosure to starve. Passed
@@ -1255,10 +1262,7 @@ export function FullscreenPlayer({
           <div className={`flex-1 min-h-0 sm:flex-none ${infoPane} p-4 sm:p-6 lg:p-10 flex flex-col gap-3 sm:gap-4 sm:h-full`}>
             <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
               <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <LiveBadge status="live" />
-                  <span className="text-xs text-muted">streaming now</span>
-                </div>
+                <LiveEdge variant="full" className="flex-wrap" behindSec={liveBehindSec} onGoLive={onGoLive} />
                 <h1 className="font-display text-xl sm:text-2xl lg:text-3xl leading-tight mt-2">{episode.title}</h1>
                 {podcast.title && podcast.title !== episode.title && (
                   <p className="text-sm text-muted mt-1">{podcast.title}</p>
@@ -1318,10 +1322,7 @@ export function FullscreenPlayer({
             </div>
 
             {isLive ? (
-              <div className="flex items-center gap-2">
-                <LiveBadge status="live" />
-                <span className="text-xs text-muted">streaming now</span>
-              </div>
+              <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
             ) : (
               <div className="flex flex-col gap-1.5">
                 <div className="relative flex items-center">

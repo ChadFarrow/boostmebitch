@@ -90,6 +90,7 @@ The wildcard had **no consumers**: the app contains exactly one `<Image>`, `src=
 
 **If a remote host ever genuinely needs optimizing, add that one hostname. Never restore the `**` wildcard** — and note the general lesson: when auditing outbound requests, grep the framework config, not just `fetch(`.
 
+**Cross-brand CORS on the two signing routes (`lib/cross-brand-cors.ts`, pinned by `check:brand`).** The Boost Me Bitch site (`https://www.boostmebitch.com` and `https://beta.boostmebitch.com`) posts boost notes for songs from BMB-hosted playlists in Buddy's wording, signed by Buddy's site key, so its browser POSTs to `/api/nostr/site-sign` and `/api/nostr/zap-receipt-sign` on the **Buddy deploy** (`NEXT_PUBLIC_BRAND=buddy`). Those two routes answer `OPTIONS` with 204 and put the CORS headers on **every** answer, errors included, for exactly those two origins (exact string match, never `*`, never a suffix test). The Bitch deploy (`bmb`) opens nothing. This adds no new capability: both routes were already public, unauthenticated, rate-limited and validated, and a non-browser caller never needed CORS. It only lets a page on one of those origins read the reply. `requireJsonBody`, `rateLimit`, every validation and the 503 are unchanged, and the preflight is not rate-limited because it signs nothing.
 
 ### Response headers and CSP (`next.config.mjs`)
 
@@ -195,6 +196,14 @@ deliberate:
 Verified by driving a real browser over CDP and recording every request the page
 issued while an `nsec` sat in the box: **zero requests carrying the key, zero
 calls to `/api/search`**, warning shown, suggestion row absent.
+
+**Text that is PUBLISHED is scanned word by word: `textHoldsSecret`** (same
+file). A community playlist's title and description go into a public RSS feed,
+so both write routes refuse a key or an NWC string in them (`{ kind: 'secret',
+field }`, never echoing the text). It runs `looksLikeSecretKey` on every run of
+letters and digits rather than on whitespace-separated tokens, because a bech32
+key is one such run and `key=nsec1…` is one token to a whitespace split.
+`validatePlaylistDraft` takes it as a required parameter, so no caller forgets it.
 
 The general rule, which is in `CLAUDE.md` because it reaches files this doc
 doesn't name: **a parser's `null` is a "no" about parsing, not a decision about

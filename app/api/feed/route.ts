@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRssDetailed, getPodcast, getRssEpisodeEnrichment, getRssEpisodesNewerThan } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
@@ -101,6 +102,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'invalid url' }, { status: 400 });
   }
   if (url) {
+    // A community playlist's feed is ours and holds no episodes; never fetch it
+    // over HTTP (see /api/playlist, which reads the store instead).
+    if (communityIdFromFeedUrl(url)) return NextResponse.json({ error: 'not found' }, { status: 404 });
     return withErrorHandling(async () => {
       const parsed = await getFeedFromRss(url);
       if (!parsed) return NextResponse.json({ error: 'not found' }, { status: 404 });

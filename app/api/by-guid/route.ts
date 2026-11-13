@@ -2,7 +2,10 @@ import { NextResponse } from 'next/server';
 import { getFeedFromRss, getPodcastByGuid, getPodcastByFeedUrl } from '@/lib/pi';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { mergeRssOverPi, piRecordIsBlank } from '@/lib/util';
+import { mergeRssOverPi, piRecordIsBlank, communityPlaylistToPodcast } from '@/lib/util';
+import { COMMUNITY_FEEDS_ON } from '@/lib/curated-playlists';
+import { communityStoreConfigured, findPlaylistByGuid } from '@/lib/community/store';
+import { summaryOf } from '@/lib/community/http';
 import type { Podcast } from '@/lib/types';
 
 /**
@@ -73,7 +76,20 @@ export async function GET(req: Request) {
   if (feedUrl && feedUrl.length > 2048) return NextResponse.json({ error: 'invalid url' }, { status: 400 });
   return withErrorHandling(async () => {
     const podcast = guid ? await getPodcastByGuid(guid) : await getPodcastByFeedUrl(feedUrl!);
-    if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    if (!podcast) {
+      // A community playlist is not in Podcast Index (it is switched off for them),
+      // so a miss on its guid is answered from our own store.
+      const own = guid && COMMUNITY_FEEDS_ON && communityStoreConfigured()
+        ? await findPlaylistByGuid(guid).catch(() => null)
+        : null;
+      if (own) {
+        return NextResponse.json(
+          { podcast: communityPlaylistToPodcast(summaryOf(own)) },
+          { headers: { 'Cache-Control': 'public, max-age=30, s-maxage=30, stale-while-revalidate=60' } },
+        );
+      }
+      return NextResponse.json({ error: 'not found' }, { status: 404 });
+    }
     return NextResponse.json(
       { podcast: await repairIfBlank(podcast) },
       {
