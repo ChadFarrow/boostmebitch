@@ -36,7 +36,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
     if (ext === 'xml') {
       const xml = buildPlaylistFeedXml(p, {
         feedUrl: communityFeedUrl(id),
-        coverUrl: communityCoverUrl(id, coverVersion(p.updatedAt)),
+        // The listener's own link: apps load it from its host, and this site serves no
+        // listener's picture to them. Only a playlist with no link gets our cover (the grid).
+        coverUrl: p.artUrl ?? communityCoverUrl(id, coverVersion(p.updatedAt)),
         ownerNpub: nip19.npubEncode(p.ownerPubkey),
         fallbackDescription: `A community playlist on ${BRAND.displayName}.`,
         // The guid saved when the row was made, never one recomputed from today's origin.

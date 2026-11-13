@@ -195,13 +195,15 @@ check('wrong types report problems', !r.ok && r.problems.length > 0);
 }
 
 const A = (o) => artVerdict(o);
-check('png 1400 ok', A({ format: 'png', width: 1400, height: 1400, hasAlpha: false }).ok);
+check('png 1400 ok', A({ format: 'png', width: 1400, height: 1400 }).ok);
 check('jpeg 3000 ok', A({ format: 'jpeg', width: 3000, height: 3000 }).ok);
-check('1399 too-small', A({ format: 'jpeg', width: 1399, height: 1399 }).reason === 'too-small');
-check('3001 too-large', A({ format: 'jpeg', width: 3001, height: 3001 }).reason === 'too-large');
-check('1400x1500 not-square', A({ format: 'jpeg', width: 1400, height: 1500 }).reason === 'not-square');
+check('300 ok (the smallest)', A({ format: 'jpeg', width: 300, height: 300 }).ok);
+check('299 too-small', A({ format: 'jpeg', width: 299, height: 299 }).reason === 'too-small');
+check('5000 ok (no upper limit; the fetch cap is 12 MB)', A({ format: 'jpeg', width: 5000, height: 5000 }).ok);
+check('764x766 ok (not square is allowed)', A({ format: 'jpeg', width: 764, height: 766 }).ok);
+check('1400x299 too-small (the shortest side counts)', A({ format: 'jpeg', width: 1400, height: 299 }).reason === 'too-small');
 check('webp format', A({ format: 'webp', width: 1400, height: 1400 }).reason === 'format');
-check('png alpha', A({ format: 'png', width: 1400, height: 1400, hasAlpha: true }).reason === 'alpha');
+check('png with alpha ok', A({ format: 'png', width: 3000, height: 3000, hasAlpha: true }).ok);
 check('{} not-image', A({}).reason === 'not-image');
 
 check('cleanText censors', cleanText('fuck this') === '**** this');
