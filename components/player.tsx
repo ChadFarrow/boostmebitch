@@ -289,21 +289,6 @@ export function Player() {
    * and bumps the nonce; that is the one path here, and it fires once per url.
    */
   const nativeHlsFailedUrl = useRef<string | null>(null);
-  /**
-   * The DEAD-TRACK SKIP's two pieces of memory (docs/ui.md, "A dead file does
-   * not stop a list that plays on its own").
-   *
-   * `autoArrived` is the `epKey` of the item the player moved to BY ITSELF —
-   * a track ending, or a dead track skipped. Only such an item is skipped when
-   * its file is gone: one the listener picked shows the message, as it always
-   * has, because skipping their choice is a surprise and a dead list is not.
-   *
-   * `deadSkips` counts dead tracks skipped since anything last PLAYED
-   * (`onPlaying` resets it). At two the third failure stops the run with the
-   * message, so a list whose every file fails cannot burn through itself.
-   */
-  const autoArrived = useRef<string | null>(null);
-  const deadSkips = useRef(0);
   const isHls = isHlsUrl(current?.episode.enclosureUrl);
   const videoAlt = current ? pickVideoAlternate(current.episode) : undefined;
   // A LIVE STREAM PLAYS ON THE <audio> WHERE THE BROWSER CAN, UNTIL THE
@@ -1460,12 +1445,8 @@ export function Player() {
    * rule is what it is.
    */
   function advanceOnItsOwn(): 'queue' | 'tracks' | null {
-    const via = handlePlaybackEnded()
-      ? 'queue'
-      : current && playsAsTracks(current.podcast) && playNext() ? 'tracks' : null;
-    const next = useApp.getState().current;
-    if (via && next) autoArrived.current = epKey(next.episode);
-    return via;
+    if (handlePlaybackEnded()) return 'queue';
+    return current && playsAsTracks(current.podcast) && playNext() ? 'tracks' : null;
   }
 
   /**
@@ -1478,27 +1459,30 @@ export function Player() {
    * album with a deleted track is common, and an album, a musicL playlist and
    * Up Next all stopped there the same way.
    *
-   * Only error 4 — the source was refused: gone, or a format the browser
-   * cannot play. Only on an item the player ARRIVED at by itself
-   * (`autoArrived`). Never offline, where every file "fails" and the place in
-   * the list is worth more than the skip. And at most twice in a row
-   * (`deadSkips`): the third dead track stops the run with the message.
+   * Chad's rule (2026-11-13): *"I'd rather have the app continue to play and
+   * not stop when it hits a dead item."* So EVERY dead item is passed over when
+   * a list continues after it — one the list advanced onto, one the listener
+   * tapped, any number in a row. A list is finite and this only moves forward,
+   * so it cannot loop. (The first build skipped only items the player reached
+   * by itself, and stopped on the third dead one in a row.)
+   *
+   * Only error 4 — the source was refused: gone, or a format the browser cannot
+   * play. And never offline: the files are not dead then, only out of reach,
+   * the browsers report that as error 4 too, and the place in the list is
+   * worth more than a run to its end.
    */
   function skipDeadTrack(code: number | undefined): boolean {
     if (code !== 4 || isHlsRef.current || isVideoRef.current) return false;
     const item = useApp.getState().current;
     if (!item || item.episode.liveStatus) return false;
-    if (autoArrived.current !== epKey(item.episode)) return false;
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
-    if (deadSkips.current >= 2) return false;
-    deadSkips.current += 1;
     const via = advanceOnItsOwn();
     // MOVED, not merely "a list answered": the listen queue's last item (and a
     // list's last track) answers by stopping on the dead item, and that must
     // still say why nothing plays.
     const now = useApp.getState().current;
     const moved = !!via && !!now && epKey(now.episode) !== epKey(item.episode);
-    logPlayback('skip_dead', { via: via ?? 'none', moved, n: deadSkips.current });
+    logPlayback('skip_dead', { via: via ?? 'none', moved });
     return moved;
   }
 
@@ -1691,8 +1675,8 @@ export function Player() {
               if (key) void downloadManager.remove(key);
             }
             // `advanceOnItsOwn` is these two steps — the queue, then a feed of
-            // tracks — and it also records where it arrived, which is what lets
-            // a dead file there be skipped (`skipDeadTrack`).
+            // tracks — and `skipDeadTrack` moves on through the same one, so a
+            // dead file and an ended one continue the same lists.
             const via = advanceOnItsOwn();
             if (via === 'queue') {
               logPlayback('advance', { via: 'queue', playing: useApp.getState().isPlaying });
@@ -1731,9 +1715,7 @@ export function Player() {
           // means resuming with a warm buffer restores the art in the same tick
           // rather than blanking it for another 20 s of `timeupdate`s.
           onProgress={(e) => { if (!isVideoRef.current) sampleHeadroom(e.currentTarget); }}
-          // `playing` also ends a run of dead tracks: something plays again,
-          // so the next dead file starts the count of three from zero.
-          onPlaying={(e) => { if (!isVideoRef.current) { deadSkips.current = 0; setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); } }}
+          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); } }}
           onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         {/* Tighter padding and gap below sm:. At 390px the row has 358px to

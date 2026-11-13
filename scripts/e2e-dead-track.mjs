@@ -18,18 +18,23 @@
 // WHAT IT PINS:
 //
 //   1. A dead track the list ADVANCED onto is skipped, and the next one plays.
-//   2. A dead track the listener PICKED is not skipped: the message shows, as
-//      before. Skipping is for a list that plays with nobody watching.
-//   3. Three dead tracks in a row stop the run on the third, with the message,
-//      so a list cannot burn through itself when every file fails.
+//   2. A dead track the listener PICKED is skipped too, when a list continues
+//      after it. Chad, 2026-11-13: "I'd rather have the app continue to play
+//      and not stop when it hits a dead item." (The first build showed the
+//      message on a picked track and stopped after three dead in a row.)
+//   3. Any number of dead tracks in a row are all passed over. A list is
+//      finite and the skip only moves forward, so it cannot loop.
 //   4. Up Next skips a dead item too, and drains it as an ended item drains.
-//   5. Offline (`navigator.onLine` false) nothing is skipped: every file
-//      "fails" then, and the place in the list is worth more than the skip.
-//   6. The track AFTER a dead one PLAYS, whether the skip or the listener moved
-//      there (sections 1 and 3). Both loaded it paused under a ▶ before
-//      `pauseIfStillCurrent`: a late `play()` rejection for the dead file, or
-//      the `AbortError` of a reload of the next one, paused the store. Section
-//      3's first check failed on `main` before the skip existed.
+//      When the dead item is the LAST thing in the list, nothing can follow:
+//      the message shows, so a stop is never silent.
+//   5. Offline (`navigator.onLine` false) nothing is skipped: the files are
+//      not dead then, only out of reach, and the place in the list is worth
+//      more than the skip.
+//   6. The track AFTER a dead one PLAYS (sections 1 to 3). It loaded paused
+//      under a ▶ before `pauseIfStillCurrent`: a late `play()` rejection for
+//      the dead file, or the `AbortError` of a reload of the next one, paused
+//      the store. A tap on another track after a dead one failed on `main`
+//      before the skip existed.
 //
 // Every request the player makes for this album is answered here; the dead
 // files answer 410, as RSS Blue's did. Nothing reaches Podcast Index.
@@ -53,13 +58,13 @@ const AUDIO = silentWav(30);
 
 const GUID = 'dead4000-0000-4000-8000-000000000001';
 const ID = 900888;
-// k: 0 ok, 1 dead, 2 ok, 3 dead, 4 dead, 5 dead, 6 ok
-const DEAD = new Set([1, 3, 4, 5]);
+// k: 0 ok, 1 dead, 2 ok, 3 dead, 4 dead, 5 dead, 6 ok, 7 dead (the album's last)
+const DEAD = new Set([1, 3, 4, 5, 7]);
 const ALBUM = {
   id: ID, podcastGuid: GUID, title: 'E2E Dead Track Album', author: 'e2e', medium: 'music',
   url: 'https://feeds.example.invalid/dead.xml',
 };
-const TRACKS = [0, 1, 2, 3, 4, 5, 6].map((k) => ({
+const TRACKS = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => ({
   id: 9900 + k, guid: `dead4000-0000-4000-8000-00000000010${k}`, podcastGuid: GUID, feedId: ID,
   title: `Dead test track ${k}`, episode: k + 1, duration: 30,
   enclosureUrl: `${APP}/api/${DEAD.has(k) ? 'e2e-gone' : 'e2e-audio'}.wav?k=${k}`,
@@ -156,22 +161,29 @@ t.ok('track 2 is playing', await until(`(() => { const a = document.querySelecto
 t.equal('no error is left on screen', await errShown(), false);
 
 // ---------------------------------------------------------------------------
-console.log('\n2. A dead track the listener picked is not skipped');
+console.log('\n2. A dead track the listener picked is passed over too');
 await tapRow(1);
-t.ok('the message shows', await until(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 10000));
-await wait(1500);
-t.equal('…and the player stays on the track that was picked', await kOf(), 1);
-t.equal('…stopped', await playing(), false);
+t.ok('the album moves on to track 2', await waitK(2, 12000), `on k=${await kOf()}`);
+t.ok('…which plays', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && /[?&]k=2(\\D|$)/.test(a.currentSrc); })()`, 15000));
+t.equal('…and no error is left on screen', await errShown(), false);
 
 // ---------------------------------------------------------------------------
-console.log('\n3. Three dead tracks in a row stop the run');
-await tapRow(2);
-t.ok('track 2 plays', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && /[?&]k=2(\\D|$)/.test(a.currentSrc); })()`, 15000));
+console.log('\n3. Any number of dead tracks in a row are passed over');
 await endTrack();
-t.ok('it passes 3 and 4 and stops on 5, the third dead track in a row', await waitK(5, 15000), `on k=${await kOf()}`);
-t.ok('…with the message', await until(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 10000));
-await wait(1500);
-t.equal('…and it does not run on to track 6', await kOf(), 5);
+t.ok('it passes 3, 4 and 5 and plays track 6', await waitK(6, 20000), `on k=${await kOf()}`);
+t.ok('…which plays', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && /[?&]k=6(\\D|$)/.test(a.currentSrc); })()`, 15000));
+t.equal('…and no error is left on screen', await errShown(), false);
+
+// ---------------------------------------------------------------------------
+console.log('\n3b. A dead LAST track: nothing can follow, so the stop says why');
+await tapRow(7);
+t.ok('the message shows', await until(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000));
+await wait(1000);
+t.equal('…on the track that was picked, stopped', [await kOf(), await playing()], [7, false]);
+// The tap that loaded the next track PAUSED on `main`: a good track picked while
+// a dead one's error is on screen must play.
+await tapRow(6);
+t.ok('a track tapped after the dead one PLAYS', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && /[?&]k=6(\\D|$)/.test(a.currentSrc); })()`, 15000));
 
 // ---------------------------------------------------------------------------
 console.log('\n4. Up Next skips a dead item, and drains it');
@@ -190,6 +202,17 @@ t.ok('the dead item is passed over and the next queued one plays', await waitK(2
 await wait(800);
 const left = JSON.parse(await js(`localStorage.getItem('bmb:listen_queue:guest') ?? '[]'`)).map((i) => i.episode.title);
 t.equal('…and both the finished and the dead item left Up Next', left, ['Dead test track 2']);
+
+console.log('\n4b. A dead LAST item: nothing can follow, so the stop says why');
+await openAlbum({ 'bmb:listen_queue:guest': JSON.stringify([qItem(0), qItem(1)]) });
+await send('Page.navigate', { url: `${APP}/listen` });
+await until(`document.readyState === "complete"`);
+await until(`!!${QROW}`, 15000);
+await js(`${QROW}.click()`);
+t.ok('the queue head plays', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && /[?&]k=0(\\D|$)/.test(a.currentSrc); })()`, 15000));
+await endTrack();
+t.ok('the dead last item shows the message', await until(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000), `on k=${await kOf()}`);
+t.equal('…and nothing plays', await playing(), false);
 
 // ---------------------------------------------------------------------------
 console.log('\n5. Offline, nothing is skipped');
