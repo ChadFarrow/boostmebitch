@@ -86,6 +86,15 @@ interface AppState {
    */
   playNext: () => boolean;
   playPrev: () => boolean;
+  /**
+   * What a track ENDING would move to, without moving — or null.
+   *
+   * `<Player>`'s `onEnded` advances when the listen queue holds the item, or
+   * when its show plays as tracks; anything else stops. So: those two tests,
+   * then `stepTo(+1)`, which is pure and asks the lists in the order the real
+   * step does. For the beta-only early fetch (`use-next-prefetch.ts`).
+   */
+  peekNextOnEnd: () => { episode: Episode; podcast: Podcast } | null;
 
   /**
    * The "Up Next" listen queue — a SECOND queue, and deliberately not a
@@ -800,6 +809,12 @@ export const useApp = create<AppState>((set, get) => ({
   // ⏮/⏭ cannot be enabled over a step these refuse to take.
   playNext: () => applyStep(stepTo(get(), 1), set, get),
   playPrev: () => applyStep(stepTo(get(), -1), set, get),
+  peekNextOnEnd: () => {
+    const s = get();
+    if (!s.current) return null;
+    if (queueIndexOf(s) < 0 && !playsAsTracks(s.current.podcast)) return null;
+    return stepTo(s, 1)?.current ?? null;
+  },
 
   listenQueue: storage.listenQueue.get(null),
   listenQueueSaved: true,

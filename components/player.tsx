@@ -18,6 +18,7 @@ import { useNowPlaying } from './player/use-now-playing';
 import { useShowSpeed } from './player/use-show-speed';
 import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
+import { isKnownGoneFile, useNextProbe } from './player/use-next-probe';
 import { fmt } from '@/lib/format';
 import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
@@ -1352,6 +1353,11 @@ export function Player() {
   // so it can be boosted later. See ./player/use-play-history.
   usePlayHistory();
 
+  // Checks the file a track ENDING would move to, ~30 s early, so a gone one is
+  // passed over before the element loads it (`advanceOnItsOwn`). See
+  // ./player/use-next-probe.
+  useNextProbe(duration, isLiveMedia);
+
   // **A queue that survived a reload has to be reachable.** `current` is
   // in-memory and the queue is not, so every page load lands with items on disk
   // and nothing playing — and the two lines below then render nothing at all,
@@ -1445,8 +1451,32 @@ export function Player() {
    * rule is what it is.
    */
   function advanceOnItsOwn(): 'queue' | 'tracks' | null {
+    const via = stepOnItsOwn();
+    // A next file the EARLY CHECK found gone (`useNextProbe`, ~30 s before the
+    // end) is passed over HERE, before the element is handed it: on an iPhone
+    // in the background its load error would end the page's audio, and the
+    // track after it would sit at 0:00 under a page that believes it plays
+    // (#555). Each step is the same step an ending takes — an Up Next item is
+    // drained as `skipDeadTrack` drains one — and the store moves before the
+    // source effect runs, so only the file that survives is ever loaded. A
+    // list's LAST item, gone, stays: nothing follows, and the element's error
+    // says why. The bound is a backstop; a list only moves forward.
+    for (let i = 0; via && i < 100; i++) {
+      const now = useApp.getState().current;
+      if (!now || !isKnownGoneFile(now.episode.enclosureUrl)) break;
+      logPlayback('skip_dead', { via: 'probe', item: playbackItemId(now.episode) });
+      if (!stepOnItsOwn()) break;
+    }
+    return via;
+  }
+
+  /** One step of `advanceOnItsOwn`: the listen queue (and the shuffle inside
+   *  it), then a feed whose rows are tracks. Reads the store, not the render's
+   *  `current`, because it runs again on an item this render never saw. */
+  function stepOnItsOwn(): 'queue' | 'tracks' | null {
     if (handlePlaybackEnded()) return 'queue';
-    return current && playsAsTracks(current.podcast) && playNext() ? 'tracks' : null;
+    const now = useApp.getState().current;
+    return now && playsAsTracks(now.podcast) && playNext() ? 'tracks' : null;
   }
 
   /**

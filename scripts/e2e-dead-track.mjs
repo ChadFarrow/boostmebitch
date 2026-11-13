@@ -30,6 +30,18 @@
 //   5. Offline (`navigator.onLine` false) nothing is skipped: the files are
 //      not dead then, only out of reach, and the place in the list is worth
 //      more than the skip.
+//   7. A dead NEXT file is found ~30 s early (`/api/audio-probe`, stubbed
+//      here) and passed over when the track ends, BEFORE the audio element
+//      loads it: the element never asks for it at all. Chad's iPhone,
+//      2026-11-13 (#555): in the background a dead file's load error ended
+//      the page's audio — WebKit makes an element's media session inactive
+//      on a fatal load error — and the next track then sat at 0:00 under a
+//      page that believed it was playing. Sections 1 to 6 stub the probe as
+//      "alive", so they still pin the error path, which is the fallback for
+//      anything the probe did not see.
+//   8. The route itself, over plain HTTP against REAL files: RSS Blue's
+//      "Winds of Change" answers 410, a Podcasting 2.0 episode answers 206,
+//      and a private address is refused without its name in the answer.
 //   6. The track AFTER a dead one PLAYS (sections 1 to 3). It loaded paused
 //      under a ▶ before `pauseIfStillCurrent`: a late `play()` rejection for
 //      the dead file, or the `AbortError` of a reload of the next one, paused
@@ -75,6 +87,10 @@ const { send, js, until } = page;
 const t = checker();
 const pageErrors = [];
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
+// The early check: off (every file "alive") for sections 1 to 6, on for 7.
+let probeDead = false;
+const probed = [];
+const goneAsked = [];
 function answer(pathname) {
   if (pathname === '/api/by-guid') return { podcast: ALBUM };
   if (pathname === '/api/feed') return { podcast: ALBUM, episodes: TRACKS };
@@ -91,7 +107,18 @@ page.on(async (m) => {
   const { requestId, request } = m.params;
   const u = new URL(request.url);
   try {
+    if (u.pathname === '/api/audio-probe') {
+      const target = u.searchParams.get('url') ?? '';
+      probed.push(target);
+      await send('Fetch.fulfillRequest', {
+        requestId, responseCode: 200,
+        responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+        body: b64({ status: probeDead && /e2e-gone/.test(target) ? 410 : 206 }),
+      });
+      return;
+    }
     if (u.pathname === '/api/e2e-gone.wav') {
+      goneAsked.push(u.searchParams.get('k'));
       // What RSS Blue answered for Winds of Change.
       await send('Fetch.fulfillRequest', {
         requestId, responseCode: 410,
@@ -227,6 +254,46 @@ await endTrack();
 await wait(4000);
 t.equal('the run stops on the dead track rather than skipping it', await kOf(), 1);
 await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+
+// ---------------------------------------------------------------------------
+console.log('\n7. A dead NEXT file found early is passed over before the player loads it');
+probeDead = true;
+probed.length = 0;
+await openAlbum();
+await tapRow(0);
+t.ok('track 0 plays', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2; })()`, 15000));
+// A 30 s track is inside the 30 s lead from its first second.
+let askedEarly = false;
+for (let i = 0; i < 25 && !askedEarly; i++) { askedEarly = probed.some((x) => /e2e-gone\.wav\?k=1(\D|$)/.test(x)); if (!askedEarly) await wait(200); }
+t.ok('the next file (dead track 1) was checked while track 0 played', askedEarly, JSON.stringify(probed));
+const goneBefore = goneAsked.length;
+await endTrack();
+t.ok('…and when track 0 ends, track 2 plays', await waitK(2, 12000), `on k=${await kOf()}`);
+t.ok('track 2 is playing', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2; })()`, 10000));
+t.equal('the player never asked for dead track 1 at all', goneAsked.slice(goneBefore), []);
+t.ok('the playback log says it was passed over on the probe',
+  await js(`(localStorage.getItem('bmb:plog:device') ?? '').includes('skip_dead via=probe')`));
+t.equal('no error is left on screen', await errShown(), false);
+probeDead = false;
+
+// ---------------------------------------------------------------------------
+console.log('\n8. /api/audio-probe itself, against real files');
+const probe = async (url) => {
+  const r = await fetch(`${APP}/api/audio-probe?url=${encodeURIComponent(url)}`, { cache: 'no-store' });
+  return { http: r.status, body: await r.json().catch(() => null) };
+};
+// RSS Blue still lists this single; its audio answers 410 Gone (2026-11-13).
+const GONE = 'https://media.rssblue.com/podcasts/winds-of-change/winds-of-change/audio.woc-20240226-demu8.mp3';
+// Podcasting 2.0 episode 278, through the op3.dev redirect.
+const ALIVE = 'https://op3.dev/e/mp3s.nashownotes.com/PC20-278-2026-11-13-Final.mp3';
+const g = await probe(GONE);
+t.equal('a gone file reports 410', g, { http: 200, body: { status: 410 } });
+const a = await probe(ALIVE);
+t.ok('a live file reports 200 or 206, through a redirect', a.http === 200 && (a.body?.status === 206 || a.body?.status === 200), JSON.stringify(a));
+const priv = await probe('http://127.0.0.1:9/secret.mp3');
+t.ok('a private address is refused, and the answer does not name it',
+  priv.http === 502 && !JSON.stringify(priv.body).includes('127.0.0.1'), JSON.stringify(priv));
+t.equal('a non-http url is refused', (await probe('javascript:alert(1)')).http, 400);
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails} of ${t.count} passed`);
