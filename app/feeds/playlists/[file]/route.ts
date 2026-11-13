@@ -6,7 +6,7 @@ import { buildCover } from '@/lib/community/cover';
 import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
 import { UUID_RE, authUrl } from '@/lib/community/http';
 import { withErrorHandling } from '@/lib/api-handler';
-import { BRAND } from '@/lib/brand';
+import { BRAND, BRANDS } from '@/lib/brand';
 import { nip19 } from 'nostr-tools';
 
 export const runtime = 'nodejs';
@@ -54,6 +54,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
         fallbackDescription: `A community playlist on ${BRAND.displayName}.`,
         // The guid saved when the row was made, never one recomputed from today's origin.
         podcastGuid: p.podcastGuid,
+        // RSS 2.0 <generator>: where the playlist was made, for Podcast Index and other
+        // apps. Always Buddy, the brand of the feed address (Chad, 2026-11-13).
+        generator: `${BRANDS.buddy.displayName} (${BRANDS.buddy.origin})`,
       });
       return new NextResponse(xml, {
         headers: {
