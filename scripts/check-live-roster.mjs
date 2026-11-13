@@ -49,7 +49,10 @@ function naive(roster) {
 // with `liveStatus`/`liveStartTime`/`liveEndTime` hand-added, and PI does not
 // reliably send `feedId` as a number — `buildEpisode` copies it through
 // unconverted, which is why some vectors below carry it as a string.
-const row = (feedId, liveStatus, liveStartTime) => ({
+// `datePublished` is the only time a REAL roster row carries (2026-11-13: no
+// `startTime` on any row), so the undated vectors below rank on it.
+const row = (feedId, liveStatus, liveStartTime, datePublished) => ({
+  datePublished,
   id: 1 + (Number(feedId) % 997),
   guid: `g-${feedId}-${liveStartTime ?? 'x'}`,
   title: 'Live from the barn',
@@ -186,6 +189,42 @@ const VECTORS = [
     alsoNaive: true,
   },
   {
+    name: 'THE 2026-11-13 ROSTER: with no start on any row, the feed PI touched most recently leads — not the lowest feed id',
+    // The measured shape. Ranked by feedId, the two stale schedules (which the
+    // publishers' RSS called `pending`) led and the two shows on air trailed —
+    // and past a 24-feed cap it was the newest ids that went unread.
+    args: [[
+      row(4831193, 'live', undefined, NOW - 170_000),
+      row(5904093, 'live', undefined, NOW - 370_000),
+      row(6611624, 'live', undefined, NOW - 60),
+      row(8113770, 'live', undefined, NOW - 800),
+    ]],
+    expect: (r) => r.join(',') === '6611624,8113770,4831193,5904093',
+  },
+  {
+    name: 'an undated row WITH a record time outranks an undated row without one',
+    args: [[row(201, 'live', undefined, undefined), row(202, 'live', undefined, NOW - 5)]],
+    expect: (r) => r.join(',') === '202,201',
+  },
+  {
+    name: 'a record time never lifts an undated row above a DATED one',
+    // `datePublished` is a rank among the undated, never a start.
+    args: [[row(211, 'live', undefined, NOW), row(212, 'live', NOW - 90_000, NOW - 90_000)]],
+    expect: (r) => r.join(',') === '212,211',
+  },
+  {
+    name: 'a feed is ranked by its NEWEST record time, not its first row',
+    // 242's newer row arrives last; "keep the first row seen" ranks it by the
+    // older one and puts 241 first.
+    args: [[row(241, 'live', undefined, NOW - 1000), row(242, 'live', undefined, NOW - 50_000), row(242, 'live', undefined, NOW - 10)]],
+    expect: (r) => r.join(',') === '242,241',
+  },
+  {
+    name: 'a Podcast Index 0 is no record time',
+    args: [[row(251, 'live', undefined, 0), row(252, 'live', undefined, NOW - 99_999)]],
+    expect: (r) => r.join(',') === '252,251',
+  },
+  {
     name: 'a non-finite start time is treated as absent, not as a rank',
     args: [[row(131, 'live', Number.NaN), row(132, 'live', NOW - 3)]],
     expect: (r) => r.join(',') === '132,131',
@@ -231,6 +270,22 @@ for (const v of VECTORS) {
   } else {
     ok('naive() loses it at the same cap  (naive() fails it)');
   }
+}
+
+// The same pairing for the roster PI actually sends: 40 feeds, none dated, the
+// freshest carrying the HIGHEST ids. A feedId tie-break keeps the 24 lowest ids
+// and drops the 16 freshest; the record time keeps them.
+{
+  const roster = [];
+  for (let i = 0; i < 40; i++) roster.push(row(1000 + i, 'live', undefined, NOW - 3600 * (40 - i)));
+  const sliced = liveRosterFeedOrder(roster).slice(0, 24);
+  if (!sliced.includes(1039) || sliced.includes(1000)) {
+    fail('an undated roster still spends the 24-feed cap on the lowest feed ids, not the freshest records');
+  } else {
+    ok('an undated roster spends the 24-feed cap on the freshest records');
+  }
+  if (naive(roster).slice(0, 24).includes(1039)) fail('naive() keeps the freshest too, so this pairing proves nothing');
+  else ok('naive() loses the freshest at the same cap  (naive() fails it)');
 }
 
 // Nothing may be mutated: the route reads `roster` again to build `byFeed`.

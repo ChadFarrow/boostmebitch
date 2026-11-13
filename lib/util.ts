@@ -1205,6 +1205,19 @@ export function liveBroadcastIsOver(
  * rather than first — absent is not "starting at the epoch", and reading
  * `?? 0` as a time is how an unstamped row would win every live tie.
  *
+ * **Undated rows are ordered by `datePublished`, newest first — and in practice
+ * that is EVERY row.** Measured 2026-11-13: Podcast Index sends no `startTime`
+ * on `/episodes/live` (see `piLiveStatus`), so the whole roster is undated and
+ * the start-time ordering above never runs. The tie-break then ranked 39 feeds
+ * by `feedId`, and the 15 NEWEST feed ids went unread — whatever they were
+ * broadcasting — while broadcasts PI last touched days earlier, and which the
+ * publisher's RSS said were only `pending`, spent the budget. `datePublished`
+ * is the newest time PI recorded for the live item — on that roster every
+ * stale schedule sat at the bottom and the shows on air at the top. It is a
+ * RANK only, never a start: it does not lift an undated row above a dated one,
+ * it is never written to `liveStartTime`, and the card's "started" line does
+ * not read it. A non-positive stamp is absent (PI's `0`).
+ *
  * Ties break on `feedId` so the slice is DETERMINISTIC. Two requests a second
  * apart must not verify different halves of the same roster: `Array.prototype
  * .sort` is stable, but the input order it would be stable about is PI's, which
@@ -1217,10 +1230,11 @@ export function liveBroadcastIsOver(
  * decides what a feed id is.
  */
 export function liveRosterFeedOrder(
-  roster: readonly { feedId?: unknown; liveStatus?: string; liveStartTime?: number }[],
+  roster: readonly { feedId?: unknown; liveStatus?: string; liveStartTime?: number; datePublished?: number }[],
 ): number[] {
-  /** Per feed: 0 if any row is live, and the best start time in that band. */
-  const best = new Map<number, { band: number; start: number | undefined }>();
+  /** Per feed: 0 if any row is live, the best start time in that band, and the
+   *  newest `datePublished` among that band's rows (the undated rank). */
+  const best = new Map<number, { band: number; start: number | undefined; seen: number | undefined }>();
   for (const e of roster) {
     const id = Number(e.feedId);
     if (!Number.isInteger(id) || id <= 0) continue;
@@ -1229,14 +1243,19 @@ export function liveRosterFeedOrder(
       typeof e.liveStartTime === 'number' && Number.isFinite(e.liveStartTime)
         ? e.liveStartTime
         : undefined;
+    const seen = liveStampSecs(e.datePublished);
     const held = best.get(id);
     if (!held || band < held.band) {
-      best.set(id, { band, start });
+      best.set(id, { band, start, seen });
       continue;
     }
-    if (band > held.band || start === undefined) continue;
-    // Same band: keep the row this band sorts FIRST by, so a feed carrying both
-    // a just-started broadcast and an older one is ranked by the newer.
+    if (band > held.band) continue;
+    // Same band. The newest record time stands for the feed, as the newest
+    // start does, so a feed is not ranked by an older row PI also still holds.
+    if (seen !== undefined && (held.seen === undefined || seen > held.seen)) held.seen = seen;
+    if (start === undefined) continue;
+    // Keep the row this band sorts FIRST by, so a feed carrying both a
+    // just-started broadcast and an older one is ranked by the newer.
     if (held.start === undefined) held.start = start;
     else held.start = band === 0 ? Math.max(held.start, start) : Math.min(held.start, start);
   }
@@ -1246,8 +1265,16 @@ export function liveRosterFeedOrder(
       if (a.band !== b.band) return a.band - b.band;
       // Undated sorts last within its band, both bands.
       if (a.start === undefined || b.start === undefined) {
-        if (a.start === b.start) return aId - bId;
-        return a.start === undefined ? 1 : -1;
+        if (a.start !== b.start) return a.start === undefined ? 1 : -1;
+        // Both undated — on Podcast Index's roster, every row. The record PI
+        // touched most recently first; a row with no record time after one
+        // that has it, for the same reason an undated row follows a dated one.
+        if (a.seen !== b.seen) {
+          if (a.seen === undefined) return 1;
+          if (b.seen === undefined) return -1;
+          return b.seen - a.seen;
+        }
+        return aId - bId;
       }
       if (a.start !== b.start) return a.band === 0 ? b.start - a.start : a.start - b.start;
       return aId - bId;
