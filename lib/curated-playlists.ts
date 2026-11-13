@@ -97,8 +97,19 @@ export const COMMUNITY_FEED_ORIGIN: string =
 
 export const COMMUNITY_FEED_PATH = '/feeds/playlists/';
 
-/** The one feature switch every community-playlist surface and route reads. */
+/** The feature switch: the maker, the list, search, admin and every write read it. */
 export const COMMUNITY_PLAYLISTS_ON: boolean = process.env.NEXT_PUBLIC_COMMUNITY_PLAYLISTS === 'on';
+
+/**
+ * SERVER ONLY: the reads that keep a PUBLISHED playlist working — its feed file and
+ * cover (`/feeds/playlists/*`), playing it from its feed URL (`/api/playlist`), and
+ * finding it by guid (`/api/by-guid`). On wherever the feature is on, and also on a
+ * deploy with `COMMUNITY_FEEDS=on` and the feature off. Production runs that way so a
+ * playlist made on beta already lives at its final Buddy address and plays on the
+ * main site, while the maker stays on beta (Chad, 2026-11-12). The name has no
+ * `NEXT_PUBLIC_` prefix, so a browser bundle always reads it as false.
+ */
+export const COMMUNITY_FEEDS_ON: boolean = COMMUNITY_PLAYLISTS_ON || process.env.COMMUNITY_FEEDS === 'on';
 
 export function communityFeedUrl(id: string): string {
   return `${COMMUNITY_FEED_ORIGIN}${COMMUNITY_FEED_PATH}${id}.xml`;
