@@ -481,9 +481,12 @@ checkTrack('a cached record becomes a track with no payee and an allowlisted sho
   showKeys: ['artwork', 'id', 'image', 'medium', 'podcastGuid', 'title'],
   show: { id: 7, guid: 'feed-1', title: 'Album (feed)', image: 'https://x/feed.png', medium: 'music' },
 });
-checkTrack('the favorite fills what the record does not say',
+// `loadItemValue` asks the feed named by `episode.podcastGuid`, and with neither
+// it nor a feed id it asks nobody: the track would play and pay no one. The
+// favorite's own parent guid is the item's feed, so it fills the gap.
+checkTrack('the favorite fills what the record does not say, the payee lookup included',
   [FAV, { id: 12, guid: 'item-1', title: 'Song', enclosureUrl: 'https://x/song.mp3' }], {
-    episodeKeys: ['enclosureUrl', 'guid', 'id', 'title'],
+    episodeKeys: ['enclosureUrl', 'guid', 'id', 'podcastGuid', 'title'],
     showKeys: ['artwork', 'id', 'image', 'medium', 'podcastGuid', 'title'],
     show: { id: 7, guid: 'feed-1', title: 'Album (favorite)', image: 'https://x/fav.png', medium: 'music' },
   });

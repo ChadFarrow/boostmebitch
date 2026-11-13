@@ -307,8 +307,13 @@ export function shuffleIndexOf(
 export function shuffleTrackFor(fav: FavoriteEpisode, episode: Episode): QueueItem | null {
   if (!isPlayableRow(episode)) return null;
   const image = episode.feedImage ?? fav.image;
+  const track = trimForQueue(episodeWithoutValue(episode));
+  // `loadItemValue` asks the feed `podcastGuid` names, and with neither it nor a
+  // feed id it asks nobody — the track would play and pay no one. The
+  // favorite's parent guid IS the item's feed, the one the record was read by.
+  if (!track.podcastGuid && fav.feedGuid) track.podcastGuid = fav.feedGuid;
   return {
-    episode: trimForQueue(episodeWithoutValue(episode)),
+    episode: track,
     podcast: {
       id: episode.feedId ?? fav.feedId ?? 0,
       podcastGuid: fav.feedGuid ?? episode.podcastGuid,
