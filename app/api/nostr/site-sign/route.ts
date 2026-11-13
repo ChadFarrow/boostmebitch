@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { finalizeEvent, type EventTemplate } from 'nostr-tools/pure';
-import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE, withCors, corsPreflight } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { siteSecretKey, sitePubkey } from '@/lib/nostr/site-key';
 import { httpUrl } from '@/lib/util';
@@ -179,7 +179,7 @@ function validateBoostTemplate(body: unknown, site: string): EventTemplate {
 /** Ceiling on the inbound body — see `readCappedRequestText`. */
 const MAX_REQUEST_BYTES = 32 * 1024;
 
-export async function POST(req: Request) {
+async function handlePost(req: Request) {
   const limited = rateLimit(req, 'site-sign', 30);
   if (limited) return limited;
   const notJson = requireJsonBody(req);
@@ -233,4 +233,14 @@ export async function POST(req: Request) {
       { headers: NO_STORE },
     );
   }, 'site-sign failed');
+}
+
+// Cross-brand CORS (lib/cross-brand-cors.ts): the Bitch site's browser calls
+// this route on the Buddy deploy. Headers go on EVERY answer, errors included.
+export async function POST(req: Request) {
+  return withCors(req, await handlePost(req));
+}
+
+export function OPTIONS(req: Request) {
+  return corsPreflight(req);
 }

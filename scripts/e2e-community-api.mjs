@@ -9,6 +9,8 @@
 // Prints `ok`/`FAIL` lines; exits non-zero on any FAIL. It deletes what it makes.
 // It sends a new x-real-ip every 5 requests (the rate limiter reads that header first on a
 // local server), so the run never waits on the 6-writes-a-minute limit.
+// `--feeds` runs only the FEEDS-ONLY half (see that section): `COMMUNITY_FEEDS=on`, the
+// feature switch off, and COMMUNITY_DB_URL passed to this script too.
 // `--off` runs only the switch-OFF half: start the server WITHOUT
 // NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on for it, then restart with it on for the full run.
 // It also depends on three third-party image URLs below (Fountain and headstarts.uk); if one
@@ -88,6 +90,65 @@ if (process.argv.includes('--off')) {
     last = (await fetch(`${APP}/feeds/playlists/00000000-0000-4000-8000-000000000000.xml`, { headers: { 'x-real-ip': flood } })).status;
   }
   check('switch off: the 241st feed request in a minute from one address -> 429 (rateLimit runs first)', last === 429, String(last));
+  console.log(`${count - fails}/${count} passed`);
+  process.exit(fails ? 1 : 0);
+}
+
+// ── the FEEDS-ONLY half ─────────────────────────────────────────────────────
+// `--feeds`: start the server with `COMMUNITY_FEEDS=on` and WITHOUT
+// NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on (production before launch), and pass the same
+// COMMUNITY_DB_URL to this script. A playlist published elsewhere (beta) must keep
+// working here — feed, cover, play by URL, find by guid — while the maker, the list,
+// search, admin and every write stay 404. Nothing can be written through the API with
+// the feature off, so the row goes straight into the store, and is deleted at the end.
+if (process.argv.includes('--feeds')) {
+  const { default: pg } = await import('pg');
+  if (!process.env.COMMUNITY_DB_URL) { console.log('FAIL --feeds needs COMMUNITY_DB_URL (the server\'s)'); process.exit(1); }
+  const db = new pg.Client({ connectionString: process.env.COMMUNITY_DB_URL });
+  await db.connect();
+  const src = await call('GET', `/api/playlist?url=${encodeURIComponent(SONG_SOURCE)}&limit=40`);
+  const real = (src.body?.episodes ?? []).filter((e) => !e.unresolved && e.guid && e.podcastGuid).slice(0, 12)
+    .map((e) => ({ feedGuid: e.podcastGuid, itemGuid: e.guid }));
+  check('feeds only: 12 real songs to store', real.length === 12, show(src));
+  const id = crypto.randomUUID();
+  const guid = crypto.randomUUID();
+  const title = `e2e feeds-only ${id.slice(0, 8)}`;
+  try {
+    await db.query(
+      `insert into community_playlists (id, owner_pubkey, title, description, art_url, songs, podcast_guid)
+       values ($1, $2, $3, '', null, $4::jsonb, $5)`,
+      [id, getPublicKey(newKey()), title, JSON.stringify(real), guid],
+    );
+    const feedUrl = `${APP}/feeds/playlists/${id}.xml`;
+    const x = await fetch(feedUrl);
+    const xml = await x.text();
+    check('feeds only: GET feed .xml -> 200 with its stored guid and 12 songs',
+      x.status === 200 && xml.includes(`<podcast:guid>${guid}</podcast:guid>`) && (xml.match(/<podcast:remoteItem/g) ?? []).length === 12,
+      `${x.status} ${xml.slice(0, 200)}`);
+    const cover = (xml.match(/<itunes:image href="([^"]+)"/) ?? [])[1] ?? '';
+    const c = await fetch(cover.replace(/&amp;/g, '&'));
+    check('feeds only: GET its cover -> 200 image/jpeg', c.status === 200 && c.headers.get('content-type') === 'image/jpeg', `${c.status} ${cover}`);
+    const play = await call('GET', `/api/playlist?url=${encodeURIComponent(feedUrl)}`);
+    check('feeds only: /api/playlist plays it from its feed URL (12 songs, its title)',
+      play.status === 200 && play.body?.episodes?.length === 12 && play.body?.podcast?.title === title, show(play).slice(0, 300));
+    const byGuid = await call('GET', `/api/by-guid?guid=${guid}`);
+    check('feeds only: /api/by-guid finds it by its guid', byGuid.status === 200 && byGuid.body?.podcast?.title === title, show(byGuid).slice(0, 300));
+    const list = await call('GET', PLAYLISTS);
+    check('feeds only: GET list -> 404 (no Community list yet)', list.status === 404, show(list));
+    const one = await call('GET', `${PLAYLISTS}/${id}`);
+    check('feeds only: GET one playlist through the API -> 404', one.status === 404, show(one));
+    const write = await call('POST', PLAYLISTS, { sk: newKey(), body: { draft: { title: 'nope', description: '', artUrl: null, songs: real } } });
+    check('feeds only: POST a playlist -> 404 (the maker is off)', write.status === 404, show(write));
+    const search = await call('GET', `/api/search?q=${encodeURIComponent(title)}`);
+    check('feeds only: search does not list it', !JSON.stringify(search.body ?? {}).includes(id), show(search).slice(0, 200));
+    for (const page of ['/playlists/make', '/admin']) {
+      const r = await fetch(`${APP}${page}`);
+      check(`feeds only: ${page} -> 404`, r.status === 404, String(r.status));
+    }
+  } finally {
+    await db.query('delete from community_playlists where id = $1', [id]);
+    await db.end();
+  }
   console.log(`${count - fails}/${count} passed`);
   process.exit(fails ? 1 : 0);
 }

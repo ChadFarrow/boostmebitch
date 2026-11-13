@@ -3,7 +3,7 @@ import { getFeedFromRss, getPodcastByGuid, getPodcastByFeedUrl } from '@/lib/pi'
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { mergeRssOverPi, piRecordIsBlank, communityPlaylistToPodcast } from '@/lib/util';
-import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
+import { COMMUNITY_FEEDS_ON } from '@/lib/curated-playlists';
 import { communityStoreConfigured, findPlaylistByGuid } from '@/lib/community/store';
 import { summaryOf } from '@/lib/community/http';
 import type { Podcast } from '@/lib/types';
@@ -79,7 +79,7 @@ export async function GET(req: Request) {
     if (!podcast) {
       // A community playlist is not in Podcast Index (it is switched off for them),
       // so a miss on its guid is answered from our own store.
-      const own = guid && COMMUNITY_PLAYLISTS_ON && communityStoreConfigured()
+      const own = guid && COMMUNITY_FEEDS_ON && communityStoreConfigured()
         ? await findPlaylistByGuid(guid).catch(() => null)
         : null;
       if (own) {
