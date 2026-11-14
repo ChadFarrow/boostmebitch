@@ -170,6 +170,28 @@ export function matchTracks(
   return { moves, unmatched };
 }
 
+/**
+ * What a favorites row on a closed host shows under itself, once `/api/moved`
+ * answered.
+ *
+ * - `'offer'` — copies to REPLACE it with (`offeredCount` is how many THIS row
+ *   can use: every copy for an album row, only copies holding the track for a
+ *   track row).
+ * - `'gone'` — the host closed and no copy exists that this row can use: the
+ *   label "RSS Blue closed — no copy found" and a REMOVE (Chad, 2026-11-14).
+ *   Without it the row was a letter tile whose audio failed with no reason.
+ * - null — no answer yet, "could not ask", or not on a closed host. Never
+ *   "gone" on a missing answer: that would tell the user a copy does not exist
+ *   when we only failed to ask.
+ */
+export function movedFooterKind(
+  answer: { service: string | null; candidates: readonly unknown[] } | null,
+  offeredCount: number,
+): 'offer' | 'gone' | null {
+  if (!answer?.service) return null;
+  return offeredCount > 0 ? 'offer' : 'gone';
+}
+
 export interface SwapInput {
   /** `'feed'` for an album row (the album and its favorited tracks), or the
    *  one track a track row stands for. */

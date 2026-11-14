@@ -160,6 +160,8 @@ A favorites row still on a closed host (`closedService`, see [`feeds.md`](feeds.
 - **REPLACE is the store actions a heart uses, every add before every remove.** Each write runs `markClearedIfEmpty`, so remove-first on a one-entry list passes through an empty store, which reads as a deliberate clear-all. Then ONE `requestFavoritesSync`.
 - **A track that cannot be placed stays.** An album REPLACE moves each favorited track whose normalized title is on the new album (`planSwap`, pinned by `check:moved`) and leaves the rest under the old guid. A track row offers only copies that hold that track.
 - **A carried row gets the lines and no button**: this device does not publish it.
+- **No copy → `RSS Blue closed — no copy found.` and REMOVE** (Chad, 2026-11-14). `movedFooterKind` (pinned by `check:moved`) picks offer / gone / nothing, and it is never "gone" on a missing answer: "could not ask" must not tell the user a copy does not exist. A track row whose album moved without that track is "gone" too. REMOVE is the heart's removal with words on it.
+- **All of them sit in ONE section at the top**, `<service> closed`, out of their medium's section — fifteen rows with something to do, scattered through 470, were hard to find. The tabs keep counting them (still favorites of that medium); each medium section's "of N" leaves them out so it does not read as filtered (`openTotals` in `favorites-page.tsx`).
 - **The result line shows under the NEW row** (`useMovedNotices`, keyed by the new guid): the old row, and the offer with it, unmounts the moment the swap lands. The new rows keep the old `addedAt`, so they land where the old ones were.
 
 Verified by `e2e:moved` (offers, 24×24 buttons, no overflow at 390px, the published event).

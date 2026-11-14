@@ -4,7 +4,7 @@ import { useApp } from '@/lib/store';
 import { fetchMovedCandidates } from '@/lib/podcast-meta';
 import { favoriteFromEpisode, favoriteFromPodcast } from '@/lib/nostr/favorites-hydrator';
 import { requestFavoritesSync } from '@/lib/nostr/favorites-sync';
-import { matchTracks, planSwap } from '@/lib/moved-feeds';
+import { matchTracks, movedFooterKind, planSwap } from '@/lib/moved-feeds';
 import type { Episode, MovedAnswer, Podcast } from '@/lib/types';
 
 /**
@@ -108,13 +108,43 @@ export function MovedOffer({
 
   const itemGuid = scope === 'feed' ? null : scope.itemGuid;
   const track = useApp((s) => (itemGuid ? s.favoriteEpisodes[itemGuid] : undefined));
-  if (!answer?.service || !answer.candidates.length) return null;
   // A track row offers only a copy that actually holds that track: a REPLACE
   // that could not place it would do nothing.
-  const offered = itemGuid
-    ? answer.candidates.filter((c) => matchTracks([{ itemGuid, title: track?.title }], itemsOf(c)).moves.length > 0)
-    : answer.candidates;
-  if (!offered.length) return null;
+  const offered = !answer
+    ? []
+    : itemGuid
+      ? answer.candidates.filter((c) => matchTracks([{ itemGuid, title: track?.title }], itemsOf(c)).moves.length > 0)
+      : answer.candidates;
+  const kind = movedFooterKind(answer, offered.length);
+  if (!kind || !answer) return null;
+
+  // No copy this row can use. Say so, and let the user drop it — the heart does
+  // the same, but a dead row with no words on it read as a broken cover.
+  if (kind === 'gone') {
+    const remove = () => {
+      const s = useApp.getState();
+      if (itemGuid) s.removeFavoriteEpisode(itemGuid);
+      else s.removeFavorite(feedGuid);
+      requestFavoritesSync(s.identity);
+    };
+    return (
+      <RowFooter>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span>{answer.service} closed — no copy found.</span>
+          {!carried && (
+            <button
+              type="button"
+              className="btn-ghost text-[10px] py-1 px-2 min-h-[28px]"
+              onClick={remove}
+              aria-label={`Remove this favorite — ${answer.service} closed and no copy was found`}
+            >
+              REMOVE
+            </button>
+          )}
+        </div>
+      </RowFooter>
+    );
+  }
 
   function replace(c: Candidate) {
     const s = useApp.getState();

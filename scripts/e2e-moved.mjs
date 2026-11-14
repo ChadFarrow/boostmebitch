@@ -31,6 +31,7 @@ const MRV_FOUNTAIN = '9b2014ae-ca84-552d-9283-8510b686adc7';
 const MRV_FOUNTAIN_ITEM = '3f4b6d0d-4d92-4caa-b170-ff4950f6db17';
 const RUNAWAY = '25e0c184-6ae9-541d-b756-1c8816c2cb59';
 const HOMEGROWN = 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f';
+const NO_COPY = '6a5d604b-8f89-5664-b603-18472947e530'; // Where Does the Time Go (Prelude), Herbivore: RSS Blue only
 const g = (feed, item) => (item ? ['i', `podcast:guid:${feed}`, `podcast:item:guid:${item}`] : ['i', `podcast:guid:${feed}`]);
 
 const sk = generateSecretKey();
@@ -45,7 +46,7 @@ const seed = finalizeEvent({
   created_at: Math.floor(Date.now() / 1000) - 120,
   tags: [
     ['alt', 'PC 2.0 Favorites'], ['visibility', 'public'],
-    g(WORRIED), g(MRV), g(RUNAWAY), g(HOMEGROWN),
+    g(WORRIED), g(MRV), g(RUNAWAY), g(HOMEGROWN), g(NO_COPY),
     g(WORRIED, WORRIED_ITEM), g(MRV, MRV_ITEM),
   ],
   content: '',
@@ -173,6 +174,25 @@ const hh = rowOf(rows, /^Homegrown Hits$/);
 t.ok('Homegrown Hits is listed', hh, '');
 t.equal('the healthy control offers nothing', hh?.footer ?? null, null);
 
+// Closed-host rows sit in ONE section at the top (Chad, 2026-11-14).
+const sections = await js(`(() => [...document.querySelectorAll('main section')].map((s) => ({
+  heading: (s.querySelector('[aria-controls]')?.textContent || '').trim(),
+  titles: [...s.querySelectorAll('li')].map((li) => li.querySelector('.font-display.text-base')?.textContent?.trim()).filter(Boolean),
+})).filter((s) => s.heading))()`);
+const closedIdx = sections.findIndex((s) => /^RSS Blue closed/.test(s.heading));
+const firstList = sections.findIndex((s) => s.titles.length > 0);
+t.ok('an "RSS Blue closed" section exists', closedIdx >= 0, JSON.stringify(sections.map((s) => s.heading)));
+t.equal('it is the first list on the page', closedIdx, firstList);
+const closedTitles = sections[closedIdx]?.titles ?? [];
+t.ok('it holds the moved and the dead albums', ['Mr. Videoman', 'Runaway Train', 'Where Does the Time Go (Prelude)'].every((x) => closedTitles.includes(x)), JSON.stringify(closedTitles));
+t.ok('a followed album (Worried) is not in it', !closedTitles.includes('Worried'), JSON.stringify(closedTitles));
+t.ok('the closed rows are not listed twice', sections.filter((s) => s.titles.includes('Runaway Train')).length === 1, JSON.stringify(sections));
+
+const gone = rowOf(rows, /^Where Does the Time Go \(Prelude\)$/);
+t.ok('an album with no copy says so', /RSS Blue closed — no copy found\./.test(gone?.footer ?? ''), gone?.footer);
+t.equal('and offers REMOVE', (gone?.buttons ?? []).length, 1);
+t.ok('REMOVE is at least 24×24 CSS px', (gone?.buttons ?? []).every((b) => b.w >= 24 && b.h >= 24), JSON.stringify(gone?.buttons));
+
 console.log('\n2. phone width');
 await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
 await wait(1500);
@@ -207,6 +227,16 @@ rows = await readRows();
 const newRow = rowOf(rows, /^Mr\.? Videoman$/);
 t.ok('the new row says what happened', /^Replaced from RSS Blue\./.test(newRow?.footer ?? ''), newRow?.footer);
 t.ok('the new row shows a Fountain cover', /feeds\.fountain\.fm/.test(newRow?.src ?? ''), newRow?.src);
+
+console.log('\n3b. REMOVE on an album with no copy');
+const beforeRemove = published.length;
+const removed = await js(`(() => { const b = [...document.querySelectorAll('button')].find((x) => /^Remove this favorite/.test(x.getAttribute('aria-label') || '')); if (!b) return false; b.click(); return true; })()`);
+t.ok('pressed REMOVE', removed, '');
+for (let i = 0; i < 40 && published.length === beforeRemove; i++) await wait(500);
+const afterRemove = (published[published.length - 1]?.tags ?? []).map((x) => x.join(' '));
+t.ok('a kind:10333 reached the relay', published.length > beforeRemove, '');
+t.ok('the dead album is off the list', !afterRemove.includes(g(NO_COPY).join(' ')), JSON.stringify(afterRemove));
+t.ok('everything else stayed', afterRemove.includes(g(WORRIED).join(' ')) && afterRemove.includes(g(HOMEGROWN).join(' ')), JSON.stringify(afterRemove));
 
 console.log('\n4. a device whose cache still holds the dead Worried');
 await js(`(() => {

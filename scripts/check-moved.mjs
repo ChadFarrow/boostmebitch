@@ -10,6 +10,7 @@
 
 import {
   closedService, itemOnClosedHost, normTitle, pickLiveTwin, movedCandidates, matchTracks, planSwap, mergeResolvedRow,
+  movedFooterKind,
 } from '../lib/moved-feeds.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -132,6 +133,13 @@ check('track row: only that track, no feed change',
 check('the new track is already a favorite: the old one goes, nothing is added',
   planSwap({ scope: 'feed', feedFav: null, newFeedIsFav: false, oldItems, newItems, favItemGuids: new Set(['n1']) }).moves,
   [{ oldItemGuid: 'a', newItemGuid: 'n1', addNew: false }]);
+
+console.log('movedFooterKind');
+check('no answer yet (or could not ask): nothing', movedFooterKind(null, 0), null);
+check('not on a closed host: nothing', movedFooterKind({ service: null, candidates: [] }, 0), null);
+check('closed, with a copy offered: the offer', movedFooterKind({ service: 'RSS Blue', candidates: [{}] }, 1), 'offer');
+check('closed, no copy anywhere: gone', movedFooterKind({ service: 'RSS Blue', candidates: [] }, 0), 'gone');
+check('closed, the album moved but not this track: gone', movedFooterKind({ service: 'RSS Blue', candidates: [{}] }, 0), 'gone');
 
 console.log('mergeResolvedRow');
 check('keeps addedAt, medium and carried from the painted row',
