@@ -669,6 +669,9 @@ function shuffleRow(item: QueueItem): Partial<AppState> {
     isPlaying: true,
     positionSec: savedStartSec(item.episode, item.podcast),
     videoMode: false,
+    // A left-over preview stops playback when the song it names ends — which
+    // would stop the shuffle the day it reaches that song.
+    previewKey: null,
   };
 }
 
@@ -958,6 +961,9 @@ export const useApp = create<AppState>((set, get) => ({
         videoMode: false,
         // A tap on an Up Next row is the listener picking something else — see `play`.
         shuffle: null,
+        // And a left-over preview would stop Up Next the day it reaches the
+        // song it names — `play` and `cue` clear it; this sets `current` itself.
+        previewKey: null,
       };
     }),
   revealQueue: () =>
