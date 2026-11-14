@@ -301,7 +301,13 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // already opens with its own "Why this earns a check script" paragraph saying
 // the same thing. Dropping it would leave the table indexing rather than
 // arguing, which is what the line above the table already claims it does.
-const BUDGET = 15000
+//
+// 15,000 -> 15,100 (2026-11-14), a table row again: `check:moved` pins which copy
+// of a dead feed collects boosts with no press, so it belongs in the table. The
+// slack above had been spent to the word before this change (14,999), and a
+// row plus one index path is ~34 words. The structural lever above is still
+// the one to pull when this is needed next; a sixth raise is not.
+const BUDGET = 15100
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')

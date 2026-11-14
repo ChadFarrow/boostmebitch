@@ -16,10 +16,10 @@
 
 import {
   getEpisodeByGuid, getPodcastByFeedUrl, getPodcastByGuid,
-  episodeFromPiRecord, podcastFromPiFeed,
+  episodeFromPiRecord, podcastFromPiFeed, preferLiveTwin, twinEpisode,
 } from './pi';
 import { askIndex } from './nostr-index-server';
-import { probeThenBatch, withFeedMediums } from './util';
+import { mapLimit, PI_FANOUT, probeThenBatch, withFeedMediums } from './util';
 
 /** Hard cap on identifiers per request. An attacker-chosen list length must
  *  never turn one request into an unbounded PI fan-out. The per-request
@@ -54,11 +54,17 @@ export async function batchPodcasts(guids: string[]): Promise<Record<string, Pod
   // cache entry we could not read is not that. Leaving it absent sends it to
   // `probeThenBatch` below, which asks PI properly.
   if (fromIndex) {
-    for (const [k, v] of Object.entries(fromIndex)) {
-      if (v == null) { out[k] = null; continue; }
-      const podcast = podcastFromPiFeed(v);
+    // The index caches PI's raw record, so a feed on a closed host arrives as
+    // the dead copy exactly as the direct path's does. Same step, same rule:
+    // `preferLiveTwin` returns a healthy record with no request, so only the
+    // closed ones cost a search, bounded at PI_FANOUT.
+    const entries = Object.entries(fromIndex);
+    const picked = await mapLimit(entries, PI_FANOUT, async ([, v]) => (v == null ? v : preferLiveTwin(v)));
+    entries.forEach(([k, v], i) => {
+      if (v == null) { out[k] = null; return; }
+      const podcast = podcastFromPiFeed(picked[i]);
       if (podcast) out[k] = podcast;
-    }
+    });
   }
 
   const missing = wanted.filter((g) => !(g in out));
@@ -114,11 +120,20 @@ export async function batchEpisodes(refs: EpisodeRef[]): Promise<Record<string, 
     body: { refs: wanted },
   });
   if (fromIndex) {
-    for (const [k, v] of Object.entries(fromIndex)) {
-      if (v == null) { out[k] = null; continue; }
-      const episode = episodeFromPiRecord(v);
+    // Same closed-host step as `getEpisodeByGuid` (`twinEpisode`); a healthy
+    // record costs nothing. A key the index returned that names no ref we asked
+    // for has no guid pair to re-ask with, so it is built as it came.
+    const refByKey = new Map(wanted.map((r) => [episodeKey(r), r]));
+    const entries = Object.entries(fromIndex);
+    const picked = await mapLimit(entries, PI_FANOUT, async ([k, v]) => {
+      const ref = refByKey.get(k);
+      return v == null || !ref ? v : twinEpisode(v, ref.feedGuid, ref.itemGuid);
+    });
+    entries.forEach(([k, v], i) => {
+      if (v == null) { out[k] = null; return; }
+      const episode = episodeFromPiRecord(picked[i]);
       if (episode) out[k] = episode;
-    }
+    });
   }
 
   const missing = wanted.filter((r) => !(episodeKey(r) in out));

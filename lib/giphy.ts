@@ -87,15 +87,23 @@ export function gifCost(gifUrl: string | null): number {
 }
 
 /**
- * GIPHY's content rating for a deploy. The family-friendly brand asks for `g`
- * only; the other for `pg-13`. GIPHY applies the filter server-side, so this is
- * what decides which GIFs can be offered at all.
+ * GIPHY's content rating for a deploy. GIPHY applies the filter server-side, so
+ * this is what decides which GIFs can be offered at all.
+ *
+ * BOTH deploys ask for `pg-13`. Buddy asked for `g` until 2026-11-14, and `g`
+ * did not hold: GIPHY rates its own GIFs, and a `g` search on boostmebuddy.com
+ * that day returned six middle fingers in eight for "middle finger" and a
+ * topless "sexy twerk" GIF for "sexy" — both rated `g` on giphy.com. Chad's
+ * call: "if anyone is using Buddy I assume they are over 13". So the family
+ * site's GIFs are now exactly the main site's; anything stricter has to be a
+ * filter of our own, because GIPHY's lowest rating is not one.
  *
  * Named the other way round on purpose: a brand id this does not know gets `g`,
- * so a third deploy starts family-friendly rather than inheriting `pg-13`.
+ * so a third deploy starts at the strictest rating rather than inheriting
+ * `pg-13`.
  */
 export function giphyRating(brandId: string): 'g' | 'pg-13' {
-  return brandId === 'bmb' ? 'pg-13' : 'g';
+  return brandId === 'bmb' || brandId === 'buddy' ? 'pg-13' : 'g';
 }
 
 /** One row the picker can render — nothing else from GIPHY's record survives. */

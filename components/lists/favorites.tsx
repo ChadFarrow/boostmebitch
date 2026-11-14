@@ -21,6 +21,8 @@ import { PodcastCover } from '../podcast-cover';
 import { FavEpisodeRowHeart, FavFeedRowHeart } from '../fav-heart';
 import { PodcastRow } from './podcast-results';
 import { useRevealed, useAutoReveal, ShowMore } from './grouping';
+import { MovedOffer, RowFooter, useMovedNotices } from './moved-offer';
+import { closedService, itemOnClosedHost } from '@/lib/moved-feeds';
 
 export type FavSort = 'recent' | 'az';
 
@@ -112,9 +114,12 @@ export function UnresolvedFavoriteRow({
 export function FavoriteItemRow({
   ep,
   onOpen,
+  footer,
 }: {
   ep: FavoriteEpisode;
   onOpen: (ep: FavoriteEpisode) => void;
+  /** A line inside the `<li>`, under the row — see `PodcastRow`'s `footer`. */
+  footer?: React.ReactNode;
 }) {
   const title = ep.title!;
   return (
@@ -123,7 +128,7 @@ export function FavoriteItemRow({
     // same reason (a button may not contain the heart's button). As an
     // `<li onClick>` this row had no keyboard route at all, so the only thing a
     // keyboard user could do with a saved episode was UNSAVE it.
-    <li className="flex gap-3 px-1 group transition hover:bg-bone/5">
+    <li className={`flex gap-3 px-1 group transition hover:bg-bone/5 ${footer ? 'flex-wrap' : ''}`}>
       <button
         type="button"
         onClick={() => onOpen(ep)}
@@ -150,6 +155,7 @@ export function FavoriteItemRow({
       <div className="flex-shrink-0 self-center">
         {ep.carried ? null : <FavEpisodeRowHeart favorite={ep} />}
       </div>
+      {footer}
     </li>
   );
 }
@@ -235,10 +241,10 @@ function CarriedNote() {
  * whose heart works would not.
  */
 function CarriedRow({
-  title, subtitle, image, seed,
-}: { title: string; subtitle?: string; image?: string; seed: string }) {
+  title, subtitle, image, seed, footer,
+}: { title: string; subtitle?: string; image?: string; seed: string; footer?: React.ReactNode }) {
   return (
-    <li className="flex gap-3 py-3 px-1 items-center opacity-80">
+    <li className={`flex gap-3 py-3 px-1 items-center opacity-80 ${footer ? 'flex-wrap' : ''}`}>
       <PodcastCover
         image={image}
         title={title}
@@ -250,8 +256,27 @@ function CarriedRow({
         {subtitle && <div className="text-xs text-muted line-clamp-2 break-words">{subtitle}</div>}
         <CarriedNote />
       </div>
+      {footer}
     </li>
   );
+}
+
+/**
+ * The footer a favorites row gets on `/favorites`: the moved-album offer while
+ * its feed (or track) is still on a closed host, or the result line of the
+ * REPLACE that put this row here. Null otherwise — every healthy row renders
+ * exactly as before.
+ */
+function movedFooter(
+  onClosedHost: boolean,
+  feedGuid: string | undefined,
+  scope: 'feed' | { itemGuid: string },
+  carried: boolean | undefined,
+  notice: string | undefined,
+): React.ReactNode {
+  if (notice) return <RowFooter>{notice}</RowFooter>;
+  if (onClosedHost && feedGuid) return <MovedOffer feedGuid={feedGuid} scope={scope} carried={carried} />;
+  return null;
 }
 
 /** Favorited feeds — albums and shows. */
@@ -270,6 +295,7 @@ export function FavoriteFeedRows({
   noun: (n: number) => string;
   onSelect: (p: Podcast) => void;
 }) {
+  const notices = useMovedNotices();
   return (
     <PagedList
       id={id}
@@ -311,9 +337,10 @@ export function FavoriteFeedRows({
           artwork: p.artwork,
           url: p.url,
         };
+        const footer = movedFooter(!!closedService(p.url), p.podcastGuid, 'feed', p.carried, notices[p.podcastGuid]);
         if (p.carried) {
           return (
-            <CarriedRow key={p.podcastGuid} title={title} subtitle={authorLine(title, p.author) ?? undefined} image={p.image ?? p.artwork} seed={p.podcastGuid} />
+            <CarriedRow key={p.podcastGuid} title={title} subtitle={authorLine(title, p.author) ?? undefined} image={p.image ?? p.artwork} seed={p.podcastGuid} footer={footer} />
           );
         }
         return (
@@ -323,6 +350,7 @@ export function FavoriteFeedRows({
             selected={false}
             onSelect={onSelect}
             showV4VStamp={false}
+            footer={footer}
           />
         );
       }}
@@ -346,6 +374,7 @@ export function FavoriteItemRows({
   noun: (n: number) => string;
   onOpen: (ep: FavoriteEpisode) => void;
 }) {
+  const notices = useMovedNotices();
   return (
     <PagedList
       id={id}
@@ -358,7 +387,14 @@ export function FavoriteItemRows({
         // Still the user's favorite, still republished — see
         // <UnresolvedFavoriteRow>.
         ep.title
-          ? <FavoriteItemRow key={ep.itemGuid} ep={ep} onOpen={onOpen} />
+          ? (
+            <FavoriteItemRow
+              key={ep.itemGuid}
+              ep={ep}
+              onOpen={onOpen}
+              footer={movedFooter(itemOnClosedHost(ep), ep.feedGuid, { itemGuid: ep.itemGuid }, ep.carried, notices[ep.itemGuid])}
+            />
+          )
           : (
             <UnresolvedFavoriteRow
               key={ep.itemGuid}
