@@ -710,6 +710,12 @@ export interface LiveShow {
    * evidence the show ended. See `mergeLiveOverPi`.
    */
   verified: boolean;
+  /**
+   * A 24/7 station rather than a broadcast (`liveItemIsAlwaysOn`): `/live`
+   * files it under 📻 24/7 and does not count it as a show on air. Absent on
+   * every other row.
+   */
+  alwaysOn?: boolean;
 }
 
 /**

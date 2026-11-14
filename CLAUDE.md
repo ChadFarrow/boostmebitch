@@ -67,7 +67,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9, `eslint.config.mjs`), and `next build`. Path alias `@/*` → repo root.
 
-**Forty-seven `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Forty-eight `check:*` scripts are this repo's tests.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -107,7 +107,7 @@ npm run dev / build / start / lint
 | `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening: feeds hang, publishes reach nobody |
 | `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show, or an ended one never leaves |
 | `check:liveover` | `liveBroadcastIsOver` — stale `live` flags, and overruns | a badge over silence, or none |
-| `check:liveroster` | `liveRosterFeedOrder` — which feeds the live cap keeps | a show on air trimmed for somebody’s schedule |
+| `check:liveroster`, `check:livealwayson` | `liveRosterFeedOrder` — which feeds the live cap keeps; 24/7 stations skip it | a show on air trimmed for somebody’s schedule |
 | `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser walks a document with | 1 MB of `<!--` pins a lambda for a minute |
 | `check:cappedbody` | `lib/capped-body.ts` — the capped readers, server AND browser | an uncapped `arrayBuffer` fills the heap from one feed |
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, `clientTag`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |

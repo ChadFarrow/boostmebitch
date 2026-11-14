@@ -73,12 +73,14 @@ const REFRESH_MIN_MS = 45_000;
 /** Read by `<HomePage>`'s back control — see `showOrigin` in lib/store.ts. */
 const LIVE_ORIGIN = { path: '/live', label: 'live' };
 
-type RssTab = 'live' | 'upcoming';
+type RssTab = 'live' | 'radio' | 'upcoming';
 
-/** The two states a `<podcast:liveItem>` can be in that this page renders.
- *  Same vocabulary and same glyphs as the Nostr strip, deliberately. */
+/** The two states a `<podcast:liveItem>` can be in that this page renders,
+ *  plus 24/7 — a SUBDIVISION of live for stations (`LiveShow.alwaysOn`). Same
+ *  vocabulary, glyphs and order as the Nostr strip, deliberately. */
 const RSS_TABS = [
   { key: 'live', label: 'Live', icon: '●' },
+  { key: 'radio', label: '24/7', icon: '📻' },
   { key: 'upcoming', label: 'Upcoming', icon: '◷' },
 ] as const;
 
@@ -364,7 +366,12 @@ export function LivePage() {
   const items = data?.items ?? [];
   // Live: only ever what the latest response said. Upcoming: everything seen
   // across the rotation, soonest first.
-  const onAir = items.filter((s) => s.liveStatus === 'live');
+  //
+  // A 24/7 station is live too, but it is not a show on air. Measured
+  // 2026-11-14: nineteen stations and no broadcast, and the Live tab said 19.
+  // They get their own tab so `● LIVE` keeps meaning "somebody started a show".
+  const onAir = items.filter((s) => s.liveStatus === 'live' && !s.alwaysOn);
+  const stations = items.filter((s) => s.liveStatus === 'live' && s.alwaysOn);
   const upcoming = Object.values(upcomingSeen)
     .flat()
     .sort((a, b) => (a.liveStartTime ?? 0) - (b.liveStartTime ?? 0));
@@ -405,8 +412,18 @@ export function LivePage() {
    * the `● LIVE 0` tab is still on screen saying exactly that — in less space
    * than the sentence would take. An explicit choice always wins.
    */
+  //
+  // Stations come LAST in that order: a show starting tonight is more news than
+  // a channel that is always on, so 24/7 is the landing tab only when it is the
+  // only content there is. A press on 24/7 is honoured until the tab empties
+  // and disappears, and then the default takes over again.
+  const rssDefault: RssTab =
+    onAir.length > 0 ? 'live'
+      : upcoming.length > 0 ? 'upcoming'
+        : stations.length > 0 ? 'radio'
+          : 'live';
   const rssActive: RssTab =
-    rssTab ?? (onAir.length === 0 && upcoming.length > 0 ? 'upcoming' : 'live');
+    rssTab === 'radio' && stations.length === 0 ? rssDefault : rssTab ?? rssDefault;
 
   // A heading over nothing is its own small lie — it says "here is the RSS
   // list" and then shows blank. The groups inside already refuse to speak when
@@ -457,18 +474,18 @@ export function LivePage() {
               <span className="text-nostr animate-bolt text-sm">●</span>
               Live on RSS
             </h3>
-            {/* BOTH TABS ALWAYS, AND THAT IS THE DIFFERENCE FROM THE NOSTR
-                STRIP. That one hides a group with nothing in it, which is right
-                for a section making no claim — it renders nothing at all when
-                empty. This section DOES make one: "nothing is broadcasting on
-                RSS right now" is a statement about the world, and hiding the
-                tab that carries it would take it off the page exactly when it
-                is true. A count of 0 on a visible tab says the same thing in
-                less space, and says it without the reader having to switch. */}
+            {/* LIVE AND UPCOMING ALWAYS. This section makes a claim the Nostr
+                one does not: "nothing is broadcasting on RSS right now" is a
+                statement about the world, and hiding the tab that carries it
+                would take it off the page exactly when it is true. A count of 0
+                on a visible tab says the same thing in less space. 24/7 is a
+                subdivision of live, not a state, so — as on the Nostr strip —
+                it appears only when a station is in it. */}
             <div className="inline-flex gap-1">
-              {RSS_TABS.map((t) => {
+              {RSS_TABS.filter((t) => t.key !== 'radio' || stations.length > 0).map((t) => {
                 const on = rssActive === t.key;
-                const count = t.key === 'live' ? onAir.length : upcoming.length;
+                const count =
+                  t.key === 'live' ? onAir.length : t.key === 'radio' ? stations.length : upcoming.length;
                 return (
                   <button
                     key={t.key}
@@ -506,6 +523,15 @@ export function LivePage() {
                     'you have favorited or boosted, so others may be on air too.'
                   : undefined
               }
+            />
+          ) : rssActive === 'radio' ? (
+            <ShowGroup
+              shows={stations}
+              state={state}
+              hasData={!!data}
+              // Never shown: the tab exists only while a station is in it.
+              emptyLine={null}
+              caption="Stations that broadcast around the clock. Each one's live item runs for a day or more."
             />
           ) : (
             <ShowGroup

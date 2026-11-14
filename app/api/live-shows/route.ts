@@ -11,7 +11,8 @@ import { createBoundedCache } from '@/lib/bounded-cache';
 import { fetchPodpingLiveFeeds, podpingConfigured } from '@/lib/podping-live';
 import { piCouldNotAskStatus } from '@/lib/pi-error';
 import {
-  compareLiveShows, liveRosterFeedOrder, mapLimit, mergeLiveOverPi, FEED_FANOUT, PI_FANOUT,
+  compareLiveShows, liveItemIsAlwaysOn, liveRosterFeedOrder, mapLimit, mergeLiveOverPi,
+  planLiveRosterReads, FEED_FANOUT, PI_FANOUT,
 } from '@/lib/util';
 import type { Episode, LiveShow, Podcast } from '@/lib/types';
 
@@ -87,6 +88,24 @@ const PERSONAL_CACHE = { 'Cache-Control': 'private, max-age=30' };
 const MAX_LIVE_FEEDS = 24;
 
 /**
+ * How many 24/7 STATIONS one request reads on top of `MAX_LIVE_FEEDS`.
+ *
+ * Measured 2026-11-14: 20 of the 40 feeds Podcast Index listed as live were
+ * stations (`liveItemIsAlwaysOn`), and because they republish their live item
+ * all day, PI's record time ranked them first — they took 19 of the 24 roster
+ * reads while nine shows with a scheduled broadcast went unread. A station this
+ * server has already read is now planned OUT of the roster and into this
+ * allowance (`planLiveRosterReads`), so it still reaches the 📻 24/7 tab and no
+ * longer costs a show its slot.
+ *
+ * Cheaper per feed than the roster: a remembered station carries its URL, so it
+ * skips the Podcast Index stage and costs one RSS read, bounded by `mapLimit`
+ * like every other read. Worst case it adds `ceil(24 / FEED_FANOUT)` = three
+ * RSS rounds; a station's feed is small and cached for `LIVE_XML_MAX_AGE_MS`.
+ */
+const MAX_ALWAYS_ON_FEEDS = 24;
+
+/**
  * How many of the caller's own favorited feeds this will additionally read.
  *
  * Separate from `MAX_LIVE_FEEDS` because it answers a different question. That
@@ -134,6 +153,20 @@ interface SeenFeed {
   podcastGuid?: string;
   /** unix ms, when this feed was last observed carrying a LIVE item. */
   lastSeen: number;
+  /**
+   * Whether that live item was a 24/7 station (`liveItemIsAlwaysOn`). Read by
+   * `planLiveRosterReads` to move the feed out of the roster cap, and by the
+   * remembered stage to skip it: a station has no schedule to find.
+   */
+  alwaysOn?: boolean;
+  /**
+   * The show's title and art, kept from the read that remembered it. A feed
+   * read through memory skips the Podcast Index stage, so `getPodcast` never
+   * fills these — and an item PI's roster does not carry (the second station
+   * on a Godcaster feed) has no PI row to borrow them from either.
+   */
+  feedTitle?: string;
+  feedImage?: string;
 }
 
 /**
@@ -275,8 +308,18 @@ export async function GET(req: Request) {
     // full of pending items cannot spend the budget while a show that is on
     // air right now sits past the cap. See the function's own comment.
     const rosterIds = liveRosterFeedOrder(roster);
-    const fromRoster = rosterIds.slice(0, MAX_LIVE_FEEDS);
-    const truncated = rosterIds.length > fromRoster.length;
+    // Stations this server has already read leave the roster for their own
+    // allowance — see MAX_ALWAYS_ON_FEEDS. On a cold instance the memory is
+    // empty and this is exactly the old slice.
+    const now = Date.now();
+    const memory = rememberedFeeds(now);
+    const stationMemory = new Set(memory.filter((f) => f.alwaysOn).map((f) => f.id));
+    const { fromRoster, fromAlwaysOn, truncated } = planLiveRosterReads(
+      rosterIds,
+      memory.filter((f) => f.alwaysOn),
+      MAX_LIVE_FEEDS,
+      MAX_ALWAYS_ON_FEEDS,
+    );
 
     /**
      * The caller's own favorited feeds, read on top of the roster.
@@ -305,7 +348,7 @@ export async function GET(req: Request) {
       .split(',')
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isInteger(n) && n > 0);
-    const seen = new Set(fromRoster);
+    const seen = new Set([...fromRoster, ...fromAlwaysOn.map((f) => f.id)]);
     // Feeds that sent a `live` podping. Read after PI's roster and before the
     // caller's favorites, because it is public and global like the roster —
     // and it is the source that finds a show PI has not noticed is on air.
@@ -329,14 +372,19 @@ export async function GET(req: Request) {
     // Feeds this server watched go live recently. They already carry a URL, so
     // they skip the Podcast Index stage below entirely — which is what makes
     // them the cheapest of the three sources and why they are read last.
-    const now = Date.now();
-    const remembered = rememberedFeeds(now)
-      .filter((f) => !seen.has(f.id))
+    // Stations are not re-read here: this stage exists to find NEXT week's
+    // schedule, a station has none, and they would take every slot — they are
+    // seen live on every request, so they are always the newest entries.
+    const remembered = memory
+      .filter((f) => !f.alwaysOn && !seen.has(f.id))
       .slice(0, MAX_REMEMBERED_FEEDS);
     for (const f of remembered) seen.add(f.id);
 
-    const knownUrl = new Map(remembered.map((f) => [f.id, f]));
-    const feedIds = [...fromRoster, ...fromPodping, ...fromFavorites, ...remembered.map((f) => f.id)];
+    const knownUrl = new Map([...fromAlwaysOn, ...remembered].map((f) => [f.id, f]));
+    const feedIds = [
+      ...fromRoster, ...fromAlwaysOn.map((f) => f.id), ...fromPodping, ...fromFavorites,
+      ...remembered.map((f) => f.id),
+    ];
     // Personal the moment one favorited feed was read — see PERSONAL_CACHE.
     // The remembered set is server state, identical for every caller, so it
     // does NOT make the answer personal.
@@ -415,6 +463,16 @@ export async function GET(req: Request) {
       // reported in the first place.
       if (!verified && piRows.length) unverifiedFeeds += 1;
       const url = urlByFeed.get(id);
+      // A row is a station when the publisher's own item says so. An
+      // UNVERIFIED row is Podcast Index's, which carries no end time, so it
+      // keeps what this server learned on its last read — otherwise one slow
+      // read of a station would move it into Live and call it a show on air.
+      const isStation = (e: Episode) =>
+        verified ? liveItemIsAlwaysOn(e) : e.liveStatus === 'live' && stationMemory.has(id);
+      const stationFeed = merged.some(isStation);
+      const known = knownUrl.get(id);
+      const feedTitle = podcast?.title ?? known?.feedTitle;
+      const feedImage = podcast?.image ?? podcast?.artwork ?? known?.feedImage;
       for (const e of merged) {
         if (e.liveStatus !== 'live' && e.liveStatus !== 'pending') continue;
         // Remember the feed the moment we see it actually broadcasting — a
@@ -431,13 +489,18 @@ export async function GET(req: Request) {
         // The podping list is public too, so a feed it named may seed the memory.
         const publicSource = piRows.length > 0 || podpingUrl.has(id);
         if (e.liveStatus === 'live' && url && publicSource && !wentLive.some((f) => f.id === id)) {
-          wentLive.push({ id, url, podcastGuid: e.podcastGuid ?? podcast?.podcastGuid, lastSeen: now });
+          wentLive.push({
+            id, url, podcastGuid: e.podcastGuid ?? podcast?.podcastGuid, lastSeen: now,
+            alwaysOn: stationFeed || undefined,
+            feedTitle: e.feedTitle ?? feedTitle,
+            feedImage: e.feedImage ?? feedImage,
+          });
         }
         items.push({
           guid: e.guid,
           title: e.title,
           description: e.description,
-          image: e.image ?? e.feedImage ?? podcast?.image ?? podcast?.artwork,
+          image: e.image ?? e.feedImage ?? feedImage,
           enclosureUrl: e.enclosureUrl ?? '',
           enclosureType: e.enclosureType,
           liveStatus: e.liveStatus,
@@ -447,11 +510,14 @@ export async function GET(req: Request) {
           // connected — see `LiveShow.liveValue`.
           liveValue: e.liveValue,
           feedId: id,
-          feedTitle: e.feedTitle ?? podcast?.title,
-          feedImage: e.feedImage ?? podcast?.image ?? podcast?.artwork,
+          feedTitle: e.feedTitle ?? feedTitle,
+          feedImage: e.feedImage ?? feedImage,
           feedUrl: url,
           podcastGuid: e.podcastGuid ?? podcast?.podcastGuid,
           verified,
+          // Omitted rather than `false`, so a show's row is byte-for-byte what
+          // it was before the 24/7 tab existed.
+          alwaysOn: isStation(e) || undefined,
         });
       }
     });
