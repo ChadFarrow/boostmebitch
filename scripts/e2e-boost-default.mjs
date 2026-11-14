@@ -14,9 +14,17 @@
 //   1. Single boost: opens blank with no default; the control saves, shows
 //      ✓ default, clears; a cleared field never leaves the old amount on the
 //      Send button; garbage or a sub-minimum stored value opens blank.
+//   2. Boost-all opens at 100 beside a single-boost default, and saves and
+//      clears its OWN key without touching the single boost's.
+//   3. The zap dialog on a note card: the same, with its own key.
+//   4. At 390 and 320 wide, no surface overflows sideways and the control
+//      clears 24×24 (WCAG 2.5.8).
 //
 // NOTHING IS PAID OR PUBLISHED. No wallet is connected, so Send stays disabled,
 // and this script never presses it. The control writes one localStorage key.
+// Section 3 signs in with a THROWAWAY key (a NIP-07 shim, as e2e:favorites
+// does) and points the app at an in-memory relay on port 0, and asserts that
+// the zap control sent that relay nothing.
 //
 //   npm run build && npm start          # in another terminal
 //   npm run e2e:boostdefault            # add --headed to watch it
@@ -24,6 +32,8 @@
 // It needs the network: the episode comes from Podcast Index through the app's
 // routes.
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { createRelay } from './local-relay.mjs';
+import { finalizeEvent, generateSecretKey, getPublicKey, nip04, nip19, nip44 } from 'nostr-tools';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 const SHOW = 'fafd2bfc-98ac-5010-9fcb-7403abfd420a'; // Two For Tunestr — value block AND track splits
@@ -100,7 +110,10 @@ async function openBoost() {
   return until(`!!(${FIELD})`, 15000);
 }
 async function closeDialog() {
-  await press(buttonIn(/^(cancel|close)$/i));
+  // The two modals have a Cancel; the zap dialog has only the shell's ×.
+  if (!(await press(buttonIn(/^(cancel|close)$/i)))) {
+    await press(`${DIALOG}?.querySelector('button[aria-label="Close"]')`);
+  }
   return until(`!${DIALOG}`, 5000);
 }
 
@@ -191,6 +204,147 @@ await closeDialog();
 await openBoostAll();
 t.equal('reopened after clear, boost-all is back at 100', await fieldValue(), '100');
 await closeDialog();
+
+// ---------------------------------------------------------------------------
+section('3. Zap a note — signed in with a throwaway key, local relay only');
+const relayEvents = [];
+const relay = createRelay({ port: 0, log: null, onEvent: (e) => relayEvents.push(e) });
+const PORT = await relay.ready;
+const sk = generateSecretKey();
+const pk = getPublicKey(sk);
+const npub = nip19.npubEncode(pk);
+const convo = nip44.v2.utils.getConversationKey(sk, pk);
+// A window.nostr indistinguishable from an extension, from the app's side —
+// the shim e2e:favorites uses. Installed only now, so sections 1 and 2 ran
+// with no signer at all.
+await send('Runtime.addBinding', { name: 'bmbSigner' });
+page.on(async (m) => {
+  if (m.method !== 'Runtime.bindingCalled' || m.params.name !== 'bmbSigner') return;
+  const { rid, fn, args } = JSON.parse(m.params.payload);
+  let out, err = null;
+  try {
+    if (fn === 'getPublicKey') out = pk;
+    else if (fn === 'signEvent') out = finalizeEvent(args[0], sk);
+    else if (fn === 'nip44.encrypt') out = nip44.v2.encrypt(args[1], convo);
+    else if (fn === 'nip44.decrypt') out = nip44.v2.decrypt(args[1], convo);
+    else if (fn === 'nip04.encrypt') out = await nip04.encrypt(sk, args[0], args[1]);
+    else if (fn === 'nip04.decrypt') out = await nip04.decrypt(sk, args[0], args[1]);
+    else err = `no such method ${fn}`;
+  } catch (e) { err = String(e?.message ?? e); }
+  await js(`window.__bmbResolve(${JSON.stringify(rid)}, ${JSON.stringify({ out, err })})`);
+});
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+  (() => {
+    const waiting = new Map(); let n = 0;
+    window.__bmbResolve = (rid, r) => { const p = waiting.get(rid); waiting.delete(rid); r.err ? p.reject(new Error(r.err)) : p.resolve(r.out); };
+    const call = (fn, ...args) => new Promise((resolve, reject) => {
+      const rid = 'r' + (++n); waiting.set(rid, { resolve, reject });
+      window.bmbSigner(JSON.stringify({ rid, fn, args }));
+    });
+    window.nostr = {
+      getPublicKey: () => call('getPublicKey'),
+      signEvent: (e) => call('signEvent', e),
+      nip44: { encrypt: (p, t) => call('nip44.encrypt', p, t), decrypt: (p, c) => call('nip44.decrypt', p, c) },
+      nip04: { encrypt: (p, t) => call('nip04.encrypt', p, t), decrypt: (p, c) => call('nip04.decrypt', p, c) },
+    };
+  })();
+` });
+
+// One boost note by a SECOND throwaway key, whose profile has a Lightning
+// address — the dialog shows its amount field only then. In the feed cache's
+// own shape (e2e:feedbuttons), dated an hour ahead so it sorts first.
+const authorSk = generateSecretKey();
+const authorPk = getPublicKey(authorSk);
+const BOWL = '2d418249-453a-5714-8abc-5b657570b641'; // Bowl After Bowl
+const rawNote = finalizeEvent({
+  kind: 1, created_at: Math.floor(Date.now() / 1000) + 3600,
+  tags: [['i', `podcast:guid:${BOWL}`]], content: 'E2E-ZAP a note to zap',
+}, authorSk);
+const NOTE = {
+  id: rawNote.id, pubkey: authorPk, npub: nip19.npubEncode(authorPk), nevent: nip19.neventEncode({ id: rawNote.id }),
+  createdAt: rawNote.created_at, content: rawNote.content, isBoost: true, client: null, podcastGuid: BOWL,
+  episodeGuids: [], amountSats: 21, quotesResolved: true, replies: [], rawEvent: rawNote,
+  author: { name: 'Zap Test', lud16: 'zaptest@example.invalid' },
+};
+const ZAP_BUTTON = `[...document.querySelectorAll('article')].find((a) => a.innerText.includes('E2E-ZAP'))?.querySelector('button[aria-label="Zap"]')`;
+
+/** Signed in, the seeded note on the home feed. `extra` runs before load. */
+async function openFeed(extra = '') {
+  await send('Page.navigate', { url: `${APP}/privacy` });
+  await until('document.readyState === "complete"');
+  await js(`localStorage.clear();
+    localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
+    localStorage.setItem('bmb:npub', ${JSON.stringify(npub)});
+    localStorage.setItem('bmb:signer', 'nip07');
+    localStorage.setItem('bmb:feed:global', ${JSON.stringify(JSON.stringify([NOTE]))});
+    ${extra}`);
+  await send('Page.navigate', { url: `${APP}/` });
+  await until('document.readyState === "complete"');
+  return until(`!!(${ZAP_BUTTON})`, 40000);
+}
+async function openZap() {
+  await js(`${ZAP_BUTTON}?.click()`);
+  return until(`!!(${FIELD})`, 10000);
+}
+
+t.ok('signed in, the note offers ⚡ zap',
+  await openFeed(`localStorage.setItem('bmb:boost_default', '1000'); localStorage.setItem('bmb:boost_all_default', '250');`));
+t.ok('the zap dialog opens with its amount field', await openZap());
+t.equal('the other two defaults do NOT fill it: it opens at 100', await fieldValue(), '100');
+t.equal('its control is there, enabled at 100', await setState(), 'enabled');
+const before = relayEvents.length;
+await type('2100');
+await press(SET);
+t.equal('pressing it saves bmb:zap_default', await stored('bmb:zap_default'), '2100');
+t.equal('bmb:boost_default is untouched', await stored('bmb:boost_default'), '1000');
+t.equal('bmb:boost_all_default is untouched', await stored('bmb:boost_all_default'), '250');
+t.ok('the control reads ✓ default', await marked());
+await wait(1000);
+t.equal('the relay received nothing from the control', relayEvents.length - before, 0);
+t.ok('the zap dialog closes', await closeDialog());
+await openZap();
+t.equal('reopened, the zap dialog holds its own default', await fieldValue(), '2100');
+await press(CLEAR);
+t.equal('clear removes bmb:zap_default', await stored('bmb:zap_default'), null);
+await closeDialog();
+await openZap();
+t.equal('reopened after clear, it is back at 100', await fieldValue(), '100');
+await closeDialog();
+
+// ---------------------------------------------------------------------------
+section('4. Phone widths: no sideways overflow, and a control big enough to tap');
+const measure = () => js(`(() => {
+  const d = ${DIALOG};
+  const b = ${SET} ?? ${CLEAR};
+  const r = b ? b.getBoundingClientRect() : null;
+  const de = document.documentElement;
+  return JSON.stringify({
+    page: de.scrollWidth - de.clientWidth,
+    dialog: d ? d.scrollWidth - d.clientWidth : null,
+    w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0,
+    inside: r ? r.left >= 0 && r.right <= window.innerWidth : false,
+  });
+})()`).then(JSON.parse);
+const surfaces = [
+  ['single boost', openEpisode, openBoost],
+  ['boost-all', openEpisode, openBoostAll],
+  ['zap', openFeed, openZap],
+];
+for (const [width, height] of [[390, 844], [320, 640]]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 3, mobile: true });
+  for (const [name, load, open] of surfaces) {
+    await load();
+    await open();
+    const m = await measure();
+    t.equal(`${width}px, ${name}: the page does not overflow`, m.page <= 0, true);
+    t.equal(`${width}px, ${name}: the dialog does not overflow`, m.dialog !== null && m.dialog <= 0, true);
+    t.ok(`${width}px, ${name}: the control is on screen`, m.inside, JSON.stringify(m));
+    t.ok(`${width}px, ${name}: the control is at least 24×24`, m.w >= 24 && m.h >= 24, `${m.w}×${m.h}`);
+    await closeDialog();
+  }
+}
+await send('Emulation.clearDeviceMetricsOverride');
+await relay.close();
 
 // ---------------------------------------------------------------------------
 section('Page health');
