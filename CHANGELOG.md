@@ -7,6 +7,14 @@ Release notes for the Android build published on [Zapstore](https://zapstore.dev
 The web app at <https://www.boostmebitch.com> ships continuously and is not
 versioned here — this file tracks the Android releases cut from git tags.
 
+## [0.1.1]
+
+- New app icon: each app now carries its own brand's logo, the one its website
+  has shown since 2026-10-24. An installed app takes its icon from the build,
+  so 0.1.0 kept the old one.
+- Everything inside the app comes from the website, which has updated
+  continuously since 0.1.0.
+
 ## [0.1.0]
 
 First Android release: a Trusted Web Activity around www.boostmebitch.com.

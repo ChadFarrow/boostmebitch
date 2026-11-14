@@ -107,7 +107,7 @@ for (const v of ID_VECTORS) {
 const REQUIRED = [
   'id', 'displayName', 'shortName', 'wireName', 'domain', 'origin', 'siteNpub',
   'senderName', 'boostSound', 'manifest', 'iconDir', 'userAgent', 'description',
-  'androidPackageId', 'androidAppUrl',
+  'androidPackageId', 'androidAppUrl', 'gifSource',
 ];
 
 /** Every file `app/layout.tsx`, `<AppHeader>`, the manifests and the TWA configs read out of `iconDir`. */
@@ -151,6 +151,7 @@ const LITERALS = {
       'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
     androidPackageId: 'com.boostmebitch',
     androidAppUrl: 'https://github.com/ChadFarrow/boostmebitch/releases',
+    gifSource: 'nostrbuild',
   },
   buddy: {
     id: 'buddy',
@@ -169,6 +170,7 @@ const LITERALS = {
       'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
     androidPackageId: 'com.boostmebuddy',
     androidAppUrl: 'https://zapstore.dev',
+    gifSource: 'giphy',
   },
 };
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useApp } from '@/lib/store';
+import { isKnownGoneFile, useApp } from '@/lib/store';
 import { epKey, isHlsUrl } from '@/lib/util';
 import { logPlayback, playbackItemId } from '@/lib/playback-log';
 import { downloadManager } from '@/lib/downloads/download-manager';
@@ -17,14 +17,10 @@ const PROBE_LEAD_SEC = 30;
  */
 const GONE = new Set([404, 410]);
 
-/** Enclosure URLs found gone in this tab. Memory only: a deleted file stays
- *  deleted for a session, and a reload asks again. */
-const goneUrls = new Set<string>();
-
-/** Did the early check find this file gone? */
-export function isKnownGoneFile(url: string | undefined): boolean {
-  return !!url && goneUrls.has(url);
-}
+// A file found gone goes into the store's `goneFiles` (memory only: a deleted
+// file stays deleted for a session, and a reload asks again). It lives there,
+// not here, because a press of ⏮/⏭ walks past it too (`listenerPassesOver`).
+const markGone = (url: string) => useApp.getState().markFileGone(url);
 
 /**
  * Checks the file a track ENDING would move to, ~30 s before the end, so a
@@ -65,7 +61,7 @@ export async function serverAnswers(url: string): Promise<boolean> {
     const j: unknown = await r.json();
     if (!j || typeof j !== 'object') return false;
     const status = (j as { status?: unknown }).status;
-    if (typeof status === 'number' && GONE.has(status)) goneUrls.add(url);
+    if (typeof status === 'number' && GONE.has(status)) markGone(url);
     return typeof status === 'number' || typeof (j as { error?: unknown }).error === 'string';
   } catch {
     return false;
@@ -89,14 +85,14 @@ export function useNextProbe(duration: number, live: boolean): void {
     const next = useApp.getState().peekNextOnEnd();
     const url = next?.episode.enclosureUrl;
     if (!next || !url || !/^https?:\/\//i.test(url) || isHlsUrl(url) || next.episode.liveStatus) return;
-    if (goneUrls.has(url)) return;
+    if (isKnownGoneFile(url)) return;
     if (downloadManager.localKeyFor(next.episode) !== null) return;
     const item = playbackItemId(next.episode);
     fetch(`/api/audio-probe?url=${encodeURIComponent(url)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((j: { status?: unknown } | null) => {
         const status = typeof j?.status === 'number' ? j.status : null;
-        if (status !== null && GONE.has(status)) goneUrls.add(url);
+        if (status !== null && GONE.has(status)) markGone(url);
         logPlayback('probe', { item, status: status ?? 'none' });
       })
       .catch(() => logPlayback('probe', { item, status: 'err' }));

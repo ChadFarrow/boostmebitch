@@ -132,8 +132,17 @@ export function useMediaSession({
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
-    const onPlaying = () => {
+    const onPlaying = (e: Event) => {
+      // EVERY `playing` hands over again — a GIF picker tile's too. A tile
+      // video is a media element in the document; if its session ever makes
+      // WebKit build a new remote-command listener, that listener starts from
+      // the defaults, and this is what puts ⏮/⏭ back. A repeat is harmless.
       handOver(ms, tracksRef.current, cb);
+      // But a tile writes NO log line: the grid plays a GIF per tile on
+      // screen, and one scroll through 200 of them would push every real
+      // player event out of the 150-line playback log a bug report sends.
+      // Pool videos carry `data-gif-tile` (lib/gifs/video-pool.ts).
+      if (e.target instanceof HTMLElement && e.target.hasAttribute('data-gif-tile')) return;
       logPlayback('ms.reg', { tracks: tracksRef.current });
     };
     document.addEventListener('playing', onPlaying, true);

@@ -19,6 +19,7 @@ export function PodcastRow({
   meta,
   piUnasked,
   action,
+  footer,
 }: {
   podcast: Podcast;
   selected: boolean;
@@ -56,6 +57,13 @@ export function PodcastRow({
    * may not contain another interactive element.
    */
   action?: React.ReactNode;
+  /**
+   * A line under the row, INSIDE its `<li>` — `/favorites` puts the moved-album
+   * offer here (`<MovedOffer>`). Inside rather than a sibling `<li>` because the
+   * list is a two-column grid from `lg:`, where a sibling would take a cell of
+   * its own and break every pair after it. Optional; absent changes nothing.
+   */
+  footer?: React.ReactNode;
 }) {
   return (
     // The row's opening control is a real <button>, with <FavHeart> as its
@@ -70,7 +78,7 @@ export function PodcastRow({
     // the padding moves inside the button so the focus ring and the hit area
     // describe the same box.
     <li
-      className={`flex gap-3 px-1 group transition ${
+      className={`flex gap-3 px-1 group transition ${footer ? 'flex-wrap' : ''} ${
         selected ? 'bg-bolt/10' : 'hover:bg-bone/5'
       }`}
     >
@@ -129,6 +137,7 @@ export function PodcastRow({
         {action}
         <FavHeart podcast={podcast} />
       </div>
+      {footer}
     </li>
   );
 }

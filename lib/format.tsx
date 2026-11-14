@@ -235,6 +235,26 @@ export function scrollBehavior(): ScrollBehavior {
 }
 
 /**
+ * Scroll `box` — and ONLY `box` — so that `row`, one of its descendants, sits
+ * in the middle of it.
+ *
+ * Never `row.scrollIntoView()`: that walks up and scrolls EVERY scrollable
+ * ancestor, so a list following playback would also move the page, or the
+ * now-playing sheet on a phone, under the listener's thumb. Setting one
+ * element's scroll position cannot move anything else.
+ *
+ * Measured with `getBoundingClientRect` relative to the box, NOT `offsetTop`:
+ * `offsetTop` is relative to the nearest POSITIONED ancestor, which is not the
+ * box, and it scrolled the transcript to the wrong place.
+ */
+export function centerInScrollBox(box: HTMLElement, row: HTMLElement, behavior: ScrollBehavior): void {
+  const boxRect = box.getBoundingClientRect();
+  const rowRect = row.getBoundingClientRect();
+  const top = box.scrollTop + (rowRect.top - boxRect.top) - box.clientHeight / 2 + rowRect.height / 2;
+  box.scrollTo({ top: Math.max(0, top), behavior });
+}
+
+/**
  * Brand-coloured confetti burst: bolt yellow, nostr magenta, bone.
  *
  * `canvas-confetti` is dynamic-imported so it stays out of the initial bundle —
