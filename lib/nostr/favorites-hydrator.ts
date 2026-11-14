@@ -660,7 +660,9 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
       // this cycle, and a row rebuilt without it looks like this device's to
       // publish (`localFavoriteEntries`). `mergeResolvedRow`, pinned by
       // check:moved, because re-resolving closed-host rows sends more rows here.
-      mergedShows[fav.podcastGuid] = mergeResolvedRow(prev, fav);
+      // Null: the row left the store since the paint (a heart, a REPLACE) — skip.
+      const mergedShow = mergeResolvedRow(prev, fav);
+      if (mergedShow) mergedShows[fav.podcastGuid] = mergedShow;
     }
     setFavorites(mergedShows);
   }
@@ -685,7 +687,8 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
       // `prev`. Deliberately NOT a per-parent /podcasts/byguid fan-out: a
       // request per entry whose sole purpose is a hint is exactly the cost the
       // hint exists to avoid. `carried` is kept, as for shows above.
-      mergedEpisodes[fav.itemGuid] = mergeResolvedRow(prev, fav);
+      const mergedEpisode = mergeResolvedRow(prev, fav);
+      if (mergedEpisode) mergedEpisodes[fav.itemGuid] = mergedEpisode;
     }
     setFavoriteEpisodes(mergedEpisodes);
   }

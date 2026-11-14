@@ -500,10 +500,22 @@ export async function twinEpisode(raw: any, feedGuid: string, itemGuid: string):
   if (!raw || typeof raw !== 'object') return raw;
   if (!closedService(raw.enclosureUrl) && !closedService(raw.feedImage)) return raw;
   try {
-    const feed = await liveFeedForGuid(feedGuid);
-    if (!feed || feed.id == null || closedService(feed.url)) return raw;
+    // The twin answer is cached per guid, so a playlist of RSS Blue tracks does
+    // not re-ask `/podcasts/byguid` for every one of them (final review): a
+    // cached "none" costs nothing, a cached twin costs only the item lookup.
+    const cached = twinCache.get(feedGuid, Date.now());
+    let twinId: number;
+    if (cached) {
+      if (!cached.value.twin || cached.value.twin.id == null) return raw;
+      twinId = cached.value.twin.id;
+    } else {
+      const feed = await liveFeedForGuid(feedGuid);
+      if (!feed || feed.id == null || closedService(feed.url)) return raw;
+      twinId = feed.id;
+    }
+    if (twinId === raw.feedId) return raw;
     const data = await pi<any>(
-      `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&feedid=${encodeURIComponent(String(feed.id))}`,
+      `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&feedid=${encodeURIComponent(String(twinId))}`,
     );
     return data?.episode?.guid ? data.episode : raw;
   } catch {

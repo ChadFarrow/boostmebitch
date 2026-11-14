@@ -63,10 +63,17 @@ check('a PI-dead copy is refused', pickLiveTwin(dead, [{ ...live, dead: 1 }]), n
 check('another closed copy is refused', pickLiveTwin(dead, [{ ...live, id: 9, url: 'https://feeds.rssblue.com/worried-2' }]), null);
 check('a different guid is refused', pickLiveTwin(dead, [{ ...live, podcastGuid: 'other' }]), null);
 check('the dead record itself is not its twin', pickLiveTwin(dead, [dead]), null);
-check('the newest crawl wins',
-  pickLiveTwin(dead, [{ ...live, id: 1, lastCrawlTime: 100 }, { ...live, id: 2, lastCrawlTime: 200 }])?.id, 2);
-check('then the highest id',
-  pickLiveTwin(dead, [{ ...live, id: 5, lastCrawlTime: 100 }, { ...live, id: 8, lastCrawlTime: 100 }])?.id, 8);
+// A scraped copycat copies the guid AND the author, and a publisher can push
+// `lastCrawlTime` with a podping: with two candidates nothing tells the real
+// copy apart, and this one is paid with no press. Follow none (final review).
+check('two live same-guid same-artist copies: follow none',
+  pickLiveTwin(dead, [{ ...live, id: 1, lastCrawlTime: 100 }, { ...live, id: 2, lastCrawlTime: 200 }]), null);
+check('two copies with the same crawl time: follow none',
+  pickLiveTwin(dead, [{ ...live, id: 5, lastCrawlTime: 100 }, { ...live, id: 8, lastCrawlTime: 100 }]), null);
+check('the same copy listed twice is still one copy',
+  pickLiveTwin(dead, [live, { ...live }])?.id, 7520866);
+check('a copycat with a different author does not make the real copy ambiguous',
+  pickLiveTwin(dead, [live, { ...live, id: 9, author: 'Copycat FM' }])?.id, 7520866);
 check('an author spelled with different punctuation still matches',
   pickLiveTwin(dead, [{ ...live, author: 'suzanne  santo.' }])?.id, 7520866);
 check('a dead record with no author has no twin', pickLiveTwin({ ...dead, author: '' }, [{ ...live, author: '' }]), null);
@@ -136,8 +143,12 @@ check('carried is cleared when the painted row is not carried',
   mergeResolvedRow({ addedAt: 0 }, { addedAt: 99, carried: true }).carried, undefined);
 check('a resolved medium wins over the painted hint',
   mergeResolvedRow({ addedAt: 1, medium: 'podcast' }, { addedAt: 2, medium: 'music' }).medium, 'music');
-check('no painted row: the fresh row as is',
-  mergeResolvedRow(undefined, { addedAt: 7, medium: 'music' }), { addedAt: 7, medium: 'music' });
+// The paint loop gives EVERY entry a row, so no painted row means the entry
+// left the store after the paint — a heart, or a REPLACE on exactly the
+// closed-host rows this re-resolves. Re-adding it undid the swap and
+// republished the old guid (final review, 2026-11-14).
+check('no painted row: removed since the paint, so not re-added',
+  mergeResolvedRow(undefined, { addedAt: 7, medium: 'music' }), null);
 
 const problems = importFreeProblems('lib/moved-feeds.ts');
 if (problems.length) {

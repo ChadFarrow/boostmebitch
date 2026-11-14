@@ -94,25 +94,26 @@ export interface RawFeed {
  * Index holds copycat feeds that reuse another feed's guid, and one would
  * collect the boosts. The author must match too (both copies of Worried say
  * "Suzanne Santo"); a dead record with no author has no twin.
+ *
+ * **And it must be the ONLY such copy.** A scraped copycat copies the guid and
+ * the author with the rest of the RSS, and a publisher can push
+ * `lastCrawlTime` with a podping, so with two candidates nothing here tells the
+ * real one apart. Ambiguous → follow none; the row keeps today's dead state
+ * rather than paying a guess (final review, 2026-11-14).
  */
 export function pickLiveTwin<F extends RawFeed>(dead: RawFeed, feeds: readonly F[]): F | null {
   const author = normTitle(dead.author);
   if (!dead.podcastGuid || !author) return null;
-  let best: F | null = null;
+  let only: F | null = null;
   for (const f of feeds) {
     if (f.podcastGuid !== dead.podcastGuid) continue;
     if (f.id === undefined || f.id === dead.id) continue;
     if (f.dead === 1 || closedService(f.url)) continue;
     if (normTitle(f.author) !== author) continue;
-    if (
-      !best
-      || (f.lastCrawlTime ?? 0) > (best.lastCrawlTime ?? 0)
-      || ((f.lastCrawlTime ?? 0) === (best.lastCrawlTime ?? 0) && f.id > (best.id ?? 0))
-    ) {
-      best = f;
-    }
+    if (only && only.id !== f.id) return null;
+    only = f;
   }
-  return best;
+  return only;
 }
 
 /** At most this many copies are offered on one row. */
@@ -226,12 +227,18 @@ export function planSwap(input: SwapInput): SwapPlan {
  *   used to rebuild the row without it, which made a row the device must not
  *   publish look like its own until the next hydrate. Re-resolving rows on a
  *   closed host sends more rows through here, which is why it is pinned now.
+ *
+ * **Null when there is no painted row.** The paint loop gives every entry a row,
+ * so an absent one LEFT the store after the paint — a heart, or a REPLACE on
+ * exactly the closed-host rows that are being re-resolved. Returning the fresh
+ * row re-added it with a new `addedAt`, and the next sync republished it. The
+ * caller skips a null.
  */
 export function mergeResolvedRow<T extends { addedAt: number; medium?: string; carried?: boolean }>(
   prev: T | undefined,
   fresh: T,
-): T {
-  if (!prev) return fresh;
+): T | null {
+  if (!prev) return null;
   return {
     ...fresh,
     medium: fresh.medium ?? prev.medium,
