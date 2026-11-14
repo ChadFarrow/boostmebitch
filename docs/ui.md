@@ -1545,6 +1545,47 @@ a private cache under the shared one introduces no staleness class the CDN was
 not already permitted, so a publisher who replaces a cover still reaches
 everyone inside the window the week-long shared cache already allowed.
 
+### The lock-screen buttons: ⏮/⏭ for a track, skips for a podcast
+
+Asked for from the lock screen on 2026-11-13, over a favorites shuffle:
+*"instead of skip forward and back 10 or 30 seconds? Can we have previous and
+next when listening to music?"* An item that plays as tracks (`playsAsTracks` —
+music and musicL, the favorites shuffle's tracks) hands the OS `seekbackward`
+and `seekforward` as `null`; a podcast or a live item keeps them. A skip is how
+a podcast listener gets past an ad, and ⏮/⏭ there would leave the episode.
+`play`, `pause`, `previoustrack`, `nexttrack` and the scrub bar (`seekto`) are
+handed over for both.
+
+**Handed over ONCE was not enough, and that is the half that matters on iOS.**
+The first version set the handlers at mount and on a change of item kind. Every
+check in Chromium passed, and Chad's iPhone still drew ±10 s for music (#553):
+its playback log showed only `seekto` and `pause` arriving — both in WebKit's
+defaults. Read in WebKit's source (Safari 17.4–18 branches and `main`):
+
+- WebKit sends iOS the page's commands through a remote-command listener, and
+  `NowPlayingManager::addSupportedCommand` returns early when there is none.
+- The listener is created when a media element's session becomes active (a
+  load starts, or `play()`), and destroyed when the last session goes.
+- A NEW listener starts from `defaultCommands()` — play/pause, the scrubber,
+  ±skip, and NO ⏮/⏭ — and `MediaSession` never re-sends what the page set
+  before. Our mount registration ran before the audio had a source.
+- Setting a handler to `null` does remove the command
+  (`removeSupportedCommand`), so the null half was right all along.
+- Apple's own MediaSession API test plays first and sets handlers after.
+
+So `handOver` hands over all seven again on EVERY `playing` event, heard in the
+capture phase on `document` (media events do not bubble — the playback log
+listens the same way). The commands are a set, so a repeat is harmless, and by
+`playing` the listener exists. Each hand-over writes `ms.reg tracks=1|0` to the
+playback log, so a report shows whether it ran after playback started. Pinned
+by `npm run e2e:lockbuttons`, which records what the page hands
+`navigator.mediaSession.setActionHandler`, stamped with how many `playing`
+events had fired; section 5 requires all seven AFTER the latest one. No browser
+here draws a lock screen, so whether iOS then draws ⏮/⏭ is still the phone's to
+show. Which of the two iOS draws when BOTH are registered is not in WebKit's
+code (the layout is iOS's own); a developer reports skip wins, which is why the
+track case hands over `null` rather than leaving them.
+
 ## Reduced motion
 
 **The reader's OS-level "reduce motion" setting is honoured, and it takes two
