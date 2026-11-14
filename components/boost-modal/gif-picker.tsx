@@ -5,6 +5,7 @@ import { giphyTile, gifPreviewUrl, nbTile, type GifPick, type GifTile } from '@/
 import { NB_BROWSE_URL, nbSearchUrl, normalizeNbQuery, parseNbResults } from '@/lib/gifs/nostr-build';
 import { readCappedJson } from '@/lib/capped-body';
 import { BRAND } from '@/lib/brand';
+import { storage } from '@/lib/storage';
 import { prefersReducedMotion } from '@/lib/format';
 import { GifGrid } from './gif-grid';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
@@ -143,6 +144,9 @@ export function GifPicker({
   const secretHit = looksLikeSecretKey(q);
   // Read at render, never cached: the setting can change while the picker is open.
   const reduced = prefersReducedMotion();
+  // "Play anyway" under Reduce Motion, remembered on this device (bmb:gif_motion).
+  const [playAnyway, setPlayAnyway] = useState(() => typeof window !== 'undefined' && storage.gifMotion.get());
+  const choosePlayAnyway = (v: boolean) => { setPlayAnyway(v); storage.gifMotion.set(v); };
   // nostr.build: a single Latin letter is NOT a search (it would spend the
   // reader's 120-a-minute budget on noise), so the grid keeps what it shows.
   const notASearch = source === 'nostrbuild' && q.trim() !== '' && normalizeNbQuery(q) === null;
@@ -294,12 +298,30 @@ export function GifPicker({
         {/* Still pictures are on purpose in two cases, and the picker SAYS
             which: a phone showing a still grid otherwise looks broken (Chad's
             iPhone, beta, 2026-11-14). The refusal line names Low Power Mode as
-            the usual cause, not the only one. */}
-        {state.kind === 'ready' && (reduced || refused) && (
-          <p className="mt-2 text-xs text-muted" role="status">
-            {reduced
-              ? 'Reduce Motion is on, so the GIFs show as still pictures.'
-              : 'This device did not let the GIFs play by themselves (Low Power Mode does this), so they show as still pictures.'}
+            the usual cause, not the only one. Under Reduce Motion the reader
+            may choose motion anyway ("Play anyway", remembered on this device
+            in bmb:gif_motion) and take it back; a refusal has no such button —
+            the device would refuse again. */}
+        {state.kind === 'ready' && reduced && playAnyway && (
+          <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted" role="status">
+            <span>GIFs play although Reduce Motion is on.</span>
+            <button type="button" className="btn-mini min-h-[32px]" onClick={() => choosePlayAnyway(false)}>
+              Show still pictures
+            </button>
+          </p>
+        )}
+        {state.kind === 'ready' && ((reduced && !playAnyway) || refused) && (
+          <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted" role="status">
+            <span>
+              {refused
+                ? 'This device did not let the GIFs play by themselves (Low Power Mode does this), so they show as still pictures.'
+                : 'Reduce Motion is on, so the GIFs show as still pictures.'}
+            </span>
+            {!refused && (
+              <button type="button" className="btn-mini min-h-[32px]" onClick={() => choosePlayAnyway(true)}>
+                Play anyway
+              </button>
+            )}
           </p>
         )}
         {/* The scroll box is held in STATE, not a ref: the grid's observers are
@@ -315,7 +337,7 @@ export function GifPicker({
             <GifGrid
               tiles={tiles}
               scrollRoot={scrollBox}
-              motion={reduced || refused ? 'still' : 'play'}
+              motion={(reduced && !playAnyway) || refused ? 'still' : 'play'}
               onAutoplayRefused={() => setRefused(true)}
               // The grid can be open when Send is pressed. A pick after that
               // would show a GIF the sent boost does not carry.

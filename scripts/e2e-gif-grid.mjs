@@ -448,6 +448,19 @@ if (BRAND_ID !== 'buddy') {
   t.ok('far tiles show nothing', all.filter((x) => x.top > rbox * 1.5 + 4).every((x) => !x.img));
   // Said on screen, so a phone that shows still pictures says why (Chad's iPhone, beta, 2026-11-14).
   t.ok('the picker says Reduce Motion is the reason', /Reduce Motion is on/.test(await dialogText()), await dialogText());
+  // Chad (iPhone, Reduce Motion on, 2026-11-14): a "Play anyway" the device
+  // remembers, and a way back.
+  t.ok('it offers Play anyway', await clickButton('/play anyway/i'));
+  t.ok('Play anyway: the on-screen tiles play', await until(`!!document.querySelector('[data-gif-key][data-state="playing"]')`, 15000));
+  t.equal('and this device remembers it (bmb:gif_motion)', await js(`localStorage.getItem('bmb:gif_motion')`), '1');
+  await clickButton('/^close$/i');
+  await clickButton('/add a gif/i');
+  t.ok('opened again: it plays at once', await until(`!!document.querySelector('[data-gif-key][data-state="playing"]')`, 15000));
+  t.ok('and offers still pictures again', /show still pictures/i.test(await dialogText()), await dialogText());
+  await clickButton('/show still pictures/i');
+  t.ok('Show still pictures: back to stills', await until(
+    `[...document.querySelectorAll('[data-gif-key]')].slice(0, 2).every((b) => b.dataset.state === 'still')`, 5000));
+  t.equal('and the key is gone', await js(`localStorage.getItem('bmb:gif_motion')`), null);
   await send('Emulation.setEmulatedMedia', { features: [] });
 
   section('1c. A refused autoplay: stills for the grid');

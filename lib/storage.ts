@@ -141,6 +141,7 @@ const KEYS = {
   boostAllDefault: 'bmb:boost_all_default', // boost-all, PER TRACK
   zapDefault: 'bmb:zap_default',            // the note card's zap dialog
   deleteAfterPlay: 'bmb:dl_delete_played', // '1' when a podcast episode's download is deleted once it plays to the end; absent = keep (the default). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
+  gifMotion: 'bmb:gif_motion', // '1' when the GIF picker plays its GIFs although Reduce Motion is on (its "Play anyway"); absent = still pictures under Reduce Motion (the default). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
   played: 'bmb:played',               // Record<resumeKey, epoch ms> — podcast episodes this device played to the end, capped at PLAYED_CAP newest. DEVICE-wide like bmb:resume, and for the same reason not a cache.
   nowPlaying: 'bmb:now_playing',      // QueueItem — the episode last in the player, so a reload reopens IT (paused) rather than the queue's head. DEVICE-wide like bmb:resume; the place inside it is bmb:resume's job. Not a cache: nothing can rebuild what was in the player, so deliberately absent from EVICTABLE_PREFIXES.
@@ -1322,6 +1323,19 @@ export const storage = {
     set: (v: boolean): boolean => {
       if (v) return safeSet(KEYS.deleteAfterPlay, '1');
       safeRemove(KEYS.deleteAfterPlay);
+      return true;
+    },
+  },
+
+  /** The GIF picker's "Play anyway": play its GIFs although this device asks
+   *  for reduced motion (Chad, iPhone, 2026-11-14). Absent = still pictures,
+   *  the accessible default; off removes the key. Returns whether it reached
+   *  disk. See docs/money-boosts.md, "A GIF on a boost". */
+  gifMotion: {
+    get: (): boolean => safeGet(KEYS.gifMotion) === '1',
+    set: (v: boolean): boolean => {
+      if (v) return safeSet(KEYS.gifMotion, '1');
+      safeRemove(KEYS.gifMotion);
       return true;
     },
   },
