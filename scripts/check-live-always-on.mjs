@@ -9,9 +9,9 @@
 // THE FAILURE THIS IS WRITTEN AGAINST. Measured 2026-11-14: Podcast Index listed
 // 40 feeds as live, and 20 of them were 24/7 channels — 17 Stupid Potato
 // old-time-radio feeds and 3 Godcaster radio stations. Not one real show was on
-// air. The page counted all of them as LIVE, and because every one of those
-// feeds republishes its live item through the day, PI's record time ranked them
-// first and they took 19 of the route's 24 reads. Nine shows with a scheduled
+// air. The page counted the 19 station rows it read as LIVE, and because those
+// feeds republish their live item through the day, PI's record time ranked them
+// first, so they took 18 of the route's 24 reads. Eight shows with a scheduled
 // broadcast (Chad and Reeds, MMO, New Music Nudge Unit…) went unread, so their
 // Upcoming rows never reached the page.
 //

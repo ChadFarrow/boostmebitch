@@ -92,8 +92,8 @@ const MAX_LIVE_FEEDS = 24;
  *
  * Measured 2026-11-14: 20 of the 40 feeds Podcast Index listed as live were
  * stations (`liveItemIsAlwaysOn`), and because they republish their live item
- * all day, PI's record time ranked them first — they took 19 of the 24 roster
- * reads while nine shows with a scheduled broadcast went unread. A station this
+ * all day, PI's record time ranked them first — they took 18 of the 24 roster
+ * reads while eight shows with a scheduled broadcast went unread. A station this
  * server has already read is now planned OUT of the roster and into this
  * allowance (`planLiveRosterReads`), so it still reaches the 📻 24/7 tab and no
  * longer costs a show its slot.

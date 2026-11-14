@@ -1470,8 +1470,8 @@ export function liveItemIsAlwaysOn(
  *
  * `rosterIds` is Podcast Index's roster in `liveRosterFeedOrder` order, and the
  * route can read only `maxRoster` of them. Stations republish their live item
- * all day, so PI's record time ranks them FIRST — on 2026-11-14 twenty of them
- * took the slots, and nine shows with a scheduled broadcast went unread.
+ * all day, so PI's record time ranks them FIRST — on 2026-11-14 eighteen of
+ * them took the slots, and eight shows with a scheduled broadcast went unread.
  *
  * So a station this server has already read (`alwaysOn`, from its memory, URL
  * in hand) gets its OWN allowance of `maxAlwaysOn` reads and leaves the roster
