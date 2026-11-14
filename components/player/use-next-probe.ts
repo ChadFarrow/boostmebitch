@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useApp } from '@/lib/store';
 import { epKey, isHlsUrl } from '@/lib/util';
 import { logPlayback, playbackItemId } from '@/lib/playback-log';
+import { downloadManager } from '@/lib/downloads/download-manager';
 
 /** How long before the end of a track the next one's file is checked. */
 const PROBE_LEAD_SEC = 30;
@@ -41,9 +42,36 @@ export function isKnownGoneFile(url: string | undefined): boolean {
  *
  * `peekNextOnEnd` answers for the listen queue, the shuffle and an album, and
  * null for anything that stops when it ends. Once per item; never for a live
- * item, an HLS stream, a downloaded (`blob:`) file, or offline. Each answer
- * writes `probe item=… status=…` to the playback log.
+ * item, an HLS stream, or offline — and **never for a DOWNLOADED song**: a
+ * download keeps its `https:` `enclosureUrl` and the source effect picks the
+ * local bytes later (`localKeyFor`), so a 410 from its host says nothing about
+ * whether it plays. With RSS Blue gone, every downloaded RSS Blue track was
+ * being passed over while online (review of #545). `localKeyFor` answering
+ * `undefined` (not hydrated yet) is not "no", so that is skipped too. Each
+ * answer writes `probe item=… status=…` to the playback log.
  */
+/**
+ * Did OUR server answer about this file? A load error (error 4) may skip only
+ * then. A captive portal, Wi-Fi with no internet or a DNS failure keep
+ * `navigator.onLine` true while EVERY file fails fast and looks dead, and the
+ * skip drained a whole Up Next queue, saved, with no undo (review of #545).
+ * An answer — any status, or the route's own JSON error — proves the network
+ * reaches our server, so the failure was the file's. A portal's HTML page, a
+ * failed fetch or a timeout is no answer. A 404/410 also marks the file gone.
+ */
+export async function serverAnswers(url: string): Promise<boolean> {
+  try {
+    const r = await fetch(`/api/audio-probe?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(6000) });
+    const j: unknown = await r.json();
+    if (!j || typeof j !== 'object') return false;
+    const status = (j as { status?: unknown }).status;
+    if (typeof status === 'number' && GONE.has(status)) goneUrls.add(url);
+    return typeof status === 'number' || typeof (j as { error?: unknown }).error === 'string';
+  } catch {
+    return false;
+  }
+}
+
 export function useNextProbe(duration: number, live: boolean): void {
   const current = useApp((s) => s.current);
   const isPlaying = useApp((s) => s.isPlaying);
@@ -62,6 +90,7 @@ export function useNextProbe(duration: number, live: boolean): void {
     const url = next?.episode.enclosureUrl;
     if (!next || !url || !/^https?:\/\//i.test(url) || isHlsUrl(url) || next.episode.liveStatus) return;
     if (goneUrls.has(url)) return;
+    if (downloadManager.localKeyFor(next.episode) !== null) return;
     const item = playbackItemId(next.episode);
     fetch(`/api/audio-probe?url=${encodeURIComponent(url)}`)
       .then((r) => (r.ok ? r.json() : null))

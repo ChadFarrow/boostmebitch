@@ -42,6 +42,17 @@
 //   8. The route itself, over plain HTTP against REAL files: RSS Blue's
 //      "Winds of Change" answers 410, a Podcasting 2.0 episode answers 206,
 //      and a private address is refused without its name in the answer.
+//   9. With NO answer from our server — a captive portal, Wi-Fi with no
+//      internet, a DNS failure, all with `navigator.onLine` still true — a
+//      load error skips nothing and Up Next keeps its items. Every file fails
+//      fast then and looks dead; skipping drained the whole queue, saved, with
+//      no undo (review of #545). A skip on a load error waits for
+//      `/api/audio-probe` to answer, which proves the network works.
+//  10. A gone LAST item is not drained by the early check: nothing follows it,
+//      so the element gets it and the error path says why, once.
+//  11. A DOWNLOADED song is never checked or passed over: it plays from the
+//      phone whatever its host answers. With RSS Blue gone, every downloaded
+//      RSS Blue track was being skipped while online (review of #545).
 //   6. The track AFTER a dead one PLAYS (sections 1 to 3). It loaded paused
 //      under a ▶ before `pauseIfStillCurrent`: a late `play()` rejection for
 //      the dead file, or the `AbortError` of a reload of the next one, paused
@@ -89,6 +100,8 @@ const pageErrors = [];
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 // The early check: off (every file "alive") for sections 1 to 6, on for 7.
 let probeDead = false;
+let probeFail = false;           // section 9: the probe request itself fails
+let probeGoneK = null;           // sections 10-11: also report this k as gone
 const probed = [];
 const goneAsked = [];
 function answer(pathname) {
@@ -110,10 +123,12 @@ page.on(async (m) => {
     if (u.pathname === '/api/audio-probe') {
       const target = u.searchParams.get('url') ?? '';
       probed.push(target);
+      if (probeFail) { await send('Fetch.failRequest', { requestId, errorReason: 'InternetDisconnected' }); return; }
+      const goneK = probeGoneK !== null && new RegExp(`[?&]k=${probeGoneK}(\\D|$)`).test(target);
       await send('Fetch.fulfillRequest', {
         requestId, responseCode: 200,
         responseHeaders: [{ name: 'content-type', value: 'application/json' }],
-        body: b64({ status: probeDead && /e2e-gone/.test(target) ? 410 : 206 }),
+        body: b64({ status: (probeDead && /e2e-gone/.test(target)) || goneK ? 410 : 206 }),
       });
       return;
     }
@@ -169,8 +184,15 @@ async function endTrack() {
 async function openAlbum(seed = {}) {
   await send('Page.navigate', { url: `${APP}/privacy` });
   await until('document.readyState === "complete"');
-  await js(`(() => { localStorage.clear(); const s = ${JSON.stringify(seed)};
-    for (const k in s) localStorage.setItem(k, s[k]); return 1; })()`);
+  const seedIt = `(() => { localStorage.clear(); const s = ${JSON.stringify(seed)};
+    for (const k in s) localStorage.setItem(k, s[k]); return 1; })()`;
+  await js(seedIt);
+  // AGAIN after a second: this page read the PREVIOUS section's Up Next at
+  // load, and its start-up can write that back after the first seed — a race
+  // that left section 10 playing section 9's queue, now that section 9 keeps
+  // its items. The second seed lands after those writes.
+  await wait(1000);
+  await js(seedIt);
   await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
   await until(`[...document.querySelectorAll('ul > li')].some((li) => li.textContent.includes('Dead test track 6'))`, 20000);
   await wait(800);
@@ -296,6 +318,59 @@ const priv = await probe('http://127.0.0.1:9/secret.mp3');
 t.ok('a private address is refused, and the answer does not name it',
   priv.http === 502 && !JSON.stringify(priv.body).includes('127.0.0.1'), JSON.stringify(priv));
 t.equal('a non-http url is refused', (await probe('javascript:alert(1)')).http, 400);
+
+// ---------------------------------------------------------------------------
+const queueTitles = async () => JSON.parse(await js(`localStorage.getItem('bmb:listen_queue:guest') ?? '[]'`)).map((i) => i.episode.title);
+async function playQueueHead() {
+  await send('Page.navigate', { url: `${APP}/listen` });
+  await until(`document.readyState === "complete"`);
+  await until(`!!${QROW}`, 15000);
+  await js(`${QROW}.click()`);
+  return until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && /[?&]k=0(\\D|$)/.test(a.currentSrc); })()`, 15000);
+}
+
+console.log('\n9. No answer from the server (a captive portal): a load error skips nothing');
+probeDead = false; probeFail = true;
+await openAlbum({ 'bmb:listen_queue:guest': JSON.stringify([qItem(0), qItem(1), qItem(2)]) });
+t.ok('the queue head plays', await playQueueHead());
+await endTrack();
+t.ok('dead track 1 shows the message', await until(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000), `on k=${await kOf()}`);
+await wait(1500);
+t.ok('…and track 2 did not start', (await kOf()) !== 2, `on k=${await kOf()}`);
+t.equal('Up Next still holds the dead item and the one after it', await queueTitles(), ['Dead test track 1', 'Dead test track 2']);
+probeFail = false;
+
+// ---------------------------------------------------------------------------
+console.log('\n10. A gone LAST item is not drained by the early check');
+probeGoneK = '6';
+await openAlbum({ 'bmb:listen_queue:guest': JSON.stringify([qItem(0), qItem(6)]) });
+t.ok('the queue head plays', await playQueueHead());
+await endTrack();
+// In the stub its file plays; a real gone file would fail and the error path
+// would say why. Either way it is the element's to decide, not the probe's.
+t.ok('the last item, reported gone, still reaches the element (track 6 plays)', await waitK(6, 12000), `on k=${await kOf()}`);
+t.equal('…and it was not drained on the way', await queueTitles(), ['Dead test track 6']);
+probeGoneK = null;
+
+// ---------------------------------------------------------------------------
+console.log('\n11. A downloaded song is never passed over, whatever its host answers');
+const ROWS = `[...document.querySelectorAll('li')].filter((li) => li.querySelector('button[aria-label="Play"], button[aria-label="Pause"], button[aria-label^="More actions for "]'))`;
+await openAlbum();
+const row2 = await js(`${ROWS}.findIndex((li) => li.textContent.includes('Dead test track 2'))`);
+await js(`${ROWS}[${row2}].querySelector('button[aria-label^="More actions for "]').click()`);
+await until(`!!document.querySelector('[role="menu"]')`, 5000);
+const pressed = await js(`(() => { const b = [...document.querySelectorAll('[role="menu"] button[aria-label^="Download "]')].find((x) => /to play without a connection/.test(x.getAttribute('aria-label'))); if (!b) return false; b.click(); return true; })()`);
+t.ok('track 2 offers DOWNLOAD, and it starts', pressed);
+t.ok('track 2 is downloaded', await until(`${ROWS}.some((li) => li.textContent.includes('Dead test track 2') && /✓ downloaded/.test(li.textContent))`, 30000));
+// The queue goes in WITHOUT clearing storage: the download index must survive.
+await js(`localStorage.setItem('bmb:listen_queue:guest', ${JSON.stringify(JSON.stringify([qItem(0), qItem(2), qItem(6)]))}); true`);
+probeGoneK = '2';
+probed.length = 0;
+t.ok('the queue head plays', await playQueueHead());
+await endTrack();
+t.ok('track 2 plays, from the phone (a blob: source)', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && a.currentSrc.startsWith('blob:') && (document.querySelector('${MINI_BAR}')?.textContent ?? '').includes('Dead test track 2'); })()`, 15000), `src=${(await src()).slice(0, 40)}`);
+t.equal('the early check never asked about the downloaded track', probed.filter((x) => /[?&]k=2(\D|$)/.test(x)), []);
+probeGoneK = null;
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails} of ${t.count} passed`);

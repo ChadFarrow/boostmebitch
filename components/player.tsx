@@ -18,7 +18,7 @@ import { useNowPlaying } from './player/use-now-playing';
 import { useShowSpeed } from './player/use-show-speed';
 import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
-import { isKnownGoneFile, useNextProbe } from './player/use-next-probe';
+import { isKnownGoneFile, serverAnswers, useNextProbe } from './player/use-next-probe';
 import { fmt } from '@/lib/format';
 import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
@@ -26,6 +26,7 @@ import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { downloadManager } from '@/lib/downloads/download-manager';
+import type { Episode } from '@/lib/types';
 import { logPlayback, playbackItemId, startPlaybackLog, watchMediaElement } from '@/lib/playback-log';
 import { loadItemValue } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
@@ -1458,14 +1459,24 @@ export function Player() {
     // track after it would sit at 0:00 under a page that believes it plays
     // (#555). Each step is the same step an ending takes — an Up Next item is
     // drained as `skipDeadTrack` drains one — and the store moves before the
-    // source effect runs, so only the file that survives is ever loaded. A
-    // list's LAST item, gone, stays: nothing follows, and the element's error
-    // says why. The bound is a backstop; a list only moves forward.
+    // source effect runs, so only the file that survives is ever loaded. The
+    // bound is a backstop; a list only moves forward. Three cases stop the pass:
+    // - a DOWNLOADED item plays from the phone whatever its host answers;
+    // - a gone item with NOTHING after it stays for the element, whose error
+    //   says why and drains an Up Next item there, once — stepping it here
+    //   drained it and then, on the next pass, walked into whatever album was
+    //   on screen (review of #545);
+    // - a step that did not MOVE (the queue's last item answers by stopping).
     for (let i = 0; via && i < 100; i++) {
       const now = useApp.getState().current;
       if (!now || !isKnownGoneFile(now.episode.enclosureUrl)) break;
+      if (downloadManager.localKeyFor(now.episode) !== null) break;
+      if (!useApp.getState().peekNextOnEnd()) break;
       logPlayback('skip_dead', { via: 'probe', item: playbackItemId(now.episode) });
+      const before = epKey(now.episode);
       if (!stepOnItsOwn()) break;
+      const after = useApp.getState().current;
+      if (!after || epKey(after.episode) === before) break;
     }
     return via;
   }
@@ -1499,13 +1510,21 @@ export function Player() {
    * Only error 4 — the source was refused: gone, or a format the browser cannot
    * play. And never offline: the files are not dead then, only out of reach,
    * the browsers report that as error 4 too, and the place in the list is
-   * worth more than a run to its end.
+   * worth more than a run to its end. **And only once OUR server has answered
+   * about the file** (`serverAnswers`, in `onMediaError`): a captive portal or
+   * Wi-Fi with no internet keeps `navigator.onLine` true while every file
+   * fails fast, and the skip drained a whole Up Next queue (review of #545).
+   * A file the early check already found gone skips at once.
    */
-  function skipDeadTrack(code: number | undefined): boolean {
+  function deadSkipAllowed(code: number | undefined): boolean {
     if (code !== 4 || isHlsRef.current || isVideoRef.current) return false;
     const item = useApp.getState().current;
     if (!item || item.episode.liveStatus) return false;
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+    return !(typeof navigator !== 'undefined' && navigator.onLine === false);
+  }
+
+  /** Move past `item` now; true when the player MOVED. */
+  function skipDeadTrack(item: { episode: Episode }): boolean {
     const via = advanceOnItsOwn();
     // MOVED, not merely "a list answered": the listen queue's last item (and a
     // list's last track) answers by stopping on the dead item, and that must
@@ -1529,10 +1548,30 @@ export function Player() {
       setReloadNonce((n) => n + 1);
       return;
     }
-    if (skipDeadTrack(code)) {
-      setAudioErr(null);
-      return;
+    if (deadSkipAllowed(code)) {
+      const item = useApp.getState().current!;
+      if (isKnownGoneFile(item.episode.enclosureUrl)) {
+        if (skipDeadTrack(item)) { setAudioErr(null); return; }
+      } else {
+        // Wait for our server before skipping. Nothing is shown meanwhile —
+        // the answer takes well under a second — and a listener who moved on
+        // in the meantime is left alone.
+        const key = epKey(item.episode);
+        setAudioErr(null);
+        void serverAnswers(item.episode.enclosureUrl).then((answered) => {
+          const now = useApp.getState().current;
+          if (!now || epKey(now.episode) !== key) return;
+          if (answered && skipDeadTrack(item)) return;
+          if (!answered) logPlayback('skip_dead', { via: 'none', net: false });
+          showMediaError(code);
+        });
+        return;
+      }
     }
+    showMediaError(code);
+  }
+
+  function showMediaError(code: number | undefined) {
     // Fired by the <video> too, so name the right medium.
     const what = isHlsRef.current ? 'live stream' : isVideoRef.current ? 'video' : 'audio';
     setAudioErr(
