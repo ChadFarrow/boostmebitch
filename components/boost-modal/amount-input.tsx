@@ -1,7 +1,82 @@
 'use client';
 import { useEffect, useId, useState } from 'react';
+import { storage, type AmountDefaultKind } from '@/lib/storage';
 
 export const MIN_BOOST_SATS = 100;
+
+/**
+ * The amount a surface opens with, or null for "no default". A stored number
+ * under the minimum reads as none: the surface would open on an amount its own
+ * Send button refuses, which looks like the control did not work.
+ */
+export function readAmountDefault(kind: AmountDefaultKind): number | null {
+  const n = storage.amountDefault.get(kind);
+  return n !== null && n >= MIN_BOOST_SATS ? n : null;
+}
+
+/**
+ * SET AS DEFAULT, under an amount field. Each surface keeps its OWN default
+ * (`kind`) — boost-all's number is per track and is multiplied by the track
+ * count, so it may never read the single boost's.
+ *
+ * `typed` is what the FIELD holds, never the parent's amount state: the two
+ * have disagreed before (an emptied field left the old amount on Send), and
+ * this control must not mark a blank field ✓ default.
+ *
+ * It writes one localStorage key and nothing else: no relay, no wallet.
+ */
+export function DefaultAmountControl({
+  kind,
+  typed,
+  disabled = false,
+}: {
+  kind: AmountDefaultKind;
+  typed: number;
+  disabled?: boolean;
+}) {
+  const [saved, setSaved] = useState<number | null>(() => readAmountDefault(kind));
+  // The write reached memory only (full or blocked storage): it works for this
+  // visit, and the next one opens without it. docs/storage.md, `safeSet`.
+  const [visitOnly, setVisitOnly] = useState(() => storage.amountDefault.isEphemeral(kind));
+
+  if (saved !== null && typed === saved) {
+    return (
+      <span className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-wider">
+        <span className="text-bolt">✓ default</span>
+        {visitOnly && <span className="text-muted normal-case tracking-normal">this visit only</span>}
+        <button
+          type="button"
+          className="btn-mini disabled:opacity-40"
+          disabled={disabled}
+          aria-label={`Clear the default amount of ${saved} sats`}
+          onClick={() => {
+            storage.amountDefault.clear(kind);
+            setSaved(null);
+            setVisitOnly(false);
+          }}
+        >
+          clear
+        </button>
+      </span>
+    );
+  }
+
+  const canSave = Number.isSafeInteger(typed) && typed >= MIN_BOOST_SATS;
+  return (
+    <button
+      type="button"
+      className="btn-mini disabled:opacity-40"
+      disabled={disabled || !canSave}
+      onClick={() => {
+        const onDisk = storage.amountDefault.set(kind, typed);
+        setSaved(typed);
+        setVisitOnly(!onDisk);
+      }}
+    >
+      set as default
+    </button>
+  );
+}
 
 export function AmountInput({
   sats,
@@ -19,11 +94,15 @@ export function AmountInput({
   // ✓ glyphs land beside those rows as the legs settle. <ModalShell> already
   // takes `dismissable={!running}` for the same reason.
   disabled = false,
+  // Which surface's default this field saves and opens with. Absent = no
+  // SET AS DEFAULT control. See <DefaultAmountControl>.
+  defaultKind,
 }: {
   sats: number;
   onChange: (n: number) => void;
   label?: string;
   disabled?: boolean;
+  defaultKind?: AmountDefaultKind;
 }) {
   const [raw, setRaw] = useState(sats > 0 ? String(sats) : '');
   // htmlFor/id, not a bare sibling <label>. The label was unassociated, so the
@@ -58,10 +137,19 @@ export function AmountInput({
         onChange={(e) => {
           const digits = e.target.value.replace(/\D/g, '');
           setRaw(digits);
-          if (digits) onChange(Number(digits));
+          // An emptied field is 0, not "no change". Reporting only non-empty
+          // values left the parent on its LAST number, so a blank field sat
+          // beside "Send 1000 sat" — and a saved default makes emptying the
+          // field the ordinary way to type a different amount.
+          onChange(digits ? Number(digits) : 0);
         }}
       />
-      <p id={hintId} className="text-[11px] text-muted mt-1.5">minimum {MIN_BOOST_SATS} sats</p>
+      <div className="flex items-center justify-between gap-3 mt-1.5">
+        <p id={hintId} className="text-[11px] text-muted">minimum {MIN_BOOST_SATS} sats</p>
+        {defaultKind && (
+          <DefaultAmountControl kind={defaultKind} typed={raw ? Number(raw) : 0} disabled={disabled} />
+        )}
+      </div>
     </div>
   );
 }

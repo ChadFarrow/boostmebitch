@@ -49,6 +49,15 @@ Reported as a bug: a boost modal read `ChadF 44.6%`, `ChadF test node 44.6%`, `b
 
 **It is derived per SPLITS LIST, never per modal.** A boost inside a `<podcast:valueTimeSplit>` window renders two `<SplitsPreview>` cards with two different recipient sets, and `payableSplit` may have trimmed the host card's list — see the comment at `components/boost-modal/index.tsx:93-97`, which is the same reason the percentages are per-card.
 
+## Default amounts (SET AS DEFAULT)
+
+Three surfaces open with an amount the user saved: the single boost (`bmb:boost_default`), boost-all (`bmb:boost_all_default`, **per track**) and the note card's zap dialog (`bmb:zap_default`). Each has its own SET AS DEFAULT control under its field — `<DefaultAmountControl>` in `components/boost-modal/amount-input.tsx`, which `<AmountInput defaultKind>` renders for the two modals and the zap dialog renders directly. With nothing saved, each opens as it did before: the single boost blank (dd98f78), the other two at 100.
+
+- **One key per surface, never a shared one.** The owner chose it, and the reason is money: boost-all multiplies its number by the track count, so a 5,000-sat single default read there is 60,000 sats on a 12-track album. A new surface gets its own `AmountDefaultKind`.
+- **The control reads the FIELD's text, not the parent's `sats`.** The two disagreed: `<AmountInput>` reported only a non-empty value upward, so emptying the field left `sats` at its last number — a blank field beside "Send 1000 sat". An emptied field now reports `0`. A saved default makes emptying the field the ordinary way to type another amount, which is why that fix ships with the control.
+- **A pre-fill is not a payment.** The control writes one localStorage key; Send still names the amount and still needs a tap. That is why a default has no upper bound beyond a safe integer, unlike `bmb:stream_rate`, which is paid on a timer with no prompt.
+- Pinned in a real browser by `npm run e2e:boostdefault`.
+
 ## Boost-all tracks (valueTimeSplits)
 
 Music podcasts tag each track in their RSS with a `<podcast:valueTimeSplit>` — a startTime/duration window plus either a `<podcast:remoteItem feedGuid itemGuid>` pointing at the track's own album feed, or inline `<podcast:valueRecipient>` entries. **Windows come from the RSS, and an ordinary item keeps only the first kind** (`itemValueTimeSplits`). Podcast Index's flat `e.timesplits[]` is not read.
