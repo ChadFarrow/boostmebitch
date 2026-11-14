@@ -498,7 +498,10 @@ conflicts with its own change on `main`.
 **Beta protects the code, not the data.** It uses the same relays, the same
 `SITE_NOSTR_SK` and real sats. Favorites (kind:10333) and the kind:30078 wallet
 and settings backups have one copy per user across all deploys, so a beta bug can
-damage them. Boost notes keep `BRAND.origin`, so their links open `www`. Browser
+damage them. Boost notes keep `BRAND.origin`, so their links open `www`. A note
+for a song from a BETA community playlist keeps the bitch words and beta's own
+signing route too: Buddy's words are only for playlists on `www.boostmebuddy.com`
+(`noteBrandFor`), and its Heard-on link opens the playlist on beta, where it exists. Browser
 storage is per origin, so on beta you sign in and connect the wallet again.
 
 **`NEXT_PUBLIC_BETA=1` marks the build** (`lib/beta.ts`), and it is inert anywhere

@@ -62,6 +62,50 @@ export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * How a boost note describes a song played from a PLAYLIST. Pure; the note
+ * builder wires it. `container` is the playlist (`podcast`) when it is a list
+ * medium AND the episode names a feed with a guid different from the
+ * playlist's — an RSS-preview playlist has NO guid of its own, so a missing
+ * guid on the playlist still differs. Any other pairing is the ordinary case,
+ * `container: null`, `show === podcast`. For every container `show` is the
+ * track's OWN feed via `ownShowOf`, an allowlist rewrite that carries none of
+ * the playlist's facts (`nostrNpubs` stays undefined: the curator is tagged
+ * through `container`, never copied onto the album), so a guid-less playlist is
+ * not named twice. `hosted` is true for a playlist this deploy serves, whose
+ * note uses the brand's own wording.
+ */
+export function playlistBoostContext(
+  podcast: Podcast,
+  episode: Episode | undefined,
+  hostedFeedPrefix: string,
+): { container: Podcast | null; show: Podcast; hosted: boolean } {
+  const container = episode?.podcastGuid
+    && isPlaylistMedium(podcast)
+    && episode.podcastGuid !== podcast.podcastGuid
+    ? podcast
+    : null;
+  const show = container && episode ? ownShowOf(episode, podcast) : podcast;
+  return { container, show, hosted: !!container?.url?.startsWith(hostedFeedPrefix) };
+}
+
+/**
+ * The "heard on" lines of a boost note: the credit line, then the playlist's
+ * landing link (only when it has a guid). The link is the same shape as
+ * `siteLandingUrl` in `lib/nostr/boost-notes.ts`, encoding included.
+ */
+export function heardOnLines(
+  container: Podcast,
+  makerNpub: string | null,
+  linkOrigin: string,
+): string[] {
+  const lines = [`🎧 Heard on ${container.title}${makerNpub ? ` by nostr:${makerNpub}` : ''}`];
+  if (container.podcastGuid) {
+    lines.push(`${linkOrigin}/?podcast=${encodeURIComponent(container.podcastGuid)}`);
+  }
+  return lines;
+}
+
+/**
  * Feeds whose rows are TRACKS rather than episodes: a row tap plays instead of
  * opening a detail page, the header cover is a play button, playback
  * auto-advances, and chapters/transcripts are suppressed.
@@ -203,6 +247,17 @@ export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
     || !episode.podcastGuid
     || podcast.podcastGuid === episode.podcastGuid;
   if (containerIsParent) return podcast;
+  return ownShowOf(episode, podcast);
+}
+
+/**
+ * The song's OWN feed as a `Podcast`, built from what the episode says about
+ * it — the allowlist `queueShowFor` documents above, extracted so the boost
+ * note (`playlistBoostContext`) builds the identical object for a container
+ * that has no guid of its own. Callers decide WHETHER the container is the
+ * parent; this only builds the answer for when it is not.
+ */
+export function ownShowOf(episode: Episode, podcast: Podcast): Podcast {
   return {
     id: episode.feedId ?? podcast.id,
     podcastGuid: episode.podcastGuid,

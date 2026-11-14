@@ -5,11 +5,12 @@ import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost, ValueBlock, ValueRecipient, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, receiptRefUrls, type QuotedZapReceipt } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
-import { BRAND, resolveSenderName } from '@/lib/brand';
+import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, playlistBoostContext, redirectLegs, retryableLegs, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
+import { BRAND, noteBrandFor, resolveSenderName, type Brand } from '@/lib/brand';
+import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from '../wallet-balance';
@@ -116,6 +117,9 @@ interface SentBoost {
   sats: number;
   msg: string;
   senderName: string;
+  /** The NOTE's brand and sender name — see `noteBrand` in the component. */
+  noteBrand: Brand;
+  noteSenderName: string;
   shareNostr: boolean;
   shareAs: 'self' | 'site';
   mentions: MentionNpub[];
@@ -243,6 +247,18 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // substitution when a named user just leaves "From" empty. Computed at
   // component scope (not inside go()) because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
+
+  // The NOTE's words, which are not always the boostagram's. A song played from
+  // a playlist BMB hosts on the production Buddy origin is shared in Buddy's
+  // words on either deploy — links, picture, `client` tag, default sender name,
+  // and Buddy's key when the site signs (`noteBrandFor`, lib/brand.ts); a test
+  // store's playlist (beta) keeps this deploy's. The boostagram above and below
+  // never changes: its `app_name` and `sender_name` name the deploy that paid.
+  const ctx = useMemo(
+    () => playlistBoostContext(podcast, episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH),
+    [podcast, episode],
+  );
+  const noteBrand = noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN);
 
   // Where a recipient can boost this user back, resolved from their profile's
   // lightning address. Empty until it resolves, and never gated on — see the
@@ -443,13 +459,16 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     const { boostagram, mentions } = sent;
     setPubState({ kind: 'publishing' });
     try {
+      // The note's brand and sender name ride beside the boostagram, never in
+      // it: the boostagram is what the legs carried.
+      const noteWords = { brand: sent.noteBrand, senderName: sent.noteSenderName };
       const note = identity && sent.shareAs === 'self'
-        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt, track })
+        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt, track, ...noteWords })
         // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
         // what each may do with them — the body always, the `p` tags only when
         // the user's own key signs — and that decision belongs there, not in a
         // caller that would have to remember it at every site.
-        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions, summaryReceipt, track });
+        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions, summaryReceipt, track, ...noteWords });
       setPubState({ kind: 'done', note });
       storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
       bumpBoosts();
@@ -565,16 +584,19 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       sats,
       msg: boostMsg,
       senderName,
+      noteBrand,
+      noteSenderName: resolveSenderName(name, anonymous, noteBrand),
       shareNostr,
       shareAs,
       mentions,
       maySignAsSelf,
       liveStreamId,
+      // The URL hints in the NOTE's brand: the receipt is signed by that
+      // brand's deploy, so a Buddy receipt must not carry this origin's links.
       hostRefs: {
         podcastGuid: showGuid,
         episodeGuid: itemGuid,
-        podcastUrl: showShareUrl(showGuid) ?? undefined,
-        episodeUrl: showShareUrl(showGuid, itemGuid) ?? undefined,
+        ...receiptRefUrls(noteBrand, showGuid, itemGuid),
       },
       noteSplit,
       noteArtist,
@@ -852,6 +874,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       ? await mintSummaryReceipt({
           paidSats, refs: sent.hostRefs, relays,
           as: identity && shareAs === 'self' && hasSigner ? 'self' : 'site',
+          // The note's deploy mints the receipt the note quotes.
+          brand: sent.noteBrand,
         })
       : null;
     // `collected` is the TRACK's legs whenever there is a track to name: a
@@ -981,6 +1005,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             onShareChange={handleShareNostrChange}
             onShareAsChange={handleShareAsChange}
             noteNoun="A public note"
+            brand={noteBrand}
           />
           {/* The redirect, said out loud. A boost that silently pays someone
               other than the act the user is listening to is the failure this

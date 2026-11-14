@@ -203,10 +203,18 @@ export function inlineMentions(
  * A newline rather than a visible separator: anything printable placed between
  * a name and the next URI is a character a client may absorb into the link
  * text, and this content is a signed kind:1 that can never be edited.
+ *
+ * A person the body ALREADY names is not named again. A boost note for a song
+ * from a playlist writes the playlist's maker into its `🎧 Heard on … by
+ * nostr:npub…` line, and the maker is also a feed npub, so the run printed the
+ * same `nostr:npub…` twice in a note nobody can edit. The test is the whole
+ * `nostr:<npub>` token: every npub has the same length, so one can never be a
+ * prefix of another. The `p` tags are not decided here and are unaffected.
  */
 export function withMentionRun(content: string, npubs: MentionNpub[]): string {
-  if (!npubs.length) return content;
-  return `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join('\n')}`;
+  const left = npubs.filter((n) => !content.includes(`nostr:${n.npub}`));
+  if (!left.length) return content;
+  return `${content}\n\n${left.map((n) => `nostr:${n.npub}`).join('\n')}`;
 }
 
 /**

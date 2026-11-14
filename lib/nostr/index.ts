@@ -99,6 +99,7 @@ export {
   publishBoostNote,
   publishBoostNoteViaSite,
   noteNpubs,
+  receiptRefUrls,
 } from './boost-notes';
 
 export {
