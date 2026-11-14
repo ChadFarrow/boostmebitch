@@ -171,7 +171,38 @@ function answer(u) {
   return {};
 }
 
-const { page } = await launchChrome({ name: 'gifgrid', args: ['--disable-gpu'] });
+// 30 s of silence for section 3's track (/api/e2e-audio.wav), as e2e-dead-track.
+function silentWav(seconds) {
+  const rate = 8000;
+  const n = rate * seconds;
+  const b = Buffer.alloc(44 + n, 128);
+  b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVE', 8);
+  b.write('fmt ', 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34);
+  b.write('data', 36); b.writeUInt32LE(n, 40);
+  return b;
+}
+const AUDIO = silentWav(30);
+async function answerAudio(requestId, request) {
+  const range = Object.entries(request.headers).find(([k]) => k.toLowerCase() === 'range')?.[1];
+  const mm = range && /bytes=(\d+)-(\d*)/.exec(range);
+  const start = mm ? Number(mm[1]) : 0;
+  const end = mm && mm[2] ? Math.min(Number(mm[2]), AUDIO.length - 1) : AUDIO.length - 1;
+  const body = AUDIO.subarray(start, end + 1);
+  await send('Fetch.fulfillRequest', {
+    requestId, responseCode: mm ? 206 : 200,
+    responseHeaders: [
+      { name: 'content-type', value: 'audio/wav' },
+      { name: 'accept-ranges', value: 'bytes' },
+      { name: 'content-length', value: String(body.length) },
+      ...(mm ? [{ name: 'content-range', value: `bytes ${start}-${end}/${AUDIO.length}` }] : []),
+    ],
+    body: body.toString('base64'),
+  });
+}
+
+// `autoplay` so section 3's track plays from a scripted click.
+const { page } = await launchChrome({ name: 'gifgrid', autoplay: true, args: ['--disable-gpu'] });
 const { send, js, until, on } = page;
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const media = []; // every GIF file the page asked for: { host, id, file }
@@ -229,6 +260,7 @@ on(async (m) => {
       else await send('Fetch.continueRequest', { requestId });
       return;
     }
+    if (u.pathname === '/api/e2e-audio.wav') { await answerAudio(requestId, request); return; }
     if (u.pathname.startsWith('/api/nostr/')) {
       await send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
       return;
@@ -552,6 +584,56 @@ if (BRAND_ID !== 'bmb') {
   const w = await js(`[document.documentElement.scrollWidth, document.documentElement.clientWidth]`);
   t.ok('no sideways overflow', w && w[0] <= w[1], JSON.stringify(w));
   await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+}
+
+if (!REAL_NB) {
+  section('3. The player: GIF tiles write no ms.reg line, and the lock-screen hand-over still runs');
+  // What the page hands the OS, stamped with how many `playing` events came
+  // from a GIF tile by then. Registered before any app script, so for one
+  // event this listener counts first and the app's capture listener runs after.
+  const { result: recorder } = await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    const ms = navigator.mediaSession; if (!ms) return;
+    const orig = ms.setActionHandler.bind(ms);
+    window.__msLog = []; window.__tilePlaying = 0;
+    document.addEventListener('playing', (e) => {
+      if (e.target instanceof HTMLElement && e.target.hasAttribute('data-gif-tile')) window.__tilePlaying += 1;
+    }, true);
+    ms.setActionHandler = (action, handler) => {
+      window.__msLog.push({ action, fn: typeof handler === 'function', tile: window.__tilePlaying });
+      try { orig(action, handler); } catch { /* unsupported */ }
+    };
+  })();` });
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
+  await until(`[...document.querySelectorAll('ul > li')].some((li) => li.textContent.includes('GIF grid track 0'))`, 60000);
+  // The log is a 150-line ring in localStorage that outlives a page load, and
+  // the sections above filled it. In a full ring a new line pushes an old one
+  // out, so a count only means something from an empty log.
+  const clearLog = () => js(`localStorage.setItem('bmb:plog:device', '[]')`);
+  const msReg = () => js(`(JSON.parse(localStorage.getItem('bmb:plog:device') ?? '[]')).filter((l) => / ms\\.reg/.test(l)).length`);
+  await clearLog();
+  await js(`[...document.querySelectorAll('ul > li')].find((li) => li.textContent.includes('GIF grid track 0'))?.click()`);
+  t.ok('the track plays', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2; })()`, 20000));
+  await wait(500);
+  t.ok("the player's own playing logged ms.reg", (await msReg()) >= 1, `ms.reg lines: ${await msReg()}`);
+  await clearLog();
+  const regBefore = 0;
+
+  await js(`document.querySelector('button[aria-label="Boost this track"]').click()`);
+  await until(`[...document.querySelectorAll('button')].some((b) => /add a gif/i.test(b.innerText) && !b.disabled)`, 20000);
+  await clickButton('/add a gif/i');
+  t.ok('GIF tiles play over the track', await until(`window.__tilePlaying >= 3`, 20000), `tile playing events: ${await js('window.__tilePlaying')}`);
+  await wait(800);
+  t.equal('no ms.reg line for a tile', await msReg(), regBefore);
+  const lastTile = await js('window.__tilePlaying');
+  t.ok('the hand-over still ran after the latest tile played (nexttrack set)',
+    await js(`window.__msLog.some((e) => e.action === 'nexttrack' && e.fn && e.tile >= ${lastTile})`),
+    JSON.stringify((await js('window.__msLog')).slice(-4)));
+
+  await clickButton('/^close$/i');
+  await js(`(() => { const a = document.querySelector('audio'); a.pause(); setTimeout(() => a.play(), 300); })()`);
+  t.ok("the player's own playing still logs ms.reg", await until(`(JSON.parse(localStorage.getItem('bmb:plog:device') ?? '[]')).filter((l) => / ms\\.reg/.test(l)).length > ${regBefore}`, 8000));
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: recorder.identifier });
 }
 
 if (pageErrors.length) console.log(`\n  info page errors: ${JSON.stringify(pageErrors.slice(0, 5))}`);
