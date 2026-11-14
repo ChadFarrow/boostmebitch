@@ -10,7 +10,7 @@ import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
   addToHistory, epKey, insertShuffled, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndexBy,
-  playsAsTracks, queueShowFor, shuffleIndexOf, speedShowKey, trimForQueue,
+  playingRowIndex, playsAsTracks, queueShowFor, shuffleIndexOf, speedShowKey, trimForQueue,
 } from './util';
 import { savedStartSec } from './resume-position';
 import { downloadManager } from './downloads/download-manager';
@@ -762,7 +762,9 @@ function stepTo(
   const qIdx = queueIndexOf(s);
   if (qIdx >= 0) return queueStepTo(s, qIdx, step, passItem);
 
-  const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
+  // By `isPlayingRow`, not `id` alone: a favorites-shuffle track reaches the
+  // player under an id the album's own row does not carry.
+  const idx = playingRowIndex(s.episodeQueue, s.current);
   const to = nextPlayableIndexBy(s.episodeQueue, idx, step, (e) => e, passOver);
   if (to < 0) return null;
   const episode = s.episodeQueue[to];

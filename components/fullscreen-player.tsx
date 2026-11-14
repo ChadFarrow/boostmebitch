@@ -83,6 +83,8 @@ import {
   isHlsUrl,
   epKey,
   shuffleIndexOf,
+  isPlayingRow,
+  playingRowIndex,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -772,7 +774,7 @@ export function FullscreenPlayer({
   const followShuffleIdx = current ? shuffleIndexOf(shuffle?.items ?? null, current.episode) : -1;
   const followAlbumIdx =
     current && followShuffleIdx < 0 && isMusicMedium(current.podcast) && episodeQueue.length > 1
-      ? episodeQueue.findIndex((t) => t.id === current.episode.id)
+      ? playingRowIndex(episodeQueue, current)
       : -1;
   const listsMounted = open && everOpened;
   const shuffleListRef = useFollowActiveRow<HTMLUListElement>(listsMounted, followShuffleIdx);
@@ -1552,7 +1554,7 @@ export function FullscreenPlayer({
                 </p>
                 <ul ref={albumListRef} className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
                   {episodeQueue.map((t, i) => {
-                    const active = t.id === episode.id;
+                    const active = isPlayingRow(t, current);
                     return (
                       <li key={t.id} aria-current={active ? 'true' : undefined}>
                         {/* The active row draws ❚❚, so it has to pause.
