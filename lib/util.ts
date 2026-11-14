@@ -1432,6 +1432,108 @@ export function liveRosterFeedOrder(
     .map(([id]) => id);
 }
 
+/** A live item that declares a span this long or longer is a station. */
+export const ALWAYS_ON_SPAN_SECS = 24 * 60 * 60;
+
+/**
+ * Whether a `<podcast:liveItem>` is a 24/7 STATION rather than a broadcast —
+ * the RSS half of `/live`'s 📻 24/7 tab.
+ *
+ * **WHY THIS EXISTS.** Measured 2026-11-14: Podcast Index listed 40 feeds as
+ * live and 20 of them were stations — Stupid Potato's old-time-radio channels,
+ * whose live item runs midnight to midnight and is republished every day, and
+ * Godcaster radio stations, whose live item is declared for a year. No real
+ * show was on air, and the page said nineteen were.
+ *
+ * **THE DECLARED SPAN, NOT THE TITLE.** The Nostr strip splits stations by a
+ * title convention (`is247`, "24/7 Chiptune") because NIP-53 has no field for
+ * it. None of the measured RSS stations says 24/7 in its title ("Dry Gulch:
+ * live now", "88.9 Crossway Radio - LIVE"), and a broadcast ABOUT the 24/7 news
+ * cycle would match one. The span is the publisher's own statement of how long
+ * the item is on air, so a day or more is a station.
+ *
+ * Only `live` items: a pending station is still Upcoming. Both stamps go
+ * through `liveStampSecs`, so Podcast Index's `0` for an absent end is absent
+ * here too, and an item with no end is a SHOW — absent is not forever.
+ */
+export function liveItemIsAlwaysOn(
+  e: { liveStatus?: string; liveStartTime?: number; liveEndTime?: number },
+): boolean {
+  if (e.liveStatus !== 'live') return false;
+  const start = liveStampSecs(e.liveStartTime);
+  const end = liveStampSecs(e.liveEndTime);
+  return start !== undefined && end !== undefined && end - start >= ALWAYS_ON_SPAN_SECS;
+}
+
+/**
+ * Which feeds `/api/live-shows` reads, once it knows which ones are stations.
+ *
+ * `rosterIds` is Podcast Index's roster in `liveRosterFeedOrder` order, and the
+ * route can read only `maxRoster` of them. Stations republish their live item
+ * all day, so PI's record time ranks them FIRST — on 2026-11-14 eighteen of
+ * them took the slots, and eight shows with a scheduled broadcast went unread.
+ *
+ * So a station this server has already read (`alwaysOn`, from its memory, URL
+ * in hand) gets its OWN allowance of `maxAlwaysOn` reads and leaves the roster
+ * slots to everything else. It is still read, so the 24/7 tab keeps it. Three
+ * rules keep this from changing anything else:
+ *
+ *  - Only a station Podcast Index LISTS today is read. Memory alone never adds
+ *    a row; it only moves one.
+ *  - A station past its allowance stays in the roster and competes for a slot
+ *    as it does today — the plan never drops a feed.
+ *  - `truncated` counts the roster feeds the cap cut, which is what the page's
+ *    "more shows than this page checks" line is about.
+ */
+export function planLiveRosterReads<T extends { id: number }>(
+  rosterIds: readonly number[],
+  alwaysOn: readonly T[],
+  maxRoster: number,
+  maxAlwaysOn: number,
+): { fromRoster: number[]; fromAlwaysOn: T[]; truncated: boolean } {
+  const listed = new Set(rosterIds);
+  const fromAlwaysOn = alwaysOn.filter((f) => listed.has(f.id)).slice(0, maxAlwaysOn);
+  const moved = new Set(fromAlwaysOn.map((f) => f.id));
+  const regular = rosterIds.filter((id) => !moved.has(id));
+  const fromRoster = regular.slice(0, maxRoster);
+  return { fromRoster, fromAlwaysOn, truncated: regular.length > fromRoster.length };
+}
+
+/**
+ * `/live`'s Upcoming list after one more poll: the rows it held, with every
+ * feed this answer DESCRIBES replaced by what the answer says.
+ *
+ * Upcoming is accumulated across polls because the visitor's favorites are
+ * asked about a slice at a time, and a schedule is stable for days. A feed is
+ * described when the poll asked about it (`askedIds`, the `?feeds=` slice) OR
+ * when the answer carries any row for it — Podcast Index's roster, podping and
+ * the server's memory name feeds no visitor asked about. A described feed gets
+ * the answer's pending rows, which may be none; a feed this poll neither asked
+ * about nor answered for keeps what it had.
+ *
+ * **Measured on production 2026-11-14: Upcoming read 3, then 6, then 9.** The
+ * merge cleared only `askedIds` and then APPENDED every pending row, so a
+ * roster show — in nobody's `?feeds=` — was added again every minute. It also
+ * pushed into an array the previous state still held; React may call an
+ * updater twice with the same previous state, and that showed as a jump of
+ * two in development. Nothing here is changed in place.
+ */
+export function mergeUpcomingSeen(
+  prev: Readonly<Record<number, readonly LiveShow[]>>,
+  askedIds: readonly number[],
+  items: readonly LiveShow[],
+): Record<number, LiveShow[]> {
+  const next: Record<number, LiveShow[]> = {};
+  for (const [id, list] of Object.entries(prev)) next[Number(id)] = [...list];
+  for (const id of askedIds) delete next[id];
+  for (const s of items) delete next[s.feedId];
+  for (const s of items) {
+    if (s.liveStatus !== 'pending') continue;
+    (next[s.feedId] ??= []).push(s);
+  }
+  return next;
+}
+
 export function compareLiveShows(a: LiveShow, b: LiveShow): number {
   const rank = (s: LiveShow) => (s.liveStatus === 'live' ? 0 : 1);
   if (rank(a) !== rank(b)) return rank(a) - rank(b);
