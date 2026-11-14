@@ -25,7 +25,7 @@
 
 import { register } from 'node:module';
 import { readFileSync } from 'node:fs';
-import { checker, exit } from './cdp.mjs';
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 register('./e2e-resolve-hook.mjs', import.meta.url);
 
@@ -128,5 +128,259 @@ if (PURE_ONLY) {
   await exit(t.fails ? 1 : 0);
 }
 
+// --- The browser ----------------------------------------------------------------
+// Installed Chrome (it plays H.264; Playwright's builds do not). Only `/api/*`
+// is stubbed — an album with a value block, so BOOST opens, and the GIF search.
+// The GIF files come from the real CDNs.
+const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
+await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.`);
+
+// 56 real GIPHY ids with their real 200w sizes (scripts/fixtures/gifs-giphy.json).
+// Three sizes are changed HERE, so the layout is shown to come from the data
+// and never from the media: the real files are all 200 px wide.
+const GIPHY = JSON.parse(readFileSync(new URL('./fixtures/gifs-giphy.json', import.meta.url), 'utf8')).gifs
+  .map((g, i) => (i === 0 ? { ...g, width: 1000, height: 50 } : i === 1 ? { ...g, width: 50, height: 1000 }
+    : i === 2 ? { ...g, width: 200, height: 250 } : g));
+
+const GUID = 'c1f40000-0000-4000-8000-000000000002';
+const ID = 900778;
+const RECIPIENTS = [{ name: 'E2E stub node', type: 'node', address: `02${'ab'.repeat(32)}`, split: 100 }];
+const VALUE = { model: { type: 'lightning', method: 'keysend' }, recipients: RECIPIENTS };
+const ALBUM = {
+  id: ID, podcastGuid: GUID, title: 'E2E GIF Grid Album', author: 'e2e', medium: 'music',
+  url: 'https://feeds.example.invalid/gifgrid.xml', value: VALUE,
+};
+const TRACKS = [0, 1].map((k) => ({
+  id: 9810 + k, guid: `c1f40000-0000-4000-8000-00000000020${k}`, podcastGuid: GUID, feedId: ID,
+  title: `GIF grid track ${k}`, episode: k + 1, duration: 30,
+  enclosureUrl: `${APP}/api/e2e-audio.wav?k=${k}`, value: VALUE,
+}));
+/** A different order per query, so ten searches mount and release real tiles. */
+const giphyAnswer = (q) => {
+  const n = [...q].reduce((s, c) => s + c.charCodeAt(0), 0) % GIPHY.length;
+  return { gifs: q ? [...GIPHY.slice(n), ...GIPHY.slice(0, n)].slice(0, 50) : GIPHY.slice(0, 50) };
+};
+function answer(u) {
+  if (u.pathname === '/api/by-guid') return { podcast: ALBUM };
+  if (u.pathname === '/api/feed') return { podcast: ALBUM, episodes: TRACKS };
+  if (u.pathname === '/api/item-value') {
+    return { read: true, value: { type: 'lightning', method: 'keysend', recipients: RECIPIENTS }, valueTimeSplits: [] };
+  }
+  if (u.pathname === '/api/gifs') return giphyAnswer(u.searchParams.get('q') ?? '');
+  if (u.pathname === '/api/live-shows') return { items: [], unverifiedFeeds: 0, truncated: false };
+  return {};
+}
+
+const { page } = await launchChrome({ name: 'gifgrid', args: ['--disable-gpu'] });
+const { send, js, until, on } = page;
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
+const media = []; // every GIF file the page asked for: { host, id, file }
+const pageErrors = [];
+await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Request' }] });
+on(async (m) => {
+  if (m.method === 'Runtime.exceptionThrown') {
+    pageErrors.push((m.params.exceptionDetails?.exception?.description ?? '').slice(0, 200));
+    return;
+  }
+  if (m.method === 'Network.requestWillBeSent') {
+    const g = /^https:\/\/media\.giphy\.com\/media\/([A-Za-z0-9]+)\/([^?#]+)/.exec(m.params.request.url);
+    if (g) media.push({ host: 'giphy', id: g[1], file: g[2] });
+    return;
+  }
+  if (m.method !== 'Fetch.requestPaused') return;
+  const { requestId, request } = m.params;
+  const u = new URL(request.url);
+  try {
+    if (u.pathname.startsWith('/api/nostr/')) {
+      await send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
+      return;
+    }
+    await send('Fetch.fulfillRequest', {
+      requestId, responseCode: 200,
+      responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+      body: b64(answer(u)),
+    });
+  } catch { /* the page navigated away under a paused request */ }
+});
+// Every <video> the page ever makes, counted from before any app script runs.
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+  window.__videosMade = 0;
+  const ce = Document.prototype.createElement;
+  Document.prototype.createElement = function (tag, ...rest) {
+    if (String(tag).toLowerCase() === 'video') window.__videosMade++;
+    return ce.call(this, tag, ...rest);
+  };
+})();` });
+await send('Page.enable');
+await send('Runtime.enable');
+await send('Network.enable');
+
+const brand = async () => ((await js(`document.querySelector('link[rel="manifest"]')?.getAttribute('href') ?? ''`)) ?? '').includes('buddy') ? 'buddy' : 'bmb';
+const clickButton = (re) => js(`(() => {
+  const b = [...document.querySelectorAll('button')].find((x) => ${re}.test(x.innerText) && !x.disabled);
+  if (!b) return false;
+  b.click();
+  return true;
+})()`);
+async function openPicker(minTiles = 20) {
+  await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
+  t.ok('the album offers BOOST', await until(`!!document.querySelector('button[aria-label="Boost this track"]')`, 90000));
+  await js(`document.querySelector('button[aria-label="Boost this track"]').click()`);
+  t.ok('the boost modal offers + Add a GIF', await until(`[...document.querySelectorAll('button')].some((b) => /add a gif/i.test(b.innerText) && !b.disabled)`, 20000));
+  await clickButton('/add a gif/i');
+  const shown = await until(`document.querySelectorAll('[data-gif-key]').length >= ${minTiles}`, 20000);
+  const seen = shown ? '' : await js(`[...document.querySelectorAll('[role="dialog"]')].map((d) => d.innerText).join(' | ').replace(/\\s+/g, ' ').slice(0, 400)`);
+  t.ok(`the grid shows ${minTiles} or more tiles`, shown, `the dialog shows: ${seen}`);
+  if (!shown) await exit(1);
+}
+/** Every tile: its key, state, box (relative to the scroll box) and video. */
+const tiles = () => js(`(() => {
+  const box = document.querySelector('[data-gif-scroll]').getBoundingClientRect();
+  return [...document.querySelectorAll('[data-gif-key]')].map((b) => {
+    const r = b.getBoundingClientRect();
+    const v = b.querySelector('video');
+    const img = b.querySelector('img:not([data-lqip])');
+    return {
+      key: b.dataset.gifKey, state: b.dataset.state,
+      top: r.top - box.top, bottom: r.bottom - box.top, left: Math.round(r.left), width: r.width, height: r.height,
+      video: v ? { paused: v.paused, src: v.getAttribute('src') ?? '', rs: v.readyState, ct: v.currentTime } : null,
+      img: img && getComputedStyle(img).display !== 'none' ? img.getAttribute('src') : null,
+    };
+  });
+})()`);
+const boxHeight = () => js(`document.querySelector('[data-gif-scroll]').clientHeight`);
+const scrollGrid = async (y) => { await js(`document.querySelector('[data-gif-scroll]').scrollTop = ${y}`); await wait(900); };
+const attachedVideos = () => js(`document.querySelectorAll('video[data-gif-tile]').length`);
+const idOf = (key) => key.split(':')[1];
+
+await send('Page.navigate', { url: `${APP}/privacy` });
+await until(`document.readyState === 'complete' && !!document.querySelector('link[rel="manifest"]')`, 90000);
+const BRAND_ID = await brand();
+console.log(`\n(the server at ${APP} serves the ${BRAND_ID} brand)`);
+
+if (BRAND_ID !== 'buddy') {
+  console.log('\n(skipping section 1: it runs against a NEXT_PUBLIC_BRAND=buddy server)');
+} else {
+  section('1. GIPHY grid (desktop 1280×900)');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  await openPicker(40);
+  await wait(1500);
+  let all = await tiles();
+  const colW = all.find((x) => x.key === `giphy:${GIPHY[3].id}`)?.width ?? 0;
+  const lefts = [...new Set(all.map((x) => x.left))];
+  t.equal('two columns', lefts.length, 2);
+  const h = (i) => all.find((x) => x.key === `giphy:${GIPHY[i].id}`)?.height ?? 0;
+  t.ok('a tile takes its height from the DATA (200×250 → 1.25 × width)', Math.abs(h(2) - colW * 1.25) <= 1.5,
+    `width ${colW}, height ${h(2)}`);
+  t.ok('extreme ratios clamped: 1000×50 → half the width', Math.abs(h(0) - colW / 2) <= 1.5, `height ${h(0)}`);
+  t.ok('extreme ratios clamped: 50×1000 → 4/3 of the width', Math.abs(h(1) - (colW * 4) / 3) <= 1.5, `height ${h(1)}`);
+
+  const box = await boxHeight();
+  t.ok('an on-screen tile plays', await until(`(() => {
+    const b = document.querySelector('[data-gif-key][data-state="playing"]');
+    const v = b?.querySelector('video');
+    return !!v && !v.paused && v.currentTime > 0.05;
+  })()`, 15000));
+  all = await tiles();
+  const onScreen = all.filter((x) => x.bottom > 0 && x.top < box);
+  t.ok('every on-screen tile plays (or is still loading)', onScreen.every((x) => ['playing', 'waiting'].includes(x.state)),
+    JSON.stringify(onScreen.map((x) => x.state)));
+  const near = all.filter((x) => x.top >= box + 4 && x.top < box * 1.5 - 4);
+  t.ok('there are tiles in the near zone below the box', near.length > 0, `box ${box}`);
+  t.ok('a near tile waits paused on its first frame', near.length > 0 && near.every((x) => x.state === 'waiting'
+    && x.video && x.video.paused && x.video.src.endsWith('#t=0.001') && x.video.rs >= 2), JSON.stringify(near.map((x) => [x.state, x.video])));
+  const far = all.filter((x) => x.top > box * 1.5 + 4);
+  t.ok('there are far tiles', far.length > 0);
+  t.ok('a far tile holds no video and no picture', far.every((x) => x.state === 'far' && !x.video && !x.img),
+    JSON.stringify(far.slice(0, 3)));
+  const farIds = new Set(far.map((x) => idOf(x.key)));
+  t.equal('a far tile asked for no file', media.filter((m) => farIds.has(m.id)).length, 0);
+  t.equal('no tile asked for an animated WebP or a still while video plays',
+    media.filter((m) => m.file !== '200w.mp4').map((m) => m.file), []);
+
+  const firstKeys = onScreen.map((x) => x.key);
+  const scrollMax = await js(`(() => { const s = document.querySelector('[data-gif-scroll]'); return s.scrollHeight - s.clientHeight; })()`);
+  await scrollGrid(scrollMax);
+  all = await tiles();
+  t.ok('scrolled to the end: the first tiles are far again and hold no video',
+    all.filter((x) => firstKeys.includes(x.key)).every((x) => x.state === 'far' && !x.video));
+  t.equal('every attached video belongs to a near tile', await attachedVideos(),
+    all.filter((x) => x.video).length);
+
+  let maxAttached = 0;
+  for (let i = 0; i < 10; i++) {
+    await js(`(() => {
+      const el = document.querySelector('input[type="search"]');
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      set.call(el, 'search ${'x'.repeat(i + 2)}');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await until(`document.querySelectorAll('[data-gif-key]').length >= 40`, 10000);
+    await wait(1200);
+    maxAttached = Math.max(maxAttached, await attachedVideos());
+    await scrollGrid(600);
+    maxAttached = Math.max(maxAttached, await attachedVideos());
+  }
+  const made = await js('window.__videosMade');
+  t.ok('ten searches: videos made ≤ the most attached at once + 4', made <= maxAttached + 4,
+    `made ${made}, most attached ${maxAttached}`);
+
+  await clickButton('/^close$/i');
+  t.ok('close releases every video', await until(`document.querySelectorAll('video[data-gif-tile]').length === 0`, 3000));
+  await clickButton('/add a gif/i');
+  await until(`document.querySelectorAll('[data-gif-key][data-state="playing"]').length > 0`, 15000);
+  await wait(1500);
+  t.ok('a second opening reuses the pool', (await js('window.__videosMade')) <= made,
+    `made ${await js('window.__videosMade')} after reopening, ${made} before`);
+
+  all = await tiles();
+  const pickTile = all.find((x) => x.state === 'playing');
+  await js(`document.querySelector('[data-gif-key="${pickTile.key}"]').click()`);
+  t.ok('a click picks: the picker closes', await until(`!document.querySelector('[data-gif-scroll]')`, 3000));
+  t.equal('the picked GIF shows above the message', await js(`document.querySelector('img[alt="The GIF this boost will carry"]')?.src ?? null`),
+    `https://media.giphy.com/media/${idOf(pickTile.key)}/200w.webp`);
+  t.equal('a pick releases every video', await attachedVideos(), 0);
+
+  section('1b. Reduced motion: stills, no video');
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await openPicker(40);
+  await wait(2000);
+  all = await tiles();
+  const rbox = await boxHeight();
+  t.equal('no video is attached', await attachedVideos(), 0);
+  // One <video> is allowed: `canPlayH264()` asks `canPlayType` on a bare one,
+  // once per page. It is never attached and never given a `src`.
+  t.ok('and no tile video was made (only the one H.264 probe)', (await js('window.__videosMade')) <= 1,
+    `made ${await js('window.__videosMade')}`);
+  t.ok('on-screen tiles show their still', all.filter((x) => x.bottom > 0 && x.top < rbox).every((x) => x.state === 'still'
+    && /\/200w_s\.gif$/.test(x.img ?? '')), JSON.stringify(all.slice(0, 2)));
+  t.ok('far tiles show nothing', all.filter((x) => x.top > rbox * 1.5 + 4).every((x) => !x.img));
+  await send('Emulation.setEmulatedMedia', { features: [] });
+
+  section('1c. A refused autoplay: stills for the grid');
+  const { result: refusal } = await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    HTMLMediaElement.prototype.play = function () { return Promise.reject(new DOMException('refused', 'NotAllowedError')); };` });
+  await openPicker(40);
+  t.ok('the grid falls back to stills', await until(`(() => {
+    const on = [...document.querySelectorAll('[data-gif-key]')].slice(0, 4);
+    return on.length === 4 && on.every((b) => b.dataset.state === 'still');
+  })()`, 10000), JSON.stringify((await tiles()).slice(0, 4).map((x) => x.state)));
+  t.equal('and holds no video', await attachedVideos(), 0);
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: refusal.identifier });
+
+  section('1d. Phone (390×844, touch)');
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await openPicker(40);
+  await wait(1500);
+  all = await tiles();
+  t.equal('two columns', [...new Set(all.map((x) => x.left))].length, 2);
+  const w = await js(`[document.documentElement.scrollWidth, document.documentElement.clientWidth]`);
+  t.ok('no sideways overflow', w && w[0] <= w[1], JSON.stringify(w));
+  t.ok('an on-screen tile plays on the phone too', await until(`!!document.querySelector('[data-gif-key][data-state="playing"]')`, 15000));
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+}
+
+if (pageErrors.length) console.log(`\n  info page errors: ${JSON.stringify(pageErrors.slice(0, 5))}`);
 console.log(`\n${t.count - t.fails}/${t.count} checks passed`);
 await exit(t.fails ? 1 : 0);

@@ -1,7 +1,9 @@
 'use client';
-import { useEffect, useId, useState } from 'react';
-import { giphyStillUrl, type GifResult } from '@/lib/giphy';
-import { gifPreviewUrl, type GifPick } from '@/lib/gifs/pick';
+import { useEffect, useId, useMemo, useState } from 'react';
+import type { GifResult } from '@/lib/giphy';
+import { giphyTile, gifPreviewUrl, type GifPick } from '@/lib/gifs/pick';
+import { prefersReducedMotion } from '@/lib/format';
+import { GifGrid } from './gif-grid';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { ModalShell } from '@/components/modal-shell';
 
@@ -36,6 +38,12 @@ export function GifPicker({
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [state, setState] = useState<SearchState>({ kind: 'idle' });
+  const [scrollBox, setScrollBox] = useState<HTMLDivElement | null>(null);
+  // A `play()` refused with NotAllowedError (iOS Low Power Mode): stills for
+  // the whole grid until the next answer, so no tile loads a video only to be
+  // refused.
+  const [refused, setRefused] = useState(false);
+  const tiles = useMemo(() => (state.kind === 'ready' ? state.gifs.map(giphyTile) : []), [state]);
   const inputId = useId();
   // Refused BEFORE any fetch and SAID so — the retype is as dangerous as the
   // first paste, so a silent no-op is not enough.
@@ -57,6 +65,7 @@ export function GifPicker({
           });
           return;
         }
+        setRefused(false);
         setState({ kind: 'ready', gifs: body.gifs });
       } catch {
         if (live) setState({ kind: 'error', message: 'GIF search is not available now.' });
@@ -163,42 +172,37 @@ export function GifPicker({
       ) : state.kind === 'ready' && state.gifs.length === 0 ? (
         <p className="mt-2 text-xs text-muted" role="status">No GIFs match that search.</p>
       ) : (
-        // The scroll box and the layout are two elements, and the layout is
-        // CSS columns, not a grid. A grid inside a fixed-height scroll box
-        // sized its rows from each tile's min-content height — which is 0 for
-        // a percent-sized square — so iOS Safari squeezed every row to fit the
-        // box and the tiles covered each other. Columns let each GIF keep its
-        // own shape, uncropped, at the height its width gives it.
+        // The scroll box is held in STATE, not a ref: the grid's observers are
+        // rooted at it, and the dialog mounts its content after the first
+        // render, so a ref read then measured nothing.
         <div
+          ref={setScrollBox}
+          data-gif-scroll=""
           className="mt-3 min-h-0 flex-1 overflow-y-auto overscroll-contain"
           aria-busy={state.kind === 'loading'}
         >
-          <div className="columns-2 gap-2 sm:columns-3">
-          {state.kind === 'ready'
-            ? state.gifs.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  className="mb-2 block min-h-[44px] w-full break-inside-avoid overflow-hidden rounded border border-line bg-bone/5 hover:border-bolt focus-visible:border-bolt disabled:opacity-40"
-                  onClick={() => { onChange({ src: 'giphy', id: g.id }); close(); }}
-                  // The grid can be open when Send is pressed. A pick after
-                  // that would show a GIF the sent boost does not carry.
-                  disabled={disabled}
-                  title={g.title || 'GIF'}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element -- third-party media */}
-                  <img
-                    src={giphyStillUrl(g.id)}
-                    alt={g.title || 'GIF'}
-                    loading="lazy"
-                    className="block h-auto w-full"
-                  />
-                </button>
-              ))
-            : Array.from({ length: 6 }, (_, i) => (
-                <div key={i} className="mb-2 h-32 w-full break-inside-avoid rounded border border-line bg-bone/5 animate-pulse" />
+          {state.kind === 'ready' ? (
+            <GifGrid
+              tiles={tiles}
+              scrollRoot={scrollBox}
+              motion={prefersReducedMotion() || refused ? 'still' : 'play'}
+              onAutoplayRefused={() => setRefused(true)}
+              // The grid can be open when Send is pressed. A pick after that
+              // would show a GIF the sent boost does not carry.
+              disabled={disabled}
+              onPick={(tile) => { onChange(tile.pick); close(); }}
+            />
+          ) : (
+            <div className="flex gap-2" aria-hidden>
+              {[0, 1].map((c) => (
+                <div key={c} className="flex flex-1 flex-col gap-2">
+                  {[0, 1, 2].map((r) => (
+                    <div key={r} className="h-32 rounded border border-line bg-bone/5 animate-pulse" />
+                  ))}
+                </div>
               ))}
-          </div>
+            </div>
+          )}
         </div>
       )}
       <div className="mt-2 text-right text-[10px] text-muted">Powered by GIPHY</div>
