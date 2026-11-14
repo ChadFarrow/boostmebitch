@@ -53,7 +53,13 @@ const seed = finalizeEvent({
 await new Promise((resolve, reject) => {
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
   ws.on('open', () => ws.send(JSON.stringify(['EVENT', seed])));
-  ws.on('message', (m) => { const d = JSON.parse(m); if (d[0] === 'OK') { ws.close(); d[2] ? resolve() : reject(new Error(d[3])); } });
+  ws.on('message', (m) => {
+    const d = JSON.parse(m);
+    if (d[0] !== 'OK') return;
+    ws.close();
+    if (d[2]) resolve();
+    else reject(new Error(d[3]));
+  });
   ws.on('error', reject);
 });
 published.length = 0; // the seed is not the app's publish

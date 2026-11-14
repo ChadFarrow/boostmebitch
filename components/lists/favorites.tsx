@@ -21,7 +21,7 @@ import { PodcastCover } from '../podcast-cover';
 import { FavEpisodeRowHeart, FavFeedRowHeart } from '../fav-heart';
 import { PodcastRow } from './podcast-results';
 import { useRevealed, useAutoReveal, ShowMore } from './grouping';
-import { MovedOffer, RowFooter, useMovedNotices } from '../moved-offer';
+import { MovedOffer, RowFooter, useMovedNotices } from './moved-offer';
 import { closedService, itemOnClosedHost } from '@/lib/moved-feeds';
 
 export type FavSort = 'recent' | 'az';
