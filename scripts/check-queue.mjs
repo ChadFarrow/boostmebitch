@@ -503,8 +503,17 @@ checkTrack('an unresolved record is no track', [FAV, { ...PI_RECORD, unresolved:
 // the press. The favorite stores its own `enclosureUrl`; built from that, a
 // track plays with no request. Its id is synthetic and per item, because
 // `<Player>`'s source effect keys on `episode.id`: one shared id would never
-// reload the audio between tracks. `-fnvHash` of the pair is what
-// `lib/playlist-db.ts` gives a row with no Podcast Index id.
+// reload the audio between tracks.
+//
+// AND IT IS THE RSS READER'S ID, `-fnvHash(itemGuid)` — a money key, not a
+// render key (pre-merge review of #541, 2026-11-14). `/api/value-splits` finds
+// a negative id in the feed by `-fnvHash(guid)` (`getRssItemValueTimeSplits`,
+// the `episodeFromRssItem` rule). The first build hashed the PAIR
+// (`feedGuid:itemGuid`, as `lib/playlist-db.ts` does for rows that carry no
+// splits), which matched nothing: a shuffled track's time splits never loaded,
+// so streaming inside a featured artist's window paid the main block, and a
+// boost there said it could not look the track up. `itemGuid` is the key of
+// the favorites map, so the id is still unique per favorite.
 const fromFavShape = (e) => (e === null ? null : {
   id: e.id, guid: e.guid, podcastGuid: e.podcastGuid, feedId: e.feedId, title: e.title,
   enclosureUrl: e.enclosureUrl, value: e.value,
@@ -514,18 +523,23 @@ function checkFromFav(label, args, expected, { alsoNaive = false } = {}) {
   vectors.push({ label, kind: 'fromfav', args, alsoNaive });
 }
 checkFromFav('a favorite with an enclosure is a playable episode under a per-item id', [FAV], {
-  id: -fnvHash('feed-1:item-1'), guid: 'item-1', podcastGuid: 'feed-1', feedId: 7, title: 'Song',
+  id: -fnvHash('item-1'), guid: 'item-1', podcastGuid: 'feed-1', feedId: 7, title: 'Song',
   enclosureUrl: 'https://x/old.mp3', value: undefined,
 });
 checkFromFav('a second favorite gets a DIFFERENT id',
   [{ ...FAV, itemGuid: 'item-2' }], {
-    id: -fnvHash('feed-1:item-2'), guid: 'item-2', podcastGuid: 'feed-1', feedId: 7, title: 'Song',
+    id: -fnvHash('item-2'), guid: 'item-2', podcastGuid: 'feed-1', feedId: 7, title: 'Song',
     enclosureUrl: 'https://x/old.mp3', value: undefined,
   });
 checkFromFav('no enclosure is no episode', [{ ...FAV, enclosureUrl: undefined }], null);
+checkFromFav('the id is the RSS reader\'s for that item, whatever feed guid the favorite stores',
+  [{ ...FAV, feedGuid: 'feed-9' }], {
+    id: -fnvHash('item-1'), guid: 'item-1', podcastGuid: 'feed-9', feedId: 7, title: 'Song',
+    enclosureUrl: 'https://x/old.mp3', value: undefined,
+  });
 checkFromFav('no title is still an episode, titled by nothing rather than undefined',
   [{ ...FAV, title: undefined }], {
-    id: -fnvHash('feed-1:item-1'), guid: 'item-1', podcastGuid: 'feed-1', feedId: 7, title: '',
+    id: -fnvHash('item-1'), guid: 'item-1', podcastGuid: 'feed-1', feedId: 7, title: '',
     enclosureUrl: 'https://x/old.mp3', value: undefined,
   });
 

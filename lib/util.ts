@@ -293,19 +293,6 @@ export function shuffleIndexOf(
 }
 
 /**
- * One favorite single as a track the shuffle can play, or null when it cannot.
- *
- * `episode` is the cached Podcast Index record (it has the real `id` the
- * player's source effect keys on; a `FavoriteEpisode` has none). Its value
- * block goes: `payableValue` reads `episode.value` first, so a cached block
- * would outrank the feed, and with none `valueNotRead` is true and `<Player>`
- * asks the track's own feed when it starts — the playlist row's path.
- *
- * The show is an ALLOWLIST, never a spread, for `queueShowFor`'s reason: it
- * drives the streaming key, the share URL and the boost note, and the next
- * field added to a record must not ride onto it by default.
- */
-/**
  * A favorite single as an `Episode`, from what the favorite itself stores — or
  * null when it stores no enclosure.
  *
@@ -316,15 +303,22 @@ export function shuffleIndexOf(
  * refuse. The favorite keeps the enclosure it was hearted with, so the track
  * plays with no request at all.
  *
- * The id is `-fnvHash` of the pair, as `lib/playlist-db.ts` gives a row with no
- * Podcast Index id: `<Player>`'s source effect keys on `episode.id`, so ids
- * must differ per track or the audio never reloads between them. No value
- * block — `<Player>` reads the payee from the track's own feed.
+ * The id is `-fnvHash(itemGuid)`, the RSS reader's id for the item
+ * (`episodeFromRssItem`), and it is a MONEY key, not only a render key.
+ * `<Player>`'s source effect keys on `episode.id`, so ids must differ per track
+ * or the audio never reloads — `itemGuid` is the favorites map's key, so they
+ * do. And `/api/value-splits` finds a negative id in the feed by
+ * `-fnvHash(guid)` (`getRssItemValueTimeSplits`): the first build hashed the
+ * PAIR, as `lib/playlist-db.ts` does for rows that carry no splits, which
+ * matched nothing — a shuffled track's time splits never loaded, so streaming
+ * inside a featured artist's window paid the main block (pre-merge review,
+ * 2026-11-14). No value block — `<Player>` reads the payee from the track's
+ * own feed.
  */
 export function episodeFromFavorite(fav: FavoriteEpisode): Episode | null {
   if (!fav.enclosureUrl || !fav.itemGuid) return null;
   return {
-    id: -fnvHash(`${fav.feedGuid ?? ''}:${fav.itemGuid}`),
+    id: -fnvHash(fav.itemGuid),
     guid: fav.itemGuid,
     podcastGuid: fav.feedGuid,
     // 0 is "not known" to every reader (`feedId > 0` gates each lookup).
@@ -350,6 +344,19 @@ export function sameCurrentTrack(
   return epKey(a.episode) === epKey(b.episode);
 }
 
+/**
+ * One favorite single as a track the shuffle can play, or null when it cannot.
+ *
+ * `episode` is the cached Podcast Index record (it has the real `id` the
+ * player's source effect keys on; a `FavoriteEpisode` has none). Its value
+ * block goes: `payableValue` reads `episode.value` first, so a cached block
+ * would outrank the feed, and with none `valueNotRead` is true and `<Player>`
+ * asks the track's own feed when it starts — the playlist row's path.
+ *
+ * The show is an ALLOWLIST, never a spread, for `queueShowFor`'s reason: it
+ * drives the streaming key, the share URL and the boost note, and the next
+ * field added to a record must not ride onto it by default.
+ */
 export function shuffleTrackFor(fav: FavoriteEpisode, episode: Episode): QueueItem | null {
   if (!isPlayableRow(episode)) return null;
   const image = episode.feedImage ?? fav.image;
