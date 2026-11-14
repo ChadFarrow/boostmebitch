@@ -89,16 +89,20 @@ function graphemes(s: string): string[] {
   return [...s];
 }
 
-/** One request per query, the whole ranked list (at most 200) at once. */
+/**
+ * One request per query, never paged. 100 results, not the 200 the API allows:
+ * a 200-result answer is ~390 KB (its blurred placeholders ride inline), 100 is
+ * ~195 KB — 0.1–0.3 s less on phone data (Chad, 2026-11-14: "a little slow").
+ */
 export function nbSearchUrl(q: string): string {
-  return `${NB_BASE}/api/v1/search?q=${encodeURIComponent(q)}&limit=200`;
+  return `${NB_BASE}/api/v1/search?q=${encodeURIComponent(q)}&limit=100`;
 }
 
 /**
  * What an empty box shows. nostr.build has no trending list; `kind=reaction`
  * is its daily-shuffled browse of reaction GIFs, the nearest thing to it.
  */
-export const NB_BROWSE_URL = `${NB_BASE}/api/v1/gifs?kind=reaction&limit=200`;
+export const NB_BROWSE_URL = `${NB_BASE}/api/v1/gifs?kind=reaction&limit=100`;
 
 /** One result the picker can draw — nothing else from the record survives. */
 export interface NbResult {

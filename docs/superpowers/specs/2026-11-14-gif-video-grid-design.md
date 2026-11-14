@@ -110,10 +110,10 @@ A costs less code. **#562 is superseded** and is closed when this PR opens.
 ### Search
 
 - **nostr.build (boostmebitch.com):** a plain `fetch` to
-  `https://gifs.nostr.build/api/v1/search?q=<q>&limit=200` (no headers); the empty box asks
-  `/api/v1/gifs?kind=reaction&limit=200` (nostr.build has no trending). The query is trimmed, spaces
+  `https://gifs.nostr.build/api/v1/search?q=<q>&limit=100` (no headers); the empty box asks
+  `/api/v1/gifs?kind=reaction&limit=100` (nostr.build has no trending). The query is trimmed, spaces
   collapsed, cut at 500 characters between code points; one Latin letter is not searched. Debounce
-  300 ms (as now). 15 s timeout. Never aborted: a late answer is ignored (the existing `live` flag).
+  250 ms (300 at first; cut on 2026-11-14 with limit 200 → 100, the faded old grid and the first screen loading at once, after Chad found search slow on his phone). 15 s timeout. Never aborted: a late answer is ignored (the existing `live` flag).
   Retried once after 1 s only when the request failed before an answer. 429 → "Too many searches for
   now: give it a minute." Anything else, including the CORS failure an unregistered Origin produces →
   "GIFs are unavailable right now." with a Try again button.

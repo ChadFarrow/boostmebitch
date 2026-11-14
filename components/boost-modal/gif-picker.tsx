@@ -12,7 +12,8 @@ import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { ModalShell } from '@/components/modal-shell';
 
 /** How long a keystroke waits before the GIF source is asked. */
-const SEARCH_DEBOUNCE_MS = 300;
+// 250, the low end of nostr.build's 250–350 range (Chad, 2026-11-14: "a little slow").
+const SEARCH_DEBOUNCE_MS = 250;
 
 /** A 200-result nostr.build answer is well under 1 MB. */
 const NB_MAX_BYTES = 2 * 1024 * 1024;
@@ -29,7 +30,10 @@ const FAILURE_TEXT: Record<Failure, string> = {
 
 type SearchState =
   | { kind: 'idle' }
-  | { kind: 'loading' }
+  // `previous`: the grid shown when the search began, kept on screen, faded,
+  // until the answer replaces it — grey boxes between two searches read as
+  // a picker that forgot what it had (Chad, 2026-11-14).
+  | { kind: 'loading'; previous: GifTile[] | null }
   | { kind: 'ready'; tiles: GifTile[] }
   | { kind: 'error'; failure: Failure };
 
@@ -137,7 +141,8 @@ export function GifPicker({
       && window.matchMedia('(hover: hover)').matches,
   );
   const source = BRAND.gifSource;
-  const tiles = state.kind === 'ready' ? state.tiles : [];
+  const tiles = state.kind === 'ready' ? state.tiles : state.kind === 'loading' && state.previous ? state.previous : [];
+  const searching = state.kind === 'loading' && tiles.length > 0;
   const inputId = useId();
   // Refused BEFORE any fetch and SAID so — the retype is as dangerous as the
   // first paste, so a silent no-op is not enough.
@@ -167,7 +172,10 @@ export function GifPicker({
   useEffect(() => {
     if (!open || secretHit) return;
     let live = true;
-    setState({ kind: 'loading' });
+    setState((s) => ({
+      kind: 'loading',
+      previous: s.kind === 'ready' ? s.tiles : s.kind === 'loading' ? s.previous : null,
+    }));
     const t = setTimeout(async () => {
       const answer = source === 'nostrbuild' ? await searchNostrBuild(searchQ || null) : await searchGiphy(searchQ);
       // A newer search has started: this answer must not replace its grid.
@@ -330,10 +338,11 @@ export function GifPicker({
         <div
           ref={setScrollBox}
           data-gif-scroll=""
-          className="mt-3 min-h-0 flex-1 overflow-y-auto overscroll-contain"
+          data-searching={searching ? "" : undefined}
+          className={`mt-3 min-h-0 flex-1 overflow-y-auto overscroll-contain transition-opacity ${searching ? 'opacity-40' : ''}`}
           aria-busy={state.kind === 'loading'}
         >
-          {state.kind === 'ready' ? (
+          {state.kind === 'ready' || searching ? (
             <GifGrid
               tiles={tiles}
               scrollRoot={scrollBox}

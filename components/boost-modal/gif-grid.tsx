@@ -160,6 +160,11 @@ function Tile({
   const holder = useRef<HTMLSpanElement>(null);
   const [near, setNear] = useState(false);
   const [armed, setArmed] = useState(false); // near for NEAR_DELAY_MS
+  // On screen at its FIRST look: a tile that is already showing when the
+  // answer arrives skips the wait — it exists for flings, and the first screen
+  // is not one (Chad, 2026-11-14: "a little slow"; 150 ms saved there).
+  const [instant, setInstant] = useState(false);
+  const firstLook = useRef(true);
   const [onScreen, setOnScreen] = useState(false);
   const [onScreenLong, setOnScreenLong] = useState(false); // on screen for NEAR_DELAY_MS
   const alpha = alphaSrc(tile.alpha);
@@ -184,7 +189,16 @@ function Tile({
   useEffect(() => {
     const el = button.current;
     if (!zones || !el) return;
-    return zones.watch(el, { near: setNear, onScreen: setOnScreen, ahead: setAhead });
+    const onScreenFirst = (inside: boolean) => {
+      if (firstLook.current) {
+        firstLook.current = false;
+        setInstant(inside);
+      } else if (!inside) {
+        setInstant(false); // once it has left the screen, later arrivals wait
+      }
+      setOnScreen(inside);
+    };
+    return zones.watch(el, { near: setNear, onScreen: onScreenFirst, ahead: setAhead });
   }, [zones]);
 
   // Warm the video this tile will play, a screen and a half ahead, so its own
@@ -201,9 +215,10 @@ function Tile({
 
   useEffect(() => {
     if (!near) { setArmed(false); return; }
+    if (instant) { setArmed(true); return; }
     const t = setTimeout(() => setArmed(true), NEAR_DELAY_MS);
     return () => clearTimeout(t);
-  }, [near]);
+  }, [near, instant]);
 
   useEffect(() => {
     if (!onScreen) { setOnScreenLong(false); return; }

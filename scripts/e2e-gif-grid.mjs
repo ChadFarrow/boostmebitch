@@ -80,10 +80,10 @@ const B = 'https://gifs.nostr.build';
   t.equal('600 characters are cut to 500 code points', [...nb.normalizeNbQuery('x'.repeat(600))].length, 500);
   t.equal('the cut never splits an emoji', nb.normalizeNbQuery('😂'.repeat(600)), '😂'.repeat(500));
   const u = new URL(nb.nbSearchUrl('cat videos'));
-  t.equal('nbSearchUrl asks /api/v1/search with q and limit=200 only',
+  t.equal('nbSearchUrl asks /api/v1/search with q and limit=100 only (Chad, 2026-11-14: half the download)',
     [u.origin + u.pathname, u.searchParams.get('q'), u.searchParams.get('limit'), [...u.searchParams.keys()].length],
-    [`${B}/api/v1/search`, 'cat videos', '200', 2]);
-  t.equal('NB_BROWSE_URL is the daily reaction list', nb.NB_BROWSE_URL, `${B}/api/v1/gifs?kind=reaction&limit=200`);
+    [`${B}/api/v1/search`, 'cat videos', '100', 2]);
+  t.equal('NB_BROWSE_URL is the daily reaction list', nb.NB_BROWSE_URL, `${B}/api/v1/gifs?kind=reaction&limit=100`);
 }
 {
   const key = `${'a'.repeat(64)}.gif`;
@@ -289,6 +289,14 @@ on(async (m) => {
 // Every <video> the page ever makes, counted from before any app script runs.
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
   window.__videosMade = 0;
+  // When the first tile appeared, and when the first tile video started loading.
+  window.__firstTileAt = null; window.__firstLoadstartAt = null;
+  new MutationObserver(() => {
+    if (window.__firstTileAt === null && document.querySelector('[data-gif-key]')) window.__firstTileAt = performance.now();
+  }).observe(document, { subtree: true, childList: true });
+  document.addEventListener('loadstart', (e) => {
+    if (window.__firstLoadstartAt === null && e.target instanceof HTMLVideoElement && e.target.hasAttribute('data-gif-tile')) window.__firstLoadstartAt = performance.now();
+  }, true);
   const ce = Document.prototype.createElement;
   Document.prototype.createElement = function (tag, ...rest) {
     if (String(tag).toLowerCase() === 'video') window.__videosMade++;
@@ -492,6 +500,7 @@ if (BRAND_ID !== 'buddy') {
 const typeQuery = (value) => js(`(() => {
   const el = document.querySelector('input[type="search"]');
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  window.__typedAt = performance.now();
   set.call(el, ${JSON.stringify(value)});
   el.dispatchEvent(new Event('input', { bubbles: true }));
 })()`);
@@ -517,8 +526,10 @@ if (BRAND_ID !== 'bmb') {
   section('2. nostr.build, from the browser (desktop 1280×900)');
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await openPicker(20);
+  const startGap = await js(`window.__firstLoadstartAt !== null && window.__firstTileAt !== null ? Math.round(window.__firstLoadstartAt - window.__firstTileAt) : null`);
+  t.ok('the first screen starts its videos at once (under 120 ms after the tiles appear)', startGap !== null && startGap < 120, `gap ${startGap} ms`);
   const browse = nbStub.log.filter((r) => r.path === '/api/v1/gifs');
-  t.equal('the empty box asks the browse list once', browse.map((r) => [r.kind, r.limit]), [['reaction', '200']]);
+  t.equal('the empty box asks the browse list once', browse.map((r) => [r.kind, r.limit]), [['reaction', '100']]);
   t.equal('no request carries an Authorization header', nbStub.log.filter((r) => r.auth).length, 0);
   t.equal('the grid shows the browse answer', sorted(await gridKeys()), sorted(keysOf(FIX.chibi)));
   t.ok('the attribution links https://nostr.build', await js(`(() => {
@@ -536,12 +547,30 @@ if (BRAND_ID !== 'bmb') {
   await typeQuery('applause');
   t.ok('a typed search shows its answer', await until(`document.querySelector('[data-gif-key="${keysOf(FIX.applause)[0]}"]') !== null`, 8000));
   const asked = nbStub.log.slice(before);
-  t.equal('it asked once, with limit=200', asked.map((r) => [r.path, r.q, r.limit]), [['/api/v1/search', 'applause', '200']]);
+  t.equal('it asked once, with limit=100', asked.map((r) => [r.path, r.q, r.limit]), [['/api/v1/search', 'applause', '100']]);
+  const pause = await js(`(() => { const e = performance.getEntriesByType('resource').filter((x) => x.name.includes('/api/v1/search?q=applause')).at(-1);
+    return e ? Math.round(e.startTime - window.__typedAt) : null; })()`);
+  t.ok('the search goes out 230–300 ms after typing (a 250 ms pause)', pause !== null && pause >= 230 && pause < 300, `${pause} ms`);
   before = nbStub.log.length;
   await typeQuery('Applause ');
   await wait(900);
   t.equal('the same query with a trailing space and a capital sends nothing new', nbStub.log.length - before, 0);
   t.ok('and the grid stays', (await gridKeys()).length > 10);
+  // While a search runs the old GIFs stay, faded, not grey boxes (Chad, 2026-11-14).
+  nbStub.slow.cat = 1500;
+  await typeQuery('cat');
+  await wait(700);
+  t.ok('while a search runs, the old GIFs stay, faded, with no grey boxes', await js(`(() => {
+    const s = document.querySelector('[data-gif-scroll]');
+    const keys = [...document.querySelectorAll('[data-gif-key]')].map((b) => b.dataset.gifKey);
+    return !!s && s.hasAttribute('data-searching') && keys.includes(${JSON.stringify(keysOf(FIX.applause)[0])})
+      && !document.querySelector('[role="dialog"] .animate-pulse');
+  })()`), await dialogText());
+  t.ok('then the new answer replaces them, not faded', await until(`document.querySelector('[data-gif-key="${keysOf(FIX.cat)[0]}"]') !== null
+    && !document.querySelector('[data-gif-scroll]').hasAttribute('data-searching')`, 5000));
+  delete nbStub.slow.cat;
+  await typeQuery('applause');
+  await until(`document.querySelector('[data-gif-key="${keysOf(FIX.applause)[0]}"]') !== null`, 8000);
 
   nbStub.slow.cat = 2000;
   await typeQuery('cat');
