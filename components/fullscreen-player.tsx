@@ -213,6 +213,7 @@ import { NowPlayingAccountMenu } from './nostr-auth/now-playing-account-menu';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 import { LiveEdge } from './player/live-edge';
+import { useFollowActiveRow } from './player/use-follow-active-row';
 
 // THE TOP BAR'S CONTROLS FROM lg:, all five — ← BACK, ⋯, the balance box, the
 // identity chip and ✕ — plus <AuthControl overlay>'s SIGN IN, which carries the
@@ -756,6 +757,26 @@ export function FullscreenPlayer({
   // as the entry moves; null for anything that never resumes (a track, a live
   // item, an HLS URL), so the control is absent there by construction.
   const savedPos = useSavedPosition(current?.episode ?? null, current?.podcast ?? null);
+
+  // THE TRACK LISTS FOLLOW THE PLAYING ROW. Each list below is a `max-h-80`
+  // box of its own, and a 230-track shuffle opened at row 1 with the playing
+  // row out of sight (Chad, 2026-11-14). The playing row's index in the list
+  // the sheet shows, or -1 — the same tests the two panels render on, here
+  // above the early return because the hooks may not sit after it.
+  //
+  // `open && everOpened`, NOT `open`: on the FIRST open of a page the lists do
+  // not exist yet — the subtree mounts a commit later, when the latch's effect
+  // flips — so a hook keyed on `open` alone ran against no box, and the first
+  // open, the one the screenshot shows, still opened at row 1. Measured by
+  // `e2e:shuffle` section 10, which opens on a fresh page every time.
+  const followShuffleIdx = current ? shuffleIndexOf(shuffle?.items ?? null, current.episode) : -1;
+  const followAlbumIdx =
+    current && followShuffleIdx < 0 && isMusicMedium(current.podcast) && episodeQueue.length > 1
+      ? episodeQueue.findIndex((t) => t.id === current.episode.id)
+      : -1;
+  const listsMounted = open && everOpened;
+  const shuffleListRef = useFollowActiveRow<HTMLUListElement>(listsMounted, followShuffleIdx);
+  const albumListRef = useFollowActiveRow<HTMLUListElement>(listsMounted, followAlbumIdx);
 
   if (!current) return null;
 
@@ -1490,7 +1511,7 @@ export function FullscreenPlayer({
                 <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
                   Shuffle · {shuffle.items.length} tracks
                 </p>
-                <ul className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+                <ul ref={shuffleListRef} className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
                   {shuffle.items.map((t, i) => {
                     const active = i === shuffleIdx;
                     const key = epKey(t.episode);
@@ -1529,11 +1550,11 @@ export function FullscreenPlayer({
                 <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
                   Album · {episodeQueue.length} tracks
                 </p>
-                <ul className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+                <ul ref={albumListRef} className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
                   {episodeQueue.map((t, i) => {
                     const active = t.id === episode.id;
                     return (
-                      <li key={t.id}>
+                      <li key={t.id} aria-current={active ? 'true' : undefined}>
                         {/* The active row draws ❚❚, so it has to pause.
                             `play()` on the current track writes
                             `isPlaying: true` over `true` and re-runs neither of

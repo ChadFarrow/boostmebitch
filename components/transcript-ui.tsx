@@ -1,6 +1,6 @@
 'use client';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, Fragment } from 'react';
-import { fmt, scrollBehavior } from '@/lib/format';
+import { centerInScrollBox, fmt, scrollBehavior } from '@/lib/format';
 import type { TranscriptCue } from '@/lib/transcript';
 
 // Split `text` on case-insensitive occurrences of `query`, wrapping matches in a
@@ -75,13 +75,10 @@ export function TranscriptPanel({
     );
   }, [cues, q]);
 
-  // Keep the active line centered by scrolling only this container — scrollIntoView
-  // would bubble up and move the whole page as playback advances. Safe in both
+  // Keep the active line centered by scrolling only this container
+  // (`centerInScrollBox` says why that is not `scrollIntoView`). Safe in both
   // surfaces (player + detail view) because the box is its own bounded scroll
-  // region, so following playback here never yanks the page. Position is measured
-  // with getBoundingClientRect (relative to the box's current scroll), NOT
-  // offsetTop — offsetTop is relative to the nearest *positioned* ancestor, which
-  // isn't the box, so it scrolled to the wrong place.
+  // region, so following playback here never yanks the page.
   useEffect(() => {
     // While filtering, matching rows are shown and the active playing line may be
     // hidden — don't chase it (activeIdx points into the full cues array).
@@ -90,15 +87,12 @@ export function TranscriptPanel({
     const box = boxRef.current;
     const row = activeRef.current;
     if (!box || !row) return;
-    const boxRect = box.getBoundingClientRect();
-    const rowRect = row.getBoundingClientRect();
-    const target = box.scrollTop + (rowRect.top - boxRect.top) - box.clientHeight / 2 + rowRect.height / 2;
     // `scrollBehavior()`, not a literal 'smooth': this one re-fires on every
     // transcript line for the whole length of an episode, so under a
     // reduced-motion setting it is not one animation to sit through, it is
     // continuous drift for an hour. An explicit `behavior` beats the CSS
     // property by spec, so the globals.css block cannot reach this.
-    box.scrollTo({ top: Math.max(0, target), behavior: scrollBehavior() });
+    centerInScrollBox(box, row, scrollBehavior());
   }, [activeIdx, query]);
 
   if (loading && !cues?.length) {

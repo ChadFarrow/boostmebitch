@@ -35,6 +35,13 @@
 //      before it were out of reach (review of the merged #541/#545/#547). Here
 //      the early check answers "alive", so the file joins the dead list only
 //      through its own load error — the case a 403 or a bad format takes.
+//  10. The list follows the playing row. A 230-track shuffle opened at row 1
+//      with the playing row out of sight (Chad, desktop, beta, 2026-11-14:
+//      "it is highlighted it just doesnt auto scroll"). With 40 singles: the
+//      sheet opens with row 21 in the middle of the list's box, ⏭ on the open
+//      sheet takes the list along, a list the listener scrolled away is left
+//      alone until the track changes, and only the BOX scrolls — never the
+//      sheet or the page. The album panel does the same for a 40-track album.
 //
 // Signed out: no key, so nothing reaches a relay. The shuffle's own requests are
 // answered here; anything else goes to the dev server untouched.
@@ -103,6 +110,22 @@ const ALBUM_EPISODES = [0, 1, 2].map((k) => ({
 }));
 const SHOW_GUID = guid('show', 0);
 const SHOW = { id: 0, podcastGuid: SHOW_GUID, title: 'E2E Show', author: 'e2e', medium: 'podcast', addedAt: 1700000000000 };
+// Section 10: lists longer than their `max-h-80` box. Eight rows fit in it, so
+// the fixtures above never scroll.
+const LONG = 40;
+const MANY = Array.from({ length: LONG }, (_, i) => ({
+  itemGuid: guid('many', i), feedGuid: guid('mfeed', i),
+  title: `Long single ${i}`, podcastTitle: `Long album of ${i}`, medium: 'music',
+  addedAt: 1700000000000 + i, enclosureUrl: `${APP}/api/e2e-audio.wav?n=${100 + i}`,
+}));
+const LONG_ALBUM_GUID = guid('album', 1);
+const LONG_ALBUM_ID = 900002;
+const LONG_ALBUM = { id: LONG_ALBUM_ID, podcastGuid: LONG_ALBUM_GUID, title: 'E2E Long Album', author: 'e2e', medium: 'music', addedAt: 1700000000000 };
+const LONG_ALBUM_EPISODES = Array.from({ length: LONG }, (_, k) => ({
+  id: 7100 + k, guid: guid('ltrack', k), podcastGuid: LONG_ALBUM_GUID, feedId: LONG_ALBUM_ID,
+  title: `Long track ${k}`, enclosureUrl: `${APP}/api/e2e-audio.wav?long=${k}`, episode: k + 1,
+  value: { model: { type: 'lightning', method: 'keysend' }, recipients: [{ name: 'album', type: 'node', address: '02album', split: 100 }] },
+}));
 const PODCAST_EPS = [0, 1].map((k) => ({
   itemGuid: guid('pep', k), feedGuid: SHOW_GUID, title: `Talk ${k}`, podcastTitle: 'E2E Show',
   medium: 'podcast', addedAt: 1700000000000 + k,
@@ -209,6 +232,14 @@ page.on(async (m) => {
       await fulfillJson(requestId, { podcast: ALBUM });
       return;
     }
+    if (u.pathname === '/api/feed' && q.get('id') === String(LONG_ALBUM_ID)) {
+      await fulfillJson(requestId, { podcast: { ...LONG_ALBUM, url: 'https://feeds.example.invalid/long-album.xml' }, episodes: LONG_ALBUM_EPISODES });
+      return;
+    }
+    if (u.pathname === '/api/by-guid' && q.get('guid') === LONG_ALBUM_GUID) {
+      await fulfillJson(requestId, { podcast: LONG_ALBUM });
+      return;
+    }
     await send('Fetch.continueRequest', { requestId });
   } catch {
     // The page navigated away under a paused request. Nothing to answer.
@@ -218,12 +249,15 @@ await send('Page.enable');
 await send('Runtime.enable');
 
 // ---- helpers --------------------------------------------------------------
-async function open({ items = SINGLES, cached = SINGLES.map((_, i) => i), queue = null, feeds = true } = {}) {
+async function open({ items = SINGLES, cached = SINGLES.map((_, i) => i), queue = null, feeds = true, longAlbum = false } = {}) {
   await send('Page.navigate', { url: `${APP}/privacy` });
   await until('document.readyState === "complete"');
   const now = Date.now();
   const seed = {
-    'bmb:favorites:guest': JSON.stringify(feeds ? { [ALBUM_GUID]: ALBUM, [SHOW_GUID]: SHOW } : {}),
+    'bmb:favorites:guest': JSON.stringify({
+      ...(feeds ? { [ALBUM_GUID]: ALBUM, [SHOW_GUID]: SHOW } : {}),
+      ...(longAlbum ? { [LONG_ALBUM_GUID]: LONG_ALBUM } : {}),
+    }),
     'bmb:favepisodes:guest': JSON.stringify(Object.fromEntries([...items, ...PODCAST_EPS].map((e) => [e.itemGuid, e]))),
   };
   for (const i of cached) {
@@ -531,6 +565,128 @@ console.log('\n9. ⏮/⏭ walk past a track whose file is dead');
   t.ok('⏭ walks past it too, to the third track', await playsN(order[2]), `on n=${await srcN()}`);
   t.equal('…still without asking for the dead file', deadAsked, asked);
   deadN = null;
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n10. The track list follows the playing row');
+{
+  const SHUFFLE_UL = `document.querySelector('[data-shuffle-panel] ul')`;
+  const ALBUM_UL = `[...document.querySelectorAll('p')].find((p) => /^Album · ${LONG} tracks$/.test(p.textContent.trim()))?.parentElement.querySelector('ul')`;
+  // Where the playing row sits in its list's box, and whether anything ABOVE
+  // the box scrolled: the sheet's own scroll row on a phone, or the page. Every
+  // ancestor up to the fixed sheet opened at 0 and nobody touched it here, so a
+  // non-zero one is a scroll this feature caused (`scrollIntoView` does that).
+  const listState = async (ul) => JSON.parse(await js(`JSON.stringify((() => {
+    const ul = ${ul};
+    if (!ul) return null;
+    const li = ul.querySelector('li[aria-current="true"]');
+    const moved = [];
+    for (let el = ul.parentElement; el; el = el.parentElement) {
+      if (el.scrollTop) moved.push(el.tagName.toLowerCase() + '=' + Math.round(el.scrollTop));
+      if (getComputedStyle(el).position === 'fixed') break;
+    }
+    if (!li) return { index: -1, scrollTop: Math.round(ul.scrollTop), moved };
+    const u = ul.getBoundingClientRect(), r = li.getBoundingClientRect();
+    return {
+      index: [...ul.children].indexOf(li),
+      scrollTop: Math.round(ul.scrollTop),
+      inView: r.top >= u.top - 1 && r.bottom <= u.bottom + 1,
+      offCenter: Math.round(r.top + r.height / 2 - (u.top + u.height / 2)),
+      moved,
+    };
+  })())`));
+  // Smooth scrolls take a moment; poll until the row is centred (one row of
+  // slack) rather than sleeping a guess.
+  const centred = async (ul, index, ms = 4000) => {
+    const end = Date.now() + ms;
+    let s = await listState(ul);
+    while (Date.now() < end && !(s && s.index === index && s.inView && Math.abs(s.offCenter) <= 20)) {
+      await wait(100);
+      s = await listState(ul);
+    }
+    return s;
+  };
+  const openSheet = async (ul) => {
+    await js(`document.querySelector('[aria-label^="Open fullscreen player"]')?.click()`);
+    await until(`!!(${ul})`, 5000);
+    // The sheet slides up for 300 ms; let it come to rest.
+    for (let last = null, i = 0; i < 40; i++) {
+      const now = await js(`Math.round((${ul}).getBoundingClientRect().top)`);
+      if (now === last) break;
+      last = now; await wait(150);
+    }
+  };
+  const closeSheet = async () => {
+    await js(`document.querySelector('[aria-label="Close fullscreen player"]')?.click()`);
+    await wait(400);
+  };
+  const sheetNext = () => js(`(() => {
+    let box = document.querySelector('[data-shuffle-panel]'), b = null;
+    while (box && !b) { box = box.parentElement; b = box?.querySelector('button[aria-label="Next in shuffle"]'); }
+    if (!b || b.disabled) return false; b.click(); return true; })()`);
+
+  for (const [name, width, height, mobile] of [['1440', 1440, 900, false], ['390', 390, 844, true]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: mobile ? 3 : 1, mobile });
+    await open({ items: MANY, cached: [] });
+    t.ok(`${name}: SHUFFLE starts`, await pressShuffle());
+    await waitSrc((s) => /[?&]n(=|%3D)1\d\d(\D|$)/.test(s));
+    // Twenty steps with the sheet CLOSED: the screenshot's case, where the
+    // playing row was far down a list nobody had looked at yet.
+    for (let i = 0; i < 20; i++) { await pressMini('/^Next/'); await wait(200); }
+    await openSheet(SHUFFLE_UL);
+    let s = await centred(SHUFFLE_UL, 20);
+    t.ok(`${name}: the sheet opens with the playing row (21 of ${LONG}) in the middle of the list`,
+      s?.index === 20 && s.inView && Math.abs(s.offCenter) <= 20, JSON.stringify(s));
+    t.equal(`${name}: …by scrolling the list's box only — not the sheet, not the page`, s?.moved, []);
+
+    for (const k of [21, 22]) {
+      t.ok(`${name}: ⏭ on the open sheet lands (to row ${k + 1})`, await sheetNext());
+      s = await centred(SHUFFLE_UL, k);
+      t.ok(`${name}: …and the list follows it`, s?.index === k && s.inView && Math.abs(s.offCenter) <= 20, JSON.stringify(s));
+    }
+    t.equal(`${name}: still nothing above the box scrolled`, s?.moved, []);
+
+    // The listener scrolls back to the top to read. The track keeps playing,
+    // so the sheet re-renders on every `timeupdate` — none of which may pull
+    // the list back. Only the next track does.
+    await js(`(() => { const ul = ${SHUFFLE_UL}; ul.scrollTo({ top: 0, behavior: 'instant' }); return true; })()`);
+    await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.3; })()`, 8000);
+    const before = await js(`document.querySelector('audio').currentTime`);
+    await wait(1500);
+    s = await listState(SHUFFLE_UL);
+    const after = await js(`document.querySelector('audio').currentTime`);
+    t.ok(`${name}: a list the listener scrolled away stays where they put it while the track plays`,
+      s?.scrollTop === 0 && after > before, JSON.stringify({ s, before, after }));
+    t.ok(`${name}: ⏭ lands (to row 24)`, await sheetNext());
+    s = await centred(SHUFFLE_UL, 23);
+    t.ok(`${name}: …and the next track brings the list back to it`, s?.index === 23 && s.inView && Math.abs(s.offCenter) <= 20, JSON.stringify(s));
+    // A SECOND open on the same page: the lists are mounted already, so this
+    // is the other path in — the close resets the hook, the open catches up.
+    await closeSheet();
+    for (let i = 0; i < 5; i++) { await pressMini('/^Next/'); await wait(200); }
+    await openSheet(SHUFFLE_UL);
+    s = await centred(SHUFFLE_UL, 28);
+    t.ok(`${name}: closed, five tracks on, opened again: row 29 is in the middle`,
+      s?.index === 28 && s.inView && Math.abs(s.offCenter) <= 20, JSON.stringify(s));
+    await closeSheet();
+
+    // The album panel: the same list for a track feed, the same follow.
+    await open({ items: MANY, cached: [], longAlbum: true });
+    await js(`(() => { const li = [...document.querySelectorAll('section ul > li')].find((x) => x.textContent.includes('E2E Long Album'));
+      (li?.querySelector('button') ?? li)?.click(); return !!li; })()`);
+    t.ok(`${name}: the long album opens`, await until(`document.body.textContent.includes('Long track 39')`, 10000));
+    await wait(500);
+    await js(`(() => { const li = [...document.querySelectorAll('ul > li')].find((x) => /Long track 25(\\D|$)/.test(x.textContent));
+      li?.click(); return !!li; })()`);
+    t.ok(`${name}: a tap on track 26 plays it`, await waitSrc((s) => /long(=|%3D)25(\D|$)/.test(s)));
+    await openSheet(ALBUM_UL);
+    s = await centred(ALBUM_UL, 25);
+    t.ok(`${name}: the album panel opens with track 26 of ${LONG} in the middle of the list`,
+      s?.index === 25 && s.inView && Math.abs(s.offCenter) <= 20, JSON.stringify(s));
+    t.equal(`${name}: …by scrolling the list's box only`, s?.moved, []);
+    await closeSheet();
+  }
+  await send('Emulation.clearDeviceMetricsOverride');
 }
 
 // ---------------------------------------------------------------------------
