@@ -368,13 +368,17 @@ if (BRAND_ID !== 'buddy') {
   await clickButton('/^close$/i');
   t.ok('close releases every video', await until(`document.querySelectorAll('video[data-gif-tile]').length === 0`, 3000));
   await clickButton('/add a gif/i');
-  await until(`document.querySelectorAll('[data-gif-key][data-state="playing"]').length > 0`, 15000);
+  const replays = await until(`document.querySelectorAll('[data-gif-key][data-state="playing"]').length > 0`, 15000);
+  t.ok('the reopened grid plays', replays, JSON.stringify((await tiles()).slice(0, 6).map((x) => [x.state, x.video])));
   await wait(1500);
   t.ok('a second opening reuses the pool', (await js('window.__videosMade')) <= made,
     `made ${await js('window.__videosMade')} after reopening, ${made} before`);
 
+  await until(`document.querySelectorAll('[data-gif-key][data-state="playing"]').length > 0`, 10000);
   all = await tiles();
   const pickTile = all.find((x) => x.state === 'playing');
+  t.ok('a tile is playing when the pick is made', !!pickTile, JSON.stringify(all.slice(0, 6).map((x) => [x.state, x.video])));
+  if (!pickTile) await exit(1);
   await js(`document.querySelector('[data-gif-key="${pickTile.key}"]').click()`);
   t.ok('a click picks: the picker closes', await until(`!document.querySelector('[data-gif-scroll]')`, 3000));
   t.equal('the picked GIF shows above the message', await js(`document.querySelector('img[alt="The GIF this boost will carry"]')?.src ?? null`),
