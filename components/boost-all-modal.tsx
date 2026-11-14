@@ -5,13 +5,14 @@ import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, receiptRefUrls } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { getErrorMessage, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
-import { BRAND, resolveSenderName } from '@/lib/brand';
+import { getErrorMessage, hasValueRecipients, payableValue, playlistBoostContext, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { BRAND, noteBrandFor, resolveSenderName } from '@/lib/brand';
+import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
@@ -108,6 +109,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // one aggregator and "Unknown" in the next. Applies to every leg — per-track,
   // host share, summary. Component scope because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
+
+  // The NOTE's words — Buddy's for an episode played from a playlist BMB hosts on
+  // the production Buddy origin, on either deploy (`noteBrandFor`, lib/brand.ts) —
+  // and the show it names,
+  // which for a playlist episode is its OWN feed. The boostagrams never change:
+  // `app_name` and `sender_name` name the deploy that paid.
+  const ctx = useMemo(
+    () => playlistBoostContext(podcast, episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH),
+    [podcast, episode],
+  );
+  const noteBrand = noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN);
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
   // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
@@ -233,11 +245,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     let paidSats = 0;
     // The show and item the summary receipt names. Value-block legs are never
     // zaps (see payOne), so this is the only NIP-73 pair a boost-all signs.
+    // Its URL hints are in the NOTE's brand — the deploy that signs the receipt.
     const hostRefs: Nip73Refs = {
       podcastGuid: podcast.podcastGuid,
       episodeGuid: episode.guid,
-      podcastUrl: showShareUrl(podcast.podcastGuid) ?? undefined,
-      episodeUrl: showShareUrl(podcast.podcastGuid, episode.guid) ?? undefined,
+      ...receiptRefUrls(noteBrand, podcast.podcastGuid, episode.guid),
     };
 
     for (let i = 0; i < splits.length; i++) {
@@ -432,11 +444,15 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       uuid: randomId(),
     };
 
+    // In the NOTE's words: its brand's default sender name and the show the
+    // episode belongs to (see `ctx` above). `senderName` stays on the wire.
+    const noteSenderName = resolveSenderName(name, anonymous, noteBrand);
     const lines: string[] = ['⚡ Boost ⚡', ''];
     if (boostMsg.trim()) lines.push(boostMsg.trim(), '');
-    // Mirrors formatContent's attribution line, off the same `senderName` the
-    // boostagrams carry — so an anonymous summary note reads as
-    // DEFAULT_SENDER_NAME rather than attributing itself back to the user.
+    // Mirrors formatContent's attribution line, off the same anonymity rule the
+    // boostagrams' `senderName` follows (in the note's brand) — so an anonymous
+    // summary note reads as the default name rather than attributing itself
+    // back to the user.
     // The reconcilable half, and the reason this line changed. This note is the
     // ONLY artifact carrying the album total; every wire record carries one
     // track's share, and nothing in a boostagram says it is 1 of N. So a reader
@@ -464,7 +480,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         ? ` (${uniform.track.sats} to the artist + ${uniform.host.sats} to the show, each)`
         : ` (${uniform.track.sats} each)`;
     lines.push(
-      `${senderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats${each}`,
+      `${noteSenderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${ctx.show.title} for ${totalSats} sats${each}`,
     );
     if (trackList.length) {
       lines.push('');
@@ -483,6 +499,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     const summaryReceipt = await mintSummaryReceipt({
       paidSats, refs: hostRefs, relays,
       as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
+      brand: noteBrand,
     });
     try {
       // User's own key only when signed in AND they picked "Post to my Nostr
@@ -492,10 +509,12 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         ? await publishBoostNote({
             podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
             mentions, summaryReceipt: summaryReceipt ?? undefined,
+            brand: noteBrand, senderName: noteSenderName,
           })
         : await publishBoostNoteViaSite({
             podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
             mentions, summaryReceipt: summaryReceipt ?? undefined,
+            brand: noteBrand, senderName: noteSenderName,
           });
       if (cancelled.current) return;
       setPubState({ kind: 'done', note });
@@ -693,6 +712,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                 onShareChange={handleShareNostrChange}
                 onShareAsChange={handleShareAsChange}
                 noteNoun="One summary note"
+                brand={noteBrand}
               />
             </>
           )}
