@@ -29,6 +29,12 @@
 //      shuffled track starts with its value block unread, and the splits row
 //      above the list unmounted until `/api/item-value` answered, so the list
 //      jumped up 44px and back on every track (Chad, desktop, beta, 2026-11-13).
+//   9. ⏮/⏭ walk PAST a track whose file is dead. The skip that passed it moved
+//      only forward, so ⏮ from the track after it landed on it again, and the
+//      skip carried the listener back to where they pressed from: the tracks
+//      before it were out of reach (review of the merged #541/#545/#547). Here
+//      the early check answers "alive", so the file joins the dead list only
+//      through its own load error — the case a 403 or a bad format takes.
 //
 // Signed out: no key, so nothing reaches a relay. The shuffle's own requests are
 // answered here; anything else goes to the dev server untouched.
@@ -111,6 +117,8 @@ const pageErrors = [];
 // What the shuffle asks, and how this run answers.
 let batchMode = 'ok';            // 'ok' | '429' | 'slow'
 let itemValueDelay = 0;          // ms before /api/item-value answers (section 8)
+let deadN = null;                // section 9: this single's file answers 410 Gone
+let deadAsked = 0;               // …and how often the player asked for it
 const seen = { get: 0, batch: 0, itemValue: [] };
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const fulfillJson = (requestId, body, responseCode = 200) => send('Fetch.fulfillRequest', {
@@ -133,6 +141,21 @@ page.on(async (m) => {
     // RANGES ARE ANSWERED, because the test seeks. With `accept-ranges: none`
     // Chrome reports `seekable` as [0, 0] and a seek lands on 0 — measured on
     // this file — so the track never reached its end and no `ended` fired.
+    if (u.pathname === '/api/e2e-audio.wav' && deadN !== null && q.get('n') === String(deadN)) {
+      deadAsked += 1;
+      await send('Fetch.fulfillRequest', {
+        requestId, responseCode: 410,
+        responseHeaders: [{ name: 'content-type', value: 'text/plain;charset=UTF-8' }],
+        body: Buffer.from('Gone').toString('base64'),
+      });
+      return;
+    }
+    // Section 9: the early check says every file is alive, so the dead one is
+    // found only by its load error.
+    if (u.pathname === '/api/audio-probe' && deadN !== null) {
+      await fulfillJson(requestId, { status: 206 });
+      return;
+    }
     if (u.pathname === '/api/e2e-audio.wav') {
       const range = Object.entries(request.headers).find(([k]) => k.toLowerCase() === 'range')?.[1];
       const m = range && /bytes=(\d+)-(\d*)/.exec(range);
@@ -478,6 +501,37 @@ for (const [name, width, height, mobile] of [['1440', 1440, 900, false], ['390',
   await wait(300);
 }
 await send('Emulation.clearDeviceMetricsOverride');
+
+// ---------------------------------------------------------------------------
+console.log('\n9. ⏮/⏭ walk past a track whose file is dead');
+{
+  const onN = (n) => `/[?&]n(?:=|%3D)${n}(\\D|$)/.test(document.querySelector('audio')?.currentSrc ?? '')`;
+  const playsN = (n, ms = 12000) => until(`(() => { const a = document.querySelector('audio');
+    return !!a && !a.paused && a.currentTime > 0.2 && ${onN(n)}; })()`, ms);
+  await open({ items: SINGLES.slice(0, 3), cached: [0, 1, 2] });
+  t.ok('SHUFFLE starts', await pressShuffle());
+  const order = (await panel()).keys.map(nOf);
+  t.equal('three tracks in the shuffle', order.length, 3);
+  // The order is random; the MIDDLE one is made dead, after the press, so a
+  // track sits on each side of it.
+  deadN = order[1];
+  deadAsked = 0;
+  t.ok('the first track plays', await playsN(order[0]));
+  await endTrack();
+  t.ok('…the dead second one is passed over and the third plays', await playsN(order[2]), `on n=${await srcN()}`);
+  const asked = deadAsked;
+  t.ok('…after the player tried the dead file once', asked >= 1, `asked ${asked}`);
+  t.equal('⏮ is enabled', (await miniPrev())?.disabled, false);
+  await pressMini('/^Previous/');
+  t.ok('⏮ lands on the FIRST track, past the dead one', await playsN(order[0]), `on n=${await srcN()}`);
+  await wait(1500);
+  t.equal('…and stays there: no skip carried it forward again', await srcN(), order[0]);
+  t.equal('the player did not ask for the dead file again', deadAsked, asked);
+  await pressMini('/^Next/');
+  t.ok('⏭ walks past it too, to the third track', await playsN(order[2]), `on n=${await srcN()}`);
+  t.equal('…still without asking for the dead file', deadAsked, asked);
+  deadN = null;
+}
 
 // ---------------------------------------------------------------------------
 t.equal('no uncaught page errors', pageErrors, []);

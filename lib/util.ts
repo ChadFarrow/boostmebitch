@@ -882,16 +882,23 @@ export function pruneNewRows(
  * `<TransportControls>` decides whether the buttons are enabled. Giving the
  * queue its own copy of the loop is how those two come to disagree, which is
  * the dead-control bug the comment above is about. One walk, four callers.
+ *
+ * `passOver` names more rows to walk past — the files a press of ⏮/⏭ must not
+ * land on (`listenerPassesOver` in lib/store.ts). It is a second argument, not
+ * a stricter `isPlayableRow`, because the steps a list takes ON ITS OWN do not
+ * pass: they land on a dead file so `<Player>` can log it, drain it, or say why
+ * the list stopped. Omitted, the walk is exactly the one above.
  */
 export function nextPlayableIndexBy<T>(
   queue: readonly T[],
   from: number,
   step: 1 | -1,
   row: (item: T) => Pick<Episode, 'enclosureUrl' | 'unresolved'>,
+  passOver?: (item: T) => boolean,
 ): number {
   if (from < 0) return -1;
   for (let i = from + step; i >= 0 && i < queue.length; i += step) {
-    if (isPlayableRow(row(queue[i]))) return i;
+    if (isPlayableRow(row(queue[i])) && !passOver?.(queue[i])) return i;
   }
   return -1;
 }

@@ -9,7 +9,7 @@ import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
-  addToHistory, epKey, insertShuffled, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
+  addToHistory, epKey, insertShuffled, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndexBy,
   playsAsTracks, queueShowFor, shuffleIndexOf, speedShowKey, trimForQueue,
 } from './util';
 import { savedStartSec } from './resume-position';
@@ -83,9 +83,31 @@ interface AppState {
    * last track left `isPlaying` true over an element that had stopped, so the
    * transport drew ❚❚ over silence — the glyph lying about what a press will
    * do. Callers that only want the move ignore the return.
+   *
+   * **These two are the LISTENER's ⏮/⏭** — `<TransportControls>` and the lock
+   * screen — and they walk past a file this tab knows is dead
+   * (`listenerPassesOver`). A list moving on by itself uses `stepOnEnd`.
    */
   playNext: () => boolean;
   playPrev: () => boolean;
+  /**
+   * The step a feed whose rows are tracks takes when one ENDS (`<Player>`'s
+   * `stepOnItsOwn`): `playNext` without the pass over dead files. That path
+   * lands on a dead file on purpose — `advanceOnItsOwn` logs and steps past
+   * it, and a dead LAST track reaches the element, whose message says why the
+   * album stopped. Passing over it here would end the album in silence.
+   */
+  stepOnEnd: () => boolean;
+  /**
+   * Enclosure URLs this tab knows are DEAD: the early check (or the check after
+   * a load error) got 404/410 from the host, or the element refused the file
+   * while our server answered (`<Player>`'s `onMediaError`). Memory only — a
+   * reload asks again. In the store, not a module variable, so ⏮/⏭ redraw
+   * when a file joins it: `<TransportControls>` disables a button whose only
+   * rows left are dead.
+   */
+  goneFiles: ReadonlySet<string>;
+  markFileGone: (url: string) => void;
   /**
    * What a track ENDING would move to, without moving — or null.
    *
@@ -663,6 +685,37 @@ function shuffleRow(item: QueueItem): Partial<AppState> {
   };
 }
 
+/**
+ * Must a press of ⏮/⏭ walk PAST this row? Yes when its file is in `gone` and
+ * the phone holds no copy of it.
+ *
+ * WHY THE PRESS, AND NOT ONLY THE ENDING (review of the merged #541/#545/#547,
+ * 2026-11-14): the skip in `<Player>` worked only when a list moved on by
+ * itself. A press landed on the dead file, and
+ * - **⏮ could not get back past a dead track.** In a shuffle C → D (dead,
+ *   skipped) → E, ⏮ on E loaded D, D failed, and the skip moved FORWARD — to E
+ *   again, at 0:00. Every press did the same, so C was out of reach.
+ * - **on the lock screen it loaded a known-dead file in the background**, and
+ *   on an iPhone that load error ends the page's audio (#555): the next track
+ *   sits at 0:00 under a page that believes it plays. Since #547 iOS shows
+ *   ⏮/⏭ there for music, so a press reached this.
+ *
+ * A DOWNLOADED song plays from the phone whatever its host answers — the
+ * early check's own rule — and `localKeyFor` answering `undefined` (the
+ * download index not read yet) is "maybe", so that row is landed on too.
+ */
+export function listenerPassesOver(gone: ReadonlySet<string>, episode: Episode): boolean {
+  const url = episode.enclosureUrl;
+  if (!url || !gone.has(url)) return false;
+  return downloadManager.localKeyFor(episode) === null;
+}
+
+/** `listenerPassesOver` for one state, or nothing to pass when no file is dead. */
+function listenerPass(s: AppState): ((e: Episode) => boolean) | undefined {
+  const gone = s.goneFiles;
+  return gone.size ? (e) => listenerPassesOver(gone, e) : undefined;
+}
+
 let shuffleSeq = 0;
 
 /**
@@ -683,9 +736,17 @@ let shuffleSeq = 0;
  * rather than looked up, because that array is one feed's display order and
  * every row in it belongs to the same show. **That is the sentence the listen
  * queue breaks**, and why a queued item carries its own.
+ *
+ * `passOver` is the listener's press (`listenerPass`): the same walk, past the
+ * files this tab knows are dead, in all three lists.
  */
-function stepTo(s: AppState, step: 1 | -1): Partial<AppState> | null {
+function stepTo(
+  s: AppState,
+  step: 1 | -1,
+  passOver?: (e: Episode) => boolean,
+): Partial<AppState> | null {
   if (!s.current) return null;
+  const passItem = passOver && ((i: QueueItem) => passOver(i.episode));
 
   // The shuffle is asked FIRST for its own tracks. A hearted single can also
   // sit in Up Next; asked second, reaching it would drain it from Up Next and
@@ -694,15 +755,15 @@ function stepTo(s: AppState, step: 1 | -1): Partial<AppState> | null {
   const sIdx = shuffleIndex(s);
   if (sIdx >= 0) {
     const items = s.shuffle!.items;
-    const to = nextPlayableIndexBy(items, sIdx, step, queuedEpisode);
+    const to = nextPlayableIndexBy(items, sIdx, step, queuedEpisode, passItem);
     return to < 0 ? null : shuffleRow(items[to]);
   }
 
   const qIdx = queueIndexOf(s);
-  if (qIdx >= 0) return queueStepTo(s, qIdx, step);
+  if (qIdx >= 0) return queueStepTo(s, qIdx, step, passItem);
 
   const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
-  const to = nextPlayableIndex(s.episodeQueue, idx, step);
+  const to = nextPlayableIndexBy(s.episodeQueue, idx, step, (e) => e, passOver);
   if (to < 0) return null;
   const episode = s.episodeQueue[to];
   return {
@@ -730,14 +791,26 @@ function stepTo(s: AppState, step: 1 | -1): Partial<AppState> | null {
  * something other than what it draws. A skip glyph that stops playback and
  * empties the last row is drawn wrong. The last item still leaves — when it
  * FINISHES, which is `handlePlaybackEnded`'s job.
+ *
+ * **Forward also drains the DEAD items a press walked over** (`passOver`) —
+ * the automatic skip drains those too (`skipDeadTrack`), and one left behind
+ * would sit in Up Next for good. Only those: a row the walk passes for having
+ * no audio stays where it was, as it always has. Back still removes nothing.
  */
-function queueStepTo(s: AppState, qIdx: number, step: 1 | -1): Partial<AppState> | null {
-  const to = nextPlayableIndexBy(s.listenQueue, qIdx, step, queuedEpisode);
+function queueStepTo(
+  s: AppState,
+  qIdx: number,
+  step: 1 | -1,
+  passOver?: (i: QueueItem) => boolean,
+): Partial<AppState> | null {
+  const to = nextPlayableIndexBy(s.listenQueue, qIdx, step, queuedEpisode, passOver);
   if (to < 0) return null;
   const item = s.listenQueue[to];
   return {
     // Filtering by INDEX off the pre-step array, never by key off the new one.
-    ...(step === 1 ? { listenQueue: s.listenQueue.filter((_, i) => i !== qIdx) } : null),
+    ...(step === 1
+      ? { listenQueue: s.listenQueue.filter((it, i) => i !== qIdx && !(i > qIdx && i < to && passOver?.(it))) }
+      : null),
     current: { episode: item.episode, podcast: item.podcast },
     isPlaying: true,
     // Same resume rule as `play()` and the episode-list `stepTo`. Each item
@@ -866,8 +939,14 @@ export const useApp = create<AppState>((set, get) => ({
   // arithmetic hands the player a dead track, which reports as playing and is
   // silent. See `isPlayableRow`; `<TransportControls>` reads the same helper so
   // ⏮/⏭ cannot be enabled over a step these refuse to take.
-  playNext: () => applyStep(stepTo(get(), 1), set, get),
-  playPrev: () => applyStep(stepTo(get(), -1), set, get),
+  playNext: () => applyStep(stepTo(get(), 1, listenerPass(get())), set, get),
+  playPrev: () => applyStep(stepTo(get(), -1, listenerPass(get())), set, get),
+  stepOnEnd: () => applyStep(stepTo(get(), 1), set, get),
+  goneFiles: new Set<string>(),
+  // A NEW set on each addition, so a subscriber redraws; the same one when the
+  // URL is already there, so nothing redraws for nothing.
+  markFileGone: (url) =>
+    set((s) => (s.goneFiles.has(url) ? {} : { goneFiles: new Set(s.goneFiles).add(url) })),
   peekNextOnEnd: () => {
     const s = get();
     if (!s.current) return null;
@@ -1386,4 +1465,10 @@ export function dropRefusedPlaybackRate(refused: number): void {
   // A refused speed held by neither key (it cannot be today) must still leave
   // the store, or the tile names a speed the element is not playing.
   useApp.setState({ playbackRate: next === refused ? 1 : next });
+}
+
+/** Does this tab know the file is dead? (`goneFiles`.) For `<Player>` and the
+ *  early check, which read it outside a render. */
+export function isKnownGoneFile(url: string | undefined): boolean {
+  return !!url && useApp.getState().goneFiles.has(url);
 }

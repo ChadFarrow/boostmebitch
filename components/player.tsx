@@ -8,7 +8,7 @@ import {
   type HtmlPortalNode,
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
-import { dropRefusedPlaybackRate, isMusicItem, resolvePlaybackRate, useApp } from '@/lib/store';
+import { dropRefusedPlaybackRate, isKnownGoneFile, isMusicItem, resolvePlaybackRate, useApp } from '@/lib/store';
 import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
@@ -18,7 +18,7 @@ import { useNowPlaying } from './player/use-now-playing';
 import { useShowSpeed } from './player/use-show-speed';
 import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
-import { isKnownGoneFile, serverAnswers, useNextProbe } from './player/use-next-probe';
+import { serverAnswers, useNextProbe } from './player/use-next-probe';
 import { fmt } from '@/lib/format';
 import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
@@ -191,7 +191,9 @@ export function Player() {
   const seekReq = useApp((s) => s.seekReq);
   const setPlaying = useApp((s) => s.setPlaying);
   const setPosition = useApp((s) => s.setPosition);
-  const playNext = useApp((s) => s.playNext);
+  // NOT `playNext`: that is the listener's ⏭, which walks past a dead file.
+  // A list moving on by itself lands on it, so `advanceOnItsOwn` can log it.
+  const stepOnEnd = useApp((s) => s.stepOnEnd);
   const handlePlaybackEnded = useApp((s) => s.handlePlaybackEnded);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const playbackRate = useApp((s) => s.playbackRate);
@@ -1487,7 +1489,7 @@ export function Player() {
   function stepOnItsOwn(): 'queue' | 'tracks' | null {
     if (handlePlaybackEnded()) return 'queue';
     const now = useApp.getState().current;
-    return now && playsAsTracks(now.podcast) && playNext() ? 'tracks' : null;
+    return now && playsAsTracks(now.podcast) && stepOnEnd() ? 'tracks' : null;
   }
 
   /**
@@ -1559,6 +1561,13 @@ export function Player() {
         const key = epKey(item.episode);
         setAudioErr(null);
         void serverAnswers(item.episode.enclosureUrl).then((answered) => {
+          // The element refused the file while the network reaches us, so it
+          // is dead for this tab whatever the host's status was — a 403, a
+          // format this browser cannot play. Into `goneFiles`, so a later ⏮
+          // walks PAST it: without this, ⏮ from the track after it landed on
+          // it again, and the skip carried the listener forward to where they
+          // pressed from (review of the merged #541/#545/#547).
+          if (answered) useApp.getState().markFileGone(item.episode.enclosureUrl);
           const now = useApp.getState().current;
           if (!now || epKey(now.episode) !== key) return;
           if (answered && skipDeadTrack(item)) return;
