@@ -610,6 +610,19 @@ export interface HistoryItem extends QueueItem {
 }
 
 /**
+ * `/api/moved`: where a favorite on a CLOSED host (`lib/moved-feeds.ts`) may
+ * have gone under a NEW guid. Only offered, never followed on its own — see
+ * `movedCandidates`. A same-guid copy is followed by the resolvers instead, so
+ * it answers with no candidates.
+ */
+export interface MovedAnswer {
+  /** The closed service the feed was on (`'RSS Blue'`), or null when it is not on one. */
+  service: string | null;
+  /** At most three; each with its items, value blocks stripped. */
+  candidates: { podcast: Podcast; items: Episode[] }[];
+}
+
+/**
  * A favorited episode. Keyed by `itemGuid` (NIP-73 `podcast:item:guid:`), with
  * `feedGuid` carried alongside because PI's /episodes/byguid wants
  * `podcastguid` — an item guid on its own is not enough to resolve one.

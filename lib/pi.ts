@@ -1,7 +1,7 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
 import { PiHttpError, isPiMiss } from './pi-error';
-import type { ItemPayment, Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
+import type { ItemPayment, MovedAnswer, Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
 import {
   readAttr,
   decodeXmlText,
@@ -24,10 +24,10 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
-import { closedService, pickLiveTwin } from './moved-feeds';
+import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -509,6 +509,61 @@ export async function twinEpisode(raw: any, feedGuid: string, itemGuid: string):
   } catch {
     return raw;
   }
+}
+
+/** A PI search that treats a miss (400/404) as no rows; auth, 429 and 5xx throw. */
+async function searchRaw(path: string): Promise<any[]> {
+  try {
+    const data = await pi<any>(path);
+    return Array.isArray(data?.feeds) ? data.feeds : [];
+  } catch (e) {
+    if (isPiMiss(e)) return [];
+    throw e;
+  }
+}
+
+/**
+ * Where a favorite on a closed host may have gone under a NEW guid — offered on
+ * its row, swapped only on a press (`<MovedOffer>`). See {@link MovedAnswer}.
+ *
+ * - Not on a closed host → `{ service: null, candidates: [] }`, one PI call.
+ * - On one, with a same-guid live copy → no candidates: the resolvers already
+ *   follow that copy, so there is nothing to replace.
+ * - Otherwise a title search and an author search (two fixed calls, so not a
+ *   list fan-out), `movedCandidates` (same title AND artist), and each
+ *   candidate's items through `mapLimit` at PI_FANOUT. The items lose their value
+ *   blocks: they become favorites, and a stored copy must never name a payee.
+ * - Null when PI holds no record for the guid.
+ */
+export async function findMovedCandidates(guid: string): Promise<MovedAnswer | null> {
+  let raw: any;
+  try {
+    const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(guid)}`);
+    raw = Array.isArray(data?.feed) ? data.feed[0] : data?.feed;
+  } catch (e) {
+    if (isPiMiss(e)) return null;
+    throw e;
+  }
+  if (!raw || raw.id == null) return null;
+  const service = closedService(raw.url);
+  if (!service) return { service: null, candidates: [] };
+  if ((await preferLiveTwin(raw)) !== raw) return { service, candidates: [] };
+  const [byTitle, byAuthor] = await Promise.all([
+    raw.title ? searchRaw(`/search/bytitle?q=${encodeURIComponent(raw.title)}&max=50&similar`) : [],
+    raw.author ? searchRaw(`/search/byterm?q=${encodeURIComponent(raw.author)}&max=60`) : [],
+  ]);
+  const found = movedCandidates(raw, [...byTitle, ...byAuthor]);
+  const candidates = await mapLimit(found, PI_FANOUT, async (f) => {
+    const podcast = podcastFromPiFeed(f);
+    let items: Episode[] = [];
+    try {
+      items = (await getEpisodes(f.id, 200)).map(episodeWithoutValue);
+    } catch (e) {
+      if (!isPiMiss(e)) throw e;
+    }
+    return podcast ? { podcast, items } : null;
+  });
+  return { service, candidates: candidates.filter((c): c is { podcast: Podcast; items: Episode[] } => c !== null) };
 }
 
 export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
