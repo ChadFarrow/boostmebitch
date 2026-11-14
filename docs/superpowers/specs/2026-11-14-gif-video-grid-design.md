@@ -62,7 +62,7 @@ Decisions Chad made on 2026-11-14:
   `imeta` and the banner holds it. Same as GIPHY today.
 - No `suggest` combobox, no starter chips, no Similar or Copy link, no Report action. The picker
   shows only GIFs the user searched for or the empty-box list.
-- No HEAD warming of MP4s ahead of the load zone.
+- ~~No HEAD warming of MP4s ahead of the load zone.~~ Reversed 2026-11-14 after Chad found search-and-scroll slow on beta: a video nostr.build has not made yet is made in its first request, and a CDN miss measured 397 ms median against 141 ms after a HEAD. Tiles a screen and a half ahead are now warmed (`warmVideo`, nostr.build only, three at a time, once per video).
 - No virtualization. nostr.build's plain sample mounts all 200 tiles and measured flat memory.
 - No change to how live chat, note cards or the My Boosts list draw a GIF beyond goal 4.
 

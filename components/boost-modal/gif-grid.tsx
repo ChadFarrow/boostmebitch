@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { gifPickKey, type GifTile } from '@/lib/gifs/pick';
-import { alphaSrc, borrowVideo, canPlayH264, returnVideo } from '@/lib/gifs/video-pool';
+import { alphaSrc, borrowVideo, canPlayH264, returnVideo, unwarmVideo, warmVideo } from '@/lib/gifs/video-pool';
 
 // The GIF picker's grid: every GIF near the screen holds a pooled <video> and
 // plays while it is on screen. The rules are nostr.build's, measured on Safari
@@ -32,13 +32,19 @@ function ratioOf(t: GifTile): number {
   return Math.min(MAX_RATIO, Math.max(MIN_RATIO, t.height / t.width));
 }
 
-type ZoneHandler = { near: (inside: boolean) => void; onScreen: (inside: boolean) => void };
+type ZoneHandler = {
+  near: (inside: boolean) => void;
+  onScreen: (inside: boolean) => void;
+  ahead: (inside: boolean) => void;
+};
 type Zones = { watch: (el: Element, h: ZoneHandler) => () => void };
 
 /**
- * Two observers for the whole grid, rooted at the picker's scroll box — in a
- * dialog the grid scrolls its own element, not the page, so "near" and "on
- * screen" have to be measured against what the reader sees.
+ * Three observers for the whole grid, rooted at the picker's scroll box — in a
+ * dialog the grid scrolls its own element, not the page, so the zones have to
+ * be measured against what the reader sees. `ahead` (a screen and a half) is
+ * where a video is warmed with a HEAD (`warmVideo`); `near` (half a screen) is
+ * where a tile loads its own video.
  */
 function useZones(root: HTMLElement | null): Zones | null {
   const handlers = useRef(new Map<Element, ZoneHandler>());
@@ -54,15 +60,20 @@ function useZones(root: HTMLElement | null): Zones | null {
       (entries) => { for (const e of entries) map.get(e.target)?.onScreen(e.isIntersecting && e.intersectionRatio >= 0.1); },
       { root, threshold: [0, 0.1] },
     );
+    const ahead = new IntersectionObserver(
+      (entries) => { for (const e of entries) map.get(e.target)?.ahead(e.isIntersecting); },
+      { root, rootMargin: '150% 0px' },
+    );
     setZones({
       watch(el, h) {
         map.set(el, h);
         near.observe(el);
         onScreen.observe(el);
-        return () => { near.unobserve(el); onScreen.unobserve(el); map.delete(el); };
+        ahead.observe(el);
+        return () => { near.unobserve(el); onScreen.unobserve(el); ahead.unobserve(el); map.delete(el); };
       },
     });
-    return () => { near.disconnect(); onScreen.disconnect(); map.clear(); setZones(null); };
+    return () => { near.disconnect(); onScreen.disconnect(); ahead.disconnect(); map.clear(); setZones(null); };
   }, [root]);
   return zones;
 }
@@ -168,11 +179,25 @@ function Tile({
   const onScreenRef = useRef(onScreen);
   onScreenRef.current = onScreen;
 
+  const [ahead, setAhead] = useState(false); // within a screen and a half
+
   useEffect(() => {
     const el = button.current;
     if (!zones || !el) return;
-    return zones.watch(el, { near: setNear, onScreen: setOnScreen });
+    return zones.watch(el, { near: setNear, onScreen: setOnScreen, ahead: setAhead });
   }, [zones]);
+
+  // Warm the video this tile will play, a screen and a half ahead, so its own
+  // request (half a screen ahead) is a CDN hit. nostr.build only: it makes a
+  // video inside its first request; GIPHY's are served hot. Not under stills.
+  const warmSrc = tile.pick.src === 'nostrbuild' && motion === 'play'
+    ? stage === 'alpha' ? alpha : stage === 'mp4' ? tile.mp4 : null
+    : null;
+  useEffect(() => {
+    if (!warmSrc) return;
+    if (ahead && !near) warmVideo(warmSrc);
+    else if (!ahead) unwarmVideo(warmSrc);
+  }, [ahead, near, warmSrc]);
 
   useEffect(() => {
     if (!near) { setArmed(false); return; }

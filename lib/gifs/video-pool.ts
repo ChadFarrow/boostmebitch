@@ -55,6 +55,55 @@ export function returnVideo(v: HTMLVideoElement): void {
   if (!spare.includes(v)) spare.push(v);
 }
 
+// --- Warming videos ahead of the screen -----------------------------------
+//
+// nostr.build makes a GIF's MP4 inside its FIRST request when it never has
+// (about 3 s, its guide says), and a video only in its origin's cache is a
+// CDN miss: measured 2026-11-14 from the beta origin, a deep search result's
+// first request took 397 ms median and 574 ms worst on a fast line, and 141 ms
+// once a HEAD had gone first (`cf-cache-status: HIT`). A tile asks for its own
+// video only half a screen ahead, so during a scroll it arrived empty — Chad's
+// "slow when I search and scroll". A HEAD a screen and a half ahead fills the
+// CDN's cache, so the tile's own requests are hits. Three at a time, each
+// video asked once for the page's life, never retried: a timed-out HEAD may
+// still have started the render, and the tile's own request finishes it.
+
+const WARM_AT_ONCE = 3;
+const WARM_TIMEOUT_MS = 60_000;
+const warmAsked = new Set<string>();
+const warmWaiting: string[] = [];
+let warmBusy = 0;
+
+function warmNext(): void {
+  while (warmBusy < WARM_AT_ONCE && warmWaiting.length) {
+    const src = warmWaiting.shift() as string;
+    warmBusy += 1;
+    // AbortSignal.timeout exists from Safari 16; without it, no limit.
+    const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(WARM_TIMEOUT_MS)
+      : undefined;
+    fetch(src, signal ? { method: 'HEAD', signal } : { method: 'HEAD' })
+      .catch(() => {})
+      .finally(() => { warmBusy -= 1; warmNext(); });
+  }
+}
+
+/** Queue one HEAD for a video a tile will play soon. Once per video per page. */
+export function warmVideo(src: string): void {
+  if (warmAsked.has(src)) return;
+  warmAsked.add(src);
+  warmWaiting.push(src);
+  warmNext();
+}
+
+/** The tile left the warm zone before its HEAD went out: forget it. */
+export function unwarmVideo(src: string): void {
+  const i = warmWaiting.indexOf(src);
+  if (i < 0) return;
+  warmWaiting.splice(i, 1);
+  warmAsked.delete(src);
+}
+
 let h264: boolean | null = null;
 
 /**

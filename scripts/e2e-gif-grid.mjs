@@ -210,7 +210,7 @@ const pageErrors = [];
 // gifs.nostr.build's API, answered from the fixture. `nbStub.mode` makes it
 // rate-limit (429) or drop the connection; `nbStub.slow` delays one query;
 // `nbStub.failWebm` fails every transparent GIF's WebM.
-const nbStub = { log: [], mode: 'ok', slow: {}, failWebm: false };
+const nbStub = { log: [], mode: 'ok', slow: {}, failWebm: false, heads: [], gets: [], headInFlight: 0, headMax: 0 };
 const nbAnswer = (u) => (u.pathname === '/api/v1/gifs' ? FIX.chibi : FIX[u.searchParams.get('q') ?? ''] ?? FIX.applause);
 // `--real-nb`: pass gifs.nostr.build's API through to the real service. The
 // page is on 127.0.0.1, the API's shared development client, so it is admitted
@@ -239,6 +239,7 @@ async function answerNb(requestId, request, u) {
 await send('Fetch.enable', { patterns: [
   { urlPattern: '*/api/*', requestStage: 'Request' },
   { urlPattern: '*gifs.nostr.build/webm/*', requestStage: 'Request' },
+  { urlPattern: '*gifs.nostr.build/mp4/*', requestStage: 'Request' },
 ] });
 on(async (m) => {
   if (m.method === 'Runtime.exceptionThrown') {
@@ -246,6 +247,7 @@ on(async (m) => {
     return;
   }
   if (m.method === 'Network.requestWillBeSent') {
+    if (m.params.request.method === 'HEAD' && m.params.request.url.includes('gifs.nostr.build')) nbStub.netHeads = (nbStub.netHeads ?? 0) + 1;
     const g = /^https:\/\/media\.giphy\.com\/media\/([A-Za-z0-9]+)\/([^?#]+)/.exec(m.params.request.url);
     if (g) media.push({ host: 'giphy', id: g[1], file: g[2] });
     return;
@@ -256,8 +258,19 @@ on(async (m) => {
   try {
     if (u.hostname === 'gifs.nostr.build') {
       if (u.pathname.startsWith('/api/')) { await answerNb(requestId, request, u); return; }
+      if (request.method === 'HEAD') {
+        // A warming request: held 400 ms, so the test can see how many run at once.
+        nbStub.heads.push(u.pathname);
+        nbStub.headInFlight += 1;
+        nbStub.headMax = Math.max(nbStub.headMax, nbStub.headInFlight);
+        await wait(400);
+        nbStub.headInFlight -= 1;
+        await send('Fetch.continueRequest', { requestId });
+        return;
+      }
+      if (u.pathname.startsWith('/mp4/')) nbStub.gets.push(u.pathname);
       // true: every WebM fails; a key: only that GIF's (one tile failing alone gets its own pooled element back).
-      if (nbStub.failWebm === true || (typeof nbStub.failWebm === 'string' && u.pathname.endsWith(`/${nbStub.failWebm}`))) await send('Fetch.failRequest', { requestId, errorReason: 'ConnectionRefused' });
+      if (u.pathname.startsWith('/webm/') && (nbStub.failWebm === true || (typeof nbStub.failWebm === 'string' && u.pathname.endsWith(`/${nbStub.failWebm}`)))) await send('Fetch.failRequest', { requestId, errorReason: 'ConnectionRefused' });
       else await send('Fetch.continueRequest', { requestId });
       return;
     }
@@ -575,6 +588,37 @@ if (BRAND_ID !== 'bmb') {
     return b?.dataset.state === 'playing' && !!v && !v.paused && v.currentTime > 0.05;
   })()`, 10000), JSON.stringify((await tiles()).find((x) => x.key === firstKey)));
   nbStub.failWebm = false;
+
+  section('2e. Videos a screen and a half ahead are warmed with a HEAD (Chad, beta, 2026-11-14: "slow when I search and scroll")');
+  // A video nostr.build has not made yet is made inside its first request
+  // (~3 s, the guide says; 0.3–0.6 s measured for a CDN miss here), so a tile
+  // that starts its own request only half a screen ahead arrives empty.
+  // A fresh page: the warm queue remembers each video for the page's life,
+  // and the searches above already warmed this answer's videos.
+  await openPicker(20);
+  nbStub.heads.length = 0;
+  nbStub.gets.length = 0;
+  nbStub.headMax = 0;
+  await typeQuery('applause');
+  await until(`document.querySelector('[data-gif-key="${keysOf(FIX.applause)[0]}"]') !== null`, 8000);
+  await wait(3000);
+  {
+    const box = await boxHeight();
+    const all = await tiles();
+    const mp4Path = (key) => `/mp4/orig/${key.split(':')[1]}`;
+    const warmZone = all.filter((x) => x.top > box * 1.5 + 8 && x.top < box * 2.5 - 8);
+    const farZone = all.filter((x) => x.top > box * 2.5 + 8);
+    t.ok('there are tiles in the warm zone and beyond it', warmZone.length > 0 && farZone.length > 0,
+      `warm ${warmZone.length}, far ${farZone.length}, box ${box}`);
+    t.ok('every tile 0.5–1.5 screens ahead got a HEAD for its video',
+      warmZone.every((x) => nbStub.heads.includes(mp4Path(x.key))),
+      JSON.stringify(warmZone.filter((x) => !nbStub.heads.includes(mp4Path(x.key))).map((x) => x.key.slice(11, 19))));
+    t.ok('and no GET: it waits for its own video', warmZone.every((x) => !nbStub.gets.includes(mp4Path(x.key))));
+    t.ok('a tile beyond 1.5 screens got no HEAD', farZone.every((x) => !nbStub.heads.includes(mp4Path(x.key))));
+    t.equal('each video is warmed once', nbStub.heads.length, new Set(nbStub.heads).size);
+    console.log(`  info HEADs seen by the network layer: ${nbStub.netHeads ?? 0}, by the stub: ${nbStub.heads.length}`);
+    t.ok('at most three HEADs at a time', nbStub.headMax > 0 && nbStub.headMax <= 3, `max ${nbStub.headMax}`);
+  }
 
   section('2c. A pick, and the stored boost');
   await typeQuery('applause');
