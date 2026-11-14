@@ -1499,6 +1499,41 @@ export function planLiveRosterReads<T extends { id: number }>(
   return { fromRoster, fromAlwaysOn, truncated: regular.length > fromRoster.length };
 }
 
+/**
+ * `/live`'s Upcoming list after one more poll: the rows it held, with every
+ * feed this answer DESCRIBES replaced by what the answer says.
+ *
+ * Upcoming is accumulated across polls because the visitor's favorites are
+ * asked about a slice at a time, and a schedule is stable for days. A feed is
+ * described when the poll asked about it (`askedIds`, the `?feeds=` slice) OR
+ * when the answer carries any row for it — Podcast Index's roster, podping and
+ * the server's memory name feeds no visitor asked about. A described feed gets
+ * the answer's pending rows, which may be none; a feed this poll neither asked
+ * about nor answered for keeps what it had.
+ *
+ * **Measured on production 2026-11-14: Upcoming read 3, then 6, then 9.** The
+ * merge cleared only `askedIds` and then APPENDED every pending row, so a
+ * roster show — in nobody's `?feeds=` — was added again every minute. It also
+ * pushed into an array the previous state still held; React may call an
+ * updater twice with the same previous state, and that showed as a jump of
+ * two in development. Nothing here is changed in place.
+ */
+export function mergeUpcomingSeen(
+  prev: Readonly<Record<number, readonly LiveShow[]>>,
+  askedIds: readonly number[],
+  items: readonly LiveShow[],
+): Record<number, LiveShow[]> {
+  const next: Record<number, LiveShow[]> = {};
+  for (const [id, list] of Object.entries(prev)) next[Number(id)] = [...list];
+  for (const id of askedIds) delete next[id];
+  for (const s of items) delete next[s.feedId];
+  for (const s of items) {
+    if (s.liveStatus !== 'pending') continue;
+    (next[s.feedId] ??= []).push(s);
+  }
+  return next;
+}
+
 export function compareLiveShows(a: LiveShow, b: LiveShow): number {
   const rank = (s: LiveShow) => (s.liveStatus === 'live' ? 0 : 1);
   if (rank(a) !== rank(b)) return rank(a) - rank(b);

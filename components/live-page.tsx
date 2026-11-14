@@ -7,7 +7,7 @@ import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import {
   hasValueRecipients, isMusicMedium, isPlaylistMedium, liveShowToEpisode,
-  liveShowToPodcast, payableValue, showShareUrl,
+  liveShowToPodcast, mergeUpcomingSeen, payableValue, showShareUrl,
 } from '@/lib/util';
 import type { LiveShow } from '@/lib/types';
 import { AppHeader } from '@/components/app-header';
@@ -310,19 +310,11 @@ export function LivePage() {
       const json: LiveShowsResponse = await res.json();
       if (!mountedRef.current) return;
       setData(json);
-      setUpcomingSeen((prev) => {
-        const next = { ...prev };
-        // Every feed this response covered gets its upcoming list REPLACED,
-        // including with nothing — that is how an item withdrawn from a feed
-        // stops being rendered. Feeds this poll did not ask about keep what
-        // they had; they were not described either way.
-        for (const id of askedIds) delete next[id];
-        for (const s of json.items) {
-          if (s.liveStatus !== 'pending') continue;
-          (next[s.feedId] ??= []).push(s);
-        }
-        return next;
-      });
+      // Every feed this response describes — asked about, or carrying any
+      // row — gets its upcoming list REPLACED, including with nothing. An
+      // append here added a roster show again on every poll (3, 6, 9 on
+      // production, 2026-11-14). See `mergeUpcomingSeen`.
+      setUpcomingSeen((prev) => mergeUpcomingSeen(prev, askedIds, json.items));
       // Re-pin from what this response said about the feeds it was asked.
       const liveNow = new Set(
         json.items.filter((s) => s.liveStatus === 'live').map((s) => String(s.feedId)),
