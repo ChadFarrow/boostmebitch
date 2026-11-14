@@ -19,6 +19,10 @@
 //   3. The zap dialog on a note card: the same, with its own key.
 //   4. At 390 and 320 wide, no surface overflows sideways and the control
 //      clears 24×24 (WCAG 2.5.8).
+//   5. The wallet modal's Default amounts section sets and clears all three,
+//      refuses a number under the minimum, and an open boost modal under it
+//      hears the change. Its connected view needs a wallet: a WebLN stand-in
+//      whose every payment method rejects.
 //
 // NOTHING IS PAID OR PUBLISHED. No wallet is connected, so Send stays disabled,
 // and this script never presses it. The control writes one localStorage key.
@@ -383,6 +387,122 @@ for (const [width, height] of [[390, 844], [320, 640]]) {
 }
 await send('Emulation.clearDeviceMetricsOverride');
 await relay.close();
+
+// ---------------------------------------------------------------------------
+section('5. Wallet modal: a Default amounts section for all three');
+// The section sits beside STREAMING SATS, in the CONNECTED view, so the test
+// needs a connected wallet. A WebLN stand-in that can enable and report a
+// balance and CAN PAY NOTHING: every payment method rejects.
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+  window.webln = {
+    enable: async () => {},
+    isEnabled: async () => true,
+    getInfo: async () => ({ node: { alias: 'e2e' }, methods: ['getInfo', 'getBalance'] }),
+    getBalance: async () => ({ balance: 0 }),
+    keysend: async () => { throw new Error('e2e: this wallet pays nothing'); },
+    sendPayment: async () => { throw new Error('e2e: this wallet pays nothing'); },
+    makeInvoice: async () => { throw new Error('e2e: this wallet pays nothing'); },
+  };
+` });
+// The wallet modal opens ON TOP of the boost modal, so it is the LAST dialog.
+const TOP = `[...document.querySelectorAll('[role="dialog"]')].at(-1)`;
+const dialogs = () => js(`document.querySelectorAll('[role="dialog"]').length`);
+const settingsField = (label) =>
+  `[...(${TOP}?.querySelectorAll('label') ?? [])].find((l) => l.textContent.trim() === ${JSON.stringify(label)})?.control`;
+const settingsValue = (label) => js(`${settingsField(label)}?.value ?? null`);
+/** Type into a settings field and commit it with Enter, as a user does. */
+async function setSetting(label, text) {
+  await js(`(() => { const f = ${settingsField(label)}; if (!f) return false; f.blur(); f.focus(); f.select(); return true; })()`);
+  await wait(50);
+  if (text) await send('Input.insertText', { text });
+  else {
+    for (const type of ['keyDown', 'keyUp']) {
+      await send('Input.dispatchKeyEvent', { type, key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
+    }
+  }
+  await key('Enter');
+}
+/** From an open boost modal: its wallet button. The WebLN stand-in is enabled
+ *  in module memory only, so after a page load the picker shows first; picking
+ *  WebLN connects it and CLOSES the wallet (wallet-modal.tsx,
+ *  handleWeblnPickerClick), and the next open is the connected view. */
+async function openWallet() {
+  await press(buttonIn(/wallet/i));
+  const connected = `/streaming sats/i.test(${TOP}?.innerText ?? '')`;
+  await until(`[...(${TOP}?.querySelectorAll('button') ?? [])].some((b) => /webln/i.test(b.textContent)) || ${connected}`, 10000);
+  if (!(await js(connected))) {
+    await js(`[...${TOP}.querySelectorAll('button')].find((b) => /webln/i.test(b.textContent))?.click()`);
+    await until(`document.querySelectorAll('[role="dialog"]').length === 1`, 10000);
+    await press(buttonIn(/wallet/i));
+    await until(connected, 10000);
+  }
+  return until(`/default amounts/i.test(${TOP}?.innerText ?? '')`, 5000);
+}
+async function closeTop() {
+  await js(`${TOP}?.querySelector('button[aria-label="Close"]')?.click()`);
+  return until(`document.querySelectorAll('[role="dialog"]').length === 1`, 5000);
+}
+
+t.ok('the episode offers BOOST', await openEpisode());
+t.ok('the boost modal opens', await openBoost());
+t.ok('its wallet button opens the wallet, connected, with a Default amounts section', await openWallet());
+t.equal('two dialogs are open: the wallet is over the boost modal', await dialogs(), 2);
+t.equal('with nothing saved, the Boost field is blank', await settingsValue('Boost'), '');
+t.equal('so is Boost all, per track', await settingsValue('Boost all, per track'), '');
+t.equal('so is Zap', await settingsValue('Zap'), '');
+
+await setSetting('Boost', '1500');
+t.equal('Boost 1500 saves bmb:boost_default', await stored('bmb:boost_default'), '1500');
+await setSetting('Boost all, per track', '300');
+t.equal('Boost all 300 saves bmb:boost_all_default', await stored('bmb:boost_all_default'), '300');
+t.equal('and leaves bmb:boost_default alone', await stored('bmb:boost_default'), '1500');
+await setSetting('Zap', '50');
+t.equal('Zap 50 is under the minimum: nothing is saved', await stored('bmb:zap_default'), null);
+t.equal('and the field goes back to blank', await settingsValue('Zap'), '');
+await setSetting('Zap', '2100');
+t.equal('Zap 2100 saves bmb:zap_default', await stored('bmb:zap_default'), '2100');
+await setSetting('Zap', '');
+t.equal('an emptied Zap field clears the default', await stored('bmb:zap_default'), null);
+
+t.ok('the wallet closes, back to the boost modal', await closeTop());
+t.equal('the open boost modal keeps what it opened with (blank)', await fieldValue(), '');
+await type('1500');
+t.ok('typing the new default shows ✓ default at once — the control heard the change', await marked());
+await closeDialog();
+await openBoost();
+t.equal('reopened, the boost modal opens with 1500', await fieldValue(), '1500');
+
+await type('1800');
+await press(SET);
+t.equal('SET AS DEFAULT in the modal saves 1800', await stored('bmb:boost_default'), '1800');
+await openWallet();
+t.equal('and the wallet section shows 1800', await settingsValue('Boost'), '1800');
+await closeTop();
+await closeDialog();
+
+for (const [width, height] of [[390, 844], [320, 640]]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 3, mobile: true });
+  await openEpisode();
+  await openBoost();
+  await openWallet();
+  const m = JSON.parse(await js(`(() => {
+    const d = ${TOP};
+    const de = document.documentElement;
+    const fields = ['Boost', 'Boost all, per track', 'Zap'].map((label) => {
+      const f = [...d.querySelectorAll('label')].find((l) => l.textContent.trim() === label)?.control;
+      const r = f ? f.getBoundingClientRect() : null;
+      return r ? { w: Math.round(r.width), h: Math.round(r.height), inside: r.left >= 0 && r.right <= window.innerWidth } : null;
+    });
+    return JSON.stringify({ page: de.scrollWidth - de.clientWidth, dialog: d.scrollWidth - d.clientWidth, fields });
+  })()`));
+  t.equal(`${width}px wallet: the page does not overflow`, m.page <= 0, true);
+  t.equal(`${width}px wallet: the dialog does not overflow`, m.dialog <= 0, true);
+  t.ok(`${width}px wallet: all three fields are on screen and at least 24×24`,
+    m.fields.every((f) => f && f.inside && f.w >= 24 && f.h >= 24), JSON.stringify(m.fields));
+  await closeTop();
+  await closeDialog();
+}
+await send('Emulation.clearDeviceMetricsOverride');
 
 // ---------------------------------------------------------------------------
 section('Page health');

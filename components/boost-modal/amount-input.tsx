@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useId, useState } from 'react';
-import { storage, type AmountDefaultKind } from '@/lib/storage';
+import { storage, subscribeAmountDefaults, type AmountDefaultKind } from '@/lib/storage';
 
 export const MIN_BOOST_SATS = 100;
 
@@ -46,6 +46,13 @@ export function DefaultAmountControl({
   // The write reached memory only (full or blocked storage): it works for this
   // visit, and the next one opens without it. docs/storage.md, `safeSet`.
   const [visitOnly, setVisitOnly] = useState(() => storage.amountDefault.isEphemeral(kind));
+  // The wallet modal's Default amounts section opens ON TOP of this modal and
+  // writes the same key. Without this the control kept the value it mounted
+  // with, so the amount just saved there read as "set as default" here.
+  useEffect(() => subscribeAmountDefaults(() => {
+    setSaved(readAmountDefault(kind));
+    setVisitOnly(storage.amountDefault.isEphemeral(kind));
+  }), [kind]);
 
   const isDefault = saved !== null && typed === saved;
   const canSave = Number.isSafeInteger(typed) && typed >= MIN_BOOST_SATS;

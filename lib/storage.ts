@@ -55,6 +55,13 @@ export const subscribeFavPrivacy = favPrivacyObservable.subscribe;
 const streamRateObservable = createObservable();
 export const subscribeStreamRate = streamRateObservable.subscribe;
 
+// A default boost amount changed. It is shown in two places that can be open
+// AT ONCE — the wallet modal's Default amounts section opens on top of a boost
+// modal, whose SET AS DEFAULT control shows the same key — so a write from
+// either one has to reach the other. Notified from the setter, as above.
+const amountDefaultObservable = createObservable();
+export const subscribeAmountDefaults = amountDefaultObservable.subscribe;
+
 const KEYS = {
   npub: 'bmb:npub',
   signer: 'bmb:signer',               // 'amber' | 'bunker' | 'local' when a polyfill signer is active; absent = NIP-07 extension or none
@@ -1295,9 +1302,14 @@ export const storage = {
     get: (kind: AmountDefaultKind): number | null => saneDefaultSats(safeGet(AMOUNT_DEFAULT_KEYS[kind])),
     set: (kind: AmountDefaultKind, sats: number): boolean => {
       if (!Number.isSafeInteger(sats) || sats <= 0) return false;
-      return safeSet(AMOUNT_DEFAULT_KEYS[kind], String(sats));
+      const onDisk = safeSet(AMOUNT_DEFAULT_KEYS[kind], String(sats));
+      amountDefaultObservable.notify();
+      return onDisk;
     },
-    clear: (kind: AmountDefaultKind): void => safeRemove(AMOUNT_DEFAULT_KEYS[kind]),
+    clear: (kind: AmountDefaultKind): void => {
+      safeRemove(AMOUNT_DEFAULT_KEYS[kind]);
+      amountDefaultObservable.notify();
+    },
     isEphemeral: (kind: AmountDefaultKind): boolean => isMemoryOnly(AMOUNT_DEFAULT_KEYS[kind]),
   },
 

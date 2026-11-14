@@ -8,6 +8,8 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 All wallet config lives in **`components/wallet-modal.tsx`**, a portal'd overlay opened from `<AuthControl>` (`walletOpen`). Portal'd to `document.body` so `position: fixed` resolves against the viewport, not the sticky `<header>` — the header's `backdrop-blur` creates a containing block for fixed descendants, and without the portal mobile renders the modal clipped to the header.
 
+**The connected view carries two money settings below the wallet card:** "Default amounts" (`<DefaultAmounts>`, `components/boost-modal/default-amounts.tsx` — the amount the single boost, boost-all and the zap dialog each open with; see [`money-boosts.md`](money-boosts.md), "Default amounts") and then streaming (`<StreamRate>`, `<StreamedLog>`). The modal can open ON TOP of a boost modal, from its wallet button, so the default amounts are re-read on `subscribeAmountDefaults` on both sides.
+
 Picker order is **WebLN, NWC, Spark**; signed out, the **Spark row is disabled** with a "◆ Sign in with Nostr" hint (its seed is NIP-44-encrypted to the user's key), while NWC + WebLN work fully signed-out.
 
 Three-view state machine — `WalletView = picker | connecting | connected` — showing **one rail at a time**. Opens on `connected` when `getActiveRail()` finds one (rail-pref first, then NWC > Spark > WebLN, WebLN gated on `isWeblnEnabled()`), else `picker`. "Switch wallet →" reopens the picker; tapping an already-connected rail there makes it the active payer, while connecting a new one clears the others. Sub-cards `nwc-wallet.tsx` / `spark-wallet.tsx` / `webln-wallet.tsx` take `mode="form" | "card"`; `subscribeNwc`/`subscribeSpark`/`subscribeWebln` drive a `setTick` so views flip without remount.
