@@ -766,15 +766,20 @@ const playlistInFlight = new Map<string, Promise<PlaylistResponse>>();
  * `/api/moved` for one feed guid: where a favorite whose host closed may have
  * gone under a NEW guid (`<MovedOffer>`).
  *
- * One request per guid per tab — the promise is kept, success or not, so a row
- * that re-renders does not ask again — and at most three in flight, because a
- * favorites page mounts every dead row at once and each answer costs the server
- * two Podcast Index searches plus a track list. Any non-200 is `null`: this is
- * an offer, so "could not ask" simply shows nothing, and it never trips the PI
- * breaker the resolvers rely on.
+ * - A DEFINITE answer is kept for the tab: a 200, or a 404 (PI holds no record,
+ *   so nothing to offer — answered as no candidates).
+ * - "Could not ask" is `null` and is NOT kept, so a later caller asks again.
+ *   Measured 2026-11-14: Podcast Index answers bursts with 429, and each answer
+ *   here costs the server two PI searches plus a track list — one throttled
+ *   load had hidden every offer for the life of the tab. `<MovedOffer>` retries
+ *   once on a `null`.
+ * - At most two in flight, because a favorites page mounts every dead row at
+ *   once, and a burst is what PI throttles.
+ * - It never trips the PI breaker the resolvers rely on: this is an offer.
  */
 const movedInFlight = new Map<string, Promise<MovedAnswer | null>>();
-const MOVED_CONCURRENCY = 3;
+const MOVED_CONCURRENCY = 2;
+const NOTHING_MOVED: MovedAnswer = { service: null, candidates: [] };
 let movedActive = 0;
 const movedQueue: (() => void)[] = [];
 
@@ -786,6 +791,7 @@ export function fetchMovedCandidates(guid: string): Promise<MovedAnswer | null> 
     movedActive++;
     try {
       const r = await fetch(`/api/moved?guid=${encodeURIComponent(guid)}`);
+      if (r.status === 404) return NOTHING_MOVED;
       if (!r.ok) return null;
       const body = (await r.json()) as MovedAnswer;
       return body && Array.isArray(body.candidates) ? body : null;
@@ -797,5 +803,7 @@ export function fetchMovedCandidates(guid: string): Promise<MovedAnswer | null> 
     }
   })();
   movedInFlight.set(guid, p);
+  // Forget a "could not ask", so the next caller asks again.
+  void p.then((a) => { if (a === null && movedInFlight.get(guid) === p) movedInFlight.delete(guid); });
   return p;
 }

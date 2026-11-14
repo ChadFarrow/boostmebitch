@@ -529,10 +529,12 @@ async function searchRaw(path: string): Promise<any[]> {
  * - Not on a closed host → `{ service: null, candidates: [] }`, one PI call.
  * - On one, with a same-guid live copy → no candidates: the resolvers already
  *   follow that copy, so there is nothing to replace.
- * - Otherwise a title search and an author search (two fixed calls, so not a
- *   list fan-out), `movedCandidates` (same title AND artist), and each
- *   candidate's items through `mapLimit` at PI_FANOUT. The items lose their value
- *   blocks: they become favorites, and a stored copy must never name a payee.
+ * - Otherwise a title search (which also settles the same-guid question, so
+ *   `preferLiveTwin`'s search is not repeated) and an author search,
+ *   `movedCandidates` (same title AND artist), and each candidate's items — every
+ *   call ONE AT A TIME, because Podcast Index answers a burst with 429. The items
+ *   lose their value blocks: they become favorites, and a stored copy must never
+ *   name a payee.
  * - Null when PI holds no record for the guid.
  */
 export async function findMovedCandidates(guid: string): Promise<MovedAnswer | null> {
@@ -547,13 +549,21 @@ export async function findMovedCandidates(guid: string): Promise<MovedAnswer | n
   if (!raw || raw.id == null) return null;
   const service = closedService(raw.url);
   if (!service) return { service: null, candidates: [] };
-  if ((await preferLiveTwin(raw)) !== raw) return { service, candidates: [] };
-  const [byTitle, byAuthor] = await Promise.all([
-    raw.title ? searchRaw(`/search/bytitle?q=${encodeURIComponent(raw.title)}&max=50&similar`) : [],
-    raw.author ? searchRaw(`/search/byterm?q=${encodeURIComponent(raw.author)}&max=60`) : [],
-  ]);
+  // ONE title search answers both questions — is there a same-guid copy, and
+  // which new-guid copies match — and every call after it runs one at a time.
+  // Measured 2026-11-14: Podcast Index answers a burst with 429, and this route
+  // used to repeat `preferLiveTwin`'s search and run the rest in parallel.
+  const known = twinCache.get(raw.podcastGuid, Date.now());
+  if (known?.value.twin) return { service, candidates: [] };
+  const byTitle = raw.title ? await searchRaw(`/search/bytitle?q=${encodeURIComponent(raw.title)}&max=50&similar`) : [];
+  if (!known && raw.podcastGuid) {
+    const twin = pickLiveTwin(raw, byTitle);
+    twinCache.set(raw.podcastGuid, { twin }, Date.now());
+    if (twin) return { service, candidates: [] };
+  }
+  const byAuthor = raw.author ? await searchRaw(`/search/byterm?q=${encodeURIComponent(raw.author)}&max=60`) : [];
   const found = movedCandidates(raw, [...byTitle, ...byAuthor]);
-  const candidates = await mapLimit(found, PI_FANOUT, async (f) => {
+  const candidates = await mapLimit(found, 1, async (f) => {
     const podcast = podcastFromPiFeed(f);
     let items: Episode[] = [];
     try {

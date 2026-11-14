@@ -124,9 +124,39 @@ async function settle(ms) {
 const t = checker();
 
 console.log('\n1. a fresh device');
+// The FIRST /api/moved for Mr. Videoman is answered 429 here, the way Podcast
+// Index throttles a burst (measured 2026-11-14: one throttled load used to hide
+// every offer for the life of the tab). The row must retry and still offer.
+let throttled = 0;
+// The app's service worker (app/sw.js) would otherwise make this request itself,
+// out of the page's sight, and the interception below would never see it.
+await send('Network.enable');
+await send('Network.setBypassServiceWorker', { bypass: true });
+await send('Fetch.enable', { patterns: [{ urlPattern: '*api/moved*', requestStage: 'Request' }] });
+page.on(async (m) => {
+  if (m.method !== 'Fetch.requestPaused') return;
+  const { requestId, request } = m.params;
+  if (throttled === 0 && request.url.includes(MRV)) {
+    throttled++;
+    await send('Fetch.fulfillRequest', {
+      requestId, responseCode: 429,
+      responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+      body: Buffer.from('{"error":"rate limited"}').toString('base64'),
+    });
+    return;
+  }
+  await send('Fetch.continueRequest', { requestId });
+});
 await send('Page.navigate', { url: `${APP}/favorites` });
 await settle(25000);
+// The retry lands ~20 s after the throttled answer: wait for it, bounded.
+for (let i = 0; i < 40; i++) {
+  const r = rowOf(await readRows(), /^Mr\.? Videoman$/);
+  if (/Found:/.test(r?.footer ?? '')) break;
+  await wait(1000);
+}
 let rows = await readRows();
+t.equal('the first offer request was throttled', throttled, 1);
 if (process.env.MOVED_DEBUG) console.log(JSON.stringify(rows.filter((r) => /Videoman|Runaway|Worried/.test(r.title)), null, 1));
 const worried = rowOf(rows, /^Worried$/);
 t.ok('Worried is listed', worried, JSON.stringify(rows.map((r) => r.title)));

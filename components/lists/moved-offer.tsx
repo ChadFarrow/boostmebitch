@@ -70,6 +70,9 @@ export function RowFooter({ children }: { children: React.ReactNode }) {
 
 type Candidate = { podcast: Podcast; items: Episode[] };
 
+/** How long a row waits before asking `/api/moved` again after "could not ask". */
+const MOVED_RETRY_MS = 20_000;
+
 /** A candidate's tracks as `planSwap` reads them; an item with no guid cannot
  *  become a favorite, so it is not offered as a match. */
 function itemsOf(c: Candidate): { guid: string; title?: string }[] {
@@ -90,8 +93,17 @@ export function MovedOffer({
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let live = true;
-    void fetchMovedCandidates(feedGuid).then((a) => { if (live) setAnswer(a); });
-    return () => { live = false; };
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    void fetchMovedCandidates(feedGuid).then((a) => {
+      if (!live) return;
+      if (a) { setAnswer(a); return; }
+      // "Could not ask" — usually Podcast Index throttling a burst. ONE retry
+      // while the row is on screen; after that the row stays as it was.
+      retry = setTimeout(() => {
+        void fetchMovedCandidates(feedGuid).then((b) => { if (live && b) setAnswer(b); });
+      }, MOVED_RETRY_MS);
+    });
+    return () => { live = false; if (retry) clearTimeout(retry); };
   }, [feedGuid]);
 
   const itemGuid = scope === 'feed' ? null : scope.itemGuid;
