@@ -19,6 +19,7 @@ import { useShowSpeed } from './player/use-show-speed';
 import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { serverAnswers, useNextProbe } from './player/use-next-probe';
+import { useAndroidSessionKeeper } from './player/use-android-session-keeper';
 import { fmt } from '@/lib/format';
 import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
@@ -1360,6 +1361,11 @@ export function Player() {
   // passed over before the element loads it (`advanceOnItsOwn`). See
   // ./player/use-next-probe.
   useNextProbe(duration, isLiveMedia);
+
+  // Android only: a silent second player while playing, so the lock-screen
+  // player does not vanish at each track change. See
+  // ./player/use-android-session-keeper.
+  useAndroidSessionKeeper(isPlaying);
 
   // **A queue that survived a reload has to be reachable.** `current` is
   // in-memory and the queue is not, so every page load lands with items on disk
