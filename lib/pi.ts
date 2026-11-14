@@ -27,6 +27,7 @@ import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
 import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
+import { closedService, pickLiveTwin } from './moved-feeds';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -431,10 +432,90 @@ export async function getPodcastByFeedUrl(feedUrl: string): Promise<Podcast | nu
   }
 }
 
+/**
+ * A feed on a CLOSED host, followed to its live copy with the same guid.
+ *
+ * RSS Blue closed (2026-11-14) and its feeds, covers and audio answer 410, but
+ * Podcast Index still serves those records as healthy and `/podcasts/byguid`
+ * returns the dead copy even when a live one carries the same guid (Worried:
+ * dead 7101864, live Fountain 7520866). Only a title search lists both. See
+ * `lib/moved-feeds.ts` for why a host list decides "closed", and
+ * docs/superpowers/specs/2026-11-14-moved-feeds-design.md.
+ *
+ * - A record NOT on a closed host comes back untouched with NO request — this
+ *   runs on every guid resolve, and a healthy feed must cost nothing.
+ * - The twin must have the same guid AND the same artist (`pickLiveTwin`): it is
+ *   followed with no press, payee included (Chad's choice, 2026-11-14).
+ * - A definite answer (twin, or none) is cached per guid for a day. A failed
+ *   search is NOT cached and returns the dead record, which is still PI's
+ *   answer — "could not ask" is never "there is no twin".
+ *
+ * Takes and returns PI's RAW record, so the direct path, the index path and the
+ * value-split path all build from whichever record this picked.
+ */
+const twinCache = createBoundedCache<{ twin: any | null }>({
+  maxAgeMs: 24 * 60 * 60 * 1000,
+  maxEntries: 2000,
+});
+
+export async function preferLiveTwin(raw: any): Promise<any> {
+  if (!raw || typeof raw !== 'object' || !closedService(raw.url)) return raw;
+  if (!raw.podcastGuid || !raw.title) return raw;
+  const now = Date.now();
+  const hit = twinCache.get(raw.podcastGuid, now);
+  if (hit) return hit.value.twin ?? raw;
+  try {
+    const data = await pi<any>(`/search/bytitle?q=${encodeURIComponent(raw.title)}&max=50&similar`);
+    const twin = pickLiveTwin(raw, Array.isArray(data?.feeds) ? data.feeds : []);
+    twinCache.set(raw.podcastGuid, { twin }, now);
+    return twin ?? raw;
+  } catch {
+    return raw;
+  }
+}
+
+/** PI's raw record for a feed guid, after {@link preferLiveTwin}. Null on a miss. */
+export async function liveFeedForGuid(feedGuid: string): Promise<any | null> {
+  try {
+    const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(feedGuid)}`);
+    const feed = Array.isArray(data?.feed) ? data.feed[0] : data?.feed;
+    if (!feed || feed.id == null) return null;
+    return await preferLiveTwin(feed);
+  } catch (e) {
+    if (isPiMiss(e)) return null;
+    throw e;
+  }
+}
+
+/**
+ * An item PI answered for on a closed host, re-asked on the live same-guid copy.
+ *
+ * Decided on the record's own URLs, so a healthy item costs nothing: every
+ * RSS Blue enclosure ran through `op3.dev/e,pg=…/media.rssblue.com/…`, which
+ * `closedService` reads as a path segment. The item guid is kept by the move
+ * (measured on the Worried track). A miss on the copy, or any failure, keeps the
+ * original answer — a dead record is still better than no record.
+ */
+export async function twinEpisode(raw: any, feedGuid: string, itemGuid: string): Promise<any> {
+  if (!raw || typeof raw !== 'object') return raw;
+  if (!closedService(raw.enclosureUrl) && !closedService(raw.feedImage)) return raw;
+  try {
+    const feed = await liveFeedForGuid(feedGuid);
+    if (!feed || feed.id == null || closedService(feed.url)) return raw;
+    const data = await pi<any>(
+      `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&feedid=${encodeURIComponent(String(feed.id))}`,
+    );
+    return data?.episode?.guid ? data.episode : raw;
+  } catch {
+    return raw;
+  }
+}
+
 export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   try {
     const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(guid)}`);
-    return podcastFromPiFeed(data.feed);
+    const feed = Array.isArray(data.feed) ? data.feed[0] : data.feed;
+    return podcastFromPiFeed(await preferLiveTwin(feed));
   } catch (e) {
     // A miss, not an outage — see `isPiMiss`. Today PI answers an unknown or
     // malformed guid with 200 and an empty feed, so this arm is defensive:
@@ -1950,7 +2031,8 @@ export async function getEpisodeByGuid(
     // a record with no guid and no title, and the browser keeps it for seven
     // days, so a note stays without its heart and queue long after PI crawls the
     // item. Measured on a live item and on an episode released hours before.
-    return data.episode?.guid ? buildEpisode(data.episode) : null;
+    // A closed-host item is re-asked on the live same-guid copy (`twinEpisode`).
+    return data.episode?.guid ? buildEpisode(await twinEpisode(data.episode, feedGuid, itemGuid)) : null;
   } catch (e) {
     // Same miss-is-not-an-outage rule as getPodcastByFeedUrl above, and it
     // matters more here. PI answers an unindexed pair with **400**
@@ -1993,7 +2075,11 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
     const feedRes = await pi<any>(
       `/podcasts/byguid?guid=${encodeURIComponent(split.remoteItem.feedGuid)}`,
     );
-    const feedUrl: string | undefined = feedRes.feed?.url;
+    // An album on a closed host is read from its live same-guid copy, so the
+    // payee comes from the RSS that still answers (Chad, 2026-11-14: payment
+    // follows the switch). The dead feed answers 410 and pays no one.
+    const feed = await preferLiveTwin(Array.isArray(feedRes.feed) ? feedRes.feed[0] : feedRes.feed);
+    const feedUrl: string | undefined = feed?.url;
     if (!feedUrl) return named;
     const rss = await resolveRemoteItemFromRss(feedUrl, split.remoteItem.itemGuid);
     if (!rss) return named;
