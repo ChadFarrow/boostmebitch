@@ -153,7 +153,15 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # `packages` is set because its default, "tools platform-tools", stopped
+      # working: Google's SDK repository no longer offers the legacy `tools`
+      # package, and `sdkmanager tools` fails the job ("Failed to find package
+      # 'tools'", run 43603943128, 2026-11-14; v0.1.0 built with it on
+      # 2026-09-04). That package was also what gave Bubblewrap the folder it
+      # checks for — see "Point Bubblewrap at the runner's JDK and Android SDK".
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - uses: actions/setup-go@v5
         with:
@@ -326,6 +334,23 @@ jobs:
       - name: Point Bubblewrap at the runner's JDK and Android SDK
         run: |
           set -euo pipefail
+          # Bubblewrap (core 1.25.0, AndroidSdkTools.validatePath) refuses an SDK
+          # with neither a `tools` nor a `bin` folder, and runs `sdkmanager`
+          # from one of them to install build-tools. The legacy `tools` package
+          # made the first until Google removed it (see setup-android above).
+          # So when neither exists, `bin` gets a wrapper that runs the
+          # sdkmanager setup-android put on PATH, by its full path — never over
+          # a folder the image already has. A wrapper, not a symlinked folder:
+          # sdkmanager's start script finds its own jars from the path it was
+          # started by, and a logical `cd bin/..` through a link lands in the
+          # SDK root instead of cmdline-tools/<version>.
+          if [ ! -e "$ANDROID_HOME/tools" ] && [ ! -e "$ANDROID_HOME/bin" ]; then
+            SDKMANAGER="$(command -v sdkmanager)"
+            mkdir "$ANDROID_HOME/bin"
+            printf '#!/bin/sh\nexec "%s" "$@"\n' "$SDKMANAGER" > "$ANDROID_HOME/bin/sdkmanager"
+            chmod +x "$ANDROID_HOME/bin/sdkmanager"
+            echo "Made $ANDROID_HOME/bin/sdkmanager, which runs $SDKMANAGER, for Bubblewrap"
+          fi
           mkdir -p "$HOME/.bubblewrap"
           jq -n --arg jdk "$JAVA_HOME" --arg sdk "$ANDROID_HOME" \
              '{jdkPath: $jdk, androidSdkPath: $sdk}' \
