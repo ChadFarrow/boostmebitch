@@ -1432,14 +1432,27 @@ export function Player() {
   // one sentence that says why playback died is the failure this bar already
   // documents. The chapter keeps its `text-bolt/90` here so the collapsed line
   // still says which of the three it is showing.
+  //
+  // **The STALL folds at every width, not only below `sm:`.** The bar is fixed
+  // to the dock and grows UPWARD, so a line that comes and goes moves its top
+  // edge — and a new source starts with nothing buffered, so `waiting` raised
+  // the stall on every track change. From `sm:` up the readout was a line of
+  // its own: the bar stood 78px, then 98.5px (115px at 640, where the long
+  // sentence wrapped) until the next file arrived, then 78px again. Reported as
+  // "the now playing bar moves up and down when songs change". From `sm:` it now
+  // takes the show title's place on the second line, which is the same trade
+  // the phone ladder makes (e2e:minibar).
   const miniStalled = stalled && !audioErr;
+  // Short, so it fits both lines it can land on without truncating — a
+  // truncated instruction is not an instruction.
+  const stallLine = '⋯ buffering — press play to retry';
   const miniChapter = !miniStalled ? activeChapter?.title : undefined;
   // Below `sm:` the `N s behind` of <LiveEdge> folds into this line, the way
   // the buffering line does: at 390 px the row held `● LIVE 7 s behind
   // ⏭ GO LIVE` and the play/pause button covered the end of GO LIVE.
   const miniBehind = isLive && isPlaying ? liveBehindSec : 0;
   const miniSecondary = miniStalled
-    ? '⋯ buffering — press play to retry'
+    ? stallLine
     : miniBehind > 0
       ? `${miniBehind} s behind live`
       : miniChapter || podcast.title;
@@ -1869,7 +1882,11 @@ export function Player() {
               <span className={`truncate sm:hidden ${miniChapter ? 'text-bolt/90' : 'text-muted'}`}>
                 {miniSecondary}
               </span>
-              <span className="hidden sm:inline text-muted truncate">{podcast.title}</span>
+              {/* From `sm:` the chapter keeps its own line below the seek row,
+                  so this line's ladder is only stall → show title. */}
+              <span className="hidden sm:inline text-muted truncate">
+                {miniStalled ? stallLine : podcast.title}
+              </span>
               <StreamPulse />
             </div>
             {/* The error is the one line the user actually needs to read when
@@ -1888,15 +1905,9 @@ export function Player() {
                 handles that one, so a stall that still reaches the user is a
                 plain slow network — and guessing at a cause we've already
                 mitigated would be a confident lie. Say what is true and what to
-                do about it. */}
-            {/* `hidden sm:block`: below `sm:` this line is folded into the one
-                secondary line above — the same sentence, shortened to fit one
-                truncating row. It is hidden, never dropped. */}
-            {miniStalled && (
-              <div className="hidden sm:block text-[11px] text-muted mt-1">
-                ⋯ buffering — press play to retry if it doesn&rsquo;t resume.
-              </div>
-            )}
+                do about it. It is said on the secondary line above, at every
+                width (`stallLine`): a line of its own here moved the whole bar
+                on every track change. */}
             {isLive ? (
               <LiveEdge variant="mini" className="mt-1" behindSec={miniBehind} onGoLive={goLive} />
             ) : (
