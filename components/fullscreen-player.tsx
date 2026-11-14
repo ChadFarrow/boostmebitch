@@ -81,6 +81,8 @@ import {
   exitFullscreen,
   FAST_PLAYBACK_RATES,
   isHlsUrl,
+  epKey,
+  shuffleIndexOf,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -207,10 +209,10 @@ import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
 import { WalletBalanceBox } from './wallet-balance';
-import { NostrIdentityChip } from './nostr-auth/identity-chip';
+import { NowPlayingAccountMenu } from './nostr-auth/now-playing-account-menu';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
-import { LiveBadge } from './live-badge';
+import { LiveEdge } from './player/live-edge';
 
 // THE TOP BAR'S CONTROLS FROM lg:, all five — ← BACK, ⋯, the balance box, the
 // identity chip and ✕ — plus <AuthControl overlay>'s SIGN IN, which carries the
@@ -458,6 +460,8 @@ export function FullscreenPlayer({
   videoRef,
   isVideo,
   audioErr,
+  liveBehindSec,
+  onGoLive,
   artOk,
   splitArt,
   splits,
@@ -491,6 +495,11 @@ export function FullscreenPlayer({
       or a failing live stream reads as a silent black box (the mini-bar's tiny
       error line is hidden behind this overlay). */
   audioErr: string | null;
+  /** Whole seconds a playing live item is behind a fresh connect, 0 when on
+   *  time or paused — <Player>'s measure, so both rows show one number. */
+  liveBehindSec: number;
+  /** ⏭ GO LIVE: <Player>'s reconnect at the live edge. */
+  onGoLive: () => void;
   /** False when audio is playing and the buffer can't afford heavy artwork —
    *  <Player>'s `artUsable`, which is the gate AND the "is anything actually
    *  playing" test, since a paused element has no enclosure to starve. Passed
@@ -527,7 +536,9 @@ export function FullscreenPlayer({
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
   const episodeQueue = useApp((s) => s.episodeQueue);
+  const shuffle = useApp((s) => s.shuffle);
   const play = useApp((s) => s.play);
+  const playFromShuffle = useApp((s) => s.playFromShuffle);
   const togglePlay = useApp((s) => s.togglePlay);
   const [valueOpen, setValueOpen] = useState(false);
 
@@ -750,6 +761,8 @@ export function FullscreenPlayer({
 
   const { episode, podcast } = current;
   const isMusic = isMusicMedium(podcast);
+  // -1 with no shuffle, or when it does not hold this track.
+  const shuffleIdx = shuffleIndexOf(shuffle?.items ?? null, episode);
   // Not `isMusic`: a playlist's tracks count too, and from /downloads the show has
   // no medium, so only the download record can say.
   const musicItem = isMusicItem(current);
@@ -946,13 +959,14 @@ export function FullscreenPlayer({
               opened, and a mounted `useWalletBalance` is a NIP-47 read on
               every `payment_sent` — see <WalletBalanceBox>. */}
           {open && <WalletBalanceBox className={BAR_CHIP_LG} />}
-          {/* WHO SIGNS THE NOTE, beside what pays for it. `<AuthControl
-              overlay>` below offers the two logins while signed OUT and
-              renders nothing once signed in — the account menu belongs to
-              <NostrAuth>, which these routes mount hidden — so this bar showed
-              no Nostr at all to the one user whose boost note it would sign.
-              A readout, like the balance: the menu is one ← BACK away. */}
-          <NostrIdentityChip className={BAR_CHIP_LG} />
+          {/* WHO SIGNS THE NOTE, beside what pays for it — and now the same
+              account menu the header opens (Chad, 2026-11-13: "if I click my
+              avatar in the top right, I'd like it to open the same menu that
+              it does on the home screen"). `<AuthControl overlay>` below
+              offers the two logins while signed OUT; this renders nothing
+              then. `open &&`, like the balance: the menu holds bunker
+              subscriptions, so it is mounted only while the screen is. */}
+          {open && <NowPlayingAccountMenu className={BAR_CHIP_LG} />}
           <AuthControl overlay />
           <button onClick={onClose} className={`btn-ghost px-2 py-1 text-base lg:text-lg leading-none ${BAR_CHIP_LG}`} aria-label="Close fullscreen player">
             ✕
@@ -1223,6 +1237,12 @@ export function FullscreenPlayer({
                 // without this an episode cover that is itself a huge GIF would
                 // still be fetched whole while the buffer is in trouble.
                 preferOriginal={open && artOk}
+                // The cover changes IN PLACE — per track, per chapter, and twice
+                // more per track as the art gate shuts and reopens — so it holds
+                // the painted picture until the next one has loaded. Without it
+                // every change is an empty box until the file arrives: the
+                // "flashes just once" reported from beta (e2e:coverhold).
+                hold
                 // The whole picture, letterboxed — never a crop. Episode art
                 // is not reliably square: a show that reuses its video
                 // thumbnail publishes 16:9, and `object-cover` in a square box
@@ -1249,10 +1269,7 @@ export function FullscreenPlayer({
           <div className={`flex-1 min-h-0 sm:flex-none ${infoPane} p-4 sm:p-6 lg:p-10 flex flex-col gap-3 sm:gap-4 sm:h-full`}>
             <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
               <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <LiveBadge status="live" />
-                  <span className="text-xs text-muted">streaming now</span>
-                </div>
+                <LiveEdge variant="full" className="flex-wrap" behindSec={liveBehindSec} onGoLive={onGoLive} />
                 <h1 className="font-display text-xl sm:text-2xl lg:text-3xl leading-tight mt-2">{episode.title}</h1>
                 {podcast.title && podcast.title !== episode.title && (
                   <p className="text-sm text-muted mt-1">{podcast.title}</p>
@@ -1312,10 +1329,7 @@ export function FullscreenPlayer({
             </div>
 
             {isLive ? (
-              <div className="flex items-center gap-2">
-                <LiveBadge status="live" />
-                <span className="text-xs text-muted">streaming now</span>
-              </div>
+              <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
             ) : (
               <div className="flex flex-col gap-1.5">
                 <div className="relative flex items-center">
@@ -1450,8 +1464,67 @@ export function FullscreenPlayer({
                 )}
               </div>
             )}
+            {/* WHILE THE BLOCK IS UNREAD THE ROW HOLDS ITS PLACE. A favorites
+                shuffle track (and a playlist row) starts with no value block
+                and asks `/api/item-value` as it plays, so on every ⏭ the row
+                above unmounted and came back, and the list under it jumped
+                61px up and down (Chad, beta, 2026-11-13). Same box, same
+                height; no count, because the last track's would be wrong.
+                Pinned by `e2e:shuffle` section 8. */}
+            {!hasValue && boost.reason === 'pending' && (
+              <div className="-mt-1 border-t border-bone/10" data-splits-pending>
+                <p className="flex w-full items-center gap-2 h-11 text-xs text-muted" aria-busy="true">
+                  <BoltIcon className="w-3.5 h-3.5 text-bolt/40" />
+                  <span>Checking splits…</span>
+                </p>
+              </div>
+            )}
 
-            {isMusic && episodeQueue.length > 1 && (
+            {/* THE SHUFFLE replaces the album panel while it owns the track.
+                `episodeQueue` is the list of whatever show was opened last,
+                which during a shuffle is an album the listener browsed past —
+                and a tap there would `play` it under THIS track's show. Each
+                row here carries its own show, so a tap is `playFromShuffle`. */}
+            {shuffleIdx >= 0 && shuffle ? (
+              <div data-shuffle-panel className="border-t border-bone/10 pt-5">
+                <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
+                  Shuffle · {shuffle.items.length} tracks
+                </p>
+                <ul className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+                  {shuffle.items.map((t, i) => {
+                    const active = i === shuffleIdx;
+                    const key = epKey(t.episode);
+                    return (
+                      <li key={key} data-key={key} aria-current={active ? 'true' : undefined}>
+                        {/* The active row draws ❚❚, so it pauses — the album
+                            panel's rule below. */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (active) togglePlay();
+                            else playFromShuffle(i);
+                          }}
+                          className={`w-full flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
+                            active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                          }`}
+                        >
+                          <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
+                            {active && isPlaying ? '❚❚' : i + 1}
+                          </span>
+                          <span className="truncate flex-1 min-w-0">
+                            {t.episode.title}
+                            {t.podcast.title ? <span className="text-muted"> · {t.podcast.title}</span> : null}
+                          </span>
+                          {t.episode.duration ? (
+                            <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.episode.duration)}</span>
+                          ) : null}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : isMusic && episodeQueue.length > 1 && (
               <div className="border-t border-bone/10 pt-5">
                 <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
                   Album · {episodeQueue.length} tracks

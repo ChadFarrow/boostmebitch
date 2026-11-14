@@ -18,6 +18,16 @@ export function escapeXml(s: string): string {
     .replace(/'/g, '&apos;');
 }
 
+/**
+ * When the CHANNEL TEMPLATE below last changed: a tag added, removed or reworded for
+ * every feed at once (Chad, 2026-11-13: he updates all hosted feeds with a push, and no
+ * listener has to republish). `<lastBuildDate>` is the later of this and the playlist's
+ * own `updatedAt`, so an app that checks it reads every feed again after the change.
+ * Set it to the time of the commit that changes the template. The songs, their order,
+ * the title, description, art and guid come only from the stored row, never from here.
+ */
+export const FEED_TEMPLATE_UPDATED_AT = '2026-11-13T12:50:00.000Z';
+
 // Podcasting 2.0 guid namespace (podcastindex-org/podcast-namespace, `guid`).
 const PODCAST_GUID_NAMESPACE = 'ead4c236-bf58-58c6-a2c6-a6b28d128cb6';
 
@@ -41,7 +51,7 @@ export function communityFeedGuid(feedUrl: string): string {
  */
 export function buildPlaylistFeedXml(
   p: StoredPlaylist,
-  o: { feedUrl: string; coverUrl: string; ownerNpub: string; fallbackDescription: string; podcastGuid: string },
+  o: { feedUrl: string; coverUrl: string; ownerNpub: string; fallbackDescription: string; podcastGuid: string; generator: string },
 ): string {
   const e = escapeXml;
   const description = p.description || o.fallbackDescription;
@@ -56,7 +66,8 @@ export function buildPlaylistFeedXml(
     <description>${e(description)}</description>
     <link>${e(o.feedUrl)}</link>
     <language>en</language>
-    <lastBuildDate>${new Date(p.updatedAt).toUTCString()}</lastBuildDate>
+    <lastBuildDate>${new Date(Math.max(Date.parse(p.updatedAt), Date.parse(FEED_TEMPLATE_UPDATED_AT))).toUTCString()}</lastBuildDate>
+    <generator>${e(o.generator)}</generator>
     <podcast:guid>${e(o.podcastGuid)}</podcast:guid>
     <podcast:medium>musicL</podcast:medium>
     <podcast:txt purpose="npub">${e(o.ownerNpub)}</podcast:txt>

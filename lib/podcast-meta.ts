@@ -475,6 +475,26 @@ export async function resolveEpisodeByGuid(
 }
 
 /**
+ * The cached record for one item, read SYNCHRONOUSLY: memory, then `bmb:epmeta`
+ * (promoted into memory, as `resolveEpisodeByGuid` does). `undefined` means
+ * "not cached", `null` means "asked, and Podcast Index had none". It never
+ * fetches.
+ *
+ * It exists for the favorites shuffle, which must set `current` inside the
+ * press — iOS ties `play()` to the gesture, and an `await` over real I/O loses
+ * it — and which must not fall back to one GET per track after a failed batch.
+ */
+export function cachedEpisodeByGuid(feedGuid: string, itemGuid: string): Episode | null | undefined {
+  const key = `${feedGuid}:${itemGuid}`;
+  if (episodeMem.has(key)) return episodeMem.get(key) ?? null;
+  const cached = storage.episodeMeta.get(key);
+  if (!cached) return undefined;
+  episodeMem.set(key, cached);
+  capMem(episodeMem);
+  return cached;
+}
+
+/**
  * Load a show's feed and pick one episode out of it by guid — the only way to
  * put an episode on screen that this app hasn't already listed.
  *
