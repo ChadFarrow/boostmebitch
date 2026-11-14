@@ -152,6 +152,20 @@ Two browser details that are not decoration. The anchor is **appended to the doc
 
 Verified against a real relay and a real signer (`scripts/local-relay.mjs` plus a CDP-injected `window.nostr`, the `e2e:favorites` shape): the downloaded file carries exactly the seven NIP-01 keys, its signature verifies, and its id, tags and content are identical to the event the relay holds. Pointed at a dead relay, no file is written and the reason renders.
 
+### A favorite whose host closed — the REPLACE offer (`components/lists/moved-offer.tsx`)
+
+A favorites row still on a closed host (`closedService`, see [`feeds.md`](feeds.md) "A feed whose host closed") after the resolvers tried the same-guid copy shows where the album may have gone under a NEW guid: `RSS Blue closed. Found:` and one line per copy, `Mr Videoman — Prosperous Soul · Fountain [REPLACE]`. It asks `/api/moved` two rows at a time and renders nothing until it answers, and nothing on an empty answer. A definite answer is kept for the tab; a "could not ask" is not, and the row retries once after 20 s — Podcast Index answers a burst with 429, and one throttled load used to hide every offer until a reload (`e2e:moved` throttles the first request on purpose). Chad chose this over an automatic swap (2026-11-14): a title-and-artist match can be wrong, and a swap changes a list other apps read and who a boost pays.
+
+- **A footer INSIDE the row's `<li>`, never a sibling `<li>`.** The list is a two-column grid from `lg:`, where a sibling takes a cell of its own and shifts every pair after it. `PodcastRow`, `FavoriteItemRow` and `CarriedRow` take an optional `footer`; absent, the row is unchanged.
+- **REPLACE is the store actions a heart uses, every add before every remove.** Each write runs `markClearedIfEmpty`, so remove-first on a one-entry list passes through an empty store, which reads as a deliberate clear-all. Then ONE `requestFavoritesSync`.
+- **A track that cannot be placed stays.** An album REPLACE moves each favorited track whose normalized title is on the new album (`planSwap`, pinned by `check:moved`) and leaves the rest under the old guid. A track row offers only copies that hold that track.
+- **A carried row gets the lines and no button**: this device does not publish it.
+- **No copy → `RSS Blue closed — no copy found.` and REMOVE** (Chad, 2026-11-14). `movedFooterKind` (pinned by `check:moved`) picks offer / gone / nothing, and it is never "gone" on a missing answer: "could not ask" must not tell the user a copy does not exist. A track row whose album moved without that track is "gone" too. REMOVE is the heart's removal with words on it.
+- **All of them sit in ONE section at the top**, `<service> closed`, out of their medium's section — fifteen rows with something to do, scattered through 470, were hard to find. The tabs keep counting them (still favorites of that medium); each medium section's "of N" leaves them out so it does not read as filtered (`openTotals` in `favorites-page.tsx`).
+- **The result line shows under the NEW row** (`useMovedNotices`, keyed by the new guid): the old row, and the offer with it, unmounts the moment the swap lands. The new rows keep the old `addedAt`, so they land where the old ones were.
+
+Verified by `e2e:moved` (offers, 24×24 buttons, no overflow at 390px, the published event).
+
 ### Seeing and repairing the private half (`⌕ CHECK PRIVATE FAVORITES`)
 
 Opens the encrypted half of the kind:10333 event, counts what is in it, and compares it with the plaintext tags. It **publishes nothing**. The arithmetic is `lib/favorites-audit.ts`; the decrypt and the rendering are in `components/favorites-page.tsx`, on the same row as `⇩ BACKUP` because both ask the relays about the list as STORED rather than as painted.

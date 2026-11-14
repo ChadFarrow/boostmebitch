@@ -21,6 +21,7 @@ import {
   EMPTY_PARSED, baselineOfList, parseFavoritesList, type ParsedList,
 } from '@/lib/nostr/favorites-list';
 import { getErrorMessage } from '@/lib/util';
+import { closedService, itemOnClosedHost } from '@/lib/moved-feeds';
 import {
   loadEpisodeFromFeed, resolveEpisodeByGuid, resolvePodcastByGuid,
   warmEpisodeCache, warmPodcastCache,
@@ -473,15 +474,44 @@ export function FavoritesPage() {
       ? crossSplitLabel(tab, activeTab?.label ?? 'medium unknown', kind)
       : half[kind];
 
+  // Rows whose feed host CLOSED (RSS Blue — `lib/moved-feeds.ts`) leave their
+  // medium's section for ONE section at the top: each carries something to do
+  // (REPLACE, or the "no copy found" label and REMOVE), and fifteen of them
+  // scattered through 470 rows were hard to find (Chad, 2026-11-14). The tabs
+  // keep counting them — a closed favorite is still a favorite of its medium —
+  // but each medium section's "of N" leaves them out, so it does not read as
+  // filtered.
+  const closedFeeds = useMemo(() => feeds.filter((r) => !!closedService(r.url)), [feeds]);
+  const closedItems = useMemo(() => items.filter((r) => itemOnClosedHost(r)), [items]);
+  const openFeeds = useMemo(() => feeds.filter((r) => !closedService(r.url)), [feeds]);
+  const openItems = useMemo(() => items.filter((r) => !itemOnClosedHost(r)), [items]);
+  const allClosedFeeds = useMemo(() => feedRows.filter((r) => !!closedService(r.url)), [feedRows]);
+  const allClosedItems = useMemo(() => itemRows.filter((r) => itemOnClosedHost(r)), [itemRows]);
+  const openTotals = useMemo(() => {
+    const less = (totals: Map<string, number>, rows: { medium?: string }[]) => {
+      const out = new Map(totals);
+      for (const g of groupByMedium(rows, (r) => r.medium)) out.set(g.key, (out.get(g.key) ?? 0) - g.rows.length);
+      return out;
+    };
+    return { feeds: less(halfTotals.feeds, allClosedFeeds), items: less(halfTotals.items, allClosedItems) };
+  }, [halfTotals, allClosedFeeds, allClosedItems]);
+  const closedShown = (showFeeds ? closedFeeds.length : 0) + (showItems ? closedItems.length : 0);
+  const closedTotal = (showFeeds ? allClosedFeeds.filter((r) => inTab(r, tab)).length : 0)
+    + (showItems ? allClosedItems.filter((r) => inTab(r, tab)).length : 0);
+  const closedHeading = `${[...new Set([
+    ...closedFeeds.map((r) => closedService(r.url)),
+    ...closedItems.map((r) => closedService(r.enclosureUrl) ?? closedService(r.image)),
+  ].filter(Boolean))].join(', ') || 'Host'} closed`;
+
   const feedSections = showFeeds
     ? tab === 'all'
-      ? mediumSections(feeds, 'feeds', halfTotals.feeds, !!query)
-      : [{ fold: 'favpage:feeds', mediumKey: tab, heading: headingFor('feeds'), rows: feeds, ofTotal: halfTotals.feeds.get(tab) ?? 0 }]
+      ? mediumSections(openFeeds, 'feeds', openTotals.feeds, !!query)
+      : [{ fold: 'favpage:feeds', mediumKey: tab, heading: headingFor('feeds'), rows: openFeeds, ofTotal: openTotals.feeds.get(tab) ?? 0 }]
     : [];
   const itemSections = showItems
     ? tab === 'all'
-      ? mediumSections(items, 'items', halfTotals.items, !!query)
-      : [{ fold: 'favpage:items', mediumKey: tab, heading: headingFor('items'), rows: items, ofTotal: halfTotals.items.get(tab) ?? 0 }]
+      ? mediumSections(openItems, 'items', openTotals.items, !!query)
+      : [{ fold: 'favpage:items', mediumKey: tab, heading: headingFor('items'), rows: openItems, ofTotal: openTotals.items.get(tab) ?? 0 }]
     : [];
 
   return (
@@ -665,6 +695,36 @@ export function FavoritesPage() {
                   under `all`. The list id is derived per section rather than
                   from a second `useId`, because the count is data-driven and a
                   hook cannot be. */}
+              <Section
+                key="favpage:closed"
+                listId={`${feedsListId}closed`}
+                heading={closedHeading}
+                shown={closedShown}
+                ofTotal={closedTotal}
+                collapsed={collapsed.has('favpage:closed')}
+                onToggle={() => toggleCollapsed('favpage:closed')}
+              >
+                {showFeeds && closedFeeds.length > 0 && (
+                  <FavoriteFeedRows
+                    id={`${feedsListId}closed`}
+                    rows={closedFeeds}
+                    resetKey={resetKey}
+                    hidden={collapsed.has('favpage:closed')}
+                    noun={(n) => (n === 1 ? 'album or show' : 'albums and shows')}
+                    onSelect={openFeed}
+                  />
+                )}
+                {showItems && closedItems.length > 0 && (
+                  <FavoriteItemRows
+                    id={`${itemsListId}closed`}
+                    rows={closedItems}
+                    resetKey={resetKey}
+                    hidden={collapsed.has('favpage:closed')}
+                    noun={(n) => (n === 1 ? 'track or episode' : 'tracks and episodes')}
+                    onOpen={openItem}
+                  />
+                )}
+              </Section>
               {feedSections.map((sec) => (
                 <Section
                   key={sec.fold}

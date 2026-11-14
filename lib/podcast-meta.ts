@@ -20,8 +20,9 @@
 // collide with a guid in either cache.
 
 import { storage } from './storage';
-import type { Episode, ItemPayment, PlayGroup, Podcast, ValueTimeSplit } from './types';
+import type { Episode, ItemPayment, MovedAnswer, PlayGroup, Podcast, ValueTimeSplit } from './types';
 import { isPlaylistMedium } from './util';
+import { closedService, itemOnClosedHost } from './moved-feeds';
 
 /**
  * Entry cap for the two in-memory tiers below.
@@ -119,7 +120,10 @@ const COULD_NOT_ASK = new Set([408, 429]);
 async function resolveVia(cacheKey: string, query: string): Promise<Podcast | null> {
   if (podcastMem.has(cacheKey)) return podcastMem.get(cacheKey) ?? null;
   const cached = storage.podcastMeta.get(cacheKey);
-  if (cached) {
+  // A record on a CLOSED host (`lib/moved-feeds.ts`) is not trusted from disk:
+  // the server now follows it to its live same-guid copy, and a 7-day-old answer
+  // naming the dead feed would hide that for a week. Asked again, once per tab.
+  if (cached && !closedService(cached.url)) {
     podcastMem.set(cacheKey, cached);
     capMem(podcastMem);
     return cached;
@@ -222,7 +226,8 @@ export async function warmPodcastCache(guids: string[]): Promise<void> {
      * stops asking a second time.
      */
     const cached = storage.podcastMeta.get(g);
-    if (cached) {
+    // Not a closed-host record: see `resolveVia`.
+    if (cached && !closedService(cached.url)) {
       podcastMem.set(g, cached);
       capMem(podcastMem);
       return false;
@@ -269,7 +274,8 @@ export async function warmEpisodeCache(refs: { feedGuid: string; itemGuid: strin
     // `episodeMem` is not, so this was re-asking for records already on disk.
     // `resolveEpisodeByGuid` promotes a disk hit into memory; so does this.
     const cached = storage.episodeMeta.get(key);
-    if (cached) {
+    // Not a closed-host record: see `resolveVia`.
+    if (cached && !itemOnClosedHost(cached)) {
       episodeMem.set(key, cached);
       capMem(episodeMem);
       return false;
@@ -434,7 +440,8 @@ export async function resolveEpisodeByGuid(
   const cacheKey = `${feedGuid}:${itemGuid}`;
   if (episodeMem.has(cacheKey)) return episodeMem.get(cacheKey) ?? null;
   const cached = storage.episodeMeta.get(cacheKey);
-  if (cached) {
+  // Not a closed-host record: see `resolveVia`.
+  if (cached && !itemOnClosedHost(cached)) {
     episodeMem.set(cacheKey, cached);
     capMem(episodeMem);
     return cached;
@@ -488,7 +495,8 @@ export function cachedEpisodeByGuid(feedGuid: string, itemGuid: string): Episode
   const key = `${feedGuid}:${itemGuid}`;
   if (episodeMem.has(key)) return episodeMem.get(key) ?? null;
   const cached = storage.episodeMeta.get(key);
-  if (!cached) return undefined;
+  // A closed-host record is a miss here too: playing it plays a 410.
+  if (!cached || itemOnClosedHost(cached)) return undefined;
   episodeMem.set(key, cached);
   capMem(episodeMem);
   return cached;
@@ -753,3 +761,49 @@ export function loadPlaylistPage(
 }
 
 const playlistInFlight = new Map<string, Promise<PlaylistResponse>>();
+
+/**
+ * `/api/moved` for one feed guid: where a favorite whose host closed may have
+ * gone under a NEW guid (`<MovedOffer>`).
+ *
+ * - A DEFINITE answer is kept for the tab: a 200, or a 404 (PI holds no record,
+ *   so nothing to offer — answered as no candidates).
+ * - "Could not ask" is `null` and is NOT kept, so a later caller asks again.
+ *   Measured 2026-11-14: Podcast Index answers bursts with 429, and each answer
+ *   here costs the server two PI searches plus a track list — one throttled
+ *   load had hidden every offer for the life of the tab. `<MovedOffer>` retries
+ *   once on a `null`.
+ * - At most two in flight, because a favorites page mounts every dead row at
+ *   once, and a burst is what PI throttles.
+ * - It never trips the PI breaker the resolvers rely on: this is an offer.
+ */
+const movedInFlight = new Map<string, Promise<MovedAnswer | null>>();
+const MOVED_CONCURRENCY = 2;
+const NOTHING_MOVED: MovedAnswer = { service: null, candidates: [] };
+let movedActive = 0;
+const movedQueue: (() => void)[] = [];
+
+export function fetchMovedCandidates(guid: string): Promise<MovedAnswer | null> {
+  const known = movedInFlight.get(guid);
+  if (known) return known;
+  const p = (async () => {
+    if (movedActive >= MOVED_CONCURRENCY) await new Promise<void>((go) => movedQueue.push(go));
+    movedActive++;
+    try {
+      const r = await fetch(`/api/moved?guid=${encodeURIComponent(guid)}`);
+      if (r.status === 404) return NOTHING_MOVED;
+      if (!r.ok) return null;
+      const body = (await r.json()) as MovedAnswer;
+      return body && Array.isArray(body.candidates) ? body : null;
+    } catch {
+      return null;
+    } finally {
+      movedActive--;
+      movedQueue.shift()?.();
+    }
+  })();
+  movedInFlight.set(guid, p);
+  // Forget a "could not ask", so the next caller asks again.
+  void p.then((a) => { if (a === null && movedInFlight.get(guid) === p) movedInFlight.delete(guid); });
+  return p;
+}

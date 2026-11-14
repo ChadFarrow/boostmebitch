@@ -68,6 +68,7 @@ import {
   listDecryptOnLoadOk,
 } from './favorites-sync';
 import { mapLimit } from '@/lib/util';
+import { closedService, itemOnClosedHost, mergeResolvedRow } from '@/lib/moved-feeds';
 import { resolvePublishRelays } from './relays';
 import type { DecryptPurpose } from './signer';
 import type { NostrIdentity } from './auth';
@@ -96,7 +97,9 @@ async function resolveGuidToFavorite(guid: string): Promise<FavoritePodcast | nu
   return podcast ? favoriteFromPodcast(podcast) : null;
 }
 
-function favoriteFromEpisode(ep: Episode, feedGuid: string): FavoriteEpisode | null {
+/** A resolved item as a favorite. Exported for `<MovedOffer>`, which writes the
+ *  new album's tracks on a REPLACE — one builder, so the two cannot drift. */
+export function favoriteFromEpisode(ep: Episode, feedGuid: string): FavoriteEpisode | null {
   if (!ep?.guid) return null;
   return {
     itemGuid: ep.guid,
@@ -594,7 +597,11 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     // being carried the moment this device claims it, and a stale `true` would
     // quietly drop it from the next publish.
     nextShows[feed.feedGuid] = carried ? { ...painted, carried: true } : { ...painted, carried: undefined };
-    if (!hit || !hit.artwork) unresolvedShows.push(feed.feedGuid);
+    // Also re-resolved: a cached row on a CLOSED host (RSS Blue, 2026-11-14). The
+    // server now follows it to its live same-guid copy, but this cache has no TTL,
+    // so without this the device that reported the dead covers keeps them. A row
+    // with no copy re-asks once per load; the answer comes from memory after that.
+    if (!hit || !hit.artwork || closedService(hit.url)) unresolvedShows.push(feed.feedGuid);
   }
 
   const nextEpisodes: Record<string, FavoriteEpisode> = {};
@@ -617,7 +624,8 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     // decides only whether to spend a request, never whether the favorite is
     // kept. Either way it still gets a row, still rides through every republish,
     // and renders unresolved: it is the user's favorite regardless.
-    if (!hit && item.feedGuid && looksLikeFeedGuid(item.feedGuid)) {
+    // A cached item on a closed host is re-resolved too, for the reason above.
+    if ((!hit || itemOnClosedHost(hit)) && item.feedGuid && looksLikeFeedGuid(item.feedGuid)) {
       unresolvedEpisodes.push({ itemGuid: item.itemGuid, feedGuid: item.feedGuid });
     }
   }
@@ -648,11 +656,13 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
       const prev = mergedShows[fav.podcastGuid];
       // A resolved medium wins, but PI not reporting one must not blank the hint
       // another app put on the wire — that hint is the only answer that exists
-      // for a feed PI has delisted.
-      const withMedium = fav.medium ? fav : { ...fav, medium: prev?.medium };
-      mergedShows[fav.podcastGuid] = prev?.addedAt
-        ? { ...withMedium, addedAt: prev.addedAt }
-        : withMedium;
+      // for a feed PI has delisted. And `carried` is KEPT: the paint loop set it
+      // this cycle, and a row rebuilt without it looks like this device's to
+      // publish (`localFavoriteEntries`). `mergeResolvedRow`, pinned by
+      // check:moved, because re-resolving closed-host rows sends more rows here.
+      // Null: the row left the store since the paint (a heart, a REPLACE) — skip.
+      const mergedShow = mergeResolvedRow(prev, fav);
+      if (mergedShow) mergedShows[fav.podcastGuid] = mergedShow;
     }
     setFavorites(mergedShows);
   }
@@ -676,11 +686,9 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
       // sources are the parent feed's entry and the wire hint, both already in
       // `prev`. Deliberately NOT a per-parent /podcasts/byguid fan-out: a
       // request per entry whose sole purpose is a hint is exactly the cost the
-      // hint exists to avoid.
-      const withMedium = fav.medium ? fav : { ...fav, medium: prev?.medium };
-      mergedEpisodes[fav.itemGuid] = prev?.addedAt
-        ? { ...withMedium, addedAt: prev.addedAt }
-        : withMedium;
+      // hint exists to avoid. `carried` is kept, as for shows above.
+      const mergedEpisode = mergeResolvedRow(prev, fav);
+      if (mergedEpisode) mergedEpisodes[fav.itemGuid] = mergedEpisode;
     }
     setFavoriteEpisodes(mergedEpisodes);
   }
