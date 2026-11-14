@@ -176,7 +176,39 @@ const { send, js, until, on } = page;
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const media = []; // every GIF file the page asked for: { host, id, file }
 const pageErrors = [];
-await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Request' }] });
+// gifs.nostr.build's API, answered from the fixture. `nbStub.mode` makes it
+// rate-limit (429) or drop the connection; `nbStub.slow` delays one query;
+// `nbStub.failWebm` fails every transparent GIF's WebM.
+const nbStub = { log: [], mode: 'ok', slow: {}, failWebm: false };
+const nbAnswer = (u) => (u.pathname === '/api/v1/gifs' ? FIX.chibi : FIX[u.searchParams.get('q') ?? ''] ?? FIX.applause);
+// `--real-nb`: pass gifs.nostr.build's API through to the real service. The
+// page is on 127.0.0.1, the API's shared development client, so it is admitted
+// without a registration. Only section 2r runs then.
+const REAL_NB = process.argv.includes('--real-nb');
+async function answerNb(requestId, request, u) {
+  if (REAL_NB) { await send('Fetch.continueRequest', { requestId }); return; }
+  const headers = Object.fromEntries(Object.entries(request.headers).map(([k, v]) => [k.toLowerCase(), v]));
+  nbStub.log.push({ path: u.pathname, q: u.searchParams.get('q'), kind: u.searchParams.get('kind'),
+    limit: u.searchParams.get('limit'), auth: 'authorization' in headers });
+  if (nbStub.mode === 'fail') { await send('Fetch.failRequest', { requestId, errorReason: 'ConnectionRefused' }); return; }
+  const delay = nbStub.slow[u.searchParams.get('q') ?? ''];
+  if (delay) await wait(delay);
+  const rate = nbStub.mode === 'rate';
+  await send('Fetch.fulfillRequest', {
+    requestId, responseCode: rate ? 429 : 200,
+    responseHeaders: [
+      { name: 'content-type', value: 'application/json' },
+      // What the real API sends a registered Origin.
+      { name: 'access-control-allow-origin', value: headers.origin ?? '*' },
+      { name: 'vary', value: 'Origin' },
+    ],
+    body: b64(rate ? { error: { code: 'rate_limited', message: 'Over the limit.' } } : nbAnswer(u)),
+  });
+}
+await send('Fetch.enable', { patterns: [
+  { urlPattern: '*/api/*', requestStage: 'Request' },
+  { urlPattern: '*gifs.nostr.build/webm/*', requestStage: 'Request' },
+] });
 on(async (m) => {
   if (m.method === 'Runtime.exceptionThrown') {
     pageErrors.push((m.params.exceptionDetails?.exception?.description ?? '').slice(0, 200));
@@ -191,6 +223,12 @@ on(async (m) => {
   const { requestId, request } = m.params;
   const u = new URL(request.url);
   try {
+    if (u.hostname === 'gifs.nostr.build') {
+      if (u.pathname.startsWith('/api/')) { await answerNb(requestId, request, u); return; }
+      if (nbStub.failWebm) await send('Fetch.failRequest', { requestId, errorReason: 'ConnectionRefused' });
+      else await send('Fetch.continueRequest', { requestId });
+      return;
+    }
     if (u.pathname.startsWith('/api/nostr/')) {
       await send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
       return;
@@ -214,6 +252,8 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
 await send('Page.enable');
 await send('Runtime.enable');
 await send('Network.enable');
+// A cached WebM would hide the failure `nbStub.failWebm` makes.
+await send('Network.setCacheDisabled', { cacheDisabled: true });
 
 const brand = async () => ((await js(`document.querySelector('link[rel="manifest"]')?.getAttribute('href') ?? ''`)) ?? '').includes('buddy') ? 'buddy' : 'bmb';
 const clickButton = (re) => js(`(() => {
@@ -378,6 +418,135 @@ if (BRAND_ID !== 'buddy') {
   const w = await js(`[document.documentElement.scrollWidth, document.documentElement.clientWidth]`);
   t.ok('no sideways overflow', w && w[0] <= w[1], JSON.stringify(w));
   t.ok('an on-screen tile plays on the phone too', await until(`!!document.querySelector('[data-gif-key][data-state="playing"]')`, 15000));
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+}
+
+/** Type into the search box the way React hears it. */
+const typeQuery = (value) => js(`(() => {
+  const el = document.querySelector('input[type="search"]');
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  set.call(el, ${JSON.stringify(value)});
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+})()`);
+const dialogText = () => js(`[...document.querySelectorAll('[role="dialog"]')].at(-1)?.innerText ?? ''`);
+const gridKeys = () => js(`[...document.querySelectorAll('[data-gif-key]')].map((b) => b.dataset.gifKey)`);
+const keysOf = (answer) => nb.parseNbResults(answer).map((r) => `nostrbuild:${r.key}`);
+/** The grid is two masonry columns, so page order is not result order: compare sets. */
+const sorted = (a) => [...a].sort();
+
+if (BRAND_ID !== 'bmb') {
+  console.log('\n(skipping section 2: it runs against a server with no NEXT_PUBLIC_BRAND)');
+} else if (REAL_NB) {
+  section('2r. The REAL gifs.nostr.build API, from 127.0.0.1');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  await openPicker(10);
+  t.ok('the browse list arrives and a tile plays', await until(`!!document.querySelector('[data-gif-key][data-state="playing"]')`, 20000));
+  await typeQuery('applause');
+  t.ok('a search for applause shows tiles', await until(`document.querySelectorAll('[data-gif-key]').length >= 10`, 15000));
+  t.ok('and one plays', await until(`(() => {
+    const v = document.querySelector('[data-gif-key][data-state="playing"] video');
+    return !!v && !v.paused && v.currentTime > 0.05 && v.getAttribute('src').startsWith('${B}/');
+  })()`, 20000));
+} else {
+  section('2. nostr.build, from the browser (desktop 1280×900)');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  await openPicker(20);
+  const browse = nbStub.log.filter((r) => r.path === '/api/v1/gifs');
+  t.equal('the empty box asks the browse list once', browse.map((r) => [r.kind, r.limit]), [['reaction', '200']]);
+  t.equal('no request carries an Authorization header', nbStub.log.filter((r) => r.auth).length, 0);
+  t.equal('the grid shows the browse answer', sorted(await gridKeys()), sorted(keysOf(FIX.chibi)));
+  t.ok('the attribution links https://nostr.build', await js(`(() => {
+    const a = [...document.querySelectorAll('[role="dialog"] a[href="https://nostr.build"]')].at(-1);
+    return !!a && /nostr\\.build/.test(a.innerText) && a.target === '_blank';
+  })()`));
+  t.ok('"Powered by GIPHY" is not shown', !/Powered by GIPHY/i.test(await dialogText()));
+
+  let before = nbStub.log.length;
+  await typeQuery('a');
+  await wait(900);
+  t.equal('one Latin letter sends nothing', nbStub.log.length - before, 0);
+
+  before = nbStub.log.length;
+  await typeQuery('applause');
+  t.ok('a typed search shows its answer', await until(`document.querySelector('[data-gif-key="${keysOf(FIX.applause)[0]}"]') !== null`, 8000));
+  const asked = nbStub.log.slice(before);
+  t.equal('it asked once, with limit=200', asked.map((r) => [r.path, r.q, r.limit]), [['/api/v1/search', 'applause', '200']]);
+
+  nbStub.slow.cat = 2000;
+  await typeQuery('cat');
+  await wait(600);
+  await typeQuery('');
+  await wait(3200);
+  t.equal('late answer ignored: the cleared box shows the browse list', sorted(await gridKeys()), sorted(keysOf(FIX.chibi)));
+  delete nbStub.slow.cat;
+
+  before = nbStub.log.length;
+  await typeQuery(`nsec1${'q'.repeat(58)}`);
+  await wait(900);
+  t.equal('a typed nsec sends nothing to gifs.nostr.build', nbStub.log.length - before, 0);
+  t.ok('and says so', /secret key/i.test(await dialogText()));
+
+  nbStub.mode = 'rate';
+  await typeQuery('ratelimit');
+  t.ok('429 says to wait a minute', await until(`/Too many searches for now: give it a minute\\./.test([...document.querySelectorAll('[role="dialog"]')].at(-1)?.innerText ?? '')`, 8000));
+  t.ok('and offers no Try again', !/Try again/i.test(await dialogText()));
+
+  nbStub.mode = 'fail';
+  before = nbStub.log.length;
+  await typeQuery('failing');
+  t.ok('a failed request says GIFs are unavailable', await until(`/GIFs are unavailable right now\\./.test([...document.querySelectorAll('[role="dialog"]')].at(-1)?.innerText ?? '')`, 10000));
+  t.equal('it retried once after the network failure', nbStub.log.slice(before).filter((r) => r.q === 'failing').length, 2);
+  nbStub.mode = 'ok';
+  before = nbStub.log.length;
+  await clickButton('/try again/i');
+  t.ok('Try again asks again and shows the answer', await until(`document.querySelectorAll('[data-gif-key]').length > 10`, 8000)
+    && nbStub.log.slice(before).some((r) => r.q === 'failing'));
+
+  section('2b. A transparent GIF plays its WebM, then its MP4 when the WebM fails');
+  await typeQuery('');
+  await until(`document.querySelector('[data-gif-key="${keysOf(FIX.chibi)[0]}"] video') !== null`, 10000);
+  const firstKey = keysOf(FIX.chibi)[0];
+  const srcOf = () => js(`document.querySelector('[data-gif-key="${firstKey}"] video')?.getAttribute('src') ?? ''`);
+  t.ok('Chrome plays the WebM', (await srcOf()).startsWith(`${B}/webm/orig/`), await srcOf());
+  await clickButton('/^close$/i');
+  nbStub.failWebm = true;
+  await clickButton('/add a gif/i');
+  t.ok('a failed WebM falls back to the MP4', await until(`(document.querySelector('[data-gif-key="${firstKey}"] video')?.getAttribute('src') ?? '').startsWith('${B}/mp4/orig/')`, 10000),
+    await srcOf());
+  nbStub.failWebm = false;
+
+  section('2c. A pick, and the stored boost');
+  await typeQuery('applause');
+  await until(`document.querySelector('[data-gif-key][data-state="playing"]') !== null`, 15000);
+  const chosen = await js(`document.querySelector('[data-gif-key][data-state="playing"]').dataset.gifKey`);
+  const key = chosen.split(':')[1];
+  await js(`document.querySelector('[data-gif-key="${chosen}"]').click()`);
+  t.ok('the picker closes', await until(`!document.querySelector('[data-gif-scroll]')`, 3000));
+  t.equal('the picked GIF shows its animated preview', await js(`document.querySelector('img[alt="The GIF this boost will carry"]')?.src ?? null`),
+    `${B}/anim/w240/${key}`);
+  t.equal('the message box gives the URL its room (250 − the URL − 1)', await js(`document.querySelector('[role="dialog"] textarea')?.maxLength ?? null`),
+    250 - `${B}/${key}`.length - 1);
+  t.equal('a pick releases every video', await attachedVideos(), 0);
+
+  const stored = [
+    { uuid: 'e2e-nb', ts: Date.now() - 1000, podcastTitle: 'E2E', sats: 100, message: `nostr.build boost\n${B}/${key}`, legs: [] },
+    { uuid: 'e2e-giphy', ts: Date.now() - 2000, podcastTitle: 'E2E', sats: 100, message: 'giphy boost\nhttps://media.giphy.com/media/1VQr7rkEjsLXG/giphy.gif', legs: [] },
+  ];
+  await js(`localStorage.setItem('bmb:boosts:guest', ${JSON.stringify(JSON.stringify(stored))})`);
+  await send('Page.navigate', { url: `${APP}/` });
+  t.ok('a stored boost draws its nostr.build GIF and an old GIPHY one', await until(`(() => {
+    const s = [...document.querySelectorAll('img[alt="GIF"]')].map((i) => i.src);
+    return s.includes('${B}/anim/w240/${key}') && s.includes('https://media.giphy.com/media/1VQr7rkEjsLXG/200w.webp');
+  })()`, 20000));
+  await js(`localStorage.removeItem('bmb:boosts:guest')`);
+
+  section('2d. Phone (390×844, touch): the field is not focused on open');
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  await openPicker(10);
+  t.ok('the keyboard does not cover the grid', await js(`document.activeElement?.getAttribute('type') !== 'search'`));
+  const w = await js(`[document.documentElement.scrollWidth, document.documentElement.clientWidth]`);
+  t.ok('no sideways overflow', w && w[0] <= w[1], JSON.stringify(w));
   await send('Emulation.setTouchEmulationEnabled', { enabled: false });
 }
 

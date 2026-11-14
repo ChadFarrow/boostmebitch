@@ -1,20 +1,103 @@
 'use client';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { GifResult } from '@/lib/giphy';
-import { giphyTile, gifPreviewUrl, type GifPick } from '@/lib/gifs/pick';
+import { giphyTile, gifPreviewUrl, nbTile, type GifPick, type GifTile } from '@/lib/gifs/pick';
+import { NB_BROWSE_URL, nbSearchUrl, normalizeNbQuery, parseNbResults } from '@/lib/gifs/nostr-build';
+import { readCappedJson } from '@/lib/capped-body';
+import { BRAND } from '@/lib/brand';
 import { prefersReducedMotion } from '@/lib/format';
 import { GifGrid } from './gif-grid';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { ModalShell } from '@/components/modal-shell';
 
-/** How long a keystroke waits before GIPHY is asked. */
+/** How long a keystroke waits before the GIF source is asked. */
 const SEARCH_DEBOUNCE_MS = 300;
+
+/** A 200-result nostr.build answer is well under 1 MB. */
+const NB_MAX_BYTES = 2 * 1024 * 1024;
+const NB_TIMEOUT_MS = 15_000;
+const NB_RETRY_AFTER_MS = 1_000;
+
+type Failure = 'rate' | 'unavailable' | 'setup';
+
+const FAILURE_TEXT: Record<Failure, string> = {
+  rate: 'Too many searches for now: give it a minute.',
+  unavailable: 'GIFs are unavailable right now.',
+  setup: 'GIF search is not set up on this site.',
+};
 
 type SearchState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'ready'; gifs: GifResult[] }
-  | { kind: 'error'; message: string };
+  | { kind: 'ready'; tiles: GifTile[] }
+  | { kind: 'error'; failure: Failure };
+
+type Answer = { tiles: GifTile[] } | { failure: Failure };
+
+/**
+ * gifs.nostr.build, called from the BROWSER with a plain `fetch` and no
+ * custom headers: the API admits this site by its registered Origin, and an
+ * `Authorization` header would fail the CORS preflight. An unregistered
+ * Origin is answered before CORS headers are added, so it reaches this code
+ * as a network error — "unavailable", like any other.
+ *
+ * `q` null is the empty box: the daily reaction list (there is no trending).
+ * One request per query, never aborted (a late answer is ignored by the
+ * caller instead); retried ONCE after a second, and only when no answer came
+ * back — never a timeout, which may have arrived and been counted.
+ */
+async function searchNostrBuild(q: string | null): Promise<Answer> {
+  const url = q ? nbSearchUrl(q) : NB_BROWSE_URL;
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
+    try {
+      // AbortSignal.timeout exists from Safari 16; without it, no timeout.
+      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(NB_TIMEOUT_MS)
+        : undefined;
+      res = await fetch(url, signal ? { signal } : undefined);
+    } catch (e) {
+      if (attempt === 0 && (e as { name?: string } | null)?.name !== 'TimeoutError') {
+        await new Promise((r) => setTimeout(r, NB_RETRY_AFTER_MS));
+        continue;
+      }
+      return { failure: 'unavailable' };
+    }
+    if (res.status === 429) return { failure: 'rate' };
+    if (!res.ok) return { failure: 'unavailable' };
+    try {
+      return { tiles: parseNbResults(await readCappedJson(res, NB_MAX_BYTES)).map(nbTile) };
+    } catch {
+      return { failure: 'unavailable' };
+    }
+  }
+}
+
+/** GIPHY through our own `/api/gifs`, which holds the key. */
+async function searchGiphy(q: string): Promise<Answer> {
+  try {
+    const res = await fetch(`/api/gifs?q=${encodeURIComponent(q)}`);
+    if (res.status === 503) return { failure: 'setup' };
+    if (!res.ok) return { failure: 'unavailable' };
+    const body = (await res.json().catch(() => null)) as { gifs?: GifResult[] } | null;
+    return Array.isArray(body?.gifs) ? { tiles: body.gifs.map(giphyTile) } : { failure: 'unavailable' };
+  } catch {
+    return { failure: 'unavailable' };
+  }
+}
+
+/** Each source's required credit line. nostr.build's is a condition of use. */
+function Attribution({ source }: { source: 'nostrbuild' | 'giphy' }) {
+  if (source === 'giphy') return <>Powered by GIPHY</>;
+  return (
+    <>
+      GIFs from{' '}
+      <a href="https://nostr.build" target="_blank" rel="noopener noreferrer" className="underline">
+        nostr.build
+      </a>
+    </>
+  );
+}
 
 /**
  * Pick one GIF for a boost. Holds a {@link GifPick} only — the caller turns it
@@ -43,36 +126,44 @@ export function GifPicker({
   // the whole grid until the next answer, so no tile loads a video only to be
   // refused.
   const [refused, setRefused] = useState(false);
-  const tiles = useMemo(() => (state.kind === 'ready' ? state.gifs.map(giphyTile) : []), [state]);
+  // Bumped by "Try again", which sends the same search once more.
+  const [attempt, setAttempt] = useState(0);
+  // A phone's keyboard would cover the grid, so the field takes focus on open
+  // only where a pointer can hover. Headless Chrome matches neither, so tests
+  // see the phone's behaviour.
+  const [focusOnOpen] = useState(
+    () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      && window.matchMedia('(hover: hover)').matches,
+  );
+  const source = BRAND.gifSource;
+  const tiles = state.kind === 'ready' ? state.tiles : [];
   const inputId = useId();
   // Refused BEFORE any fetch and SAID so — the retype is as dangerous as the
   // first paste, so a silent no-op is not enough.
   const secretHit = looksLikeSecretKey(q);
+  // nostr.build: the query as searched; a single Latin letter is NOT a search
+  // (it would spend the reader's 120-a-minute budget on noise), so the grid
+  // keeps what it shows.
+  const nbQuery = source === 'nostrbuild' ? normalizeNbQuery(q) : null;
+  const notASearch = source === 'nostrbuild' && q.trim() !== '' && nbQuery === null;
 
   useEffect(() => {
-    if (!open || secretHit) return;
+    if (!open || secretHit || notASearch) return;
     let live = true;
     setState({ kind: 'loading' });
     const t = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/gifs?q=${encodeURIComponent(q.trim())}`);
-        const body = (await res.json().catch(() => null)) as { gifs?: GifResult[]; error?: string } | null;
-        if (!live) return;
-        if (!res.ok || !body?.gifs) {
-          setState({
-            kind: 'error',
-            message: res.status === 503 ? 'GIF search is not set up on this site.' : 'GIF search is not available now.',
-          });
-          return;
-        }
-        setRefused(false);
-        setState({ kind: 'ready', gifs: body.gifs });
-      } catch {
-        if (live) setState({ kind: 'error', message: 'GIF search is not available now.' });
+      const answer = source === 'nostrbuild' ? await searchNostrBuild(nbQuery) : await searchGiphy(q.trim());
+      // A newer search has started: this answer must not replace its grid.
+      if (!live) return;
+      if ('failure' in answer) {
+        setState({ kind: 'error', failure: answer.failure });
+        return;
       }
+      setRefused(false);
+      setState({ kind: 'ready', tiles: answer.tiles });
     }, q.trim() ? SEARCH_DEBOUNCE_MS : 0);
     return () => { live = false; clearTimeout(t); };
-  }, [open, q, secretHit]);
+  }, [open, q, secretHit, notASearch, nbQuery, source, attempt]);
 
   if (pick) {
     return (
@@ -94,7 +185,9 @@ export function GifPicker({
             >
               × Remove GIF
             </button>
-            <span className="text-[10px] text-muted">Powered by GIPHY</span>
+            <span className="text-[10px] text-muted">
+              <Attribution source={pick.src} />
+            </span>
           </div>
         </div>
       </div>
@@ -154,11 +247,14 @@ export function GifPicker({
         value={q}
         maxLength={50}
         onChange={(e) => setQ(e.target.value)}
-        placeholder="search GIPHY…"
+        placeholder={source === 'giphy' ? 'search GIPHY…' : 'search GIFs…'}
         autoComplete="off"
-        autoFocus
+        autoFocus={focusOnOpen}
         disabled={disabled}
       />
+      {notASearch && !secretHit && (
+        <p className="mt-1.5 text-xs text-muted" role="status">Keep typing to search.</p>
+      )}
       {secretHit ? (
         <p className="mt-1.5 flex items-start gap-2 rounded border border-red-400/50 bg-red-400/5 px-3 py-2 text-xs text-red-300">
           <span aria-hidden className="shrink-0">⚠</span>
@@ -168,8 +264,17 @@ export function GifPicker({
           </span>
         </p>
       ) : state.kind === 'error' ? (
-        <p className="mt-2 text-xs text-muted" role="status">{state.message}</p>
-      ) : state.kind === 'ready' && state.gifs.length === 0 ? (
+        // The old results are hidden under an error: they are not the answer
+        // to this search. A 429 offers no Try again — the minute is the fix.
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted" role="status">
+          <span>{FAILURE_TEXT[state.failure]}</span>
+          {state.failure === 'unavailable' && (
+            <button type="button" className="btn-mini min-h-[32px]" onClick={() => setAttempt((n) => n + 1)}>
+              Try again
+            </button>
+          )}
+        </div>
+      ) : state.kind === 'ready' && state.tiles.length === 0 ? (
         <p className="mt-2 text-xs text-muted" role="status">No GIFs match that search.</p>
       ) : (
         // The scroll box is held in STATE, not a ref: the grid's observers are
@@ -205,7 +310,9 @@ export function GifPicker({
           )}
         </div>
       )}
-      <div className="mt-2 text-right text-[10px] text-muted">Powered by GIPHY</div>
+      <div className="mt-2 text-right text-[10px] text-muted">
+        <Attribution source={source} />
+      </div>
       </ModalShell>
     </>
   );
