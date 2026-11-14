@@ -153,7 +153,10 @@ function Tile({
   const [onScreenLong, setOnScreenLong] = useState(false); // on screen for NEAR_DELAY_MS
   const alpha = alphaSrc(tile.alpha);
   const [stage, setStage] = useState<Stage>(() => (alpha ? 'alpha' : h264 ? 'mp4' : 'animated'));
-  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  // A NEW object per borrow, not the element: the pool often hands the same
+  // element straight back (a WebM that fails → its MP4), and a play effect
+  // keyed on the element alone would then never run for the new source.
+  const [video, setVideo] = useState<{ el: HTMLVideoElement } | null>(null);
   const [drawn, setDrawn] = useState(false);
   const [faded, setFaded] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -216,7 +219,7 @@ function Tile({
     v.autoplay = false; // Chrome starts a waiting video by itself with autoplay on, even off screen.
     v.src = `${videoSrc}#t=0.001`; // Safari draws nothing for a paused video without this.
     host.appendChild(v);
-    setVideo(v);
+    setVideo({ el: v });
     return () => {
       clearTimeout(fadeTimer);
       v.removeEventListener('loadeddata', onLoaded);
@@ -234,16 +237,17 @@ function Tile({
   // Play a tenth on screen; pause (only if playing) once off it.
   useEffect(() => {
     if (!video) return;
+    const el = video.el;
     if (onScreen) {
-      video.autoplay = true;
-      video.play().catch((e: unknown) => {
+      el.autoplay = true;
+      el.play().catch((e: unknown) => {
         // A refusal (iOS Low Power Mode) holds for the whole grid until the
         // next search. An AbortError only means we paused it.
         if ((e as { name?: string })?.name === 'NotAllowedError') refused.current();
       });
     } else {
-      video.autoplay = false;
-      if (!video.paused) video.pause();
+      el.autoplay = false;
+      if (!el.paused) el.pause();
     }
   }, [video, onScreen]);
 

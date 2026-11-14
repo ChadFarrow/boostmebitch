@@ -141,18 +141,29 @@ export function GifPicker({
   // Refused BEFORE any fetch and SAID so — the retype is as dangerous as the
   // first paste, so a silent no-op is not enough.
   const secretHit = looksLikeSecretKey(q);
-  // nostr.build: the query as searched; a single Latin letter is NOT a search
-  // (it would spend the reader's 120-a-minute budget on noise), so the grid
-  // keeps what it shows.
-  const nbQuery = source === 'nostrbuild' ? normalizeNbQuery(q) : null;
-  const notASearch = source === 'nostrbuild' && q.trim() !== '' && nbQuery === null;
+  // nostr.build: a single Latin letter is NOT a search (it would spend the
+  // reader's 120-a-minute budget on noise), so the grid keeps what it shows.
+  const notASearch = source === 'nostrbuild' && q.trim() !== '' && normalizeNbQuery(q) === null;
+  // The query as SENT, which the search runs on — not the box's raw text. A
+  // trailing space or a capital is the same search, and a single letter is
+  // none at all: keyed on the raw text, both cancelled the search in flight,
+  // and a letter typed before the first list arrived left the skeleton
+  // pulsing under "Keep typing to search." for good.
+  const [searchQ, setSearchQ] = useState('');
+  const onQuery = (value: string) => {
+    setQ(value);
+    if (source !== 'nostrbuild') { setSearchQ(value.trim()); return; }
+    if (value.trim() === '') { setSearchQ(''); return; }
+    const n = normalizeNbQuery(value);
+    if (n !== null) setSearchQ(n);
+  };
 
   useEffect(() => {
-    if (!open || secretHit || notASearch) return;
+    if (!open || secretHit) return;
     let live = true;
     setState({ kind: 'loading' });
     const t = setTimeout(async () => {
-      const answer = source === 'nostrbuild' ? await searchNostrBuild(nbQuery) : await searchGiphy(q.trim());
+      const answer = source === 'nostrbuild' ? await searchNostrBuild(searchQ || null) : await searchGiphy(searchQ);
       // A newer search has started: this answer must not replace its grid.
       if (!live) return;
       if ('failure' in answer) {
@@ -161,9 +172,9 @@ export function GifPicker({
       }
       setRefused(false);
       setState({ kind: 'ready', tiles: answer.tiles });
-    }, q.trim() ? SEARCH_DEBOUNCE_MS : 0);
+    }, searchQ ? SEARCH_DEBOUNCE_MS : 0);
     return () => { live = false; clearTimeout(t); };
-  }, [open, q, secretHit, notASearch, nbQuery, source, attempt]);
+  }, [open, searchQ, secretHit, source, attempt]);
 
   if (pick) {
     return (
@@ -212,7 +223,7 @@ export function GifPicker({
     );
   }
 
-  const close = () => { setOpen(false); setQ(''); };
+  const close = () => { setOpen(false); setQ(''); setSearchQ(''); };
 
   // The search opens as its OWN modal over the boost modal: inline, the grid
   // got a 256px window inside a card already full of amount, message and
@@ -246,7 +257,7 @@ export function GifPicker({
         type="search"
         value={q}
         maxLength={50}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => onQuery(e.target.value)}
         placeholder={source === 'giphy' ? 'search GIPHY…' : 'search GIFs…'}
         autoComplete="off"
         autoFocus={focusOnOpen}

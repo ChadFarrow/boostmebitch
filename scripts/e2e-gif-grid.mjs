@@ -256,7 +256,8 @@ on(async (m) => {
   try {
     if (u.hostname === 'gifs.nostr.build') {
       if (u.pathname.startsWith('/api/')) { await answerNb(requestId, request, u); return; }
-      if (nbStub.failWebm) await send('Fetch.failRequest', { requestId, errorReason: 'ConnectionRefused' });
+      // true: every WebM fails; a key: only that GIF's (one tile failing alone gets its own pooled element back).
+      if (nbStub.failWebm === true || (typeof nbStub.failWebm === 'string' && u.pathname.endsWith(`/${nbStub.failWebm}`))) await send('Fetch.failRequest', { requestId, errorReason: 'ConnectionRefused' });
       else await send('Fetch.continueRequest', { requestId });
       return;
     }
@@ -507,6 +508,11 @@ if (BRAND_ID !== 'bmb') {
   t.ok('a typed search shows its answer', await until(`document.querySelector('[data-gif-key="${keysOf(FIX.applause)[0]}"]') !== null`, 8000));
   const asked = nbStub.log.slice(before);
   t.equal('it asked once, with limit=200', asked.map((r) => [r.path, r.q, r.limit]), [['/api/v1/search', 'applause', '200']]);
+  before = nbStub.log.length;
+  await typeQuery('Applause ');
+  await wait(900);
+  t.equal('the same query with a trailing space and a capital sends nothing new', nbStub.log.length - before, 0);
+  t.ok('and the grid stays', (await gridKeys()).length > 10);
 
   nbStub.slow.cat = 2000;
   await typeQuery('cat');
@@ -538,6 +544,18 @@ if (BRAND_ID !== 'bmb') {
   t.ok('Try again asks again and shows the answer', await until(`document.querySelectorAll('[data-gif-key]').length > 10`, 8000)
     && nbStub.log.slice(before).some((r) => r.q === 'failing'));
 
+  // One letter typed while the first list is still on its way is not a search,
+  // so it must not cancel that list either: the grid would pulse its skeleton
+  // under "Keep typing to search." for good (final review).
+  await clickButton('/^close$/i');
+  nbStub.slow[''] = 1500;
+  await clickButton('/add a gif/i');
+  await until(`!!document.querySelector('input[type="search"]')`, 5000);
+  await typeQuery('a');
+  t.ok('one letter typed during the first load: the browse list still arrives', await until(
+    `document.querySelectorAll('[data-gif-key]').length > 10`, 4000), await dialogText());
+  delete nbStub.slow[''];
+
   section('2b. A transparent GIF plays its WebM, then its MP4 when the WebM fails');
   await typeQuery('');
   await until(`document.querySelector('[data-gif-key="${keysOf(FIX.chibi)[0]}"] video') !== null`, 10000);
@@ -545,10 +563,17 @@ if (BRAND_ID !== 'bmb') {
   const srcOf = () => js(`document.querySelector('[data-gif-key="${firstKey}"] video')?.getAttribute('src') ?? ''`);
   t.ok('Chrome plays the WebM', (await srcOf()).startsWith(`${B}/webm/orig/`), await srcOf());
   await clickButton('/^close$/i');
-  nbStub.failWebm = true;
+  nbStub.failWebm = firstKey.split(':')[1];
   await clickButton('/add a gif/i');
   t.ok('a failed WebM falls back to the MP4', await until(`(document.querySelector('[data-gif-key="${firstKey}"] video')?.getAttribute('src') ?? '').startsWith('${B}/mp4/orig/')`, 10000),
     await srcOf());
+  // Loading the MP4 is not enough: the pool hands the SAME element back, so a
+  // play effect keyed on the element alone never runs again (final review).
+  t.ok('and the fallback MP4 PLAYS', await until(`(() => {
+    const b = document.querySelector('[data-gif-key="${firstKey}"]');
+    const v = b?.querySelector('video');
+    return b?.dataset.state === 'playing' && !!v && !v.paused && v.currentTime > 0.05;
+  })()`, 10000), JSON.stringify((await tiles()).find((x) => x.key === firstKey)));
   nbStub.failWebm = false;
 
   section('2c. A pick, and the stored boost');
