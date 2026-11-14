@@ -19,9 +19,17 @@ export function readAmountDefault(kind: AmountDefaultKind): number | null {
  * (`kind`) — boost-all's number is per track and is multiplied by the track
  * count, so it may never read the single boost's.
  *
- * `typed` is what the FIELD holds, never the parent's amount state: the two
- * have disagreed before (an emptied field left the old amount on Send), and
+ * `typed` is the number the field SHOWS. `<AmountInput>` passes its own text
+ * rather than the parent's amount, because the two have disagreed before (an
+ * emptied field left the old amount on Send); the zap dialog's field is
+ * controlled by its amount, so there the two are the same thing. Either way
  * this control must not mark a blank field ✓ default.
+ *
+ * ONE <button>, at a fixed position, whose label and handler change with the
+ * state. Swapping it for a different element unmounted the button that had
+ * focus: focus fell to <body>, so Escape stopped closing the modal (the shell
+ * listens on its overlay) and the Tab trap stopped wrapping. A click in
+ * Chrome focuses a button too, so this was not only a keyboard problem.
  *
  * It writes one localStorage key and nothing else: no relay, no wallet.
  */
@@ -39,42 +47,39 @@ export function DefaultAmountControl({
   // visit, and the next one opens without it. docs/storage.md, `safeSet`.
   const [visitOnly, setVisitOnly] = useState(() => storage.amountDefault.isEphemeral(kind));
 
-  if (saved !== null && typed === saved) {
-    return (
-      <span className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-wider">
-        <span className="text-bolt">✓ default</span>
-        {visitOnly && <span className="text-muted normal-case tracking-normal">this visit only</span>}
-        <button
-          type="button"
-          className="btn-mini disabled:opacity-40"
-          disabled={disabled}
-          aria-label={`Clear the default amount of ${saved} sats`}
-          onClick={() => {
+  const isDefault = saved !== null && typed === saved;
+  const canSave = Number.isSafeInteger(typed) && typed >= MIN_BOOST_SATS;
+
+  return (
+    <span className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-wider">
+      {/* Always in the tree, so a screen reader announces the change; `sr-only`
+          (absolutely positioned) when empty, so it takes no gap in the row. */}
+      <span role="status" className={isDefault ? 'text-bolt' : 'sr-only'}>
+        {isDefault ? '✓ default' : ''}
+      </span>
+      {isDefault && visitOnly && (
+        <span className="text-muted normal-case tracking-normal">this visit only</span>
+      )}
+      <button
+        type="button"
+        className="btn-mini disabled:opacity-40"
+        disabled={disabled || (!isDefault && !canSave)}
+        aria-label={isDefault ? `Clear the default amount of ${saved} sats` : undefined}
+        onClick={() => {
+          if (isDefault) {
             storage.amountDefault.clear(kind);
             setSaved(null);
             setVisitOnly(false);
-          }}
-        >
-          clear
-        </button>
-      </span>
-    );
-  }
-
-  const canSave = Number.isSafeInteger(typed) && typed >= MIN_BOOST_SATS;
-  return (
-    <button
-      type="button"
-      className="btn-mini disabled:opacity-40"
-      disabled={disabled || !canSave}
-      onClick={() => {
-        const onDisk = storage.amountDefault.set(kind, typed);
-        setSaved(typed);
-        setVisitOnly(!onDisk);
-      }}
-    >
-      set as default
-    </button>
+            return;
+          }
+          const onDisk = storage.amountDefault.set(kind, typed);
+          setSaved(typed);
+          setVisitOnly(!onDisk);
+        }}
+      >
+        {isDefault ? 'clear' : 'set as default'}
+      </button>
+    </span>
   );
 }
 

@@ -90,6 +90,17 @@ async function empty() {
   }
   await wait(150);
 }
+/** A real key press on whatever has focus. Enter carries its text, or a
+ *  native <button> is not activated by it. */
+async function key(name) {
+  const keys = {
+    Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
+    Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+  };
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', ...keys[name] });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', ...keys[name], text: undefined });
+  await wait(200);
+}
 async function press(expr) {
   const found = await js(`(() => { const b = ${expr}; if (!b) return false; b.click(); return true; })()`);
   await wait(200);
@@ -158,6 +169,25 @@ t.equal('and set-as-default is back, enabled', await setState(), 'enabled');
 await closeDialog();
 await openBoost();
 t.equal('reopened after clear, the field is blank', await fieldValue(), '');
+
+// The keyboard path. A script's `b.click()` moves no focus, so the clicks above
+// could not see the control swap its <button> for a <span>: focus fell to
+// <body>, and Escape stopped closing the modal, because the shell listens on
+// its overlay. A real click in Chrome focuses the button too, so this is a
+// mouse user's problem as much as a keyboard user's.
+const focused = () => js(`(() => { const a = document.activeElement;
+  return a && a !== document.body && ${DIALOG}?.contains(a) ? a.textContent.trim().toLowerCase() : null; })()`);
+await type('1000');
+await js(`${SET}?.focus()`);
+await key('Enter');
+t.equal('Enter on set-as-default saves it', await stored('bmb:boost_default'), '1000');
+t.equal('focus stays on the control, which now reads clear', await focused(), 'clear');
+await key('Enter');
+t.equal('Enter on clear removes it', await stored('bmb:boost_default'), null);
+t.equal('focus stays on the control, which reads set as default again', await focused(), 'set as default');
+await key('Escape');
+t.ok('Escape still closes the modal', await until(`!${DIALOG}`, 3000));
+await openBoost();
 
 await type('50');
 t.equal('below 100, the control is disabled', await setState(), 'disabled');
@@ -313,34 +343,42 @@ await closeDialog();
 
 // ---------------------------------------------------------------------------
 section('4. Phone widths: no sideways overflow, and a control big enough to tap');
+// The control's whole row (✓ default + clear, or set as default) must be on
+// screen, and its button must clear 24×24 — in BOTH states, since the saved
+// state is the wider one.
 const measure = () => js(`(() => {
   const d = ${DIALOG};
   const b = ${SET} ?? ${CLEAR};
   const r = b ? b.getBoundingClientRect() : null;
+  const row = b ? b.parentElement.getBoundingClientRect() : null;
   const de = document.documentElement;
   return JSON.stringify({
     page: de.scrollWidth - de.clientWidth,
     dialog: d ? d.scrollWidth - d.clientWidth : null,
     w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0,
-    inside: r ? r.left >= 0 && r.right <= window.innerWidth : false,
+    inside: row ? row.left >= 0 && row.right <= window.innerWidth : false,
   });
 })()`).then(JSON.parse);
 const surfaces = [
-  ['single boost', openEpisode, openBoost],
-  ['boost-all', openEpisode, openBoostAll],
-  ['zap', openFeed, openZap],
+  ['single boost', openEpisode, openBoost, 'bmb:boost_default', '1000'],
+  ['boost-all', openEpisode, openBoostAll, 'bmb:boost_all_default', '250'],
+  ['zap', openFeed, openZap, 'bmb:zap_default', '2100'],
 ];
 for (const [width, height] of [[390, 844], [320, 640]]) {
   await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 3, mobile: true });
-  for (const [name, load, open] of surfaces) {
-    await load();
-    await open();
-    const m = await measure();
-    t.equal(`${width}px, ${name}: the page does not overflow`, m.page <= 0, true);
-    t.equal(`${width}px, ${name}: the dialog does not overflow`, m.dialog !== null && m.dialog <= 0, true);
-    t.ok(`${width}px, ${name}: the control is on screen`, m.inside, JSON.stringify(m));
-    t.ok(`${width}px, ${name}: the control is at least 24×24`, m.w >= 24 && m.h >= 24, `${m.w}×${m.h}`);
-    await closeDialog();
+  for (const [name, load, open, storeKey, value] of surfaces) {
+    for (const saved of [false, true]) {
+      const label = `${width}px, ${name}, ${saved ? '✓ default' : 'no default'}`;
+      await load(saved ? `localStorage.setItem(${JSON.stringify(storeKey)}, ${JSON.stringify(value)});` : '');
+      await open();
+      if (saved) t.ok(`${label}: it opens marked ✓ default`, await marked());
+      const m = await measure();
+      t.equal(`${label}: the page does not overflow`, m.page <= 0, true);
+      t.equal(`${label}: the dialog does not overflow`, m.dialog !== null && m.dialog <= 0, true);
+      t.ok(`${label}: the control's row is on screen`, m.inside, JSON.stringify(m));
+      t.ok(`${label}: its button is at least 24×24`, m.w >= 24 && m.h >= 24, `${m.w}×${m.h}`);
+      await closeDialog();
+    }
   }
 }
 await send('Emulation.clearDeviceMetricsOverride');
