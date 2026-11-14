@@ -84,6 +84,7 @@
     "e2e:launcher": "node scripts/e2e-launcher.mjs",
     "e2e:downloads": "node scripts/e2e-downloads.mjs",
     "e2e:queue": "node scripts/e2e-queue.mjs",
+    "e2e:deadtrack": "node scripts/e2e-dead-track.mjs",
     "e2e:playbacklog": "node scripts/e2e-playback-log.mjs",
     "e2e:speed": "node scripts/e2e-speed.mjs",
     "e2e:opml": "node scripts/e2e-opml.mjs",
