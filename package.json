@@ -95,6 +95,7 @@
     "e2e:nwcrelay": "node scripts/e2e-nwc-relay.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:history": "node scripts/e2e-history.mjs",
+    "e2e:npmenu": "node scripts/e2e-nowplaying-menu.mjs",
     "e2e:livecatchup": "node --experimental-strip-types scripts/e2e-live-catch-up.mjs",
     "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs",

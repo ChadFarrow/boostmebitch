@@ -207,7 +207,7 @@ import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
 import { WalletBalanceBox } from './wallet-balance';
-import { NostrIdentityChip } from './nostr-auth/identity-chip';
+import { NowPlayingAccountMenu } from './nostr-auth/now-playing-account-menu';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 import { LiveEdge } from './player/live-edge';
@@ -953,13 +953,14 @@ export function FullscreenPlayer({
               opened, and a mounted `useWalletBalance` is a NIP-47 read on
               every `payment_sent` — see <WalletBalanceBox>. */}
           {open && <WalletBalanceBox className={BAR_CHIP_LG} />}
-          {/* WHO SIGNS THE NOTE, beside what pays for it. `<AuthControl
-              overlay>` below offers the two logins while signed OUT and
-              renders nothing once signed in — the account menu belongs to
-              <NostrAuth>, which these routes mount hidden — so this bar showed
-              no Nostr at all to the one user whose boost note it would sign.
-              A readout, like the balance: the menu is one ← BACK away. */}
-          <NostrIdentityChip className={BAR_CHIP_LG} />
+          {/* WHO SIGNS THE NOTE, beside what pays for it — and now the same
+              account menu the header opens (Chad, 2026-11-13: "if I click my
+              avatar in the top right, I'd like it to open the same menu that
+              it does on the home screen"). `<AuthControl overlay>` below
+              offers the two logins while signed OUT; this renders nothing
+              then. `open &&`, like the balance: the menu holds bunker
+              subscriptions, so it is mounted only while the screen is. */}
+          {open && <NowPlayingAccountMenu className={BAR_CHIP_LG} />}
           <AuthControl overlay />
           <button onClick={onClose} className={`btn-ghost px-2 py-1 text-base lg:text-lg leading-none ${BAR_CHIP_LG}`} aria-label="Close fullscreen player">
             ✕
