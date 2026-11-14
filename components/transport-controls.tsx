@@ -1,6 +1,6 @@
 'use client';
 import { useApp } from '@/lib/store';
-import { epKey, nextPlayableIndex, nextPlayableIndexBy } from '@/lib/util';
+import { epKey, nextPlayableIndex, nextPlayableIndexBy, shuffleIndexOf } from '@/lib/util';
 import type { QueueItem } from '@/lib/types';
 import { SkipBackIcon, SkipForwardIcon } from './icons';
 
@@ -87,6 +87,7 @@ export function TransportControls({
   const playPrev = useApp((s) => s.playPrev);
   const episodeQueue = useApp((s) => s.episodeQueue);
   const listenQueue = useApp((s) => s.listenQueue);
+  const shuffle = useApp((s) => s.shuffle);
   if (!current) return null;
 
   const idx = episodeQueue.findIndex((e) => e.id === current.episode.id);
@@ -94,11 +95,20 @@ export function TransportControls({
   // which is what collapses every expression below back to the two lines it
   // replaced. The `.length` short-circuit means an empty queue does not even
   // run `epKey`.
-  const qIdx = listenQueue.length
-    ? listenQueue.findIndex((i) => epKey(i.episode) === epKey(current.episode))
-    : -1;
-  const qNext = nextPlayableIndexBy(listenQueue, qIdx, 1, queuedEpisode);
-  const qPrev = nextPlayableIndexBy(listenQueue, qIdx, -1, queuedEpisode);
+  // The favorites shuffle, when it holds what is playing, OWNS ⏮/⏭ ahead of
+  // the listen queue — the order `stepTo` asks them in, so the two cannot
+  // disagree. With no shuffle `sIdx` is -1 and the listen queue is the owner,
+  // exactly as before.
+  const sIdx = shuffleIndexOf(shuffle?.items ?? null, current.episode);
+  const inShuffle = sIdx >= 0;
+  const owner = inShuffle ? shuffle!.items : listenQueue;
+  const qIdx = inShuffle
+    ? sIdx
+    : listenQueue.length
+      ? listenQueue.findIndex((i) => epKey(i.episode) === epKey(current.episode))
+      : -1;
+  const qNext = nextPlayableIndexBy(owner, qIdx, 1, queuedEpisode);
+  const qPrev = nextPlayableIndexBy(owner, qIdx, -1, queuedEpisode);
   // **Enabled means "there is a row this press can land on", which is not the
   // same as "there is a row".** A playlist queue holds one entry per
   // `<podcast:remoteItem>`, including the ones Podcast Index could not resolve,
@@ -134,12 +144,16 @@ export function TransportControls({
   const prevDisabled = queueTakesPrev
     ? false
     : prev ? prev.disabled : inQueue || nextPlayableIndex(episodeQueue, idx, -1) < 0;
-  const prevLabel = queueTakesPrev ? 'Previous in queue' : (prev?.label ?? 'Previous track');
+  const prevLabel = queueTakesPrev
+    ? (inShuffle ? 'Previous in shuffle' : 'Previous in queue')
+    : (prev?.label ?? 'Previous track');
   const onNext = queueTakesNext ? (() => playNext()) : (next?.onClick ?? (() => playNext()));
   const nextDisabled = queueTakesNext
     ? false
     : next ? next.disabled : inQueue || nextPlayableIndex(episodeQueue, idx, 1) < 0;
-  const nextLabel = queueTakesNext ? 'Next in queue' : (next?.label ?? 'Next track');
+  const nextLabel = queueTakesNext
+    ? (inShuffle ? 'Next in shuffle' : 'Next in queue')
+    : (next?.label ?? 'Next track');
 
   // `hidden sm:flex` rather than `flex` when the sides are desktop-only. Both
   // are display utilities, so this can't be expressed by appending a class to a

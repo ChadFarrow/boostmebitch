@@ -35,6 +35,7 @@ import {
 import { saveFile } from '@/lib/save-file';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
+import { FavoritesShuffleButton } from '@/components/favorites-shuffle-button';
 import {
   groupByMedium, feedNoun, itemNoun, splitLabels, crossSplitLabel,
   useCollapsedGroups, CollapsibleHeading,
@@ -693,6 +694,12 @@ export function FavoritesPage() {
                   ofTotal={sec.ofTotal}
                   collapsed={collapsed.has(sec.fold)}
                   onToggle={() => toggleCollapsed(sec.fold)}
+                  // SHUFFLE on the favorite singles only: the music items. An
+                  // album is a list of its own, and a podcast episode is not a
+                  // track. One row is not a shuffle.
+                  action={sec.mediumKey === 'music' && sec.rows.length >= 2
+                    ? <FavoritesShuffleButton rows={sec.rows} />
+                    : undefined}
                 >
                   <FavoriteItemRows
                     id={`${itemsListId}${sec.mediumKey}`}
@@ -1552,7 +1559,7 @@ function mediumSections<T extends { medium?: string }>(
  * passed the whole library's once, so ALBUMS read `60 of 65` with no album hidden.
  */
 function Section({
-  listId, heading, shown, ofTotal, collapsed, onToggle, children,
+  listId, heading, shown, ofTotal, collapsed, onToggle, action, children,
 }: {
   listId: string;
   heading: string;
@@ -1560,13 +1567,16 @@ function Section({
   ofTotal: number | null;
   collapsed: boolean;
   onToggle: () => void;
+  /** A control on the heading row (⤮ SHUFFLE). It positions itself in this
+   *  `relative` box, so the heading stays a direct child of the section. */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   // `!ofTotal` covers both: null under `all`, and 0 for the half a medium tab
   // does not have, which would otherwise head an empty list `EPISODES — 0`.
   if (!shown && !ofTotal) return null;
   return (
-    <section>
+    <section className="relative">
       <CollapsibleHeading
         label={
           <>
@@ -1579,6 +1589,7 @@ function Section({
         controls={listId}
         className="mt-3 mb-1"
       />
+      {action}
       {children}
     </section>
   );

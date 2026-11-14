@@ -9,8 +9,8 @@ import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
-  addToHistory, epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
-  playsAsTracks, queueShowFor, speedShowKey, trimForQueue,
+  addToHistory, epKey, insertShuffled, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
+  playsAsTracks, queueShowFor, shuffleIndexOf, speedShowKey, trimForQueue,
 } from './util';
 import { savedStartSec } from './resume-position';
 import { downloadManager } from './downloads/download-manager';
@@ -168,10 +168,32 @@ interface AppState {
   adoptListenQueue: (npub: string) => void;
   /**
    * What `<Player>`'s `<audio onEnded>` asks FIRST, returning whether the
-   * listen queue owned this ending. False changes nothing, leaving the medium
-   * gate there to decide exactly as it did before.
+   * shuffle or the listen queue owned this ending. False changes nothing,
+   * leaving the medium gate there to decide exactly as it did before.
    */
   handlePlaybackEnded: () => boolean;
+
+  /**
+   * The favorites shuffle (docs/ui.md, "The favorites shuffle") — a THIRD list,
+   * beside `episodeQueue` and the listen queue, and asked FIRST for the tracks
+   * it holds. Not `episodeQueue`: `<EpisodeList>` rewrites that whenever a show
+   * is open, and its step carries the current track's show to the next track.
+   * Not Up Next: that holds fifty and is the listener's own list.
+   *
+   * Memory only, and null whenever no shuffle runs — which is what keeps every
+   * existing path reached exactly as before. `id` tells a late `extendShuffle`
+   * from one meant for a shuffle that has since been replaced.
+   */
+  shuffle: { id: number; items: QueueItem[] } | null;
+  /** Start a shuffle on `items[0]`, playing. Returns its id, or null (and changes
+   *  nothing) for an empty list. Synchronous on purpose: iOS ties `play()` to
+   *  the press. */
+  startShuffle: (items: QueueItem[]) => number | null;
+  /** Add tracks that loaded after the shuffle started, at random places after
+   *  the one playing. A no-op unless shuffle `id` is still the one running. */
+  extendShuffle: (id: number, more: QueueItem[]) => void;
+  /** Jump to a row of the shuffle. Removes nothing and does not end it. */
+  playFromShuffle: (index: number) => void;
 
   /**
    * The play history on the Listen tab: podcast episodes this device played
@@ -622,6 +644,27 @@ function queueIndexOf(s: AppState): number {
 
 const queuedEpisode = (i: QueueItem) => i.episode;
 
+/** Where `current` sits in the shuffle, or -1 — with no shuffle, -1 before
+ *  anything else runs. */
+function shuffleIndex(s: AppState): number {
+  if (!s.current || !s.shuffle) return -1;
+  return shuffleIndexOf(s.shuffle.items, s.current.episode);
+}
+
+/** `current` set to one shuffle row, playing — the shape every move inside the
+ *  shuffle shares. Each row carries its own show, so the start rule is asked
+ *  about THAT show. */
+function shuffleRow(item: QueueItem): Partial<AppState> {
+  return {
+    current: { episode: item.episode, podcast: item.podcast },
+    isPlaying: true,
+    positionSec: savedStartSec(item.episode, item.podcast),
+    videoMode: false,
+  };
+}
+
+let shuffleSeq = 0;
+
 /**
  * The state patch that moves playback one PLAYABLE row along `step`, or `null`
  * when there is nowhere to go.
@@ -643,6 +686,17 @@ const queuedEpisode = (i: QueueItem) => i.episode;
  */
 function stepTo(s: AppState, step: 1 | -1): Partial<AppState> | null {
   if (!s.current) return null;
+
+  // The shuffle is asked FIRST for its own tracks. A hearted single can also
+  // sit in Up Next; asked second, reaching it would drain it from Up Next and
+  // leave the shuffle. It never drains — it is a list, and ⏮ goes back — and
+  // it refuses at either end rather than falling through to another list.
+  const sIdx = shuffleIndex(s);
+  if (sIdx >= 0) {
+    const items = s.shuffle!.items;
+    const to = nextPlayableIndexBy(items, sIdx, step, queuedEpisode);
+    return to < 0 ? null : shuffleRow(items[to]);
+  }
 
   const qIdx = queueIndexOf(s);
   if (qIdx >= 0) return queueStepTo(s, qIdx, step);
@@ -752,12 +806,16 @@ export const useApp = create<AppState>((set, get) => ({
   positionSec: 0,
   episodeQueue: [],
 
+  // `play` and `cue` END a shuffle: they are how the listener picks something
+  // else, and a list left behind would wake up the day one of its tracks plays
+  // again. The shuffle's own moves set `current` directly and never call these.
   play: (episode, podcast, startSec) =>
     set({
       current: { episode, podcast },
       isPlaying: true,
       positionSec: startSec ?? savedStartSec(episode, podcast),
       videoMode: false,
+      shuffle: null,
     }),
   cue: (episode, podcast) =>
     set({
@@ -765,6 +823,7 @@ export const useApp = create<AppState>((set, get) => ({
       isPlaying: false,
       positionSec: savedStartSec(episode, podcast),
       videoMode: false,
+      shuffle: null,
     }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
   setPlaying: (b) => set({ isPlaying: b }),
@@ -875,6 +934,8 @@ export const useApp = create<AppState>((set, get) => ({
         isPlaying: true,
         positionSec: savedStartSec(item.episode, item.podcast),
         videoMode: false,
+        // A tap on an Up Next row is the listener picking something else — see `play`.
+        shuffle: null,
       };
     }),
   revealQueue: () =>
@@ -888,6 +949,7 @@ export const useApp = create<AppState>((set, get) => ({
         // where the listener left it, like any other `play()`.
         positionSec: savedStartSec(head.episode, head.podcast),
         videoMode: false,
+        shuffle: null,
       };
     }),
   revealNowPlaying: () =>
@@ -920,6 +982,18 @@ export const useApp = create<AppState>((set, get) => ({
 
   handlePlaybackEnded: () => {
     const s = get();
+    // The shuffle first, for `stepTo`'s reason. At its last track it STOPS and
+    // claims the ending: falling through would hand the listener whatever
+    // `episodeQueue` holds, the list of an album they opened along the way.
+    // Up Next waits until the listener starts it (Chad, 2026-11-12).
+    const sIdx = shuffleIndex(s);
+    if (sIdx >= 0) {
+      const items = s.shuffle!.items;
+      const to = nextPlayableIndexBy(items, sIdx, 1, queuedEpisode);
+      set(to < 0 ? { isPlaying: false } : shuffleRow(items[to]));
+      return true;
+    }
+
     const qIdx = queueIndexOf(s);
     if (qIdx < 0) return false;   // not ours — the caller's own rules apply
 
@@ -947,6 +1021,31 @@ export const useApp = create<AppState>((set, get) => ({
     });
     return true;
   },
+
+  shuffle: null,
+  startShuffle: (items) => {
+    if (!items.length) return null;
+    const id = ++shuffleSeq;
+    set({ shuffle: { id, items }, ...shuffleRow(items[0]) });
+    return id;
+  },
+  extendShuffle: (id, more) =>
+    set((s) => {
+      if (!s.shuffle || s.shuffle.id !== id || !more.length) return {};
+      const have = new Set(s.shuffle.items.map((i) => epKey(i.episode)));
+      const fresh = more.filter((i) => !have.has(epKey(i.episode)));
+      if (!fresh.length) return {};
+      // After the track playing now (-1 when it is not in the shuffle any
+      // more), so ⏭ and a track ending still reach every one.
+      const items = insertShuffled(s.shuffle.items, shuffleIndex(s), fresh);
+      return { shuffle: { id, items } };
+    }),
+  playFromShuffle: (index) =>
+    set((s) => {
+      const item = s.shuffle?.items[index];
+      if (!item || !isPlayableRow(item.episode)) return {};
+      return shuffleRow(item);
+    }),
 
   playHistory: storage.playHistory.get(),
   playHistorySaved: true,

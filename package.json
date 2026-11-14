@@ -89,6 +89,7 @@
     "e2e:speed": "node scripts/e2e-speed.mjs",
     "e2e:opml": "node scripts/e2e-opml.mjs",
     "e2e:favbuttons": "node scripts/e2e-fav-buttons.mjs",
+    "e2e:shuffle": "node scripts/e2e-shuffle.mjs",
     "e2e:rsspay": "node scripts/e2e-rss-payment.mjs",
     "e2e:speed-gaps": "node scripts/e2e-speed-gaps.mjs",
     "e2e:music-hold": "node scripts/e2e-music-hold.mjs",
