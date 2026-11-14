@@ -158,6 +158,41 @@ for (const bad of ['abc', '50', '-5', '1e3', '100.5', '']) {
 }
 
 // ---------------------------------------------------------------------------
+section('2. Boost-all, per track — its own key, never the single boost\'s');
+async function openBoostAll() {
+  await js(`document.querySelector('button[aria-label="More actions"]')?.click()`);
+  await until(`[...document.querySelectorAll('[role="menuitem"]')].some((b) => /boost all \\d+ tracks/i.test(b.textContent))`, 10000);
+  await js(`[...document.querySelectorAll('[role="menuitem"]')].find((b) => /boost all \\d+ tracks/i.test(b.textContent))?.click()`);
+  return until(`!!(${FIELD})`, 15000);
+}
+t.ok('the episode offers BOOST again', await openEpisode(`localStorage.setItem('bmb:boost_default', '1000');`));
+t.ok('boost-all opens from the ⋯ menu', await openBoostAll());
+t.ok('it is the per-track field', /amount per track/i.test(await dialogText()));
+t.equal('a single-boost default of 1000 does NOT fill it: it opens at 100', await fieldValue(), '100');
+t.equal('its control is there, enabled at 100', await setState(), 'enabled');
+
+await type('250');
+await press(SET);
+t.equal('pressing it saves bmb:boost_all_default', await stored('bmb:boost_all_default'), '250');
+t.equal('and leaves bmb:boost_default alone', await stored('bmb:boost_default'), '1000');
+t.ok('the control reads ✓ default', await marked());
+await closeDialog();
+await openBoostAll();
+t.equal('reopened, boost-all holds its own default', await fieldValue(), '250');
+await closeDialog();
+await openBoost();
+t.equal('and the single boost still holds its own', await fieldValue(), '1000');
+await closeDialog();
+await openBoostAll();
+await press(CLEAR);
+t.equal('clear on boost-all removes only its key', await stored('bmb:boost_all_default'), null);
+t.equal('bmb:boost_default survives it', await stored('bmb:boost_default'), '1000');
+await closeDialog();
+await openBoostAll();
+t.equal('reopened after clear, boost-all is back at 100', await fieldValue(), '100');
+await closeDialog();
+
+// ---------------------------------------------------------------------------
 section('Page health');
 t.equal('no page exceptions', exceptions, []);
 
