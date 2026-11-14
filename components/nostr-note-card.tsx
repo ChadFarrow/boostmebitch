@@ -15,7 +15,7 @@ import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/int
 import { MessageInput } from './message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { sendZap } from '@/lib/v4v/zap';
-import { MIN_BOOST_SATS } from './boost-modal/amount-input';
+import { DefaultAmountControl, MIN_BOOST_SATS, readAmountDefault } from './boost-modal/amount-input';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
@@ -748,7 +748,9 @@ function ZapDialog({
   identity: NonNullable<ReturnType<typeof useApp.getState>['identity']>;
   onClose: () => void;
 }) {
-  const [amount, setAmount] = useState(100);
+  // The zap dialog's OWN saved default (SET AS DEFAULT, below the field),
+  // never a boost surface's. docs/money-boosts.md, "Default amounts".
+  const [amount, setAmount] = useState(() => readAmountDefault('zap') ?? 100);
   const [comment, setComment] = useState('');
   const [state, setState] = useState<ActionState>('idle');
   const [err, setErr] = useState<string | null>(null);
@@ -819,8 +821,11 @@ function ZapDialog({
               // not a thing that can be sent. No clamp to the minimum here — that
               // would rewrite the field mid-keystroke; the send button gates it.
               onChange={(e) => setAmount(Math.max(0, Math.round(Number(e.target.value) || 0)))}
-              className="input w-full mb-3"
+              className="input w-full mb-2"
             />
+            <div className="flex justify-end mb-3">
+              <DefaultAmountControl kind="zap" typed={amount} disabled={state === 'busy'} />
+            </div>
             <div className="flex gap-2 mb-3">
               {[100, 500, 1000, 5000].map((n) => (
                 <button

@@ -55,6 +55,13 @@ export const subscribeFavPrivacy = favPrivacyObservable.subscribe;
 const streamRateObservable = createObservable();
 export const subscribeStreamRate = streamRateObservable.subscribe;
 
+// A default boost amount changed. It is shown in two places that can be open
+// AT ONCE — the wallet modal's Default amounts section opens on top of a boost
+// modal, whose SET AS DEFAULT control shows the same key — so a write from
+// either one has to reach the other. Notified from the setter, as above.
+const amountDefaultObservable = createObservable();
+export const subscribeAmountDefaults = amountDefaultObservable.subscribe;
+
 const KEYS = {
   npub: 'bmb:npub',
   signer: 'bmb:signer',               // 'amber' | 'bunker' | 'local' when a polyfill signer is active; absent = NIP-07 extension or none
@@ -129,6 +136,10 @@ const KEYS = {
   streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
   streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
+  // The amount each boost surface OPENS with, saved by its SET AS DEFAULT control. Three keys, never one: boost-all multiplies its number by the track count, so a single-boost default read there is an album spend N times larger. Digits only; absent = the surface's own start (blank for the single boost, 100 for the other two). Device settings, not caches — deliberately absent from EVICTABLE_PREFIXES.
+  boostDefault: 'bmb:boost_default',        // the single boost modal
+  boostAllDefault: 'bmb:boost_all_default', // boost-all, PER TRACK
+  zapDefault: 'bmb:zap_default',            // the note card's zap dialog
   deleteAfterPlay: 'bmb:dl_delete_played', // '1' when a podcast episode's download is deleted once it plays to the end; absent = keep (the default). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
   played: 'bmb:played',               // Record<resumeKey, epoch ms> — podcast episodes this device played to the end, capped at PLAYED_CAP newest. DEVICE-wide like bmb:resume, and for the same reason not a cache.
@@ -188,6 +199,8 @@ export interface AmberParkedResult {
 export type RailPref = 'nwc' | 'spark' | 'webln';
 /** What the streaming number means: sats per minute, or sats per track. */
 export type StreamMode = 'rate' | 'track';
+/** The surfaces that save their own default amount — see `storage.amountDefault`. */
+export type AmountDefaultKind = 'boost' | 'boostAll' | 'zap';
 export type ShareNostrAs = 'self' | 'site';
 export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance {
@@ -458,6 +471,27 @@ function saneAmount(raw: string | null): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1 || n > STREAM_AMOUNT_MAX_SATS) return null;
   return Math.max(STREAM_AMOUNT_MIN_SATS, Math.floor(n));
+}
+
+const AMOUNT_DEFAULT_KEYS: Record<AmountDefaultKind, string> = {
+  boost: KEYS.boostDefault,
+  boostAll: KEYS.boostAllDefault,
+  zap: KEYS.zapDefault,
+};
+
+/**
+ * A stored default amount, or null. Digits only, because `set` only ever
+ * writes `String(n)` of a safe integer — so `'1e3'`, `'100.5'` or `'-5'` came
+ * from somewhere else, and reads as no default rather than as a guess.
+ *
+ * It rejects only GARBAGE. The boost minimum lives with the boost components
+ * (`MIN_BOOST_SATS`), and storage must not import a component, so the reader
+ * there (`readAmountDefault`) applies it.
+ */
+function saneDefaultSats(raw: string | null): number | null {
+  if (raw === null || !/^[0-9]+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 function clampAmount(sats: number): number {
@@ -1255,6 +1289,28 @@ export const storage = {
   streamSummaries: {
     get: (): boolean => safeGet(KEYS.streamSummaries) === '1',
     set: (v: boolean): boolean => safeSet(KEYS.streamSummaries, v ? '1' : '0'),
+  },
+
+  /**
+   * The amount a boost surface opens with — one key per surface, chosen by
+   * the user with its SET AS DEFAULT control (`<DefaultAmountControl>`).
+   * `set` returns whether the value reached disk, and `isEphemeral` says the
+   * value is held only for this visit, so the control can say so rather than
+   * let the user find out on their next boost.
+   */
+  amountDefault: {
+    get: (kind: AmountDefaultKind): number | null => saneDefaultSats(safeGet(AMOUNT_DEFAULT_KEYS[kind])),
+    set: (kind: AmountDefaultKind, sats: number): boolean => {
+      if (!Number.isSafeInteger(sats) || sats <= 0) return false;
+      const onDisk = safeSet(AMOUNT_DEFAULT_KEYS[kind], String(sats));
+      amountDefaultObservable.notify();
+      return onDisk;
+    },
+    clear: (kind: AmountDefaultKind): void => {
+      safeRemove(AMOUNT_DEFAULT_KEYS[kind]);
+      amountDefaultObservable.notify();
+    },
+    isEphemeral: (kind: AmountDefaultKind): boolean => isMemoryOnly(AMOUNT_DEFAULT_KEYS[kind]),
   },
 
   /** Delete a podcast episode's download when it plays to the end. Absent =

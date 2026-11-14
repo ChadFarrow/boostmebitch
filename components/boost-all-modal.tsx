@@ -14,7 +14,7 @@ import { getErrorMessage, hasValueRecipients, payableValue, redirectLegs, showSh
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
-import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
+import { AmountInput, MIN_BOOST_SATS, readAmountDefault } from './boost-modal/amount-input';
 import { MessageInput, BOOSTAGRAM_MAX } from './message-input';
 import { GifPicker } from './boost-modal/gif-picker';
 import { giphyGifUrl, gifCost, withGif } from '@/lib/giphy';
@@ -61,7 +61,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
   const identity = useApp((s) => s.identity);
   const bumpBoosts = useApp((s) => s.bumpBoosts);
-  const [sats, setSats] = useState(100);
+  // PER TRACK, so it reads its OWN default ('boostAll'), never the single
+  // boost's: this number is multiplied by the track count at send time.
+  const [sats, setSats] = useState(() => readAmountDefault('boostAll') ?? 100);
   const [msg, setMsg] = useState('');
   // Identity beside the prose, not inside it — see <BoostModal> for why the
   // npub must never enter `msg`.
@@ -557,6 +559,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             // numbers that differ from the sats going out — and the ✓ glyphs
             // land beside those rows as each track settles.
             disabled={running}
+            defaultKind="boostAll"
           />
 
           {loadState === 'loading' && (
