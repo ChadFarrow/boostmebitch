@@ -214,6 +214,27 @@ console.log(`  ${tile.length} frames: ${tileSeq.map(short).join(' → ')}`);
 t.equal('no frame paints an EMPTY tile after ⏭', tile.filter((s) => s === null).length, 0);
 t.ok('the tile ends on track 3\'s picture', !!tile[tile.length - 1]?.includes(encodeURIComponent(IMG('cover-2'))), short(tile[tile.length - 1]));
 
+// ---------------------------------------------------------------------------
+// A DECODE THAT LANDS AFTER THE TRACK CHANGED BACK must not take the box (review
+// of #544). ⏮ starts the previous cover's load + decode; a ⏭ before the decode
+// ends makes the original current again, and the late decode then set the
+// ABANDONED cover as the held picture, over the right one, until the next
+// change. The decode is slowed here so the window is always hit.
+console.log('\n3. ⏮ then ⏭ before the incoming picture is decoded');
+await js(`(() => { const real = HTMLImageElement.prototype.decode;
+  HTMLImageElement.prototype.decode = function () { const p = real.call(this);
+    return new Promise((res, rej) => setTimeout(() => p.then(res, rej), 1500)); }; return 1; })()`);
+const tilePainted = () => js(`(() => { const v = ${TILE}.filter((i) => getComputedStyle(i).opacity !== '0');
+  const p = v.find((i) => i.naturalWidth > 0); return p ? p.currentSrc : null; })()`);
+t.ok('the tile shows track 3 before', ((await tilePainted()) ?? '').includes('cover-2'), short(await tilePainted()));
+await js(`[...document.querySelectorAll('[data-mini-player] button')].find((b) => /^Previous/.test(b.getAttribute('aria-label') ?? ''))?.click()`);
+await wait(300);
+await js(`[...document.querySelectorAll('[data-mini-player] button')].find((b) => /^Next/.test(b.getAttribute('aria-label') ?? ''))?.click()`);
+t.ok('…and track 3 is current again', await until(`/[?&]k=2(\\D|$)/.test(document.querySelector('audio')?.currentSrc ?? '')`, 8000));
+await wait(2500);
+t.ok('the tile shows track 3\'s picture after the late decode, not track 2\'s',
+  ((await tilePainted()) ?? '').includes('cover-2'), short(await tilePainted()));
+
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails} of ${t.count} passed`);
 await exit(t.fails ? 1 : 0);

@@ -1,5 +1,5 @@
 'use client';
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 
 // Renders the podcast's artwork with a deterministic colored-initial
@@ -190,6 +190,10 @@ function PodcastCoverImpl({
   // `hold` only: the last URL whose picture finished loading here.
   const [shown, setShown] = useState<string | null>(null);
   const current = candidates.find((u) => !failed.has(u));
+  // `hold` only: the URL current at the LATEST render. A decode that finishes
+  // after the track changed back must not take the box (see `onLoad` below).
+  const latest = useRef<string | undefined>(undefined);
+  latest.current = current;
   const fail = (u: string) => setFailed((prev) => (prev.has(u) ? prev : new Set(prev).add(u)));
   if (current && hold) {
     // The painted picture stays until the incoming one has LOADED: the incoming
@@ -223,8 +227,14 @@ function PodcastCoverImpl({
           // invisible picture undecoded, and Chrome then decoded the big cover
           // only at the swap — one near-empty frame (measured, 7 KB of JPEG
           // against 71 KB). `decode()` resolves when it can paint at once.
+          // AND STILL CURRENT: ⏭ then ⏮ (a chapter edge, the gate flipping
+          // back) before the decode ends made the original current again, and
+          // the late decode then set the ABANDONED picture as the held one —
+          // painted over the right cover, which never fires `load` again, until
+          // the next change (review of #544; `e2e:coverhold` section 3).
           onLoad={(e) => {
-            const done = () => setShown(current);
+            const url = current;
+            const done = () => { if (latest.current === url) setShown(url); };
             const el = e.currentTarget;
             if (typeof el.decode === 'function') el.decode().then(done, done);
             else done();
