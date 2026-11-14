@@ -1685,7 +1685,11 @@ So `handOver` hands over all seven again on EVERY `playing` event, heard in the
 capture phase on `document` (media events do not bubble — the playback log
 listens the same way). The commands are a set, so a repeat is harmless, and by
 `playing` the listener exists. Each hand-over writes `ms.reg tracks=1|0` to the
-playback log, so a report shows whether it ran after playback started. Pinned
+playback log, so a report shows whether it ran after playback started — except
+for a GIF picker tile's video (`data-gif-tile`, `lib/gifs/video-pool.ts`): it is
+handed over like any other `playing`, but writes no line, or one scroll through
+200 GIFs would push every player event out of the 150-line log
+(`e2e:gifgrid` section 3). Pinned
 by `npm run e2e:lockbuttons`, which records what the page hands
 `navigator.mediaSession.setActionHandler`, stamped with how many `playing`
 events had fired; section 5 requires all seven AFTER the latest one. No browser

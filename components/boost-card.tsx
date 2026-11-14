@@ -5,7 +5,7 @@ import { shortNpub } from '@/lib/nostr';
 import { linkify, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
 import { PodcastCover } from './podcast-cover';
-import { giphyIdFromUrl, giphyPreviewUrl } from '@/lib/giphy';
+import { gifPickFromWireLine, gifPreviewUrl } from '@/lib/gifs/pick';
 
 /**
  * Renders one of the user's locally-saved sent boosts. Visual sibling to
@@ -29,11 +29,13 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
     (identity ? shortNpub(identity.npub) : 'You');
 
   // A GIF picked in the boost modal is the message's LAST line (`withGif`).
-  // Shown as the picture it is rather than a link; only a URL `giphyGifUrl`
-  // built is recognised, so a stored message never puts an arbitrary `src` here.
+  // Shown as the picture it is rather than a link; only a URL one of the two
+  // wire builders makes (`gifWireUrl`: GIPHY or gifs.nostr.build) is
+  // recognised, so a stored message never puts an arbitrary `src` here. Both
+  // sources on both deploys, so a boost sent before the switch keeps its GIF.
   const lines = boost.message?.split('\n') ?? [];
-  const gifId = lines.length ? giphyIdFromUrl(lines[lines.length - 1].trim()) : null;
-  const text = gifId ? lines.slice(0, -1).join('\n').trim() : boost.message;
+  const gifPick = lines.length ? gifPickFromWireLine(lines[lines.length - 1].trim()) : null;
+  const text = gifPick ? lines.slice(0, -1).join('\n').trim() : boost.message;
 
   const successLegs = boost.legs.filter((l) => l.ok);
   const sats = successLegs.length
@@ -90,13 +92,13 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
             {linkify(text, 'text-bolt')}
           </p>
         )}
-        {gifId && (
+        {gifPick && (
           // eslint-disable-next-line @next/next/no-img-element -- third-party animated media
           <img
-            src={giphyPreviewUrl(gifId)}
+            src={gifPreviewUrl(gifPick)}
             alt="GIF"
             loading="lazy"
-            // GIPHY can take a GIF down; the stored boost names it forever.
+            // Either host can take a GIF down; the stored boost names it forever.
             // Hidden, as `<NoteCard>` hides a dead note image, rather than a
             // broken-image icon standing in the card for good.
             onError={(e) => {

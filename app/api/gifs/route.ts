@@ -16,8 +16,8 @@ import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 
 const GIPHY_API = 'https://api.giphy.com/v1/gifs';
 
-/** Rows per answer: a 3-column grid, eight rows deep. */
-const LIMIT = 24;
+/** Rows per answer: GIPHY's maximum. The grid plays only the tiles near the screen. */
+const LIMIT = 50;
 
 /** A search page is a few dozen KB; anything near this is not a search page. */
 const MAX_GIPHY_BYTES = 2 * 1024 * 1024;
