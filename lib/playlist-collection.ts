@@ -1,7 +1,8 @@
 import { loadPlaylistPage, tripPiBreaker } from '@/lib/podcast-meta';
 import type { Podcast } from '@/lib/types';
-import { mapLimit, PI_FANOUT } from '@/lib/util';
-import { COMMUNITY_COLLECTION_URL, COMMUNITY_PLAYLIST_URLS } from '@/lib/curated-playlists';
+import { communityPlaylistToPodcast, mapLimit, PI_FANOUT } from '@/lib/util';
+import { COMMUNITY_COLLECTION_URL, COMMUNITY_PLAYLIST_URLS, COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
+import { fetchCommunityPlaylists } from '@/lib/community/client';
 
 /**
  * The curated playlist collection: which feed it comes from, and how to read it.
@@ -90,11 +91,16 @@ export interface Collection {
    * paid for on the BOOST button.
    */
   couldNotAskPi: boolean;
+  /**
+   * Community only: the store of playlists made on BMB could not be read, so
+   * that half is MISSING — said by name, never folded into `listed`.
+   */
+  storeDown?: boolean;
 }
 
 export async function loadCollection(feedUrl: string): Promise<Collection | null> {
   try {
-    if (feedUrl === COMMUNITY_COLLECTION_URL) return await loadUrlList(COMMUNITY_PLAYLIST_URLS);
+    if (feedUrl === COMMUNITY_COLLECTION_URL) return await loadCommunity();
     // A non-http(s) value is not a publisher feed, and refusing it HERE is what
     // keeps a missed sentinel branch honest. Sent to `/api/publisher` instead,
     // `safeFetch` rejects the scheme, `fetchFeedXml` SWALLOWS the throw,
@@ -128,6 +134,50 @@ export async function loadCollection(feedUrl: string): Promise<Collection | null
   } catch {
     return null;
   }
+}
+
+/**
+ * The Community collection: playlists made on BMB first (newest first), then the
+ * curated URL list.
+ *
+ * **A store that cannot be reached is a missing HALF, not an empty store.**
+ * `fetchCommunityPlaylists` answers `null` for a failure and `[]` for "nobody has
+ * made one", and only the second is a fact. On `null` this sets `storeDown`, so
+ * the page names what is missing (and offers RETRY) rather than folding it into
+ * a count; `listed` stays true to what was counted.
+ *
+ * **The two reads run in parallel** — they share nothing, and the store answers
+ * in milliseconds while the curated list pays for Podcast Index.
+ *
+ * **One feed URL, one row.** A curated entry whose URL a stored playlist holds is
+ * dropped after the merge and is not counted in `listed`. Rows are keyed by
+ * `p.id`, so two rows for one feed would make the second unreachable.
+ *
+ * The stored rows are built from our own database, so they need no Podcast Index
+ * call and are never counted against `couldNotAskPi`.
+ */
+async function loadCommunity(): Promise<Collection | null> {
+  const curated = [...new Set(COMMUNITY_PLAYLIST_URLS)];
+  const [list, rest] = await Promise.all([
+    COMMUNITY_PLAYLISTS_ON ? fetchCommunityPlaylists() : Promise.resolve([]),
+    loadUrlList(curated),
+  ]);
+  const storeDown = list === null;
+  const stored = (list ?? []).map(communityPlaylistToPodcast);
+  const have = new Set(stored.map((p) => p.url));
+  const dupes = curated.filter((u) => have.has(u)).length;
+  if (!rest) {
+    // The curated half failed outright. With stored rows in hand the page can
+    // still show them, with the curated ones counted as missing.
+    if (!stored.length) return null;
+    return { feeds: stored, listed: stored.length + curated.length - dupes, couldNotAskPi: false, storeDown };
+  }
+  return {
+    feeds: [...stored, ...rest.feeds.filter((f) => !have.has(f.url))],
+    listed: stored.length + rest.listed - dupes,
+    couldNotAskPi: rest.couldNotAskPi,
+    storeDown,
+  };
 }
 
 /**
