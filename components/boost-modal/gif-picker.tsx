@@ -141,6 +141,8 @@ export function GifPicker({
   // Refused BEFORE any fetch and SAID so — the retype is as dangerous as the
   // first paste, so a silent no-op is not enough.
   const secretHit = looksLikeSecretKey(q);
+  // Read at render, never cached: the setting can change while the picker is open.
+  const reduced = prefersReducedMotion();
   // nostr.build: a single Latin letter is NOT a search (it would spend the
   // reader's 120-a-minute budget on noise), so the grid keeps what it shows.
   const notASearch = source === 'nostrbuild' && q.trim() !== '' && normalizeNbQuery(q) === null;
@@ -288,9 +290,21 @@ export function GifPicker({
       ) : state.kind === 'ready' && state.tiles.length === 0 ? (
         <p className="mt-2 text-xs text-muted" role="status">No GIFs match that search.</p>
       ) : (
-        // The scroll box is held in STATE, not a ref: the grid's observers are
-        // rooted at it, and the dialog mounts its content after the first
-        // render, so a ref read then measured nothing.
+        <>
+        {/* Still pictures are on purpose in two cases, and the picker SAYS
+            which: a phone showing a still grid otherwise looks broken (Chad's
+            iPhone, beta, 2026-11-14). The refusal line names Low Power Mode as
+            the usual cause, not the only one. */}
+        {state.kind === 'ready' && (reduced || refused) && (
+          <p className="mt-2 text-xs text-muted" role="status">
+            {reduced
+              ? 'Reduce Motion is on, so the GIFs show as still pictures.'
+              : 'This device did not let the GIFs play by themselves (Low Power Mode does this), so they show as still pictures.'}
+          </p>
+        )}
+        {/* The scroll box is held in STATE, not a ref: the grid's observers are
+            rooted at it, and the dialog mounts its content after the first
+            render, so a ref read then measured nothing. */}
         <div
           ref={setScrollBox}
           data-gif-scroll=""
@@ -301,7 +315,7 @@ export function GifPicker({
             <GifGrid
               tiles={tiles}
               scrollRoot={scrollBox}
-              motion={prefersReducedMotion() || refused ? 'still' : 'play'}
+              motion={reduced || refused ? 'still' : 'play'}
               onAutoplayRefused={() => setRefused(true)}
               // The grid can be open when Send is pressed. A pick after that
               // would show a GIF the sent boost does not carry.
@@ -320,6 +334,7 @@ export function GifPicker({
             </div>
           )}
         </div>
+        </>
       )}
       <div className="mt-2 text-right text-[10px] text-muted">
         <Attribution source={source} />

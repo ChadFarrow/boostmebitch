@@ -337,6 +337,7 @@ const tiles = () => js(`(() => {
 const boxHeight = () => js(`document.querySelector('[data-gif-scroll]').clientHeight`);
 const scrollGrid = async (y) => { await js(`document.querySelector('[data-gif-scroll]').scrollTop = ${y}`); await wait(900); };
 const attachedVideos = () => js(`document.querySelectorAll('video[data-gif-tile]').length`);
+const dialogText = () => js(`[...document.querySelectorAll('[role="dialog"]')].at(-1)?.innerText ?? ''`);
 const idOf = (key) => key.split(':')[1];
 
 await send('Page.navigate', { url: `${APP}/privacy` });
@@ -445,6 +446,8 @@ if (BRAND_ID !== 'buddy') {
   t.ok('on-screen tiles show their still', all.filter((x) => x.bottom > 0 && x.top < rbox).every((x) => x.state === 'still'
     && /\/200w_s\.gif$/.test(x.img ?? '')), JSON.stringify(all.slice(0, 2)));
   t.ok('far tiles show nothing', all.filter((x) => x.top > rbox * 1.5 + 4).every((x) => !x.img));
+  // Said on screen, so a phone that shows still pictures says why (Chad's iPhone, beta, 2026-11-14).
+  t.ok('the picker says Reduce Motion is the reason', /Reduce Motion is on/.test(await dialogText()), await dialogText());
   await send('Emulation.setEmulatedMedia', { features: [] });
 
   section('1c. A refused autoplay: stills for the grid');
@@ -456,6 +459,7 @@ if (BRAND_ID !== 'buddy') {
     return on.length === 4 && on.every((b) => b.dataset.state === 'still');
   })()`, 10000), JSON.stringify((await tiles()).slice(0, 4).map((x) => x.state)));
   t.equal('and holds no video', await attachedVideos(), 0);
+  t.ok('the picker says the device did not let the GIFs play', /did not let the GIFs play by themselves/.test(await dialogText()), await dialogText());
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: refusal.identifier });
 
   section('1d. Phone (390×844, touch)');
@@ -478,7 +482,6 @@ const typeQuery = (value) => js(`(() => {
   set.call(el, ${JSON.stringify(value)});
   el.dispatchEvent(new Event('input', { bubbles: true }));
 })()`);
-const dialogText = () => js(`[...document.querySelectorAll('[role="dialog"]')].at(-1)?.innerText ?? ''`);
 const gridKeys = () => js(`[...document.querySelectorAll('[data-gif-key]')].map((b) => b.dataset.gifKey)`);
 const keysOf = (answer) => nb.parseNbResults(answer).map((r) => `nostrbuild:${r.key}`);
 /** The grid is two masonry columns, so page order is not result order: compare sets. */
