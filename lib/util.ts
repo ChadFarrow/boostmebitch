@@ -107,10 +107,11 @@ export function isPlayableRow(e: Pick<Episode, 'enclosureUrl' | 'unresolved'>): 
  * deduped, located and drained by.
  *
  * **`id` cannot be that key.** `stepTo` locates the playing row in
- * `episodeQueue` with `e.id === current.episode.id`, which is sound because
- * that array holds one feed's rows and a Podcast Index episode id is unique
- * within the feed that issued it. It is NOT unique between feeds, and a
- * cross-show queue puts two feeds' rows in one array.
+ * `episodeQueue` by `id` first (`isPlayingRow`), which is sound because that
+ * array holds one feed's rows and a Podcast Index episode id is unique within
+ * the feed that issued it. It is NOT unique between feeds, and a cross-show
+ * queue puts two feeds' rows in one array. Nor is it the only id one song can
+ * have — see `isPlayingRow` for the guid match that follows it.
  *
  * So the RSS `<guid>` — globally unique by the spec — is the key, with
  * `feedId:id` as the floor for a row that arrived without one. The fallback is
@@ -290,6 +291,69 @@ export function shuffleIndexOf(
   if (!shuffle || !shuffle.length) return -1;
   const key = epKey(episode);
   return shuffle.findIndex((i) => epKey(i.episode) === key);
+}
+
+/**
+ * The explicit list that owns what is playing — the shuffle, then Up Next, the
+ * order `stepTo` and `handlePlaybackEnded` ask in — or null, when neither holds
+ * it and a track ending is the open feed's to continue.
+ *
+ * The album header's ▶ reads it (`<EpisodeList>`), because a track of an album
+ * is not always playing AS that album: the favorites shuffle reaches one, and
+ * so does Up Next. The cover resumed it anyway, so "Play album" played the one
+ * song again and the shuffle went on owning what came after (Chad, 2026-11-14).
+ */
+export function listHolding(
+  shuffle: readonly QueueItem[] | null,
+  listenQueue: readonly QueueItem[],
+  episode: Pick<Episode, 'guid' | 'feedId' | 'id'>,
+): 'shuffle' | 'queue' | null {
+  if (shuffleIndexOf(shuffle, episode) >= 0) return 'shuffle';
+  if (!listenQueue.length) return null;
+  const key = epKey(episode);
+  return listenQueue.some((i) => epKey(i.episode) === key) ? 'queue' : null;
+}
+
+type RowIds = Pick<Episode, 'id' | 'guid' | 'feedId' | 'podcastGuid'>;
+
+/**
+ * Is `row` — a row of ONE feed's list: `episodeQueue`, an album's tracks — the
+ * item playing now?
+ *
+ * **`id` first, exactly as every caller matched before, and then the guid
+ * INSIDE THE SAME FEED.** One song can reach the player under two ids. The
+ * favorites shuffle builds a track from the favorite itself when no Podcast
+ * Index record is cached (`episodeFromFavorite`), and that id is
+ * `-fnvHash(itemGuid)`, while the album's row carries Podcast Index's. Matched
+ * by id alone, the open album did not hold its own track: no row was lit, ⏭ was
+ * off, and when the song ended `stepTo` found nowhere to go — `advance
+ * via=none` in the playback log, with the album's next track one row below
+ * (Chad, desktop, 2026-11-14, after a reload had dropped the shuffle).
+ *
+ * The same feed, never the guid alone: a copy of a feed repeats the original's
+ * guids, and continuing into the copy's rows would pay the copy's payee. The
+ * feed guid decides when both sides name one; the feed id when only that is
+ * known; neither known is no match, which is the answer `id` gave before.
+ */
+export function isPlayingRow(
+  row: RowIds,
+  current: { episode: RowIds; podcast: Pick<Podcast, 'id' | 'podcastGuid'> },
+): boolean {
+  if (row.id === current.episode.id) return true;
+  if (!row.guid || row.guid !== current.episode.guid) return false;
+  const feedGuid = current.episode.podcastGuid || current.podcast.podcastGuid;
+  if (row.podcastGuid && feedGuid) return row.podcastGuid === feedGuid;
+  const feedId = current.episode.feedId || current.podcast.id;
+  return !!row.feedId && row.feedId > 0 && row.feedId === feedId;
+}
+
+/** Where the playing item sits in one feed's rows, or -1. See `isPlayingRow`. */
+export function playingRowIndex(
+  rows: readonly RowIds[],
+  current: { episode: RowIds; podcast: Pick<Podcast, 'id' | 'podcastGuid'> } | null,
+): number {
+  if (!current) return -1;
+  return rows.findIndex((r) => isPlayingRow(r, current));
 }
 
 /**

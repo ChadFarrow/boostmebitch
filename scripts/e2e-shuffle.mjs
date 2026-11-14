@@ -42,6 +42,12 @@
 //      sheet takes the list along, a list the listener scrolled away is left
 //      alone until the track changes, and only the BOX scrolls — never the
 //      sheet or the page. The album panel does the same for a 40-track album.
+//  11. A shuffled single that is ALSO a track of the album opened on screen,
+//      built from the favorite (so its id is not the album row's). While the
+//      shuffle owns it the row is lit and the cover offers "Play album", which
+//      starts the album at track 1. After a reload drops the shuffle, the row
+//      is still lit, ⏭ is on, and the song's end continues the album (Chad,
+//      desktop, 2026-11-14: `advance via=none` had stopped it).
 //
 // Signed out: no key, so nothing reaches a relay. The shuffle's own requests are
 // answered here; anything else goes to the dev server untouched.
@@ -688,6 +694,81 @@ console.log('\n10. The track list follows the playing row');
   }
   await send('Emulation.clearDeviceMetricsOverride');
 }
+
+// ---------------------------------------------------------------------------
+console.log('\n11. A shuffled single that is also a track of the open album');
+// Chad, desktop, 2026-11-14: the shuffle reached a song, he opened its album to
+// play the album, and the cover's ▶ resumed the shuffle's song instead. After a
+// reload had dropped the shuffle, ▶ played that one song and playback stopped —
+// `advance via=none` in his playback log, with the album's next track one row
+// below. The favorite is built from what it stored (nothing cached, the usual
+// device), so its id is `-fnvHash(itemGuid)` while the album row carries the
+// index's; and it stored no feed id, so only the feed GUID ties the two.
+const ALBUM_SINGLE = {
+  itemGuid: ALBUM_EPISODES[1].guid, feedGuid: ALBUM_GUID, title: 'Album track 1', podcastTitle: 'E2E Album',
+  medium: 'music', addedAt: 1700000000100, enclosureUrl: `${APP}/api/e2e-audio.wav?album=1`,
+};
+const COVER = `[...document.querySelectorAll('header button.group')].find((b) => /^(Play album|Pause)$/.test(b.getAttribute('aria-label') ?? ''))`;
+const cover = async () => JSON.parse(await js(`JSON.stringify((() => { const b = ${COVER};
+  return b ? { label: b.getAttribute('aria-label'), glyph: b.lastElementChild?.textContent.trim() } : null; })())`));
+const litRows = async () => JSON.parse(await js(`JSON.stringify([...document.querySelectorAll('ul > li')]
+  .filter((li) => li.classList.contains('bg-bolt/10')).map((li) => (li.textContent.match(/Album track \\d/) ?? ['?'])[0]))`));
+const lastAdvance = () => js(`(JSON.parse(localStorage.getItem('bmb:plog:device') ?? '[]').filter((l) => / advance /.test(l)).pop() ?? '').replace(/^\\S+ /, '')`);
+async function shuffleToAlbumSingle() {
+  await open({ items: [ALBUM_SINGLE, WITH_AUDIO[0]], cached: [] });
+  await pressShuffle();
+  await waitSrc((s) => /([?&]n|album)(=|%3D)\d+/.test(s));
+  if (!/album(=|%3D)1(\D|$)/.test(await src())) await pressMini('/^Next/');
+  return waitSrc((s) => /album(=|%3D)1(\D|$)/.test(s));
+}
+async function openAlbum() {
+  // The single's own row names the album too; the album's row has no track.
+  await js(`(() => { const li = [...document.querySelectorAll('section ul > li')]
+    .find((x) => x.textContent.includes('E2E Album') && !x.textContent.includes('Album track'));
+    (li?.querySelector('button') ?? li)?.click(); return !!li; })()`);
+  const ok = await until(`document.body.textContent.includes('Album track 2')`, 10000);
+  await wait(500);
+  return ok;
+}
+
+// A: the shuffle still runs.
+t.ok('A: the shuffle reaches the album\'s song', await shuffleToAlbumSingle(), await src());
+t.ok('A: the album opens', await openAlbum());
+t.equal('A: the song\'s row is lit while the shuffle plays it', await litRows(), ['Album track 1']);
+// The order is random: the song is the shuffle's first or its last track, and
+// at the last the shuffle refuses the step rather than handing it to the album.
+const nx = await miniNext();
+t.ok('A: ⏭ stays the shuffle\'s — its next, or off at its end — never the album\'s',
+  nx?.label === 'Next in shuffle' ? nx.disabled === false : nx?.disabled === true, JSON.stringify(nx));
+console.log(`       (this run: ${nx?.label}, ${nx?.disabled ? 'off' : 'on'})`);
+t.equal('A: the cover offers the album, not a pause', await cover(), { label: 'Play album', glyph: '▶' });
+await js(`${COVER}?.click()`);
+t.ok('A: ▶ starts the album at its first track', await waitSrc((s) => /album(=|%3D)0(\D|$)/.test(s)), await src());
+t.ok('A: …and ends the shuffle', (await miniNext())?.label !== 'Next in shuffle', JSON.stringify(await miniNext()));
+await until(`!(document.querySelector('audio')?.paused ?? true)`, 5000);
+t.equal('A: the album owns it now, so the cover pauses', await cover(), { label: 'Pause', glyph: '❚❚' });
+await endTrack();
+t.ok('A: the album goes on to its second track', await waitSrc((s) => /album(=|%3D)1(\D|$)/.test(s), 10000), await src());
+await js(`${COVER}?.click()`);
+t.ok('A: ❚❚ on the cover pauses', await until(`document.querySelector('audio')?.paused === true`, 5000));
+
+// B: a reload drops the shuffle and puts the song back on its own — Chad's log.
+t.ok('B: the shuffle reaches the album\'s song', await shuffleToAlbumSingle(), await src());
+await send('Page.reload');
+await until('document.readyState === "complete"');
+await until(`!!document.querySelector('[aria-label="Filter favorites"]')`);
+t.ok('B: the reload puts the song back, paused',
+  await waitSrc((s) => /album(=|%3D)1(\D|$)/.test(s)) && await paused() === true, JSON.stringify({ src: await src(), paused: await paused() }));
+t.ok('B: the album opens', await openAlbum());
+t.equal('B: the song\'s row is lit', await litRows(), ['Album track 1']);
+t.equal('B: ⏭ is the album\'s and is on', await miniNext(), { label: 'Next track', disabled: false });
+t.equal('B: no list owns the song, so the cover resumes it', await cover(), { label: 'Play album', glyph: '▶' });
+await js(`${COVER}?.click()`);
+await until(`!(document.querySelector('audio')?.paused ?? true)`, 5000);
+t.ok('B: ▶ plays the song in the player', /album(=|%3D)1(\D|$)/.test(await src()) && await paused() === false, await src());
+await endTrack();
+t.ok('B: when it ends, the album goes on to the next track', await waitSrc((s) => /album(=|%3D)2(\D|$)/.test(s), 10000), await src());
+t.equal('B: the playback log says the album moved it', await lastAdvance(), 'advance via=tracks');
 
 // ---------------------------------------------------------------------------
 t.equal('no uncaught page errors', pageErrors, []);

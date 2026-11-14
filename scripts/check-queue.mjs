@@ -79,6 +79,12 @@
 // goes (the player reads the payee from the track's own feed), and the show is
 // an ALLOWLIST, so nothing a favorite or a cached record carries can ride onto
 // the show that streams are keyed and boost notes are written from.
+//
+// `isPlayingRow` (2026-11-14) says which row of ONE feed's list is playing, for
+// `stepTo`, ⏭, the row tint and the album panel. It matches `id`, then the guid
+// inside the same feed: a shuffled favorite's id is not its album row's, and a
+// copy feed repeats the original's guids. Its two naives are the id-only match
+// that shipped and the guid-alone match that pays the copy.
 
 import {
   addToHistory,
@@ -96,6 +102,8 @@ import {
   shuffleTrackFor,
   episodeFromFavorite,
   fnvHash,
+  isPlayingRow,
+  playingRowIndex,
   sameCurrentTrack,
   trimForQueue,
 } from '../lib/util.ts';
@@ -575,6 +583,48 @@ checkSame('another track is another choice',
   [CUR_A, { ...CUR_A, episode: { ...EP_A, guid: 'b', id: 2 } }], false, { alsoNaive: true });
 checkSame('something started where nothing played', [null, CUR_A], false, { alsoNaive: true });
 
+// WHICH ROW OF AN ALBUM IS PLAYING (2026-11-14). `stepTo`, ⏭, the row tint and
+// both halves of the fullscreen album list matched `e.id === current.episode.id`.
+// A shuffled favorite built by `episodeFromFavorite` carries `-fnvHash(itemGuid)`
+// while the album's row carries Podcast Index's id, so the open album did not
+// hold its own song and the song's end stopped playback (`advance via=none`,
+// Chad, desktop). Two wrong versions, so two kinds: `prow` against the id-only
+// match that shipped, `prowfeed` against the guid ALONE — the fix everybody
+// writes first, which continues into a copy feed's rows and pays its payee.
+const ROW = { id: 48887791858, guid: 'song-5', podcastGuid: 'album-feed', feedId: 7668956 };
+const SHUFFLED = {
+  episode: { id: -fnvHash('song-5'), guid: 'song-5', podcastGuid: 'album-feed', feedId: 0 },
+  podcast: { id: 0, podcastGuid: 'album-feed', title: 'album', medium: 'music' },
+};
+function checkRow(label, args, expected, { alsoNaive = false, kind = 'prow' } = {}) {
+  compare(label, isPlayingRow(...args), expected);
+  vectors.push({ label, kind, args, alsoNaive });
+}
+checkRow('the same id is the row, as before', [ROW, { episode: { ...ROW }, podcast: { id: 7668956 } }], true,
+  { alsoNaive: true });
+checkRow('a shuffled favorite is its album row: the same guid in the same feed guid', [ROW, SHUFFLED], true);
+checkRow('the feed id decides when neither side names a feed guid',
+  [{ ...ROW, podcastGuid: undefined },
+    { episode: { ...SHUFFLED.episode, podcastGuid: undefined, feedId: 7668956 }, podcast: { id: 0 } }], true);
+checkRow('…or the show\'s id when the episode carries none',
+  [{ ...ROW, podcastGuid: undefined },
+    { episode: { ...SHUFFLED.episode, podcastGuid: undefined }, podcast: { id: 7668956 } }], true);
+checkRow('another song of the same album is not the row',
+  [{ ...ROW, id: 48887791860, guid: 'song-6' }, SHUFFLED], false, { alsoNaive: true });
+checkRow('an empty guid never matches on the guid',
+  [{ ...ROW, guid: '' }, { ...SHUFFLED, episode: { ...SHUFFLED.episode, guid: '' } }], false, { alsoNaive: true });
+checkRow('the same guid in a COPY feed is not the row: continuing there pays the copy',
+  [{ ...ROW, podcastGuid: 'copy-feed', feedId: 999 }, SHUFFLED], false, { kind: 'prowfeed' });
+checkRow('the feed guid outranks a feed id that happens to agree',
+  [{ ...ROW, podcastGuid: 'copy-feed' }, { ...SHUFFLED, episode: { ...SHUFFLED.episode, feedId: 7668956 } }], false,
+  { kind: 'prowfeed' });
+checkRow('no feed known on either side is no match, as `id` said before',
+  [{ ...ROW, podcastGuid: undefined, feedId: 0 },
+    { episode: { ...SHUFFLED.episode, podcastGuid: undefined }, podcast: { id: 0 } }], false, { kind: 'prowfeed' });
+compare('playingRowIndex finds the shuffled song in its album',
+  playingRowIndex([{ ...ROW, id: 1, guid: 'song-4' }, ROW, { ...ROW, id: 3, guid: 'song-6' }], SHUFFLED), 1);
+compare('playingRowIndex with nothing playing is -1', playingRowIndex([ROW], null), -1);
+
 // ---------------------------------------------------------------------------
 section('The cap is a number this repo states, not one a caller passes');
 // ---------------------------------------------------------------------------
@@ -646,6 +696,10 @@ section('Every vector above is replayed against the obvious wrong version');
   const naiveFromFav = (fav) => ({ ...fav, id: 0, guid: fav.itemGuid, podcastGuid: fav.feedGuid });
   // Identity, which a payee refresh breaks.
   const naiveSame = (a, b) => a === b;
+  // NOT AN INVENTION: the id-only match that shipped in all six places.
+  const naiveRow = (row, cur) => row.id === cur.episode.id;
+  // The first fix anybody writes: the guid alone, in any feed.
+  const naiveRowFeed = (row, cur) => row.id === cur.episode.id || (!!row.guid && row.guid === cur.episode.guid);
 
   const call = (impl, v) => {
     try {
@@ -692,6 +746,10 @@ section('Every vector above is replayed against the obvious wrong version');
           return JSON.stringify(fromFavShape((real ? episodeFromFavorite : naiveFromFav)(...v.args)));
         case 'same':
           return JSON.stringify((real ? sameCurrentTrack : naiveSame)(...v.args));
+        case 'prow':
+          return JSON.stringify((real ? isPlayingRow : naiveRow)(...v.args));
+        case 'prowfeed':
+          return JSON.stringify((real ? isPlayingRow : naiveRowFeed)(...v.args));
         default: throw new Error(`unknown vector kind ${v.kind}`);
       }
       // A wrong implementation is allowed to throw where the real one returns.

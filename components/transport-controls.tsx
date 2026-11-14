@@ -1,6 +1,6 @@
 'use client';
 import { listenerPassesOver, useApp } from '@/lib/store';
-import { epKey, nextPlayableIndexBy, shuffleIndexOf } from '@/lib/util';
+import { epKey, nextPlayableIndexBy, playingRowIndex, shuffleIndexOf } from '@/lib/util';
 import type { Episode, QueueItem } from '@/lib/types';
 import { SkipBackIcon, SkipForwardIcon } from './icons';
 
@@ -98,7 +98,8 @@ export function TransportControls({
   const passEp = goneFiles.size ? (e: Episode) => listenerPassesOver(goneFiles, e) : undefined;
   const passItem = passEp && ((i: QueueItem) => passEp(i.episode));
 
-  const idx = episodeQueue.findIndex((e) => e.id === current.episode.id);
+  // `stepTo`'s own lookup, so ⏭ is lit exactly when a press can move.
+  const idx = playingRowIndex(episodeQueue, current);
   // -1 whenever the listen queue is empty or does not hold what is playing,
   // which is what collapses every expression below back to the two lines it
   // replaced. The `.length` short-circuit means an empty queue does not even
