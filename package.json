@@ -69,6 +69,7 @@
     "e2e:artgate": "node scripts/e2e-artgate.mjs",
     "e2e:artbytes": "node scripts/e2e-artbytes.mjs",
     "e2e:coverladder": "node scripts/e2e-cover-ladder.mjs",
+    "e2e:coverhold": "node scripts/e2e-cover-hold.mjs",
     "e2e:album": "node scripts/e2e-album.mjs",
     "e2e:streamdialog": "node scripts/e2e-stream-dialog.mjs",
     "e2e:seekhover": "node scripts/e2e-seekhover.mjs",

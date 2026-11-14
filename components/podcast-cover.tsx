@@ -1,5 +1,5 @@
 'use client';
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 
 // Renders the podcast's artwork with a deterministic colored-initial
@@ -29,6 +29,7 @@ function PodcastCoverImpl({
   lowPriority,
   localSrc,
   preferOriginal,
+  hold,
 }: {
   image?: string | null;
   artwork?: string | null;
@@ -119,6 +120,36 @@ function PodcastCoverImpl({
    * `artOk` exists for.
    */
   preferOriginal?: boolean;
+  /**
+   * Keep the last picture PAINTED until the next one has loaded.
+   *
+   * Without it a new URL is a new `<img>` (the `key` below), empty until its
+   * file arrives. On the big now-playing cover the URL changes up to three
+   * times per track — the next track's published file while the art gate is
+   * still open from the last one, its proxied copy once `waiting` shuts the
+   * gate, the published file again when the buffer reopens it — and the mini
+   * bar's tile changes once per track. Reported from the beta site as "the art
+   * loads, but then it also flashes just once", and again for the tile;
+   * measured as 372 ms of an empty big cover, and ~170 ms of an empty tile in
+   * WebKit.
+   *
+   * With it the incoming `<img>` loads invisibly on top of the painted one and
+   * takes its place on `load`; the box is a `<span>` carrying the caller's
+   * `className`, which both pictures fill. Nothing is fetched that was not
+   * fetched before, and a failure still walks the ladder while the held picture
+   * stays up.
+   *
+   * **Not a single element with a changing `src`**, though the HTML image
+   * algorithm keeps painting the current picture while a new `src` is pending.
+   * Measured 2026-11-13 with screenshots of the box: WebKit held the old
+   * picture, but Chrome painted the big cover's large original while it was
+   * still arriving — one frame was a near-empty box (7 KB of JPEG against
+   * 71 KB). Two elements hold in both engines.
+   *
+   * For a surface that changes its picture IN PLACE — the two now-playing
+   * covers. A list tile is a new row per item and has nothing to hold.
+   */
+  hold?: boolean;
 }) {
   // Proxied copies first, then the ORIGINAL third-party URLs behind them.
   //
@@ -156,7 +187,63 @@ function PodcastCoverImpl({
   // The cost: a URL that failed is not retried while this cover stays mounted.
   // The set grows only by URLs that failed here, so it stays a handful.
   const [failed, setFailed] = useState<ReadonlySet<string>>(NO_FAILURES);
+  // `hold` only: the last URL whose picture finished loading here.
+  const [shown, setShown] = useState<string | null>(null);
   const current = candidates.find((u) => !failed.has(u));
+  // `hold` only: the URL current at the LATEST render. A decode that finishes
+  // after the track changed back must not take the box (see `onLoad` below).
+  const latest = useRef<string | undefined>(undefined);
+  latest.current = current;
+  const fail = (u: string) => setFailed((prev) => (prev.has(u) ? prev : new Set(prev).add(u)));
+  if (current && hold) {
+    // The painted picture stays until the incoming one has LOADED: the incoming
+    // `<img>` loads invisibly on top and takes over on `load`. Both are keyed by
+    // URL in one parent, so React keeps that decoded element — moving it, never
+    // re-creating it — and no frame is empty. The CALLER's `className` sizes and
+    // decorates the box (the 48px tile, the big cover's rounded square) and the
+    // pictures fill it, so neither caller's layout changes. The attributes are
+    // the plain branch's below, for its reasons.
+    const held = shown && shown !== current && !failed.has(shown) ? shown : null;
+    const fill = `absolute inset-0 h-full w-full ${fit === 'contain' ? 'object-contain' : 'object-cover'}`;
+    const attrs = {
+      loading: 'lazy' as const,
+      decoding: 'async' as const,
+      ...(lowPriority ? { fetchPriority: 'low' as const } : {}),
+    };
+    return (
+      <span className={`relative block overflow-hidden ${className ?? ''}`}>
+        {held && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img key={held} src={held} alt="" {...attrs} className={fill} onError={() => fail(held)} />
+        )}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          key={current}
+          src={current}
+          alt=""
+          {...attrs}
+          className={held ? `${fill} opacity-0 pointer-events-none` : fill}
+          // On `load` AND decoded. `decoding="async"` lets the browser leave an
+          // invisible picture undecoded, and Chrome then decoded the big cover
+          // only at the swap — one near-empty frame (measured, 7 KB of JPEG
+          // against 71 KB). `decode()` resolves when it can paint at once.
+          // AND STILL CURRENT: ⏭ then ⏮ (a chapter edge, the gate flipping
+          // back) before the decode ends made the original current again, and
+          // the late decode then set the ABANDONED picture as the held one —
+          // painted over the right cover, which never fires `load` again, until
+          // the next change (review of #544; `e2e:coverhold` section 3).
+          onLoad={(e) => {
+            const url = current;
+            const done = () => { if (latest.current === url) setShown(url); };
+            const el = e.currentTarget;
+            if (typeof el.decode === 'function') el.decode().then(done, done);
+            else done();
+          }}
+          onError={() => fail(current)}
+        />
+      </span>
+    );
+  }
   if (current) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
@@ -219,7 +306,7 @@ function PodcastCoverImpl({
  * inputs had not changed.
  *
  * `image`, `artwork`, `localSrc`, `title`, `seed`, `className`, `w`, `fit`,
- * `lowPriority` and `preferOriginal` are all strings, numbers or booleans, so the default shallow
+ * `lowPriority`, `preferOriginal` and `hold` are all strings, numbers or booleans, so the default shallow
  * comparison is exactly right here — there is no object or callback prop for a
  * caller to hand over a fresh reference of by accident, which is the usual way a
  * `memo` becomes decoration. A new prop has to keep that true.

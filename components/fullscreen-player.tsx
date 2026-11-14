@@ -1230,6 +1230,12 @@ export function FullscreenPlayer({
                 // without this an episode cover that is itself a huge GIF would
                 // still be fetched whole while the buffer is in trouble.
                 preferOriginal={open && artOk}
+                // The cover changes IN PLACE — per track, per chapter, and twice
+                // more per track as the art gate shuts and reopens — so it holds
+                // the painted picture until the next one has loaded. Without it
+                // every change is an empty box until the file arrives: the
+                // "flashes just once" reported from beta (e2e:coverhold).
+                hold
                 // The whole picture, letterboxed — never a crop. Episode art
                 // is not reliably square: a show that reuses its video
                 // thumbnail publishes 16:9, and `object-cover` in a square box
