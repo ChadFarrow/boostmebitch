@@ -297,6 +297,20 @@ checkWalk('no playable row ahead answers -1, never the length', [Q, 3, 1, row], 
 checkWalk('no playable row behind answers -1', [Q, 0, -1, row], -1, { alsoNaive: true });
 checkWalk('a clean queue steps by one', [[Q[0], Q[3]], 0, 1, row], 1, { alsoNaive: true });
 checkWalk('an empty queue answers -1', [[], 0, 1, row], -1, { alsoNaive: true });
+// `passOver` — the listener's ⏮/⏭ walking past a file this tab knows is dead
+// (review of the merged #541/#545/#547, 2026-11-14). ⏮ from the track after a
+// dead one landed on it, and the skip carried the listener forward again.
+const G = [
+  { enclosureUrl: 'https://x/c.mp3' },
+  { enclosureUrl: 'https://x/d-gone.mp3' },
+  { enclosureUrl: 'https://x/e.mp3' },
+];
+const gone = (e) => /gone/.test(e.enclosureUrl);
+checkWalk('⏮ walks past a dead file to the track before it', [G, 2, -1, row, gone], 0);
+checkWalk('⏭ walks past it too', [G, 0, 1, row, gone], 2);
+checkWalk('only dead files ahead answers -1, so ⏭ draws disabled', [G.slice(0, 2), 0, 1, row, gone], -1);
+// Must-still-work: with nothing to pass over it is the plain walk.
+checkWalk('passOver answering false changes nothing', [G, 0, 1, row, () => false], 1, { alsoNaive: true });
 
 // ---------------------------------------------------------------------------
 section('listenStep: a minute of LISTENING, not a minute of position');

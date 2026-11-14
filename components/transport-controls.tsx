@@ -1,7 +1,7 @@
 'use client';
-import { useApp } from '@/lib/store';
-import { epKey, nextPlayableIndex, nextPlayableIndexBy, shuffleIndexOf } from '@/lib/util';
-import type { QueueItem } from '@/lib/types';
+import { listenerPassesOver, useApp } from '@/lib/store';
+import { epKey, nextPlayableIndexBy, shuffleIndexOf } from '@/lib/util';
+import type { Episode, QueueItem } from '@/lib/types';
 import { SkipBackIcon, SkipForwardIcon } from './icons';
 
 type NavOverride = { onClick: () => void; disabled: boolean; label: string };
@@ -63,6 +63,7 @@ const SKIP_FORWARD_SEC = 30;
 /** Shared with `stepTo` so the transport and the step cannot disagree about
  *  which queued rows are landable. */
 const queuedEpisode = (i: QueueItem) => i.episode;
+const asRow = (e: Episode) => e;
 
 export function TransportControls({
   size = 'sm',
@@ -88,7 +89,14 @@ export function TransportControls({
   const episodeQueue = useApp((s) => s.episodeQueue);
   const listenQueue = useApp((s) => s.listenQueue);
   const shuffle = useApp((s) => s.shuffle);
+  // The press walks past a file this tab knows is dead (`playNext`/`playPrev`),
+  // so the enabled test does too: a ⏭ whose only rows left are dead is
+  // disabled, never a press that does nothing. Subscribed, so a file joining
+  // the list redraws the buttons.
+  const goneFiles = useApp((s) => s.goneFiles);
   if (!current) return null;
+  const passEp = goneFiles.size ? (e: Episode) => listenerPassesOver(goneFiles, e) : undefined;
+  const passItem = passEp && ((i: QueueItem) => passEp(i.episode));
 
   const idx = episodeQueue.findIndex((e) => e.id === current.episode.id);
   // -1 whenever the listen queue is empty or does not hold what is playing,
@@ -107,8 +115,8 @@ export function TransportControls({
     : listenQueue.length
       ? listenQueue.findIndex((i) => epKey(i.episode) === epKey(current.episode))
       : -1;
-  const qNext = nextPlayableIndexBy(owner, qIdx, 1, queuedEpisode);
-  const qPrev = nextPlayableIndexBy(owner, qIdx, -1, queuedEpisode);
+  const qNext = nextPlayableIndexBy(owner, qIdx, 1, queuedEpisode, passItem);
+  const qPrev = nextPlayableIndexBy(owner, qIdx, -1, queuedEpisode, passItem);
   // **Enabled means "there is a row this press can land on", which is not the
   // same as "there is a row".** A playlist queue holds one entry per
   // `<podcast:remoteItem>`, including the ones Podcast Index could not resolve,
@@ -143,14 +151,14 @@ export function TransportControls({
   const onPrev = queueTakesPrev ? (() => playPrev()) : (prev?.onClick ?? (() => playPrev()));
   const prevDisabled = queueTakesPrev
     ? false
-    : prev ? prev.disabled : inQueue || nextPlayableIndex(episodeQueue, idx, -1) < 0;
+    : prev ? prev.disabled : inQueue || nextPlayableIndexBy(episodeQueue, idx, -1, asRow, passEp) < 0;
   const prevLabel = queueTakesPrev
     ? (inShuffle ? 'Previous in shuffle' : 'Previous in queue')
     : (prev?.label ?? 'Previous track');
   const onNext = queueTakesNext ? (() => playNext()) : (next?.onClick ?? (() => playNext()));
   const nextDisabled = queueTakesNext
     ? false
-    : next ? next.disabled : inQueue || nextPlayableIndex(episodeQueue, idx, 1) < 0;
+    : next ? next.disabled : inQueue || nextPlayableIndexBy(episodeQueue, idx, 1, asRow, passEp) < 0;
   const nextLabel = queueTakesNext
     ? (inShuffle ? 'Next in shuffle' : 'Next in queue')
     : (next?.label ?? 'Next track');

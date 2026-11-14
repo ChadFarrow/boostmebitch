@@ -970,7 +970,18 @@ It counts as a skip only if the player MOVED: the listen queue's last item answe
 
 Pinned by `npm run e2e:deadtrack` section 7 (the probe stubbed; the element must never request the dead file), section 8 (the route against RSS Blue's real 410 and a real 206), section 9 (the probe request fails: nothing skipped, Up Next intact), section 10 (a gone last item is not drained) and section 11 (a downloaded track, reported gone, plays from a `blob:` source and is never checked). Sections 1 to 6 stub every file as alive, so they still pin the error path.
 
-**Not verified:** a dead file two in a row in the background — the probe checks only the next file, so the second one meets the error path. And whether the probe's request ever lands too late: it is issued 30 s before the end and answered in well under a second here.
+**A press of ⏮/⏭ walks PAST a file this tab knows is dead — the skip above covered only a list moving on by itself** (review of the merged #541/#545/#547, 2026-11-14). Two faults, one cause:
+- **⏮ could not get back past a dead track.** In a shuffle C → D (dead, skipped) → E, ⏮ on E loaded D, D failed, and the skip — forward only — carried the listener back to E at 0:00. Every press did the same, so C and everything before it were out of reach. An album did the same since #545.
+- **The lock screen's ⏮/⏭ loaded a known-dead file in the background** — the #555 fault above, reached by a press. Since #547 iOS shows those buttons for music.
+
+So the known-dead list is the store's `goneFiles` (memory only, as before), and `playNext`/`playPrev` — the listener's ⏮/⏭, which `<TransportControls>` and the lock screen call — walk past its files in all three lists (`listenerPassesOver`, through `nextPlayableIndexBy`'s `passOver`). Three rules ride on it:
+- **A file joins the list when the early check finds 404/410, OR when the element refused it while our server answered** (`onMediaError`), whatever the host's status — a 403 or a format this browser cannot play is dead here too, and without that the bounce stayed for every dead file the probe did not call gone.
+- **The steps a list takes ON ITS OWN do not walk past it.** `advanceOnItsOwn` and the album's `stepOnEnd` land on the dead file on purpose: the pass logs `skip_dead via=probe`, drains an Up Next item, and a dead LAST track reaches the element, whose message says why the list stopped. Walking past it there would end an album in silence.
+- **A downloaded song is landed on** (the early check's own rule), and **⏭ on Up Next drains the dead items it walked past** with the one that was playing, as the automatic skip drains them. A row passed for having no audio stays, as before. **`<TransportControls>` reads the same walk**, subscribed to `goneFiles`, so a ⏭ whose only rows left are dead draws disabled.
+
+Pinned by `npm run e2e:shuffle` section 9 (a dead middle track in a real shuffle, found only by its load error: ⏮ reaches the first track and stays, ⏭ passes it, and the element never asks for it again), `e2e:deadtrack` sections 12 to 14 (the lock-screen handlers past a probe-found dead file, ⏭ disabled before a dead last track, Up Next drained), and `check:queue`'s `passOver` vectors.
+
+**Not verified:** a dead file two in a row in the background — the probe checks only the next file, so the second one meets the error path. Whether the probe's request ever lands too late: it is issued 30 s before the end and answered in well under a second here. A ⏮ onto a dead file this tab has NEVER tried still loads it once and bounces forward once; the next ⏮ walks past it. And the lock screen on a real iPhone: the handlers are pressed here in Chromium.
 
 ### The listen queue ("Up Next")
 
