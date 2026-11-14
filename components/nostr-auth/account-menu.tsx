@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useMenuKeys } from '../use-menu-keys';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { subscribeBunkerHealth, subscribeBunkerRestore, bunkerRefusal, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
@@ -222,9 +222,20 @@ export function AccountMenu({
   // 16px from the right edge, at this height. The player's root carries a
   // transform, which makes it the containing block for `fixed` — and it covers
   // the whole viewport, so the button's viewport coordinates are the right ones.
+  //
+  // MEASURED AGAINST THAT CONTAINING BLOCK, not the viewport. The menu mounts
+  // with the player, mid slide-in, while the root is still translated a screen
+  // down — the viewport reading put the closed-menu notice anchor ~100dvh low,
+  // off-screen, until the menu was opened once (review of #549). Relative to
+  // the nearest transformed ancestor, the slide cancels out.
   const [overlayTop, setOverlayTop] = useState<number | null>(null);
   const measureOverlayTop = useCallback(() => {
-    if (overlay && triggerRef.current) setOverlayTop(Math.round(triggerRef.current.getBoundingClientRect().bottom + 8));
+    const el = triggerRef.current;
+    if (!overlay || !el) return;
+    let block: Element | null = el.parentElement;
+    while (block && getComputedStyle(block).transform === 'none') block = block.parentElement;
+    const base = block ? block.getBoundingClientRect().top : 0;
+    setOverlayTop(Math.round(el.getBoundingClientRect().bottom - base + 8));
   }, [overlay]);
   useEffect(() => { measureOverlayTop(); }, [measureOverlayTop, open]);
   const [signerStale, setSignerStale] = useState(false);
@@ -234,6 +245,19 @@ export function AccountMenu({
   // keep in step.
   const [restoring, setRestoring] = useState(false);
   const router = useRouter();
+  const pathname = usePathname();
+  // `overlay` only: "my boosts" closes the player once the ADDRESS has reached
+  // the boosts page, not before. A live page (`/live/<npub>`, `/stream/<naddr>`)
+  // sends a closing player home, and that newer push discarded the pending one
+  // — the press ended on `/` (review of #549). Once the address has changed,
+  // that page is gone and its effect cannot run.
+  const collapseOnArrival = useRef<string | null>(null);
+  useEffect(() => {
+    if (collapseOnArrival.current && pathname === collapseOnArrival.current) {
+      collapseOnArrival.current = null;
+      useApp.getState().setPlayerExpanded(false);
+    }
+  }, [pathname]);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -368,8 +392,16 @@ export function AccountMenu({
         <div
           ref={menuRef}
           role="menu"
-          className={`${overlay ? 'fixed right-4' : 'absolute right-0 top-full mt-2'} w-[min(360px,calc(100vw-2rem))] card bg-ink p-4 z-30 shadow-xl`}
-          style={overlay ? { top: overlayTop ?? 64 } : undefined}
+          // `overlay`: CAPPED to the room under it, and it scrolls. A `fixed`
+          // box never scrolls with the page, so on a phone in landscape (~320px
+          // under Safari's bars) an open mute list or a banner pushed "sign out"
+          // and "report a bug" below the edge, unreachable (review of #549) —
+          // the ⋯ panel in the same bar caps itself the same way.
+          className={`${overlay ? 'fixed right-4 overflow-y-auto overscroll-contain' : 'absolute right-0 top-full mt-2'} w-[min(360px,calc(100vw-2rem))] card bg-ink p-4 z-30 shadow-xl`}
+          style={overlay ? {
+            top: overlayTop ?? 64,
+            maxHeight: `calc(100dvh - ${overlayTop ?? 64}px - max(0.5rem, env(safe-area-inset-bottom)))`,
+          } : undefined}
         >
           <div className="border-b border-bone/15 pb-3 mb-3">
             <div className="text-sm">{name || 'Anon'}</div>
@@ -388,8 +420,12 @@ export function AccountMenu({
               <button
                 onClick={() => {
                   setOpen(false);
-                  if (overlay) useApp.getState().setPlayerExpanded(false);
-                  router.push(`/npub/${identity.npub}`);
+                  const to = `/npub/${identity.npub}`;
+                  if (overlay) {
+                    if (pathname === to) useApp.getState().setPlayerExpanded(false);
+                    else collapseOnArrival.current = to;
+                  }
+                  router.push(to);
                 }}
                 className="btn-ghost text-[10px] py-1 px-2"
               >

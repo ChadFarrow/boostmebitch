@@ -200,11 +200,24 @@ await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, devi
 console.log('\n3. "my boosts" closes the player and opens the boosts page');
 await js(`${TRIGGER}.click()`);
 await until(`!!${MENU}`, 5000);
+// Where the address was at the moment the player closed. A live page
+// (`/live/<npub>`, `/stream/<naddr>`) sends a CLOSING player home, and a newer
+// push discards the pending one — so the player must close only once the
+// address is already the boosts page (review of #549).
+// The ROOT's class, not the ✕'s visibility: `invisible` waits out the 300 ms
+// slide, `translate-y-full` lands in the render that closes it.
+await js(`(() => { window.__closedAt = null;
+  const root = document.querySelector('[aria-label="Close fullscreen player"]').closest('div.fixed.inset-x-0.top-0');
+  const tick = () => {
+    if (root.classList.contains('translate-y-full')) { window.__closedAt = location.pathname; return; }
+    requestAnimationFrame(tick); }; requestAnimationFrame(tick); return 1; })()`);
 await js(`[...${MENU}.querySelectorAll('button')].find((b) => /my boosts/i.test(b.textContent)).click()`);
 t.ok('the boosts page opens', await until(`location.pathname === ${JSON.stringify(`/npub/${npub}`)}`, 15000), await js('location.pathname'));
 // Closed is `invisible` on the player's root (fullscreen-player.tsx), so its ✕
 // computes `visibility: hidden`.
 t.ok('…and the player is closed, not covering it', await until(`(() => { const x = document.querySelector('[aria-label="Close fullscreen player"]'); return !x || getComputedStyle(x).visibility === 'hidden'; })()`, 5000));
+t.ok('…closed only once the address was the boosts page, so a live page cannot send it home',
+  ((await js('window.__closedAt')) ?? '').startsWith('/npub/'), await js('window.__closedAt'));
 
 // ---------------------------------------------------------------------------
 console.log('\n4. "sign out" from this menu signs out');
@@ -214,6 +227,46 @@ await until(`!!${MENU}`, 5000);
 await js(`[...${MENU}.querySelectorAll('button')].find((b) => /sign out/i.test(b.textContent)).click()`);
 t.ok('bmb:npub is gone', await until(`localStorage.getItem('bmb:npub') === null`, 10000));
 t.ok('the bar offers SIGN IN instead of the menu', await until(`!${TRIGGER} && /sign in/i.test(${BAR}?.textContent ?? '')`, 10000), await js(`${BAR}?.textContent`));
+
+// ---------------------------------------------------------------------------
+console.log('\n6. A phone in landscape: the menu fits and scrolls');
+// A `fixed` box never scrolls with the page, so a menu taller than the room
+// under the bar left "sign out" and "report a bug" below the edge, unreachable
+// (review of #549; the ⋯ panel in the same bar caps itself the same way).
+// 200 tall: the rule is that the menu fits and scrolls at ANY height. This
+// test account's menu is four buttons (176px); a real one is taller — an open
+// mute list, the stale-signer banner, the key export — than the ~320px Safari's
+// bars leave in landscape. So the screen shrinks instead of the menu growing.
+await send('Emulation.setDeviceMetricsOverride', { width: 844, height: 200, deviceScaleFactor: 3, mobile: true });
+await signedInPlayerOpen();
+await js(`${TRIGGER}.click()`);
+t.ok('the menu opens', await until(`!!${MENU}`, 5000));
+await wait(300);
+const land = JSON.parse(await js(`JSON.stringify((() => { const m = ${MENU}; const r = m.getBoundingClientRect();
+  return { bottom: Math.round(r.bottom), vh: innerHeight, scrolls: m.scrollHeight > m.clientHeight + 1 }; })())`));
+t.ok('the menu ends inside the screen', land.bottom <= land.vh + 1, JSON.stringify(land));
+await js(`(() => { const m = ${MENU}; m.scrollTop = m.scrollHeight; return 1; })()`);
+await wait(200);
+const so = JSON.parse(await js(`JSON.stringify((() => { const b = [...${MENU}.querySelectorAll('button')].find((x) => /sign out/i.test(x.textContent));
+  const r = b?.getBoundingClientRect(); return r ? { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight } : null; })())`));
+t.ok('"sign out" can be scrolled into the screen', !!so && so.bottom <= so.vh + 1 && so.top >= 0, JSON.stringify(so));
+await js(`${TRIGGER}.click()`);
+await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+
+// ---------------------------------------------------------------------------
+console.log('\n7. The notices under the avatar sit under the avatar from the start');
+// The anchor for the bunker notices (shown while the menu is CLOSED) took its
+// height when the player mounted — mid slide-in, with the root still
+// translated a screen down — and kept it until the menu was opened once
+// (review of #549). Measured against the root, the slide does not matter.
+await signedInPlayerOpen();
+const anchor = JSON.parse(await js(`JSON.stringify((() => {
+  const box = [...(${BAR}?.querySelectorAll('div.fixed.right-4') ?? [])].find((d) => d.getAttribute('role') !== 'menu');
+  const b = ${TRIGGER}?.getBoundingClientRect();
+  if (!box || !b) return null;
+  return { top: Math.round(box.getBoundingClientRect().top), under: Math.round(b.bottom + 8), vh: innerHeight };
+})())`));
+t.ok('the closed-menu notice anchor is just under the avatar', !!anchor && Math.abs(anchor.top - anchor.under) <= 2, JSON.stringify(anchor));
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails} of ${t.count} passed`);
