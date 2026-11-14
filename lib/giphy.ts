@@ -39,14 +39,17 @@ export function giphyGifUrl(id: string): string {
  *
  * Stills and not the animated renditions: an animated 200px tile is ~300 KB,
  * and a grid of 24 is several megabytes pulled while the user's episode is
- * streaming on the same connection. One animated preview — the picked GIF —
- * is shown at a time.
+ * streaming on the same connection. At most one tile animates at a time — the
+ * one a mouse rests on, or keyboard focus is on — plus the picked GIF.
  */
 export function giphyStillUrl(id: string): string {
   return `https://media.giphy.com/media/${id}/200w_s.gif`;
 }
 
-/** The animated 200px-wide WebP shown for the ONE GIF the user picked. */
+/**
+ * The animated 200px-wide WebP: the GIF the user picked, and the one grid tile
+ * a mouse (or keyboard focus) rests on. Never the whole grid.
+ */
 export function giphyPreviewUrl(id: string): string {
   return `https://media.giphy.com/media/${id}/200w.webp`;
 }

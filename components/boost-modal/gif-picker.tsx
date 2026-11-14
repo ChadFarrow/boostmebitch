@@ -1,11 +1,28 @@
 'use client';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { giphyPreviewUrl, giphyStillUrl, type GifResult } from '@/lib/giphy';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { ModalShell } from '@/components/modal-shell';
 
 /** How long a keystroke waits before GIPHY is asked. */
 const SEARCH_DEBOUNCE_MS = 300;
+
+/**
+ * How long the mouse (or keyboard focus) rests on a tile before its animation
+ * is fetched. A sweep across the grid passes each tile in well under this, so
+ * it fetches nothing; without the wait every tile crossed starts a 24–870 KB
+ * download that unmounting the preview does not cancel.
+ */
+const HOVER_PREVIEW_DELAY_MS = 150;
+
+/** True when focus came from the keyboard — not from a click or a tap. */
+function focusFromKeyboard(el: Element): boolean {
+  try {
+    return el.matches(':focus-visible');
+  } catch {
+    return false; // a browser without :focus-visible throws on the selector
+  }
+}
 
 type SearchState =
   | { kind: 'idle' }
@@ -35,15 +52,26 @@ export function GifPicker({
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [state, setState] = useState<SearchState>({ kind: 'idle' });
+  // The ONE grid tile shown animated: the one the mouse rests on, or the one
+  // keyboard focus is on. Every other tile stays a still.
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputId = useId();
   // Refused BEFORE any fetch and SAID so — the retype is as dangerous as the
   // first paste, so a silent no-op is not enough.
   const secretHit = looksLikeSecretKey(q);
 
+  useEffect(() => () => {
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+  }, []);
+
   useEffect(() => {
     if (!open || secretHit) return;
     let live = true;
     setState({ kind: 'loading' });
+    // The tiles unmount under the pointer, so no pointerleave clears this; a
+    // new result list holding the same id would otherwise open animated.
+    setPreviewId(null);
     const t = setTimeout(async () => {
       try {
         const res = await fetch(`/api/gifs?q=${encodeURIComponent(q.trim())}`);
@@ -109,7 +137,23 @@ export function GifPicker({
     );
   }
 
-  const close = () => { setOpen(false); setQ(''); };
+  const startPreview = (id: string) => {
+    if (disabled) return;
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewTimer.current = setTimeout(() => setPreviewId(id), HOVER_PREVIEW_DELAY_MS);
+  };
+  const endPreview = (id: string) => {
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewTimer.current = null;
+    setPreviewId((p) => (p === id ? null : p));
+  };
+
+  const close = () => {
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    setPreviewId(null);
+    setOpen(false);
+    setQ('');
+  };
 
   // The search opens as its OWN modal over the boost modal: inline, the grid
   // got a 256px window inside a card already full of amount, message and
@@ -180,18 +224,46 @@ export function GifPicker({
                   type="button"
                   className="mb-2 block min-h-[44px] w-full break-inside-avoid overflow-hidden rounded border border-line bg-bone/5 hover:border-bolt focus-visible:border-bolt disabled:opacity-40"
                   onClick={() => { onChange(g.id); close(); }}
+                  // A MOUSE previews the tile it rests on, and so does
+                  // keyboard focus. A touch does not: a tap is the pick, and
+                  // the picked GIF animates above the message anyway. Gated on
+                  // `pointerType`, not `(hover: hover)` — the chapter tip's
+                  // rule (docs/ui.md), and headless Chrome matches neither
+                  // media query, so only this shape can be tested.
+                  onPointerEnter={(e) => { if (e.pointerType === 'mouse') startPreview(g.id); }}
+                  onPointerLeave={() => endPreview(g.id)}
+                  onFocus={(e) => { if (focusFromKeyboard(e.currentTarget)) startPreview(g.id); }}
+                  onBlur={() => endPreview(g.id)}
                   // The grid can be open when Send is pressed. A pick after
                   // that would show a GIF the sent boost does not carry.
                   disabled={disabled}
                   title={g.title || 'GIF'}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element -- third-party media */}
-                  <img
-                    src={giphyStillUrl(g.id)}
-                    alt={g.title || 'GIF'}
-                    loading="lazy"
-                    className="block h-auto w-full"
-                  />
+                  {/* The animation is laid OVER the still, not swapped into
+                      its `src`: the still stays painted while the animation
+                      loads, and both are 200px wide, so the tile neither
+                      blanks nor changes height. The wrapper, not the button,
+                      is the box, because the button's 44px floor can be
+                      taller than a wide GIF. */}
+                  <span className="relative block">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- third-party media */}
+                    <img
+                      src={giphyStillUrl(g.id)}
+                      alt={g.title || 'GIF'}
+                      loading="lazy"
+                      className="block h-auto w-full"
+                    />
+                    {previewId === g.id && (
+                      // eslint-disable-next-line @next/next/no-img-element -- third-party animated media
+                      <img
+                        src={giphyPreviewUrl(g.id)}
+                        alt=""
+                        aria-hidden="true"
+                        data-gif-preview=""
+                        className="absolute inset-0 h-full w-full"
+                      />
+                    )}
+                  </span>
                 </button>
               ))
             : Array.from({ length: 6 }, (_, i) => (
