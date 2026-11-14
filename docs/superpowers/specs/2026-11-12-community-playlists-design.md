@@ -166,7 +166,7 @@ Channel content:
   (`NOSTR_TXT_PURPOSES`).
 - `<itunes:image href>` and `<image>` — the art link if valid, else the generated
   cover's URL (also on boostmebuddy.com).
-- `<lastBuildDate>` — the last publish.
+- `<lastBuildDate>` — the later of the last publish and the last change to the feed template (`FEED_TEMPLATE_UPDATED_AT`, added 2026-11-13 so a push can update every feed at once).
 - One `<podcast:remoteItem feedGuid itemGuid feedUrl medium="music"/>` per song,
   in the listener's order. No `<item>`.
 - **No `<podcast:value>`.** No `<itunes:author>` (a free-text name on the Buddy

@@ -129,17 +129,17 @@ body::before {
   .btn {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
            border border-bone bg-bone text-ink transition
-           hover:bg-bolt hover:border-bolt active:translate-y-px;
+           active:translate-y-px;
   }
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
            border border-bone/40 text-bone transition
-           hover:border-bone hover:bg-bone/5 active:translate-y-px;
+           active:translate-y-px;
   }
   .btn-bolt {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
            border border-bolt bg-bolt text-ink transition
-           hover:bg-bone hover:border-bone active:translate-y-px;
+           active:translate-y-px;
     /* Force the ⚡ emoji to render as a monochrome glyph that inherits
        text-ink, otherwise the yellow Apple/Win bolt is invisible on the
        yellow button background. */
@@ -153,7 +153,7 @@ body::before {
   .btn-nostr {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
            border border-nostr bg-nostr text-ink transition
-           hover:bg-bone hover:border-bone active:translate-y-px;
+           active:translate-y-px;
     font-variant-emoji: text;
   }
   /* "Active / current" variant of .btn-bolt — amber outline + faint wash +
@@ -164,7 +164,7 @@ body::before {
   .btn-bolt-soft {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
            border border-bolt bg-bolt/10 text-bolt transition
-           hover:bg-bolt/20 active:translate-y-px;
+           active:translate-y-px;
     font-variant-emoji: text;
   }
   /* Mobile squeeze for button ROWS that must fit four or five peers inside a
@@ -198,7 +198,7 @@ body::before {
     @apply inline-flex items-center justify-center gap-2 px-2.5 py-1
            text-[11px] font-mono uppercase tracking-wider
            border border-bone/30 text-muted transition
-           hover:border-bone/60 hover:text-bone active:translate-y-px;
+           active:translate-y-px;
   }
   /* An action INSIDE A SENTENCE — the one place a bordered control may not go,
      because the surrounding prose owns the line box.
@@ -237,20 +237,41 @@ body::before {
     @apply flex flex-col items-center justify-center gap-1 h-[52px] w-full px-1
            text-[10px] font-mono uppercase tracking-wider leading-none
            border border-bone/40 text-bone transition
-           hover:border-bone hover:bg-bone/5 active:translate-y-px;
+           active:translate-y-px;
   }
   .tile svg { @apply w-[18px] h-[18px]; }
   /* Inline follow toggle injected after an npub in show notes (components/notes-follows.ts). */
   .npub-follow-btn {
     @apply ml-2 align-middle inline-flex items-center text-[10px] font-mono font-semibold uppercase tracking-wider
            px-1.5 py-0.5 rounded border border-bolt/50 text-bolt whitespace-nowrap
-           hover:bg-bolt/10 transition;
+           transition;
   }
   .npub-follow-btn.is-following {
-    @apply border-bone/25 text-muted hover:bg-bone/5;
+    @apply border-bone/25 text-muted;
   }
   .npub-follow-btn:disabled {
-    @apply opacity-40 cursor-default hover:bg-transparent;
+    @apply opacity-40 cursor-default;
+  }
+  /* HOVER ONLY WHERE A POINTER CAN HOVER — every shared control class above.
+     iOS keeps :hover on the element last tapped until something else is
+     tapped, so an unconditional hover style left a toggle just switched OFF
+     drawn brighter than its peers, reading as still selected: the 3.5×/5×
+     speed tiles, then the SINGLES quick button on /favorites (Chad, iPhone,
+     2026-11-13). A mouse matches (hover: hover); a phone matches
+     (hover: none). `active:` stays in each class, so a tap still answers.
+     Specificity is unchanged (`.btn-ghost:hover` either way), so a component's
+     own `hover:` utility still wins over these. Pinned by `e2e:stickyhover`. */
+  @media (hover: hover) {
+    .btn:hover { @apply bg-bolt border-bolt; }
+    .btn-ghost:hover { @apply border-bone bg-bone/5; }
+    .btn-bolt:hover { @apply bg-bone border-bone; }
+    .btn-nostr:hover { @apply bg-bone border-bone; }
+    .btn-bolt-soft:hover { @apply bg-bolt/20; }
+    .btn-mini:hover { @apply border-bone/60 text-bone; }
+    .tile:hover { @apply border-bone bg-bone/5; }
+    .npub-follow-btn:hover { @apply bg-bolt/10; }
+    .npub-follow-btn.is-following:hover { @apply bg-bone/5; }
+    .npub-follow-btn:disabled:hover { @apply bg-transparent; }
   }
   .input {
     @apply w-full bg-transparent border border-bone/30 px-3 py-2 font-mono text-sm

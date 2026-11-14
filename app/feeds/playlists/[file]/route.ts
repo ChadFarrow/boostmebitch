@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
-import { COMMUNITY_FEEDS_ON, communityFeedUrl, communityCoverUrl, coverVersion } from '@/lib/curated-playlists';
+import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEEDS_ON, communityFeedUrl, communityCoverUrl, coverVersion } from '@/lib/curated-playlists';
 import { buildPlaylistFeedXml } from '@/lib/community/feed-doc';
 import { buildCover } from '@/lib/community/cover';
 import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
-import { UUID_RE } from '@/lib/community/http';
+import { UUID_RE, authUrl } from '@/lib/community/http';
 import { withErrorHandling } from '@/lib/api-handler';
-import { BRAND } from '@/lib/brand';
+import { BRAND, BRANDS } from '@/lib/brand';
 import { nip19 } from 'nostr-tools';
 
 export const runtime = 'nodejs';
@@ -29,6 +29,16 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
   const m = /^(.+)\.(xml|jpg)$/.exec(file);
   if (!m || !UUID_RE.test(m[1])) return text(404);
   const [, id, ext] = m;
+  // A playlist feed has ONE address, on COMMUNITY_FEED_ORIGIN. Any other host that
+  // runs this route (beta, the bitch site, a deployment URL) sends the app there for
+  // good, so an app that subscribed to another copy moves itself (Chad, 2026-11-12).
+  // 301 is the code podcast apps read as "update the subscription". The host comes
+  // from authUrl (x-forwarded-host behind Vercel). No Cache-Control, like every
+  // answer but a 200.
+  const here = new URL(authUrl(req));
+  if (here.origin !== new URL(COMMUNITY_FEED_ORIGIN).origin) {
+    return NextResponse.redirect(`${COMMUNITY_FEED_ORIGIN}${here.pathname}${new URL(req.url).search}`, 301);
+  }
   if (!communityStoreConfigured()) return text(404);
   return withErrorHandling(async () => {
     const p = await getPlaylist(id);
@@ -44,6 +54,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
         fallbackDescription: `A community playlist on ${BRAND.displayName}.`,
         // The guid saved when the row was made, never one recomputed from today's origin.
         podcastGuid: p.podcastGuid,
+        // RSS 2.0 <generator>: where the playlist was made, for Podcast Index and other
+        // apps. Always Buddy, the brand of the feed address (Chad, 2026-11-13).
+        generator: `${BRANDS.buddy.displayName} (${BRANDS.buddy.origin})`,
       });
       return new NextResponse(xml, {
         headers: {
