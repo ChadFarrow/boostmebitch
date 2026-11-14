@@ -56,6 +56,15 @@ export function closedService(url: string | null | undefined): string | null {
   return null;
 }
 
+/**
+ * Whether an item (an `Episode`, or a cached `FavoriteEpisode`) lives on a
+ * closed host — its audio, its cover or its feed's cover. Any one is enough:
+ * a cached favorite may hold only the cover, and every RSS Blue file is gone.
+ */
+export function itemOnClosedHost(item: { enclosureUrl?: string; image?: string; feedImage?: string }): boolean {
+  return !!(closedService(item.enclosureUrl) || closedService(item.image) || closedService(item.feedImage));
+}
+
 /** Lower-case, `&` → `and`, every non-alphanumeric run → one space, trimmed.
  *  `Mr. Videoman` and `Mr Videoman` are the same album on two hosts. */
 export function normTitle(s: string | null | undefined): string {

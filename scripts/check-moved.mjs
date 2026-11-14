@@ -9,7 +9,7 @@
 // list (an unplaceable track must stay).
 
 import {
-  closedService, normTitle, pickLiveTwin, movedCandidates, matchTracks, planSwap, mergeResolvedRow,
+  closedService, itemOnClosedHost, normTitle, pickLiveTwin, movedCandidates, matchTracks, planSwap, mergeResolvedRow,
 } from '../lib/moved-feeds.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -39,6 +39,14 @@ check('not a URL', closedService('not a url'), null);
 check('empty', closedService(''), null);
 check('undefined', closedService(undefined), null);
 check('null', closedService(null), null);
+
+console.log('itemOnClosedHost');
+check('an enclosure behind op3 on a closed host',
+  itemOnClosedHost({ enclosureUrl: 'https://op3.dev/e,pg=x/media.rssblue.com/podcasts/w/a.mp3', image: 'https://feeds.fountain.fm/c.jpg' }), true);
+check('only the cover on a closed host', itemOnClosedHost({ image: 'https://media.rssblue.com/podcasts/w/cover.jpg' }), true);
+check('only the feed cover on a closed host', itemOnClosedHost({ feedImage: 'https://media.rssblue.com/podcasts/w/cover.jpg' }), true);
+check('a live item', itemOnClosedHost({ enclosureUrl: 'https://feeds.fountain.fm/x/a.mp3', image: 'https://feeds.fountain.fm/x/c.jpg' }), false);
+check('nothing known', itemOnClosedHost({}), false);
 
 console.log('normTitle');
 check('punctuation does not split a title', normTitle('Mr. Videoman') === normTitle('Mr Videoman'), true);
