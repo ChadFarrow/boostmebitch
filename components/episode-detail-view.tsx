@@ -7,7 +7,7 @@ import { useApp } from '@/lib/store';
 import { backOr } from '@/lib/view-history';
 import { fmt, fmtDate, fmtDuration } from '@/lib/format';
 import { useSavedPosition } from '@/lib/resume-position';
-import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml } from '@/lib/util';
+import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml, targetWord } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
 import { useItemValue } from '@/lib/use-item-value';
 import { useChapters } from '@/lib/chapters';
@@ -295,8 +295,31 @@ export function EpisodeDetailView() {
             <h2 className="font-display text-xl sm:text-3xl font-semibold leading-tight">
               {episode.title}
             </h2>
-            <p className="text-xs sm:text-sm text-muted mt-1">{podcast.title}</p>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted mt-2">
+            {/* The show name opens the show — on a music feed, the album page.
+                The same step as `← back to episodes` above, because the
+                selected podcast IS that show: a music row plays on tap rather
+                than opening this page, so a track reaches it only through a
+                deep link, a favorite or a boost card, and each of those
+                selects the track's own feed first.
+
+                `.btn-inline`'s underline, not a hover colour, is the signal
+                that this line acts: a phone has no hover (docs/ui.md, "What
+                makes a control look like a control"). `py-1` makes the
+                target 24px at text-xs (WCAG 2.5.8); it replaces `mt-1`, so the
+                name sits where it did. The accessible name keeps the visible
+                text and adds the noun, e.g. "Open album that lasts forever".
+                No title, no button: an empty one is a focus stop with no name. */}
+            {podcast.title ? (
+              <button
+                type="button"
+                onClick={() => backOr({ selectedEpisode: null }, closeEpisode)}
+                className="btn-inline block max-w-full text-left break-words py-1 text-xs sm:text-sm text-muted [@media(hover:hover)]:hover:text-bone"
+                aria-label={`Open ${targetWord('feed', podcast).toLowerCase()} ${podcast.title}`}
+              >
+                {podcast.title}
+              </button>
+            ) : null}
+            <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted ${podcast.title ? 'mt-1' : 'mt-2'}`}>
               {episode.datePublished && (
                 <span>{fmtDate(episode.datePublished)}</span>
               )}
