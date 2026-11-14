@@ -1748,6 +1748,12 @@ export function Player() {
           onEnded={() => {
             if (pendingLocalSrc.current) { logPlayback('advance', { via: 'pending' }); return; }
             forgetRestoreBaseline();
+            // A playlist-maker PREVIEW is one song: stop here, never advance.
+            if (current && useApp.getState().previewKey === epKey(current.episode)) {
+              logPlayback('advance', { via: 'preview' });
+              setPlaying(false);
+              return;
+            }
             if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
               const key = downloadManager.deletableAfterPlay(current.episode);
               if (key) void downloadManager.remove(key);

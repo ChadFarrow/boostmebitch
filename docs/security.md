@@ -199,7 +199,8 @@ calls to `/api/search`**, warning shown, suggestion row absent.
 
 **Text that is PUBLISHED is scanned word by word: `textHoldsSecret`** (same
 file). A community playlist's title and description go into a public RSS feed,
-so both write routes refuse a key or an NWC string in them (`{ kind: 'secret',
+so the maker refuses a key or an NWC string in them on screen (PUBLISH/SAVE off,
+with the reason) and both write routes refuse it again (`{ kind: 'secret',
 field }`, never echoing the text). It runs `looksLikeSecretKey` on every run of
 letters and digits rather than on whitespace-separated tokens, because a bech32
 key is one such run and `key=nsec1…` is one token to a whitespace split.

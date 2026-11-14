@@ -9,6 +9,7 @@ import type {
 import { useApp } from '@/lib/store';
 import { requestFavoritesSync } from '@/lib/nostr';
 import { targetWord } from '@/lib/util';
+import { communityIdFromFeedUrl } from '@/lib/curated-playlists';
 
 // The ♡ / ♥ favorite toggle. Lives in its own module (rather than lists.tsx)
 // because several unrelated surfaces render it — the podcast rows + show header
@@ -144,10 +145,17 @@ function HeartButton({
  * builds for a cold restore — `{ id: 0, title: 'Publisher', medium: 'publisher' }`
  * — which is a back-button label, not a declaration. It has no `podcastGuid`, so
  * it can't be favorited today, but that is an accident of an unrelated guard
- * rather than a rule. `id <= 0` means nothing ever resolved this feed.
+ * rather than a rule. `id <= 0` means nothing ever resolved this feed, and the
+ * only negative-id record whose medium IS a declaration is a stored community
+ * playlist.
  */
 function declaredMedium(podcast?: Podcast | null): string | undefined {
-  if (!podcast || podcast.id <= 0) return undefined;
+  // FAIL-CLOSED. `id <= 0` means nothing ever resolved this feed, so its medium
+  // is no declaration — with ONE exception: a community playlist is also
+  // negative-id (never a Podcast Index record) but its `musicL` comes from our
+  // own store, and `communityIdFromFeedUrl` is the test for exactly that.
+  if (!podcast) return undefined;
+  if (podcast.id <= 0 && !communityIdFromFeedUrl(podcast.url)) return undefined;
   return podcast.medium;
 }
 

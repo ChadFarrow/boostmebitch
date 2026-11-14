@@ -153,7 +153,7 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
               <NostrAuth> draws <AccountMenu> as well as owning identity
               hydration. */}
           {/* No navigation here — Favorites and Wallet are tabs in <TabBar>,
-              and /playlists is reached from the hero's BROWSE PLAYLISTS button
+              and /playlists is reached from the home page's Playlists section
               and the search box's Playlists lane. See the header comment. */}
           <AuthControl />
           <NostrAuth />

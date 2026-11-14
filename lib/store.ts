@@ -37,6 +37,15 @@ interface AppState {
    *  if it never resumes — see lib/resume-position.ts). An explicit start, 0
    *  included, always wins: a chapter tap or a `?t=` link names its second. */
   play: (episode: Episode, podcast: Podcast, startSec?: number) => void;
+  /**
+   * Play ONE song from its start and stop at its end — the playlist maker's
+   * preview. `previewKey` is that song's `epKey`; `<Player>`'s `ended` handler
+   * stops instead of advancing when it names the item that ended, so the
+   * preview never walks into an album, the draft or the listen queue.
+   * `play` and `cue` clear it.
+   */
+  playPreview: (episode: Episode, podcast: Podcast) => void;
+  previewKey: string | null;
   /** `play` without starting playback — the item is loaded, paused, at its
    *  saved place. For a surface that opens the now-playing screen on an item
    *  (a HISTORY row) without making the press an autoplay. */
@@ -682,6 +691,9 @@ function shuffleRow(item: QueueItem): Partial<AppState> {
     isPlaying: true,
     positionSec: savedStartSec(item.episode, item.podcast),
     videoMode: false,
+    // A left-over preview stops playback when the song it names ends — which
+    // would stop the shuffle the day it reaches that song.
+    previewKey: null,
   };
 }
 
@@ -879,6 +891,7 @@ export const useApp = create<AppState>((set, get) => ({
   positionSec: 0,
   episodeQueue: [],
 
+  previewKey: null,
   // `play` and `cue` END a shuffle: they are how the listener picks something
   // else, and a list left behind would wake up the day one of its tracks plays
   // again. The shuffle's own moves set `current` directly and never call these.
@@ -889,9 +902,21 @@ export const useApp = create<AppState>((set, get) => ({
       positionSec: startSec ?? savedStartSec(episode, podcast),
       videoMode: false,
       shuffle: null,
+      previewKey: null,
+    }),
+  // A preview is a choice made outside the shuffle, so it ends it, as `play` does.
+  playPreview: (episode, podcast) =>
+    set({
+      current: { episode, podcast },
+      isPlaying: true,
+      positionSec: 0,
+      videoMode: false,
+      previewKey: epKey(episode),
+      shuffle: null,
     }),
   cue: (episode, podcast) =>
     set({
+      previewKey: null,
       current: { episode, podcast },
       isPlaying: false,
       positionSec: savedStartSec(episode, podcast),
@@ -1015,6 +1040,9 @@ export const useApp = create<AppState>((set, get) => ({
         videoMode: false,
         // A tap on an Up Next row is the listener picking something else — see `play`.
         shuffle: null,
+        // And a left-over preview would stop Up Next the day it reaches the
+        // song it names — `play` and `cue` clear it; this sets `current` itself.
+        previewKey: null,
       };
     }),
   revealQueue: () =>
