@@ -17,7 +17,8 @@ import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS, readAmountDefault } from './amount-input';
 import { MessageInput, BOOSTAGRAM_MAX } from '../message-input';
 import { GifPicker } from './gif-picker';
-import { giphyGifUrl, gifCost, withGif } from '@/lib/giphy';
+import { gifCost, withGif } from '@/lib/giphy';
+import { gifWireUrl, type GifPick } from '@/lib/gifs/pick';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './sender-name';
@@ -166,11 +167,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // same string becomes the boostagram TLV message and the LNURL comment, where
   // a 63-character npub would be truncated mid-bech32 with nothing reporting it.
   const [mentions, setMentions] = useState<MentionNpub[]>([]);
-  // The picked GIF's GIPHY id. Kept beside `msg`, not inside it: the URL is
-  // appended at send time (`withGif`), so the box shows only the user's words
-  // and the GIF can be removed without editing them.
-  const [gifId, setGifId] = useState<string | null>(null);
-  const gifUrl = gifId ? giphyGifUrl(gifId) : null;
+  // The picked GIF, from either source (`BRAND.gifSource`). Kept beside `msg`,
+  // not inside it: the URL is appended at send time (`withGif`), so the box
+  // shows only the user's words and the GIF can be removed without editing them.
+  const [gifPick, setGifPick] = useState<GifPick | null>(null);
+  const gifUrl = gifPick ? gifWireUrl(gifPick) : null;
   // The GIF URL spends the same keysend budget the words do — see
   // BOOSTAGRAM_MAX for why that budget is 250 and not more.
   const msgMax = BOOSTAGRAM_MAX - gifCost(gifUrl);
@@ -972,8 +973,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             </p>
           )}
           <GifPicker
-            gifId={gifId}
-            onChange={setGifId}
+            pick={gifPick}
+            onChange={setGifPick}
             disabled={running || paymentDone}
           />
           <SenderName value={name} onChange={setName} anonymous={anonymous} />

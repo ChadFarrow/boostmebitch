@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useId, useState } from 'react';
-import { giphyPreviewUrl, giphyStillUrl, type GifResult } from '@/lib/giphy';
+import { giphyStillUrl, type GifResult } from '@/lib/giphy';
+import { gifPreviewUrl, type GifPick } from '@/lib/gifs/pick';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { ModalShell } from '@/components/modal-shell';
 
@@ -14,8 +15,8 @@ type SearchState =
   | { kind: 'error'; message: string };
 
 /**
- * Pick one GIF for a boost. Holds the GIPHY id only — the caller turns it into
- * the URL on the wire (`giphyGifUrl`), so the picker never decides what a
+ * Pick one GIF for a boost. Holds a {@link GifPick} only — the caller turns it
+ * into the URL on the wire (`gifWireUrl`), so the picker never decides what a
  * boostagram says.
  *
  * The URL comes out of the same 250-character budget as the typed words. The
@@ -24,12 +25,12 @@ type SearchState =
  * longer fit beside it.
  */
 export function GifPicker({
-  gifId,
+  pick,
   onChange,
   disabled = false,
 }: {
-  gifId: string | null;
-  onChange: (id: string | null) => void;
+  pick: GifPick | null;
+  onChange: (pick: GifPick | null) => void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -64,14 +65,14 @@ export function GifPicker({
     return () => { live = false; clearTimeout(t); };
   }, [open, q, secretHit]);
 
-  if (gifId) {
+  if (pick) {
     return (
       <div>
         <div className="text-[11px] uppercase tracking-widest text-muted">GIF</div>
         <div className="mt-1.5 flex items-start gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element -- third-party animated media; next/image would re-encode it */}
           <img
-            src={giphyPreviewUrl(gifId)}
+            src={gifPreviewUrl(pick)}
             alt="The GIF this boost will carry"
             className="h-24 w-auto max-w-[60%] rounded border border-line object-contain bg-bone/5"
           />
@@ -179,7 +180,7 @@ export function GifPicker({
                   key={g.id}
                   type="button"
                   className="mb-2 block min-h-[44px] w-full break-inside-avoid overflow-hidden rounded border border-line bg-bone/5 hover:border-bolt focus-visible:border-bolt disabled:opacity-40"
-                  onClick={() => { onChange(g.id); close(); }}
+                  onClick={() => { onChange({ src: 'giphy', id: g.id }); close(); }}
                   // The grid can be open when Send is pressed. A pick after
                   // that would show a GIF the sent boost does not carry.
                   disabled={disabled}
