@@ -1669,6 +1669,21 @@ show. Which of the two iOS draws when BOTH are registered is not in WebKit's
 code (the layout is iOS's own); a developer reports skip wins, which is why the
 track case hands over `null` rather than leaving them.
 
+### On Android the lock-screen player must not vanish between tracks
+
+**Reported from Chad's Android phone on 2026-11-14** (the Boost Me Buddy Zapstore app, a favorites shuffle): the lock-screen player disappeared for a moment at every track change — ⏭ and a song ending alike — and came back when the next song started. The audio itself did not stop.
+
+**Chrome's lock-screen player belongs to the page's media SESSION, and the session is active only while it holds a media player.** `<Player>` plays every track through one `<audio>`, and a new `src` makes Chrome destroy the media player behind it and create another — measured over CDP: `kWebMediaPlayerDestroyed` on the old player id, then a new id. A track that ENDS leaves the session even earlier. Until the next file plays, the session holds no player, and Android takes the lock-screen player away. It was so since the player existed; #547's ⏭ only made it easy to see.
+
+**`useAndroidSessionKeeper` (`components/player/use-android-session-keeper.ts`) keeps a second player in the session: a silent, looping `<audio>` that plays while `isPlaying` is true.** Three rules, each a way the obvious version breaks:
+- **It follows `isPlaying`, never the track element.** A track change keeps `isPlaying` true — the shuffle, Up Next and an album all step with `isPlaying: true` — so the keeper plays straight through it; a pause pauses it, or the lock screen would draw ❚❚ over a paused app.
+- **Its loop is 10 s, never under 5.** Chrome counts shorter media as a ONE-SHOT player, and a session that holds one is not controllable: the lock-screen buttons go dead.
+- **It is not in the document**, so its events never reach the capture listeners: no `m.*` lines in the playback log (it writes its own `keeper on=1|0`), and no `useMediaSession` hand-over on its `playing`.
+
+The page already sets `setPositionState`, `playbackState` and every action handler, so Chrome takes the seek bar and the buttons from the PAGE, not from either player. **Android only:** iOS did not show this gap, and a second element is a risk to its background play (#555); a desktop is left alone.
+
+Pinned by `npm run e2e:androidkeeper` over the CDP Media domain, with an Android user agent: one 10 s `blob:` keeper starts with the first track; across a track that ends and a ⏭ it neither pauses nor is destroyed while each track's own player is replaced; it pauses and plays with ⏸/▶; a desktop user agent gets none. **Not verified here:** the lock screen itself — that needs Chad's Android phone, on beta.
+
 ## Reduced motion
 
 **The reader's OS-level "reduce motion" setting is honoured, and it takes two
