@@ -205,7 +205,6 @@ export function PlaylistMaker() {
             if (e.guid) {
               known.current[e.guid] = {
                 ...(e.enclosureUrl ? { enclosureUrl: e.enclosureUrl } : {}),
-                ...((e.image || e.feedImage) ? { image: e.image || e.feedImage } : {}),
                 ...(e.unresolved === 'not-found' ? { notFound: true } : {}),
               };
             }

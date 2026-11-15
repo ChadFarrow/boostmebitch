@@ -8,7 +8,7 @@ import { RowThumb } from '@/components/chapter-ui';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { loadFeed } from '@/lib/podcast-meta';
 import { artCandidates, isMusicMedium } from '@/lib/util';
-import { whyNotPlayable } from './song-check';
+import { whyNotPlayable, type SongKnown } from './song-check';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import type { Episode, Podcast } from '@/lib/types';
 import type { PlaylistSong } from '@/lib/community/rules';
@@ -80,7 +80,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
   const checkThenAdd = async (
     song: PlaylistSong,
     label: SongLabel,
-    known: { enclosureUrl?: string; image?: string; feedUrl?: string },
+    known: SongKnown,
   ) => {
     const k = song.itemGuid;
     if (checks[k]) return;
@@ -258,7 +258,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
                         ...(artist ? { artist } : {}),
                         ...(image ? { image } : {}),
                       },
-                      { enclosureUrl: e.enclosureUrl, image: e.image, feedUrl: album.podcast.url },
+                      { enclosureUrl: e.enclosureUrl, feedUrl: album.podcast.url },
                     ) : undefined}
                   />
                 );
@@ -290,7 +290,7 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
                   onAdd={() => checkThenAdd(
                     { feedGuid: f.feedGuid!, itemGuid: f.itemGuid, ...(f.feedUrl ? { feedUrl: f.feedUrl } : {}) },
                     { title: f.title ?? 'Song', ...(f.podcastTitle ? { artist: f.podcastTitle } : {}), ...(f.image ? { image: f.image } : {}) },
-                    { enclosureUrl: f.enclosureUrl, image: f.image, feedUrl: f.feedUrl },
+                    { enclosureUrl: f.enclosureUrl, feedUrl: f.feedUrl },
                   )}
                 />
               ))}

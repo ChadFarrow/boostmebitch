@@ -12,7 +12,6 @@ import type { Episode } from '@/lib/types';
 /** What the caller already knows about a song, so nothing is asked twice. */
 export type SongKnown = {
   enclosureUrl?: string;
-  image?: string;
   feedUrl?: string;
   /** Podcast Index answered "not found" for it (`/api/playlist`'s `unresolved: 'not-found'`). */
   notFound?: boolean;
@@ -24,8 +23,12 @@ export type SongKnown = {
  * EDIT view for every song already in the playlist, so one that died since is
  * marked ("make it obvious which ones are dead").
  *
- * 1. A file, cover or feed on a host that CLOSED (`lib/moved-feeds.ts`): Podcast
- *    Index still lists those as healthy, and every RSS Blue file answers 410.
+ * 1. AUDIO on a host that CLOSED (`lib/moved-feeds.ts`): Podcast Index still
+ *    lists those as healthy, and every RSS Blue file answers 410. The audio
+ *    only, never the cover: an album that moved off RSS Blue can still name its
+ *    old RSS Blue cover while its songs play, and "Track not found" over a song
+ *    that plays is the one wrong answer here. The feed URL stands in only while
+ *    no file is known, as the server's `verifySongs` judges by the file too.
  * 2. No known file: ask `/api/episode-by-guid`. A 404 is "Podcast Index does not
  *    have it"; any other failure is "could not ask", which lets the song in —
  *    the server checks again at PUBLISH (`verifySongs`).
@@ -41,7 +44,7 @@ export async function whyNotPlayable(
 ): Promise<string | null> {
   if (known.notFound) return 'Podcast Index does not have this song.';
   const closed = (u?: string) => closedService(u);
-  const host = closed(known.enclosureUrl) ?? closed(known.feedUrl) ?? closed(known.image);
+  const host = known.enclosureUrl ? closed(known.enclosureUrl) : closed(known.feedUrl);
   if (host) return `Its host (${host}) closed.`;
   let file = known.enclosureUrl;
   if (!file) {
@@ -50,7 +53,7 @@ export async function whyNotPlayable(
       if (r.status === 404) return 'Podcast Index does not have this song.';
       if (r.ok) {
         const ep = ((await r.json()) as { episode?: Episode }).episode;
-        const h = closed(ep?.enclosureUrl) ?? closed(ep?.image) ?? closed(ep?.feedImage);
+        const h = closed(ep?.enclosureUrl);
         if (h) return `Its host (${h}) closed.`;
         file = ep?.enclosureUrl;
       }
