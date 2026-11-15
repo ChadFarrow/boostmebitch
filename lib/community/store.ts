@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, type QueryResult, type QueryResultRow } from 'pg';
 import { communityFeedGuid } from './feed-doc';
 import { communityFeedUrl } from '../curated-playlists';
 import type { PlaylistDraft, PlaylistSong, StoredPlaylist } from './rules';
@@ -21,7 +21,12 @@ function getPool(): Pool | null {
     connectionString,
     max: 3,
     idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 3_000,
+    // 5 s, not 3: a NEW serverless instance opens a new TLS connection, and on
+    // 2026-11-15 the first request to a fresh beta deployment failed with
+    // "Connection terminated due to connection timeout" at exactly 3 s, while
+    // the RETRY a few seconds later answered at once. `readQuery` adds one more
+    // try for reads, so a read waits at most two of these.
+    connectionTimeoutMillis: 5_000,
     query_timeout: 5_000,
     statement_timeout: 5_000,
     ...(ca ? { ssl: { ca, checkServerIdentity: () => undefined } } : {}),
@@ -34,6 +39,26 @@ function db(): Pool {
   const p = getPool();
   if (!p) throw new Error('community store is not configured');
   return p;
+}
+
+/** A failure to CONNECT (or a socket dropped under us): the query never ran. */
+const CONNECT_FAILED = /connection timeout|Connection terminated unexpectedly|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i;
+
+/**
+ * A READ, tried once more when the connection failed. Safe only because a read
+ * changes nothing; a write never retries here, so a write that may have reached
+ * the database is never sent twice. The playlist feeds that podcast apps fetch,
+ * the /playlists list and the guid lookup all read through this, and each of
+ * them otherwise failed on the first request to a new instance.
+ */
+async function readQuery<R extends QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<R>> {
+  try {
+    return await db().query<R>(text, values);
+  } catch (e) {
+    if (!(e instanceof Error) || !CONNECT_FAILED.test(e.message)) throw e;
+    console.warn('[community-store] read could not connect, trying once more:', e.message);
+    return db().query<R>(text, values);
+  }
 }
 
 export function communityStoreConfigured(): boolean {
@@ -119,7 +144,7 @@ export async function updatePlaylist(
 }
 
 export async function getPlaylist(id: string): Promise<StoredRow | 'gone' | null> {
-  const { rows } = await db().query<Row & { deleted_at: Date | null }>(
+  const { rows } = await readQuery<Row & { deleted_at: Date | null }>(
     `select ${COLS}, deleted_at from community_playlists where id = $1`,
     [id],
   );
@@ -136,7 +161,7 @@ export async function listPlaylists(o: { limit: number; owner?: string }): Promi
     args.push(o.owner);
     where += ' and owner_pubkey = $2';
   }
-  const { rows } = await db().query<Row>(
+  const { rows } = await readQuery<Row>(
     `select ${COLS} from community_playlists where ${where} order by created_at desc, id limit $1`,
     args,
   );
@@ -144,7 +169,7 @@ export async function listPlaylists(o: { limit: number; owner?: string }): Promi
 }
 
 export async function findPlaylistByGuid(podcastGuid: string): Promise<StoredRow | null> {
-  const { rows } = await db().query<Row>(
+  const { rows } = await readQuery<Row>(
     `select ${COLS} from community_playlists where podcast_guid = $1 and deleted_at is null`,
     [podcastGuid],
   );
@@ -170,7 +195,7 @@ export async function deletePlaylistsByOwner(owner: string, by: string): Promise
 }
 
 export async function isBanned(pubkey: string): Promise<boolean> {
-  const { rowCount } = await db().query('select 1 from community_bans where pubkey = $1', [pubkey]);
+  const { rowCount } = await readQuery('select 1 from community_bans where pubkey = $1', [pubkey]);
   return (rowCount ?? 0) > 0;
 }
 
@@ -186,7 +211,7 @@ export async function unbanPubkey(pubkey: string): Promise<void> {
 }
 
 export async function listBans(): Promise<{ pubkey: string; bannedAt: string; bannedBy: string }[]> {
-  const { rows } = await db().query<{ pubkey: string; banned_at: Date; banned_by: string }>(
+  const { rows } = await readQuery<{ pubkey: string; banned_at: Date; banned_by: string }>(
     'select pubkey, banned_at, banned_by from community_bans order by banned_at desc',
   );
   return rows.map((r) => ({ pubkey: r.pubkey, bannedAt: r.banned_at.toISOString(), bannedBy: r.banned_by }));
