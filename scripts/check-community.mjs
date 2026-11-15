@@ -8,6 +8,7 @@ import {
 import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
+  blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -231,6 +232,29 @@ check('{} not-image', A({}).reason === 'not-image');
   check('an upper-case hash in the answer still matches', U({ sha256: h.toUpperCase() }) === `${ART_UPLOAD_SERVER}/${h}.jpg`);
   check('a bad local hash is refused', uploadedArtUrl(ART_UPLOAD_SERVER, 'xyz', { sha256: 'xyz' }) === null);
   check('the upload server is https with no trailing slash', /^https:\/\/[^/]+$/.test(ART_UPLOAD_SERVER));
+
+  // The user's own kind:10063 list. Can fail: the obvious version reads every
+  // tag's [1] (a `relay` tag becomes a server), keeps http, or loses the order.
+  const B = (tags) => JSON.stringify(blossomServersFromTags(tags));
+  check('servers keep the user order, normalised', B([['server', 'https://cdn.a.example/'], ['server', 'https://b.example']])
+    === JSON.stringify(['https://cdn.a.example', 'https://b.example']));
+  check('a server with a path keeps the path', B([['server', 'https://a.example/blossom/']]) === JSON.stringify(['https://a.example/blossom']));
+  check('http is skipped (a signed authorization over plain http)', B([['server', 'http://a.example']]) === '[]');
+  check('credentials in the URL are skipped', B([['server', 'https://u:p@a.example']]) === '[]');
+  check('query and fragment are dropped', B([['server', 'https://a.example/?x=1#y']]) === JSON.stringify(['https://a.example']));
+  check('a non-server tag is skipped', B([['relay', 'https://a.example'], ['r', 'https://b.example']]) === '[]');
+  check('junk is skipped', B([['server'], ['server', 42], ['server', 'not a url'], 'x', null]) === '[]');
+  check('duplicates are dropped', B([['server', 'https://a.example'], ['server', 'https://a.example/']]) === JSON.stringify(['https://a.example']));
+  check('at most MAX_USER_BLOSSOM_SERVERS', blossomServersFromTags(
+    [1, 2, 3, 4, 5].map((i) => ['server', `https://s${i}.example`])).length === MAX_USER_BLOSSOM_SERVERS);
+  check('non-array tags give []', B(undefined) === '[]' && B({}) === '[]');
+  check('order: user servers, then the default', JSON.stringify(artUploadServers(['https://a.example']))
+    === JSON.stringify(['https://a.example', ART_UPLOAD_SERVER]));
+  check('the default is not tried twice', JSON.stringify(artUploadServers([ART_UPLOAD_SERVER, 'https://a.example']))
+    === JSON.stringify([ART_UPLOAD_SERVER, 'https://a.example']));
+  check('no user servers: the default alone', JSON.stringify(artUploadServers([])) === JSON.stringify([ART_UPLOAD_SERVER]));
+  check('a server with a path builds <server>/<hash>.jpg', uploadedArtUrl('https://a.example/blossom', h, { sha256: h })
+    === `https://a.example/blossom/${h}.jpg`);
 }
 
 check('cleanText censors', cleanText('fuck this') === '**** this');

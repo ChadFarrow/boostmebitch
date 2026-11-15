@@ -156,8 +156,51 @@ export function artVerdict(meta: {
 
 // ---- an uploaded cover (the UPLOAD button, lib/community/blossom.ts) --------
 
-/** The one Blossom server an uploaded cover goes to. No trailing slash. */
+/**
+ * The Blossom server an uploaded cover goes to when the user names none of their
+ * own (kind:10063), or when none of theirs takes it. No trailing slash.
+ */
 export const ART_UPLOAD_SERVER = 'https://blossom.primal.net';
+
+/** The kind of a user's Blossom server list (BUD-03). */
+export const BLOSSOM_SERVER_LIST_KIND = 10063;
+
+/** How many of the user's own servers an upload tries before the default. */
+export const MAX_USER_BLOSSOM_SERVERS = 3;
+
+/**
+ * The user's Blossom servers from a kind:10063's tags, in THEIR order (BUD-03:
+ * the first is the most trusted), normalised to `https://host[/path]` with no
+ * trailing slash. Third-party text, so: `https:` only (the upload carries a
+ * signed authorization, and a plain-http server hands it to the network), no
+ * credentials in the URL, query and fragment dropped, duplicates dropped, at
+ * most MAX_USER_BLOSSOM_SERVERS. Anything else is skipped, never repaired.
+ */
+export function blossomServersFromTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  const out: string[] = [];
+  for (const t of tags) {
+    if (out.length >= MAX_USER_BLOSSOM_SERVERS) break;
+    if (!Array.isArray(t) || t[0] !== 'server' || typeof t[1] !== 'string') continue;
+    let u: URL;
+    try {
+      u = new URL(t[1].trim());
+    } catch {
+      continue;
+    }
+    if (u.protocol !== 'https:' || !u.hostname || u.username || u.password) continue;
+    const base = `https://${u.host}${u.pathname.replace(/\/+$/, '')}`;
+    if (!out.includes(base)) out.push(base);
+  }
+  return out;
+}
+
+/** Where an upload is tried, in order: the user's own servers, then the default once. */
+export function artUploadServers(userServers: readonly string[]): string[] {
+  const out = userServers.filter((s, i) => userServers.indexOf(s) === i);
+  if (!out.includes(ART_UPLOAD_SERVER)) out.push(ART_UPLOAD_SERVER);
+  return out;
+}
 
 /**
  * The longest side an uploaded cover keeps. The cover route serves 1400 px, and

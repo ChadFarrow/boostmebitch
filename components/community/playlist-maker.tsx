@@ -10,13 +10,13 @@ import { artCandidates } from '@/lib/util';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import { cleanText } from '@/lib/community/clean-text';
 import {
-  ART_MIN_PX, ART_UPLOAD_SERVER, MAX_TITLE_LEN, MIN_SONGS, validatePlaylistDraft,
+  ART_MIN_PX, MAX_TITLE_LEN, artUploadServers, MIN_SONGS, validatePlaylistDraft,
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
   NoSignerError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
 } from '@/lib/community/client';
-import { ArtUploadError, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
+import { ArtUploadError, fetchBlossomServers, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { PlaylistPublished } from './playlist-published';
@@ -108,6 +108,10 @@ export function PlaylistMaker() {
   // Bumped on every account switch, so an upload that finishes after one never
   // writes its link into the next account's form.
   const formGen = useRef(0);
+  // The signed-in user's own Blossom servers (kind:10063). `null` while the read
+  // is in flight; the promise is kept so an UPLOAD pressed before it lands waits for it.
+  const [userServers, setUserServers] = useState<string[] | null>(null);
+  const serversRead = useRef<Promise<string[]> | null>(null);
   const [busy, setBusy] = useState(false);
   const [refusals, setRefusals] = useState<Refusal[]>([]);
   const [note, setNote] = useState<string | null>(null);
@@ -222,14 +226,30 @@ export function PlaylistMaker() {
 
   // UPLOAD: the picked file goes to the Blossom server under the user's own key,
   // and only the returned link lands in the art field (lib/community/blossom.ts).
+  useEffect(() => {
+    setUserServers(null);
+    if (!identity) { serversRead.current = null; return; }
+    let live = true;
+    const p = fetchBlossomServers(identity);
+    serversRead.current = p;
+    void p.then((s) => { if (live) setUserServers(s); });
+    return () => { live = false; };
+    // The pubkey, not the identity object: a profile refresh must not read the list again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity?.pubkey]);
+
   const uploadArt = async (file: File) => {
     const gen = formGen.current;
     setUploading(true); setUploadNote(null);
     try {
-      const url = await uploadPlaylistArt(file);
+      const servers = userServers ?? (serversRead.current ? await serversRead.current : []);
+      const r = await uploadPlaylistArt(file, servers);
       if (gen !== formGen.current) return;
-      setDirty(true); setArtUrl(url);
-      setUploadNote('Uploaded. The link is in the field above.');
+      setDirty(true); setArtUrl(r.url);
+      const host = new URL(r.server).host;
+      setUploadNote(r.skipped.length
+        ? `Your server ${r.skipped.map((s) => new URL(s).host).join(', ')} did not take the picture. It is on ${host}. The link is in the field above.`
+        : `Uploaded to ${host}. The link is in the field above.`);
     } catch (e) {
       if (gen !== formGen.current) return;
       setUploadNote(e instanceof ArtUploadError ? UPLOAD_WORDS[e.reason] : failure(e));
@@ -429,7 +449,11 @@ export function PlaylistMaker() {
               onClick={() => artFileRef.current?.click()}>
               {uploading ? 'UPLOADING…' : '↑ UPLOAD PICTURE'}
             </button>
-            <span className="text-xs text-muted">to {new URL(ART_UPLOAD_SERVER).host}, signed with your key</span>
+            <span className="text-xs text-muted" data-art-upload-host>
+              {userServers === null
+                ? 'signed with your key'
+                : `to ${new URL(artUploadServers(userServers)[0]).host}${userServers.length ? ' (your Blossom server)' : ''}, signed with your key`}
+            </span>
           </div>
           {uploadNote && <p className="mt-1 text-xs text-bone/80" role="status" data-art-upload-note>{uploadNote}</p>}
         </div>
