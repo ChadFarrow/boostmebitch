@@ -88,6 +88,7 @@
 
 import {
   addToHistory,
+  albumShuffleTracks,
   boostedOnDevice,
   epKey,
   LISTEN_QUEUE_CAP,
@@ -103,6 +104,7 @@ import {
   episodeFromFavorite,
   fnvHash,
   isPlayingRow,
+  isShuffleableTrack,
   playingRowIndex,
   sameCurrentTrack,
   trimForQueue,
@@ -626,6 +628,68 @@ compare('playingRowIndex finds the shuffled song in its album',
 compare('playingRowIndex with nothing playing is -1', playingRowIndex([ROW], null), -1);
 
 // ---------------------------------------------------------------------------
+section('The album shuffle: which rows it deals, and the song already playing goes last');
+// ---------------------------------------------------------------------------
+// `albumShuffleTracks` (2026-11-14) starts the shuffle from an album page. The
+// naive is the version anybody writes first — every row, shuffled, paired with
+// the album — which deals a live item and a row with no file into the player,
+// and can open on the song the listener is hearing, a press that changes
+// nothing. `[guid, show guid]` per track, so the pairing is in every answer.
+const albumRow = (n, extra = {}) => ({
+  id: 48887791850 + n, guid: `song-${n}`, podcastGuid: 'album-feed', feedId: 7668956,
+  enclosureUrl: `https://cdn.example/${n}.mp3`, ...extra,
+});
+const ALBUM_SHOW = { id: 7668956, podcastGuid: 'album-feed', title: 'The Album', medium: 'music' };
+const TRACKS = [1, 2, 3, 4].map((n) => albumRow(n));
+const albumShape = (items) => items.map((i) => [i.episode.guid, i.podcast.podcastGuid]);
+function checkAlbum(label, args, expected, { alsoNaive = false } = {}) {
+  const [episodes, podcast, current, seq] = args;
+  const before = episodes.slice();
+  compare(label, albumShape(albumShuffleTracks(episodes, podcast, current, rng(seq))), expected);
+  compare(`${label} (the rows passed in are unchanged)`, episodes, before);
+  vectors.push({ label, kind: 'album', args, alsoNaive });
+}
+// Fisher-Yates with j = 0 every time: [1 2 3 4] → [2 3 4 1].
+checkAlbum('nothing playing: every playable track, in the order shuffleOrder deals',
+  [TRACKS, ALBUM_SHOW, null, [0]],
+  [['song-2', 'album-feed'], ['song-3', 'album-feed'], ['song-4', 'album-feed'], ['song-1', 'album-feed']],
+  { alsoNaive: true });
+// j = i every time swaps nothing, so the filter alone decides.
+checkAlbum('a live item, a row with no file and an unresolved row are not dealt',
+  [[TRACKS[0], albumRow(7, { liveStatus: 'live' }), TRACKS[1], albumRow(8, { enclosureUrl: '' }),
+    albumRow(9, { unresolved: true }), albumRow(10, { liveStatus: 'pending' }), TRACKS[2]], ALBUM_SHOW, null, [0.999]],
+  [['song-1', 'album-feed'], ['song-2', 'album-feed'], ['song-3', 'album-feed']]);
+checkAlbum('the song already playing goes last, so the press changes the song',
+  [TRACKS, ALBUM_SHOW, { episode: TRACKS[1], podcast: ALBUM_SHOW }, [0]],
+  [['song-3', 'album-feed'], ['song-4', 'album-feed'], ['song-1', 'album-feed'], ['song-2', 'album-feed']]);
+checkAlbum('…and so does a favorites-shuffle copy of it (another id, the same guid in the same feed)',
+  [TRACKS, ALBUM_SHOW, {
+    episode: { id: -fnvHash('song-2'), guid: 'song-2', podcastGuid: 'album-feed', feedId: 0 },
+    podcast: { id: 0, podcastGuid: 'album-feed' },
+  }, [0]],
+  [['song-3', 'album-feed'], ['song-4', 'album-feed'], ['song-1', 'album-feed'], ['song-2', 'album-feed']]);
+// Dealt [2 3 4 1] with song 3 second: it still goes last, not where it fell.
+checkAlbum('a playing song the deal put in the middle goes last too',
+  [TRACKS, ALBUM_SHOW, { episode: TRACKS[2], podcast: ALBUM_SHOW }, [0]],
+  [['song-2', 'album-feed'], ['song-4', 'album-feed'], ['song-1', 'album-feed'], ['song-3', 'album-feed']]);
+checkAlbum('a playing song the deal put last stays last',
+  [TRACKS, ALBUM_SHOW, { episode: TRACKS[0], podcast: ALBUM_SHOW }, [0]],
+  [['song-2', 'album-feed'], ['song-3', 'album-feed'], ['song-4', 'album-feed'], ['song-1', 'album-feed']],
+  { alsoNaive: true });
+checkAlbum('the same guid in a COPY feed is not the song playing here',
+  [TRACKS, ALBUM_SHOW, {
+    episode: { id: 5, guid: 'song-2', podcastGuid: 'copy-feed', feedId: 999 },
+    podcast: { id: 999, podcastGuid: 'copy-feed' },
+  }, [0]],
+  [['song-2', 'album-feed'], ['song-3', 'album-feed'], ['song-4', 'album-feed'], ['song-1', 'album-feed']],
+  { alsoNaive: true });
+checkAlbum('one playable track is that track, even while it plays',
+  [[TRACKS[0]], ALBUM_SHOW, { episode: TRACKS[0], podcast: ALBUM_SHOW }, [0]], [['song-1', 'album-feed']], { alsoNaive: true });
+compare('isShuffleableTrack: an ended live item is out too — a stream has no end to step on from',
+  isShuffleableTrack(albumRow(1, { liveStatus: 'ended' })), false);
+compare('isShuffleableTrack: an ordinary track with a file is in', isShuffleableTrack(TRACKS[0]), true);
+
+// ---------------------------------------------------------------------------
 section('The cap is a number this repo states, not one a caller passes');
 // ---------------------------------------------------------------------------
 compare('LISTEN_QUEUE_CAP is 50', LISTEN_QUEUE_CAP, 50);
@@ -700,6 +764,10 @@ section('Every vector above is replayed against the obvious wrong version');
   const naiveRow = (row, cur) => row.id === cur.episode.id;
   // The first fix anybody writes: the guid alone, in any feed.
   const naiveRowFeed = (row, cur) => row.id === cur.episode.id || (!!row.guid && row.guid === cur.episode.guid);
+  // Every row, shuffled, paired with the album: no filter, and the song playing
+  // may come first.
+  const naiveAlbum = (episodes, podcast, _current, random) =>
+    shuffleOrder(episodes, random).map((episode) => ({ episode, podcast }));
 
   const call = (impl, v) => {
     try {
@@ -750,6 +818,10 @@ section('Every vector above is replayed against the obvious wrong version');
           return JSON.stringify((real ? isPlayingRow : naiveRow)(...v.args));
         case 'prowfeed':
           return JSON.stringify((real ? isPlayingRow : naiveRowFeed)(...v.args));
+        case 'album': {
+          const [episodes, podcast, current, seq] = v.args;
+          return JSON.stringify(albumShape((real ? albumShuffleTracks : naiveAlbum)(episodes, podcast, current, rng(seq))));
+        }
         default: throw new Error(`unknown vector kind ${v.kind}`);
       }
       // A wrong implementation is allowed to throw where the real one returns.

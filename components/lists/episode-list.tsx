@@ -34,6 +34,7 @@ import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavHeart } from '../fav-heart';
 import { AlbumDownload } from '../album-download';
+import { AlbumShuffleButton } from '../album-shuffle-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
@@ -791,7 +792,13 @@ export function EpisodeList({
               docs/ui.md measures it tight at 390px — a sixth tile means
               re-measuring the whole cluster. This is an action on the LIST, so
               it sits over the list. `canReverse` is true for any album of two
-              tracks or more, which is exactly when this control renders. */}
+              tracks or more, which is exactly when this control renders.
+              ⤮ SHUFFLE sits here for the same reason, and ahead of it: it
+              plays, and DOWNLOAD only stores. Albums only, as DOWNLOAD —
+              `albumShuffleTracks` (lib/util.ts) says why not a playlist. */}
+          {isMusic && !isPlaylist && data.podcast && (
+            <AlbumShuffleButton episodes={orderedEpisodes} podcast={data.podcast} />
+          )}
           {isMusic && !isPlaylist && data.podcast && (
             <AlbumDownload episodes={orderedEpisodes} podcast={data.podcast} />
           )}

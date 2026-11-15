@@ -293,9 +293,10 @@ export function trimForQueue(e: Episode): Episode {
 }
 
 // ---------------------------------------------------------------------------
-// The favorites shuffle (docs/ui.md, "The favorites shuffle"). A THIRD list of
+// The favorites shuffle (docs/ui.md, "The favorites shuffle"), and the album
+// shuffle that starts the same list from an album page. A THIRD list of
 // `QueueItem`s beside Up Next and `episodeQueue`, which the store asks first
-// for its own tracks. These four are its pure half, pinned by `check:queue`.
+// for its own tracks. These are its pure half, pinned by `check:queue`.
 // ---------------------------------------------------------------------------
 
 /**
@@ -331,6 +332,43 @@ export function insertShuffled<T>(
     out.splice(lo + Math.floor(random() * (out.length - lo + 1)), 0, m);
   }
   return out;
+}
+
+/**
+ * Can the album shuffle take this row? Not a live item — a stream has no end
+ * for the shuffle to step on from — and not a row with no file to play.
+ */
+export function isShuffleableTrack(e: Pick<Episode, 'liveStatus' | 'enclosureUrl' | 'unresolved'>): boolean {
+  return !e.liveStatus && isPlayableRow(e);
+}
+
+/**
+ * The album shuffle's list (docs/ui.md, "The album shuffle"): every track of ONE
+ * album that can play, in a random order, each as the pair a row tap plays.
+ *
+ * **The show is the album, as `play(e, data.podcast)` has it.** The favorites
+ * shuffle builds its show from a favorite and leaves the payee unread; these
+ * rows came from this album's own RSS, so a shuffled track carries the block a
+ * tap on the same row would pay, and pays exactly that. **Albums only**: a
+ * `musicL` row is a track of ANOTHER feed, and this pairing would make the
+ * curator its show.
+ *
+ * **The track already playing goes LAST, wherever the deal put it.** The press
+ * must change the song — a shuffle that opened on the song just heard would read
+ * as a press that did nothing — and that song is the one to hear again last, not
+ * second. Matched by `isPlayingRow`, so a favorites-shuffle copy of the song
+ * (another id, the same guid in the same feed) counts as playing too.
+ */
+export function albumShuffleTracks(
+  episodes: readonly Episode[],
+  podcast: Podcast,
+  current: { episode: RowIds; podcast: Pick<Podcast, 'id' | 'podcastGuid'> } | null,
+  random: () => number = Math.random,
+): QueueItem[] {
+  const out = shuffleOrder(episodes.filter(isShuffleableTrack), random);
+  const at = current ? out.findIndex((e) => isPlayingRow(e, current)) : -1;
+  if (at >= 0) out.push(out.splice(at, 1)[0]);
+  return out.map((episode) => ({ episode, podcast }));
 }
 
 /**

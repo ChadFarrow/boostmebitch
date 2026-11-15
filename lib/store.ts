@@ -205,7 +205,8 @@ interface AppState {
   handlePlaybackEnded: () => boolean;
 
   /**
-   * The favorites shuffle (docs/ui.md, "The favorites shuffle") — a THIRD list,
+   * The favorites shuffle (docs/ui.md, "The favorites shuffle"; an album page
+   * starts it too, "The album shuffle") — a THIRD list,
    * beside `episodeQueue` and the listen queue, and asked FIRST for the tracks
    * it holds. Not `episodeQueue`: `<EpisodeList>` rewrites that whenever a show
    * is open, and its step carries the current track's show to the next track.
