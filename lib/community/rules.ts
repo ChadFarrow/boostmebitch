@@ -238,6 +238,24 @@ export function uploadedArtUrl(server: string, sha256: string, answer: unknown):
   return `${server}/${sha256}.jpg`;
 }
 
+/**
+ * Which picture `/api/playlist-cover` makes for a playlist BMB does not host,
+ * when the feed's own cover fails. A v4vmusic.com playlist uses its FIRST
+ * song's art, because that is what v4vmusic itself shows for a playlist (Chad,
+ * 2026-11-15: "so we match their style"); every other host gets the 2 x 2 grid
+ * of the first four songs, BMB's own no-art cover. The host is matched exactly
+ * or as a subdomain, never as a substring: `v4vmusic.com.example` is not it.
+ */
+export function coverStyleFor(feedUrl: string): 'first-song' | 'grid' {
+  let host: string;
+  try {
+    host = new URL(feedUrl).hostname.toLowerCase();
+  } catch {
+    return 'grid';
+  }
+  return host === 'v4vmusic.com' || host.endsWith('.v4vmusic.com') ? 'first-song' : 'grid';
+}
+
 export interface StoredPlaylist extends PlaylistDraft {
   id: string;
   ownerPubkey: string;

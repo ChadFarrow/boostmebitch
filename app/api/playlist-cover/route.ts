@@ -2,11 +2,13 @@ import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { withErrorHandling } from '@/lib/api-handler';
 import { getPlaylistChannel } from '@/lib/pi';
-import { buildCover } from '@/lib/community/cover';
+import { buildCover, buildFirstSongCover } from '@/lib/community/cover';
+import { coverStyleFor } from '@/lib/community/rules';
 
 /**
- * GET /api/playlist-cover?feedUrl=<playlist feed> → a 1400 x 1400 JPEG: a 2 x 2
- * grid of the playlist's first four songs' covers.
+ * GET /api/playlist-cover?feedUrl=<playlist feed> → a 1400 x 1400 JPEG: for a
+ * v4vmusic.com playlist its first song's art (v4vmusic's own style), for any
+ * other host a 2 x 2 grid of its first four songs' covers (`coverStyleFor`).
  *
  * WHY. A playlist BMB does not host names its own `itunes:image`, and that
  * picture can die while the songs live on. On 2026-11-15 two of the curated
@@ -41,7 +43,9 @@ export async function GET(req: Request) {
     const ch = await getPlaylistChannel(feedUrl);
     if (!ch) return NextResponse.json({ error: 'not a playlist' }, { status: 404 });
     const songs = ch.refs.slice(0, 4).map((r) => ({ feedGuid: r.feedGuid, itemGuid: r.itemGuid }));
-    const c = await buildCover(null, songs);
+    // v4vmusic.com shows a playlist with its first song's art, so its playlists
+    // match that; every other host gets BMB's grid (`coverStyleFor`).
+    const c = coverStyleFor(feedUrl) === 'first-song' ? await buildFirstSongCover(songs) : await buildCover(null, songs);
     return new NextResponse(new Uint8Array(c.jpg), {
       headers: {
         'content-type': 'image/jpeg',

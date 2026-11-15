@@ -8,7 +8,7 @@ import {
 import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
-  blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS,
+  blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -255,6 +255,21 @@ check('{} not-image', A({}).reason === 'not-image');
   check('no user servers: the default alone', JSON.stringify(artUploadServers([])) === JSON.stringify([ART_UPLOAD_SERVER]));
   check('a server with a path builds <server>/<hash>.jpg', uploadedArtUrl('https://a.example/blossom', h, { sha256: h })
     === `https://a.example/blossom/${h}.jpg`);
+}
+
+// The fallback cover of a playlist BMB does not host. Can fail: the obvious
+// version tests `includes('v4vmusic.com')`, which gives a lookalike host
+// v4vmusic's style and a path that merely names it too.
+{
+  const C = coverStyleFor;
+  check('a v4vmusic playlist uses its first song', C('https://v4vmusic.com/playlist/508a029b-020f-4334-9704-e0a9a5f800fb.xml') === 'first-song');
+  check('a v4vmusic subdomain uses its first song', C('https://www.v4vmusic.com/playlist/x.xml') === 'first-song');
+  check('the host is matched in any case', C('https://V4VMusic.com/playlist/x.xml') === 'first-song');
+  check('a lookalike host gets the grid', C('https://v4vmusic.com.example/playlist/x.xml') === 'grid');
+  check('a host that only ENDS in the name gets the grid', C('https://notv4vmusic.com/p.xml') === 'grid');
+  check('a path naming v4vmusic gets the grid', C('https://cdn.kolomona.com/v4vmusic.com/p.xml') === 'grid');
+  check('another host gets the grid', C('https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-music-playlist.xml') === 'grid');
+  check('junk gets the grid', C('not a url') === 'grid');
 }
 
 check('cleanText censors', cleanText('fuck this') === '**** this');
