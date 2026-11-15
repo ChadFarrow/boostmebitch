@@ -18,7 +18,8 @@ type Problem =
   | DraftProblem
   | { kind: 'art'; reason: ArtRefusal }
   | { kind: 'song-not-found'; itemGuid: string }
-  | { kind: 'not-music'; itemGuid: string };
+  | { kind: 'not-music'; itemGuid: string }
+  | { kind: 'song-gone'; itemGuid: string; service: string };
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -76,6 +77,7 @@ export async function POST(req: Request) {
     if (!art.ok) problems.push({ kind: 'art', reason: art.reason });
     for (const itemGuid of songs.notFound) problems.push({ kind: 'song-not-found', itemGuid });
     for (const itemGuid of songs.notMusic) problems.push({ kind: 'not-music', itemGuid });
+    for (const g of songs.gone) problems.push({ kind: 'song-gone', itemGuid: g.itemGuid, service: g.service });
     if (problems.length) return NextResponse.json({ error: 'not publishable', problems }, { status: 400 });
 
     const row = await createPlaylist(auth.pubkey, {

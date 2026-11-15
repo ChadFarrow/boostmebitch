@@ -32,7 +32,8 @@ type Refusal =
   | DraftProblem
   | { kind: 'art'; reason: ArtRefusal }
   | { kind: 'song-not-found'; itemGuid: string }
-  | { kind: 'not-music'; itemGuid: string };
+  | { kind: 'not-music'; itemGuid: string }
+  | { kind: 'song-gone'; itemGuid: string; service: string };
 
 const ART_WORDS: Record<ArtRefusal, string> = {
   'too-small': `The picture must be at least ${ART_MIN_PX} px on its shortest side.`,
@@ -65,6 +66,7 @@ function problemText(p: Refusal, labels: Labels): string {
     case 'art': return ART_WORDS[p.reason] ?? ART_WORDS['not-image'];
     case 'song-not-found': return `${song(p.itemGuid)} was not found. Remove it and try again.`;
     case 'not-music': return `${song(p.itemGuid)} is not a music track. Remove it and try again.`;
+    case 'song-gone': return `${song(p.itemGuid)} cannot play: its host (${p.service}) closed. Remove it and try again.`;
   }
 }
 

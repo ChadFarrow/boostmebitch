@@ -7,7 +7,8 @@ import { UnderlineTabs, tabPanelProps } from '@/components/underline-tabs';
 import { RowThumb } from '@/components/chapter-ui';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { loadFeed } from '@/lib/podcast-meta';
-import { artCandidates, isMusicMedium } from '@/lib/util';
+import { artCandidates, isHlsUrl, isMusicMedium } from '@/lib/util';
+import { closedService } from '@/lib/moved-feeds';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import type { Episode, Podcast } from '@/lib/types';
 import type { PlaylistSong } from '@/lib/community/rules';
@@ -29,9 +30,60 @@ function Thumb({ image, fallback }: { image?: string; fallback?: string }) {
   return <RowThumb src={src} fallback={alt} className="w-10 h-10 rounded object-cover flex-shrink-0 border border-bone/15" />;
 }
 
-function SongRow({ title, artist, image, added, onAdd, preview }: {
+/**
+ * Can this song play? Asked when + ADD is pressed, before the song goes in
+ * (Chad, 2026-11-15: "if it's not findable, don't let them add it").
+ *
+ * 1. A file, cover or feed on a host that CLOSED (`lib/moved-feeds.ts`): Podcast
+ *    Index still lists those as healthy, and every RSS Blue file answers 410.
+ * 2. No known file: ask `/api/episode-by-guid`. A 404 is "Podcast Index does not
+ *    have it"; any other failure is "could not ask", which lets the song in —
+ *    the server checks again at PUBLISH (`verifySongs`).
+ * 3. The file itself, through `/api/audio-probe`: 404 or 410 is gone, the same
+ *    narrow set the player uses. A 403, a 5xx or a timeout is a host's bad
+ *    minute, not a deletion, so it lets the song in.
+ * Returns the reason to show, or null when the song may go in.
+ */
+async function whyNotPlayable(
+  feedGuid: string,
+  itemGuid: string,
+  known: { enclosureUrl?: string; image?: string; feedUrl?: string },
+): Promise<string | null> {
+  const closed = (u?: string) => closedService(u);
+  const host = closed(known.enclosureUrl) ?? closed(known.feedUrl) ?? closed(known.image);
+  if (host) return `Its host (${host}) closed.`;
+  let file = known.enclosureUrl;
+  if (!file) {
+    try {
+      const r = await fetch(`/api/episode-by-guid?feedGuid=${encodeURIComponent(feedGuid)}&itemGuid=${encodeURIComponent(itemGuid)}`);
+      if (r.status === 404) return 'Podcast Index does not have this song.';
+      if (r.ok) {
+        const ep = ((await r.json()) as { episode?: Episode }).episode;
+        const h = closed(ep?.enclosureUrl) ?? closed(ep?.image) ?? closed(ep?.feedImage);
+        if (h) return `Its host (${h}) closed.`;
+        file = ep?.enclosureUrl;
+      }
+    } catch { /* could not ask: let it in, PUBLISH checks again */ }
+  }
+  if (!file || isHlsUrl(file)) return null;
+  try {
+    const r = await fetch(`/api/audio-probe?url=${encodeURIComponent(file)}`, { signal: AbortSignal.timeout(10_000) });
+    const status = r.ok ? ((await r.json()) as { status?: number }).status : undefined;
+    if (status === 404 || status === 410) {
+      useApp.getState().markFileGone(file);
+      return `Its audio file is gone (${status}).`;
+    }
+  } catch { /* could not ask: let it in */ }
+  return null;
+}
+
+/** A row's state while + ADD checks it, or the reason it was refused. */
+type Check = { checking: true } | { refused: string };
+
+function SongRow({ title, artist, image, added, onAdd, preview, check }: {
   title: string; artist?: string; image?: string; added: boolean; onAdd?: () => void;
   preview?: { feedGuid: string; itemGuid: string; episode?: Episode; podcast?: Podcast };
+  check?: Check;
 }) {
   return (
     <li className="flex flex-wrap items-center gap-3 py-2" data-add-row>
@@ -44,8 +96,15 @@ function SongRow({ title, artist, image, added, onAdd, preview }: {
         <span className="text-[11px] text-muted shrink-0">cannot be added</span>
       ) : added ? (
         <span className={`${ROW_BTN} inline-flex items-center justify-center text-bolt`} data-added>✓ ADDED</span>
+      ) : check && 'refused' in check ? (
+        <span className="text-[11px] text-muted shrink-0">cannot be added</span>
       ) : (
-        <button type="button" className={ROW_BTN} onClick={onAdd} aria-label={`Add ${title}`}>+ ADD</button>
+        <button type="button" className={ROW_BTN} onClick={onAdd} disabled={!!check} aria-label={`Add ${title}`}>
+          {check ? 'CHECKING…' : '+ ADD'}
+        </button>
+      )}
+      {check && 'refused' in check && (
+        <p className="basis-full text-xs text-muted" role="status" data-add-refused>{check.refused}</p>
       )}
     </li>
   );
@@ -59,6 +118,29 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
 }) {
   const [tab, setTab] = useState<Tab>('search');
   const has = (feedGuid: string, itemGuid: string) => songs.some((s) => same(s, feedGuid, itemGuid));
+
+  // Each row's check, by item guid. A song is added only after `whyNotPlayable`
+  // says yes; a refusal stays on its row with the reason.
+  const [checks, setChecks] = useState<Record<string, Check>>({});
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const checkThenAdd = async (
+    song: PlaylistSong,
+    label: SongLabel,
+    known: { enclosureUrl?: string; image?: string; feedUrl?: string },
+  ) => {
+    const k = song.itemGuid;
+    if (checks[k]) return;
+    setChecks((c) => ({ ...c, [k]: { checking: true } }));
+    const why = await whyNotPlayable(song.feedGuid, song.itemGuid, known);
+    if (!live.current) return;
+    if (why) {
+      setChecks((c) => ({ ...c, [k]: { refused: why } }));
+      return;
+    }
+    setChecks((c) => { const n = { ...c }; delete n[k]; return n; });
+    onAdd(song, label);
+  };
 
   // ---- SEARCH ---------------------------------------------------------------
   const [q, setQ] = useState('');
@@ -215,13 +297,15 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
                     image={image}
                     preview={ok ? { feedGuid: feedGuid!, itemGuid: e.guid!, episode: e, podcast: album.podcast } : undefined}
                     added={ok && has(feedGuid!, e.guid!)}
-                    onAdd={ok ? () => onAdd(
+                    check={ok ? checks[e.guid!] : undefined}
+                    onAdd={ok ? () => checkThenAdd(
                       { feedGuid: feedGuid!, itemGuid: e.guid!, ...(feedUrl ? { feedUrl } : {}) },
                       {
                         title: e.title,
                         ...(artist ? { artist } : {}),
                         ...(image ? { image } : {}),
                       },
+                      { enclosureUrl: e.enclosureUrl, image: e.image, feedUrl: album.podcast.url },
                     ) : undefined}
                   />
                 );
@@ -249,9 +333,11 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
                   image={f.image}
                   preview={{ feedGuid: f.feedGuid!, itemGuid: f.itemGuid }}
                   added={has(f.feedGuid!, f.itemGuid)}
-                  onAdd={() => onAdd(
+                  check={checks[f.itemGuid]}
+                  onAdd={() => checkThenAdd(
                     { feedGuid: f.feedGuid!, itemGuid: f.itemGuid, ...(f.feedUrl ? { feedUrl: f.feedUrl } : {}) },
                     { title: f.title ?? 'Song', ...(f.podcastTitle ? { artist: f.podcastTitle } : {}), ...(f.image ? { image: f.image } : {}) },
+                    { enclosureUrl: f.enclosureUrl, image: f.image, feedUrl: f.feedUrl },
                   )}
                 />
               ))}

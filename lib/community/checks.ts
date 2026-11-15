@@ -2,6 +2,7 @@ import sharp from 'sharp';
 import { safeFetch } from '../safe-fetch';
 import { readCappedBytes } from '../capped-body';
 import { batchEpisodes, batchPodcasts, episodeKey, MAX_BATCH } from '../pi-batch';
+import { closedService } from '../moved-feeds';
 import { artVerdict, type ArtRefusal, type PlaylistSong } from './rules';
 
 // SERVER-ONLY. The two checks a draft passes before it is stored: the cover
@@ -52,20 +53,30 @@ export async function checkArt(url: string): Promise<{ ok: true } | { ok: false;
  */
 export async function verifySongs(
   songs: PlaylistSong[],
-): Promise<{ notFound: string[]; notMusic: string[]; feedUrls: Map<string, string> }> {
+): Promise<{ notFound: string[]; notMusic: string[]; gone: { itemGuid: string; service: string }[]; feedUrls: Map<string, string> }> {
   // Stop at the first chunk that holds a missing song: the draft is refused
   // already, and a 500-song draft of made-up guids must not cost five PI calls.
   const notFound = new Set<string>();
+  // A song whose AUDIO is on a host that closed (`lib/moved-feeds.ts`): Podcast
+  // Index still serves its record as healthy, so "found" is not "playable" —
+  // RSS Blue's files all answer 410 (Chad, 2026-11-15: "if it's not findable,
+  // don't let them add it"). The host list, not a probe: a probe here would be
+  // one third-party fetch per song, up to MAX_SONGS per publish. The maker's
+  // Add songs sheet also probes each song's file when it is added.
+  const gone = new Map<string, string>();
   for (let i = 0; i < songs.length && notFound.size === 0; i += MAX_BATCH) {
     const chunk = songs.slice(i, i + MAX_BATCH);
     const found = await batchEpisodes(chunk.map((s) => ({ feedGuid: s.feedGuid, itemGuid: s.itemGuid })));
     for (const s of chunk) {
       const k = episodeKey(s);
       if (k in found && found[k] === null) notFound.add(s.itemGuid);
+      const service = closedService(found[k]?.enclosureUrl);
+      if (service) gone.set(s.itemGuid, service);
     }
   }
+  const goneList = [...gone].map(([itemGuid, service]) => ({ itemGuid, service }));
   // A refused draft needs no medium lookup.
-  if (notFound.size) return { notFound: [...notFound], notMusic: [], feedUrls: new Map() };
+  if (notFound.size) return { notFound: [...notFound], notMusic: [], gone: goneList, feedUrls: new Map() };
 
   const mediums = new Map<string, string | undefined>();
   const feedUrls = new Map<string, string>();
@@ -85,5 +96,5 @@ export async function verifySongs(
       return !!m && m !== 'music';
     })
     .map((s) => s.itemGuid);
-  return { notFound: [], notMusic: [...new Set(notMusic)], feedUrls };
+  return { notFound: [], notMusic: [...new Set(notMusic)], gone: goneList, feedUrls };
 }
