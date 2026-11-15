@@ -162,6 +162,8 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
 
   // An empty library is a claim: make it only once the read has answered.
   const sync = useApp((s) => s.favoritesSync);
+  // Signed out the read never starts (`favoritesSync` stays 'idle'), so "Loading" would never end.
+  const signedIn = useApp((s) => !!s.identity);
   const albumGuid = album?.podcast.podcastGuid;
   return (
     <ModalShell onClose={onClose} label="Add songs" className="w-full max-w-2xl h-full" clearsPlayer={false}>
@@ -269,7 +271,9 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
 
         {tab === 'favorites' && (
           favSongs.length === 0 ? (
-            sync === 'idle' || sync === 'loading' ? (
+            !signedIn ? (
+              <p className="text-sm text-muted" data-testid="fav-signed-out">Sign in with Nostr to add songs you saved with ♡. SEARCH works now.</p>
+            ) : sync === 'idle' || sync === 'loading' ? (
               <p className="text-sm text-muted" data-testid="fav-loading">Loading your saved songs…</p>
             ) : sync === 'degraded' ? (
               <p className="text-sm text-muted" data-testid="fav-degraded">Your saved songs could not be read. Try again later.</p>
