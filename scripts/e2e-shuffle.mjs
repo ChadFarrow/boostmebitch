@@ -48,6 +48,14 @@
 //      starts the album at track 1. After a reload drops the shuffle, the row
 //      is still lit, ⏭ is on, and the song's end continues the album (Chad,
 //      desktop, 2026-11-14: `advance via=none` had stopped it).
+//  12. ⤮ SHUFFLE on an album, opened by its `/?podcast=` URL (Chad, 2026-11-14:
+//      "BMB needs album shuffles here"). It sits ahead of DOWNLOAD ALBUM, plays
+//      the album's playable tracks in a random order through the shuffle's
+//      list — never a row with no file — ⏭ walks the panel's order and stops
+//      at the end, and the song playing before a press is always the new
+//      shuffle's LAST track, so a press changes the song. The cover's ▶ still
+//      plays the album in order and ends the shuffle. No overflow at 320, 390
+//      and 1280; not offered on an album with one playable track, or a podcast.
 //
 // Signed out: no key, so nothing reaches a relay. The shuffle's own requests are
 // answered here; anything else goes to the dev server untouched.
@@ -136,6 +144,25 @@ const PODCAST_EPS = [0, 1].map((k) => ({
   itemGuid: guid('pep', k), feedGuid: SHOW_GUID, title: `Talk ${k}`, podcastTitle: 'E2E Show',
   medium: 'podcast', addedAt: 1700000000000 + k,
 }));
+// Section 12, opened by URL as `/?podcast=<guid>`: an album of six rows whose
+// fifth has no file, an album with ONE playable row of two, and a podcast.
+const feedFixture = (n, medium, title, rows, rowTitle, noFile = -1) => {
+  const podcastGuid = guid('album', n);
+  const id = 900000 + n;
+  return {
+    podcast: { id, podcastGuid, title, author: 'e2e', medium, addedAt: 1700000000000 },
+    episodes: Array.from({ length: rows }, (_, k) => ({
+      id: 7000 + n * 100 + k, guid: guid(`r${n}track`, k), podcastGuid, feedId: id,
+      title: `${rowTitle} ${k}`, episode: k + 1,
+      enclosureUrl: k === noFile ? '' : `${APP}/api/e2e-audio.wav?r${n}=${k}`,
+      value: { model: { type: 'lightning', method: 'keysend' }, recipients: [{ name: 'album', type: 'node', address: '02album', split: 100 }] },
+    })),
+  };
+};
+const SHUF_ALBUM = feedFixture(12, 'music', 'E2E Shuffle Album', 6, 'Shuf track', 4);
+const ONE_ALBUM = feedFixture(13, 'music', 'E2E One Track Album', 2, 'Lone track', 1);
+const TALK_SHOW = feedFixture(14, 'podcast', 'E2E Talk Show', 3, 'Talk show ep');
+const BY_URL = [SHUF_ALBUM, ONE_ALBUM, TALK_SHOW];
 
 // ---- the browser ----------------------------------------------------------
 const { page } = await launchChrome({ name: 'shuffle', autoplay: true, args: ['--disable-gpu'] });
@@ -244,6 +271,15 @@ page.on(async (m) => {
     }
     if (u.pathname === '/api/by-guid' && q.get('guid') === LONG_ALBUM_GUID) {
       await fulfillJson(requestId, { podcast: LONG_ALBUM });
+      return;
+    }
+    const byUrl = u.pathname === '/api/feed' ? BY_URL.find((f) => String(f.podcast.id) === q.get('id'))
+      : u.pathname === '/api/by-guid' ? BY_URL.find((f) => f.podcast.podcastGuid === q.get('guid'))
+      : null;
+    if (byUrl) {
+      await fulfillJson(requestId, u.pathname === '/api/feed'
+        ? { podcast: { ...byUrl.podcast, url: `https://feeds.example.invalid/${byUrl.podcast.id}.xml` }, episodes: byUrl.episodes }
+        : { podcast: byUrl.podcast });
       return;
     }
     await send('Fetch.continueRequest', { requestId });
@@ -769,6 +805,121 @@ t.ok('B: ▶ plays the song in the player', /album(=|%3D)1(\D|$)/.test(await src
 await endTrack();
 t.ok('B: when it ends, the album goes on to the next track', await waitSrc((s) => /album(=|%3D)2(\D|$)/.test(s), 10000), await src());
 t.equal('B: the playback log says the album moved it', await lastAdvance(), 'advance via=tracks');
+
+// ---------------------------------------------------------------------------
+console.log('\n12. ⤮ SHUFFLE on an album');
+// Asked for on 2026-11-14 over an album page: "BMB needs album shuffles here".
+// Opened by URL, as that link was. The album's fifth row (track 4) has no file.
+async function openByUrl(fixture, text) {
+  await send('Page.navigate', { url: `${APP}/privacy` });
+  await until('document.readyState === "complete"');
+  await js('(() => { localStorage.clear(); sessionStorage.clear(); return true; })()');
+  await send('Page.navigate', { url: `${APP}/?podcast=${fixture.podcast.podcastGuid}` });
+  await until('document.readyState === "complete"');
+  const ok = await until(`document.body.textContent.includes(${JSON.stringify(text)})`, 15000);
+  await wait(600);
+  return ok;
+}
+const ALBUM_SHUFFLE = `document.querySelector('button[data-album-shuffle]')`;
+const albumShuffles = () => js(`document.querySelectorAll('button[data-album-shuffle]').length`);
+const pressAlbumShuffle = () => js(`(() => { const b = ${ALBUM_SHUFFLE}; if (!b) return false; b.click(); return true; })()`);
+const PLAYABLE = SHUF_ALBUM.episodes.filter((e) => e.enclosureUrl);
+const kOf = (s) => { const m = s.match(/[?&]r12(?:=|%3D)(\d+)/); return m ? Number(m[1]) : null; };
+const guidOfK = (k) => SHUF_ALBUM.episodes[k].guid;
+const shufLit = async () => JSON.parse(await js(`JSON.stringify([...document.querySelectorAll('ul > li')]
+  .filter((li) => li.classList.contains('bg-bolt/10')).map((li) => (li.textContent.match(/Shuf track \\d/) ?? ['?'])[0]))`));
+const tapRow = (title) => js(`(() => { const li = [...document.querySelectorAll('ul > li')]
+  .find((x) => x.textContent.includes(${JSON.stringify(title)}));
+  const b = li?.querySelector('button[aria-label="Play"]'); b?.click(); return !!b; })()`);
+
+// A: where it is offered.
+t.ok('A: the album opens from its URL', await openByUrl(SHUF_ALBUM, 'Shuf track 5'));
+t.equal('A: one ⤮ SHUFFLE on the album', await albumShuffles(), 1);
+t.equal('A: it names what it plays', await js(`${ALBUM_SHUFFLE}?.textContent.replace(/\\s+/g, ' ').trim()`),
+  '⤮ SHUFFLE the 5 tracks of this album');
+t.ok('A: it sits in the row over the list, ahead of DOWNLOAD ALBUM', await js(`(() => {
+  const b = ${ALBUM_SHUFFLE};
+  const dl = [...(b?.parentElement?.querySelectorAll('button') ?? [])].find((x) => /download/i.test(x.textContent));
+  return !!dl && !!(b.compareDocumentPosition(dl) & Node.DOCUMENT_POSITION_FOLLOWING);
+})()`));
+
+// B: a press plays the album in a random order, through the shuffle's list.
+t.ok('B: the press lands', await pressAlbumShuffle());
+t.ok('B: a track of the album starts', await waitSrc((s) => /[?&]r12(=|%3D)\d+/.test(s)), await src());
+const firstK = kOf(await src());
+t.ok('B: never the row with no file', firstK !== 4 && firstK !== null, String(firstK));
+await until(`!(document.querySelector('audio')?.paused ?? true)`, 5000);
+t.equal('B: ⏭ is the shuffle\'s', await miniNext(), { label: 'Next in shuffle', disabled: false });
+t.equal('B: the playing track\'s row is lit', await shufLit(), [`Shuf track ${firstK}`]);
+t.equal('B: the cover offers the album in order, not a pause', await cover(), { label: 'Play album', glyph: '▶' });
+const bPanel = await panel();
+t.equal('B: the now-playing screen lists the shuffle', bPanel.heading, 'shuffle · 5 tracks');
+t.equal('B: …every playable track once, and not the row with no file',
+  [...(bPanel.keys ?? [])].sort(), PLAYABLE.map((e) => e.guid).sort());
+t.equal('B: …with the playing track marked', bPanel.active, guidOfK(firstK));
+const walked = [firstK];
+for (let i = 0; i < PLAYABLE.length - 1; i += 1) {
+  const before = await src();
+  await pressMini('/^Next/');
+  await waitSrc(new Function('s', `return s !== ${JSON.stringify(before)};`));
+  walked.push(kOf(await src()));
+}
+t.equal('B: ⏭ walks the panel\'s order', walked.map(guidOfK), bPanel.keys);
+t.equal('B: ⏭ reaches every playable track once', [...walked].sort(), [0, 1, 2, 3, 5]);
+t.equal('B: at the last track ⏭ is off', (await miniNext())?.disabled, true);
+await endTrack();
+t.ok('B: the last track ending stops, and plays nothing more',
+  await until(`document.querySelector('audio')?.paused === true`, 10000) && kOf(await src()) === walked.at(-1),
+  await src());
+
+// C: the song already playing goes last, so a press always changes the song.
+t.ok('C: a row tap plays track 2 in order', await tapRow('Shuf track 2')
+  && await waitSrc((s) => /[?&]r12(=|%3D)2(\D|$)/.test(s)), await src());
+t.equal('C: …as the album, not the shuffle', (await miniNext())?.label, 'Next track');
+let playingK = 2;
+for (let round = 1; round <= 4; round += 1) {
+  await pressAlbumShuffle();
+  const was = playingK;
+  const moved = await waitSrc(new Function('s', `return !/[?&]r12(=|%3D)${was}(\\D|$)/.test(s);`), 5000);
+  playingK = kOf(await src());
+  const p = await panel();
+  t.ok(`C${round}: the press changes the song (was ${was}, now ${playingK})`, moved && playingK !== was, await src());
+  t.equal(`C${round}: the song that was playing is the shuffle's last track`, p.keys?.at(-1), guidOfK(was));
+  t.equal(`C${round}: a new press is a whole new shuffle`, p.heading, 'shuffle · 5 tracks');
+}
+
+// D: the cover still plays the album in order, and that ends the shuffle.
+await js(`${COVER}?.click()`);
+t.ok('D: ▶ on the cover starts the album at its first track', await waitSrc((s) => /[?&]r12(=|%3D)0(\D|$)/.test(s)), await src());
+t.equal('D: …and the shuffle is over', (await miniNext())?.label, 'Next track');
+
+// E: layout, at the widths a phone and a desktop give it.
+for (const [name, width, mobile] of [['320', 320, true], ['390', 390, true], ['1280', 1280, false]]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: mobile ? 3 : 1, mobile });
+  await wait(400);
+  const m = JSON.parse(await js(`JSON.stringify((() => {
+    const b = ${ALBUM_SHUFFLE};
+    const r = b?.getBoundingClientRect();
+    const peers = [...(b?.parentElement?.children ?? [])].filter((x) => x !== b).map((x) => x.getBoundingClientRect());
+    const overlap = r ? peers.some((p) => p.width && r.left < p.right && p.left < r.right && r.top < p.bottom && p.top < r.bottom) : null;
+    return {
+      sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
+      w: r && Math.round(r.width), h: r && Math.round(r.height),
+      clip: b ? b.scrollWidth > b.clientWidth : null, overlap,
+    };
+  })())`));
+  t.equal(`E ${name}: no horizontal overflow`, m.sw, m.cw);
+  t.ok(`E ${name}: SHUFFLE is at least 24×24`, m.w >= 24 && m.h >= 24, JSON.stringify(m));
+  t.ok(`E ${name}: its word is whole`, m.clip === false, JSON.stringify(m));
+  t.ok(`E ${name}: it covers no other control in its row`, m.overlap === false, JSON.stringify(m));
+}
+await send('Emulation.clearDeviceMetricsOverride');
+
+// F: where it is NOT offered.
+t.ok('F: an album with one playable track of two opens', await openByUrl(ONE_ALBUM, 'Lone track 1'));
+t.equal('F: …and offers no shuffle', await albumShuffles(), 0);
+t.ok('F: a podcast opens', await openByUrl(TALK_SHOW, 'Talk show ep 2'));
+t.equal('F: …and offers no shuffle', await albumShuffles(), 0);
 
 // ---------------------------------------------------------------------------
 t.equal('no uncaught page errors', pageErrors, []);
