@@ -15,6 +15,7 @@ import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format'
 import { valueNotRead, authorLine, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, listHolding, playingRowIndex, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { IS_BETA } from '@/lib/beta';
 import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
@@ -118,11 +119,13 @@ function ShareButton({ podcast }: { podcast: Podcast }) {
 }
 
 // Copies a COMMUNITY playlist's own RSS URL, so the feed can be pasted into
-// another podcast app to see how it handles a musicL playlist. Beta only: it
-// rides the same switch as the maker (`COMMUNITY_PLAYLISTS_ON`), and it renders
-// only for a feed URL that is exactly one of ours — never a third-party feed.
+// another podcast app to see how it handles a musicL playlist. A testing aid,
+// so it is BETA ONLY (`IS_BETA`), and it stays that way when the playlist
+// feature itself launches on the main site — `COMMUNITY_PLAYLISTS_ON` alone
+// would put it there at launch. It renders only for a feed URL that is exactly
+// one of ours — never a third-party feed.
 function CopyRssButton({ podcast }: { podcast: Podcast }) {
-  if (!COMMUNITY_PLAYLISTS_ON || !communityIdFromFeedUrl(podcast.url)) return null;
+  if (!IS_BETA || !COMMUNITY_PLAYLISTS_ON || !communityIdFromFeedUrl(podcast.url)) return null;
   return (
     <CopyLinkButton
       url={podcast.url ?? null}
