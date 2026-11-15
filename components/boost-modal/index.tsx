@@ -15,10 +15,11 @@ import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from '../wallet-balance';
 import { RailPicker } from '../rail-picker';
-import { AmountInput, MIN_BOOST_SATS } from './amount-input';
+import { AmountInput, MIN_BOOST_SATS, readAmountDefault } from './amount-input';
 import { MessageInput, BOOSTAGRAM_MAX } from '../message-input';
 import { GifPicker } from './gif-picker';
-import { giphyGifUrl, gifCost, withGif } from '@/lib/giphy';
+import { gifCost, withGif } from '@/lib/giphy';
+import { gifWireUrl, type GifPick } from '@/lib/gifs/pick';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './sender-name';
@@ -160,18 +161,21 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
   const identity = useApp((s) => s.identity);
   const bumpBoosts = useApp((s) => s.bumpBoosts);
-  const [sats, setSats] = useState(0);
+  // Blank (0) unless the user saved a default with SET AS DEFAULT. Blank is
+  // the owner's choice for a boost nobody has set (dd98f78), so a default is
+  // opt-in and this surface's own — never boost-all's per-track number.
+  const [sats, setSats] = useState(() => readAmountDefault('boost') ?? 0);
   const [msg, setMsg] = useState('');
   // People the sender @mentioned. Kept beside `msg` rather than inside it: the
   // text carries a readable "@alice" and this carries the identity, because the
   // same string becomes the boostagram TLV message and the LNURL comment, where
   // a 63-character npub would be truncated mid-bech32 with nothing reporting it.
   const [mentions, setMentions] = useState<MentionNpub[]>([]);
-  // The picked GIF's GIPHY id. Kept beside `msg`, not inside it: the URL is
-  // appended at send time (`withGif`), so the box shows only the user's words
-  // and the GIF can be removed without editing them.
-  const [gifId, setGifId] = useState<string | null>(null);
-  const gifUrl = gifId ? giphyGifUrl(gifId) : null;
+  // The picked GIF, from either source (`BRAND.gifSource`). Kept beside `msg`,
+  // not inside it: the URL is appended at send time (`withGif`), so the box
+  // shows only the user's words and the GIF can be removed without editing them.
+  const [gifPick, setGifPick] = useState<GifPick | null>(null);
+  const gifUrl = gifPick ? gifWireUrl(gifPick) : null;
   // The GIF URL spends the same keysend budget the words do — see
   // BOOSTAGRAM_MAX for why that budget is 250 and not more.
   const msgMax = BOOSTAGRAM_MAX - gifCost(gifUrl);
@@ -972,7 +976,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               are derived from `sats` at render time, while go() pays from the
               closure it captured at the tap — so an edit mid-send repaints the
               rows with figures that differ from the sats going out. */}
-          <AmountInput sats={sats} onChange={setSats} disabled={running} />
+          <AmountInput sats={sats} onChange={setSats} disabled={running} defaultKind="boost" />
           <MessageInput
             value={msg}
             onChange={setMsg}
@@ -993,8 +997,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             </p>
           )}
           <GifPicker
-            gifId={gifId}
-            onChange={setGifId}
+            pick={gifPick}
+            onChange={setGifPick}
             disabled={running || paymentDone}
           />
           <SenderName value={name} onChange={setName} anonymous={anonymous} />

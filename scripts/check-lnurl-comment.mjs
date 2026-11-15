@@ -202,6 +202,21 @@ console.log('\nbuildLnurlComment — the GIF URL on the last line survives whole
     buildLnurlComment({ message: WITH_GIF }, WITH_GIF.length),
     WITH_GIF,
   );
+  // boostmebitch.com's GIFs come from gifs.nostr.build since 2026-11-14: a
+  // 93-character URL (lib/gifs/nostr-build.ts `nbGifUrl`), not GIPHY's 58. The
+  // rule must not care which host — it protects a URL alone on the last line.
+  const NB_GIF = `https://gifs.nostr.build/${'a'.repeat(64)}.gif`;
+  const WITH_NB = `${MSG}\n${NB_GIF}`;
+  check(
+    'nostr.build: the whole 93-character URL stays when it fits',
+    buildLnurlComment({ desc: DESC, message: WITH_NB }, DESC.length + 3 + WITH_NB.length),
+    `${DESC} — ${WITH_NB}`,
+  );
+  check(
+    'nostr.build: a cut inside the URL drops the URL and keeps the words',
+    buildLnurlComment({ desc: DESC, message: WITH_NB }, DESC.length + 3 + MSG.length + 60),
+    `${DESC} — ${MSG}`,
+  );
   // Must still work: only a URL alone on the last line is protected. Prose is
   // still cut mid-word, as it always was — the vectors above with
   // MSG.slice(0, n) pin the same thing.

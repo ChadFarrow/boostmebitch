@@ -12,7 +12,7 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { valueNotRead, authorLine, hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { valueNotRead, authorLine, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, listHolding, playingRowIndex, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
@@ -230,6 +230,9 @@ export function EpisodeList({
   const togglePlay = useApp((s) => s.togglePlay);
   const isPlaying = useApp((s) => s.isPlaying);
   const current = useApp((s) => s.current);
+  // Only the album header's ▶ reads these two: which list owns the track.
+  const shuffle = useApp((s) => s.shuffle);
+  const listenQueue = useApp((s) => s.listenQueue);
   const openEpisode = useApp((s) => s.openEpisode);
   const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
   const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
@@ -458,7 +461,7 @@ export function EpisodeList({
   useEffect(() => {
     if (!playlist || playlist.nextOffset == null || loadingMore) return;
     if (!current) return;
-    const idx = orderedEpisodes.findIndex((e) => e.id === current.episode.id);
+    const idx = playingRowIndex(orderedEpisodes, current);
     if (idx < 0 || orderedEpisodes.length - idx > PLAYLIST_PREFETCH_RUNUP) return;
     loadNextPage();
     // `loadNextPage` is a function declaration and so is new on every render;
@@ -590,6 +593,15 @@ export function EpisodeList({
     (!!data.podcast.podcastGuid && current.podcast.podcastGuid === data.podcast.podcastGuid) ||
     current.podcast.id === data.podcast.id
   );
+  // …and is it playing AS this album? Not while the favorites shuffle or Up
+  // Next owns it (`listHolding`): that list decides what plays after it, so
+  // resuming the track is not "Play album". The header's ▶ then STARTS the
+  // album, and `play()` ends the shuffle. The glyph reads the same test, so it
+  // never draws ❚❚ over a press that starts the album instead of pausing.
+  // Reported from desktop, 2026-11-14: a shuffle reached a song, the album was
+  // opened to play it, and ▶ played the one song again and not the album.
+  const albumIsCurrent = !!current && showIsCurrent
+    && listHolding(shuffle?.items ?? null, listenQueue, current.episode) === null;
   // Music feeds show the whole album (track order); other shows paginate 10 at a
   // time. A PLAYLIST renders everything it has fetched, because on that path the
   // fetch IS the page — a second reveal axis on top would make one new track
@@ -620,12 +632,12 @@ export function EpisodeList({
           <button
             type="button"
             onClick={() => {
-              if (showIsCurrent) togglePlay();
+              if (albumIsCurrent) togglePlay();
               else if (data.podcast) play(firstPlayable, data.podcast);
             }}
             className="group relative w-20 h-20 lg:w-28 lg:h-28 flex-shrink-0"
-            title={showIsCurrent && isPlaying ? 'Pause' : 'Play album'}
-            aria-label={showIsCurrent && isPlaying ? 'Pause' : 'Play album'}
+            title={albumIsCurrent && isPlaying ? 'Pause' : 'Play album'}
+            aria-label={albumIsCurrent && isPlaying ? 'Pause' : 'Play album'}
           >
             <PodcastCover
               image={data.podcast.image}
@@ -636,10 +648,10 @@ export function EpisodeList({
             />
             <div
               className={`absolute inset-0 grid place-items-center bg-ink/45 transition pointer-events-none text-2xl ${
-                showIsCurrent && isPlaying ? 'text-bolt' : 'text-bone group-hover:text-bolt group-hover:bg-ink/55'
+                albumIsCurrent && isPlaying ? 'text-bolt' : 'text-bone group-hover:text-bolt group-hover:bg-ink/55'
               }`}
             >
-              {showIsCurrent && isPlaying ? '❚❚' : '▶'}
+              {albumIsCurrent && isPlaying ? '❚❚' : '▶'}
             </div>
           </button>
         ) : (
@@ -808,7 +820,9 @@ export function EpisodeList({
           // `isThisPlaying` is the transport state, and only the glyph and the
           // labels may read it: an identity-only glyph draws ❚❚ over a paused
           // episode, which is the icon lying about what a press will do.
-          const playing = current?.episode.id === e.id;
+          // `isPlayingRow`, not `id`: a shuffled favorite carries an id its
+          // album row does not, and the row stayed unlit while it played.
+          const playing = !!current && isPlayingRow(e, current);
           const isThisPlaying = playing && isPlaying;
           const prev = idx > 0 ? visibleEpisodes[idx - 1] : null;
           const isFirstLive = !!e.liveStatus && (!prev || !prev.liveStatus);

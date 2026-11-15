@@ -8,7 +8,7 @@ import {
   type HtmlPortalNode,
 } from 'react-reverse-portal';
 import type Hls from 'hls.js';
-import { dropRefusedPlaybackRate, isMusicItem, resolvePlaybackRate, useApp } from '@/lib/store';
+import { dropRefusedPlaybackRate, isKnownGoneFile, isMusicItem, resolvePlaybackRate, useApp } from '@/lib/store';
 import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
@@ -18,7 +18,8 @@ import { useNowPlaying } from './player/use-now-playing';
 import { useShowSpeed } from './player/use-show-speed';
 import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
-import { isKnownGoneFile, serverAnswers, useNextProbe } from './player/use-next-probe';
+import { serverAnswers, useNextProbe } from './player/use-next-probe';
+import { useAndroidSessionKeeper } from './player/use-android-session-keeper';
 import { fmt } from '@/lib/format';
 import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
@@ -191,7 +192,9 @@ export function Player() {
   const seekReq = useApp((s) => s.seekReq);
   const setPlaying = useApp((s) => s.setPlaying);
   const setPosition = useApp((s) => s.setPosition);
-  const playNext = useApp((s) => s.playNext);
+  // NOT `playNext`: that is the listener's ⏭, which walks past a dead file.
+  // A list moving on by itself lands on it, so `advanceOnItsOwn` can log it.
+  const stepOnEnd = useApp((s) => s.stepOnEnd);
   const handlePlaybackEnded = useApp((s) => s.handlePlaybackEnded);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const playbackRate = useApp((s) => s.playbackRate);
@@ -1359,6 +1362,11 @@ export function Player() {
   // ./player/use-next-probe.
   useNextProbe(duration, isLiveMedia);
 
+  // Android only: a silent second player while playing, so the lock-screen
+  // player does not vanish at each track change. See
+  // ./player/use-android-session-keeper.
+  useAndroidSessionKeeper(isPlaying);
+
   // **A queue that survived a reload has to be reachable.** `current` is
   // in-memory and the queue is not, so every page load lands with items on disk
   // and nothing playing — and the two lines below then render nothing at all,
@@ -1424,14 +1432,27 @@ export function Player() {
   // one sentence that says why playback died is the failure this bar already
   // documents. The chapter keeps its `text-bolt/90` here so the collapsed line
   // still says which of the three it is showing.
+  //
+  // **The STALL folds at every width, not only below `sm:`.** The bar is fixed
+  // to the dock and grows UPWARD, so a line that comes and goes moves its top
+  // edge — and a new source starts with nothing buffered, so `waiting` raised
+  // the stall on every track change. From `sm:` up the readout was a line of
+  // its own: the bar stood 78px, then 98.5px (115px at 640, where the long
+  // sentence wrapped) until the next file arrived, then 78px again. Reported as
+  // "the now playing bar moves up and down when songs change". From `sm:` it now
+  // takes the show title's place on the second line, which is the same trade
+  // the phone ladder makes (e2e:minibar).
   const miniStalled = stalled && !audioErr;
+  // Short, so it fits both lines it can land on without truncating — a
+  // truncated instruction is not an instruction.
+  const stallLine = '⋯ buffering — press play to retry';
   const miniChapter = !miniStalled ? activeChapter?.title : undefined;
   // Below `sm:` the `N s behind` of <LiveEdge> folds into this line, the way
   // the buffering line does: at 390 px the row held `● LIVE 7 s behind
   // ⏭ GO LIVE` and the play/pause button covered the end of GO LIVE.
   const miniBehind = isLive && isPlaying ? liveBehindSec : 0;
   const miniSecondary = miniStalled
-    ? '⋯ buffering — press play to retry'
+    ? stallLine
     : miniBehind > 0
       ? `${miniBehind} s behind live`
       : miniChapter || podcast.title;
@@ -1487,7 +1508,7 @@ export function Player() {
   function stepOnItsOwn(): 'queue' | 'tracks' | null {
     if (handlePlaybackEnded()) return 'queue';
     const now = useApp.getState().current;
-    return now && playsAsTracks(now.podcast) && playNext() ? 'tracks' : null;
+    return now && playsAsTracks(now.podcast) && stepOnEnd() ? 'tracks' : null;
   }
 
   /**
@@ -1559,6 +1580,13 @@ export function Player() {
         const key = epKey(item.episode);
         setAudioErr(null);
         void serverAnswers(item.episode.enclosureUrl).then((answered) => {
+          // The element refused the file while the network reaches us, so it
+          // is dead for this tab whatever the host's status was — a 403, a
+          // format this browser cannot play. Into `goneFiles`, so a later ⏮
+          // walks PAST it: without this, ⏮ from the track after it landed on
+          // it again, and the skip carried the listener forward to where they
+          // pressed from (review of the merged #541/#545/#547).
+          if (answered) useApp.getState().markFileGone(item.episode.enclosureUrl);
           const now = useApp.getState().current;
           if (!now || epKey(now.episode) !== key) return;
           if (answered && skipDeadTrack(item)) return;
@@ -1860,7 +1888,11 @@ export function Player() {
               <span className={`truncate sm:hidden ${miniChapter ? 'text-bolt/90' : 'text-muted'}`}>
                 {miniSecondary}
               </span>
-              <span className="hidden sm:inline text-muted truncate">{podcast.title}</span>
+              {/* From `sm:` the chapter keeps its own line below the seek row,
+                  so this line's ladder is only stall → show title. */}
+              <span className="hidden sm:inline text-muted truncate">
+                {miniStalled ? stallLine : podcast.title}
+              </span>
               <StreamPulse />
             </div>
             {/* The error is the one line the user actually needs to read when
@@ -1879,15 +1911,9 @@ export function Player() {
                 handles that one, so a stall that still reaches the user is a
                 plain slow network — and guessing at a cause we've already
                 mitigated would be a confident lie. Say what is true and what to
-                do about it. */}
-            {/* `hidden sm:block`: below `sm:` this line is folded into the one
-                secondary line above — the same sentence, shortened to fit one
-                truncating row. It is hidden, never dropped. */}
-            {miniStalled && (
-              <div className="hidden sm:block text-[11px] text-muted mt-1">
-                ⋯ buffering — press play to retry if it doesn&rsquo;t resume.
-              </div>
-            )}
+                do about it. It is said on the secondary line above, at every
+                width (`stallLine`): a line of its own here moved the whole bar
+                on every track change. */}
             {isLive ? (
               <LiveEdge variant="mini" className="mt-1" behindSec={miniBehind} onGoLive={goLive} />
             ) : (

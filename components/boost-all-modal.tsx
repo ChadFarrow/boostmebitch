@@ -15,10 +15,11 @@ import { BRAND, noteBrandFor, resolveSenderName } from '@/lib/brand';
 import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
-import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
+import { AmountInput, MIN_BOOST_SATS, readAmountDefault } from './boost-modal/amount-input';
 import { MessageInput, BOOSTAGRAM_MAX } from './message-input';
 import { GifPicker } from './boost-modal/gif-picker';
-import { giphyGifUrl, gifCost, withGif } from '@/lib/giphy';
+import { gifCost, withGif } from '@/lib/giphy';
+import { gifWireUrl, type GifPick } from '@/lib/gifs/pick';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './boost-modal/sender-name';
@@ -62,14 +63,16 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
   const identity = useApp((s) => s.identity);
   const bumpBoosts = useApp((s) => s.bumpBoosts);
-  const [sats, setSats] = useState(100);
+  // PER TRACK, so it reads its OWN default ('boostAll'), never the single
+  // boost's: this number is multiplied by the track count at send time.
+  const [sats, setSats] = useState(() => readAmountDefault('boostAll') ?? 100);
   const [msg, setMsg] = useState('');
   // Identity beside the prose, not inside it — see <BoostModal> for why the
   // npub must never enter `msg`.
   const [mentions, setMentions] = useState<MentionNpub[]>([]);
   // The picked GIF, beside `msg` for the reason <BoostModal> gives.
-  const [gifId, setGifId] = useState<string | null>(null);
-  const gifUrl = gifId ? giphyGifUrl(gifId) : null;
+  const [gifPick, setGifPick] = useState<GifPick | null>(null);
+  const gifUrl = gifPick ? gifWireUrl(gifPick) : null;
   const msgMax = BOOSTAGRAM_MAX - gifCost(gifUrl);
   const msgOver = gifUrl ? msg.trim().length - msgMax : 0;
   const msgTooLong = msgOver > 0;
@@ -576,6 +579,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             // numbers that differ from the sats going out — and the ✓ glyphs
             // land beside those rows as each track settles.
             disabled={running}
+            defaultKind="boostAll"
           />
 
           {loadState === 'loading' && (
@@ -703,7 +707,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                   The message is {msgOver} character{msgOver === 1 ? '' : 's'} too long with the GIF. Shorten it or remove the GIF.
                 </p>
               )}
-              <GifPicker gifId={gifId} onChange={setGifId} disabled={running || done} />
+              <GifPicker pick={gifPick} onChange={setGifPick} disabled={running || done} />
               <SenderName value={name} onChange={setName} anonymous={anonymous} />
               <ShareNostrPicker
                 signedIn={!!identity}

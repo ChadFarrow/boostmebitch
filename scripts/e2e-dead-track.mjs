@@ -53,6 +53,14 @@
 //  11. A DOWNLOADED song is never checked or passed over: it plays from the
 //      phone whatever its host answers. With RSS Blue gone, every downloaded
 //      RSS Blue track was being skipped while online (review of #545).
+//  12. The LOCK SCREEN's ⏭/⏮ walk past a file the early check found dead: the
+//      element never asks for it. Since #547 iOS shows ⏮/⏭ there for music,
+//      and a press loaded the dead file in the background — the #555 fault
+//      (review of the merged #541/#545/#547, 2026-11-14).
+//  13. ⏭ draws DISABLED when every track after this one is dead, and the lock
+//      screen's ⏭ moves nothing.
+//  14. Up Next: ⏭ walks past a dead item and drains it with the one that was
+//      playing, as the automatic skip drains it.
 //   6. The track AFTER a dead one PLAYS (sections 1 to 3). It loaded paused
 //      under a ▶ before `pauseIfStillCurrent`: a late `play()` rejection for
 //      the dead file, or the `AbortError` of a reload of the next one, paused
@@ -169,6 +177,17 @@ page.on(async (m) => {
     // The page navigated away under a paused request.
   }
 });
+// Sections 12-13: the handlers the page hands the lock screen, kept so the
+// test can press them. Installed before any app script runs.
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+  const ms = navigator.mediaSession; if (!ms) return;
+  const orig = ms.setActionHandler.bind(ms);
+  window.__msh = {};
+  ms.setActionHandler = (action, handler) => {
+    window.__msh[action] = handler;
+    try { orig(action, handler); } catch { /* unsupported */ }
+  };
+})();` });
 await send('Page.enable');
 await send('Runtime.enable');
 
@@ -351,6 +370,64 @@ await endTrack();
 t.ok('the last item, reported gone, still reaches the element (track 6 plays)', await waitK(6, 12000), `on k=${await kOf()}`);
 t.equal('…and it was not drained on the way', await queueTitles(), ['Dead test track 6']);
 probeGoneK = null;
+
+// ---------------------------------------------------------------------------
+const playsK = (k, ms = 12000) => until(`(() => { const a = document.querySelector('audio');
+  return !!a && !a.paused && a.currentTime > 0.2 && /[?&]k=${k}(\\D|$)/.test(a.currentSrc); })()`, ms);
+const untilProbed = async (k) => {
+  for (let i = 0; i < 40; i++) {
+    if (probed.some((x) => new RegExp(`e2e-gone\\.wav\\?k=${k}(\\D|$)`).test(x))) { await wait(400); return true; }
+    await wait(200);
+  }
+  return false;
+};
+const MINI_NEXT = `[...document.querySelectorAll('${MINI_BAR} button')].find((x) => /^Next/.test(x.getAttribute('aria-label') ?? ''))`;
+const askedFor = (k, from) => goneAsked.slice(from).filter((x) => x === String(k));
+
+console.log('\n12. The lock screen\'s ⏭/⏮ walk past a file the early check found dead');
+probeDead = true;
+probed.length = 0;
+await openAlbum();
+await tapRow(0);
+t.ok('track 0 plays', await playsK(0, 15000));
+t.ok('the early check found dead track 1', await untilProbed(1), JSON.stringify(probed));
+t.ok('the lock screen has ⏭ and ⏮', await until(`typeof window.__msh?.nexttrack === 'function' && typeof window.__msh?.previoustrack === 'function'`, 8000));
+let mark = goneAsked.length;
+await js(`window.__msh.nexttrack({ action: 'nexttrack' }); true`);
+t.ok('⏭ lands on track 2, past dead track 1', await playsK(2), `on k=${await kOf()}`);
+await wait(1000);
+t.equal('the player never asked for dead track 1', askedFor(1, mark), []);
+await js(`window.__msh.previoustrack({ action: 'previoustrack' }); true`);
+t.ok('⏮ lands on track 0, past it again', await playsK(0), `on k=${await kOf()}`);
+await wait(1000);
+t.equal('…still without asking for it', askedFor(1, mark), []);
+
+// ---------------------------------------------------------------------------
+console.log('\n13. ⏭ is disabled when every track after this one is dead');
+await tapRow(6);
+t.ok('track 6 plays', await playsK(6, 15000));
+t.ok('the early check found the last track (7) dead', await untilProbed(7), JSON.stringify(probed));
+t.ok('⏭ draws disabled', await until(`(() => { const b = ${MINI_NEXT}; return !!b && b.disabled; })()`, 5000),
+  await js(`(() => { const b = ${MINI_NEXT}; return b ? b.getAttribute('aria-label') + ' disabled=' + b.disabled : 'no button'; })()`));
+mark = goneAsked.length;
+await js(`window.__msh.nexttrack({ action: 'nexttrack' }); true`);
+await wait(1500);
+t.equal('the lock screen\'s ⏭ moves nothing: track 6 plays on', [await kOf(), await playing()], [6, true]);
+t.equal('…and the player never asked for dead track 7', askedFor(7, mark), []);
+
+// ---------------------------------------------------------------------------
+console.log('\n14. Up Next: ⏭ walks past a dead item, and drains it');
+probed.length = 0;
+await openAlbum({ 'bmb:listen_queue:guest': JSON.stringify([qItem(0), qItem(1), qItem(2)]) });
+t.ok('the queue head plays', await playQueueHead());
+t.ok('the early check found dead item 1', await untilProbed(1), JSON.stringify(probed));
+mark = goneAsked.length;
+t.ok('⏭ is pressed', await js(`(() => { const b = ${MINI_NEXT}; if (!b || b.disabled) return false; b.click(); return true; })()`));
+t.ok('track 2 plays, past dead item 1', await playsK(2), `on k=${await kOf()}`);
+await wait(800);
+t.equal('Up Next lost the item that was playing AND the dead one', await queueTitles(), ['Dead test track 2']);
+t.equal('the player never asked for dead item 1', askedFor(1, mark), []);
+probeDead = false;
 
 // ---------------------------------------------------------------------------
 console.log('\n11. A downloaded song is never passed over, whatever its host answers');

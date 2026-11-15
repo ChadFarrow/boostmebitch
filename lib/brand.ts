@@ -129,6 +129,14 @@ export interface Brand {
   androidPackageId: string;
   /** Where a person gets the official Android build. */
   androidAppUrl: string;
+  /**
+   * Where the boost modals' GIF picker searches. `nostrbuild`: gifs.nostr.build,
+   * from the browser, admitted by this deploy's registered Origin (no key).
+   * `giphy`: GIPHY through `/api/gifs`, which holds `GIPHY_API_KEY`. Chad's
+   * choice, 2026-11-14 (docs/superpowers/specs/2026-11-14-gif-video-grid-design.md).
+   * A stored boost's GIF is drawn from either source on either deploy.
+   */
+  gifSource: 'nostrbuild' | 'giphy';
 }
 
 const BMB: Brand = {
@@ -149,6 +157,7 @@ const BMB: Brand = {
   androidPackageId: 'com.boostmebitch',
   // The bitch APK ships on GitHub releases; only the buddy app is on Zapstore.
   androidAppUrl: 'https://github.com/ChadFarrow/boostmebitch/releases',
+  gifSource: 'nostrbuild',
 };
 
 const BUDDY: Brand = {
@@ -174,6 +183,7 @@ const BUDDY: Brand = {
     'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
   androidPackageId: 'com.boostmebuddy',
   androidAppUrl: 'https://zapstore.dev',
+  gifSource: 'giphy',
 };
 
 export const BRANDS: Record<BrandId, Brand> = { bmb: BMB, buddy: BUDDY };

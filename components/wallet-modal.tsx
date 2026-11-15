@@ -18,6 +18,7 @@ const NwcWallet = dynamic(() => import('./nwc-wallet').then((m) => m.NwcWallet),
 import { SparkWallet } from './spark-wallet';
 import { WeblnWallet } from './webln-wallet';
 import { StreamRate, StreamedLog } from './streaming-settings';
+import { DefaultAmounts } from './boost-modal/default-amounts';
 
 type WalletView =
   | { kind: 'picker'; switching: boolean }
@@ -135,6 +136,14 @@ export function WalletModal({ onClose }: Props) {
           {!activeRail && (
             <div className="text-[11px] text-muted">No wallet active.</div>
           )}
+          {/* The amount each boost surface opens with, all three together. Here
+              for the reason streaming is below: this is where the user looks
+              at what they spend. It opens ON TOP of an open boost modal, so it
+              and that modal's SET AS DEFAULT re-read on subscribeAmountDefaults
+              (docs/money-boosts.md, "Default amounts"). */}
+          <div className="border-t border-bone/15 pt-4">
+            <DefaultAmounts />
+          </div>
           {/* Streaming lives with the wallet, not in a settings page: it's a
               standing instruction to spend from THIS wallet without asking
               again, so the place it's turned on should be the place the user
