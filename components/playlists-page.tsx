@@ -51,11 +51,7 @@ const COUNT_CONCURRENCY = 3;
 const COUNT_RESERVED_OWN = 4;
 
 const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
-  {
-    url: MUSICL_PUBLISHER_URL,
-    heading: "ChadF's playlists",
-    blurb: 'Published as a Podcasting 2.0 publisher feed, so this list updates itself.',
-  },
+  // Community first, ChadF's music-show playlists below it (Chad, 2026-11-15).
   {
     url: COMMUNITY_COLLECTION_URL,
     heading: COMMUNITY_COLLECTION_TITLE,
@@ -67,6 +63,11 @@ const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
     blurb: COMMUNITY_PLAYLISTS_ON
       ? 'Made by listeners on BMB, and by other people in the V4V community.'
       : 'Built on other hosts, and mostly by other people in the V4V community.',
+  },
+  {
+    url: MUSICL_PUBLISHER_URL,
+    heading: "ChadF's playlists",
+    blurb: 'Published as a Podcasting 2.0 publisher feed, so this list updates itself.',
   },
 ];
 
@@ -139,7 +140,12 @@ export function PlaylistsPage() {
 
   const load = useCallback(async (i: number) => {
     patch(i, { loading: true, failed: false });
-    const collection = await loadCollection(SECTIONS[i].url);
+    // The rows BMB hosts paint as soon as the store answers, under the
+    // "loading playlists…" count, and only into an EMPTY section: on a retry the
+    // rows already on screen stay until the whole collection is back.
+    const collection = await loadCollection(SECTIONS[i].url, (stored) => {
+      setSections((prev) => prev.map((st, j) => (j === i && st.playlists === null ? { ...st, playlists: stored } : st)));
+    });
     if (!collection) {
       // Keep whatever is already on screen. A retry that fails must not empty a
       // list the visitor can still read.

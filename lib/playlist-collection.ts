@@ -98,9 +98,20 @@ export interface Collection {
   storeDown?: boolean;
 }
 
-export async function loadCollection(feedUrl: string): Promise<Collection | null> {
+/**
+ * `onStored` (Community only) is handed the rows made on BMB the moment the
+ * store answers, BEFORE the curated half — which pays a Podcast Index lookup per
+ * feed — is done. The store answers in milliseconds, and those are the
+ * playlists BMB hosts, so they never wait on a third party (Chad, 2026-11-15:
+ * "The playlists hosted on Boost Me Bitch should always load"). The final
+ * `Collection` still carries every row, stored first.
+ */
+export async function loadCollection(
+  feedUrl: string,
+  onStored?: (feeds: Podcast[]) => void,
+): Promise<Collection | null> {
   try {
-    if (feedUrl === COMMUNITY_COLLECTION_URL) return await loadCommunity();
+    if (feedUrl === COMMUNITY_COLLECTION_URL) return await loadCommunity(onStored);
     // A non-http(s) value is not a publisher feed, and refusing it HERE is what
     // keeps a missed sentinel branch honest. Sent to `/api/publisher` instead,
     // `safeFetch` rejects the scheme, `fetchFeedXml` SWALLOWS the throw,
@@ -156,12 +167,13 @@ export async function loadCollection(feedUrl: string): Promise<Collection | null
  * The stored rows are built from our own database, so they need no Podcast Index
  * call and are never counted against `couldNotAskPi`.
  */
-async function loadCommunity(): Promise<Collection | null> {
+async function loadCommunity(onStored?: (feeds: Podcast[]) => void): Promise<Collection | null> {
   const curated = [...new Set(COMMUNITY_PLAYLIST_URLS)];
-  const [list, rest] = await Promise.all([
-    COMMUNITY_PLAYLISTS_ON ? fetchCommunityPlaylists() : Promise.resolve([]),
-    loadUrlList(curated),
-  ]);
+  const storeRead = COMMUNITY_PLAYLISTS_ON ? fetchCommunityPlaylists() : Promise.resolve([]);
+  void storeRead.then((l) => {
+    if (l && l.length) onStored?.(l.map(communityPlaylistToPodcast));
+  });
+  const [list, rest] = await Promise.all([storeRead, loadUrlList(curated)]);
   const storeDown = list === null;
   const stored = (list ?? []).map(communityPlaylistToPodcast);
   const have = new Set(stored.map((p) => p.url));
