@@ -7,6 +7,7 @@ import {
 } from '../lib/curated-playlists.ts';
 import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
+  artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -205,6 +206,32 @@ check('1400x299 too-small (the shortest side counts)', A({ format: 'jpeg', width
 check('webp format', A({ format: 'webp', width: 1400, height: 1400 }).reason === 'format');
 check('png with alpha ok', A({ format: 'png', width: 3000, height: 3000, hasAlpha: true }).ok);
 check('{} not-image', A({}).reason === 'not-image');
+
+// The UPLOAD button's two pure rules. Can fail: the obvious version keeps a
+// 24 MP phone photo whole (over the art check's pixel limit), or shrinks a
+// panorama under ART_MIN_PX and uploads a cover PUBLISH will then refuse.
+{
+  const S = (w, h) => JSON.stringify(artUploadSize(w, h));
+  check('24 MP phone photo shrinks to 3000 on the long side', S(5712, 4284) === JSON.stringify({ width: 3000, height: 2250 }));
+  check('portrait shrinks on the long side too', S(3024, 4032) === JSON.stringify({ width: 2250, height: 3000 }));
+  check('1400 square is kept, never enlarged', S(1400, 1400) === JSON.stringify({ width: 1400, height: 1400 }));
+  check('300 square is kept (the smallest)', S(300, 300) === JSON.stringify({ width: 300, height: 300 }));
+  check('299 square is refused', artUploadSize(299, 299) === null);
+  check('a panorama under ART_MIN_PX AFTER the shrink is refused', artUploadSize(12000, 1000) === null);
+  check('a panorama that stays over ART_MIN_PX passes', S(6000, 800) === JSON.stringify({ width: 3000, height: 400 }));
+  check('zero / NaN sizes are refused', artUploadSize(0, 500) === null && artUploadSize(NaN, 500) === null);
+  check('the shrunk size passes artVerdict', A({ format: 'jpeg', ...artUploadSize(5712, 4284) }).ok);
+
+  const h = 'ab'.repeat(32);
+  const U = (a) => uploadedArtUrl(ART_UPLOAD_SERVER, h, a);
+  check('upload url is rebuilt from OUR hash', U({ sha256: h, url: 'https://evil.example/x.jpg' }) === `${ART_UPLOAD_SERVER}/${h}.jpg`);
+  check('an answer naming another hash is refused', U({ sha256: 'cd'.repeat(32), url: `${ART_UPLOAD_SERVER}/${h}.jpg` }) === null);
+  check('an answer with no hash is refused', U({ url: `${ART_UPLOAD_SERVER}/${h}.jpg` }) === null);
+  check('a non-object answer is refused', U('ok') === null && U(null) === null);
+  check('an upper-case hash in the answer still matches', U({ sha256: h.toUpperCase() }) === `${ART_UPLOAD_SERVER}/${h}.jpg`);
+  check('a bad local hash is refused', uploadedArtUrl(ART_UPLOAD_SERVER, 'xyz', { sha256: 'xyz' }) === null);
+  check('the upload server is https with no trailing slash', /^https:\/\/[^/]+$/.test(ART_UPLOAD_SERVER));
+}
 
 check('cleanText censors', cleanText('fuck this') === '**** this');
 for (const s of ['Scunthorpe classics', 'assassin', 'Cocktail hour', 'a  b\n c'])

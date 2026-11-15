@@ -30,6 +30,19 @@ function signTimeoutMs(o?: { timeoutMs?: number }): number {
   return o?.timeoutMs ?? DEFAULT_SIGN_TIMEOUT_MS;
 }
 
+/** Race one signer call against the sign timeout. Rejects with `SignTimeoutError`. */
+export async function withSignTimeout<T>(p: Promise<T>, o?: { timeoutMs?: number }): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SignTimeoutError()), signTimeoutMs(o));
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * One request with a NIP-98 `Authorization` header. Only the SIGN step races the
  * timeout; the network call after it has its own life. Rejects with
@@ -44,16 +57,10 @@ export async function signedFetch(
   const nostr = activeNostr();
   if (!nostr) throw new NoSignerError();
   const url = `${location.origin}${path}`;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new SignTimeoutError()), signTimeoutMs(o));
-  });
-  let token: string;
-  try {
-    token = await Promise.race([getToken(url, method, (e) => nostr.signEvent(e), true, body as Record<string, unknown> | undefined), timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+  const token = await withSignTimeout(
+    getToken(url, method, (e) => nostr.signEvent(e), true, body as Record<string, unknown> | undefined),
+    o,
+  );
   return fetch(url, {
     method,
     headers: {

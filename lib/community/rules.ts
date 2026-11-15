@@ -154,6 +154,47 @@ export function artVerdict(meta: {
   return { ok: true };
 }
 
+// ---- an uploaded cover (the UPLOAD button, lib/community/blossom.ts) --------
+
+/** The one Blossom server an uploaded cover goes to. No trailing slash. */
+export const ART_UPLOAD_SERVER = 'https://blossom.primal.net';
+
+/**
+ * The longest side an uploaded cover keeps. The cover route serves 1400 px, and
+ * the art check reads at most 24 MP: a 24 MP phone photo (5712 x 4284) is over
+ * that, so it must shrink in the browser or the check refuses it.
+ */
+export const ART_UPLOAD_MAX_PX = 3000;
+
+/**
+ * The size a picked picture is re-encoded at: the longest side at most
+ * ART_UPLOAD_MAX_PX, never enlarged. `null` when the shortest side, AFTER the
+ * shrink, is under ART_MIN_PX — the art check would refuse that upload, and the
+ * user would learn it only at PUBLISH, with a file already on a public server.
+ */
+export function artUploadSize(width: number, height: number): { width: number; height: number } | null {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  const scale = Math.min(1, ART_UPLOAD_MAX_PX / Math.max(width, height));
+  const w = Math.round(width * scale);
+  const h = Math.round(height * scale);
+  if (Math.min(w, h) < ART_MIN_PX) return null;
+  return { width: w, height: h };
+}
+
+/**
+ * The cover link for a finished upload, REBUILT from the hash we computed, never
+ * read from the server's answer: BUD-01 says `<server>/<sha256>` serves the blob,
+ * and the answer is third-party data. `null` unless the answer names that same
+ * hash, so a server that stored something else is not given a playlist's cover.
+ */
+export function uploadedArtUrl(server: string, sha256: string, answer: unknown): string | null {
+  if (!/^[0-9a-f]{64}$/.test(sha256)) return null;
+  if (!answer || typeof answer !== 'object') return null;
+  const got = (answer as { sha256?: unknown }).sha256;
+  if (typeof got !== 'string' || got.toLowerCase() !== sha256) return null;
+  return `${server}/${sha256}.jpg`;
+}
+
 export interface StoredPlaylist extends PlaylistDraft {
   id: string;
   ownerPubkey: string;

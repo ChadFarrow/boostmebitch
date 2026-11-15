@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useApp } from '@/lib/store';
 import { storage, type PlaylistDraftCache } from '@/lib/storage';
@@ -10,12 +10,13 @@ import { artCandidates } from '@/lib/util';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import { cleanText } from '@/lib/community/clean-text';
 import {
-  ART_MIN_PX, MAX_TITLE_LEN, MIN_SONGS, validatePlaylistDraft,
+  ART_MIN_PX, ART_UPLOAD_SERVER, MAX_TITLE_LEN, MIN_SONGS, validatePlaylistDraft,
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
   NoSignerError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
 } from '@/lib/community/client';
+import { ArtUploadError, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { PlaylistPublished } from './playlist-published';
@@ -37,6 +38,14 @@ const ART_WORDS: Record<ArtRefusal, string> = {
   'too-small': `The picture must be at least ${ART_MIN_PX} px on its shortest side.`,
   format: 'Use a PNG or JPEG picture.',
   'not-image': 'That link is not a picture we can read.',
+};
+
+const UPLOAD_WORDS: Record<ArtUploadFailure, string> = {
+  'not-image': 'That file is not a picture we can read. Use a JPEG or PNG.',
+  'too-small': `The picture must be at least ${ART_MIN_PX} px on its shortest side.`,
+  refused: 'The picture host refused the upload. Try again, or paste a link.',
+  network: 'The upload did not finish. Check your connection and try again.',
+  'bad-answer': 'The picture host gave an answer we cannot use. Try again, or paste a link.',
 };
 
 function problemText(p: Refusal, labels: Labels): string {
@@ -92,6 +101,13 @@ export function PlaylistMaker() {
   const [unsaved, setUnsaved] = useState(false);
   // Opens <AddSongsSheet>.
   const [addOpen, setAddOpen] = useState(false);
+  // The UPLOAD button: in flight, and the one line under the art field.
+  const [uploading, setUploading] = useState(false);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const artFileRef = useRef<HTMLInputElement>(null);
+  // Bumped on every account switch, so an upload that finishes after one never
+  // writes its link into the next account's form.
+  const formGen = useRef(0);
   const [busy, setBusy] = useState(false);
   const [refusals, setRefusals] = useState<Refusal[]>([]);
   const [note, setNote] = useState<string | null>(null);
@@ -123,6 +139,7 @@ export function PlaylistMaker() {
     setFormNpub(null); setTitle(''); setDescription(''); setArtUrl(''); setSongs([]); setLabels({});
     setEditingId(null); setExpectedUpdatedAt(null); setDirty(false); setUnsaved(false); setRefusals([]);
     setNote(null); setLoadError(null); setDeleted(null); setPublished(null); setConfirmDelete(false);
+    setUploadNote(null); setUploading(false); formGen.current += 1;
     if (!npub) return;
     let live = true;
     const id = new URLSearchParams(window.location.search).get('id');
@@ -202,6 +219,24 @@ export function PlaylistMaker() {
   const failure = (e: unknown) => (e instanceof SignTimeoutError || e instanceof NoSignerError
     ? (e instanceof NoSignerError ? e.message : 'Your signer did not answer. Open it and try again.')
     : 'Could not reach the server. Try again.');
+
+  // UPLOAD: the picked file goes to the Blossom server under the user's own key,
+  // and only the returned link lands in the art field (lib/community/blossom.ts).
+  const uploadArt = async (file: File) => {
+    const gen = formGen.current;
+    setUploading(true); setUploadNote(null);
+    try {
+      const url = await uploadPlaylistArt(file);
+      if (gen !== formGen.current) return;
+      setDirty(true); setArtUrl(url);
+      setUploadNote('Uploaded. The link is in the field above.');
+    } catch (e) {
+      if (gen !== formGen.current) return;
+      setUploadNote(e instanceof ArtUploadError ? UPLOAD_WORDS[e.reason] : failure(e));
+    } finally {
+      if (gen === formGen.current) setUploading(false);
+    }
+  };
 
   const submit = useCallback(async () => {
     const v = validatePlaylistDraft(draft, textHoldsSecret);
@@ -381,6 +416,22 @@ export function PlaylistMaker() {
           <p id="pl-art-hint" className="mt-1 text-xs text-muted">
             Square is preferred, 1400–3000 px. Empty: BMB makes the cover from the first four songs.
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {/* The input is hidden and the button opens it: a bare file input has no
+                styling a phone shows as a control. */}
+            <input ref={artFileRef} type="file" accept="image/*" className="hidden" data-art-file
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                if (f) void uploadArt(f);
+              }} />
+            <button type="button" className="btn-ghost" disabled={uploading || busy} data-art-upload
+              onClick={() => artFileRef.current?.click()}>
+              {uploading ? 'UPLOADING…' : '↑ UPLOAD PICTURE'}
+            </button>
+            <span className="text-xs text-muted">to {new URL(ART_UPLOAD_SERVER).host}, signed with your key</span>
+          </div>
+          {uploadNote && <p className="mt-1 text-xs text-bone/80" role="status" data-art-upload-note>{uploadNote}</p>}
         </div>
       </div>
 
