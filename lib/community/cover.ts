@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { batchEpisodes, episodeKey } from '../pi-batch';
+import { closedService } from '../moved-feeds';
 import { fetchImageBytes, IMAGE_PIXEL_LIMIT } from './checks';
 import { COVER_BG, COVER_JPEG, COVER_SIZE, composeCover } from './cover-compose';
 import type { PlaylistSong } from './rules';
@@ -28,16 +29,33 @@ async function coverFromArtUrl(url: string): Promise<Buffer | null> {
   }
 }
 
-async function tile(url: string): Promise<Buffer | null> {
+/**
+ * One grid tile, or why there is none. `'unusable'` is PERMANENT: the file is
+ * gone (404/410) or its bytes will never decode here (over the pixel limit, not
+ * an image). `'transient'` is a host's bad minute (timeout, 5xx, network). Only
+ * a transient miss marks the cover `failed`, which keeps it 5 minutes instead of
+ * a day: a permanent one would otherwise rebuild the same grid all day long.
+ * Measured 2026-11-15 on "ChadF's favorite V4V albums": its third song's cover
+ * is 8640 x 8283 (71.6 MP, over IMAGE_PIXEL_LIMIT) and "Christmas" has an RSS
+ * Blue song (410), so both grids were held 5 minutes forever.
+ */
+async function tile(url: string): Promise<Buffer | 'unusable' | 'transient'> {
+  let buf: Buffer;
   try {
-    const buf = await fetchImageBytes(url);
+    buf = await fetchImageBytes(url);
+  } catch (e) {
+    const status = /image fetch (\d+)/.exec(e instanceof Error ? e.message : '')?.[1];
+    return status === '404' || status === '410' ? 'unusable' : 'transient';
+  }
+  try {
     return await sharp(buf, { limitInputPixels: IMAGE_PIXEL_LIMIT })
       .resize(COVER_SIZE / 2, COVER_SIZE / 2, { fit: 'cover' })
       .flatten({ background: COVER_BG })
       .png()
       .toBuffer();
   } catch {
-    return null;
+    // The same bytes fail the same way next time: too many pixels, or not an image.
+    return 'unusable';
   }
 }
 
@@ -60,10 +78,12 @@ async function buildGridCover(songs: PlaylistSong[]): Promise<{ jpg: Buffer; any
   }
   const tiles: (Buffer | null)[] = [];
   for (const u of urls) {
-    if (!u) { tiles.push(null); continue; }
+    // A host that CLOSED is not asked at all (`lib/moved-feeds.ts`): every file
+    // there answers 410, and it is no failure of ours.
+    if (!u || closedService(u)) { tiles.push(null); continue; }
     const t = await tile(u);
-    if (!t) failed = true;
-    tiles.push(t);
+    if (t === 'transient') failed = true;
+    tiles.push(t === 'unusable' || t === 'transient' ? null : t);
   }
   return { jpg: await composeCover(tiles), anyTile: tiles.some(Boolean), failed };
 }
