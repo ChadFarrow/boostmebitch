@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -490,7 +490,7 @@ console.log('\nWhich mediums ARE playlists, and which of those play as tracks');
   {
     const fb = playlistCoverFallback;
     const u = 'https://v4vmusic.com/playlist/508a029b-020f-4334-9704-e0a9a5f800fb.xml';
-    if (fb({ medium: 'musicL', url: u }) === `/api/playlist-cover?feedUrl=${encodeURIComponent(u)}`) ok('cover fallback: a musicL playlist gets the grid route');
+    if (fb({ medium: 'musicL', url: u }) === `/api/playlist-cover?feedUrl=${encodeURIComponent(u)}&v=${PLAYLIST_COVER_STYLE}`) ok('cover fallback: a musicL playlist gets the grid route');
     else fail('cover fallback: a musicL playlist should get the grid route');
     if (fb({ medium: 'music', url: u }) === undefined) ok('cover fallback: an album gets none');
     else fail('cover fallback: an album must get none');

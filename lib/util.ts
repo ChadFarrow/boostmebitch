@@ -91,8 +91,14 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
  */
 export function playlistCoverFallback(p: Pick<Podcast, 'medium' | 'url'>): string | undefined {
   if (!isPlaylistMedium(p) || !p.url || !/^https?:\/\//i.test(p.url) || p.url.length > 2048) return undefined;
-  return `/api/playlist-cover?feedUrl=${encodeURIComponent(p.url)}`;
+  // `v` names the cover STYLE. The answer is cached a day in the browser, so a
+  // change of style must change the address, or a phone that loaded the old
+  // picture keeps it (2: v4vmusic playlists moved from the grid to the first song).
+  return `/api/playlist-cover?feedUrl=${encodeURIComponent(p.url)}&v=${PLAYLIST_COVER_STYLE}`;
 }
+
+/** Bump when `/api/playlist-cover` draws a different picture for the same feed. */
+export const PLAYLIST_COVER_STYLE = 2;
 
 /**
  * Whether a row can be played at all.
