@@ -14,7 +14,7 @@ import {
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
-  NoSignerError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
+  NoSignerError, SignFailedError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
 } from '@/lib/community/client';
 import { ArtUploadError, fetchBlossomServers, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
@@ -220,9 +220,14 @@ export function PlaylistMaker() {
   }); };
   const remove = (i: number) => { setDirty(true); setSongs((s) => s.filter((_, k) => k !== i)); };
 
-  const failure = (e: unknown) => (e instanceof SignTimeoutError || e instanceof NoSignerError
-    ? (e instanceof NoSignerError ? e.message : 'Your signer did not answer. Open it and try again.')
-    : 'Could not reach the server. Try again.');
+  // Which step failed decides the words: a signer problem must never read as a
+  // server problem, or the user retries a request that never left.
+  const failure = (e: unknown) => {
+    if (e instanceof NoSignerError) return 'No signer is connected. Connect your signer, then try again.';
+    if (e instanceof SignTimeoutError) return 'Your signer did not answer. Open it and try again.';
+    if (e instanceof SignFailedError) return 'Your signer did not sign. Check that it is connected, then try again.';
+    return 'Could not reach the server. Try again.';
+  };
 
   // UPLOAD: the picked file goes to the Blossom server under the user's own key,
   // and only the returned link lands in the art field (lib/community/blossom.ts).
