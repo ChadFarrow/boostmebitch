@@ -7,7 +7,7 @@
 // `showV4VStamp` is on for search results (where the value-block is known)
 // and off for favorites (the cache only carries metadata, not value).
 import type { Podcast } from '@/lib/types';
-import { carriesV4V, isPlaylistMedium } from '@/lib/util';
+import { carriesV4V, isPlaylistMedium, playlistCoverFallback } from '@/lib/util';
 import { PodcastCover } from '../podcast-cover';
 import { FavHeart } from '../fav-heart';
 
@@ -93,6 +93,7 @@ export function PodcastRow({
           artwork={podcast.artwork}
           title={podcast.title}
           seed={podcast.podcastGuid ?? String(podcast.id)}
+          fallbackSrc={playlistCoverFallback(podcast)}
           className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
         />
         <div className="min-w-0 flex-1">

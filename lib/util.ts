@@ -62,6 +62,18 @@ export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * The picture BMB makes for a PLAYLIST whose own cover fails: the 2 x 2 grid of
+ * its first four songs (`/api/playlist-cover`). For `<PodcastCover>`'s
+ * `fallbackSrc`, the rung after the feed's own cover. Undefined for anything
+ * that is not a playlist, or with no http(s) feed URL to read the songs from.
+ * A playlist BMB hosts never reaches it: its cover route always answers.
+ */
+export function playlistCoverFallback(p: Pick<Podcast, 'medium' | 'url'>): string | undefined {
+  if (!isPlaylistMedium(p) || !p.url || !/^https?:\/\//i.test(p.url) || p.url.length > 2048) return undefined;
+  return `/api/playlist-cover?feedUrl=${encodeURIComponent(p.url)}`;
+}
+
+/**
  * Feeds whose rows are TRACKS rather than episodes: a row tap plays instead of
  * opening a detail page, the header cover is a play button, playback
  * auto-advances, and chapters/transcripts are suppressed.
