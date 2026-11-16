@@ -18,6 +18,9 @@ create table if not exists community_playlists (
 -- `updated_at = $n` and can be edited.
 alter table community_playlists alter column created_at set default date_trunc('milliseconds', now());
 alter table community_playlists alter column updated_at set default date_trunc('milliseconds', now());
+-- The maker's name, typed in the maker's NAME box (PlaylistDraft.ownerName); null for none.
+-- Apply BEFORE deploying the code that reads it: that code selects this column.
+alter table community_playlists add column if not exists owner_name text;
 create index if not exists community_playlists_created_idx
   on community_playlists (created_at desc) where deleted_at is null;
 create index if not exists community_playlists_owner_idx
