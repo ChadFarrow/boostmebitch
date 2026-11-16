@@ -1027,7 +1027,7 @@ request reaches Clave, Clave signs, and the answer has nowhere to land.
   kind:9734's failure set `bunkerStale` and armed it; two seconds later the
   kind:1 was in flight, `bunkerBusy()` was true, `maybeReviveBunker` returned —
   and nothing re-armed it, because `setBunkerStale` notifies only on a change.
-  That last one is NOT fixed here; see the end of this section.
+  Fixed in the follow-up; see the next section.
 
 **The fix asks before it signs: `checkSignerLink` (`lib/nostr/auth.ts`).** It is
 `restoreBunkerSigner` — the RECONNECT button's own function, which pings the live
@@ -1079,14 +1079,51 @@ code, not measured.
 failed ping closes the stale adapter twice — `closeStaleBunkerTransport`, then
 `activateBunkerSigner` over the same object. The second close read an ended
 `subCloser` and threw an unhandled rejection on each reconnect.
-`closeSignerQuietly` (`signer.ts`) swallows it; the e2e's page-health check is
+`closeBunkerSigner` (`bunker.ts`) swallows it; the e2e's page-health check is
 what saw it.
 
-**Still open: the ladder that dies on a busy session.** `maybeReviveBunker`
-returns on `bunkerBusy()` without re-arming, so a rung that lands while any
-signer call is in flight ends the ladder, and the banner waits for a foreground
-return or a press. The boost path no longer depends on it — RETRY NOTE runs its
-own check — but every other surface that signs still does.
+### The red dot that waited for a press
+
+Reported from the same iPhone the same day: *"See the red little reconnect thing
+pop up with [Clave] a lot, and usually I click that and it reconnects, or
+sometimes I just hit my profile image up to the top menu and just open that menu
+sometimes, reconnects it."*
+
+**Opening the menu reconnects nothing.** On iOS the tap fires `focus`, which
+`startBunkerRevive` listens for — so a dot that cleared on a menu tap was the
+app's own revive, and a dot that needed RECONNECT was one the automatic paths
+had given up on, or had raised after they had already succeeded. Two such paths,
+both reproduced by `npm run e2e:bunkerrevive` on the code before the fix.
+
+**1. A request on a replaced transport raised the dot over a rebuilt link.** A
+request issued while a revive is still PROBING rides the old transport. The
+ping fails, `closeStaleBunkerTransport` closes it, the rebuild connects and
+clears the flag — and the request it closed under is never rejected
+(`inner.close()` ends the subscription and leaves pending listeners alone). It
+sat out `BUNKER_CALL_TIMEOUT_MS`, pinged its own CLOSED signer, got nothing, and
+marked the session stale: measured at 32 s after the wake, over a link that
+signs. **Fix:** `closeBunkerSigner` records every signer it closes in a
+`WeakSet` (`isOpen` is private in 2.19.4), and `runBunkerCall` takes a
+`superseded` check — a call whose transport was closed under it fails without
+touching the flag. Only a reconnect or a sign-out closes a live signer, and each
+owns the flag. The stranded request still FAILS; re-issuing it on the new
+transport would mean a second approval prompt for a request the signer may
+already have signed.
+
+**2. The retry ladder died on a busy session.** `maybeReviveBunker` returned on
+`bunkerBusy()`, and nothing armed the ladder again — the health subscription
+fires only on a CHANGE, and the flag was already up. A failed request is what
+raises the dot and the next one is often already queued behind it, so the first
+rung commonly landed busy and the ladder was over. **Fix:** a rung that finds
+the session busy re-arms at the SAME step — it made no attempt at the link, so
+it spends none of the three. A wake is not re-armed; it is not part of the
+ladder. While busy the rung re-checks every 2 s, which is a local test and no
+network; busy is bounded by the approval budget (120 s).
+
+**What is still not covered.** A signer the OS has killed answers nothing, and
+the ladder still gives up after three fast failures or one slow one — the banner
+is the honest answer there. And a revive throttled by `BUNKER_REVIVE_MIN_GAP_MS`
+waits for the next wake.
 
 ### Clave stopped answering at prompt-time, and `withApprovalWait` is built around the answer it stopped sending
 

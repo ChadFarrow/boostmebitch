@@ -570,7 +570,25 @@ async function maybeReviveBunker({ throttled }: { throttled: boolean }): Promise
   // radio that is down. `navigator.onLine === true` says nothing, so only the
   // explicit false is acted on.
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-  if (bunkerBusy()) return;
+  if (bunkerBusy()) {
+    // A RUNG THAT LANDS ON A BUSY SESSION IS NOT SPENT — it waits its turn.
+    // Returning here used to END the ladder: nothing armed it again, because
+    // the health subscription that arms it fires only on a CHANGE of the flag,
+    // and the flag was already up. So a dot raised while any request was in
+    // flight — the commonest case, since a failed request is what raises it
+    // and the next one is often already queued behind it — stayed up until a
+    // foreground return or a press. Reported as "the red reconnect thing pops
+    // up with Clave a lot … usually I click that and it reconnects".
+    //
+    // Same rung again, not the next: the step counts attempts at the LINK, and
+    // a skip made none. A wake (`throttled`) is not re-armed — it is not part
+    // of the ladder, and the next wake will come on its own.
+    if (!throttled) {
+      retryStep = Math.max(0, retryStep - 1);
+      armBunkerRetry();
+    }
+    return;
+  }
   // JOIN A RESTORE ALREADY RUNNING, never skip past it — and the case that made
   // this an `await` rather than a `return` is the one the whole feature is
   // about. The user presses RECONNECT, walks to their signer, opens it, and

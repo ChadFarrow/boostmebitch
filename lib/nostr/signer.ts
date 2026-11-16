@@ -27,7 +27,7 @@
 import { storage } from '@/lib/storage';
 import { AmberSigner } from './amber';
 import { LocalSigner } from './local-signer';
-import { sendBunkerLogout, type BunkerAdapter } from './bunker';
+import { closeBunkerSigner, sendBunkerLogout, type BunkerAdapter } from './bunker';
 
 let amberInstance: AmberSigner | null = null;
 let bunkerInstance: BunkerAdapter | null = null;
@@ -239,21 +239,8 @@ function closeBunkerTransport() {
   // pool is a separate object. Destroying the pool is what actually returns the
   // connections — and it is safe to destroy outright only because lib/nostr/
   // bunker.ts hands us a pool it created for this one connection.
-  closeSignerQuietly(bunkerInstance.inner);
+  closeBunkerSigner(bunkerInstance.inner);
   try { bunkerInstance.pool.destroy(); } catch { /* ignore */ }
-}
-
-/**
- * `BunkerSigner.close()` is ASYNC in the pinned nostr-tools 2.19.4, so a `try`
- * around the call catches nothing: its throw arrives as a rejected promise. A
- * transport closed twice rejects — `close()` reads `this.subCloser`, which the
- * first close has already ended — and every reconnect after a failed ping
- * closes one twice: `closeStaleBunkerTransport` first, then
- * `activateBunkerSigner` over the same adapter. That surfaced as an unhandled
- * "Cannot read properties of undefined (reading 'close')" on each of them.
- */
-function closeSignerQuietly(inner: BunkerAdapter['inner']): void {
-  try { Promise.resolve(inner.close()).catch(() => { /* already closed */ }); } catch { /* ignore */ }
 }
 
 /**
@@ -326,7 +313,7 @@ export function revokeBunkerSession() {
   notifySigner();
   if (!adapter) return;
   void sendBunkerLogout(adapter).finally(() => {
-    closeSignerQuietly(adapter.inner);
+    closeBunkerSigner(adapter.inner);
     try { adapter.pool.destroy(); } catch { /* ignore */ }
   });
 }
