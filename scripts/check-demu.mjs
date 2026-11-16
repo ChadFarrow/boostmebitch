@@ -51,6 +51,13 @@ const vectors = [
   { label: 'Worried on Fountain (7520866)', args: [ROWS.worriedOnFountain], expect: true, alsoNaive: true },
   { label: 'Cartieradio, blank generator (46385)', args: [ROWS.blankGenerator], expect: true, alsoNaive: true },
   { label: 'Worried on RSS Blue, a closed host (7101864)', args: [ROWS.worriedOnRssBlue], expect: false },
+  // NOT FROM THE WIRE — a contract vector. PI always sends `generator`, as ""
+  // when the feed has none (Cartieradio above), and `buildPodcast` keeps it.
+  // An ABSENT field therefore means the wiring broke (a refactor, a slimmer
+  // projection, a lane that builds rows another way), and "absent passes"
+  // would turn every Wavlake album into DeMu with nothing on screen to say so.
+  // Absent FAILS CLOSED: DEMU goes empty, loudly, instead.
+  { label: 'generator field absent (broken wiring) fails closed', args: [{ id: 0, url: ROWS.worriedOnFountain.url }], expect: false },
 ];
 
 const call = (impl, v) => {

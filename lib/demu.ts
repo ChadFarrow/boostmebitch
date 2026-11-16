@@ -30,7 +30,13 @@
 
 /** The two fields of a Podcast Index feed record the rule reads. */
 export interface DemuRow {
-  /** The feed's `<generator>`. Blank or absent passes: 190 DeMu feeds have none. */
+  /**
+   * The feed's `<generator>`. BLANK passes: Podcast Index sends `""` for a feed
+   * without one, and 190 DeMu feeds have none. ABSENT fails: PI always sends
+   * the key and `buildPodcast` keeps it, so a row without it was built by
+   * something that dropped the field, and passing it would call every Wavlake
+   * album DeMu.
+   */
   generator?: string;
   /** The feed URL. */
   url?: string;
@@ -38,7 +44,8 @@ export interface DemuRow {
 
 /**
  * Whether one feed record is self-hosted by Chad's rule: no "wavlake" in its
- * generator, case-insensitively, and not on a closed host.
+ * generator, case-insensitively, and not on a closed host. A row with no
+ * `generator` field at all FAILS CLOSED (see `DemuRow.generator`).
  *
  * This does NOT test the medium. The DEMU lane runs the music lanes, and
  * `matchesSearchType(p, 'demu')` applies the music test to byterm's rows.
@@ -47,6 +54,7 @@ export function isDemuFeed(
   row: DemuRow,
   closedService: (url: string) => string | null,
 ): boolean {
-  if (/wavlake/i.test(row.generator ?? '')) return false;
+  if (typeof row.generator !== 'string') return false;
+  if (/wavlake/i.test(row.generator)) return false;
   return closedService(row.url ?? '') === null;
 }
