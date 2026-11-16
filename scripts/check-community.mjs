@@ -4,6 +4,7 @@
 import {
   COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH, COMMUNITY_PLAYLISTS_ON,
   communityFeedUrl, communityCoverUrl, communityIdFromFeedUrl, coverVersion,
+  COMMUNITY_PUBLISHER_PATH, communityPublisherFeedUrl,
 } from '../lib/curated-playlists.ts';
 import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
@@ -13,7 +14,7 @@ import {
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
 import {
-  escapeXml, communityFeedGuid, buildPlaylistFeedXml, FEED_TEMPLATE_UPDATED_AT,
+  escapeXml, communityFeedGuid, buildPlaylistFeedXml, FEED_TEMPLATE_UPDATED_AT, buildPublisherFeedXml, PLAYLIST_MAKER_REL,
 } from '../lib/community/feed-doc.ts';
 import { channelSlice, parsePlaylistRemoteItems, parseFeedNpubs, decodeXmlText } from '../lib/feed-xml.ts';
 import { npubEncode, noteEncode, nprofileEncode, nsecEncode } from 'nostr-tools/nip19';
@@ -308,10 +309,15 @@ const stored = {
   id, ownerPubkey: 'ab'.repeat(32), createdAt: '2026-11-01T00:00:00.000Z',
   updatedAt: '2026-11-12T00:00:00.000Z', title: TITLE, description: 'A & B <c>', ownerName: '', artUrl: null, songs: docSongs,
 };
+// The maker's publisher feed: it lists every playlist of the maker, and each playlist
+// names it back in <podcast:publisher>. The spec trusts the link only both ways.
+const PUB_URL = communityPublisherFeedUrl(ownerNpub);
+const PUB_GUID = communityFeedGuid(PUB_URL);
 const opts = {
   feedUrl: communityFeedUrl(id), coverUrl: communityCoverUrl(id, 1),
   ownerNpub, fallbackDescription: 'Fallback & co', podcastGuid: communityFeedGuid(communityFeedUrl(id)),
   generator: `${BRANDS.buddy.displayName} (${BRANDS.buddy.origin})`,
+  publisher: { feedUrl: PUB_URL, podcastGuid: PUB_GUID },
 };
 // The guid saved with the row when it was created. It is the feed's identity for good:
 // a deploy whose feed origin differs from the one the row was made under must not mint a
@@ -352,7 +358,17 @@ const docVectors = [
     return all.length === 1 && !!m && !/[<>"']/.test(m[1]) && decodeXmlText(m[1]) === `Tom & "Jerry" <3`;
   } },
   { kind: 'feedUrl only when known', build: (b) => b(stored, opts), test: (xml) =>
-    (xml.match(/feedUrl=/g) ?? []).length === 1 && xml.includes('feedUrl="https://x.example/f.xml?a=1&amp;b=2"') },
+    (xml.match(/<podcast:remoteItem [^>]*itemGuid=[^>]*feedUrl=/g) ?? []).length === 1
+    && xml.includes('feedUrl="https://x.example/f.xml?a=1&amp;b=2"') },
+  // The back-link: once, in the channel, medium="publisher", and no itemGuid, so no
+  // track reader (parsePlaylistRemoteItems above: still 12) takes it for a song.
+  { kind: 'publisher back-link', build: (b) => b(stored, opts), test: (xml) => {
+    const blocks = channelSlice(xml).match(/<podcast:publisher>([\s\S]*?)<\/podcast:publisher>/g) ?? [];
+    const items = blocks.length === 1 ? blocks[0].match(/<podcast:remoteItem [^>]*\/>/g) ?? [] : [];
+    return items.length === 1 && items[0].includes('medium="publisher"') && items[0].includes('rel="curator"')
+      && items[0].includes(`feedGuid="${PUB_GUID}"`) && items[0].includes(`feedUrl="${escapeXml(PUB_URL)}"`)
+      && !items[0].includes('itemGuid') && (xml.match(/<podcast:publisher>/g) ?? []).length === 1;
+  } },
   // lastBuildDate is the later of the row's updatedAt and FEED_TEMPLATE_UPDATED_AT, so a
   // template change reaches every feed's date and an edit after it still moves the date.
   { kind: 'rfc822 lastBuildDate: an older row shows the template date', build: (b) => b(stored, opts), test: (xml) =>
@@ -403,6 +419,68 @@ for (const v of docVectors.filter((x) => ['items', 'title well-formed', 'author 
   check('feed doc: stored-guid vector fails against recomputing from the URL (can fail)', !v.test(v.build(recompute)));
 }
 check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
+
+// ---- the maker's publisher feed (buildPublisherFeedXml) ----
+{
+  const pIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  const entries = [
+    { feedUrl: communityFeedUrl(pIds[0]), podcastGuid: 'aaaaaaaa-0000-5000-8000-000000000001', coverUrl: 'https://img.example/a.jpg?x=1&y=2', updatedAt: '2026-11-15T00:00:00.000Z' },
+    { feedUrl: communityFeedUrl(pIds[1]), podcastGuid: 'aaaaaaaa-0000-5000-8000-000000000002', coverUrl: communityCoverUrl(pIds[1], 7), updatedAt: '2026-11-14T00:00:00.000Z' },
+  ];
+  const popts = {
+    feedUrl: PUB_URL, podcastGuid: PUB_GUID, ownerNpub, ownerName: `Tom & "Jerry"`,
+    siteName: BRANDS.buddy.displayName, generator: opts.generator,
+  };
+  const xml = buildPublisherFeedXml(entries, popts);
+  const ch = channelSlice(xml);
+  const items = ch.match(/<podcast:remoteItem [^>]*\/>/g) ?? [];
+  check('pubfeed URL: the feed origin, /feeds/publishers/, the npub',
+    COMMUNITY_PUBLISHER_PATH === '/feeds/publishers/' && PUB_URL === `${COMMUNITY_FEED_ORIGIN}/feeds/publishers/${ownerNpub}.xml`);
+  check('pubfeed: medium publisher, its guid, one channel',
+    ch.includes('<podcast:medium>publisher</podcast:medium>') && ch.includes(`<podcast:guid>${PUB_GUID}</podcast:guid>`)
+    && (xml.match(/<channel>/g) ?? []).length === 1);
+  // medium="musicL", never "music": a music index then lists the maker as a curator of
+  // playlists and not as a musician (Chad, 2026-11-16).
+  check('pubfeed: one remoteItem per playlist, in order, medium="musicL", feedGuid/feedUrl/feedImg',
+    items.length === 2 && items.every((t, i) => t.includes('medium="musicL"') && t.includes('rel="curator"')
+      && t.includes(`feedGuid="${entries[i].podcastGuid}"`) && t.includes(`feedUrl="${escapeXml(entries[i].feedUrl)}"`)
+      && t.includes(`feedImg="${escapeXml(entries[i].coverUrl)}"`)) && !/medium="music"/.test(xml));
+  check('pubfeed: no itemGuid, no <item>, no value block', !xml.includes('itemGuid') && !/<item/.test(xml) && !/<podcast:value/.test(xml));
+  check('pubfeed: title and author from the escaped name',
+    titleOf(xml) === `Tom & "Jerry"'s playlists`
+    && decodeXmlText(/<itunes:author>([\s\S]*?)<\/itunes:author>/.exec(ch)?.[1] ?? '') === `Tom & "Jerry"`);
+  const BARE_AMP = /&(?!(amp|lt|gt|quot|apos);)/;
+  const wellFormed = (doc) => {
+    const c = channelSlice(doc);
+    const title = /<title>([\s\S]*?)<\/title>/.exec(c)?.[1] ?? '';
+    return (c.match(/<podcast:remoteItem [^>]*\/>/g) ?? []).every((t) => !BARE_AMP.test(t))
+      && !BARE_AMP.test(title) && !/[<>"']/.test(title);
+  };
+  check('pubfeed: attribute values and title well-formed', wellFormed(xml));
+  const naivePub = xml.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  check('pubfeed: well-formed vector fails against naive (can fail)', !wellFormed(naivePub));
+  check('pubfeed: npub, generator, image is the newest playlist\'s cover',
+    parseFeedNpubs(xml)?.[0]?.npub === ownerNpub && ch.includes(`<generator>${escapeXml(opts.generator)}</generator>`)
+    && ch.includes(`<itunes:image href="${escapeXml(entries[0].coverUrl)}"/>`));
+  check('pubfeed: pubDate is the newest playlist edit, lastBuildDate also counts the template date',
+    ch.includes(`<pubDate>${new Date(entries[0].updatedAt).toUTCString()}</pubDate>`)
+    && ch.includes(`<lastBuildDate>${new Date(Math.max(Date.parse(entries[0].updatedAt), Date.parse(FEED_TEMPLATE_UPDATED_AT))).toUTCString()}</lastBuildDate>`));
+  const anon = buildPublisherFeedXml(entries, { ...popts, ownerName: '' });
+  check('pubfeed: no name -> no author, and a title from the npub',
+    !/<itunes:author/.test(anon) && titleOf(anon).includes(ownerNpub.slice(0, 16)));
+  // Both ways: the playlist names this publisher feed, and the publisher feed lists it.
+  const pl = buildPlaylistFeedXml(stored, opts);
+  const back = (channelSlice(pl).match(/<podcast:publisher>[\s\S]*?<\/podcast:publisher>/) ?? [''])[0];
+  const one = buildPublisherFeedXml([{ feedUrl: opts.feedUrl, podcastGuid: opts.podcastGuid, coverUrl: opts.coverUrl, updatedAt: stored.updatedAt }], popts);
+  const relOf = (tag) => (/ rel="([^"]*)"/.exec(tag) ?? [])[1];
+  check('the role is "curator", the same on both sides of the link (musicindex counts only an agreed role)',
+    PLAYLIST_MAKER_REL === 'curator' && relOf(back) === 'curator'
+    && relOf((channelSlice(one).match(/<podcast:remoteItem [^>]*\/>/) ?? [''])[0]) === relOf(back));
+  check('pubfeed and playlist link both ways',
+    back.includes(`feedGuid="${PUB_GUID}"`) && back.includes(`feedUrl="${escapeXml(PUB_URL)}"`)
+    && one.includes(`<podcast:guid>${PUB_GUID}</podcast:guid>`)
+    && one.includes(`feedGuid="${opts.podcastGuid}"`) && one.includes(`feedUrl="${escapeXml(opts.feedUrl)}"`));
+}
 
 // ---- NIP-98 (lib/community/auth.ts) ----
 {
