@@ -187,6 +187,9 @@ function buildPodcast(f: any): Podcast {
     artwork: f.artwork && f.artwork !== f.image ? f.artwork : undefined,
     url: f.url,
     medium: typeof f.medium === 'string' && f.medium.length > 0 ? f.medium : undefined,
+    // Read by the DEMU search lane (`isDemuFeed`): "not Wavlake" is a test on
+    // this field, never on the host. PI sends "" for a feed without one.
+    generator: typeof f.generator === 'string' && f.generator ? f.generator : undefined,
     v4vHint: piListsValue(f) || undefined,
     funding: fundingFromPi(f),
   };

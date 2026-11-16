@@ -23,6 +23,7 @@
 
 import { isDemuFeed } from '../lib/demu.ts';
 import { closedService } from '../lib/moved-feeds.ts';
+import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -69,6 +70,44 @@ for (const v of vectors) {
 
 console.log('\nThe replay against naive():');
 replayVectors({ vectors, invoke: call, fail });
+
+// ── The selector: the menu entry, the allowlist, the music half ──────────────
+// `lib/util.ts` may not import `lib/demu.ts` (type-only imports there), so the
+// lane is composed in the route. The composition below is the route's, over
+// the real functions: filter both lanes with the rule, then the shared join.
+console.log('\nThe DEMU selector type:');
+{
+  const MENU = { type: 'demu', label: 'DEMU', noun: 'DeMu albums', placeholder: 'search self-hosted music…' };
+  const at = SEARCH_TYPES.findIndex((s) => s.type === 'demu');
+  if (JSON.stringify(SEARCH_TYPES[at]) !== JSON.stringify(MENU)) fail(`menu entry is ${JSON.stringify(SEARCH_TYPES[at])}`);
+  else ok('the menu entry reads DEMU / DeMu albums / search self-hosted music…');
+  if (at !== SEARCH_TYPES.findIndex((s) => s.type === 'music') + 1) fail(`DEMU sits at ${at}, not directly after ♫ MUSIC`);
+  else ok('DEMU sits directly after ♫ MUSIC');
+
+  if (parseSearchType('demu') !== 'demu') fail(`parseSearchType('demu') is ${parseSearchType('demu')}`);
+  else ok("parseSearchType('demu') is 'demu'");
+  if (parseSearchType('DEMU') !== 'demu') fail(`parseSearchType('DEMU') is ${parseSearchType('DEMU')}`);
+  else ok("parseSearchType('DEMU') is 'demu'");
+
+  if (matchesSearchType({ medium: 'music' }, 'demu') !== true) fail('a music row does not match demu');
+  else ok('a music row matches demu');
+  // "Longy - Everything" (7696544) is Longy's publisher feed, not an album.
+  if (matchesSearchType({ medium: 'publisher' }, 'demu') !== false) fail('a publisher row matches demu');
+  else ok('a publisher row does not match demu');
+
+  const music = [
+    ROWS.wavlakeAlbum, ROWS.wheelOnWavlake, ROWS.wavlakeQa, ROWS.wheelOnMsp,
+    ROWS.worriedOnFountain, ROWS.blankGenerator, ROWS.worriedOnRssBlue,
+  ].map((r) => ({ ...r, medium: 'music' }));
+  const byterm = [
+    { id: 7696544, medium: 'publisher', generator: 'MSP 2.0 - Music Side Project Studio', url: 'https://headstarts.uk/msp/publisher-feeds/longy-everything-publisher-feed.xml' },
+    { ...ROWS.worriedOnFountain, medium: 'music' },
+  ];
+  const keep = (f) => isDemuFeed(f, closedService);
+  const ids = mergeSearchLanes(music.filter(keep), byterm.filter(keep), 'demu', 50).map((f) => f.id);
+  if (JSON.stringify(ids) !== JSON.stringify([7287540, 7520866, 46385])) fail(`the DEMU lane returned ${JSON.stringify(ids)}`);
+  else ok('the DEMU lane keeps 7287540, 7520866, 46385: Wavlake, RSS Blue and the publisher feed out, the repeat deduped');
+}
 
 // ── The module must stay loadable under plain Node ───────────────────────────
 {
