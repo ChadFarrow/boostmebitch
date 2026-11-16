@@ -240,7 +240,7 @@ const docSongs = Array.from({ length: 12 }, (_, i) => ({
 }));
 const stored = {
   id, ownerPubkey: 'ab'.repeat(32), createdAt: '2026-11-01T00:00:00.000Z',
-  updatedAt: '2026-11-12T00:00:00.000Z', title: TITLE, description: 'A & B <c>', artUrl: null, songs: docSongs,
+  updatedAt: '2026-11-12T00:00:00.000Z', title: TITLE, description: 'A & B <c>', ownerName: '', artUrl: null, songs: docSongs,
 };
 const opts = {
   feedUrl: communityFeedUrl(id), coverUrl: communityCoverUrl(id, 1),
@@ -274,8 +274,17 @@ const docVectors = [
     decodeXmlText(/<description>([\s\S]*?)<\/description>/.exec(channelSlice(xml))[1]) === 'A & B <c>' },
   { kind: 'fallback description', build: (b) => b({ ...stored, description: '' }, opts), test: (xml) =>
     decodeXmlText(/<description>([\s\S]*?)<\/description>/.exec(channelSlice(xml))[1]) === 'Fallback & co' },
-  { kind: 'no value/item/author', build: (b) => b(stored, opts), test: (xml) =>
+  // No value block, ever (Chad, 2026-11-15: the maker of a playlist takes no cut).
+  { kind: 'no value/item; no author without a name', build: (b) => b(stored, opts), test: (xml) =>
     !/<podcast:value/.test(xml) && !/<item/.test(xml) && !/<itunes:author/.test(xml) },
+  { kind: 'no value/item with a name either', build: (b) => b({ ...stored, ownerName: 'X' }, opts), test: (xml) =>
+    !/<podcast:value/.test(xml) && !/<item/.test(xml) },
+  // The maker's Nostr name, once, in the channel, escaped (Chad, 2026-11-15).
+  { kind: 'author is the stored name', build: (b) => b({ ...stored, ownerName: `Tom & "Jerry" <3` }, opts), test: (xml) => {
+    const all = xml.match(/<itunes:author>([\s\S]*?)<\/itunes:author>/g) ?? [];
+    const m = /<itunes:author>([\s\S]*?)<\/itunes:author>/.exec(channelSlice(xml));
+    return all.length === 1 && !!m && !/[<>"']/.test(m[1]) && decodeXmlText(m[1]) === `Tom & "Jerry" <3`;
+  } },
   { kind: 'feedUrl only when known', build: (b) => b(stored, opts), test: (xml) =>
     (xml.match(/feedUrl=/g) ?? []).length === 1 && xml.includes('feedUrl="https://x.example/f.xml?a=1&amp;b=2"') },
   // lastBuildDate is the later of the row's updatedAt and FEED_TEMPLATE_UPDATED_AT, so a
@@ -283,6 +292,10 @@ const docVectors = [
   { kind: 'rfc822 lastBuildDate: an older row shows the template date', build: (b) => b(stored, opts), test: (xml) =>
     xml.includes(`<lastBuildDate>${new Date(FEED_TEMPLATE_UPDATED_AT).toUTCString()}</lastBuildDate>`)
     && Date.parse(stored.updatedAt) < Date.parse(FEED_TEMPLATE_UPDATED_AT) },
+  // pubDate is the row's own last change, never the template date: a template change publishes nothing new.
+  { kind: 'rfc822 pubDate is the row edit', build: (b) => b(stored, opts), test: (xml) =>
+    (channelSlice(xml).match(/<pubDate>/g) ?? []).length === 1
+    && xml.includes(`<pubDate>${new Date(stored.updatedAt).toUTCString()}</pubDate>`) },
   { kind: 'rfc822 lastBuildDate: a newer row shows its own edit', build: (b) => b({ ...stored, updatedAt: '2099-01-02T03:04:05.000Z' }, opts), test: (xml) =>
     xml.includes('<lastBuildDate>Fri, 02 Jan 2099 03:04:05 GMT</lastBuildDate>') },
   { kind: 'stored podcast:guid', build: (b) => b(stored, { ...opts, podcastGuid: STORED_GUID }), test: (xml) =>
@@ -312,7 +325,7 @@ const oldEscapeBuild = (p, o) => buildPlaylistFeedXml({ ...p, title: 'TT' }, o)
   check('feed doc: illegal chars vector fails against old escapeXml (can fail)', !v.test(v.build(oldEscapeBuild)));
 }
 // Only the escaping vectors must fail against the naive builder.
-for (const v of docVectors.filter((x) => ['items', 'title well-formed'].includes(x.kind))) {
+for (const v of docVectors.filter((x) => ['items', 'title well-formed', 'author is the stored name'].includes(x.kind))) {
   let passes;
   try { passes = v.test(v.build(naiveBuild)); } catch { passes = false; }
   check('feed doc: ' + v.kind + ' fails against naive (can fail)', !passes);

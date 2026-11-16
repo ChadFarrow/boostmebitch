@@ -5,7 +5,7 @@ import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, receiptRefUrls } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, receiptRefUrls, checkSignerLink, type QuotedZapReceipt, type SignerCheck } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
@@ -23,7 +23,7 @@ import { gifWireUrl, type GifPick } from '@/lib/gifs/pick';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './boost-modal/sender-name';
-import { PublishStatus, type PublishState } from './boost-modal/publish-status';
+import { PublishStatus, signerCheckMessage, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
 import { RailPicker } from './rail-picker';
@@ -235,6 +235,12 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // Words and GIF as one string, read by every boostagram, the log and the
     // summary note below.
     const boostMsg = withGif(msg, gifUrl);
+
+    // Can the user's signer answer? Started NOW so it runs while the album's
+    // legs pay, and awaited before the summary note signs — see
+    // `checkSignerLink`. Null when the user's key will sign nothing.
+    const selfSigned = !!identity && shareNostr && shareAs === 'self';
+    const signerCheck: Promise<SignerCheck> | null = selfSigned ? checkSignerLink() : null;
 
     setRunning(true);
     setProgress([]);
@@ -491,40 +497,68 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     }
     const contentOverride = lines.join('\n');
 
-    setPubState({ kind: 'publishing' });
-    // `results: []` on purpose: the summary's `amount` comes from
-    // `value_msat_total`. The ONE receipt it quotes is the site-signed summary
-    // for `paidSats` — the album's settled total, so what Fountain renders is
-    // the figure the note states, not one track's leg. Per-leg receipts are
-    // never waited for or quoted (a 4-second wait here once dropped the note
-    // when × was pressed during it). Null quotes nothing; nothing throws.
-    // Every posting boost, self or site — see <BoostModal> for the rule.
-    const summaryReceipt = await mintSummaryReceipt({
-      paidSats, refs: hostRefs, relays,
-      as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
-      brand: noteBrand,
-    });
-    try {
-      // User's own key only when signed in AND they picked "Post to my Nostr
-      // feed"; otherwise the site's Nostr identity (signed out, or the
-      // signed-in "Post via boostmebitch.com" choice).
-      const note = identity && shareAs === 'self'
-        ? await publishBoostNote({
-            podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
-            mentions, summaryReceipt: summaryReceipt ?? undefined,
-            brand: noteBrand, senderName: noteSenderName,
-          })
-        : await publishBoostNoteViaSite({
-            podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
-            mentions, summaryReceipt: summaryReceipt ?? undefined,
-            brand: noteBrand, senderName: noteSenderName,
-          });
-      if (cancelled.current) return;
-      setPubState({ kind: 'done', note });
-    } catch (e) {
-      if (cancelled.current) return;
-      setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
-    }
+    // A summary receipt an attempt has already published. RETRY NOTE quotes it
+    // rather than minting a second: two receipts for one boost would count its
+    // sats twice wherever receipts are summed.
+    let summaryReceipt: QuotedZapReceipt | null = null;
+    // The note step as a function, so RETRY NOTE can run it again with a fresh
+    // signer check — the check this attempt used is the one that failed.
+    const postSummary = async (check: Promise<SignerCheck> | null): Promise<void> => {
+      setPubState({ kind: 'publishing' });
+      // Once per failure — a second tap landing before the re-render would sign
+      // and publish the note twice.
+      let pressed = false;
+      const retry = () => {
+        if (pressed) return;
+        pressed = true;
+        void postSummary(selfSigned ? checkSignerLink() : null);
+      };
+      // ASK BEFORE SIGNING — see <BoostModal>'s `maybePublishNote`: on a link
+      // that cannot answer, both signatures below would each wait out 40 s and
+      // fail with "timed out".
+      if (check) {
+        const c = await check;
+        if (cancelled.current) return;
+        if (c.kind !== 'ok') {
+          setPubState({ kind: 'error', message: signerCheckMessage(c), retry });
+          return;
+        }
+      }
+      // `results: []` on purpose: the summary's `amount` comes from
+      // `value_msat_total`. The ONE receipt it quotes is the site-signed summary
+      // for `paidSats` — the album's settled total, so what Fountain renders is
+      // the figure the note states, not one track's leg. Per-leg receipts are
+      // never waited for or quoted (a 4-second wait here once dropped the note
+      // when × was pressed during it). Null quotes nothing; nothing throws.
+      // Every posting boost, self or site — see <BoostModal> for the rule.
+      summaryReceipt ??= await mintSummaryReceipt({
+        paidSats, refs: hostRefs, relays,
+        as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
+        brand: noteBrand,
+      });
+      try {
+        // User's own key only when signed in AND they picked "Post to my Nostr
+        // feed"; otherwise the site's Nostr identity (signed out, or the
+        // signed-in "Post via boostmebitch.com" choice).
+        const note = identity && shareAs === 'self'
+          ? await publishBoostNote({
+              podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
+              mentions, summaryReceipt: summaryReceipt ?? undefined,
+              brand: noteBrand, senderName: noteSenderName,
+            })
+          : await publishBoostNoteViaSite({
+              podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
+              mentions, summaryReceipt: summaryReceipt ?? undefined,
+              brand: noteBrand, senderName: noteSenderName,
+            });
+        if (cancelled.current) return;
+        setPubState({ kind: 'done', note });
+      } catch (e) {
+        if (cancelled.current) return;
+        setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed'), retry });
+      }
+    };
+    await postSummary(signerCheck);
   }
 
   return (

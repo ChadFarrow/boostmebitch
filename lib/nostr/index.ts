@@ -11,6 +11,7 @@ export {
   restoreAmberSigner,
   restoreBunkerSigner,
   startBunkerRevive,
+  checkSignerLink,
   restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,
@@ -18,6 +19,7 @@ export {
   shortNpub,
   coerceProfileMetadata,
   type BunkerRestoreResult,
+  type SignerCheck,
   type NostrIdentity,
   type ProfileMetadata,
 } from './auth';

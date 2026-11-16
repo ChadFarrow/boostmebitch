@@ -138,6 +138,8 @@ Each **imports the real module** via `node --experimental-strip-types`: a copy p
 
 **"Testing locally" and "testing against local data" are DIFFERENT THINGS.** A dev server on localhost still publishes to the public relays under whatever npub is signed in — including the shared kind:10333 event another app reads, which keeps no history, so a bug found that way is found in production on someone else's device. A session touching favorites, mutes, follows or the profile uses `npm run relay` (in-memory NIP-01, WITH replaceable-event semantics), `npm run seed:relay -- <npub>` (a real list with history in it), `npm run e2e:favorites` or `npm run e2e:mutes` (a throwaway key over CDP, real NIP-44) — never a real account. **And a branch "N commits ahead of `main`" is NOT unfinished work**: a squash merge changes the patch id, so ask `gh pr list --state merged`. → [`docs/testing.md`](docs/testing.md)
 
+**A change to what a community playlist FEED contains goes to `main`, even while the maker is beta only.** Production serves every published feed (`COMMUNITY_FEEDS=on`) and beta answers a feed URL with a `301` to it, so a feed change on a beta-only branch reaches no app. → [`docs/feeds.md`](docs/feeds.md)
+
 **Re-landing a REVERTED feature: compute what the revert touched — the conflict list will not.** A merge conflicts only where BOTH sides changed a file, so a revert's deletions land unopposed, on a green build. → [`docs/ops.md`](docs/ops.md)
 
 ## Server vs client boundary (don't cross it)
