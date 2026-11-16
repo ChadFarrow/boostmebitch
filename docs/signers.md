@@ -554,8 +554,9 @@ is waiting, and a fresh wait that is waiting has its own token in the set.
 **The money path argues for the larger budget, not the smaller**, which is the
 opposite of the intuition: `publishBoostNote` signs AFTER the sats have moved,
 so a long wait costs a spinner beside a payment already reported as successful,
-while giving up early costs the note outright — `<PublishStatus>` renders
-"Publish failed" with **no retry control**, and nothing re-attempts a kind:1.
+while giving up early costs the note until the user acts — `<PublishStatus>`
+renders "Note not posted" with RETRY NOTE (since 2026-11-15; there was no retry
+control before), and nothing else re-attempts a kind:1.
 
 **The two decrypts are deliberately NOT wrapped, and this is the inconsistency
 someone will tidy away.** Both already run inside a 10 s cap this module cannot
@@ -791,7 +792,7 @@ itself back for five seconds, and a healthy revive is nowhere near that.
 
 | Guard | The case it is for |
 | --- | --- |
-| `bunkerBusy()` | A failed probe runs `closeStaleBunkerTransport`, which takes a pending `sign_event` down with it — and `publishBoostNote` signs AFTER the sats have moved, with no retry control behind it |
+| `bunkerBusy()` | A failed probe runs `closeStaleBunkerTransport`, which takes a pending `sign_event` down with it — and `publishBoostNote` signs AFTER the sats have moved, with only the user's RETRY NOTE behind it |
 | `reviveRefusedFor` | `refused` is the signer saying this client is not paired; only pairing again helps, so retrying on every foreground return asks a signer that has already answered |
 | `restoreInFlight` | Belt to `restoreBunkerSigner`'s own coalescing, and what keeps the throttle honest when a restore outlives the gap |
 | `visibilityState` / `navigator.onLine === false` | `focus` and `online` both fire for a document nobody is looking at; a known-down radio buys a 90 s connect for nothing |
@@ -999,6 +1000,93 @@ a menu close while its restore is still on the wire, that the settled answer
 takes the notice away and puts the banner up — and, as the must-still-work half,
 that a HEALTHY restore raises none of it. Run against a version with the notice
 stubbed out, four of those fail and the rest stay green.
+
+### The boost note signed into a link that had gone deaf
+
+Reported from an iPhone on Clave, 2026-11-15: *"i sent a boost in BMB but clave
+needed to reconnect so it didnt go to nostr … i clicked the reconnect for it and
+it reconnected just fine. Ive noticed this a lot with clave lately when its
+signed it but needs a wake up on the connection."* The sats moved, the note
+never posted, and RECONNECT fixed the link first time.
+
+**"It signed it" is the clue, and the pinned nostr-tools explains it.** In
+2.19.4 the pool forgets a relay whose socket closed, and `publish` dials it
+afresh — but `BunkerSigner.sendRequest` subscribes again only once EVERY
+relay's subscription has closed. So one of the two relays dropping leaves a new
+socket that carries the request out and has no subscription on it, and a
+suspended socket that never fires a close event leaves the other one deaf. The
+request reaches Clave, Clave signs, and the answer has nowhere to land.
+
+**A boost then lost its note three ways at once.**
+
+- It signs TWICE after the sats move — the summary receipt's kind:9734, then the
+  kind:1 — and each sat out `BUNKER_CALL_TIMEOUT_MS` and a ping before failing.
+- The boost modal closed 1.5 s after the payment and let the note publish behind
+  it, so the failure rendered into a modal that was gone.
+- The ladder that should have reconnected by itself died on its first rung. The
+  kind:9734's failure set `bunkerStale` and armed it; two seconds later the
+  kind:1 was in flight, `bunkerBusy()` was true, `maybeReviveBunker` returned —
+  and nothing re-armed it, because `setBunkerStale` notifies only on a change.
+  That last one is NOT fixed here; see the end of this section.
+
+**The fix asks before it signs: `checkSignerLink` (`lib/nostr/auth.ts`).** It is
+`restoreBunkerSigner` — the RECONNECT button's own function, which pings the live
+adapter and rebuilds only on silence — run at the moment the button would have
+been needed. Both modals START it at the tap and await it before the first
+signature, so on a healthy link it has finished before the wallet has, and on a
+dead one the 10 s probe runs while the sats move. That is safe only because no
+payment rail touches the signer: `lib/v4v/boost.ts` imports nothing from
+`lib/nostr`, so the rebuild's `closeStaleBunkerTransport` cannot reach a leg.
+**Keep it that way** — a rail that signs would put a payment under the close.
+
+| `checkSignerLink` answers | When | The boost does |
+| --- | --- | --- |
+| `ok` | Not a bunker (extension, Amber NIP-55, local key) — nothing to probe | Signs, as before |
+| `ok` | `bunkerBusy()` — a probe that fails would close a pending request, maybe an earlier boost's note awaiting approval | Signs, as before |
+| `ok` | Pong, or a rebuild that connected | Signs |
+| `unreachable` / `refused` | Nothing answered, or the signer said no | Signs NOTHING; "Note not posted" with the reason and RETRY NOTE |
+
+**Skipping the signature on a no is the point, not a shortcut.** After a failed
+check the transport is closed, so a signature would fail at once with "this
+signer is not open anymore" — or, during the probe, sit in the dead link for
+another 40 s. A refusal is quoted, as `<BunkerHealthBanner>` quotes it.
+
+**RETRY NOTE (`<PublishStatus>`) is the first retry control a note has had.** It
+runs a FRESH check — the one that failed is the wrong answer to reuse — then
+mints and posts. It reuses a summary receipt the failed attempt had already
+published, because two receipts for one boost count its sats twice wherever
+receipts are summed. It cannot duplicate the note: every error path is one where
+nothing was published, since the event is published only after the signer's
+answer arrives. One press per failure — a second tap before the re-render would
+post twice.
+
+**The single boost modal now closes only once the note is out.** On a failure it
+stays open, which is the only way the reason and the button are seen. The cost
+is the modal staying up for the length of a healthy note — about one signer
+round trip. Boost-all never auto-closed.
+
+**Pinned by `npm run e2e:boostnote`** — a real build, a stub signer that reads
+every request and answers none until the page sends `connect` (the rebuild),
+and a WebLN stand-in. Run against the code before this change it fails on the
+field bug itself: a `sign_event` went into the dead link, the note never reached
+the relay, and the modal had already closed. NOT covered there: the summary
+receipt itself, because `mintSummaryReceipt` publishes only to `wss://` relays and
+the test relay is `ws://`, so the receipt's reuse on a retry is read from the
+code, not measured.
+
+**The double close it surfaced.** `BunkerSigner.close()` is async in 2.19.4, so
+`try { inner.close() } catch {}` caught nothing, and every reconnect after a
+failed ping closes the stale adapter twice — `closeStaleBunkerTransport`, then
+`activateBunkerSigner` over the same object. The second close read an ended
+`subCloser` and threw an unhandled rejection on each reconnect.
+`closeSignerQuietly` (`signer.ts`) swallows it; the e2e's page-health check is
+what saw it.
+
+**Still open: the ladder that dies on a busy session.** `maybeReviveBunker`
+returns on `bunkerBusy()` without re-arming, so a rung that lands while any
+signer call is in flight ends the ladder, and the banner waits for a foreground
+return or a press. The boost path no longer depends on it — RETRY NOTE runs its
+own check — but every other surface that signs still does.
 
 ### Clave stopped answering at prompt-time, and `withApprovalWait` is built around the answer it stopped sending
 
