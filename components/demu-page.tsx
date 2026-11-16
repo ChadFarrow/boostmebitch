@@ -139,7 +139,7 @@ export function DemuPage() {
     <>
       <h1 className="headline text-3xl sm:text-4xl">DeMu</h1>
       <p className="mt-2 max-w-xl text-sm leading-relaxed text-bone/80">
-        Self-hosted music. Nothing from Wavlake.
+        Self-hosted music.
       </p>
 
       <label className="mt-6 block max-w-xl">
