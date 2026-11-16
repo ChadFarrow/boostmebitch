@@ -23,8 +23,10 @@
 
 import {
   isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
-  hasValueBlock, demuValueGaps, keepWithValue,
+  hasValueBlock, demuValueGaps, keepWithValue, keepForDemu,
 } from '../lib/demu.ts';
+import { DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
+import { remoteItemFeedGuids } from '../lib/feed-xml.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
@@ -349,6 +351,63 @@ console.log('\nThe value filter over the roster:');
   else ok('a feed nobody answered for is not kept (no value proven)');
 }
 
+// ── Homegrown Hits plays it → always shown; the hide list → never shown ──────
+// Chad, 2026-11-16: "Items that match the remote items in the Homegrown Hits
+// feed [are] what we are looking to show here", "Radio shows should be removed",
+// "A hide list is a good idea", and what HGH plays is on the show list, never
+// the hide list. So PLAYED wins over HIDDEN, which wins over the value rule.
+console.log('\nHomegrown Hits and the hide list:');
+{
+  // Wire: two real tags from feed.homegrownhits.xyz (2026-11-16) — one inside a
+  // valueTimeSplit with an itemGuid, one bare — plus an upper-case repeat and a
+  // decoy attribute `readAttr` must not read as feedGuid.
+  const xml = '<rss><channel><item><podcast:valueTimeSplit startTime="30.665" remotePercentage="99" duration="213">'
+    + '<podcast:remoteItem feedGuid="86f9ba78-7c4a-5bd2-a382-c6a88e9a96a0" itemGuid="1e5cea5b-050c-4ac2-8ce1-6867f10e169c" />'
+    + '</podcast:valueTimeSplit></item>'
+    + '<podcast:remoteItem feedGuid="7c6f7875-2b73-491e-b32c-e2c8d6e91d53" />'
+    + '<podcast:remoteItem feedGuid="86F9BA78-7C4A-5BD2-A382-C6A88E9A96A0" itemGuid="x" />'
+    + '<podcast:remoteItem x-feedGuid="00000000-0000-0000-0000-00000000dead" /></channel></rss>';
+  const got = JSON.stringify(remoteItemFeedGuids(xml));
+  const want = JSON.stringify(['86f9ba78-7c4a-5bd2-a382-c6a88e9a96a0', '7c6f7875-2b73-491e-b32c-e2c8d6e91d53']);
+  if (got !== want) fail(`remoteItemFeedGuids gave ${got}`);
+  else ok('remoteItemFeedGuids: every remoteItem, lower-cased, deduped, no decoy attribute');
+
+  // 4827093 Radio 1 Timemachine (value, HIDDEN); 7744401 MOOKY (no value, PLAYED);
+  // 7982024 UXRZONE (no value); 7287540 Longy (value, PLAYED); 1 a played feed
+  // someone also put on the hide list — played wins.
+  const albums = [
+    album(4827093, 1, { podcastGuid: '2ad45cc1-f1ff-57f5-bb84-c2c0a9b21fbe' }),
+    album(7744401, 2, { podcastGuid: 'cccc0000-0000-0000-0000-000000000003' }),
+    album(7982024, 3, { podcastGuid: '01f38143-ea31-5285-9dc2-0878d2097b3b' }),
+    album(7287540, 4, { podcastGuid: 'bbbb0000-0000-0000-0000-000000000002' }),
+    album(1, 5, { podcastGuid: 'dddd0000-0000-0000-0000-000000000004' }),
+  ];
+  const kept = keepForDemu(albums, {
+    valueIds: new Set([4827093, 7287540]),
+    batch: new Map(),
+    played: new Set(['cccc0000-0000-0000-0000-000000000003', 'bbbb0000-0000-0000-0000-000000000002', 'dddd0000-0000-0000-0000-000000000004']),
+    hidden: new Set(['2ad45cc1-f1ff-57f5-bb84-c2c0a9b21fbe', 'dddd0000-0000-0000-0000-000000000004']),
+  }).map((a) => a.id).sort((a, b) => a - b);
+  if (JSON.stringify(kept) !== JSON.stringify([1, 7287540, 7744401])) fail(`keepForDemu kept ${JSON.stringify(kept)}`);
+  else ok('keepForDemu: played wins over hidden and over no value; hidden beats a value block; the rest need value');
+
+  const gaps = demuValueGaps(albums, new Set([4827093, 7287540]), new Set(['cccc0000-0000-0000-0000-000000000003', 'dddd0000-0000-0000-0000-000000000004']));
+  if (JSON.stringify(gaps) !== JSON.stringify(['01f38143-ea31-5285-9dc2-0878d2097b3b'])) fail(`demuValueGaps with a skip set asks for ${JSON.stringify(gaps)}`);
+  else ok('demuValueGaps skips feeds already decided (played or hidden)');
+
+  // The hide list itself: lower-case unique guids, a title and a reason each,
+  // and never a feed Homegrown Hits plays (two the show plays, from its feed).
+  const guids = DEMU_HIDE_LIST.map((h) => h.guid);
+  const wellFormed = DEMU_HIDE_LIST.every((h) => /^[0-9a-f-]{36}$/.test(h.guid) && h.title && h.reason);
+  if (!wellFormed || new Set(guids).size !== guids.length) fail('the hide list has a malformed or repeated entry');
+  else ok(`the hide list: ${guids.length} entries, lower-case unique guids, each with a title and a reason`);
+  const playedSample = ['86f9ba78-7c4a-5bd2-a382-c6a88e9a96a0', 'ee7351fd-9646-4843-ae49-0e2aacf524be'];
+  if (guids.some((g) => playedSample.includes(g))) fail('the hide list names a feed Homegrown Hits plays');
+  else ok('the hide list names no sampled Homegrown Hits feed');
+  if (HOMEGROWN_HITS_FEED_URL !== 'https://feed.homegrownhits.xyz/feed.xml') fail(`HOMEGROWN_HITS_FEED_URL is ${HOMEGROWN_HITS_FEED_URL}`);
+  else ok('the Homegrown Hits feed URL is the show’s own feed');
+}
+
 for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {
   const fam = listVectors.filter((v) => v.kind === kind);
   if (!fam.some((v) => !v.alsoNaive)) fail(`the ${kind} vectors prove nothing against naive()`);
@@ -356,12 +415,13 @@ for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {
 
 // ── The module must stay loadable under plain Node ───────────────────────────
 {
-  const path = 'lib/demu.ts';
-  const problems = importFreeProblems(path);
-  if (problems.length) {
-    explainImportFree(path, problems);
-    failures++;
-  } else ok(`${path} is import-free`);
+  for (const path of ['lib/demu.ts', 'lib/demu-hide-list.ts']) {
+    const problems = importFreeProblems(path);
+    if (problems.length) {
+      explainImportFree(path, problems);
+      failures++;
+    } else ok(`${path} is import-free`);
+  }
 }
 
 if (failures) {

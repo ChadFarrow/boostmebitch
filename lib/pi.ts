@@ -19,6 +19,7 @@ import {
   stripComments,
   splitAnchors,
   escapeDanglingLt,
+  remoteItemFeedGuids,
 } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
@@ -28,7 +29,8 @@ import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMediu
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
-import { demuRosterFromPi, demuValueGaps, hasValueBlock, keepWithValue } from './demu';
+import { demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu } from './demu';
+import { DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from './demu-hide-list';
 import type { DemuAlbum } from './demu';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -502,6 +504,31 @@ async function batchHasValue(guids: readonly string[]): Promise<Map<string, bool
   return out;
 }
 
+/**
+ * The feeds Homegrown Hits plays — shown on /demu with or without a value
+ * block, and beyond the hide list's reach (`keepForDemu`). The show's own feed
+ * (1.3 MB on 2026-11-16) is read through `remoteItemFeedGuids`. A failure is
+ * NOT a failed refresh: the list then follows the other rules alone, which
+ * drops only the few played feeds without a value block (1 of 477 that day),
+ * and the next refresh restores them.
+ */
+async function fetchHomegrownHitsPlayed(): Promise<Set<string>> {
+  try {
+    const res = await fetch(HOMEGROWN_HITS_FEED_URL, {
+      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(PI_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    return new Set(remoteItemFeedGuids(await readCappedText(res, 16 * 1024 * 1024)));
+  } catch (e) {
+    console.warn('[pi] Homegrown Hits feed unreadable; /demu follows the other rules alone:', e instanceof Error ? e.message : e);
+    return new Set();
+  }
+}
+
+const DEMU_HIDDEN = new Set(DEMU_HIDE_LIST.map((h) => h.guid.toLowerCase()));
+
 const demuRoster = createBoundedCache<DemuAlbum[]>({
   maxAgeMs: DEMU_ROSTER_STALE_MS,
   maxEntries: 1,
@@ -517,9 +544,10 @@ let demuInFlight: Promise<DemuAlbum[] | null> | null = null;
  */
 async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
   try {
-    const [data, valueIds] = await Promise.all([
+    const [data, valueIds, played] = await Promise.all([
       pi<unknown>('/podcasts/bymedium?medium=music', DEMU_MAX_BYTES),
       fetchValueFeedIds(),
+      fetchHomegrownHitsPlayed(),
     ]);
     // `null` when the answer read nothing — never cached, for the reason above.
     const candidates = demuRosterFromPi(data, closedService);
@@ -527,10 +555,12 @@ async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
       console.warn('[pi] DeMu roster refresh read no DeMu albums; not cached');
       return null;
     }
-    // Chad's V4V rule: keep only feeds with a value block — the static file's,
-    // plus the live batch answer for the feeds the file does not list yet.
-    const batch = await batchHasValue(demuValueGaps(candidates, valueIds));
-    const albums = keepWithValue(candidates, valueIds, batch);
+    // Chad's rules, in his order (`keepForDemu`): played by Homegrown Hits →
+    // shown; on the hide list → not; otherwise a value block is required — the
+    // static file's, plus the live batch answer for feeds the file does not list.
+    const decided = new Set([...played, ...DEMU_HIDDEN]);
+    const batch = await batchHasValue(demuValueGaps(candidates, valueIds, decided));
+    const albums = keepForDemu(candidates, { valueIds, batch, played, hidden: DEMU_HIDDEN });
     if (!albums.length) {
       console.warn('[pi] DeMu roster refresh kept no album with a value block; not cached');
       return null;

@@ -195,11 +195,45 @@ export function hasValueBlock(raw: unknown): boolean {
   return named(block.destinations) || named(block.recipients);
 }
 
-/** The guids (lower-cased) of roster albums the static value file does not list — the ones to ask the batch call about. */
-export function demuValueGaps(albums: readonly DemuAlbum[], valueIds: ReadonlySet<number>): string[] {
+/**
+ * The guids (lower-cased) of roster albums the static value file does not list
+ * — the ones to ask the batch call about. `skip` holds guids already decided
+ * either way (played by Homegrown Hits, or hidden), which need no question.
+ */
+export function demuValueGaps(
+  albums: readonly DemuAlbum[],
+  valueIds: ReadonlySet<number>,
+  skip: ReadonlySet<string> = new Set(),
+): string[] {
   return albums
-    .filter((a) => !valueIds.has(a.id) && a.podcastGuid)
+    .filter((a) => !valueIds.has(a.id) && a.podcastGuid && !skip.has(a.podcastGuid.toLowerCase()))
     .map((a) => (a.podcastGuid as string).toLowerCase());
+}
+
+/**
+ * What /demu shows, in Chad's order (2026-11-16):
+ * 1. **Played by Homegrown Hits** (`played`, lower-cased guids) — always shown,
+ *    with or without a value block, and the hide list cannot remove it.
+ * 2. **On the hide list** (`hidden`) — never shown.
+ * 3. **Everything else needs `<podcast:value>`** — `keepWithValue`.
+ * Every album here already passed `demuRosterRows` (music, not Wavlake, not a
+ * closed host, not dead), so a played feed that nobody can play stays out.
+ */
+export function keepForDemu(
+  albums: readonly DemuAlbum[],
+  rule: {
+    valueIds: ReadonlySet<number>;
+    batch: ReadonlyMap<string, boolean>;
+    played: ReadonlySet<string>;
+    hidden: ReadonlySet<string>;
+  },
+): DemuAlbum[] {
+  return albums.filter((a) => {
+    const guid = a.podcastGuid?.toLowerCase();
+    if (guid && rule.played.has(guid)) return true;
+    if (guid && rule.hidden.has(guid)) return false;
+    return keepWithValue([a], rule.valueIds, rule.batch).length === 1;
+  });
 }
 
 /**

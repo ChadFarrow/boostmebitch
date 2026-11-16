@@ -617,6 +617,31 @@ const PODROLL_BLOCK_TAG = 'podcast:podroll';
 export const MAX_PLAYLIST_REFS = 5000;
 
 /**
+ * Every feed a document's `<podcast:remoteItem>` tags name — ANYWHERE in it:
+ * channel-level, inside an `<item>`, inside a `<podcast:valueTimeSplit>`.
+ * Lower-cased, deduped, in document order, capped at `MAX_PLAYLIST_REFS`.
+ *
+ * For `/demu`'s always-show list: Homegrown Hits plays only DeMu and names each
+ * song's feed in a valueTimeSplit's remoteItem (1,932 tags, 631 feeds on
+ * 2026-11-16). Through `readAttr`, like every parser here, so an
+ * `x-feedGuid` decoy is not a feedGuid. Unlike `parsePlaylistRemoteItems` this
+ * reads feeds only — no item guids, no podroll rule — because the caller asks
+ * "does this show play anything from that feed", not "which track is this".
+ */
+export function remoteItemFeedGuids(xml: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of findTags(xml, 'podcast:remoteItem')) {
+    const g = readAttr(tag.attrs, 'feedGuid')?.trim().toLowerCase();
+    if (!g || seen.has(g)) continue;
+    seen.add(g);
+    out.push(g);
+    if (out.length >= MAX_PLAYLIST_REFS) break;
+  }
+  return out;
+}
+
+/**
  * Per-guid length caps, mirroring app/api/episode-by-guid/batch/route.ts.
  * A feed guid is a UUID; an item guid is any globally-unique string and real
  * feeds use permalink URLs, so the two limits differ by a lot.
