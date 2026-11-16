@@ -54,6 +54,7 @@ export function summaryOf(p: StoredRow): CommunityPlaylistSummary {
     podcastGuid: p.podcastGuid,
     ownerPubkey: p.ownerPubkey,
     ownerNpub: nip19.npubEncode(p.ownerPubkey),
+    ownerName: p.ownerName || null,
     coverUrl: communityCoverUrl(p.id, coverVersion(p.updatedAt)),
     songCount: p.songs.length,
     createdAt: p.createdAt,
