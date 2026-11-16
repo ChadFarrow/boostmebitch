@@ -20,7 +20,7 @@ import type { StreamLedger } from './v4v/stream-ledger';
 // cannot close a cycle.
 import {
   capKeys, NEW_MUSIC_CAP, NEW_MUSIC_DISMISSED_CAP, NEW_MUSIC_SEEN_CAP,
-  type NewMusicRecord, type NewMusicRow,
+  type ArtistFollow, type NewMusicRecord, type NewMusicRow,
 } from './new-music';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -83,6 +83,7 @@ const KEYS = {
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
   newMarksPrefix: 'bmb:newmarks',     // + ':<npub>' — `{ checkedAt, marks: { [podcastGuid]: datePublished }, rows, uncovered, failed }`: the "new episodes" list on /favorites AND what this device has already shown you of it. The rows are the persisted thing and the marks describe them — holding the rows in React state alone made the CHECK consume the list rather than the reader. Seconds, because that is the unit Podcast Index's `since` takes back. A user-facing READ MARKER, not a cache — nothing on any wire records what this device showed somebody — so deliberately absent from EVICTABLE_PREFIXES, same class as bmb:listen_queue and bmb:ep_order. Evicting it does not cost a refetch, it re-announces a week of episodes as new. Pruned to the current favorites on every write (lib/util.ts `pruneMarks`).
+  artistFollowsPrefix: 'bmb:artists', // + ':<npub>' — `{ [feedGuid]: { feedGuid, feedUrl, title, addedAt } }`: artists followed with ♡ ARTIST on an album page, for NEW MUSIC. ON THIS DEVICE ONLY and on purpose: never on the shared kind:10333 list until cross-app artist favorites are decided (owner, 2026-11-15) — see `ArtistFollow` in lib/new-music.ts. A user DECISION, not a cache, so deliberately absent from EVICTABLE_PREFIXES.
   newMusicPrefix: 'bmb:newmusic',     // + ':<npub>' — `{ checkedAt, seen: { [publisherGuid]: albumKey[] }, checked, rows, dismissed, uncovered }`: the "new music" list on /favorites (new albums from favorited PUBLISHER feeds) AND which albums this device has seen each artist list. A user-facing READ MARKER like bmb:newmarks, not a cache, so deliberately absent from EVICTABLE_PREFIXES: evicting it makes every artist a first look again and drops the list the reader has not read. Pruned to the current publisher favorites on every pass (lib/new-music.ts `pruneNewMusic`).
   listenQueuePrefix: 'bmb:listen_queue', // + ':<npub>' — the "Up Next" cross-show listen queue. An ORDERED ARRAY, never a keyed object: the order IS the data. A user DECISION, not a network-regenerable cache — deliberately absent from EVICTABLE_PREFIXES, same class as bmb:ep_order and bmb:list_unlock. Items are trimmed at ENQUEUE (lib/util.ts `trimForQueue`) and capped at LISTEN_QUEUE_CAP. No migration from any global key: there has never been one.
   favoritesPrefix: 'bmb:favorites',
@@ -322,6 +323,32 @@ function coerceNewMusicRow(r: unknown): NewMusicRow | null {
   if (typeof o.date === 'number' && Number.isFinite(o.date) && o.date > 0) row.date = o.date;
   return row;
 }
+
+/** Artists followed on this device. Read and written per ENTRY: one bad
+ *  entry must not unfollow the rest. The address must be http(s) — it is the
+ *  feed NEW MUSIC reads — and the guid a short string with no spaces. */
+const MAX_ARTIST_FOLLOWS = 500;
+function coerceArtistFollows(raw: unknown): Record<string, ArtistFollow> {
+  const out: Record<string, ArtistFollow> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const v of Object.values(raw as Record<string, unknown>)) {
+    if (Object.keys(out).length >= MAX_ARTIST_FOLLOWS) break;
+    if (!v || typeof v !== 'object') continue;
+    const o = v as Record<string, unknown>;
+    const feedGuid = typeof o.feedGuid === 'string' ? o.feedGuid.trim() : '';
+    const feedUrl = httpUrl(typeof o.feedUrl === 'string' ? o.feedUrl : undefined);
+    if (!feedGuid || feedGuid.length > 100 || /\s/.test(feedGuid) || !feedUrl) continue;
+    const f: ArtistFollow = {
+      feedGuid,
+      feedUrl,
+      addedAt: typeof o.addedAt === 'number' && Number.isFinite(o.addedAt) ? o.addedAt : 0,
+    };
+    if (typeof o.title === 'string' && o.title.trim()) f.title = o.title.trim().slice(0, 300);
+    out[feedGuid] = f;
+  }
+  return out;
+}
+const artistFollowsChanged = createObservable();
 
 function coerceStoredBoost(b: StoredBoost): StoredBoost {
   if (!b || !Array.isArray(b.legs)) return b;
@@ -2261,6 +2288,22 @@ export const storage = {
           dismissed: v.dismissed ? capKeys(v.dismissed, NEW_MUSIC_DISMISSED_CAP) : undefined,
         }),
       ),
+  },
+
+  /** Artists followed on THIS device (♡ ARTIST) — see `bmb:artists` in KEYS.
+   *  `set` returns whether the value reached disk and notifies `subscribe`. */
+  artistFollows: {
+    get: (npub: string | null | undefined): Record<string, ArtistFollow> => {
+      const raw = safeGet(identityKey(KEYS.artistFollowsPrefix, npub));
+      if (!raw) return {};
+      try { return coerceArtistFollows(JSON.parse(raw)); } catch { return {}; }
+    },
+    set: (npub: string | null | undefined, v: Record<string, ArtistFollow>): boolean => {
+      const ok = safeSet(identityKey(KEYS.artistFollowsPrefix, npub), JSON.stringify(coerceArtistFollows(v)));
+      artistFollowsChanged.notify();
+      return ok;
+    },
+    subscribe: (fn: () => void) => artistFollowsChanged.subscribe(fn),
   },
 
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */

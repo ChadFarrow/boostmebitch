@@ -16,7 +16,7 @@
 //   unfavorited artist's rows and memory must go.
 
 import {
-  albumKeys, rowKey, planPublisher, selectNewMusic, mergeNewMusicRows, pruneNewMusic, stalestFirst, capKeys,
+  albumKeys, rowKey, planPublisher, selectNewMusic, mergeNewMusicRows, pruneNewMusic, stalestFirst, capKeys, newMusicArtists,
   NEW_MUSIC_WINDOW_SECS, NEW_MUSIC_CAP, NEW_MUSIC_SEEN_CAP,
 } from '../lib/new-music.ts';
 import { parsePublisherRef } from '../lib/feed-xml.ts';
@@ -169,6 +169,19 @@ check('stable among equals', stalestFirst(['X', 'Y'], {}), ['X', 'Y']);
 console.log('capKeys');
 check('keeps the newest keys', capKeys(['a', 'b', 'c'], 2), ['b', 'c']);
 check('drops a repeat, keeping the latest position', capKeys(['a', 'b', 'a'], 5), ['b', 'a']);
+
+console.log('newMusicArtists');
+const FAVPUB = { podcastGuid: '64569161-a8f7-52e5-8aae-9e0385043149', url: 'https://feeds.fountain.fm/VUDmJJ8Eo1byHznQtHIn', title: 'Haleen' };
+const FOLLOW_NJ = { feedGuid: 'aa909244-7555-4b52-ad88-7233860c6fb4', feedUrl: 'https://wavlake.com/feed/artist/aa909244-7555-4b52-ad88-7233860c6fb4', title: 'Nate Johnivan', addedAt: 1 };
+check('favorites first, then device follows',
+  newMusicArtists([FAVPUB], { [FOLLOW_NJ.feedGuid]: FOLLOW_NJ }).map((a) => a.title), ['Haleen', 'Nate Johnivan']);
+check('a device follow carries its feed address',
+  newMusicArtists([], { [FOLLOW_NJ.feedGuid]: FOLLOW_NJ })[0].url, FOLLOW_NJ.feedUrl);
+check('one artist in both is one artist, and the favorite wins',
+  newMusicArtists([FAVPUB], { x: { feedGuid: FAVPUB.podcastGuid.toUpperCase(), feedUrl: 'https://other.example/f', title: 'Dup', addedAt: 1 } }),
+  [FAVPUB]);
+check('a follow with no address is skipped',
+  newMusicArtists([], { x: { feedGuid: FOLLOW_NJ.feedGuid, feedUrl: '', addedAt: 1 } }), []);
 
 // ---- parsePublisherRef (lib/feed-xml.ts) — an album's artist feed ----------
 // Fixtures are the WIRE bytes, copied from the feeds on 2026-11-15.

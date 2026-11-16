@@ -8,9 +8,10 @@ import { readCappedJson } from '@/lib/capped-body';
 import { fmtDate } from '@/lib/format';
 import { fnvHash, NEW_EPISODES_LATEST_MAX_FEEDS } from '@/lib/util';
 import {
-  albumKeys, mergeNewMusicRows, planPublisher, pruneNewMusic, rowKey, selectNewMusic, stalestFirst,
-  type NewMusicAlbum, type NewMusicRecord, type NewMusicRow, type PublisherPlan,
+  albumKeys, mergeNewMusicRows, newMusicArtists, planPublisher, pruneNewMusic, rowKey, selectNewMusic, stalestFirst,
+  type NewMusicAlbum, type NewMusicArtist, type NewMusicRecord, type NewMusicRow, type PublisherPlan,
 } from '@/lib/new-music';
+import { setArtistFollow, useArtistFollows } from '@/lib/use-artist-follows';
 import { PodcastCover } from './podcast-cover';
 import { CollapsibleHeading, useCollapsedGroups } from './lists/grouping';
 import type { FavoritePodcast, Podcast } from '@/lib/types';
@@ -78,6 +79,12 @@ type Phase = 'idle' | 'checking' | 'done';
 
 const isPublisher = (f: FavoritePodcast) => f.medium?.toLowerCase() === 'publisher';
 
+/** The publisher feeds among the reader's favorites, as NEW MUSIC artists. */
+const favoriteArtists = (favs: Record<string, FavoritePodcast>): NewMusicArtist[] =>
+  Object.values(favs)
+    .filter((f) => isPublisher(f) && !!f.podcastGuid)
+    .map((f) => ({ podcastGuid: f.podcastGuid, url: f.url, title: f.title }));
+
 /** Only the fields the row renders and opens with. `storage.newMusic` keeps the
  *  same whitelist, so a full `Podcast` never reaches the key either way. */
 function pickAlbum(p: NewMusicAlbum): NewMusicAlbum {
@@ -140,9 +147,13 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
     setUncovered(stored.uncovered ?? 0);
   }, [npub]);
 
+  /** Artists followed with ♡ ARTIST on this device (never on the shared list). */
+  const follows = useArtistFollows(npub);
+  /** Every artist this section asks about: publisher favorites, then device
+   *  follows (`newMusicArtists`). */
   const publishers = useMemo(
-    () => Object.values(favorites).filter((f) => isPublisher(f) && !!f.podcastGuid),
-    [favorites],
+    () => newMusicArtists(favoriteArtists(favorites), follows),
+    [favorites, follows],
   );
   /** A stable key over the ASK SET — `favorites` is replaced wholesale on every
    *  heart, and only the artists and their addresses can change the answer. */
@@ -157,7 +168,7 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
     const onScreen = () => npubNow.current === npub;
 
     const favs = useApp.getState().favorites;
-    const pubs = Object.values(favs).filter((f) => isPublisher(f) && !!f.podcastGuid);
+    const pubs = newMusicArtists(favoriteArtists(favs), storage.artistFollows.get(npub));
     // PRUNED FIRST, so an unfavorited artist's rows leave at the next visit
     // even when the throttle stops the pass from asking anything.
     const stored = pruneNewMusic(storage.newMusic.get(npub), pubs.map((f) => f.podcastGuid));
@@ -189,7 +200,7 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
     const now = Date.now();
     const seen = { ...stored.seen };
     const checked = { ...stored.checked };
-    const plans: { pub: FavoritePodcast; plan: PublisherPlan }[] = [];
+    const plans: { pub: NewMusicArtist; plan: PublisherPlan }[] = [];
     let failed = 0;
 
     try {
@@ -212,17 +223,17 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
       /**
        * THE DATES, for the candidates Podcast Index holds: each album's newest
        * track, one PI call per album through the route's `latest=1` branch, in
-       * series, `NEW_EPISODES_LATEST_MAX_FEEDS` a request. A request that fails
-       * leaves its albums undated: a first look then names no "latest" for
-       * them, and a later look still shows a new one — the safe direction.
+       * series, `NEW_EPISODES_LATEST_MAX_FEEDS` a request. A later look with a
+       * failed request still shows a new album, undated — the safe direction.
        */
       const ids = [...new Set(plans.flatMap(({ plan }) => plan.candidates.map((a) => a.id)).filter((id) => id > 0))];
       const dates: Record<number, number> = {};
+      const undated = new Set<number>();
       for (let i = 0; i < ids.length; i += NEW_EPISODES_LATEST_MAX_FEEDS) {
         const chunk = ids.slice(i, i + NEW_EPISODES_LATEST_MAX_FEEDS);
         try {
           const res = await fetch(`/api/new-episodes?latest=1&feeds=${chunk.join(',')}`);
-          if (!res.ok) continue;
+          if (!res.ok) throw new Error(String(res.status));
           const data = (await readCappedJson(res)) as { episodes?: unknown };
           const episodes = Array.isArray(data.episodes) ? data.episodes : [];
           for (const e of episodes as { feedId?: unknown; datePublished?: unknown }[]) {
@@ -230,13 +241,33 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
             dates[e.feedId] = Math.max(dates[e.feedId] ?? 0, e.datePublished);
           }
         } catch {
-          // Undated, see above.
+          for (const id of chunk) undated.add(id);
         }
+      }
+
+      /**
+       * A FIRST LOOK WHOSE DATES DID NOT COME BACK IS NOT A FIRST LOOK YET.
+       * Writing its seen list would mark the whole catalogue seen with no
+       * "latest" named, so the artist's newest album could never show — on a
+       * 429 from Podcast Index, which is ordinary (measured 2026-11-15 on
+       * Nate Johnivan's Wavlake feed). So that artist keeps no seen list and no
+       * check time, counts as "could not check", and the next pass looks again.
+       */
+      const notYet = new Set(
+        plans
+          .filter(({ plan }) => plan.first && plan.candidates.some((a) => undated.has(a.id)))
+          .map(({ pub }) => pub.podcastGuid),
+      );
+      for (const g of notYet) {
+        delete seen[g];
+        if (stored.checked[g] !== undefined) checked[g] = stored.checked[g];
+        else delete checked[g];
+        failed += 1;
       }
 
       const favoriteKeys = new Set(Object.values(favs).flatMap((f) => albumKeys(f)));
       const nowSec = Math.floor(Date.now() / 1000);
-      const fresh: NewMusicRow[] = plans.flatMap(({ pub, plan }) =>
+      const fresh: NewMusicRow[] = plans.filter(({ pub }) => !notYet.has(pub.podcastGuid)).flatMap(({ pub, plan }) =>
         selectNewMusic({ first: plan.first, candidates: plan.candidates, dates, nowSec, favoriteKeys }).map((r) => {
           const row: NewMusicRow = { album: pickAlbum(r.album), publisherGuid: pub.podcastGuid, foundAt: now };
           if (pub.title) row.publisherTitle = pub.title;
@@ -332,6 +363,7 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
   const stale = Date.now() - record.checkedAt >= CHECK_MIN_MS;
   const when = record.checkedAt ? fmtDate(Math.floor(record.checkedAt / 1000)) : null;
   const artists = `${publishers.length} ${publishers.length === 1 ? 'artist' : 'artists'}`;
+  const followList = Object.values(follows).sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''));
 
   return (
     <section className="mb-4" data-new-music>
@@ -359,7 +391,31 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
           <>
             {/* WHERE THESE COME FROM, said once: following an artist is a ♡ on
                 its publisher feed, which nothing else on the page explains. */}
-            <p className="text-muted text-[11px] pb-2">New albums from the {artists} you favorited.</p>
+            <p className="text-muted text-[11px] pb-2">New albums from the {artists} you follow.</p>
+
+            {/* The artists followed with ♡ ARTIST, each with a way to stop.
+                Device-only follows appear nowhere else on this page — the
+                library lists the shared favorites — so without this a follow
+                could only be undone from one of the artist's album pages. */}
+            {followList.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 pb-2" data-artist-follows>
+                <span className="text-muted text-[11px]">Followed on this device:</span>
+                {followList.map((f) => (
+                  <span key={f.feedGuid} className="inline-flex items-center gap-1 border border-bone/20 pl-2 text-[11px]">
+                    {f.title || 'Artist'}
+                    <button
+                      type="button"
+                      onClick={() => setArtistFollow(npub, f, false)}
+                      className="btn-ghost w-7 h-7 p-0 inline-flex items-center justify-center"
+                      title="Stop following"
+                      aria-label={`Stop following ${f.title || 'this artist'}`}
+                    >
+                      <span aria-hidden>✕</span>
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
 
             {phase === 'checking' && visible.length === 0 && (
               <p className="text-muted text-sm py-3">checking your artists for new albums…</p>

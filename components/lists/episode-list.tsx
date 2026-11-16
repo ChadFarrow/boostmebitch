@@ -32,7 +32,7 @@ import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
-import { FavArtistHeart, FavHeart } from '../fav-heart';
+import { ArtistFollowChip, FavHeart } from '../fav-heart';
 import { AlbumDownload } from '../album-download';
 import { AlbumShuffleButton } from '../album-shuffle-button';
 import { ValueSplitRows } from '../value-split-rows';
@@ -678,14 +678,17 @@ export function EpisodeList({
           {authorLine(data.podcast.title, data.podcast.author) && (
             <p className="text-sm text-muted mt-1">{authorLine(data.podcast.title, data.podcast.author)}</p>
           )}
-          {/* ♡ ARTIST — follow the album's artist for NEW MUSIC on /favorites.
-              Under the artist's name, not in the tile row below: that row is
-              measured tight at 390px. Renders nothing until Podcast Index
-              resolves the artist feed (see <FavArtistHeart>). Albums only — a
-              playlist's channel is the curator's. */}
+          {/* ♡ ARTIST — follow the album's artist for NEW MUSIC on /favorites,
+              on this device only (see <ArtistFollowChip>). Under the artist's
+              name, not in the tile row below: that row is measured tight at
+              390px. Albums only — a playlist's channel is the curator's. */}
           {isMusic && !isPlaylist && data.podcast.publisherFeed && (
             <div className="mt-1.5">
-              <FavArtistHeart feedGuid={data.podcast.publisherFeed.feedGuid} />
+              <ArtistFollowChip
+                feedGuid={data.podcast.publisherFeed.feedGuid}
+                feedUrl={data.podcast.publisherFeed.feedUrl}
+                artistName={data.podcast.author}
+              />
             </div>
           )}
           {/* Both stamps share one wrapper. They are `inline-flex` and each used

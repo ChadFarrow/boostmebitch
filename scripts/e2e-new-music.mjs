@@ -26,6 +26,11 @@
 //   7. No favorited artist: no section.
 //   8. 390px phone: no horizontal overflow; ✕ and the row control are at least
 //      24×24.
+//   9. ♡ ARTIST on an album page follows its artist ON THIS DEVICE: it shows
+//      for an artist feed Podcast Index does not hold, a press writes
+//      `bmb:artists` and leaves the shared favorites list unchanged, NEW MUSIC
+//      then follows the artist and lists the follow with a ✕ that stops it. An
+//      artist already in favorites gets a stamp, not a control.
 //
 // Signed out: favorites live in `bmb:favorites:guest` and nothing reaches a
 // relay. `/api/publisher`, `/api/new-episodes` and `/api/feed` are answered
@@ -89,6 +94,8 @@ const albumPage = (id, title, pub) => ({
 const ALBUM_PAGES = { 9401: albumPage(9401, 'Album By Nine', P9), 9402: albumPage(9402, 'Album By Ten', P10) };
 listing[pubUrl(9)] = [album(901), album(902)];
 AGE[9901] = 4;
+listing[pubUrl(10)] = [album(1001)];
+AGE[10001] = 6;
 
 // ---- the browser ----------------------------------------------------------
 const { page } = await launchChrome({ name: 'newmusic' });
@@ -96,6 +103,8 @@ const { send, js, until } = page;
 const t = checker();
 const pageErrors = [];
 const asked = { publisher: [], latest: [], feed: [] };
+// Section 10: the date lookup answers 429, as Podcast Index does under load.
+let latestRateLimited = false;
 let inFlight = 0;
 let maxInFlight = 0;
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
@@ -129,6 +138,10 @@ page.on(async (m) => {
         return;
       }
       await fulfillJson(requestId, { feeds, listed: feeds.length, couldNotAskPi: false });
+      return;
+    }
+    if (u.pathname === '/api/new-episodes' && q.get('latest') === '1' && latestRateLimited) {
+      await fulfillJson(requestId, { error: 'rate limited' }, 429);
       return;
     }
     if (u.pathname === '/api/new-episodes' && q.get('latest') === '1') {
@@ -214,7 +227,7 @@ await settle();
 t.equal('only artist one\'s latest album, under 90 days', await rowTitles(), ['Album 101']);
 t.ok('the row names the artist', /Artist One/.test(await sectionText()));
 t.ok('the unreadable artist is "could not check", not "nothing new"', /Could not check 1 of your artists/.test(await sectionText()));
-t.ok('the section says where the albums come from', /New albums from the 3 artists you favorited/.test(await sectionText()));
+t.ok('the section says where the albums come from', /New albums from the 3 artists you follow/.test(await sectionText()));
 let rec = await record();
 t.equal('every listed album of artist one is seen (guid and url keys)', rec.seen[P1.podcastGuid].length, 5);
 t.equal('artist two is seen too, though nothing showed', rec.seen[P2.podcastGuid].length, 4);
@@ -326,35 +339,63 @@ t.ok('the row control is at least 24×24', m.row && m.row[0] >= 24 && m.row[1] >
 t.ok('the heading control is at least 24 tall', m.head && m.head[1] >= 24, JSON.stringify(m.head));
 
 // ---- 9. ♡ ARTIST on the album page ----------------------------------------
+// A FOLLOW ON THIS DEVICE, never a favorite: the shared list must not change.
 console.log('9. ♡ ARTIST');
 await seed({ 'bmb:favorites:guest': FAVS([]) });
-await send('Page.navigate', { url: `${APP}/?feed=9401` });
-await until(`/Album By Nine/.test(document.body.textContent)`, 15000);
-const chipShown = await until(`!!document.querySelector('[data-artist-heart] button')`, 8000);
-t.ok('an album whose artist PI holds shows ♡ ARTIST', chipShown);
+await send('Page.navigate', { url: `${APP}/?feed=9402` });
+await until(`/Album By Ten/.test(document.body.textContent)`, 15000);
+const chipShown = await until(`!!document.querySelector('[data-artist-follow] button')`, 8000);
+t.ok('♡ ARTIST shows for an artist Podcast Index does not hold', chipShown);
 const chip = await js(`(() => {
-  const b = document.querySelector('[data-artist-heart] button');
+  const b = document.querySelector('[data-artist-follow] button');
   const r = b?.getBoundingClientRect();
-  return b && { text: b.textContent.trim(), w: Math.round(r.width), h: Math.round(r.height),
+  return b && { text: b.textContent.trim(), pressed: b.getAttribute('aria-pressed'), w: Math.round(r.width), h: Math.round(r.height),
     sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
 })()`);
-t.ok('the chip says ARTIST', /ARTIST/.test(chip?.text ?? ''), JSON.stringify(chip));
+t.ok('the chip says ARTIST and is not pressed', /ARTIST/.test(chip?.text ?? '') && chip.pressed === 'false', JSON.stringify(chip));
 t.ok('the chip is at least 24×24 on a phone', chip && chip.w >= 24 && chip.h >= 24, JSON.stringify(chip));
 t.ok('the album page has no horizontal overflow', chip && chip.sw <= chip.cw, JSON.stringify(chip));
-await js(`document.querySelector('[data-artist-heart] button').click()`);
+await js(`document.querySelector('[data-artist-follow] button').click()`);
 await wait(500);
-const saved = await js(`JSON.parse(localStorage.getItem('bmb:favorites:guest') || '{}')[${JSON.stringify(P9.podcastGuid)}] ?? null`);
-t.equal('a press saves the ARTIST feed, as PI holds it', saved && [saved.id, saved.medium, saved.url, saved.title], [P9.id, 'publisher', P9.url, P9.title]);
+const follows = await js(`JSON.parse(localStorage.getItem('bmb:artists:guest') || '{}')`);
+t.equal('a press follows the artist on this device, with its feed address',
+  Object.values(follows).map((f) => [f.feedGuid, f.feedUrl, f.title]), [[P10.podcastGuid, P10.url, P10.title]]);
+t.equal('the SHARED favorites list does not change', await js(`localStorage.getItem('bmb:favorites:guest')`), FAVS([]));
+t.equal('the chip shows it is pressed', await js(`document.querySelector('[data-artist-follow] button').getAttribute('aria-pressed')`), 'true');
 await openFavorites();
 await until(`!!document.querySelector('[data-new-music]')`, 10000);
 await wait(2800);
 await settle();
-t.equal('NEW MUSIC follows the artist just saved', await rowTitles(), ['Album 901']);
+t.equal('NEW MUSIC follows the artist just followed', await rowTitles(), ['Album 1001']);
+t.ok('the section lists the follow', /Followed on this device:.*Artist Ten Not In PI/.test(await sectionText()));
+await js(`document.querySelector('[aria-label="Stop following Artist Ten Not In PI"]')?.click()`);
+await wait(500);
+t.equal('✕ on the follow stops it', await js(`localStorage.getItem('bmb:artists:guest')`), '{}');
+t.equal('and with no artist left the section goes', await js(`!!document.querySelector('[data-new-music]')`), false);
 
-await send('Page.navigate', { url: `${APP}/?feed=9402` });
-await until(`/Album By Ten/.test(document.body.textContent)`, 15000);
-await wait(2500);
-t.equal('an album whose artist PI does not hold shows no ♡ ARTIST', await js(`!!document.querySelector('[data-artist-heart]')`), false);
+// An artist already in the shared favorites: a stamp, never a control that
+// could remove the shared favorite.
+await seed({ 'bmb:favorites:guest': FAVS([P9]) });
+await send('Page.navigate', { url: `${APP}/?feed=9401` });
+await until(`/Album By Nine/.test(document.body.textContent)`, 15000);
+await until(`/ARTIST IN FAVORITES/.test(document.body.textContent)`, 8000);
+t.ok('an artist already in favorites shows the stamp', /ARTIST IN FAVORITES/.test(await js('document.body.textContent')));
+t.equal('and no follow button', await js(`!!document.querySelector('[data-artist-follow]')`), false);
+
+// ---- 10. a first look whose dates do not come back ------------------------
+console.log('10. dates rate limited on a first look');
+latestRateLimited = true;
+await seed({ 'bmb:favorites:guest': FAVS([P9]) });
+await openFavorites();
+await until(`!!document.querySelector('[data-new-music]')`, 10000);
+await wait(2800);
+await settle();
+rec = await record();
+t.ok('the artist is "could not check", not "nothing new"', /Could not check 1 of your artists/.test(await sectionText()));
+t.equal('and keeps no seen list, so the first look is not spent', P9.podcastGuid in rec.seen, false);
+latestRateLimited = false;
+await forcePass();
+t.equal('the next check names the latest album', await rowTitles(), ['Album 901']);
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails}/${t.count} passed`);

@@ -27,6 +27,64 @@
  * satisfies it.
  */
 
+/**
+ * An artist followed with ♡ ARTIST on the album page — on THIS DEVICE ONLY.
+ *
+ * **Never on the shared kind:10333 list** (the owner's choice, 2026-11-15,
+ * until cross-app artist favorites are decided). A feed favorite there is keyed
+ * by guid alone and carries no feed URL, so an artist feed Podcast Index does
+ * not hold — every Wavlake artist feed, on 2026-11-15 — would be an entry no
+ * other device or app can open. Kept in `bmb:artists:<npub>` instead, with the
+ * URL, so NEW MUSIC can read the feed without Podcast Index.
+ */
+export interface ArtistFollow {
+  /** The artist feed's guid, as the album's channel names it. */
+  feedGuid: string;
+  /** The artist feed's address — what NEW MUSIC reads. */
+  feedUrl: string;
+  /** The artist's name, from the album it was followed on. */
+  title?: string;
+  /** Unix ms. */
+  addedAt: number;
+}
+
+/** One artist NEW MUSIC asks about, from either source. */
+export interface NewMusicArtist {
+  podcastGuid: string;
+  url?: string;
+  title?: string;
+}
+
+/**
+ * Every artist NEW MUSIC follows: the publisher feeds in the reader's
+ * FAVORITES first, then the ones followed on this device only. One artist in
+ * both is one artist (guids compared without case), and the favorite's record
+ * wins — it is the one Podcast Index resolved. A follow with no guid or no
+ * address is skipped: it cannot be asked about.
+ */
+export function newMusicArtists(
+  publisherFavorites: readonly NewMusicArtist[],
+  follows: Readonly<Record<string, ArtistFollow>>,
+): NewMusicArtist[] {
+  const out: NewMusicArtist[] = [];
+  const have = new Set<string>();
+  for (const a of publisherFavorites) {
+    const k = a.podcastGuid?.trim().toLowerCase();
+    if (!k || have.has(k)) continue;
+    have.add(k);
+    out.push(a);
+  }
+  for (const f of Object.values(follows)) {
+    const k = f.feedGuid?.trim().toLowerCase();
+    if (!k || !f.feedUrl || have.has(k)) continue;
+    have.add(k);
+    const a: NewMusicArtist = { podcastGuid: f.feedGuid, url: f.feedUrl };
+    if (f.title) a.title = f.title;
+    out.push(a);
+  }
+  return out;
+}
+
 /** The fields of an album this section reads. A `Podcast` satisfies it. */
 export interface NewMusicAlbum {
   /** Podcast Index feed id; 0 when PI does not hold the feed (yet). */
