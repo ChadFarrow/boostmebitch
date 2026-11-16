@@ -26,8 +26,9 @@
 // records each keysend and moves nothing. `/api/item-value` is answered by the
 // script with a one-recipient keysend block, so every leg is that stand-in.
 // The server still reads Podcast Index for the episode page, and the summary
-// receipt is signed by the local server's SITE_NOSTR_SK and published to the
-// local relay only.
+// receipt is signed by the local server's SITE_NOSTR_SK. Back-to-back runs can
+// draw a Podcast Index 429 (the server logs `lookup failed: PI 429`), which
+// fails at "episode open" — wait a few minutes rather than rerun at once.
 //
 // What it pins, in order of what it costs when wrong:
 //   1. THE FIELD BUG. A link that answers nothing until reconnected: the boost
@@ -292,13 +293,15 @@ section('2. A signer that never answers: nothing signed, the modal stays, RETRY 
   for (const [width, height] of [[390, 844], [320, 640]]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 3, mobile: true });
     await wait(400);
-    const m = JSON.parse(await js(`(() => {
-      const b = ${RETRY_NOTE}; const r = b.getBoundingClientRect(); const d = ${DIALOG}; const de = document.documentElement;
+    // `null` when the button or the dialog is gone — a FAIL below, not a crash.
+    const m = JSON.parse((await js(`(() => {
+      const b = ${RETRY_NOTE}; const d = ${DIALOG}; if (!b || !d) return 'null';
+      const r = b.getBoundingClientRect(); const de = document.documentElement;
       return JSON.stringify({ page: de.scrollWidth - de.clientWidth, dialog: d.scrollWidth - d.clientWidth,
         w: Math.round(r.width), h: Math.round(r.height), inside: r.left >= 0 && r.right <= innerWidth });
-    })()`));
-    t.ok(`${width}px: nothing overflows sideways`, m.page <= 0 && m.dialog <= 0, JSON.stringify(m));
-    t.ok(`${width}px: RETRY NOTE is on screen and at least 24×24 (WCAG 2.5.8)`, m.inside && m.w >= 24 && m.h >= 24, JSON.stringify(m));
+    })()`)) ?? 'null');
+    t.ok(`${width}px: nothing overflows sideways`, !!m && m.page <= 0 && m.dialog <= 0, JSON.stringify(m));
+    t.ok(`${width}px: RETRY NOTE is on screen and at least 24×24 (WCAG 2.5.8)`, !!m && m.inside && m.w >= 24 && m.h >= 24, JSON.stringify(m));
   }
   await send('Emulation.clearDeviceMetricsOverride');
   t.equal('nothing was sent to the signer to sign', signsSince(t0).length, 0);
