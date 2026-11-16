@@ -1731,6 +1731,114 @@ export function filterPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author
 }
 
 /**
+ * Whether `a` and `b` are at most `max` edits apart — insert, delete, substitute,
+ * or swap two neighbouring letters (optimal string alignment).
+ *
+ * BOUNDED, because the search lanes call it once per word per roster row on
+ * every keystroke: a length gap above `max` answers at once, and a row whose
+ * best cell is already past `max` stops the walk.
+ */
+export function editDistanceWithin(a: string, b: string, max: number): boolean {
+  if (max < 0) return false;
+  if (Math.abs(a.length - b.length) > max) return false;
+  if (a === b) return true;
+  let prev2: number[] = [];
+  let prev: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur: number[] = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let d = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d = Math.min(d, prev2[j - 2] + 1);
+      }
+      cur.push(d);
+      if (d < best) best = d;
+    }
+    if (best > max) return false;
+    prev2 = prev;
+    prev = cur;
+  }
+  return prev[b.length] <= max;
+}
+
+/** Lower case, accents dropped, so `Øystein` and `oystein` are one word to the typo test. */
+function foldForNearMatch(s: string): string {
+  return s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+}
+
+/**
+ * How many typos one query term may carry: none under four letters, one up to
+ * seven, two from eight. A short term with a typo allowed matches half the
+ * dictionary — `pod` is one edit from `god`, `pot` and `pop`.
+ */
+function nearTermBudget(term: string): number {
+  if (term.length < 4) return 0;
+  return term.length < 8 ? 1 : 2;
+}
+
+/**
+ * One query term against one row's words: within budget of a whole word, or of
+ * the word's opening letters (the box searches as the user types, so `mutto`
+ * is a word on its way to `mutton`).
+ */
+function termNearlyIn(term: string, words: readonly string[]): boolean {
+  const max = nearTermBudget(term);
+  if (max === 0) return false;
+  return words.some((w) => editDistanceWithin(term, w, max)
+    || (w.length > term.length && editDistanceWithin(term, w.slice(0, term.length), max)));
+}
+
+/**
+ * The playlists a query reaches only THROUGH A TYPO — every row
+ * `filterPlaylistsByQuery` already returns is left out.
+ *
+ * Same contract as that function otherwise: every term must land, the medium is
+ * re-checked, a blank query matches nothing, and PI's order is kept. A term
+ * lands when it is a substring of the title or author, as there, or when it is
+ * within `nearTermBudget` edits of one of their words. So `muton` and
+ * `homegrwn hits` find their playlists, and `pod` finds no new one.
+ *
+ * Kept APART from the exact matches rather than merged into them, because the
+ * two are promoted differently: `/api/search` lifts an exact playlist above
+ * Podcast Index's ranking, and lifting a near one too would put the `mutton`
+ * playlist over the results of somebody who typed `button` on purpose.
+ */
+export function nearPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author' | 'medium'>>(
+  feeds: readonly T[],
+  q: string,
+  limit: number,
+): T[] {
+  const terms = foldForNearMatch(q).split(/\s+/).map((t) => t.replace(/[^\p{L}\p{N}]/gu, '')).filter(Boolean);
+  if (!terms.length || limit <= 0) return [];
+  const exact = new Set(filterPlaylistsByQuery(feeds, q, feeds.length));
+  const out: T[] = [];
+  for (const f of feeds) {
+    if (exact.has(f) || !isPlaylistMedium(f)) continue;
+    const hay = foldForNearMatch(`${f.title ?? ''} ${f.author ?? ''}`);
+    const words = hay.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    if (!terms.every((t) => hay.includes(t) || termNearlyIn(t, words))) continue;
+    out.push(f);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * A roster lane's answer: the exact matches, then the near ones, `limit` in all.
+ * An exact match never loses its place to a typo match.
+ */
+export function matchPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author' | 'medium'>>(
+  feeds: readonly T[],
+  q: string,
+  limit: number,
+): T[] {
+  const exact = filterPlaylistsByQuery(feeds, q, limit);
+  return [...exact, ...nearPlaylistsByQuery(feeds, q, limit - exact.length)];
+}
+
+/**
  * What kind of thing the search box is being asked for.
  *
  * `'all'` is the default and is deliberately not a filter at all — it is the

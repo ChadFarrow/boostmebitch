@@ -24,7 +24,7 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
@@ -257,6 +257,23 @@ export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]
  * and the MUSIC chip degrades to a shorter answer rather than a broken one. Only
  * auth and 5xx propagate.
  */
+/**
+ * Podcast Index's loose TITLE match — `/search/bytitle` with `similar`.
+ *
+ * `/search/byterm` has no typo tolerance, so `/api/search` asks this as well
+ * when byterm comes back thin (`nearTitles` in the route). It matches titles
+ * only, never authors. How many typos PI's `similar` forgives is PI's
+ * decision and is not documented.
+ *
+ * An accelerator: the caller treats any failure as no rows.
+ */
+export async function searchSimilarTitles(query: string, max = 20): Promise<Podcast[]> {
+  const data = await pi<any>(
+    `/search/bytitle?q=${encodeURIComponent(query)}&max=${max}&similar`,
+  );
+  return (data.feeds ?? []).map(buildPodcast);
+}
+
 export async function searchMusicPodcasts(query: string, max = 50): Promise<Podcast[]> {
   try {
     const data = await pi<any>(
@@ -397,10 +414,10 @@ export async function searchPlaylistFeeds(query: string, limit: number): Promise
         rosterInFlight,
         new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ROSTER_COLD_WAIT_MS); }),
       ]).finally(() => { if (timer) clearTimeout(timer); });
-      return filterPlaylistsByQuery(feeds ?? [], query, limit);
+      return matchPlaylistsByQuery(feeds ?? [], query, limit);
     }
   }
-  return filterPlaylistsByQuery(hit?.value ?? [], query, limit);
+  return matchPlaylistsByQuery(hit?.value ?? [], query, limit);
 }
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {

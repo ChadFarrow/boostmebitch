@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
-import { searchPodcasts, searchMusicPodcasts, searchPlaylistFeeds, getPodcast, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
+import { searchPodcasts, searchMusicPodcasts, searchPlaylistFeeds, searchSimilarTitles, getPodcast, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
 import { searchCuratedPlaylists } from '@/lib/curated-roster';
 import type { CuratedHits } from '@/lib/curated-roster';
 import {
   curatedNotListed, filterPlaylistsByQuery, matchesSearchType, mergeRssOverPi, mergeSearchLanes,
-  parseSearchType, piRecordIsBlank, rankPlaylistsFirst,
+  nearPlaylistsByQuery, parseSearchType, piRecordIsBlank, rankPlaylistsFirst,
 } from '@/lib/util';
+import type { Podcast } from '@/lib/types';
 import type { SearchType } from '@/lib/util';
 import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
@@ -36,6 +37,39 @@ const MAX_PLAYLIST_HITS = 6;
  * and nothing here jumps anything.
  */
 const MAX_TYPED_HITS = 50;
+
+/**
+ * Below this many rows, a search also asks Podcast Index for loose title matches.
+ *
+ * `/search/byterm` forgives no typo, so `muton` finds nothing about mutton. The
+ * extra call runs only when the answer is thin, which keeps a normal search at
+ * the PI cost it had before.
+ */
+const NEAR_TITLES_BELOW = 5;
+
+/** How many loose title matches one search may add. */
+const MAX_NEAR_TITLES = 20;
+
+/**
+ * Podcast Index's loose title matches for a thin answer — only the rows of the
+ * chip's type, after everything already listed, and none already listed.
+ *
+ * `added` is how many NEW rows PI returned before the type filter, for `total`.
+ *
+ * An ACCELERATOR, the same contract as the playlist lanes: every failure is no
+ * rows, so it can make an answer longer and never break one. It runs after the
+ * other lanes because only their answer says whether it is needed.
+ */
+async function nearTitles(
+  query: string,
+  listed: readonly Podcast[],
+  type: SearchType,
+): Promise<{ rows: Podcast[]; added: number }> {
+  if (listed.length >= NEAR_TITLES_BELOW || query.length < 3) return { rows: [], added: 0 };
+  const similar = await searchSimilarTitles(query, MAX_NEAR_TITLES).catch(() => [] as Podcast[]);
+  const fresh = curatedNotListed(similar, listed);
+  return { rows: fresh.filter((f) => matchesSearchType(f, type)), added: fresh.length };
+}
 
 /**
  * One response shape for every branch.
@@ -178,7 +212,9 @@ export async function GET(req: Request) {
         searchMusicPodcasts(query, MAX_TYPED_HITS).catch(() => [] as Awaited<ReturnType<typeof searchMusicPodcasts>>),
         searchPodcasts(query, 50),
       ]);
-      return answer(mergeSearchLanes(music, feeds, 'music', MAX_TYPED_HITS), feeds.length, type);
+      const listed = mergeSearchLanes(music, feeds, 'music', MAX_TYPED_HITS);
+      const near = await nearTitles(query, listed, type);
+      return answer([...listed, ...near.rows], feeds.length + near.added, type);
     }, 'search failed');
   }
 
@@ -201,12 +237,17 @@ export async function GET(req: Request) {
       ]);
       const fromByterm = filterPlaylistsByQuery(feeds, query, MAX_TYPED_HITS);
       const curated = curatedNotListed(curatedHits.feeds, [...fromByterm, ...rosterHits]);
-      return answer(
-        mergeSearchLanes(fromByterm, [...rosterHits, ...curated], 'playlist', MAX_TYPED_HITS),
-        feeds.length,
-        type,
-        curatedHits.answered,
+      // Exact roster matches before the ones a typo away, whichever lane found
+      // them: a curated exact title outranks a PI roster near miss.
+      const lanes = [...rosterHits, ...curated];
+      const listed = mergeSearchLanes(
+        fromByterm,
+        [...filterPlaylistsByQuery(lanes, query, MAX_TYPED_HITS), ...nearPlaylistsByQuery(lanes, query, MAX_TYPED_HITS)],
+        'playlist',
+        MAX_TYPED_HITS,
       );
+      const near = await nearTitles(query, listed, type);
+      return answer([...listed, ...near.rows], feeds.length + near.added, type, curatedHits.answered);
     }, 'search failed');
   }
 
@@ -217,7 +258,9 @@ export async function GET(req: Request) {
       // a list medium" — because Podcast Index leaves the tag blank on most of
       // what it holds, and an inclusion test would silently empty the chip.
       const feeds = await searchPodcasts(query, 50);
-      return answer(feeds.filter((f) => matchesSearchType(f, 'podcast')), feeds.length, type);
+      const listed = feeds.filter((f) => matchesSearchType(f, 'podcast'));
+      const near = await nearTitles(query, listed, type);
+      return answer([...listed, ...near.rows], feeds.length + near.added, type);
     }, 'search failed');
   }
 
@@ -246,7 +289,15 @@ export async function GET(req: Request) {
     // displacing PI's own leader. The whole rule — and the measurements behind
     // it — lives in `rankPlaylistsFirst`, which `check:musicl` pins against the
     // real `mutton` and `flowgnar` responses.
-    const ranked = rankPlaylistsFirst(feeds, [...rosterHits, ...curated], query, MAX_PLAYLIST_HITS);
-    return answer(ranked, ranked.length, 'all', curatedHits.answered);
+    //
+    // Only an EXACT roster match is promoted. A playlist a typo away goes after
+    // PI's own results: lifting it would put the `mutton` playlist over the
+    // results of somebody who typed `button` on purpose.
+    const lanes = [...rosterHits, ...curated];
+    const ranked = rankPlaylistsFirst(feeds, filterPlaylistsByQuery(lanes, query, MAX_PLAYLIST_HITS), query, MAX_PLAYLIST_HITS);
+    const listed = [...ranked, ...curatedNotListed(nearPlaylistsByQuery(lanes, query, MAX_PLAYLIST_HITS), ranked)];
+    const near = await nearTitles(query, listed, 'all');
+    const all = [...listed, ...near.rows];
+    return answer(all, all.length, 'all', curatedHits.answered);
   }, 'search failed');
 }
