@@ -28,6 +28,8 @@ import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMediu
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
+import { demuRosterRows } from './demu';
+import type { DemuAlbum } from './demu';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -407,6 +409,87 @@ export async function searchPlaylistFeeds(query: string, limit: number): Promise
     }
   }
   return filterPlaylistsByQuery(hit?.value ?? [], query, limit);
+}
+
+// ─── The DeMu roster (/demu) ─────────────────────────────────────────────────
+//
+// Every self-hosted music album, for the /demu page. The playlist roster above
+// is the pattern, and each rule below exists for the same reason it does there.
+// Design: docs/superpowers/specs/2026-11-15-demu-page-design.md.
+//
+// ONE call: `/podcasts/bymedium?medium=music` answers all of PI's music feeds
+// at once (8,671 on 2026-11-15, ~1 s) and ignores `max`. `demuRosterRows`
+// (lib/demu.ts, pinned by `check:demu`) keeps the DeMu ones: no Wavlake
+// generator, no closed host, not dead, one row per guid.
+
+/** A music feed changes slowly; one refresh serves six hours. */
+const DEMU_ROSTER_FRESH_MS = 6 * 60 * 60_000;
+/** A failed refresh keeps serving the last good roster for up to a day. */
+const DEMU_ROSTER_STALE_MS = 24 * 60 * 60_000;
+/**
+ * How long a page load waits on a COLD roster before it answers "not loaded
+ * yet". The call took ~1 s when measured; past this the refresh keeps running
+ * and the next load is served from cache. Same bound as the curated roster.
+ */
+const DEMU_ROSTER_COLD_WAIT_MS = 2500;
+/**
+ * The whole music list is one body: 9.9 MB on 2026-11-15, over the shared
+ * `MAX_BODY_BYTES`, which would THROW rather than truncate. Room to grow.
+ */
+const DEMU_MAX_BYTES = 32 * 1024 * 1024;
+
+const demuRoster = createBoundedCache<DemuAlbum[]>({
+  maxAgeMs: DEMU_ROSTER_STALE_MS,
+  maxEntries: 1,
+});
+const DEMU_KEY = 'music';
+let demuInFlight: Promise<DemuAlbum[] | null> | null = null;
+
+/**
+ * One refresh. Resolves `null` when Podcast Index could not be asked, and that
+ * null is NEVER cached: "nobody answered" written as an empty roster would be
+ * served for six hours as "there is no DeMu music" — the page saying so over a
+ * PI outage, with nothing in a log to show why.
+ */
+async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
+  try {
+    const data = await pi<any>('/podcasts/bymedium?medium=music', DEMU_MAX_BYTES);
+    const albums = demuRosterRows(Array.isArray(data?.feeds) ? data.feeds : [], closedService);
+    demuRoster.set(DEMU_KEY, albums, Date.now());
+    return albums;
+  } catch (e) {
+    console.warn('[pi] DeMu roster refresh failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/**
+ * The DeMu roster for `/api/demu`.
+ *
+ * `answered: false` means NOT LOADED (cold and not ready inside the bound, or
+ * every refresh so far failed), never "empty": the page must say "could not
+ * load", and the route must not let a CDN keep that answer. A stale roster is
+ * served as-is while a refresh runs behind it; refreshes are deduped.
+ */
+export async function getDemuRoster(): Promise<{ albums: DemuAlbum[]; answered: boolean; fetchedAt: number | null }> {
+  const now = Date.now();
+  const hit = demuRoster.get(DEMU_KEY, now);
+  if (!hit || hit.ageMs >= DEMU_ROSTER_FRESH_MS) {
+    if (!demuInFlight) {
+      demuInFlight = refreshDemuRoster().finally(() => { demuInFlight = null; });
+    }
+    if (!hit) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const albums = await Promise.race([
+        demuInFlight,
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), DEMU_ROSTER_COLD_WAIT_MS); }),
+      ]).finally(() => { if (timer) clearTimeout(timer); });
+      return albums
+        ? { albums, answered: true, fetchedAt: Date.now() }
+        : { albums: [], answered: false, fetchedAt: null };
+    }
+  }
+  return { albums: hit.value, answered: true, fetchedAt: now - hit.ageMs };
 }
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {
