@@ -24,10 +24,10 @@
 import {
   isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
   hasValueBlock, demuValueGaps, keepWithValue, keepForDemu, mspFeedGuids, confirmValueMissing,
-  demuAppOf, DEMU_APPS,
+  demuAppOf, DEMU_APPS, withCoverFallback,
 } from '../lib/demu.ts';
 import { DEMU_HIDE_LIST, DEMU_HIDE_AUTHORS, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
-import { remoteItemFeedGuids, feedHasValueTag } from '../lib/feed-xml.ts';
+import { remoteItemFeedGuids, feedHasValueTag, newestItemImage } from '../lib/feed-xml.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
@@ -568,6 +568,45 @@ console.log('\nFountain off /demu:');
   // The search lane reads the same rule: a Fountain album is not DeMu there either.
   if (isDemuFeed({ generator: 'Fountain', url: 'https://feeds.fountain.fm/x' }, () => null)) fail('isDemuFeed (the DEMU search type) still counts Fountain');
   else ok('isDemuFeed (the DEMU search type) drops Fountain too');
+}
+
+// ── A feed with no cover borrows its newest track's (Chad, 2026-11-16) ────────
+// Crem Road's feeds carry no channel cover at all — no <itunes:image>, no
+// <image><url> — only one per track, so PI has none and the row drew a letter.
+// Wire: the item tag shape of cremroad.com/rss/?artist=Me In The Bath.
+console.log('\nCover from the newest track:');
+{
+  const item = (date, img) => `<item><title>t</title><pubDate>${date}</pubDate>${img ? `<itunes:image href="${img}"/>` : ''}<enclosure url="http://cremroad.com/a.mp3"/></item>`;
+  const doc = (...items) => `<rss><channel><title>Me In The Bath</title>${items.join('')}</channel></rss>`;
+  const vectors = [
+    // Document order is NOT date order: the newest track is second here.
+    ['newest by pubDate, not by position', doc(item('Mon, 01 Sep 2025 00:00:00 GMT', 'http://cremroad.com/covers/old.jpg'), item('Thu, 18 Sep 2025 00:00:00 GMT', 'http://cremroad.com/covers/mitb-onrb.jpg')), 'http://cremroad.com/covers/mitb-onrb.jpg'],
+    ['a newer track WITHOUT a cover is skipped', doc(item('Fri, 19 Sep 2025 00:00:00 GMT', null), item('Thu, 18 Sep 2025 00:00:00 GMT', 'https://cremroad.com/covers/b.png')), 'https://cremroad.com/covers/b.png'],
+    ['no track cover at all', doc(item('Thu, 18 Sep 2025 00:00:00 GMT', null)), undefined],
+    ['a javascript: cover is not a cover', doc(item('Thu, 18 Sep 2025 00:00:00 GMT', 'javascript:alert(1)')), undefined],
+    ['a data: cover is not a cover', doc(item('Thu, 18 Sep 2025 00:00:00 GMT', 'data:image/png;base64,AAAA')), undefined],
+    ['no dates: the first track with a cover', doc(item('', 'https://x.example/1.jpg'), item('', 'https://x.example/2.jpg')), 'https://x.example/1.jpg'],
+  ];
+  for (const [name, xml, want] of vectors) {
+    const got = newestItemImage(xml);
+    if (got !== want) fail(`newestItemImage: ${name} gave ${JSON.stringify(got)}`);
+    else ok(`newestItemImage: ${name}`);
+  }
+  const filled = withCoverFallback(
+    [album(7621696, 1, { podcastGuid: '23befcef-bd42-57a2-a471-789fcb5aaa8a' }),
+      album(2, 2, { podcastGuid: 'g2', image: 'https://has.example/own.jpg' }),
+      album(3, 3, { podcastGuid: 'g3', artwork: 'https://has.example/art.jpg' })],
+    new Map([['23befcef-bd42-57a2-a471-789fcb5aaa8a', 'http://cremroad.com/covers/mitb-onrb.jpg'], ['g2', 'https://x/no.jpg'], ['g3', 'https://x/no.jpg']]),
+  ).map((a) => [a.id, a.image ?? null]);
+  if (JSON.stringify(filled) !== JSON.stringify([[7621696, 'http://cremroad.com/covers/mitb-onrb.jpg'], [2, 'https://has.example/own.jpg'], [3, null]])) fail(`withCoverFallback gave ${JSON.stringify(filled)}`);
+  else ok('withCoverFallback fills only an album with neither image nor artwork');
+
+  // The Crem Road copies: cremroad.com ignores ?a=, so three PI feeds are one document.
+  for (const g of ['c5075dbf-7937-57d9-8023-6d974d2b26de', 'e65712c3-c07c-51c2-8c61-1d81caa9552f']) {
+    if (!DEMU_HIDE_LIST.some((h) => h.guid === g)) fail(`the hide list lacks the Crem Road copy ${g}`);
+  }
+  if (DEMU_HIDE_LIST.some((h) => h.guid === '4fd41d97-7be1-5cca-b933-0638f8fe22dd')) fail('the hide list hides the Crem Road row we keep');
+  else ok('two Crem Road copies hidden, cremroad.com/rss/ kept');
 }
 
 // ── Which app made the feed: the cover's corner badge (Chad, 2026-11-16) ──────

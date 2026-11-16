@@ -617,6 +617,29 @@ const PODROLL_BLOCK_TAG = 'podcast:podroll';
 export const MAX_PLAYLIST_REFS = 5000;
 
 /**
+ * The cover of a feed's NEWEST track (by `<pubDate>`, never by document order),
+ * for a feed that names no cover of its own. Crem Road's feeds carry no channel
+ * `<itunes:image>` or `<image><url>` at all, only one per track, so Podcast Index
+ * holds no image and `/demu` drew a letter (Chad, 2026-11-16). A track without a
+ * cover is skipped; only an http(s) URL counts — `javascript:` and `data:` are not
+ * covers. With no dates at all, the first track with a cover. `undefined` when no
+ * track has one. Through `findBlocks`/`readAttr`, like every parser here.
+ */
+export function newestItemImage(xml: string): string | undefined {
+  let best: { at: number; url: string } | undefined;
+  for (const item of findBlocks(xml, 'item')) {
+    const tag = firstTag(item.inner, 'itunes:image');
+    const href = tag ? readAttr(tag.attrs, 'href')?.trim() : undefined;
+    if (!href || !/^https?:\/\//i.test(href)) continue;
+    const date = firstBlock(item.inner, 'pubDate');
+    const parsed = date ? Date.parse(decodeXmlText(date.inner).trim()) : NaN;
+    const at = Number.isFinite(parsed) ? parsed : -Infinity;
+    if (!best || at > best.at) best = { at, url: href };
+  }
+  return best?.url;
+}
+
+/**
  * True when a feed carries any `<podcast:value>` block — on the channel OR on an
  * item. Podcast Index's value data is channel-level only, so it calls an
  * item-level-only feed valueless: MOOKY (Podhome) pays two recipients from its

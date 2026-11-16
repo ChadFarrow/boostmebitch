@@ -48,6 +48,10 @@ export const DEMU_HIDE_LIST: readonly DemuHidden[] = [
   { guid: 'c64fab29-66bf-56da-a7f3-c2a11f37f526', title: 'CGRadio - The Mix Series', reason: 'a radio mix series (LNBeats id 424986)' },
   { guid: 'c9c7bad3-4712-514e-9ebd-d1e208fa1b76', title: 'Board Game Design Lab (13 archive feeds)', reason: 'a talk show filed as music (LNBeats: author Gabe Barrett)' },
   { guid: '3e7c4f6a-9f9e-5b13-8d8a-eb053b35d377', title: '小杉毅誉大officialサイト', reason: 'not a music release (LNBeats: author 小杉毅誉大)' },
+  // cremroad.com ignores `?a=`, so these two PI feeds are byte for byte the
+  // catalog at cremroad.com/rss/ (4fd41d97-…, kept). Chad, 2026-11-16.
+  { guid: 'c5075dbf-7937-57d9-8023-6d974d2b26de', title: 'Crem Road (cremroad.com/rss/?a=Still Living Creature)', reason: 'the same document as cremroad.com/rss/' },
+  { guid: 'e65712c3-c07c-51c2-8c61-1d81caa9552f', title: 'Crem Road (cremroad.com/rss/?a=Me In The Bath)', reason: 'the same document as cremroad.com/rss/' },
 ];
 
 /**

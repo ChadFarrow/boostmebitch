@@ -299,6 +299,23 @@ export function mspFeedGuids(rows: readonly PiMusicRow[]): Set<string> {
 }
 
 /**
+ * Gives an album with NO cover — neither `image` nor `artwork` from Podcast
+ * Index — the cover of its newest track, from `covers` (lower-cased guid →
+ * URL, read by the refresh with `newestItemImage`). Crem Road, 2026-11-16: its
+ * feeds name a cover per track only. An album with any cover of its own keeps it.
+ */
+export function withCoverFallback(
+  albums: readonly DemuAlbum[],
+  covers: ReadonlyMap<string, string>,
+): DemuAlbum[] {
+  return albums.map((a) => {
+    if (a.image || a.artwork || !a.podcastGuid) return a;
+    const url = covers.get(a.podcastGuid.toLowerCase());
+    return url ? { ...a, image: url } : a;
+  });
+}
+
+/**
  * The NO VALUE BLOCK stamp, checked against each feed's own RSS. `rss` maps a
  * lower-cased guid to `true` (the RSS has a `<podcast:value>` somewhere — on an
  * item counts), `false` (read, and none), or `null`/absent (not read). The mark

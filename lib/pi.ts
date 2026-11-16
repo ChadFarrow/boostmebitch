@@ -21,6 +21,7 @@ import {
   escapeDanglingLt,
   remoteItemFeedGuids,
   feedHasValueTag,
+  newestItemImage,
 } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
@@ -30,7 +31,7 @@ import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMediu
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
-import { confirmValueMissing, demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids } from './demu';
+import { confirmValueMissing, demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids, withCoverFallback } from './demu';
 import { DEMU_HIDE_AUTHORS, DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from './demu-hide-list';
 import type { DemuAlbum, PiMusicRow } from './demu';
 
@@ -577,7 +578,17 @@ async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
       const xml = a.url ? await fetchFeedXml(a.url) : null;
       rss.set(a.podcastGuid!.toLowerCase(), xml == null ? null : feedHasValueTag(xml));
     });
-    const albums = confirmValueMissing(kept, rss);
+    const confirmed = confirmValueMissing(kept, rss);
+    // An album with no cover at all borrows its newest track's, from its own RSS
+    // (`newestItemImage`) — 4 feeds on 2026-11-16, all Crem Road. Same reader and
+    // fan-out as above; a feed that cannot be read keeps its letter placeholder.
+    const covers = new Map<string, string>();
+    await mapLimit(confirmed.filter((a) => !a.image && !a.artwork && a.url && a.podcastGuid), FEED_FANOUT, async (a) => {
+      const xml = await fetchFeedXml(a.url!);
+      const img = xml == null ? undefined : newestItemImage(xml);
+      if (img) covers.set(a.podcastGuid!.toLowerCase(), img);
+    });
+    const albums = withCoverFallback(confirmed, covers);
     if (!albums.length) {
       console.warn('[pi] DeMu roster refresh kept no album with a value block; not cached');
       return null;
