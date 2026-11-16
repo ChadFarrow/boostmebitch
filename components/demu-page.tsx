@@ -53,7 +53,10 @@ export function DemuPage() {
     try {
       const r = await fetch('/api/demu');
       const data = r.ok ? await r.json() : null;
-      if (data?.answered === true && Array.isArray(data.albums)) {
+      // An answered roster with NO albums read nothing (the server no longer
+      // caches one, but a CDN copy or an older server could still send it):
+      // "could not load", never "0 DeMu albums" over an empty-quotes no-match.
+      if (data?.answered === true && Array.isArray(data.albums) && data.albums.length > 0) {
         setLoad({ status: 'loaded', albums: data.albums as DemuAlbum[], now: Date.now() });
       } else {
         setLoad({ status: 'failed' });
@@ -112,16 +115,20 @@ export function DemuPage() {
     router.push('/');
   }
 
-  const meta = (p: Podcast) => {
+  // The track count rides on the author line (it may be cut on a narrow
+  // phone); the date and age get their own line, which is never cut — Chad
+  // chose this layout for the dates, "especially for mobile".
+  const meta = (p: Podcast) => trackLabel((p as unknown as DemuAlbum).episodeCount) || null;
+  const detail = (p: Podcast) => {
     const a = p as unknown as DemuAlbum;
     const at = new Date(now);
     const date = demuDateLabel(a.newestItemPubdate, at);
-    const parts = [trackLabel(a.episodeCount), date].filter(Boolean).join(' · ');
     const age = demuAge(a.newestItemPubdate, at);
+    if (!date && !age) return null;
     return (
       <>
-        {parts}
-        {age ? <span className="text-bolt">{parts ? ' · ' : ''}{age}</span> : null}
+        {date}
+        {age ? <span data-demu-age className="text-bolt">{date ? ' · ' : ''}{age}</span> : null}
       </>
     );
   };
@@ -173,7 +180,7 @@ export function DemuPage() {
                   <h2 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-bolt border-b border-bolt/40 pb-1.5 mb-1 px-1">
                     {g.label}
                   </h2>
-                  <PodcastResults feeds={g.albums} selected={null} onSelect={openAlbum} meta={meta} />
+                  <PodcastResults feeds={g.albums} selected={null} onSelect={openAlbum} meta={meta} detail={detail} />
                 </section>
               ))}
               <ShowMore remaining={remaining} onClick={more} noun="DeMu albums" innerRef={sentinel} />

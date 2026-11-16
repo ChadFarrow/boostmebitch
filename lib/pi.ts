@@ -28,7 +28,7 @@ import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMediu
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
-import { demuRosterRows } from './demu';
+import { demuRosterFromPi } from './demu';
 import type { DemuAlbum } from './demu';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -453,8 +453,13 @@ let demuInFlight: Promise<DemuAlbum[] | null> | null = null;
  */
 async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
   try {
-    const data = await pi<any>('/podcasts/bymedium?medium=music', DEMU_MAX_BYTES);
-    const albums = demuRosterRows(Array.isArray(data?.feeds) ? data.feeds : [], closedService);
+    const data = await pi<unknown>('/podcasts/bymedium?medium=music', DEMU_MAX_BYTES);
+    // `null` when the answer read nothing — never cached, for the reason above.
+    const albums = demuRosterFromPi(data, closedService);
+    if (!albums) {
+      console.warn('[pi] DeMu roster refresh read no DeMu albums; not cached');
+      return null;
+    }
     demuRoster.set(DEMU_KEY, albums, Date.now());
     return albums;
   } catch (e) {

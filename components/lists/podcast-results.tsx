@@ -17,6 +17,7 @@ export function PodcastRow({
   onSelect,
   showV4VStamp,
   meta,
+  detail,
   piUnasked,
   footer,
 }: {
@@ -24,6 +25,14 @@ export function PodcastRow({
   selected: boolean;
   onSelect: (p: Podcast) => void;
   showV4VStamp: boolean;
+  /**
+   * A short third line that must NEVER be cut — `/demu` puts the date and age
+   * of the newest track here (`Nov 14 · 1 day`). Not `meta`: that rides at the
+   * end of the author line, which truncates, and at 390px it hid the age on
+   * every row (measured, final review 2026-11-15). Optional; absent changes
+   * nothing.
+   */
+  detail?: React.ReactNode;
   /**
    * Extra text for the secondary line, beside the author.
    *
@@ -117,6 +126,7 @@ export function PodcastRow({
               </>
             ) : null}
           </div>
+          {detail ? <div className="text-xs text-muted whitespace-nowrap mt-0.5">{detail}</div> : null}
         </div>
       </button>
       {/* `self-center`, and it is not cosmetic: a bare flex child inherits
@@ -140,6 +150,7 @@ export function PodcastResults({
   onSelect,
   empty,
   meta,
+  detail,
   piUnasked,
 }: {
   feeds: Podcast[];
@@ -147,6 +158,8 @@ export function PodcastResults({
   onSelect: (p: Podcast) => void;
   /** Per-row extra text for the secondary line — see `<PodcastRow>`'s `meta`. */
   meta?: (p: Podcast) => React.ReactNode;
+  /** Per-row line that is never cut — see `<PodcastRow>`'s `detail`. */
+  detail?: (p: Podcast) => React.ReactNode;
   /** Podcast Index was never asked — see `<PodcastRow>`'s `piUnasked`. */
   piUnasked?: boolean;
   /**
@@ -189,6 +202,7 @@ export function PodcastResults({
           onSelect={onSelect}
           showV4VStamp
           meta={meta?.(p)}
+          detail={detail?.(p)}
           piUnasked={piUnasked}
         />
       ))}

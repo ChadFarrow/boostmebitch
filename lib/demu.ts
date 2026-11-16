@@ -149,6 +149,25 @@ export function demuRosterRows(
   return [...byGuid.values(), ...noGuid];
 }
 
+/**
+ * A whole `/podcasts/bymedium?medium=music` answer → the roster, or `null` when
+ * the answer READ NOTHING: no body, no `feeds` list, an empty list, or rows that
+ * all fail (every row without `generator` fails closed, so a PI schema change
+ * that drops the field lands here). `null` means "do not cache, say could not
+ * load"; flattening it into `[]` cached six hours of "0 DeMu albums" over a
+ * broken answer (final review, 2026-11-15). There are ~1,100 DeMu albums, so a
+ * real answer with none is not a state worth trusting.
+ */
+export function demuRosterFromPi(
+  data: unknown,
+  closedService: (url: string) => string | null,
+): DemuAlbum[] | null {
+  const feeds = (data as { feeds?: unknown } | null)?.feeds;
+  if (!Array.isArray(feeds) || feeds.length === 0) return null;
+  const albums = demuRosterRows(feeds as PiMusicRow[], closedService);
+  return albums.length ? albums : null;
+}
+
 function isNewer(a: DemuAlbum, b: DemuAlbum): boolean {
   const da = a.newestItemPubdate ?? 0;
   const db = b.newestItemPubdate ?? 0;

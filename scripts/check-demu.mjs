@@ -22,7 +22,7 @@
 // Wavlake (6443203) and self-hosted on headstarts.uk (7287540).
 
 import {
-  isDemuFeed, demuRosterRows, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
+  isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
 } from '../lib/demu.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
@@ -263,6 +263,35 @@ for (const v of listVectors) {
 }
 console.log('\nThe /demu list — the replay against naive():');
 replayVectors({ vectors: listVectors, invoke: callList, fail });
+// ── An answer that read nothing is NOT an empty roster ───────────────────────
+// `null` is "do not cache, say could-not-load"; `[]` would be cached for six
+// hours and rendered as "0 DeMu albums" (final review, 2026-11-15). The naive
+// is the code that shipped first: a malformed body flattened into `[]`.
+const naiveFromPi = (data) => demuRosterRows(Array.isArray(data?.feeds) ? data.feeds : [], closedService);
+const piVectors = [
+  { label: 'no body', args: [null], expect: null },
+  { label: 'no feeds field (a schema change)', args: [{ status: 'true' }], expect: null },
+  { label: 'feeds is not a list', args: [{ feeds: {} }], expect: null },
+  { label: 'an empty feeds list', args: [{ feeds: [] }], expect: null },
+  { label: 'rows without generator (PI dropped the field) all fail closed', args: [{ feeds: [{ id: 1, url: ROWS.worriedOnFountain.url }, { id: 2, url: ROWS.wheelOnMsp.url }] }], expect: null },
+  { label: 'a real answer keeps its DeMu rows', args: [{ feeds: Object.values(ROWS) }], expect: [7287540, 7520866, 46385], alsoNaive: true },
+];
+const callPi = (impl, v) => {
+  try {
+    const out = impl === 'real' ? demuRosterFromPi(v.args[0], closedService) : naiveFromPi(v.args[0]);
+    return JSON.stringify(out === null ? null : out.map((a) => a.id).sort((a, b) => a - b));
+  } catch (e) { return `threw ${(e && e.message) || e}`; }
+};
+console.log('\ndemuRosterFromPi — the shipping answer:');
+for (const v of piVectors) {
+  const want = JSON.stringify(v.expect === null ? null : [...v.expect].sort((a, b) => a - b));
+  const got = callPi('real', v);
+  if (got !== want) fail(`"${v.label}" — expected ${want}, got ${got}`);
+  else ok(v.label);
+}
+console.log('\ndemuRosterFromPi — the replay against naive():');
+replayVectors({ vectors: piVectors, invoke: callPi, fail });
+
 for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {
   const fam = listVectors.filter((v) => v.kind === kind);
   if (!fam.some((v) => !v.alsoNaive)) fail(`the ${kind} vectors prove nothing against naive()`);
