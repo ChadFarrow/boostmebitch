@@ -43,9 +43,27 @@ export interface DemuRow {
 }
 
 /**
+ * A feed Fountain made or hosts: generator Fountain, or a feed on fountain.fm.
+ * Not DeMu since 2026-11-16 — Chad dropped Fountain from /demu ("Can we also hide
+ * fountain hosted feeds?") and then from this search type ("Fountain needs removed
+ * there too"). The host half is exact: `notfountain.fm.example.com` is not Fountain.
+ */
+export function isFountainFeed(row: DemuRow): boolean {
+  if (/^fountain\b/i.test((row.generator ?? '').trim())) return true;
+  let host = '';
+  try {
+    host = new URL(row.url ?? '').hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === 'fountain.fm' || host.endsWith('.fountain.fm');
+}
+
+/**
  * Whether one feed record is self-hosted by Chad's rule: no "wavlake" in its
- * generator, case-insensitively, and not on a closed host. A row with no
- * `generator` field at all FAILS CLOSED (see `DemuRow.generator`).
+ * generator, case-insensitively, not made or hosted by Fountain
+ * (`isFountainFeed`), and not on a closed host. A row with no `generator`
+ * field at all FAILS CLOSED (see `DemuRow.generator`).
  *
  * This does NOT test the medium. The DEMU lane runs the music lanes, and
  * `matchesSearchType(p, 'demu')` applies the music test to byterm's rows.
@@ -56,5 +74,6 @@ export function isDemuFeed(
 ): boolean {
   if (typeof row.generator !== 'string') return false;
   if (/wavlake/i.test(row.generator)) return false;
+  if (isFountainFeed(row)) return false;
   return closedService(row.url ?? '') === null;
 }

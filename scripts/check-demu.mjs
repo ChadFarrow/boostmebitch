@@ -48,7 +48,12 @@ const vectors = [
   { label: 'Katherines Wheel, Wavlake copy (6443203)', args: [ROWS.wheelOnWavlake], expect: false, alsoNaive: true },
   { label: 'Wavlake QA feed on run.app (8097582)', args: [ROWS.wavlakeQa], expect: false },
   { label: 'Katherines Wheel, MSP copy on headstarts.uk (7287540)', args: [ROWS.wheelOnMsp], expect: true, alsoNaive: true },
-  { label: 'Worried on Fountain (7520866)', args: [ROWS.worriedOnFountain], expect: true, alsoNaive: true },
+  // Fountain is not DeMu since 2026-11-16 (Chad: "Fountain needs removed there too",
+  // after /demu dropped it): by generator, or by a feed on fountain.fm.
+  { label: 'Worried on Fountain (7520866)', args: [ROWS.worriedOnFountain], expect: false },
+  // NOT FROM THE WIRE: the host half of the rule, and a look-alike host that is not Fountain.
+  { label: 'a feed on fountain.fm under another generator', args: [{ id: 1, generator: 'Something Else', url: 'https://feeds.fountain.fm/abc' }], expect: false },
+  { label: 'a look-alike host is not fountain.fm', args: [{ id: 2, generator: '', url: 'https://notfountain.fm.example.com/x.xml' }], expect: true, alsoNaive: true },
   { label: 'Cartieradio, blank generator (46385)', args: [ROWS.blankGenerator], expect: true, alsoNaive: true },
   { label: 'Worried on RSS Blue, a closed host (7101864)', args: [ROWS.worriedOnRssBlue], expect: false },
   // NOT FROM THE WIRE — a contract vector. PI always sends `generator`, as ""
@@ -109,11 +114,12 @@ console.log('\nThe DEMU selector type:');
   const byterm = [
     { id: 7696544, medium: 'publisher', generator: 'MSP 2.0 - Music Side Project Studio', url: 'https://headstarts.uk/msp/publisher-feeds/longy-everything-publisher-feed.xml' },
     { ...ROWS.worriedOnFountain, medium: 'music' },
+    { ...ROWS.wheelOnMsp, medium: 'music' },
   ];
   const keep = (f) => isDemuFeed(f, closedService);
   const ids = mergeSearchLanes(music.filter(keep), byterm.filter(keep), 'demu', 50).map((f) => f.id);
-  if (JSON.stringify(ids) !== JSON.stringify([7287540, 7520866, 46385])) fail(`the DEMU lane returned ${JSON.stringify(ids)}`);
-  else ok('the DEMU lane keeps 7287540, 7520866, 46385: Wavlake, RSS Blue and the publisher feed out, the repeat deduped');
+  if (JSON.stringify(ids) !== JSON.stringify([7287540, 46385])) fail(`the DEMU lane returned ${JSON.stringify(ids)}`);
+  else ok('the DEMU lane keeps 7287540, 46385: Wavlake, Fountain, RSS Blue and the publisher feed out, the repeat deduped');
 }
 
 // ── The module must stay loadable under plain Node ───────────────────────────
