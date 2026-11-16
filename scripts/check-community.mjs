@@ -9,7 +9,7 @@ import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
   blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
-  ownerNameOf, MAX_OWNER_NAME_LEN,
+  foldName, MAX_OWNER_NAME_LEN,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -307,7 +307,7 @@ const docSongs = Array.from({ length: 12 }, (_, i) => ({
 }));
 const stored = {
   id, ownerPubkey: 'ab'.repeat(32), createdAt: '2026-11-01T00:00:00.000Z',
-  updatedAt: '2026-11-12T00:00:00.000Z', title: TITLE, description: 'A & B <c>', artUrl: null, songs: docSongs,
+  updatedAt: '2026-11-12T00:00:00.000Z', title: TITLE, description: 'A & B <c>', ownerName: '', artUrl: null, songs: docSongs,
 };
 const opts = {
   feedUrl: communityFeedUrl(id), coverUrl: communityCoverUrl(id, 1),
@@ -359,6 +359,10 @@ const docVectors = [
   { kind: 'rfc822 lastBuildDate: an older row shows the template date', build: (b) => b(stored, opts), test: (xml) =>
     xml.includes(`<lastBuildDate>${new Date(FEED_TEMPLATE_UPDATED_AT).toUTCString()}</lastBuildDate>`)
     && Date.parse(stored.updatedAt) < Date.parse(FEED_TEMPLATE_UPDATED_AT) },
+  // pubDate is the row's own last change, never the template date: a template change publishes nothing new.
+  { kind: 'rfc822 pubDate is the row edit', build: (b) => b(stored, opts), test: (xml) =>
+    (channelSlice(xml).match(/<pubDate>/g) ?? []).length === 1
+    && xml.includes(`<pubDate>${new Date(stored.updatedAt).toUTCString()}</pubDate>`) },
   { kind: 'rfc822 lastBuildDate: a newer row shows its own edit', build: (b) => b({ ...stored, updatedAt: '2099-01-02T03:04:05.000Z' }, opts), test: (xml) =>
     xml.includes('<lastBuildDate>Fri, 02 Jan 2099 03:04:05 GMT</lastBuildDate>') },
   { kind: 'stored podcast:guid', build: (b) => b(stored, { ...opts, podcastGuid: STORED_GUID }), test: (xml) =>
@@ -401,30 +405,34 @@ for (const v of docVectors.filter((x) => ['items', 'title well-formed', 'author 
 }
 check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
 
-// ---- ownerNameOf: the maker's Nostr name, stored and printed as <itunes:author> ----
+// ---- The MADE BY box: PlaylistDraft.ownerName, printed as <itunes:author> ----
 {
   const nsec = nsecEncode(generateSecretKey());
-  const long = 'é'.repeat(MAX_OWNER_NAME_LEN + 10);
+  const name = (raw) => { const r = V(draft({ ownerName: raw })); return r.ok ? r.draft.ownerName : kinds(r); };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const nameVectors = [
     { kind: 'plain', args: ['ChadF'], want: 'ChadF', alsoNaive: true },
     { kind: 'trimmed', args: ['  ChadF  '], want: 'ChadF', alsoNaive: true },
+    { kind: 'absent is no name (an older draft)', args: [undefined], want: '', alsoNaive: true },
+    { kind: 'not a string is no name', args: [42], want: '', alsoNaive: true },
     { kind: 'white space runs collapse', args: ['Chad \t\n  F'], want: 'Chad F' },
     { kind: 'control characters go', args: ['Ch\x00ad\x1F\x7F\x85F'], want: 'Ch ad F' },
-    { kind: 'cut at MAX_OWNER_NAME_LEN code points', args: [long], want: 'é'.repeat(MAX_OWNER_NAME_LEN) },
-    { kind: 'a secret key is no name', args: [nsec], want: null },
-    { kind: 'a key inside a name is no name', args: [`hi ${nsec}`], want: null },
-    { kind: 'empty is no name', args: ['   '], want: null, alsoNaive: true },
-    { kind: 'not a string is no name', args: [42], want: null, alsoNaive: true },
-    { kind: 'null is no name', args: [null], want: null, alsoNaive: true },
+    { kind: 'MAX_OWNER_NAME_LEN code points pass', args: ['é'.repeat(MAX_OWNER_NAME_LEN)], want: 'é'.repeat(MAX_OWNER_NAME_LEN), alsoNaive: true },
+    { kind: 'one more is refused', args: ['é'.repeat(MAX_OWNER_NAME_LEN + 1)], want: ['name-too-long'] },
+    { kind: 'a secret key is refused', args: [nsec], want: ['secret'] },
+    { kind: 'a key inside a name is refused (and too long)', args: [`hi ${nsec}`], want: ['secret', 'name-too-long'] },
   ];
-  // The obvious wrong version: store what the browser sent, trimmed.
-  const naive = (raw) => (typeof raw === 'string' ? raw.trim() : null) || null;
+  // The obvious wrong version: take the box as typed, trimmed, with no limit or key test.
+  const naive = (raw) => (typeof raw === 'string' ? raw.trim() : '');
   for (const v of nameVectors) {
-    check('ownerNameOf: ' + v.kind, ownerNameOf(...v.args, textHoldsSecret) === v.want);
+    check('name box: ' + v.kind, same(name(...v.args), v.want));
     const n = naive(...v.args);
-    if (v.alsoNaive) check('ownerNameOf: ' + v.kind + ' (naive agrees)', n === v.want);
-    else check('ownerNameOf: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+    if (v.alsoNaive) check('name box: ' + v.kind + ' (naive agrees)', same(n, v.want));
+    else check('name box: ' + v.kind + ' fails against naive (can fail)', !same(n, v.want));
   }
+  const r = V(draft({ ownerName: nsec }));
+  check('name box: the secret refusal names the field "name"', !r.ok && r.problems.some((p) => p.kind === 'secret' && p.field === 'name'));
+  check('foldName of a non-string is empty', foldName(null) === '' && foldName({}) === '');
 }
 
 // ---- NIP-98 (lib/community/auth.ts) ----

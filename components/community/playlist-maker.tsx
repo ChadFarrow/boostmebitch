@@ -11,7 +11,7 @@ import { whyNotPlayable, type SongKnown } from './song-check';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import { cleanText } from '@/lib/community/clean-text';
 import {
-  ART_MIN_PX, MAX_TITLE_LEN, artUploadServers, MIN_SONGS, validatePlaylistDraft,
+  ART_MIN_PX, MAX_TITLE_LEN, MAX_OWNER_NAME_LEN, artUploadServers, MIN_SONGS, validatePlaylistDraft,
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
@@ -65,6 +65,7 @@ function problemText(p: Refusal, labels: Labels): string {
     case 'title-missing': return 'Add a title.';
     case 'title-too-long': return 'The title is too long.';
     case 'description-too-long': return 'The description is too long.';
+    case 'name-too-long': return 'The name is too long.';
     case 'too-few-songs': return `Add ${MIN_SONGS - p.have} more ${MIN_SONGS - p.have === 1 ? 'song' : 'songs'}.`;
     case 'too-many-songs': return 'The playlist has too many songs.';
     case 'duplicate-song': return `${song(p.itemGuid)} is in the playlist twice.`;
@@ -112,6 +113,9 @@ export function PlaylistMaker() {
   const [formOwner, setFormOwner] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  // The NAME box: who made the playlist, printed as the feed's author. Typed, never
+  // read from the Nostr profile (Chad, 2026-11-16).
+  const [ownerName, setOwnerName] = useState('');
   const [artUrl, setArtUrl] = useState('');
   const [songs, setSongs] = useState<PlaylistSong[]>([]);
   const [labels, setLabels] = useState<Labels>({});
@@ -167,9 +171,6 @@ export function PlaylistMaker() {
   const npub = identity?.npub ?? null;
   const pubkey = identity?.pubkey ?? null;
   const name = identity?.profile?.display_name || identity?.profile?.name || (npub ? `${npub.slice(0, 12)}…` : '');
-  // The feed's author (`<itunes:author>`): the Nostr name only, never the npub stand-in
-  // above. Null while the profile is unread, and the server then keeps the stored name.
-  const ownerName = identity?.profile?.display_name || identity?.profile?.name || null;
   const owner = npub ?? GUEST;
   const ready = formOwner === owner;
 
@@ -184,7 +185,7 @@ export function PlaylistMaker() {
   // ---- load: the saved draft, or the stored playlist in edit mode ----------
   useEffect(() => {
     // An account switch: nothing of the last account's form survives.
-    setFormOwner(null); setTitle(''); setDescription(''); setArtUrl(''); setSongs([]); setLabels({});
+    setFormOwner(null); setTitle(''); setDescription(''); setOwnerName(''); setArtUrl(''); setSongs([]); setLabels({});
     setEditingId(null); setExpectedUpdatedAt(null); setDirty(false); setUnsaved(false); setRefusals([]);
     setNote(null); setLoadError(null); setDeleted(null); setPublished(null); setConfirmDelete(false);
     setUploadNote(null); setUploading(false); formGen.current += 1;
@@ -192,7 +193,7 @@ export function PlaylistMaker() {
     known.current = {}; checked.current = new Set(); setDead({}); setCheckReady(false);
     const id = new URLSearchParams(window.location.search).get('id');
     const apply = (c: PlaylistDraftCache) => {
-      setTitle(c.draft.title); setDescription(c.draft.description); setArtUrl(c.draft.artUrl ?? '');
+      setTitle(c.draft.title); setDescription(c.draft.description); setOwnerName(c.draft.ownerName); setArtUrl(c.draft.artUrl ?? '');
       setSongs(c.draft.songs); setLabels(c.labels); setEditingId(c.editingId); setExpectedUpdatedAt(c.expectedUpdatedAt);
     };
     if (!npub) {
@@ -245,7 +246,7 @@ export function PlaylistMaker() {
       // server's version here would overwrite that change with no word.
       if (cached) apply({ ...cached, editingId: id, expectedUpdatedAt: cached.expectedUpdatedAt ?? p.updatedAt });
       else {
-        setTitle(p.title); setDescription(p.description); setArtUrl(p.artUrl ?? '');
+        setTitle(p.title); setDescription(p.description); setOwnerName(p.ownerName ?? ''); setArtUrl(p.artUrl ?? '');
         setSongs(p.songs); setEditingId(p.id); setExpectedUpdatedAt(p.updatedAt);
       }
       setFormOwner(npub);
@@ -281,17 +282,17 @@ export function PlaylistMaker() {
   useEffect(() => {
     if (!ready || !dirty || published || deleted || loadError) return;
     const cache: PlaylistDraftCache = {
-      draft: { title, description, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
+      draft: { title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
       editingId, expectedUpdatedAt, labels,
     };
     if (!npub) guestWork.current = cache;
     const ok = storage.playlistDraft.set(npub, cache, editingId ?? undefined);
     setUnsaved(!ok);
-  }, [npub, ready, dirty, published, deleted, loadError, title, description, artUrl, songs, labels, editingId, expectedUpdatedAt]);
+  }, [npub, ready, dirty, published, deleted, loadError, title, description, ownerName, artUrl, songs, labels, editingId, expectedUpdatedAt]);
 
   const draft: PlaylistDraft = useMemo(
-    () => ({ title, description, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
-    [title, description, artUrl, songs],
+    () => ({ title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
+    [title, description, ownerName, artUrl, songs],
   );
   const verdict = useMemo(() => validatePlaylistDraft(draft, textHoldsSecret), [draft]);
   const blocked = whyNot(verdict, !!identity);
@@ -301,6 +302,7 @@ export function PlaylistMaker() {
   const otherProblems = problems.filter((p) => p.kind !== 'title-missing' && p.kind !== 'too-few-songs');
   const cleaned = cleanText(title);
   const cleanedDesc = cleanText(description);
+  const cleanedName = cleanText(ownerName);
 
   const edit = <T,>(set: (v: T) => void) => (v: T) => { setDirty(true); set(v); };
   const move = (i: number, by: -1 | 1) => { setDirty(true); setSongs((s) => {
@@ -386,9 +388,9 @@ export function PlaylistMaker() {
           if (!expected) { setNote('We could not read the playlist. Try again.'); return; }
           setExpectedUpdatedAt(expected);
         }
-        res = await savePlaylist(editingId, v.draft, expected, ownerName);
+        res = await savePlaylist(editingId, v.draft, expected);
       } else {
-        res = await publishPlaylist(v.draft, ownerName);
+        res = await publishPlaylist(v.draft);
       }
       const body = await res.json().catch(() => null) as
         { id?: string; feedUrl?: string; error?: string; problems?: Refusal[]; playlist?: { id: string; updatedAt: string } } | null;
@@ -425,7 +427,7 @@ export function PlaylistMaker() {
     } finally {
       setBusy(false);
     }
-  }, [draft, npub, pubkey, editingId, expectedUpdatedAt, ownerName]);
+  }, [draft, npub, pubkey, editingId, expectedUpdatedAt]);
 
   // PUBLISH is never disabled for what is missing: a disabled button answers a
   // press with nothing (Chad, 2026-11-15). A press opens the list of what is
@@ -551,6 +553,17 @@ export function PlaylistMaker() {
           <textarea id="pl-desc" className="input mt-1" rows={3} value={description} onChange={(e) => edit(setDescription)(e.target.value)} />
           {description && cleanedDesc !== description && (
             <p className="mt-1 text-xs text-muted">Will publish as: {cleanedDesc}</p>
+          )}
+        </div>
+        <div>
+          <label htmlFor="pl-name" className="block text-xs font-mono uppercase tracking-wider text-muted">MADE BY</label>
+          <input id="pl-name" className="input mt-1" autoComplete="nickname" maxLength={MAX_OWNER_NAME_LEN}
+            aria-describedby="pl-name-hint" value={ownerName} onChange={(e) => edit(setOwnerName)(e.target.value)} />
+          <p id="pl-name-hint" className="mt-1 text-xs text-muted">
+            Your name, as listeners will see it under the title. Leave it empty to show no name.
+          </p>
+          {ownerName && cleanedName !== ownerName && (
+            <p className="mt-1 text-xs text-muted">Will publish as: {cleanedName}</p>
           )}
         </div>
         <div>

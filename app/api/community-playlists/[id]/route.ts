@@ -10,7 +10,7 @@ import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { cleanText } from '@/lib/community/clean-text';
 import { checkArt, verifySongs } from '@/lib/community/checks';
 import { adminPubkeys } from '@/lib/community/auth';
-import { authenticate, ownerNameCleaned, NOT_FOUND, NOT_CONFIGURED, BANNED, UUID_RE } from '@/lib/community/http';
+import { authenticate, NOT_FOUND, NOT_CONFIGURED, BANNED, UUID_RE } from '@/lib/community/http';
 import {
   communityStoreConfigured, deletePlaylist, getPlaylist, isBanned, updatePlaylist,
 } from '@/lib/community/store';
@@ -66,7 +66,7 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (await isBanned(auth.pubkey)) return BANNED();
 
     const raw = (parsed.body && typeof parsed.body === 'object' ? parsed.body : {}) as
-      { draft?: unknown; expectedUpdatedAt?: unknown; ownerName?: unknown };
+      { draft?: unknown; expectedUpdatedAt?: unknown };
     if (typeof raw.expectedUpdatedAt !== 'string') {
       return NextResponse.json({ error: 'missing expectedUpdatedAt' }, { status: 400 });
     }
@@ -100,9 +100,11 @@ export async function PUT(req: Request, ctx: Ctx) {
     });
     const out = await updatePlaylist(
       id,
-      { ...v.draft, songs: stored, title: cleanText(v.draft.title), description: cleanText(v.draft.description) },
+      {
+        ...v.draft, songs: stored,
+        title: cleanText(v.draft.title), description: cleanText(v.draft.description), ownerName: cleanText(v.draft.ownerName),
+      },
       raw.expectedUpdatedAt,
-      ownerNameCleaned(raw.ownerName),
     );
     if (out === 'gone') return gone();
     if (out === 'banned') return BANNED();

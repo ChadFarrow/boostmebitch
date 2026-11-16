@@ -93,7 +93,7 @@ function toStored(r: Row): StoredRow {
   return {
     id: r.id,
     ownerPubkey: r.owner_pubkey,
-    ownerName: r.owner_name ?? null,
+    ownerName: r.owner_name ?? '',
     title: r.title,
     description: r.description,
     artUrl: r.art_url,
@@ -105,7 +105,7 @@ function toStored(r: Row): StoredRow {
 }
 
 /** `'banned'` when the owner is banned at the moment of the write (the test is inside the INSERT). */
-export async function createPlaylist(owner: string, d: PlaylistDraft, ownerName: string | null): Promise<StoredRow | 'banned'> {
+export async function createPlaylist(owner: string, d: PlaylistDraft): Promise<StoredRow | 'banned'> {
   const id = crypto.randomUUID();
   const guid = communityFeedGuid(communityFeedUrl(id));
   const { rows } = await db().query<Row>(
@@ -115,7 +115,7 @@ export async function createPlaylist(owner: string, d: PlaylistDraft, ownerName:
             date_trunc('milliseconds', now()), date_trunc('milliseconds', now())
       where not exists (select 1 from community_bans where pubkey = $2::text)
      returning ${COLS}`,
-    [id, owner, d.title, d.description, d.artUrl, JSON.stringify(d.songs), guid, ownerName],
+    [id, owner, d.title, d.description, d.artUrl, JSON.stringify(d.songs), guid, d.ownerName || null],
   );
   return rows[0] ? toStored(rows[0]) : 'banned';
 }
@@ -124,23 +124,21 @@ export async function updatePlaylist(
   id: string,
   d: PlaylistDraft,
   expectedUpdatedAt: string,
-  ownerName: string | null,
 ): Promise<StoredRow | 'gone' | 'stale' | 'banned'> {
   const expected = new Date(expectedUpdatedAt);
   if (Number.isNaN(expected.getTime())) return 'stale';
   // updated_at moves strictly forward, so two quick edits never share a value.
   // The ban test is part of the UPDATE: a ban that lands after a route's own
-  // isBanned read still stops this write. A write that sends no name (the profile
-  // was not loaded yet) keeps the stored one rather than blanking the feed's author.
+  // isBanned read still stops this write.
   const { rows } = await db().query<Row>(
     `update community_playlists
         set title = $2, description = $3, art_url = $4, songs = $5::jsonb,
-            owner_name = coalesce($7::text, owner_name),
+            owner_name = $7::text,
             updated_at = greatest(date_trunc('milliseconds', now()), updated_at + interval '1 millisecond')
       where id = $1 and deleted_at is null and updated_at = $6
         and not exists (select 1 from community_bans b where b.pubkey = community_playlists.owner_pubkey)
       returning ${COLS}`,
-    [id, d.title, d.description, d.artUrl, JSON.stringify(d.songs), expected, ownerName],
+    [id, d.title, d.description, d.artUrl, JSON.stringify(d.songs), expected, d.ownerName || null],
   );
   if (rows[0]) return toStored(rows[0]);
   const cur = await getPlaylist(id);

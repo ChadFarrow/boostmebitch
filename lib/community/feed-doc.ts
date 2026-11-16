@@ -23,10 +23,12 @@ export function escapeXml(s: string): string {
  * every feed at once (Chad, 2026-11-13: he updates all hosted feeds with a push, and no
  * listener has to republish). `<lastBuildDate>` is the later of this and the playlist's
  * own `updatedAt`, so an app that checks it reads every feed again after the change.
- * Set it to the time of the commit that changes the template. The songs, their order,
+ * Set it to the time of the commit that changes the template. `<pubDate>` is the row's own
+ * `updatedAt` alone: the content (songs, order, title, name) changed then, and a
+ * template change publishes nothing new. The songs, their order,
  * the title, description, art and guid come only from the stored row, never from here.
  */
-export const FEED_TEMPLATE_UPDATED_AT = '2026-11-16T00:30:00.000Z';
+export const FEED_TEMPLATE_UPDATED_AT = '2026-11-16T00:08:00.000Z';
 
 // Podcasting 2.0 guid namespace (podcastindex-org/podcast-namespace, `guid`).
 const PODCAST_GUID_NAMESPACE = 'ead4c236-bf58-58c6-a2c6-a6b28d128cb6';
@@ -66,6 +68,7 @@ export function buildPlaylistFeedXml(
     <description>${e(description)}</description>
     <link>${e(o.feedUrl)}</link>
     <language>en</language>
+    <pubDate>${new Date(p.updatedAt).toUTCString()}</pubDate>
     <lastBuildDate>${new Date(Math.max(Date.parse(p.updatedAt), Date.parse(FEED_TEMPLATE_UPDATED_AT))).toUTCString()}</lastBuildDate>
     <generator>${e(o.generator)}</generator>
     <podcast:guid>${e(o.podcastGuid)}</podcast:guid>
