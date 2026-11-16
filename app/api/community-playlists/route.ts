@@ -84,6 +84,7 @@ export async function POST(req: Request) {
       songs: withIndexFeedUrls(v.draft.songs, (s) => songs.feedUrls.get(s.feedGuid)),
       title: cleanText(v.draft.title),
       description: cleanText(v.draft.description),
+      ownerName: cleanText(v.draft.ownerName),
     });
     // A ban that landed after the isBanned read above is caught inside the INSERT.
     if (row === 'banned') return BANNED();
