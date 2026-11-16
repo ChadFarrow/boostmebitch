@@ -69,6 +69,27 @@ const listing = {
 // Album 202 is already in the library.
 const FAV_ALBUM = { id: 9202, podcastGuid: guid('alb', 202), title: 'Album 202', url: albumUrl(202), medium: 'music', addedAt: 1700000000000 };
 
+// Section 9: two album pages naming an artist feed (`publisherFeed`, which
+// `/api/feed` attaches from either tag form). Artist nine is in Podcast Index;
+// artist ten is not, like Wavlake's artist feeds on 2026-11-15.
+const P9 = PUB(9, 'Artist Nine');
+const P10 = PUB(10, 'Artist Ten Not In PI');
+const ARTISTS_IN_PI = { [P9.podcastGuid]: { ...P9, addedAt: undefined } };
+const track = (feedId, k) => ({
+  id: feedId * 10 + k, guid: guid(`trk${feedId}`, k), feedId, title: `Track ${k}`,
+  enclosureUrl: `https://feeds.example.invalid/t-${feedId}-${k}.mp3`, datePublished: 1790000000 + k,
+});
+const albumPage = (id, title, pub) => ({
+  podcast: {
+    id, podcastGuid: guid('page', id), title, author: pub.title, medium: 'music', url: albumUrl(id),
+    publisherFeed: { feedGuid: pub.podcastGuid, feedUrl: pub.url },
+  },
+  episodes: [track(id, 1), track(id, 2)],
+});
+const ALBUM_PAGES = { 9401: albumPage(9401, 'Album By Nine', P9), 9402: albumPage(9402, 'Album By Ten', P10) };
+listing[pubUrl(9)] = [album(901), album(902)];
+AGE[9901] = 4;
+
 // ---- the browser ----------------------------------------------------------
 const { page } = await launchChrome({ name: 'newmusic' });
 const { send, js, until } = page;
@@ -123,6 +144,19 @@ page.on(async (m) => {
       // The NEW EPISODES section on the same page: nothing new there.
       const ids = (q.get('feeds') ?? '').split(',').map(Number).filter(Boolean);
       await fulfillJson(requestId, { episodes: [], covered: ids, truncated: false });
+      return;
+    }
+    // Section 9: the album pages and the artist lookups behind ♡ ARTIST.
+    if (u.pathname === '/api/by-guid' && ARTISTS_IN_PI[q.get('guid')]) {
+      await fulfillJson(requestId, { podcast: ARTISTS_IN_PI[q.get('guid')] });
+      return;
+    }
+    if (u.pathname === '/api/by-guid' && [P9.podcastGuid, P10.podcastGuid].includes(q.get('guid'))) {
+      await fulfillJson(requestId, { error: 'not found' }, 404);
+      return;
+    }
+    if (u.pathname === '/api/feed' && ALBUM_PAGES[q.get('id')]) {
+      await fulfillJson(requestId, ALBUM_PAGES[q.get('id')]);
       return;
     }
     if (u.pathname === '/api/feed') {
@@ -290,6 +324,37 @@ t.ok('no horizontal overflow', m.sw <= m.cw, JSON.stringify(m));
 t.ok('✕ is at least 24×24', m.x && m.x[0] >= 24 && m.x[1] >= 24, JSON.stringify(m.x));
 t.ok('the row control is at least 24×24', m.row && m.row[0] >= 24 && m.row[1] >= 24, JSON.stringify(m.row));
 t.ok('the heading control is at least 24 tall', m.head && m.head[1] >= 24, JSON.stringify(m.head));
+
+// ---- 9. ♡ ARTIST on the album page ----------------------------------------
+console.log('9. ♡ ARTIST');
+await seed({ 'bmb:favorites:guest': FAVS([]) });
+await send('Page.navigate', { url: `${APP}/?feed=9401` });
+await until(`/Album By Nine/.test(document.body.textContent)`, 15000);
+const chipShown = await until(`!!document.querySelector('[data-artist-heart] button')`, 8000);
+t.ok('an album whose artist PI holds shows ♡ ARTIST', chipShown);
+const chip = await js(`(() => {
+  const b = document.querySelector('[data-artist-heart] button');
+  const r = b?.getBoundingClientRect();
+  return b && { text: b.textContent.trim(), w: Math.round(r.width), h: Math.round(r.height),
+    sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
+})()`);
+t.ok('the chip says ARTIST', /ARTIST/.test(chip?.text ?? ''), JSON.stringify(chip));
+t.ok('the chip is at least 24×24 on a phone', chip && chip.w >= 24 && chip.h >= 24, JSON.stringify(chip));
+t.ok('the album page has no horizontal overflow', chip && chip.sw <= chip.cw, JSON.stringify(chip));
+await js(`document.querySelector('[data-artist-heart] button').click()`);
+await wait(500);
+const saved = await js(`JSON.parse(localStorage.getItem('bmb:favorites:guest') || '{}')[${JSON.stringify(P9.podcastGuid)}] ?? null`);
+t.equal('a press saves the ARTIST feed, as PI holds it', saved && [saved.id, saved.medium, saved.url, saved.title], [P9.id, 'publisher', P9.url, P9.title]);
+await openFavorites();
+await until(`!!document.querySelector('[data-new-music]')`, 10000);
+await wait(2800);
+await settle();
+t.equal('NEW MUSIC follows the artist just saved', await rowTitles(), ['Album 901']);
+
+await send('Page.navigate', { url: `${APP}/?feed=9402` });
+await until(`/Album By Ten/.test(document.body.textContent)`, 15000);
+await wait(2500);
+t.equal('an album whose artist PI does not hold shows no ♡ ARTIST', await js(`!!document.querySelector('[data-artist-heart]')`), false);
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails}/${t.count} passed`);

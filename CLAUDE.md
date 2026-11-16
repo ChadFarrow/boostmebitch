@@ -117,7 +117,7 @@ npm run dev / build / start / lint
 | `check:likes` | `tallyLikes`, `likeTags`, `unlikeTags` (`lib/nostr/like-tally.ts`) | a like Fountain cannot count, or anyone can un-like anyone |
 | `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards, or a second boost hidden |
 | `check:deletions` | `deletedNoteIds` — feed NIP-09 | strangers hide boosts |
-| `check:newmusic` | `lib/new-music.ts` — `planPublisher`, `selectNewMusic`, `albumKeys`, `mergeNewMusicRows`, `pruneNewMusic` | an artist's whole back catalogue announced as new, or a new album never shown |
+| `check:newmusic` | `lib/new-music.ts` — `planPublisher`, `selectNewMusic`, `albumKeys`, `mergeNewMusicRows`, `pruneNewMusic`; `parsePublisherRef` | an artist's whole back catalogue announced as new, or a new album never shown |
 | `check:opml` | `parseOpml`, `planOpmlImport` (what leaves the device), `opmlLinkVerdict`, `sortOpmlAnswers`, `buildOpml` | a paid feed's key sent to Podcast Index; a rate limit read as "not found" |
 | `check:moved` | `lib/moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked, what REPLACE removes | a copycat feed collects boosts; a favorite with no match vanishes |
 

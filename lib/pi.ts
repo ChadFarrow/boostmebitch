@@ -19,6 +19,7 @@ import {
   stripComments,
   splitAnchors,
   escapeDanglingLt,
+  parsePublisherRef,
 } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
@@ -1467,6 +1468,8 @@ export interface RssFeedEnrichment {
   feedPodroll?: PodrollItem[];
   feedFunding?: FundingLink[];
   feedNostrNpubs?: FeedNpub[];
+  /** The artist feed the channel names (`parsePublisherRef`). */
+  feedPublisher?: { feedGuid: string; feedUrl: string };
   /** The channel `<title>`, for the case where Podcast Index holds a BLANK one.
    *  See the backfills in app/api/feed/route.ts. */
   feedTitle?: string;
@@ -1666,6 +1669,7 @@ export async function getRssEpisodeEnrichment(
   // show's npub would tag the guest of one broadcast on every boost forever.
   const feedNostrNpubs = parseFeedNpubs(channelXml);
   const feedTitle = extractText(channelXml, 'title') || undefined;
+  const feedPublisher = parsePublisherRef(channelXml);
 
   for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
     const inner = item.inner;
@@ -1702,7 +1706,7 @@ export async function getRssEpisodeEnrichment(
     episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, funding, value, valueTimeSplits });
   }
   const feedValue = parseValueBlock(channelXml);
-  return { episodes, rssRead: true, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle };
+  return { episodes, rssRead: true, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle, feedPublisher };
 }
 
 // --- Non-PI feed preview ---------------------------------------------------
@@ -1827,6 +1831,7 @@ function previewPodcastFromChannel(rssUrl: string, channelXml: string): Podcast 
     funding: parseFunding(channelXml),
     podroll: parsePodroll(channelXml),
     nostrNpubs: parseFeedNpubs(channelXml),
+    publisherFeed: parsePublisherRef(channelXml),
     isPreview: true,
   };
 }

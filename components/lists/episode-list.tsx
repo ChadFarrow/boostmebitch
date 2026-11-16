@@ -32,7 +32,7 @@ import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
-import { FavHeart } from '../fav-heart';
+import { FavArtistHeart, FavHeart } from '../fav-heart';
 import { AlbumDownload } from '../album-download';
 import { AlbumShuffleButton } from '../album-shuffle-button';
 import { ValueSplitRows } from '../value-split-rows';
@@ -677,6 +677,16 @@ export function EpisodeList({
           </h2>
           {authorLine(data.podcast.title, data.podcast.author) && (
             <p className="text-sm text-muted mt-1">{authorLine(data.podcast.title, data.podcast.author)}</p>
+          )}
+          {/* ♡ ARTIST — follow the album's artist for NEW MUSIC on /favorites.
+              Under the artist's name, not in the tile row below: that row is
+              measured tight at 390px. Renders nothing until Podcast Index
+              resolves the artist feed (see <FavArtistHeart>). Albums only — a
+              playlist's channel is the curator's. */}
+          {isMusic && !isPlaylist && data.podcast.publisherFeed && (
+            <div className="mt-1.5">
+              <FavArtistHeart feedGuid={data.podcast.publisherFeed.feedGuid} />
+            </div>
           )}
           {/* Both stamps share one wrapper. They are `inline-flex` and each used
               to carry its own `mt-2`, so a preview feed that ALSO has a value

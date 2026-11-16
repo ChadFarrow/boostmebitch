@@ -830,3 +830,62 @@ export function parseOpml(xml: string): OpmlOutline[] | null {
   }
   return out;
 }
+
+/** An album feed's pointer to its artist's PUBLISHER feed. */
+export interface PublisherRef {
+  feedGuid: string;
+  feedUrl: string;
+}
+
+const FEED_GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The artist (publisher) feed an album's channel names, or undefined.
+ *
+ * **TWO FORMS ARE ON THE WIRE, and a reader of one misses every feed of the
+ * other.** The Podcasting 2.0 spec wraps it — `<podcast:publisher>` around a
+ * `<podcast:remoteItem medium="publisher" …>` — and Fountain and MSP write
+ * that. **Wavlake writes the remoteItem BARE in the channel**, with
+ * `medium="publisher"` and no wrapper (measured 2026-11-15 on Tinderbox, Nate
+ * Johnivan, and on albums by Joe Martin and Ben Reneer). A survey that looked
+ * for the wrapper alone reported "0 of 57 Wavlake albums name an artist"; every
+ * one did. StableKraft reads both (`parsePublisherFeedFromXML`).
+ *
+ * **The bare form is read only OUTSIDE the blocks that hold remote items for
+ * another reason.** A `<podcast:podroll>` may recommend an artist with
+ * `medium="publisher"`, and a channel `<podcast:value>` may carry
+ * `<podcast:valueTimeSplit>`s; reading either as "this album's artist" puts a
+ * stranger's ♡ on the album page.
+ *
+ * Both attributes are required and checked: `feedGuid` is what a favorite
+ * would write, so it must be guid-shaped, and `feedUrl` must be http(s). The
+ * caller still has to establish that Podcast Index can RESOLVE the guid before
+ * it offers a favorite — see `previewPodcastFromChannel` in lib/pi.ts.
+ */
+export function parsePublisherRef(channelXml: string): PublisherRef | undefined {
+  const take = (attrs: string, needMedium: boolean): PublisherRef | undefined => {
+    const medium = readAttr(attrs, 'medium');
+    if (medium !== undefined ? asciiLower(medium.trim()) !== 'publisher' : needMedium) return undefined;
+    const feedGuid = readAttr(attrs, 'feedGuid')?.trim();
+    const feedUrl = readAttr(attrs, 'feedUrl')?.trim();
+    if (!feedGuid || !FEED_GUID_RE.test(feedGuid)) return undefined;
+    if (!feedUrl || !/^https?:\/\/[^\s]+$/i.test(feedUrl)) return undefined;
+    return { feedGuid, feedUrl };
+  };
+  // The spec's form. Inside the wrapper a missing `medium` still means the
+  // publisher: that is what the wrapper says.
+  const wrapper = firstBlock(channelXml, 'podcast:publisher');
+  if (wrapper && !wrapper.selfClosing) {
+    for (const { attrs } of findTags(wrapper.inner, 'podcast:remoteItem', { max: 8 })) {
+      const ref = take(attrs, false);
+      if (ref) return ref;
+    }
+  }
+  // Wavlake's bare form: `medium="publisher"` is the only thing saying so.
+  const bare = stripBlocks(channelXml, ['podcast:publisher', 'podcast:podroll', 'podcast:value']);
+  for (const { attrs } of findTags(bare, 'podcast:remoteItem', { max: 64 })) {
+    const ref = take(attrs, true);
+    if (ref) return ref;
+  }
+  return undefined;
+}

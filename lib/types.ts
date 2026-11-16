@@ -159,6 +159,12 @@ export interface Podcast {
    *  Read it through `carriesV4V`. */
   v4vHint?: boolean;
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
+  /** The ARTIST (publisher) feed this album's channel names — either the
+   *  spec's `<podcast:publisher>` wrapper or Wavlake's bare
+   *  `<podcast:remoteItem medium="publisher">` (`parsePublisherRef`). From RSS
+   *  only. Naming it is not resolving it: `<FavArtistHeart>` asks Podcast
+   *  Index before it offers a favorite. */
+  publisherFeed?: { feedGuid: string; feedUrl: string };
   funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
   nostrNpubs?: FeedNpub[]; // <podcast:txt purpose="nostr"> — the show's own npub(s), from RSS
   /** Synthetic feed parsed directly from raw RSS because it isn't in Podcast

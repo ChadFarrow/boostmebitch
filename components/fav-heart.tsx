@@ -1,4 +1,5 @@
 'use client';
+import { useEffect, useState } from 'react';
 import type {
   Episode,
   Podcast,
@@ -9,6 +10,7 @@ import type {
 import { useApp } from '@/lib/store';
 import { requestFavoritesSync } from '@/lib/nostr';
 import { targetWord } from '@/lib/util';
+import { resolvePodcastByGuid } from '@/lib/podcast-meta';
 
 // The ♡ / ♥ favorite toggle. Lives in its own module (rather than lists.tsx)
 // because several unrelated surfaces render it — the podcast rows + show header
@@ -209,6 +211,46 @@ export function FavHeart({
       label="podcast"
       word={nameTarget ? targetWord('feed', podcast) : undefined}
     />
+  );
+}
+
+/**
+ * ♡ ARTIST — the album's artist (publisher) feed, for NEW MUSIC on /favorites.
+ *
+ * The album page knows only the reference its channel declares
+ * (`Podcast.publisherFeed`, `parsePublisherRef`). This asks Podcast Index for
+ * that guid and renders the ordinary `<FavHeart>` over PI's record — and
+ * NOTHING when PI cannot resolve it, or resolves it to a feed that does not
+ * declare `medium` `publisher`.
+ *
+ * **NOTHING, ON PURPOSE, for an artist feed PI does not hold.** A feed favorite
+ * writes its guid to the shared kind:10333 list with no undo, and the list
+ * carries no feed URL, so a guid PI cannot resolve is an entry no other device
+ * or app can open — the rule `previewPodcastFromChannel` (lib/pi.ts) states for
+ * every not-in-PI feed. Measured 2026-11-15: Wavlake's artist feeds
+ * (`wavlake.com/feed/artist/<id>`) are not in Podcast Index, so a Wavlake
+ * album shows no ♡ ARTIST until its artist feed is indexed. A 429 resolves to
+ * null too, which costs the chip for that page view and nothing else.
+ */
+export function FavArtistHeart({ feedGuid }: { feedGuid: string }) {
+  const [artist, setArtist] = useState<Podcast | null>(null);
+  useEffect(() => {
+    let live = true;
+    setArtist(null);
+    resolvePodcastByGuid(feedGuid)
+      .then((p) => {
+        if (!live || !p || p.id <= 0 || !p.podcastGuid) return;
+        if (p.medium?.toLowerCase() !== 'publisher') return;
+        setArtist(p);
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [feedGuid]);
+  if (!artist) return null;
+  return (
+    <span data-artist-heart title={`Favorite ${artist.title}: new albums show under NEW MUSIC on Favorites`}>
+      <FavHeart podcast={artist} size="sm" nameTarget />
+    </span>
   );
 }
 

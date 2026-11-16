@@ -3510,6 +3510,8 @@ export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): str
   // word off the container's medium would call them tracks.
   const playlist = !!podcast && isPlaylistMedium(podcast);
   const tracks = !!podcast && playsAsTracks(podcast);
+  // A publisher feed is an ARTIST: it lists albums and plays nothing itself.
+  if (kind === 'feed' && podcast?.medium?.toLowerCase() === 'publisher') return 'ARTIST';
   if (kind === 'feed') return playlist ? 'PLAYLIST' : tracks ? 'ALBUM' : 'SHOW';
   return tracks ? 'TRACK' : 'EPISODE';
 }

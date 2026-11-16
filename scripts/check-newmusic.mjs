@@ -19,6 +19,7 @@ import {
   albumKeys, rowKey, planPublisher, selectNewMusic, mergeNewMusicRows, pruneNewMusic, stalestFirst, capKeys,
   NEW_MUSIC_WINDOW_SECS, NEW_MUSIC_CAP, NEW_MUSIC_SEEN_CAP,
 } from '../lib/new-music.ts';
+import { parsePublisherRef } from '../lib/feed-xml.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
@@ -168,6 +169,58 @@ check('stable among equals', stalestFirst(['X', 'Y'], {}), ['X', 'Y']);
 console.log('capKeys');
 check('keeps the newest keys', capKeys(['a', 'b', 'c'], 2), ['b', 'c']);
 check('drops a repeat, keeping the latest position', capKeys(['a', 'b', 'a'], 5), ['b', 'a']);
+
+// ---- parsePublisherRef (lib/feed-xml.ts) — an album's artist feed ----------
+// Fixtures are the WIRE bytes, copied from the feeds on 2026-11-15.
+console.log('parsePublisherRef');
+const NJ = { feedGuid: 'aa909244-7555-4b52-ad88-7233860c6fb4', feedUrl: 'https://wavlake.com/feed/artist/aa909244-7555-4b52-ad88-7233860c6fb4' };
+const HALEEN = { feedGuid: '64569161-a8f7-52e5-8aae-9e0385043149', feedUrl: 'https://feeds.fountain.fm/VUDmJJ8Eo1byHznQtHIn' };
+// Tinderbox, Nate Johnivan, on Wavlake: the remoteItem is BARE in the channel.
+const WAVLAKE = `<channel><title>Tinderbox</title><author><![CDATA[Nate Johnivan]]></author>
+  <podcast:medium>music</podcast:medium>
+  <podcast:remoteItem medium="publisher" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}">
+  </podcast:remoteItem>
+  <podcast:category text="Pop"/>`;
+// A Fountain album: the spec's wrapper.
+const FOUNTAIN = `<channel><title>Garden Of The Soul</title><podcast:medium>music</podcast:medium>
+  <podcast:publisher>
+    <podcast:remoteItem feedGuid="${HALEEN.feedGuid}" feedUrl="${HALEEN.feedUrl}" medium="publisher" title="Haleen"/>
+  </podcast:publisher>`;
+// A podroll recommending ANOTHER artist's publisher feed.
+const PODROLL = `<channel><podcast:medium>music</podcast:medium>
+  <podcast:podroll><podcast:remoteItem medium="publisher" feedGuid="${HALEEN.feedGuid}" feedUrl="${HALEEN.feedUrl}"/></podcast:podroll>`;
+// The obvious reader: the first remoteItem anywhere saying medium="publisher".
+function naivePublisherRef(xml) {
+  const m = xml.match(/<podcast:remoteItem[^>]*medium="publisher"[^>]*feedGuid="([^"]*)"[^>]*feedUrl="([^"]*)"/);
+  return m ? { feedGuid: m[1], feedUrl: m[2] } : undefined;
+}
+check('Wavlake: the bare channel remoteItem', parsePublisherRef(WAVLAKE), NJ);
+check('Fountain: the spec wrapper', parsePublisherRef(FOUNTAIN), HALEEN);
+check('the wrapper with no medium attribute still names the publisher',
+  parsePublisherRef(`<podcast:publisher><podcast:remoteItem feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/></podcast:publisher>`), NJ);
+check('a podroll recommending an artist is NOT this album\'s artist', parsePublisherRef(PODROLL), undefined);
+check('naive() takes the podroll\'s artist', naivePublisherRef(PODROLL), HALEEN);
+check('a remote item inside the channel value block is not the artist',
+  parsePublisherRef(`<podcast:value type="lightning"><podcast:valueTimeSplit startTime="1" duration="2"><podcast:remoteItem medium="publisher" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/></podcast:valueTimeSplit></podcast:value>`),
+  undefined);
+check('a bare remote item of another medium is not the artist',
+  parsePublisherRef(`<podcast:remoteItem medium="music" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/>`), undefined);
+check('a bare remote item with no medium is not the artist',
+  parsePublisherRef(`<podcast:remoteItem feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/>`), undefined);
+check('single-quoted attributes are read',
+  parsePublisherRef(`<podcast:remoteItem medium='publisher' feedGuid='${NJ.feedGuid}' feedUrl='${NJ.feedUrl}'/>`), NJ);
+check('the medium is compared without case',
+  parsePublisherRef(`<podcast:remoteItem medium="Publisher" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/>`), NJ);
+check('no feedUrl: nothing',
+  parsePublisherRef(`<podcast:remoteItem medium="publisher" feedGuid="${NJ.feedGuid}"/>`), undefined);
+check('a javascript: feedUrl: nothing',
+  parsePublisherRef(`<podcast:remoteItem medium="publisher" feedGuid="${NJ.feedGuid}" feedUrl="javascript:alert(1)"/>`), undefined);
+check('a feedGuid that is not a guid: nothing',
+  parsePublisherRef(`<podcast:remoteItem medium="publisher" feedGuid="joe-martin" feedUrl="${NJ.feedUrl}"/>`), undefined);
+check('a decoy x-feedUrl does not steer it (readAttr)',
+  parsePublisherRef(`<podcast:remoteItem medium="publisher" x-feedUrl="https://evil.example/f" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/>`), NJ);
+check('the wrapper wins over a bare one', parsePublisherRef(`${WAVLAKE}${FOUNTAIN}`), HALEEN);
+check('an album that names no artist', parsePublisherRef('<channel><title>x</title><podcast:medium>music</podcast:medium>'), undefined);
 
 const problems = importFreeProblems('lib/new-music.ts');
 if (problems.length) {
