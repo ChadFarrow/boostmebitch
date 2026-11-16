@@ -21,11 +21,20 @@
 // Longy is the reference artist: he has the same album, Katherines Wheel, on
 // Wavlake (6443203) and self-hosted on headstarts.uk (7287540).
 
-import { isDemuFeed } from '../lib/demu.ts';
+import {
+  isDemuFeed, demuRosterRows, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
+} from '../lib/demu.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
+
+// The /demu list groups and ages rows in the VIEWER'S local time, so the
+// vectors below run in a fixed zone whose day differs from UTC's for five
+// hours of every day. Set here, not before the imports: ES imports run first,
+// and none of the imported modules creates a `Date` while it loads. Node
+// re-reads `TZ` on the next `Date` operation.
+process.env.TZ = 'America/New_York';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -114,6 +123,149 @@ console.log('\nThe DEMU selector type:');
   const ids = mergeSearchLanes(music.filter(keep), byterm.filter(keep), 'demu', 50).map((f) => f.id);
   if (JSON.stringify(ids) !== JSON.stringify([7287540, 7520866, 46385])) fail(`the DEMU lane returned ${JSON.stringify(ids)}`);
   else ok('the DEMU lane keeps 7287540, 7520866, 46385: Wavlake, RSS Blue and the publisher feed out, the repeat deduped');
+}
+
+// ── The /demu list: roster rows, order, groups, ages, dates, search ──────────
+// `now` is a Sunday evening in New York, 02:00 MONDAY in UTC — so a function
+// that reads UTC fields puts "now" in the next week, which is exactly the
+// mistake the group and age vectors exist to catch.
+const now = new Date(2026, 10, 15, 21, 0);
+const nowSec = Math.floor(now.getTime() / 1000);
+const t = (y, m, d, h = 12, min = 0) => Math.floor(new Date(y, m - 1, d, h, min).getTime() / 1000);
+const album = (id, newestItemPubdate, extra = {}) => ({ id, title: `a${id}`, medium: 'music', newestItemPubdate, ...extra });
+
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTH = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+// naive() for groups: the same bands, read in UTC.
+function naiveGroup(sec) {
+  if (sec == null) return 'No date';
+  const day = (x) => new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+  const monday = (x) => { const y = day(x); y.setUTCDate(y.getUTCDate() - ((y.getUTCDay() + 6) % 7)); return y; };
+  const d = new Date(Math.min(sec, nowSec) * 1000);
+  const w = Math.round((monday(now) - monday(d)) / (7 * 864e5));
+  const md = (x) => `${MON[x.getUTCMonth()]} ${x.getUTCDate()}`;
+  if (w < 8) {
+    const s = monday(d);
+    const e = new Date(s); e.setUTCDate(s.getUTCDate() + 6);
+    const range = s.getUTCMonth() === e.getUTCMonth() ? `${md(s)}–${e.getUTCDate()}` : `${md(s)}–${md(e)}`;
+    return w === 0 ? `This week · ${range}` : w === 1 ? `Last week · ${range}` : `Week of ${md(s)}`;
+  }
+  const start = monday(now); start.setUTCDate(start.getUTCDate() - 49);
+  const diff = (start.getUTCFullYear() - d.getUTCFullYear()) * 12 + start.getUTCMonth() - d.getUTCMonth();
+  return diff <= 11 ? `${MONTH[d.getUTCMonth()]} ${d.getUTCFullYear()}` : String(d.getUTCFullYear());
+}
+// naive() for ages: hours inside a day, the way `timeAgo` reads.
+function naiveAge(sec) {
+  const diff = nowSec - sec;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  const d = Math.floor(diff / 86400);
+  if (d === 1) return '1 day';
+  if (d < 14) return `${d} days`;
+  if (d < 60) return `${Math.floor(d / 7)} weeks`;
+  if (d < 365) return `${Math.floor(d / 30)} months`;
+  const y = Math.floor(d / 365);
+  return y === 1 ? '1 year' : `${y} years`;
+}
+const naiveDate = (sec) => { const d = new Date(sec * 1000); return `${MON[d.getMonth()]} ${d.getDate()}`; };
+const naiveSort = (albums) => [...albums].sort((a, b) => (b.newestItemPubdate ?? 0) - (a.newestItemPubdate ?? 0));
+const naiveQuery = (a, q) => (a.title ?? '').includes(q) || (a.author ?? '').includes(q);
+const naiveRoster = (rows) => rows.filter((r) => !/wavlake/i.test(r.generator ?? ''));
+
+// The `lemons` pair is a REAL duplicate guid (LNBeats' updateMusicFiles/dupes.json
+// lists 7560785 "lemons" and 7216161 "Lemons" under it). Their URLs and dates
+// here are stand-ins; the guid, ids and titles are the wire's.
+const LEMONS = '27bc3c57-6b47-5029-873d-9876c7ba2f1e';
+const ROSTER_IN = [
+  ...Object.values(ROWS),
+  { id: 7560785, podcastGuid: LEMONS, title: 'lemons', generator: 'Fountain', url: 'https://feeds.fountain.fm/x1', newestItemPubdate: 200 },
+  { id: 7216161, podcastGuid: LEMONS, title: 'Lemons', generator: 'Fountain', url: 'https://feeds.fountain.fm/x2', newestItemPubdate: 100 },
+  { ...ROWS.worriedOnFountain, id: 1, dead: 1 },
+];
+
+const listVectors = [
+  // groups
+  { kind: 'group', label: 'Sunday morning is this week', args: [t(2026, 11, 15, 10)], expect: 'This week · Nov 9–15' },
+  { kind: 'group', label: 'Monday 00:30 is this week', args: [t(2026, 11, 9, 0, 30)], expect: 'This week · Nov 9–15' },
+  { kind: 'group', label: 'Sunday 23:30 is last week', args: [t(2026, 11, 8, 23, 30)], expect: 'Last week · Nov 2–8' },
+  { kind: 'group', label: 'Monday 03:00 UTC is still Sunday in New York', args: [Date.UTC(2026, 10, 9, 3) / 1000], expect: 'Last week · Nov 2–8' },
+  { kind: 'group', label: 'the DST day (Nov 1) stays in its week', args: [t(2026, 11, 1)], expect: 'Week of Oct 26', alsoNaive: true },
+  { kind: 'group', label: 'Monday after DST is last week', args: [t(2026, 11, 2, 0, 30)], expect: 'Last week · Nov 2–8' },
+  { kind: 'group', label: 'the 8th weekly group', args: [t(2026, 9, 21)], expect: 'Week of Sep 21' },
+  { kind: 'group', label: 'one day past the weekly window is a month', args: [t(2026, 9, 20)], expect: 'September 2026', alsoNaive: true },
+  { kind: 'group', label: 'the 12th month back', args: [t(2025, 10, 5)], expect: 'October 2025', alsoNaive: true },
+  { kind: 'group', label: 'past the 12 months is a year', args: [t(2025, 9, 30)], expect: '2025', alsoNaive: true },
+  { kind: 'group', label: 'an old album is its year', args: [t(2024, 6, 1)], expect: '2024', alsoNaive: true },
+  { kind: 'group', label: 'no date is the last group', args: [undefined], expect: 'No date', alsoNaive: true },
+  { kind: 'group', label: 'a future date counts as now', args: [t(2026, 11, 20)], expect: 'This week · Nov 9–15' },
+  // ages
+  { kind: 'age', label: 'earlier today', args: [t(2026, 11, 15, 10)], expect: 'today' },
+  { kind: 'age', label: 'last night is 1 day', args: [t(2026, 11, 14, 23)], expect: '1 day' },
+  { kind: 'age', label: '3 days', args: [t(2026, 11, 12)], expect: '3 days', alsoNaive: true },
+  { kind: 'age', label: '13 days', args: [t(2026, 11, 2)], expect: '13 days', alsoNaive: true },
+  { kind: 'age', label: '16 days is 2 weeks', args: [t(2026, 10, 30)], expect: '2 weeks', alsoNaive: true },
+  { kind: 'age', label: '75 days is 2 months', args: [t(2026, 9, 1)], expect: '2 months', alsoNaive: true },
+  { kind: 'age', label: '370 days is 1 year', args: [t(2025, 11, 10)], expect: '1 year', alsoNaive: true },
+  { kind: 'age', label: '897 days is 2 years', args: [t(2024, 6, 1)], expect: '2 years', alsoNaive: true },
+  { kind: 'age', label: 'a future date is upcoming', args: [t(2026, 11, 20)], expect: 'upcoming' },
+  // dates
+  { kind: 'date', label: 'this year: month and day', args: [t(2026, 11, 14)], expect: 'Nov 14', alsoNaive: true },
+  { kind: 'date', label: 'another year: with the year', args: [t(2024, 6, 1)], expect: 'Jun 1, 2024' },
+  // sort
+  {
+    kind: 'sort',
+    label: 'future as now, ties by id desc, no date last',
+    args: [[album(1, t(2026, 11, 1)), album(2, t(2026, 11, 20)), album(3, undefined), album(4, t(2026, 11, 14)), album(5, t(2026, 11, 14))]],
+    expect: [2, 5, 4, 1, 3],
+  },
+  // search
+  { kind: 'query', label: 'artist, padded', args: [{ title: 'Katherines Wheel', author: 'Longy' }, ' longy '], expect: true },
+  { kind: 'query', label: 'title, other case', args: [{ title: 'Katherines Wheel', author: 'Longy' }, 'WHEEL'], expect: true },
+  { kind: 'query', label: 'no match', args: [{ title: 'Katherines Wheel', author: 'Longy' }, 'wavlake'], expect: false, alsoNaive: true },
+  { kind: 'query', label: 'an empty query matches', args: [{ title: 'Katherines Wheel', author: 'Longy' }, ''], expect: true, alsoNaive: true },
+  // roster
+  {
+    kind: 'roster',
+    label: 'roster drops Wavlake, closed, dead and the older duplicate guid',
+    args: [ROSTER_IN],
+    expect: { ids: [46385, 7287540, 7520866, 7560785], allMusic: true, generatorKeys: 0 },
+  },
+];
+
+const runList = (impl, v) => {
+  const real = impl === 'real';
+  switch (v.kind) {
+    case 'group':
+      return real ? demuGroups([album(9, v.args[0])], now)[0]?.label : naiveGroup(v.args[0]);
+    case 'age': return real ? demuAge(v.args[0], now) : naiveAge(v.args[0]);
+    case 'date': return real ? demuDateLabel(v.args[0], now) : naiveDate(v.args[0]);
+    case 'sort': return (real ? sortDemuAlbums(v.args[0], nowSec) : naiveSort(v.args[0])).map((a) => a.id);
+    case 'query': return real ? matchesDemuQuery(v.args[0], v.args[1]) : naiveQuery(v.args[0], v.args[1]);
+    case 'roster': {
+      const out = real ? demuRosterRows(v.args[0], closedService) : naiveRoster(v.args[0]);
+      return {
+        ids: out.map((a) => a.id).sort((a, b) => a - b),
+        allMusic: out.every((a) => a.medium === 'music'),
+        generatorKeys: out.filter((a) => 'generator' in a).length,
+      };
+    }
+  }
+};
+const callList = (impl, v) => {
+  try { return JSON.stringify(runList(impl, v)); } catch (e) { return `threw ${(e && e.message) || e}`; }
+};
+
+console.log('\nThe /demu list — the shipping answer:');
+for (const v of listVectors) {
+  const got = callList('real', v);
+  if (got !== JSON.stringify(v.expect)) fail(`"${v.label}" — expected ${JSON.stringify(v.expect)}, got ${got}`);
+  else ok(v.label);
+}
+console.log('\nThe /demu list — the replay against naive():');
+replayVectors({ vectors: listVectors, invoke: callList, fail });
+for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {
+  const fam = listVectors.filter((v) => v.kind === kind);
+  if (!fam.some((v) => !v.alsoNaive)) fail(`the ${kind} vectors prove nothing against naive()`);
 }
 
 // ── The module must stay loadable under plain Node ───────────────────────────
