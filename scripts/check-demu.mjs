@@ -23,7 +23,7 @@
 
 import {
   isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
-  hasValueBlock, demuValueGaps, keepWithValue, keepForDemu,
+  hasValueBlock, demuValueGaps, keepWithValue, keepForDemu, mspFeedGuids,
 } from '../lib/demu.ts';
 import { DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
 import { remoteItemFeedGuids } from '../lib/feed-xml.ts';
@@ -406,6 +406,38 @@ console.log('\nHomegrown Hits and the hide list:');
   else ok('the hide list names no sampled Homegrown Hits feed');
   if (HOMEGROWN_HITS_FEED_URL !== 'https://feed.homegrownhits.xyz/feed.xml') fail(`HOMEGROWN_HITS_FEED_URL is ${HOMEGROWN_HITS_FEED_URL}`);
   else ok('the Homegrown Hits feed URL is the show’s own feed');
+
+  // Chad, 2026-11-16: "Any feed made by MSP gets shown." Both MSP generator
+  // spellings from the wire; a hide-list line still wins (DJ Criket's mixes are
+  // MSP-made and Chad hid them by name) — only Homegrown Hits beats the list.
+  const msp = mspFeedGuids([
+    { id: 7929072, podcastGuid: '9D75EDEC-139E-41A8-8ADD-EE146993E15B', generator: 'MSP 2.0 - Music Side Project Studio' },
+    { id: 7287540, podcastGuid: 'bbbb0000-0000-0000-0000-000000000002', generator: 'Music Side Project Studio' },
+    { id: 8099814, podcastGuid: 'be51bf9f-4350-4f79-896a-e9328b3c332b', generator: 'MSP 2.0 - Music Side Project Studio' },
+    { id: 7520866, podcastGuid: 'eeee0000-0000-0000-0000-000000000005', generator: 'Fountain' },
+    { id: 7353237, podcastGuid: 'ffff0000-0000-0000-0000-000000000006', generator: 'Sovereign Feeds' },
+  ]);
+  if (JSON.stringify([...msp].sort()) !== JSON.stringify(['9d75edec-139e-41a8-8add-ee146993e15b', 'bbbb0000-0000-0000-0000-000000000002', 'be51bf9f-4350-4f79-896a-e9328b3c332b'])) {
+    fail(`mspFeedGuids gave ${JSON.stringify([...msp])}`);
+  } else ok('mspFeedGuids: both MSP generator spellings, lower-cased; Fountain and Sovereign Feeds are not MSP');
+  // NOT FROM THE WIRE: Chad names three more spellings ("MSP or MSP 2.0 or MSP
+  // Studio would be in the generator tag"); PI held none of them on 2026-11-16.
+  // "MSP" is matched as a WORD, so a tool whose name merely starts with it is not.
+  const spelled = mspFeedGuids([
+    { id: 1, podcastGuid: 'a0000000-0000-0000-0000-000000000001', generator: 'MSP' },
+    { id: 2, podcastGuid: 'a0000000-0000-0000-0000-000000000002', generator: 'MSP 2.0' },
+    { id: 3, podcastGuid: 'a0000000-0000-0000-0000-000000000003', generator: 'MSP Studio' },
+    { id: 4, podcastGuid: 'a0000000-0000-0000-0000-000000000004', generator: 'MSPodcaster 1.2' },
+  ]);
+  if (JSON.stringify([...spelled].sort()) !== JSON.stringify(['a0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000002', 'a0000000-0000-0000-0000-000000000003'])) {
+    fail(`mspFeedGuids on Chad's spellings gave ${JSON.stringify([...spelled])}`);
+  } else ok('mspFeedGuids: "MSP", "MSP 2.0", "MSP Studio" are MSP; "MSPodcaster" is not');
+  const mspKept = keepForDemu(
+    [album(7929072, 1, { podcastGuid: '9d75edec-139e-41a8-8add-ee146993e15b' }), album(8099814, 2, { podcastGuid: 'be51bf9f-4350-4f79-896a-e9328b3c332b' })],
+    { valueIds: new Set(), batch: new Map(), played: new Set(), hidden: new Set(['be51bf9f-4350-4f79-896a-e9328b3c332b']), msp },
+  ).map((a) => a.id);
+  if (JSON.stringify(mspKept) !== JSON.stringify([7929072])) fail(`keepForDemu with MSP kept ${JSON.stringify(mspKept)}`);
+  else ok('an MSP feed without a value block is shown (Phase 2); a hidden MSP feed is not (DJ Criket)');
 }
 
 for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {

@@ -11,8 +11,9 @@
 // **What the hide list cannot do (Chad, 2026-11-16):** remove a feed that
 // Homegrown Hits plays. Those are always shown — "items that match the remote
 // items in the Homegrown Hits feed [are] what we are looking to show here" —
-// and `keepForDemu` lets PLAYED win over HIDDEN. Everything else must also
-// carry <podcast:value> to be shown.
+// and `keepForDemu` lets PLAYED win over HIDDEN. A line here DOES beat "any
+// feed made by MSP gets shown". Everything else must also carry
+// <podcast:value> to be shown.
 //
 // Design: docs/superpowers/specs/2026-11-15-demu-page-design.md; the rule order
 // is in docs/feeds.md, "The DeMu roster".

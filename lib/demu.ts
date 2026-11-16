@@ -211,11 +211,29 @@ export function demuValueGaps(
 }
 
 /**
+ * The lower-cased guids of the rows Music Side Project made — Chad, 2026-11-16:
+ * "Any feed made by MSP gets shown", and "MSP or MSP 2.0 or MSP Studio would be
+ * in the generator tag". On the wire that day: "Music Side Project Studio"
+ * (221) and "MSP 2.0 - Music Side Project Studio" (101). "MSP" is matched as a
+ * WORD, so a tool whose name only starts with those letters is not MSP.
+ */
+export function mspFeedGuids(rows: readonly PiMusicRow[]): Set<string> {
+  const out = new Set<string>();
+  for (const r of rows) {
+    if (r.podcastGuid && /\bmsp\b|music side project/i.test(r.generator ?? '')) out.add(r.podcastGuid.toLowerCase());
+  }
+  return out;
+}
+
+/**
  * What /demu shows, in Chad's order (2026-11-16):
  * 1. **Played by Homegrown Hits** (`played`, lower-cased guids) — always shown,
  *    with or without a value block, and the hide list cannot remove it.
  * 2. **On the hide list** (`hidden`) — never shown.
- * 3. **Everything else needs `<podcast:value>`** — `keepWithValue`.
+ * 3. **Made by MSP** (`msp`) — shown with or without a value block. Below the
+ *    hide list: a line naming one feed is more specific than "any MSP feed"
+ *    (DJ Criket's mixes are MSP-made, and Chad hid them by name).
+ * 4. **Everything else needs `<podcast:value>`** — `keepWithValue`.
  * Every album here already passed `demuRosterRows` (music, not Wavlake, not a
  * closed host, not dead), so a played feed that nobody can play stays out.
  */
@@ -226,12 +244,14 @@ export function keepForDemu(
     batch: ReadonlyMap<string, boolean>;
     played: ReadonlySet<string>;
     hidden: ReadonlySet<string>;
+    msp?: ReadonlySet<string>;
   },
 ): DemuAlbum[] {
   return albums.filter((a) => {
     const guid = a.podcastGuid?.toLowerCase();
     if (guid && rule.played.has(guid)) return true;
     if (guid && rule.hidden.has(guid)) return false;
+    if (guid && rule.msp?.has(guid)) return true;
     return keepWithValue([a], rule.valueIds, rule.batch).length === 1;
   });
 }
