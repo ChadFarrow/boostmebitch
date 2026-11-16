@@ -28,6 +28,7 @@ import {
 } from '@/lib/podcast-meta';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { FavoritesNewEpisodes } from '@/components/favorites-new-episodes';
+import { FavoritesNewMusic } from '@/components/favorites-new-music';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
 import {
@@ -599,6 +600,12 @@ export function FavoritesPage() {
           It is NOT part of the tab / sort / split state: those describe the
           library, this describes the wire. */}
       <FavoritesNewEpisodes key={identity?.npub ?? 'guest'} onOpen={openNewEpisode} />
+
+      {/* New albums from favorited PUBLISHER feeds (artists). Same place and
+          same rules as the section above, and the same handoff — `openFeed`,
+          because a row here is an album, i.e. a show. It self-hides when no
+          favorite is a publisher feed. */}
+      <FavoritesNewMusic key={`music:${identity?.npub ?? 'guest'}`} onOpen={openFeed} />
 
       {/* The progress and result of an OPML import started from the EMPTY
           card. Here, above the split, because that card turns into the library

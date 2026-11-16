@@ -16,6 +16,12 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // value import from it here cannot close a cycle.
 import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue, withoutStoredValue, episodeWithoutValue } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
+// An import-free leaf (`check:newmusic` scans it), so a value import here
+// cannot close a cycle.
+import {
+  capKeys, NEW_MUSIC_CAP, NEW_MUSIC_DISMISSED_CAP, NEW_MUSIC_SEEN_CAP,
+  type NewMusicRecord, type NewMusicRow,
+} from './new-music';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
   DEFAULT_STREAM_RATE_PER_MIN,
@@ -77,6 +83,7 @@ const KEYS = {
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
   newMarksPrefix: 'bmb:newmarks',     // + ':<npub>' — `{ checkedAt, marks: { [podcastGuid]: datePublished }, rows, uncovered, failed }`: the "new episodes" list on /favorites AND what this device has already shown you of it. The rows are the persisted thing and the marks describe them — holding the rows in React state alone made the CHECK consume the list rather than the reader. Seconds, because that is the unit Podcast Index's `since` takes back. A user-facing READ MARKER, not a cache — nothing on any wire records what this device showed somebody — so deliberately absent from EVICTABLE_PREFIXES, same class as bmb:listen_queue and bmb:ep_order. Evicting it does not cost a refetch, it re-announces a week of episodes as new. Pruned to the current favorites on every write (lib/util.ts `pruneMarks`).
+  newMusicPrefix: 'bmb:newmusic',     // + ':<npub>' — `{ checkedAt, seen: { [publisherGuid]: albumKey[] }, checked, rows, dismissed, uncovered }`: the "new music" list on /favorites (new albums from favorited PUBLISHER feeds) AND which albums this device has seen each artist list. A user-facing READ MARKER like bmb:newmarks, not a cache, so deliberately absent from EVICTABLE_PREFIXES: evicting it makes every artist a first look again and drops the list the reader has not read. Pruned to the current publisher favorites on every pass (lib/new-music.ts `pruneNewMusic`).
   listenQueuePrefix: 'bmb:listen_queue', // + ':<npub>' — the "Up Next" cross-show listen queue. An ORDERED ARRAY, never a keyed object: the order IS the data. A user DECISION, not a network-regenerable cache — deliberately absent from EVICTABLE_PREFIXES, same class as bmb:ep_order and bmb:list_unlock. Items are trimmed at ENQUEUE (lib/util.ts `trimForQueue`) and capped at LISTEN_QUEUE_CAP. No migration from any global key: there has never been one.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
@@ -280,6 +287,42 @@ const STREAMED_CAP = 100;
  * A rejected url is dropped rather than rendered inert, because the link is
  * decoration over the descriptor and a missing one costs nothing.
  */
+/**
+ * One NEW MUSIC row, as `storage.newMusic` reads AND writes it: a WHITELIST of
+ * the album fields the section renders and opens with, so neither a full
+ * `Podcast` handed to `set` (a kilobyte of description, a value block) nor a
+ * tampered entry on disk passes through. The album's `url` is the feed address
+ * the show page loads, so it must be http(s) (`httpUrl`); a bad one is dropped
+ * and the row still opens by its PI id. null for a row the section cannot place.
+ */
+function coerceNewMusicRow(r: unknown): NewMusicRow | null {
+  if (!r || typeof r !== 'object') return null;
+  const o = r as Record<string, unknown>;
+  const a = o.album as Record<string, unknown> | undefined;
+  if (!a || typeof a !== 'object') return null;
+  if (typeof a.title !== 'string' || typeof o.publisherGuid !== 'string') return null;
+  if (typeof o.foundAt !== 'number' || !Number.isFinite(o.foundAt)) return null;
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+  const album: NewMusicRow['album'] = {
+    id: typeof a.id === 'number' && Number.isInteger(a.id) && a.id > 0 ? a.id : 0,
+    title: a.title,
+  };
+  const guid = str(a.podcastGuid);
+  if (guid) album.podcastGuid = guid;
+  const url = httpUrl(str(a.url));
+  if (url) album.url = url;
+  for (const f of ['author', 'image', 'artwork', 'medium'] as const) {
+    const v = str(a[f]);
+    if (v) album[f] = v;
+  }
+  if (!guid && !url && !album.id) return null;
+  const row: NewMusicRow = { album, publisherGuid: o.publisherGuid, foundAt: o.foundAt };
+  const title = str(o.publisherTitle);
+  if (title) row.publisherTitle = title;
+  if (typeof o.date === 'number' && Number.isFinite(o.date) && o.date > 0) row.date = o.date;
+  return row;
+}
+
 function coerceStoredBoost(b: StoredBoost): StoredBoost {
   if (!b || !Array.isArray(b.legs)) return b;
   if (!b.legs.some((l) => l?.boostboxUrl)) return b;
@@ -2153,6 +2196,70 @@ export const storage = {
         JSON.stringify(
           v.rows ? { ...v, rows: v.rows.slice(0, FAV_NEW_CAP).map(trimForQueue) } : v,
         ),
+      ),
+  },
+
+  /**
+   * The NEW MUSIC section's record — see `bmb:newmusic` in KEYS and
+   * `lib/new-music.ts`. Read PER ENTRY, like `newEpisodeMarks`: one bad row or
+   * one bad artist must not empty a list the reader has not read, nor turn
+   * every artist into a first look.
+   */
+  newMusic: {
+    get: (npub: string | null | undefined): NewMusicRecord => {
+      const empty: NewMusicRecord = { checkedAt: 0, seen: {}, checked: {}, rows: [] };
+      const raw = safeGet(identityKey(KEYS.newMusicPrefix, npub));
+      if (!raw) return empty;
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return empty;
+        const seen: Record<string, string[]> = {};
+        if (parsed.seen && typeof parsed.seen === 'object') {
+          for (const [g, v] of Object.entries(parsed.seen)) {
+            if (Array.isArray(v)) seen[g] = v.filter((k): k is string => typeof k === 'string').slice(-NEW_MUSIC_SEEN_CAP);
+          }
+        }
+        const checked: Record<string, number> = {};
+        if (parsed.checked && typeof parsed.checked === 'object') {
+          for (const [g, v] of Object.entries(parsed.checked)) {
+            if (typeof v === 'number' && Number.isFinite(v) && v > 0) checked[g] = v;
+          }
+        }
+        const rows: NewMusicRow[] = [];
+        if (Array.isArray(parsed.rows)) {
+          for (const r of parsed.rows) {
+            const row = coerceNewMusicRow(r);
+            if (row) rows.push(row);
+            if (rows.length >= NEW_MUSIC_CAP) break;
+          }
+        }
+        return {
+          checkedAt: typeof parsed.checkedAt === 'number' && Number.isFinite(parsed.checkedAt) ? parsed.checkedAt : 0,
+          seen,
+          checked,
+          rows,
+          dismissed: Array.isArray(parsed.dismissed)
+            ? capKeys(parsed.dismissed.filter((k: unknown) => typeof k === 'string'), NEW_MUSIC_DISMISSED_CAP)
+            : undefined,
+          uncovered: Number.isInteger(parsed.uncovered) && parsed.uncovered > 0 ? parsed.uncovered : 0,
+        };
+      } catch {
+        return empty;
+      }
+    },
+    /** Returns whether the value reached DISK — the `newEpisodeMarks` contract:
+     *  a `seen` list held only in memory is gone on the next load, and every
+     *  artist's whole listing then counts as a first look again. Rows are
+     *  written through `coerceNewMusicRow`, so a full `Podcast` handed in
+     *  (description, value block, podroll) never reaches this key. */
+    set: (npub: string | null | undefined, v: NewMusicRecord): boolean =>
+      safeSet(
+        identityKey(KEYS.newMusicPrefix, npub),
+        JSON.stringify({
+          ...v,
+          rows: v.rows.slice(0, NEW_MUSIC_CAP).map(coerceNewMusicRow).filter(Boolean),
+          dismissed: v.dismissed ? capKeys(v.dismissed, NEW_MUSIC_DISMISSED_CAP) : undefined,
+        }),
       ),
   },
 

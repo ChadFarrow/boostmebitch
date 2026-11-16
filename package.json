@@ -122,7 +122,9 @@
     "check:deletions": "node --experimental-strip-types scripts/check-note-deletions.mjs",
     "check:opml": "node --experimental-strip-types scripts/check-opml.mjs",
     "check:moved": "node --experimental-strip-types scripts/check-moved.mjs",
-    "e2e:moved": "node scripts/e2e-moved.mjs"
+    "check:newmusic": "node --experimental-strip-types scripts/check-newmusic.mjs",
+    "e2e:moved": "node scripts/e2e-moved.mjs",
+    "e2e:newmusic": "node scripts/e2e-new-music.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
