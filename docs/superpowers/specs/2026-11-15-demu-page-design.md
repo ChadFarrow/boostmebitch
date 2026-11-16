@@ -98,12 +98,13 @@ Measured 2026-11-15 against Podcast Index:
   - The API count is therefore **below** the 1,163 measured for the search rule; measure it.
 - **`/api/demu`** (`app/api/demu/route.ts`): `GET`, no parameters. Answers
   `{ albums: DemuAlbum[], answered: boolean, fetchedAt: number | null }`.
-  - `DemuAlbum = { id, podcastGuid, title, author, image, artwork, url, medium, v4vHint, newestItemPubdate, episodeCount }`
+  - `DemuAlbum = { id, podcastGuid, title, author, image, artwork, url, medium, newestItemPubdate, episodeCount }`
     — what a row, the ♥ and `selectPodcast` need, nothing else (no description). **`medium` is
     required**: `<FavHeart>` writes `declaredMedium(podcast)` into the shared kind:10333 favorites
     event, so a row without it saves a favorite with no medium — public, and with no undo.
-    `v4vHint` keeps the ⚡ V4V stamp consistent with the DEMU search results. *(Claude's call, from
-    the builder check.)*
+    *(Claude's call, from the builder check.)* **No ⚡ V4V stamp on `/demu`:** the `bymedium` rows
+    carry no `value` field (checked against the 2026-11-15 response), so `v4vHint` cannot be set,
+    and a stamp computed per row would mean a second PI call per album.
   - A cold roster is waited for up to a bound (2.5 s, as the curated roster), then the route answers
     `answered: false`, `albums: []`, `no-store`. A warm answer is cacheable at the CDN
     (`s-maxage` well under the 6 h roster window, with `stale-while-revalidate`).
