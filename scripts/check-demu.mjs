@@ -177,13 +177,15 @@ const naiveQuery = (a, q) => (a.title ?? '').includes(q) || (a.author ?? '').inc
 const naiveRoster = (rows) => rows.filter((r) => !/wavlake/i.test(r.generator ?? ''));
 
 // The `lemons` pair is a REAL duplicate guid (LNBeats' updateMusicFiles/dupes.json
-// lists 7560785 "lemons" and 7216161 "Lemons" under it). Their URLs and dates
-// here are stand-ins; the guid, ids and titles are the wire's.
+// lists 7560785 "lemons" and 7216161 "Lemons" under it). Their URLs, generators and
+// dates here are stand-ins; the guid, ids and titles are the wire's. The generator is
+// a blank stand-in since 2026-11-16, when Fountain left /demu: on Fountain both rows
+// would drop as Fountain and the pair would test nothing.
 const LEMONS = '27bc3c57-6b47-5029-873d-9876c7ba2f1e';
 const ROSTER_IN = [
   ...Object.values(ROWS),
-  { id: 7560785, podcastGuid: LEMONS, title: 'lemons', generator: 'Fountain', url: 'https://feeds.fountain.fm/x1', newestItemPubdate: 200 },
-  { id: 7216161, podcastGuid: LEMONS, title: 'Lemons', generator: 'Fountain', url: 'https://feeds.fountain.fm/x2', newestItemPubdate: 100 },
+  { id: 7560785, podcastGuid: LEMONS, title: 'lemons', generator: '', url: 'https://example.com/lemons-1.xml', newestItemPubdate: 200 },
+  { id: 7216161, podcastGuid: LEMONS, title: 'Lemons', generator: '', url: 'https://example.com/lemons-2.xml', newestItemPubdate: 100 },
   { ...ROWS.worriedOnFountain, id: 1, dead: 1 },
 ];
 
@@ -230,9 +232,10 @@ const listVectors = [
   // roster
   {
     kind: 'roster',
-    label: 'roster drops Wavlake, closed, dead and the older duplicate guid',
+    label: 'roster drops Wavlake, Fountain, closed, dead and the older duplicate guid',
     args: [ROSTER_IN],
-    expect: { ids: [46385, 7287540, 7520866, 7560785], allMusic: true, generatorKeys: 0 },
+    // 7520866 (Worried, on Fountain) left with Chad's option B, 2026-11-16.
+    expect: { ids: [46385, 7287540, 7560785], allMusic: true, generatorKeys: 0 },
   },
 ];
 
@@ -278,7 +281,8 @@ const piVectors = [
   { label: 'feeds is not a list', args: [{ feeds: {} }], expect: null },
   { label: 'an empty feeds list', args: [{ feeds: [] }], expect: null },
   { label: 'rows without generator (PI dropped the field) all fail closed', args: [{ feeds: [{ id: 1, url: ROWS.worriedOnFountain.url }, { id: 2, url: ROWS.wheelOnMsp.url }] }], expect: null },
-  { label: 'a real answer keeps its DeMu rows', args: [{ feeds: Object.values(ROWS) }], expect: [7287540, 7520866, 46385], alsoNaive: true },
+  // 7520866 (Worried, on Fountain) left with Chad's option B, 2026-11-16.
+  { label: 'a real answer keeps its DeMu rows', args: [{ feeds: Object.values(ROWS) }], expect: [7287540, 46385], alsoNaive: true },
 ];
 const callPi = (impl, v) => {
   try {
@@ -538,6 +542,27 @@ console.log('\nHomegrown Hits and the hide list:');
   else ok('confirmValueMissing: the stamp stays only when the RSS was read and has no <podcast:value> (Phase 2); item-level (MOOKY) and unreadable lose it');
 }
 
+// ── Fountain is not on /demu (Chad, 2026-11-16, option B) ─────────────────────
+// "Can we also hide fountain hosted feeds?" — all of them, even the 74 Homegrown
+// Hits plays, so the drop happens in the roster, before keepForDemu's played rule.
+// "Fountain hosted": generator Fountain OR a feed on fountain.fm (364 and 364, the
+// same albums that day). The DEMU search type keeps its own rule (isDemuFeed).
+console.log('\nFountain off /demu:');
+{
+  const rows = demuRosterRows([
+    { id: 8115349, podcastGuid: 'f1', title: "I Don't Wanna Leave", generator: 'Fountain', url: 'https://feeds.fountain.fm/keSrIDz6ehktUeJjXm1z', newestItemPubdate: 9 },
+    { id: 2, podcastGuid: 'f2', title: 'x', generator: 'Something Else', url: 'https://feeds.fountain.fm/abc', newestItemPubdate: 8 },
+    { id: 3, podcastGuid: 'f3', title: 'y', generator: 'Fountain', url: 'https://example.com/y.xml', newestItemPubdate: 7 },
+    { id: 4, podcastGuid: 'f4', title: 'z', generator: '', url: 'https://notfountain.fm.example.com/z.xml', newestItemPubdate: 6 },
+    { id: 7287540, podcastGuid: 'f5', title: 'Katherines Wheel', generator: 'Music Side Project Studio', url: 'https://headstarts.uk/msp/x.xml', newestItemPubdate: 5 },
+  ], () => null).map((a) => a.id);
+  if (JSON.stringify(rows) !== JSON.stringify([4, 7287540])) fail(`demuRosterRows kept ${JSON.stringify(rows)}`);
+  else ok('the roster drops a Fountain generator or a fountain.fm feed; a look-alike host and MSP stay');
+  // The search lane is unchanged: a Fountain album is still DeMu there.
+  if (!isDemuFeed({ generator: 'Fountain', url: 'https://feeds.fountain.fm/x' }, () => null)) fail('isDemuFeed dropped Fountain — the search type changed too');
+  else ok('isDemuFeed (the DEMU search type) still counts Fountain');
+}
+
 // ── Which app made the feed: the cover's corner badge (Chad, 2026-11-16) ──────
 // LNBeats' idea: a small logo per app, "just for at a glance". Wire: every generator
 // spelling on the DeMu list on 2026-11-16, plus two that must NOT match.
@@ -569,8 +594,8 @@ console.log('\nThe app badge:');
     { id: 1, podcastGuid: 'a1', title: 'x', generator: 'Fountain', url: 'https://feeds.fountain.fm/x', newestItemPubdate: 5 },
     { id: 2, podcastGuid: 'a2', title: 'y', generator: '', url: 'https://example.com/y.xml', newestItemPubdate: 6 },
   ], () => null).map((a) => [a.id, a.app]);
-  if (JSON.stringify(rows) !== JSON.stringify([[1, 'fountain'], [2, 'self']])) fail(`demuRosterRows app gave ${JSON.stringify(rows)}`);
-  else ok('demuRosterRows sets `app` on every album');
+  if (JSON.stringify(rows) !== JSON.stringify([[2, 'self']])) fail(`demuRosterRows app gave ${JSON.stringify(rows)}`);
+  else ok('demuRosterRows sets `app` on every album it keeps');
   // Every app but "self" has its picture in public/demu-apps/, and each label is set.
   const { existsSync } = await import('node:fs');
   const missing = Object.keys(DEMU_APPS).filter((k) => k !== 'self' && !existsSync(`public/demu-apps/${k}.png`));
