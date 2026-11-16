@@ -144,7 +144,36 @@ interface Props {
   onClose: () => void;
 }
 
-export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props) {
+/**
+ * What the modal renders from once Send is pressed: the props and the live
+ * target `go()` built the legs from. See `sentView` in <BoostModal>.
+ */
+interface SentView {
+  episode?: Episode;
+  podcast: Podcast;
+  positionSec: number;
+  liveTarget: LiveTarget | null;
+}
+
+export function BoostModal(props: Props) {
+  // From the press of Send until the modal closes, it renders the boost AS SENT
+  // — the props and the live target `go()` paid from — never what they become
+  // (#551). The payee rows, the splits and the per-leg results are three views
+  // of one payment, and `results` is paired with the rows BY INDEX: rows re-read
+  // from a moved target put each ✓/✗ beside a payee that leg never paid. On a
+  // live show that is any song change during a send, because `useLiveTarget` is
+  // subscribed; from <Player> it was any change of the playing item.
+  //
+  // It changes no payee. The legs and `retryFailed` already read only
+  // `sentRef`, and before the press everything still follows the props and the
+  // on-air block exactly as before. A send that throws before its first leg
+  // (`sendBoost` throws only then) lets go, so a second press follows again.
+  const [sentView, setSentView] = useState<SentView | null>(null);
+  const episode = sentView ? sentView.episode : props.episode;
+  const podcast = sentView ? sentView.podcast : props.podcast;
+  const positionSec = sentView ? sentView.positionSec : (props.positionSec ?? 0);
+  const { onClose } = props;
+
   // The exact set the published note will `p`-tag, from the one function that
   // decides it. MEMOIZED, and that is load-bearing rather than tidiness: this
   // is a prop on <MessageInput>, whose warm effect keys on it, and this
@@ -285,8 +314,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // track ("● LIVE paying Cringe · 7 recipients") while the rows under it, and
   // the legs, were the show's three. Subscribed, not snapshotted, so the rows
   // follow the target the same way the "● LIVE" row above them does; `go()`
-  // pays and labels from this same rendered value.
-  const liveTarget = useLiveTarget(episode?.guid);
+  // pays and labels from this same rendered value. Until Send: from the press
+  // on, the rows show the block the legs went to (`sentView`).
+  const liveNow = useLiveTarget(episode?.guid);
+  const liveTarget = sentView ? sentView.liveTarget : liveNow;
   const liveSplit = liveTarget && hasValueRecipients(liveTarget.split?.value)
     ? liveTarget.split!
     : null;
@@ -610,6 +641,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       logged: false,
     };
     sentRef.current = sent;
+    // Before the first await, from the same render the legs were built from.
+    setSentView({ episode, podcast, positionSec, liveTarget });
 
     setRunning(true);
     // Pre-sized so an out-of-order leg can be written at its own index without
@@ -648,6 +681,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       } catch (e) {
         setSendErr(getErrorMessage(e, 'boost failed'));
         setRunning(false);
+        // Nothing was sent, so there is nothing to hold: the next press
+        // follows the props and the on-air block again.
+        setSentView(null);
         return;
       }
     }
