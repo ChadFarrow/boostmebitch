@@ -181,11 +181,6 @@ export function PlaylistMaker() {
     return () => clearTimeout(timer);
   }, []);
   const restoring = mounted && !identity && !gaveUp && !!storage.npub.get();
-  // No MADE BY box on this branch, so nothing else clears the name: an account switch
-  // must not carry one account's name into the next one's draft. Runs before the load
-  // effect below, which sets the loaded name. #576's load effect clears it itself, so
-  // this goes when #576 lands.
-  useEffect(() => { setOwnerName(''); }, [npub]);
 
   // ---- load: the saved draft, or the stored playlist in edit mode ----------
   useEffect(() => {
