@@ -30,7 +30,7 @@ import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
 import { demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids } from './demu';
-import { DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from './demu-hide-list';
+import { DEMU_HIDE_AUTHORS, DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from './demu-hide-list';
 import type { DemuAlbum, PiMusicRow } from './demu';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -528,6 +528,7 @@ async function fetchHomegrownHitsPlayed(): Promise<Set<string>> {
 }
 
 const DEMU_HIDDEN = new Set(DEMU_HIDE_LIST.map((h) => h.guid.toLowerCase()));
+const DEMU_HIDDEN_AUTHORS = new Set(DEMU_HIDE_AUTHORS);
 
 const demuRoster = createBoundedCache<DemuAlbum[]>({
   maxAgeMs: DEMU_ROSTER_STALE_MS,
@@ -563,7 +564,7 @@ async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
     const msp = mspFeedGuids(Array.isArray(rows) ? (rows as PiMusicRow[]) : []);
     const decided = new Set([...played, ...DEMU_HIDDEN, ...msp]);
     const batch = await batchHasValue(demuValueGaps(candidates, valueIds, decided));
-    const albums = keepForDemu(candidates, { valueIds, batch, played, hidden: DEMU_HIDDEN, msp });
+    const albums = keepForDemu(candidates, { valueIds, batch, played, hidden: DEMU_HIDDEN, msp, hiddenAuthors: DEMU_HIDDEN_AUTHORS });
     if (!albums.length) {
       console.warn('[pi] DeMu roster refresh kept no album with a value block; not cached');
       return null;

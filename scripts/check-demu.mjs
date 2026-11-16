@@ -25,7 +25,7 @@ import {
   isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
   hasValueBlock, demuValueGaps, keepWithValue, keepForDemu, mspFeedGuids,
 } from '../lib/demu.ts';
-import { DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
+import { DEMU_HIDE_LIST, DEMU_HIDE_AUTHORS, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
 import { remoteItemFeedGuids } from '../lib/feed-xml.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
@@ -438,6 +438,35 @@ console.log('\nHomegrown Hits and the hide list:');
   ).map((a) => a.id);
   if (JSON.stringify(mspKept) !== JSON.stringify([7929072])) fail(`keepForDemu with MSP kept ${JSON.stringify(mspKept)}`);
   else ok('an MSP feed without a value block is shown (Phase 2); a hidden MSP feed is not (DJ Criket)');
+
+  // LNBeats' allowFeed() (thebells1111/lnbeats, src/old_routes/+layout.svelte), Chad
+  // 2026-11-16: "Can we add the lnbeats allowfeed() list here also?" Its ids map to
+  // guids (PI, 2026-11-16); its two authors hide by name, so a NEW feed of theirs stays
+  // off too. Wire: 6801467 is one of the 13 Board Game Design Lab archives on the second
+  // guid, author "Gabe Barrett", with a value block in this vector.
+  const lnbeats = ['27293ad7-c199-5047-8135-a864fb546492', 'c64fab29-66bf-56da-a7f3-c2a11f37f526',
+    'aa9471ed-f45b-5a15-9e72-9b4ea6f6af3b', 'c9c7bad3-4712-514e-9ebd-d1e208fa1b76', '3e7c4f6a-9f9e-5b13-8d8a-eb053b35d377'];
+  const missing = lnbeats.filter((g) => !guids.includes(g));
+  if (missing.length) fail(`the hide list lacks LNBeats' allowFeed() feeds ${JSON.stringify(missing)}`);
+  else ok("the hide list carries every LNBeats allowFeed() feed still in Podcast Index");
+  if (JSON.stringify([...DEMU_HIDE_AUTHORS].sort()) !== JSON.stringify(['Gabe Barrett', '小杉毅誉大'])) {
+    fail(`DEMU_HIDE_AUTHORS is ${JSON.stringify(DEMU_HIDE_AUTHORS)}`);
+  } else ok("DEMU_HIDE_AUTHORS is LNBeats' two authors");
+  const byAuthor = keepForDemu(
+    [
+      album(6801467, 1, { podcastGuid: 'eeee0000-0000-0000-0000-00000000000a', author: 'Gabe Barrett' }),
+      album(2, 2, { podcastGuid: 'eeee0000-0000-0000-0000-00000000000b', author: ' 小杉毅誉大 ' }),
+      album(3, 3, { podcastGuid: 'eeee0000-0000-0000-0000-00000000000c', author: 'Gabe Barrett' }),
+      album(4, 4, { podcastGuid: 'eeee0000-0000-0000-0000-00000000000d', author: 'Gabe Barrett Jr' }),
+    ],
+    {
+      valueIds: new Set([6801467, 2, 3, 4]), batch: new Map(),
+      played: new Set(['eeee0000-0000-0000-0000-00000000000c']), hidden: new Set(),
+      hiddenAuthors: new Set(DEMU_HIDE_AUTHORS),
+    },
+  ).map((a) => a.id);
+  if (JSON.stringify(byAuthor) !== JSON.stringify([3, 4])) fail(`keepForDemu by author kept ${JSON.stringify(byAuthor)}`);
+  else ok('a hidden author is off even with a value block (trimmed, exact name); Homegrown Hits still wins; a longer name is not that author');
 }
 
 for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {

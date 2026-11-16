@@ -245,12 +245,15 @@ export function keepForDemu(
     played: ReadonlySet<string>;
     hidden: ReadonlySet<string>;
     msp?: ReadonlySet<string>;
+    /** Exact author names (after a trim) hidden like a guid — LNBeats' allowFeed(). */
+    hiddenAuthors?: ReadonlySet<string>;
   },
 ): DemuAlbum[] {
   return albums.filter((a) => {
     const guid = a.podcastGuid?.toLowerCase();
     if (guid && rule.played.has(guid)) return true;
     if (guid && rule.hidden.has(guid)) return false;
+    if (a.author && rule.hiddenAuthors?.has(a.author.trim())) return false;
     if (guid && rule.msp?.has(guid)) return true;
     return keepWithValue([a], rule.valueIds, rule.batch).length === 1;
   });

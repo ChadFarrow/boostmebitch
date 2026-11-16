@@ -42,4 +42,17 @@ export const DEMU_HIDE_LIST: readonly DemuHidden[] = [
   { guid: '0d9786b8-1753-58a2-9e94-55c3aad0ebc9', title: "Bustin' Out with CERO D", reason: 'a DJ show' },
   { guid: 'be51bf9f-4350-4f79-896a-e9328b3c332b', title: 'DJ Criket Summer Mixes. 100% Vinyl', reason: 'DJ mixes' },
   { guid: '15dcedb8-68fe-45b8-a84e-f0b6368fbd37', title: "Fletcher and Blaney's No Agenda End-of-Show Mixes Volume 1", reason: 'show mixes' },
+  // LNBeats' allowFeed() (thebells1111/lnbeats, src/old_routes/+layout.svelte), added at
+  // Chad's request, 2026-11-16. Its feed ids 5718023 (100% Retro, above) and 424986 map
+  // to these guids; 4222574 is no longer in Podcast Index. Its two authors are below.
+  { guid: 'c64fab29-66bf-56da-a7f3-c2a11f37f526', title: 'CGRadio - The Mix Series', reason: 'a radio mix series (LNBeats id 424986)' },
+  { guid: 'c9c7bad3-4712-514e-9ebd-d1e208fa1b76', title: 'Board Game Design Lab (13 archive feeds)', reason: 'a talk show filed as music (LNBeats: author Gabe Barrett)' },
+  { guid: '3e7c4f6a-9f9e-5b13-8d8a-eb053b35d377', title: '小杉毅誉大officialサイト', reason: 'not a music release (LNBeats: author 小杉毅誉大)' },
 ];
+
+/**
+ * Authors whose every feed is hidden — LNBeats' allowFeed() hid these two by name, so a
+ * NEW feed of theirs stays off without a new line above. Matched exactly, after a trim:
+ * "Gabe Barrett Jr" is somebody else. Homegrown Hits still wins over this, as over a guid.
+ */
+export const DEMU_HIDE_AUTHORS: readonly string[] = ['Gabe Barrett', '小杉毅誉大'];
