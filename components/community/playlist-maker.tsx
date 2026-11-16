@@ -167,6 +167,9 @@ export function PlaylistMaker() {
   const npub = identity?.npub ?? null;
   const pubkey = identity?.pubkey ?? null;
   const name = identity?.profile?.display_name || identity?.profile?.name || (npub ? `${npub.slice(0, 12)}…` : '');
+  // The feed's author (`<itunes:author>`): the Nostr name only, never the npub stand-in
+  // above. Null while the profile is unread, and the server then keeps the stored name.
+  const ownerName = identity?.profile?.display_name || identity?.profile?.name || null;
   const owner = npub ?? GUEST;
   const ready = formOwner === owner;
 
@@ -383,9 +386,9 @@ export function PlaylistMaker() {
           if (!expected) { setNote('We could not read the playlist. Try again.'); return; }
           setExpectedUpdatedAt(expected);
         }
-        res = await savePlaylist(editingId, v.draft, expected);
+        res = await savePlaylist(editingId, v.draft, expected, ownerName);
       } else {
-        res = await publishPlaylist(v.draft);
+        res = await publishPlaylist(v.draft, ownerName);
       }
       const body = await res.json().catch(() => null) as
         { id?: string; feedUrl?: string; error?: string; problems?: Refusal[]; playlist?: { id: string; updatedAt: string } } | null;
@@ -422,7 +425,7 @@ export function PlaylistMaker() {
     } finally {
       setBusy(false);
     }
-  }, [draft, npub, pubkey, editingId, expectedUpdatedAt]);
+  }, [draft, npub, pubkey, editingId, expectedUpdatedAt, ownerName]);
 
   // PUBLISH is never disabled for what is missing: a disabled button answers a
   // press with nothing (Chad, 2026-11-15). A press opens the list of what is

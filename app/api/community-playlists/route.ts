@@ -8,7 +8,7 @@ import {
 import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { cleanText } from '@/lib/community/clean-text';
 import { checkArt, verifySongs } from '@/lib/community/checks';
-import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, BANNED } from '@/lib/community/http';
+import { authenticate, summaryOf, ownerNameCleaned, NOT_FOUND, NOT_CONFIGURED, BANNED } from '@/lib/community/http';
 import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
 import { communityStoreConfigured, createPlaylist, isBanned, listPlaylists } from '@/lib/community/store';
 
@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     if (await isBanned(auth.pubkey)) {
       return BANNED();
     }
-    const raw = (parsed.body && typeof parsed.body === 'object' ? parsed.body : {}) as { draft?: unknown };
+    const raw = (parsed.body && typeof parsed.body === 'object' ? parsed.body : {}) as { draft?: unknown; ownerName?: unknown };
     // A secret key in the title or description is refused here (`{ kind: 'secret' }`,
     // the text never echoed) before anything is stored or sent to Podcast Index.
     const v = validatePlaylistDraft(raw.draft, textHoldsSecret);
@@ -86,7 +86,7 @@ export async function POST(req: Request) {
       songs: withIndexFeedUrls(v.draft.songs, (s) => songs.feedUrls.get(s.feedGuid)),
       title: cleanText(v.draft.title),
       description: cleanText(v.draft.description),
-    });
+    }, ownerNameCleaned(raw.ownerName));
     // A ban that landed after the isBanned read above is caught inside the INSERT.
     if (row === 'banned') return BANNED();
     notifyPodcastIndexAfter(communityFeedUrl(row.id), 'new');

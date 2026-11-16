@@ -4807,6 +4807,7 @@ export function communityPlaylistToPodcast(s: CommunityPlaylistSummary): Podcast
     url: s.feedUrl,
     medium: 'musicL',
     isPreview: true,
+    ...(s.ownerName ? { author: s.ownerName } : {}),
     nostrNpubs: [{ npub: s.ownerNpub, pubkey: s.ownerPubkey }],
   };
 }

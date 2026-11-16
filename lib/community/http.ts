@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { nip19 } from 'nostr-tools';
 import { verifyNip98, authMessage } from './auth';
-import type { CommunityPlaylistSummary } from './rules';
+import { ownerNameOf, type CommunityPlaylistSummary } from './rules';
+import { cleanText } from './clean-text';
+import { textHoldsSecret } from '../nostr/npub-input';
 import type { StoredRow } from './store';
 import { communityFeedUrl, communityCoverUrl, coverVersion } from '../curated-playlists';
 
@@ -44,6 +46,12 @@ export async function authenticate(
   return { ok: false, response: NextResponse.json({ error: authMessage(r.reason) }, { status: 401 }) };
 }
 
+/** The maker's Nostr name as stored: `ownerNameOf`, then the same word filter as the title. */
+export function ownerNameCleaned(raw: unknown): string | null {
+  const n = ownerNameOf(raw, textHoldsSecret);
+  return n === null ? null : cleanText(n);
+}
+
 export function summaryOf(p: StoredRow): CommunityPlaylistSummary {
   const feedUrl = communityFeedUrl(p.id);
   return {
@@ -54,6 +62,7 @@ export function summaryOf(p: StoredRow): CommunityPlaylistSummary {
     podcastGuid: p.podcastGuid,
     ownerPubkey: p.ownerPubkey,
     ownerNpub: nip19.npubEncode(p.ownerPubkey),
+    ownerName: p.ownerName,
     coverUrl: communityCoverUrl(p.id, coverVersion(p.updatedAt)),
     songCount: p.songs.length,
     createdAt: p.createdAt,

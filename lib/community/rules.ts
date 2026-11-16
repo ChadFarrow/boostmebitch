@@ -139,6 +139,27 @@ export function withIndexFeedUrls(
   });
 }
 
+/** The longest maker name stored. A Nostr name is a label, not a paragraph. */
+export const MAX_OWNER_NAME_LEN = 64;
+
+/**
+ * The maker's Nostr name (kind:0 `display_name`, else `name`) as it is STORED with
+ * the playlist and printed as the feed's `<itunes:author>` (Chad, 2026-11-15: the
+ * list shows who made a v4vmusic playlist, so ours says who made it too). The maker's
+ * browser sends it with each write; the NIP-98 signature proves the writer owns the
+ * playlist, so a name is that owner's own claim, like the title. Control characters
+ * go, runs of white space become one space, and the result is cut to
+ * MAX_OWNER_NAME_LEN code points. Not a string, empty, or a secret key / NWC string
+ * (`holdsSecret`, as validatePlaylistDraft takes it) gives null: no name.
+ */
+export function ownerNameOf(raw: unknown, holdsSecret: (text: string) => boolean): string | null {
+  if (typeof raw !== 'string') return null;
+  const flat = raw.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!flat || holdsSecret(flat)) return null;
+  const cut = [...flat].slice(0, MAX_OWNER_NAME_LEN).join('').trim();
+  return cut || null;
+}
+
 export type ArtRefusal = 'not-image' | 'format' | 'too-small';
 
 /** A cover link is a PNG or JPEG whose shortest side is at least ART_MIN_PX. Any shape and transparency pass. */
@@ -259,6 +280,8 @@ export function coverStyleFor(feedUrl: string): 'first-song' | 'grid' {
 export interface StoredPlaylist extends PlaylistDraft {
   id: string;
   ownerPubkey: string;
+  /** `ownerNameOf` at the last write that sent one; null when none was ever sent. */
+  ownerName: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -271,6 +294,7 @@ export interface CommunityPlaylistSummary {
   podcastGuid: string;
   ownerPubkey: string;
   ownerNpub: string;
+  ownerName: string | null;
   coverUrl: string;
   songCount: number;
   createdAt: string;

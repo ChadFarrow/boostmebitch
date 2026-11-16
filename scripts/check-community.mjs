@@ -9,6 +9,7 @@ import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
   blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
+  ownerNameOf, MAX_OWNER_NAME_LEN,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -340,8 +341,17 @@ const docVectors = [
     decodeXmlText(/<description>([\s\S]*?)<\/description>/.exec(channelSlice(xml))[1]) === 'A & B <c>' },
   { kind: 'fallback description', build: (b) => b({ ...stored, description: '' }, opts), test: (xml) =>
     decodeXmlText(/<description>([\s\S]*?)<\/description>/.exec(channelSlice(xml))[1]) === 'Fallback & co' },
-  { kind: 'no value/item/author', build: (b) => b(stored, opts), test: (xml) =>
+  // No value block, ever (Chad, 2026-11-15: the maker of a playlist takes no cut).
+  { kind: 'no value/item; no author without a name', build: (b) => b(stored, opts), test: (xml) =>
     !/<podcast:value/.test(xml) && !/<item/.test(xml) && !/<itunes:author/.test(xml) },
+  { kind: 'no value/item with a name either', build: (b) => b({ ...stored, ownerName: 'X' }, opts), test: (xml) =>
+    !/<podcast:value/.test(xml) && !/<item/.test(xml) },
+  // The maker's Nostr name, once, in the channel, escaped (Chad, 2026-11-15).
+  { kind: 'author is the stored name', build: (b) => b({ ...stored, ownerName: `Tom & "Jerry" <3` }, opts), test: (xml) => {
+    const all = xml.match(/<itunes:author>([\s\S]*?)<\/itunes:author>/g) ?? [];
+    const m = /<itunes:author>([\s\S]*?)<\/itunes:author>/.exec(channelSlice(xml));
+    return all.length === 1 && !!m && !/[<>"']/.test(m[1]) && decodeXmlText(m[1]) === `Tom & "Jerry" <3`;
+  } },
   { kind: 'feedUrl only when known', build: (b) => b(stored, opts), test: (xml) =>
     (xml.match(/feedUrl=/g) ?? []).length === 1 && xml.includes('feedUrl="https://x.example/f.xml?a=1&amp;b=2"') },
   // lastBuildDate is the later of the row's updatedAt and FEED_TEMPLATE_UPDATED_AT, so a
@@ -378,7 +388,7 @@ const oldEscapeBuild = (p, o) => buildPlaylistFeedXml({ ...p, title: 'TT' }, o)
   check('feed doc: illegal chars vector fails against old escapeXml (can fail)', !v.test(v.build(oldEscapeBuild)));
 }
 // Only the escaping vectors must fail against the naive builder.
-for (const v of docVectors.filter((x) => ['items', 'title well-formed'].includes(x.kind))) {
+for (const v of docVectors.filter((x) => ['items', 'title well-formed', 'author is the stored name'].includes(x.kind))) {
   let passes;
   try { passes = v.test(v.build(naiveBuild)); } catch { passes = false; }
   check('feed doc: ' + v.kind + ' fails against naive (can fail)', !passes);
@@ -390,6 +400,32 @@ for (const v of docVectors.filter((x) => ['items', 'title well-formed'].includes
   check('feed doc: stored-guid vector fails against recomputing from the URL (can fail)', !v.test(v.build(recompute)));
 }
 check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
+
+// ---- ownerNameOf: the maker's Nostr name, stored and printed as <itunes:author> ----
+{
+  const nsec = nsecEncode(generateSecretKey());
+  const long = 'é'.repeat(MAX_OWNER_NAME_LEN + 10);
+  const nameVectors = [
+    { kind: 'plain', args: ['ChadF'], want: 'ChadF', alsoNaive: true },
+    { kind: 'trimmed', args: ['  ChadF  '], want: 'ChadF', alsoNaive: true },
+    { kind: 'white space runs collapse', args: ['Chad \t\n  F'], want: 'Chad F' },
+    { kind: 'control characters go', args: ['Ch\x00ad\x1F\x7F\x85F'], want: 'Ch ad F' },
+    { kind: 'cut at MAX_OWNER_NAME_LEN code points', args: [long], want: 'é'.repeat(MAX_OWNER_NAME_LEN) },
+    { kind: 'a secret key is no name', args: [nsec], want: null },
+    { kind: 'a key inside a name is no name', args: [`hi ${nsec}`], want: null },
+    { kind: 'empty is no name', args: ['   '], want: null, alsoNaive: true },
+    { kind: 'not a string is no name', args: [42], want: null, alsoNaive: true },
+    { kind: 'null is no name', args: [null], want: null, alsoNaive: true },
+  ];
+  // The obvious wrong version: store what the browser sent, trimmed.
+  const naive = (raw) => (typeof raw === 'string' ? raw.trim() : null) || null;
+  for (const v of nameVectors) {
+    check('ownerNameOf: ' + v.kind, ownerNameOf(...v.args, textHoldsSecret) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('ownerNameOf: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('ownerNameOf: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+}
 
 // ---- NIP-98 (lib/community/auth.ts) ----
 {
@@ -495,6 +531,10 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const got = communityPlaylistToPodcast(summary);
   check('communityPlaylistToPodcast: exact shape', JSON.stringify(got) === JSON.stringify(want));
   check('communityPlaylistToPodcast: id is negative', got.id < 0);
+  // The list row's "who made it" line is `author`, as for a v4vmusic playlist.
+  const named = communityPlaylistToPodcast({ ...summary, ownerName: 'ChadF' });
+  check('communityPlaylistToPodcast: the maker name is the author', named.author === 'ChadF');
+  check('communityPlaylistToPodcast: no name, no author key', !('author' in communityPlaylistToPodcast({ ...summary, ownerName: null })));
 }
 
 {

@@ -95,11 +95,12 @@ export async function signedFetch(
   });
 }
 
-export const publishPlaylist = (d: PlaylistDraft) =>
-  signedFetch(PLAYLISTS_PATH, 'POST', { draft: d });
+/** `ownerName` is the maker's Nostr name, printed as the feed's author; null keeps the stored one. */
+export const publishPlaylist = (d: PlaylistDraft, ownerName: string | null) =>
+  signedFetch(PLAYLISTS_PATH, 'POST', { draft: d, ownerName });
 
-export const savePlaylist = (id: string, d: PlaylistDraft, expectedUpdatedAt: string) =>
-  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'PUT', { draft: d, expectedUpdatedAt });
+export const savePlaylist = (id: string, d: PlaylistDraft, expectedUpdatedAt: string, ownerName: string | null) =>
+  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'PUT', { draft: d, expectedUpdatedAt, ownerName });
 
 export const deleteOwnPlaylist = (id: string) =>
   signedFetch(`${PLAYLISTS_PATH}/${id}`, 'DELETE');

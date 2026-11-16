@@ -26,7 +26,7 @@ export function escapeXml(s: string): string {
  * Set it to the time of the commit that changes the template. The songs, their order,
  * the title, description, art and guid come only from the stored row, never from here.
  */
-export const FEED_TEMPLATE_UPDATED_AT = '2026-11-13T12:50:00.000Z';
+export const FEED_TEMPLATE_UPDATED_AT = '2026-11-16T00:30:00.000Z';
 
 // Podcasting 2.0 guid namespace (podcastindex-org/podcast-namespace, `guid`).
 const PODCAST_GUID_NAMESPACE = 'ead4c236-bf58-58c6-a2c6-a6b28d128cb6';
@@ -71,7 +71,7 @@ export function buildPlaylistFeedXml(
     <podcast:guid>${e(o.podcastGuid)}</podcast:guid>
     <podcast:medium>musicL</podcast:medium>
     <podcast:txt purpose="npub">${e(o.ownerNpub)}</podcast:txt>
-    <itunes:image href="${e(o.coverUrl)}"/>
+${p.ownerName ? `    <itunes:author>${e(p.ownerName)}</itunes:author>\n` : ''}    <itunes:image href="${e(o.coverUrl)}"/>
     <image>
       <url>${e(o.coverUrl)}</url>
       <title>${e(p.title)}</title>
