@@ -5,6 +5,15 @@ import type { Episode, Podcast } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { loadPlaylistPage } from '@/lib/podcast-meta';
 import { isShuffleableTrack, listKey, playlistShuffleTracks } from '@/lib/util';
+import { RepeatIcon, ShuffleIcon } from './icons';
+
+/**
+ * Both buttons are ICON-ONLY squares (Chad, 2026-11-16: "just use the symbol
+ * buttons to save space, since playlists will mainly be used on mobile"). 44 px
+ * square, the touch size `<FavHeart>`'s mobile chip uses, so each clears the
+ * 24×24 minimum with room; the word is the `aria-label` and the `title`.
+ */
+const ICON_BUTTON = 'btn-mini w-11 h-11 p-0';
 
 /**
  * Time between two pages the shuffle loads after the press. `/api/playlist` is
@@ -101,12 +110,13 @@ export function PlaylistShuffleButton({
         type="button"
         data-playlist-shuffle
         onClick={press}
-        // The album button's look: `.btn-mini` for the row's 27px, BONE text,
-        // because the muted text read as disabled on a real iPhone.
-        className="btn-mini border-bone/60 text-bone"
+        // BONE, not `.btn-mini`'s muted text: that read as disabled on a real
+        // iPhone (the album button's lesson).
+        className={`${ICON_BUTTON} border-bone/60 text-bone`}
+        aria-label="Shuffle this playlist"
+        title="Shuffle this playlist"
       >
-        <span aria-hidden>⤮</span> SHUFFLE
-        <span className="sr-only"> the tracks of this playlist</span>
+        <ShuffleIcon />
       </button>
       {state.kind !== 'idle' && (
         <p className="text-muted text-xs basis-full" role="status" data-playlist-shuffle-status>
@@ -137,10 +147,13 @@ export function PlaylistRepeatButton({ playlist }: { playlist: Podcast }) {
       data-playlist-repeat
       aria-pressed={on}
       onClick={() => setRepeatList(on ? null : key)}
-      className={`btn-mini ${on ? 'border-bolt text-bolt' : 'border-bone/60 text-bone'}`}
-      title={on ? 'Stop repeating this playlist' : 'Repeat this playlist'}
+      // ON is told by colour AND fill, never colour alone: bolt border and glyph
+      // on a bolt-tinted square, against bone on none.
+      className={`${ICON_BUTTON} ${on ? 'border-bolt text-bolt bg-bolt/15' : 'border-bone/60 text-bone'}`}
+      aria-label="Repeat this playlist"
+      title={on ? 'Repeat is on: press to stop repeating this playlist' : 'Repeat this playlist'}
     >
-      <span aria-hidden>↻</span> REPEAT{on ? ' ON' : ''}
+      <RepeatIcon />
     </button>
   );
 }
