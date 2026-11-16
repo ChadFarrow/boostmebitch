@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
-import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEEDS_ON, communityFeedUrl, communityCoverUrl, coverVersion } from '@/lib/curated-playlists';
-import { buildPlaylistFeedXml } from '@/lib/community/feed-doc';
+import {
+  COMMUNITY_FEED_ORIGIN, COMMUNITY_FEEDS_ON, communityFeedUrl, communityCoverUrl, coverVersion, communityPublisherFeedUrl,
+} from '@/lib/curated-playlists';
+import { buildPlaylistFeedXml, communityFeedGuid } from '@/lib/community/feed-doc';
 import { buildCover } from '@/lib/community/cover';
 import { communityStoreConfigured, getPlaylist } from '@/lib/community/store';
 import { UUID_RE, authUrl } from '@/lib/community/http';
@@ -45,12 +47,17 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
     if (p === null) return text(404);
     if (p === 'gone') return text(410);
     if (ext === 'xml') {
+      const ownerNpub = nip19.npubEncode(p.ownerPubkey);
+      const publisherUrl = communityPublisherFeedUrl(ownerNpub);
       const xml = buildPlaylistFeedXml(p, {
         feedUrl: communityFeedUrl(id),
         // The listener's own link: apps load it from its host, and this site serves no
         // listener's picture to them. Only a playlist with no link gets our cover (the grid).
         coverUrl: p.artUrl ?? communityCoverUrl(id, coverVersion(p.updatedAt)),
-        ownerNpub: nip19.npubEncode(p.ownerPubkey),
+        ownerNpub,
+        // The maker's publisher feed (/feeds/publishers/<npub>.xml) lists this playlist,
+        // and this names it back: the spec trusts the link only both ways.
+        publisher: { feedUrl: publisherUrl, podcastGuid: communityFeedGuid(publisherUrl) },
         fallbackDescription: `A community playlist on ${BRAND.displayName}.`,
         // The guid saved when the row was made, never one recomputed from today's origin.
         podcastGuid: p.podcastGuid,
