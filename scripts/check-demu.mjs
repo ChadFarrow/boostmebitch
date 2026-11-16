@@ -23,6 +23,7 @@
 
 import {
   isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
+  hasValueBlock, demuValueGaps, keepWithValue,
 } from '../lib/demu.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
@@ -291,6 +292,62 @@ for (const v of piVectors) {
 }
 console.log('\ndemuRosterFromPi — the replay against naive():');
 replayVectors({ vectors: piVectors, invoke: callPi, fail });
+
+// ── Chad's rule: a feed without <podcast:value> is not on /demu ──────────────
+// (2026-11-16: "Remove anything that doesn't have <podcast:value>".) Podcast
+// Index's music list carries no value field, so the roster asks two sources:
+// the static file of every feed with a value block, and — for feeds the file
+// does not list yet — the live batch call, whose `valueBlock` is a JSON STRING
+// or null. Fixtures: the batch answer of 2026-11-16 (UXRZONE null, Radio 1
+// Timemachine keysend, DJ Yo! lnaddress) and the static file's object shape.
+const VB_RADIO1 = '{"model":{"type":"lightning","method":"keysend"},"destinations":[{"name":"Radio 1 Rocks","type":"node","address":"hello@radio1.rocks","split":100}]}';
+const VB_DJYO = '{"model":{"type":"lightning","method":"lnaddress"},"destinations":[{"name":"djyo@fountain.fm","type":"lnaddress","address":"djyo@fountain.fm","split":90},{"name":"Fountain","type":"lnaddress","address":"boostbot@fountain.fm","split":10}]}';
+const naiveHasValue = (v) => v != null && v !== '';
+const valueVectors = [
+  { label: 'UXRZONE: valueBlock null', args: [null], expect: false, alsoNaive: true },
+  { label: 'Radio 1 Timemachine: a keysend block (a JSON string)', args: [VB_RADIO1], expect: true, alsoNaive: true },
+  { label: 'DJ Yo!: an lnaddress block (a JSON string)', args: [VB_DJYO], expect: true, alsoNaive: true },
+  { label: 'the static file shape: an object', args: [JSON.parse(VB_DJYO)], expect: true, alsoNaive: true },
+  { label: 'a block with no destinations is no value block', args: ['{"model":{"type":"lightning","method":"keysend"},"destinations":[]}'], expect: false },
+  { label: 'an unreadable string is no value block', args: ['{not json'], expect: false },
+  { label: 'the string "null" is no value block', args: ['null'], expect: false },
+];
+const callValue = (impl, v) => {
+  try { return JSON.stringify(impl === 'real' ? hasValueBlock(v.args[0]) : naiveHasValue(v.args[0])); } catch (e) { return `threw ${(e && e.message) || e}`; }
+};
+console.log('\nhasValueBlock — the shipping answer:');
+for (const v of valueVectors) {
+  const got = callValue('real', v);
+  if (got !== JSON.stringify(v.expect)) fail(`"${v.label}" — expected ${v.expect}, got ${got}`);
+  else ok(v.label);
+}
+console.log('\nhasValueBlock — the replay against naive():');
+replayVectors({ vectors: valueVectors, invoke: callValue, fail });
+
+console.log('\nThe value filter over the roster:');
+{
+  // Ids and guids from the 2026-11-16 list: 4827093 Radio 1 Timemachine (in the
+  // file), 7982024 UXRZONE (in neither), 8115349 I Don't Wanna Leave (newer than
+  // the file; the batch says value), 7287540 Longy (in the file).
+  const albums = [
+    album(4827093, 1, { podcastGuid: '2ad45cc1-f1ff-57f5-bb84-c2c0a9b21fbe' }),
+    album(7982024, 2, { podcastGuid: '01f38143-ea31-5285-9dc2-0878d2097b3b' }),
+    album(8115349, 3, { podcastGuid: 'AAAA0000-0000-0000-0000-000000000001' }),
+    album(7287540, 4, { podcastGuid: 'bbbb0000-0000-0000-0000-000000000002' }),
+  ];
+  const inFile = new Set([4827093, 7287540]);
+  const gaps = demuValueGaps(albums, inFile);
+  if (JSON.stringify(gaps) !== JSON.stringify(['01f38143-ea31-5285-9dc2-0878d2097b3b', 'aaaa0000-0000-0000-0000-000000000001'])) {
+    fail(`demuValueGaps asks for ${JSON.stringify(gaps)}`);
+  } else ok('demuValueGaps asks only for feeds the file does not list, guids lower-cased');
+  const batch = new Map([['01f38143-ea31-5285-9dc2-0878d2097b3b', false], ['aaaa0000-0000-0000-0000-000000000001', true]]);
+  const kept = keepWithValue(albums, inFile, batch).map((a) => a.id).sort((a, b) => a - b);
+  if (JSON.stringify(kept) !== JSON.stringify([4827093, 7287540, 8115349])) fail(`keepWithValue kept ${JSON.stringify(kept)}`);
+  else ok('keepWithValue keeps the file’s feeds and the batch’s yes; drops UXRZONE');
+  const unasked = keepWithValue(albums, inFile, new Map()).map((a) => a.id).sort((a, b) => a - b);
+  if (JSON.stringify(unasked) !== JSON.stringify([4827093, 7287540])) fail(`keepWithValue without a batch answer kept ${JSON.stringify(unasked)}`);
+  else ok('a feed nobody answered for is not kept (no value proven)');
+}
 
 for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {
   const fam = listVectors.filter((v) => v.kind === kind);

@@ -28,7 +28,7 @@ import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMediu
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
-import { demuRosterFromPi } from './demu';
+import { demuRosterFromPi, demuValueGaps, hasValueBlock, keepWithValue } from './demu';
 import type { DemuAlbum } from './demu';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -428,15 +428,79 @@ const DEMU_ROSTER_FRESH_MS = 6 * 60 * 60_000;
 const DEMU_ROSTER_STALE_MS = 24 * 60 * 60_000;
 /**
  * How long a page load waits on a COLD roster before it answers "not loaded
- * yet". The call took ~1 s when measured; past this the refresh keeps running
- * and the next load is served from cache. Same bound as the curated roster.
+ * yet"; past this the refresh keeps running and the next load is served from
+ * cache. 8 s, not the curated roster's 2.5 s: a refresh is now the music list
+ * and the value file in parallel, then the batch calls — ~2–3.5 s measured on
+ * 2026-11-16 — and this route serves only the /demu page, which says "loading
+ * DeMu…" while it waits. Under the bound, a cold instance's first visitor
+ * would mostly get "Could not load". Still inside PI_TIMEOUT_MS-sized calls.
  */
-const DEMU_ROSTER_COLD_WAIT_MS = 2500;
+const DEMU_ROSTER_COLD_WAIT_MS = 8000;
 /**
  * The whole music list is one body: 9.9 MB on 2026-11-15, over the shared
  * `MAX_BODY_BYTES`, which would THROW rather than truncate. Room to grow.
  */
 const DEMU_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Chad's V4V rule needs to know which feeds carry `<podcast:value>`, and the
+ * music list does not say. PI's static file of every feed with a value block:
+ * one fetch, no key (it refuses a request without a User-Agent), 18.4 MB and
+ * ~0.7 s on 2026-11-16. It is DAYS old (Last-Modified 2026-11-11 that day), so
+ * it misses the newest feeds — the batch call below covers those.
+ */
+const DEMU_VALUE_FILE_URL = 'https://tracking.podcastindex.org/feedValueBlocks.json';
+const DEMU_VALUE_FILE_MAX_BYTES = 64 * 1024 * 1024;
+/** `/podcasts/batch/byguid` answers at most 25 feeds per request (measured: 30, 50 and 100 all stop at 26). */
+const DEMU_BATCH_SIZE = 25;
+
+/** Ids of every feed PI's static file lists with a value block. Throws when the file cannot be read. */
+async function fetchValueFeedIds(): Promise<Set<number>> {
+  const res = await fetch(DEMU_VALUE_FILE_URL, {
+    headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(PI_TIMEOUT_MS * 2),
+  });
+  if (!res.ok) throw new Error(`feedValueBlocks.json ${res.status}`);
+  const rows: unknown = JSON.parse(await readCappedText(res, DEMU_VALUE_FILE_MAX_BYTES));
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error('feedValueBlocks.json read no rows');
+  const ids = new Set<number>();
+  for (const r of rows) {
+    const id = (r as { id?: unknown })?.id;
+    if (typeof id === 'number') ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * Whether each guid's feed has a value block, from the LIVE batch call — for
+ * the feeds the static file does not list yet. `valueBlock` there is a JSON
+ * string or null (`hasValueBlock` reads both shapes). Lower-cased guid keys.
+ * Throws on a PI failure, so the whole refresh fails and is not cached.
+ */
+async function batchHasValue(guids: readonly string[]): Promise<Map<string, boolean>> {
+  const chunks: string[][] = [];
+  for (let i = 0; i < guids.length; i += DEMU_BATCH_SIZE) chunks.push(guids.slice(i, i + DEMU_BATCH_SIZE));
+  const answers = await mapLimit(chunks, PI_FANOUT, async (chunk) => {
+    const res = await fetch(BASE + '/podcasts/batch/byguid', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(chunk),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(PI_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new PiHttpError(res.status, await readCappedText(res, 4 * 1024).catch(() => ''));
+    const data = JSON.parse(await readCappedText(res)) as { feeds?: unknown };
+    return Array.isArray(data.feeds) ? data.feeds : [];
+  });
+  const out = new Map<string, boolean>();
+  for (const feeds of answers) {
+    for (const f of feeds as { podcastGuid?: unknown; valueBlock?: unknown }[]) {
+      if (typeof f?.podcastGuid === 'string') out.set(f.podcastGuid.toLowerCase(), hasValueBlock(f.valueBlock));
+    }
+  }
+  return out;
+}
 
 const demuRoster = createBoundedCache<DemuAlbum[]>({
   maxAgeMs: DEMU_ROSTER_STALE_MS,
@@ -453,11 +517,22 @@ let demuInFlight: Promise<DemuAlbum[] | null> | null = null;
  */
 async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
   try {
-    const data = await pi<unknown>('/podcasts/bymedium?medium=music', DEMU_MAX_BYTES);
+    const [data, valueIds] = await Promise.all([
+      pi<unknown>('/podcasts/bymedium?medium=music', DEMU_MAX_BYTES),
+      fetchValueFeedIds(),
+    ]);
     // `null` when the answer read nothing — never cached, for the reason above.
-    const albums = demuRosterFromPi(data, closedService);
-    if (!albums) {
+    const candidates = demuRosterFromPi(data, closedService);
+    if (!candidates) {
       console.warn('[pi] DeMu roster refresh read no DeMu albums; not cached');
+      return null;
+    }
+    // Chad's V4V rule: keep only feeds with a value block — the static file's,
+    // plus the live batch answer for the feeds the file does not list yet.
+    const batch = await batchHasValue(demuValueGaps(candidates, valueIds));
+    const albums = keepWithValue(candidates, valueIds, batch);
+    if (!albums.length) {
+      console.warn('[pi] DeMu roster refresh kept no album with a value block; not cached');
       return null;
     }
     demuRoster.set(DEMU_KEY, albums, Date.now());

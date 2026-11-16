@@ -168,6 +168,53 @@ export function demuRosterFromPi(
   return albums.length ? albums : null;
 }
 
+// ─── Chad's V4V rule: no <podcast:value>, not on /demu ───────────────────────
+//
+// Chad, 2026-11-16, about a radio station's archive on the list: "Remove
+// anything that doesn't have <podcast:value>". It removes the radio stations
+// and DJ-mix shows that declare `medium=music` without a value block (UXRZONE,
+// Mixing Podcast Amsterdam, Techno Live Sets…) and the talk show filed as
+// music (The Board Game Design Lab). It does NOT remove Radio 1 Timemachine,
+// which has one — Chad was told, and chose this rule.
+//
+// `/podcasts/bymedium` rows carry no `value`, so the roster asks two sources:
+// PI's static file of every feed with a value block (one fetch, no key, but
+// days old), and for the feeds that file does not list — new releases mostly —
+// the live `/podcasts/batch/byguid`, whose `valueBlock` is a JSON STRING or
+// null. These functions decide; lib/pi.ts asks.
+
+/** Whether one value block — an object (the static file) or a JSON string (the batch call) — names anyone to pay. */
+export function hasValueBlock(raw: unknown): boolean {
+  let v: unknown = raw;
+  if (typeof v === 'string') {
+    try { v = JSON.parse(v); } catch { return false; }
+  }
+  if (!v || typeof v !== 'object') return false;
+  const block = v as { destinations?: unknown; recipients?: unknown };
+  const named = (list: unknown) => Array.isArray(list) && list.length > 0;
+  return named(block.destinations) || named(block.recipients);
+}
+
+/** The guids (lower-cased) of roster albums the static value file does not list — the ones to ask the batch call about. */
+export function demuValueGaps(albums: readonly DemuAlbum[], valueIds: ReadonlySet<number>): string[] {
+  return albums
+    .filter((a) => !valueIds.has(a.id) && a.podcastGuid)
+    .map((a) => (a.podcastGuid as string).toLowerCase());
+}
+
+/**
+ * The albums with a value block: listed in the static file, or answered `true`
+ * by the batch call (keyed by lower-cased guid). An album nobody answered for
+ * is NOT kept — the rule keeps proven value blocks only.
+ */
+export function keepWithValue(
+  albums: readonly DemuAlbum[],
+  valueIds: ReadonlySet<number>,
+  batch: ReadonlyMap<string, boolean>,
+): DemuAlbum[] {
+  return albums.filter((a) => valueIds.has(a.id) || (!!a.podcastGuid && batch.get(a.podcastGuid.toLowerCase()) === true));
+}
+
 function isNewer(a: DemuAlbum, b: DemuAlbum): boolean {
   const da = a.newestItemPubdate ?? 0;
   const db = b.newestItemPubdate ?? 0;
