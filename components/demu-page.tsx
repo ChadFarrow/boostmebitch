@@ -133,6 +133,19 @@ export function DemuPage() {
     );
   };
 
+  // Shown without a value block (Homegrown Hits plays it, or MSP made it): say so
+  // rather than hide it — Chad, 2026-11-16. Only when PI said none (`valueMissing`).
+  const stamp = (p: Podcast) =>
+    (p as unknown as DemuAlbum).valueMissing ? (
+      <span
+        data-demu-novalue
+        className="stamp text-muted border-muted/40"
+        title="This feed has no <podcast:value> block, so a boost has no one to pay."
+      >
+        NO VALUE BLOCK
+      </span>
+    ) : null;
+
   const q = query.trim();
 
   return (
@@ -180,7 +193,7 @@ export function DemuPage() {
                   <h2 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-bolt border-b border-bolt/40 pb-1.5 mb-1 px-1">
                     {g.label}
                   </h2>
-                  <PodcastResults feeds={g.albums} selected={null} onSelect={openAlbum} meta={meta} detail={detail} />
+                  <PodcastResults feeds={g.albums} selected={null} onSelect={openAlbum} meta={meta} detail={detail} stamp={stamp} />
                 </section>
               ))}
               <ShowMore remaining={remaining} onClick={more} noun="DeMu albums" innerRef={sentinel} />

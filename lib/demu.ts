@@ -86,6 +86,13 @@ export interface DemuAlbum {
   /** Unix seconds of the feed's newest track (PI's `newestItemPubdate`). */
   newestItemPubdate?: number;
   episodeCount?: number;
+  /**
+   * True when the album is shown WITHOUT a value block — Homegrown Hits plays it or
+   * MSP made it — and Podcast Index's batch answer said it has none. The page stamps
+   * it `NO VALUE BLOCK` (Chad, 2026-11-16). Absent means "has one" or "not known":
+   * never set from a guid the batch did not answer.
+   */
+  valueMissing?: true;
 }
 
 /** The fields of one `/podcasts/bymedium?medium=music` row this file reads. */
@@ -226,6 +233,27 @@ export function mspFeedGuids(rows: readonly PiMusicRow[]): Set<string> {
 }
 
 /**
+ * The NO VALUE BLOCK stamp, checked against each feed's own RSS. `rss` maps a
+ * lower-cased guid to `true` (the RSS has a `<podcast:value>` somewhere — on an
+ * item counts), `false` (read, and none), or `null`/absent (not read). The mark
+ * stays only on `false`: PI's value data is channel-level, so MOOKY's item-level
+ * block reads there as none, and an unreadable feed is "not known", never
+ * "missing". Albums without the mark pass through unchanged.
+ */
+export function confirmValueMissing(
+  albums: readonly DemuAlbum[],
+  rss: ReadonlyMap<string, boolean | null>,
+): DemuAlbum[] {
+  return albums.map((a) => {
+    if (!a.valueMissing) return a;
+    if (a.podcastGuid && rss.get(a.podcastGuid.toLowerCase()) === false) return a;
+    const rest: DemuAlbum = { ...a };
+    delete rest.valueMissing;
+    return rest;
+  });
+}
+
+/**
  * What /demu shows, in Chad's order (2026-11-16):
  * 1. **Played by Homegrown Hits** (`played`, lower-cased guids) — always shown,
  *    with or without a value block, and the hide list cannot remove it.
@@ -249,14 +277,21 @@ export function keepForDemu(
     hiddenAuthors?: ReadonlySet<string>;
   },
 ): DemuAlbum[] {
-  return albums.filter((a) => {
+  const out: DemuAlbum[] = [];
+  for (const a of albums) {
     const guid = a.podcastGuid?.toLowerCase();
-    if (guid && rule.played.has(guid)) return true;
-    if (guid && rule.hidden.has(guid)) return false;
-    if (a.author && rule.hiddenAuthors?.has(a.author.trim())) return false;
-    if (guid && rule.msp?.has(guid)) return true;
-    return keepWithValue([a], rule.valueIds, rule.batch).length === 1;
-  });
+    // Shown with or without a value block: say so when the batch call said none.
+    const shownAnyway = () => {
+      const missing = !!guid && !rule.valueIds.has(a.id) && rule.batch.get(guid) === false;
+      out.push(missing ? { ...a, valueMissing: true } : a);
+    };
+    if (guid && rule.played.has(guid)) { shownAnyway(); continue; }
+    if (guid && rule.hidden.has(guid)) continue;
+    if (a.author && rule.hiddenAuthors?.has(a.author.trim())) continue;
+    if (guid && rule.msp?.has(guid)) { shownAnyway(); continue; }
+    if (keepWithValue([a], rule.valueIds, rule.batch).length === 1) out.push(a);
+  }
+  return out;
 }
 
 /**

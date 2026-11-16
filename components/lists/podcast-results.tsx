@@ -18,6 +18,7 @@ export function PodcastRow({
   showV4VStamp,
   meta,
   detail,
+  stamp,
   piUnasked,
   footer,
 }: {
@@ -33,6 +34,12 @@ export function PodcastRow({
    * nothing.
    */
   detail?: React.ReactNode;
+  /**
+   * One more stamp in the title row, after the built-in ones — `/demu` marks an
+   * album shown without a value block (`NO VALUE BLOCK`). In the row that wraps,
+   * so it is never cut at 390px. Optional; absent changes nothing.
+   */
+  stamp?: React.ReactNode;
   /**
    * Extra text for the secondary line, beside the author.
    *
@@ -116,6 +123,7 @@ export function PodcastRow({
             {showV4VStamp && carriesV4V(podcast) && (
               <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
             )}
+            {stamp}
           </div>
           <div className="text-xs text-muted truncate">
             {podcast.author}
@@ -151,6 +159,7 @@ export function PodcastResults({
   empty,
   meta,
   detail,
+  stamp,
   piUnasked,
 }: {
   feeds: Podcast[];
@@ -160,6 +169,8 @@ export function PodcastResults({
   meta?: (p: Podcast) => React.ReactNode;
   /** Per-row line that is never cut — see `<PodcastRow>`'s `detail`. */
   detail?: (p: Podcast) => React.ReactNode;
+  /** Per-row extra stamp in the title row — see `<PodcastRow>`'s `stamp`. */
+  stamp?: (p: Podcast) => React.ReactNode;
   /** Podcast Index was never asked — see `<PodcastRow>`'s `piUnasked`. */
   piUnasked?: boolean;
   /**
@@ -203,6 +214,7 @@ export function PodcastResults({
           showV4VStamp
           meta={meta?.(p)}
           detail={detail?.(p)}
+          stamp={stamp?.(p)}
           piUnasked={piUnasked}
         />
       ))}

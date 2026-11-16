@@ -20,16 +20,17 @@ import {
   splitAnchors,
   escapeDanglingLt,
   remoteItemFeedGuids,
+  feedHasValueTag,
 } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, FEED_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
-import { demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids } from './demu';
+import { confirmValueMissing, demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids } from './demu';
 import { DEMU_HIDE_AUTHORS, DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from './demu-hide-list';
 import type { DemuAlbum, PiMusicRow } from './demu';
 
@@ -562,9 +563,21 @@ async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
     // feeds the file does not list.
     const rows = (data as { feeds?: unknown } | null)?.feeds;
     const msp = mspFeedGuids(Array.isArray(rows) ? (rows as PiMusicRow[]) : []);
-    const decided = new Set([...played, ...DEMU_HIDDEN, ...msp]);
-    const batch = await batchHasValue(demuValueGaps(candidates, valueIds, decided));
-    const albums = keepForDemu(candidates, { valueIds, batch, played, hidden: DEMU_HIDDEN, msp, hiddenAuthors: DEMU_HIDDEN_AUTHORS });
+    // Only a HIDDEN feed skips the batch question. A played or MSP feed is shown
+    // either way, but its NO VALUE BLOCK stamp must rest on an answer, not on the
+    // static file being days old (`valueMissing` in lib/demu.ts).
+    const batch = await batchHasValue(demuValueGaps(candidates, valueIds, DEMU_HIDDEN));
+    const kept = keepForDemu(candidates, { valueIds, batch, played, hidden: DEMU_HIDDEN, msp, hiddenAuthors: DEMU_HIDDEN_AUTHORS });
+    // A NO VALUE BLOCK stamp must be true of the FEED, not of PI's channel-level
+    // data: MOOKY pays from an item-level block PI does not see. So each marked
+    // album's own RSS decides (a handful of feeds, through safeFetch and the RSS
+    // cache); an unreadable one loses the mark rather than gaining a false claim.
+    const rss = new Map<string, boolean | null>();
+    await mapLimit(kept.filter((a) => a.valueMissing && a.podcastGuid), FEED_FANOUT, async (a) => {
+      const xml = a.url ? await fetchFeedXml(a.url) : null;
+      rss.set(a.podcastGuid!.toLowerCase(), xml == null ? null : feedHasValueTag(xml));
+    });
+    const albums = confirmValueMissing(kept, rss);
     if (!albums.length) {
       console.warn('[pi] DeMu roster refresh kept no album with a value block; not cached');
       return null;

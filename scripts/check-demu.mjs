@@ -23,10 +23,10 @@
 
 import {
   isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
-  hasValueBlock, demuValueGaps, keepWithValue, keepForDemu, mspFeedGuids,
+  hasValueBlock, demuValueGaps, keepWithValue, keepForDemu, mspFeedGuids, confirmValueMissing,
 } from '../lib/demu.ts';
 import { DEMU_HIDE_LIST, DEMU_HIDE_AUTHORS, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
-import { remoteItemFeedGuids } from '../lib/feed-xml.ts';
+import { remoteItemFeedGuids, feedHasValueTag } from '../lib/feed-xml.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
@@ -467,6 +467,74 @@ console.log('\nHomegrown Hits and the hide list:');
   ).map((a) => a.id);
   if (JSON.stringify(byAuthor) !== JSON.stringify([3, 4])) fail(`keepForDemu by author kept ${JSON.stringify(byAuthor)}`);
   else ok('a hidden author is off even with a value block (trimmed, exact name); Homegrown Hits still wins; a longer name is not that author');
+
+  // Chad, 2026-11-16: an album shown without a value block (MOOKY, Homegrown Hits plays
+  // it; Phase 2, MSP made it) stays, but says the block is missing. `valueMissing` only
+  // when the batch call SAID no — an unanswered guid is "not known", never "missing".
+  const flagged = keepForDemu(
+    [
+      album(7744401, 1, { podcastGuid: 'cccc0000-0000-0000-0000-000000000003' }), // played, batch: no
+      album(7929072, 2, { podcastGuid: '9d75edec-139e-41a8-8add-ee146993e15b' }), // MSP, batch: no
+      album(7287540, 3, { podcastGuid: 'bbbb0000-0000-0000-0000-000000000002' }), // played, in the value file
+      album(5, 4, { podcastGuid: 'cccc0000-0000-0000-0000-000000000005' }), // played, batch: yes
+      album(6, 5, { podcastGuid: 'cccc0000-0000-0000-0000-000000000006' }), // played, batch never answered
+      album(8115349, 6, { podcastGuid: 'dddd0000-0000-0000-0000-000000000008' }), // value rule only
+    ],
+    {
+      valueIds: new Set([7287540, 8115349]),
+      batch: new Map([
+        ['cccc0000-0000-0000-0000-000000000003', false],
+        ['9d75edec-139e-41a8-8add-ee146993e15b', false],
+        ['cccc0000-0000-0000-0000-000000000005', true],
+      ]),
+      played: new Set(['cccc0000-0000-0000-0000-000000000003', 'bbbb0000-0000-0000-0000-000000000002',
+        'cccc0000-0000-0000-0000-000000000005', 'cccc0000-0000-0000-0000-000000000006']),
+      hidden: new Set(),
+      msp: new Set(['9d75edec-139e-41a8-8add-ee146993e15b']),
+    },
+  );
+  const marks = JSON.stringify(flagged.map((a) => [a.id, a.valueMissing === true]));
+  const wantMarks = JSON.stringify([[7744401, true], [7929072, true], [7287540, false], [5, false], [6, false], [8115349, false]]);
+  if (marks !== wantMarks) fail(`valueMissing marks ${marks}`);
+  else ok('valueMissing: set when the batch said no (MOOKY, Phase 2); never for a value-file feed, a batch yes, or an unanswered guid');
+  const gapsKeepPlayed = demuValueGaps(
+    [album(7744401, 1, { podcastGuid: 'cccc0000-0000-0000-0000-000000000003' }), album(4827093, 2, { podcastGuid: '2ad45cc1-f1ff-57f5-bb84-c2c0a9b21fbe' })],
+    new Set(), new Set(['2ad45cc1-f1ff-57f5-bb84-c2c0a9b21fbe']),
+  );
+  if (JSON.stringify(gapsKeepPlayed) !== JSON.stringify(['cccc0000-0000-0000-0000-000000000003'])) fail(`demuValueGaps asked ${JSON.stringify(gapsKeepPlayed)}`);
+  else ok('a played feed outside the value file is still asked about, so its mark is a fact; a hidden one is not');
+
+  // PI's value data is CHANNEL-level. MOOKY (Podhome, 2026-11-16) carries its block on
+  // the ITEM, so PI says "none" while the track pays two recipients. The feed's own RSS
+  // decides: any <podcast:value>, channel or item. Wire: MOOKY's item block, trimmed.
+  const vectors = [
+    ['item-level block (MOOKY)', '<rss><channel><title>MOOKY</title><item><title>t</title><podcast:value type="lightning" method="lnaddress" suggested="0.00004200000"><podcast:valueRecipient name="mooky@fountain.fm" type="node" address="03b6" split="75"/></podcast:value></item></channel></rss>', true],
+    ['channel-level block', '<rss><channel><podcast:value type="lightning" method="keysend"><podcast:valueRecipient address="03b6" split="1"/></podcast:value><item/></channel></rss>', true],
+    ['self-closing block', '<rss><channel><podcast:value type="lightning" method="keysend" /></channel></rss>', true],
+    ['no block (Phase 2)', '<rss><channel><title>Phase 2</title><item><title>t</title><enclosure url="https://x/a.mp3"/></item></channel></rss>', false],
+    ['only a valueTimeSplit (not a value block)', '<rss><channel><item><podcast:valueTimeSplit startTime="1" duration="2" remotePercentage="90"><podcast:remoteItem feedGuid="x"/></podcast:valueTimeSplit></item></channel></rss>', false],
+    ['only a stray valueRecipient', '<rss><channel><podcast:valueRecipient address="03b6" split="1"/></channel></rss>', false],
+  ];
+  for (const [name, xml, want] of vectors) {
+    if (feedHasValueTag(xml) !== want) fail(`feedHasValueTag: ${name} gave ${!want}`);
+    else ok(`feedHasValueTag: ${name} → ${want}`);
+  }
+  const confirmed = confirmValueMissing(
+    [
+      { ...album(7744401, 1, { podcastGuid: 'cccc0000-0000-0000-0000-000000000003' }), valueMissing: true }, // RSS: item block
+      { ...album(7929072, 2, { podcastGuid: '9d75edec-139e-41a8-8add-ee146993e15b' }), valueMissing: true }, // RSS: none
+      { ...album(9, 3, { podcastGuid: 'cccc0000-0000-0000-0000-000000000009' }), valueMissing: true }, // RSS unreadable
+      album(8115349, 4, { podcastGuid: 'dddd0000-0000-0000-0000-000000000008' }), // never marked
+    ],
+    new Map([
+      ['cccc0000-0000-0000-0000-000000000003', true],
+      ['9d75edec-139e-41a8-8add-ee146993e15b', false],
+      ['cccc0000-0000-0000-0000-000000000009', null],
+    ]),
+  );
+  const cmarks = JSON.stringify(confirmed.map((a) => [a.id, a.valueMissing === true]));
+  if (cmarks !== JSON.stringify([[7744401, false], [7929072, true], [9, false], [8115349, false]])) fail(`confirmValueMissing gave ${cmarks}`);
+  else ok('confirmValueMissing: the stamp stays only when the RSS was read and has no <podcast:value> (Phase 2); item-level (MOOKY) and unreadable lose it');
 }
 
 for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {

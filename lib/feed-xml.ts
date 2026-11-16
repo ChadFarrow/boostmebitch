@@ -617,6 +617,19 @@ const PODROLL_BLOCK_TAG = 'podcast:podroll';
 export const MAX_PLAYLIST_REFS = 5000;
 
 /**
+ * True when a feed carries any `<podcast:value>` block — on the channel OR on an
+ * item. Podcast Index's value data is channel-level only, so it calls an
+ * item-level-only feed valueless: MOOKY (Podhome) pays two recipients from its
+ * track while PI says none (2026-11-16). `/demu` asks this before it stamps a row
+ * NO VALUE BLOCK.
+ */
+export function feedHasValueTag(xml: string): boolean {
+  // `firstTag` matches the NAME exactly, so `<podcast:valueRecipient>` and
+  // `<podcast:valueTimeSplit>` are not a value block (check:demu pins both).
+  return firstTag(xml, 'podcast:value') !== undefined;
+}
+
+/**
  * Every feed a document's `<podcast:remoteItem>` tags name — ANYWHERE in it:
  * channel-level, inside an `<item>`, inside a `<podcast:valueTimeSplit>`.
  * Lower-cased, deduped, in document order, capped at `MAX_PLAYLIST_REFS`.
