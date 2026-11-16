@@ -45,6 +45,7 @@ function problemText(p: Refusal, labels: Labels): string {
     case 'title-missing': return 'Add a title.';
     case 'title-too-long': return 'The title is too long.';
     case 'description-too-long': return 'The description is too long.';
+    case 'name-too-long': return 'The name is too long.';
     case 'too-few-songs': return `Add ${MIN_SONGS - p.have} more ${MIN_SONGS - p.have === 1 ? 'song' : 'songs'}.`;
     case 'too-many-songs': return 'The playlist has too many songs.';
     case 'duplicate-song': return `${song(p.itemGuid)} is in the playlist twice.`;
@@ -177,14 +178,16 @@ export function PlaylistMaker() {
   useEffect(() => {
     if (!npub || !ready || !dirty || published || deleted || loadError) return;
     const ok = storage.playlistDraft.set(npub, {
-      draft: { title, description, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
+      // No MADE BY box on this branch (#576 adds it), so no name: the feed then
+      // carries no <itunes:author>, as for any client from before the box.
+      draft: { title, description, ownerName: '', artUrl: artUrl.trim() === '' ? null : artUrl, songs },
       editingId, expectedUpdatedAt, labels,
     }, editingId ?? undefined);
     setUnsaved(!ok);
   }, [npub, ready, dirty, published, deleted, loadError, title, description, artUrl, songs, labels, editingId, expectedUpdatedAt]);
 
   const draft: PlaylistDraft = useMemo(
-    () => ({ title, description, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
+    () => ({ title, description, ownerName: '', artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
     [title, description, artUrl, songs],
   );
   const blocked = whyNot(draft);
