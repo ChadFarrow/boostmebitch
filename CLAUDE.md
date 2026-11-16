@@ -102,7 +102,7 @@ npm run dev / build / start / lint
 | `check:cache` | `createBoundedCache` — the age, entry AND byte bounds both RSS caches share | an entry cap is not a memory bound |
 | `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load, forever |
 | `check:playlistdb` | `dbRowToEpisode` — another app's DB row as a track we render, with no payee | a mapped column type-checks and pays the wrong payee |
-| `check:community` | `validatePlaylistDraft`, `artVerdict`, `cleanText`, `buildPlaylistFeedXml`, `verifyNip98`… | a feed no app parses, or a write by a non-owner |
+| `check:community` | `validatePlaylistDraft`, `artVerdict`, `cleanText`, `buildPlaylistFeedXml`, `buildPublisherFeedXml`, `verifyNip98`… | a feed no app parses, or a write by a non-owner |
 | `check:favbackup` | `lib/favorites-export.ts` — what a backup file must prove before we republish it | a tampered file republishes a list nobody signed |
 | `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening: feeds hang, publishes reach nobody |
 | `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show, or an ended one never leaves |
