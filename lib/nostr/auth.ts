@@ -570,7 +570,25 @@ async function maybeReviveBunker({ throttled }: { throttled: boolean }): Promise
   // radio that is down. `navigator.onLine === true` says nothing, so only the
   // explicit false is acted on.
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-  if (bunkerBusy()) return;
+  if (bunkerBusy()) {
+    // A RUNG THAT LANDS ON A BUSY SESSION IS NOT SPENT — it waits its turn.
+    // Returning here used to END the ladder: nothing armed it again, because
+    // the health subscription that arms it fires only on a CHANGE of the flag,
+    // and the flag was already up. So a dot raised while any request was in
+    // flight — the commonest case, since a failed request is what raises it
+    // and the next one is often already queued behind it — stayed up until a
+    // foreground return or a press. Reported as "the red reconnect thing pops
+    // up with Clave a lot … usually I click that and it reconnects".
+    //
+    // Same rung again, not the next: the step counts attempts at the LINK, and
+    // a skip made none. A wake (`throttled`) is not re-armed — it is not part
+    // of the ladder, and the next wake will come on its own.
+    if (!throttled) {
+      retryStep = Math.max(0, retryStep - 1);
+      armBunkerRetry();
+    }
+    return;
+  }
   // JOIN A RESTORE ALREADY RUNNING, never skip past it — and the case that made
   // this an `await` rather than a `return` is the one the whole feature is
   // about. The user presses RECONNECT, walks to their signer, opens it, and
@@ -613,6 +631,72 @@ async function maybeReviveBunker({ throttled }: { throttled: boolean }): Promise
   // BUNKER_SLOW_ATTEMPT_MS for why a slow one ends the ladder instead.
   if (Date.now() - startedAt <= BUNKER_SLOW_ATTEMPT_MS) armBunkerRetry();
   else cancelBunkerRetry();
+}
+
+/** What `checkSignerLink` found. `refused` carries the signer's own words. */
+export type SignerCheck =
+  | { kind: 'ok' }
+  | { kind: 'unreachable' }
+  | { kind: 'refused'; message: string };
+
+/**
+ * "Can the user's signer answer right now?" — asked BEFORE a boost signs, and
+ * the answer is what decides whether the signature is attempted at all.
+ *
+ * Reported from an iPhone on Clave: a boost paid, its note never reached Nostr,
+ * and RECONNECT in the account menu then worked first time. The shape is the
+ * one docs/signers.md keeps meeting from different sides: a PUBLISH can still
+ * get out after the page has lost the subscription its answer arrives on. In
+ * the pinned nostr-tools 2.19.4 the pool forgets a relay whose socket closed
+ * and `publish` dials it afresh, while `BunkerSigner.sendRequest` subscribes
+ * again only once EVERY relay's subscription has closed — so one dropped relay
+ * of the two leaves a new socket that carries the request out and has no
+ * subscription on it, and a suspended socket that fires no close event at all
+ * leaves the other one deaf. The request reached Clave, Clave signed it, and
+ * the answer had nowhere to land. A boost signs twice after the sats move
+ * (the summary receipt's kind:9734, then the kind:1), and each one sat out
+ * `BUNKER_CALL_TIMEOUT_MS` plus a ping before failing. The note was gone, and
+ * the modal had closed 1.5 s after the payment, so nothing on screen said so.
+ *
+ * THE CHECK IS THE RECONNECT BUTTON'S OWN FUNCTION, run at the moment the
+ * button would have been needed. `restoreBunkerSigner` pings the live adapter
+ * first — Clave auto-allows `ping`, so a healthy link costs one round trip and
+ * no prompt — and rebuilds only on silence. The rebuild is the thing the user
+ * did by hand and which worked.
+ *
+ * Callers START it at the tap and await it after the payment, so on a healthy
+ * link it has finished before the wallet has, and on a dead one the 10 s probe
+ * runs while the sats move instead of after. No payment rail touches the
+ * signer (lib/v4v/boost.ts imports nothing from lib/nostr), so the rebuild's
+ * `closeStaleBunkerTransport` cannot take a payment down with it.
+ *
+ * `ok` FOR EVERYTHING THAT IS NOT A BUNKER. An extension, Amber over NIP-55
+ * and a local key sign in-process or by intent; there is no link to probe, and
+ * their own failures still report through the signature as they always did.
+ *
+ * `ok` WHILE THE SESSION IS BUSY, unprobed — the revive's first guard, for the
+ * revive's reason: a failed probe closes the transport and every request
+ * pending on it, and a pending one may be an earlier boost's note waiting on
+ * the user's approval. Answering `ok` there is the behaviour before this
+ * existed, which is the safe direction: the signature is attempted and reports
+ * its own failure.
+ */
+export async function checkSignerLink(): Promise<SignerCheck> {
+  if (storage.signer.get() !== 'bunker') return { kind: 'ok' };
+  // A 'bunker' session with no stored pointer has nothing to rebuild FROM, and
+  // `restoreBunkerSigner` would answer `no-session` — a storage fact, not a
+  // link fact. The signature reports whatever is wrong there.
+  if (!storage.bunker.get()?.uri) return { kind: 'ok' };
+  if (bunkerBusy()) return { kind: 'ok' };
+  let r: BunkerRestoreResult;
+  try {
+    r = await restoreBunkerSigner();
+  } catch {
+    return { kind: 'unreachable' };
+  }
+  if (r.kind === 'refused') return r;
+  if (r.kind === 'unreachable') return r;
+  return { kind: 'ok' };
 }
 
 /**
