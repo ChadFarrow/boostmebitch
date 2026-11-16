@@ -1,6 +1,6 @@
 'use client';
 import { listenerPassesOver, useApp } from '@/lib/store';
-import { epKey, nextPlayableIndexBy, playingRowIndex, shuffleIndexOf } from '@/lib/util';
+import { epKey, listKey, nextPlayableIndexBy, nextPlayableIndexRepeating, playingRowIndex, shuffleIndexOf } from '@/lib/util';
 import type { Episode, QueueItem } from '@/lib/types';
 import { SkipBackIcon, SkipForwardIcon } from './icons';
 
@@ -89,6 +89,10 @@ export function TransportControls({
   const episodeQueue = useApp((s) => s.episodeQueue);
   const listenQueue = useApp((s) => s.listenQueue);
   const shuffle = useApp((s) => s.shuffle);
+  // REPEAT (docs/ui.md, "The playlist shuffle and repeat"): the store's own two
+  // tests, read here so ⏭ on a repeating list's last track is lit — it wraps.
+  const repeatList = useApp((s) => s.repeatList);
+  const episodeQueueComplete = useApp((s) => s.episodeQueueComplete);
   // The press walks past a file this tab knows is dead (`playNext`/`playPrev`),
   // so the enabled test does too: a ⏭ whose only rows left are dead is
   // disabled, never a press that does nothing. Subscribed, so a file joining
@@ -116,7 +120,8 @@ export function TransportControls({
     : listenQueue.length
       ? listenQueue.findIndex((i) => epKey(i.episode) === epKey(current.episode))
       : -1;
-  const qNext = nextPlayableIndexBy(owner, qIdx, 1, queuedEpisode, passItem);
+  const shuffleRepeats = inShuffle && !!repeatList && shuffle!.source === repeatList;
+  const qNext = nextPlayableIndexRepeating(owner, qIdx, 1, queuedEpisode, passItem, shuffleRepeats);
   const qPrev = nextPlayableIndexBy(owner, qIdx, -1, queuedEpisode, passItem);
   // **Enabled means "there is a row this press can land on", which is not the
   // same as "there is a row".** A playlist queue holds one entry per
@@ -159,7 +164,8 @@ export function TransportControls({
   const onNext = queueTakesNext ? (() => playNext()) : (next?.onClick ?? (() => playNext()));
   const nextDisabled = queueTakesNext
     ? false
-    : next ? next.disabled : inQueue || nextPlayableIndexBy(episodeQueue, idx, 1, asRow, passEp) < 0;
+    : next ? next.disabled : inQueue || nextPlayableIndexRepeating(episodeQueue, idx, 1, asRow, passEp,
+      !!repeatList && episodeQueueComplete && listKey(current.podcast) === repeatList) < 0;
   const nextLabel = queueTakesNext
     ? (inShuffle ? 'Next in shuffle' : 'Next in queue')
     : (next?.label ?? 'Next track');

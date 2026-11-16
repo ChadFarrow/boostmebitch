@@ -312,9 +312,8 @@ export function isShuffleableTrack(e: Pick<Episode, 'liveStatus' | 'enclosureUrl
  * **The show is the album, as `play(e, data.podcast)` has it.** The favorites
  * shuffle builds its show from a favorite and leaves the payee unread; these
  * rows came from this album's own RSS, so a shuffled track carries the block a
- * tap on the same row would pay, and pays exactly that. **Albums only**: a
- * `musicL` row is a track of ANOTHER feed, and this pairing would make the
- * curator its show.
+ * tap on the same row would pay, and pays exactly that. A playlist has its own
+ * entry, `playlistShuffleTracks`, for the reason given there.
  *
  * **The track already playing goes LAST, wherever the deal put it.** The press
  * must change the song — a shuffle that opened on the song just heard would read
@@ -332,6 +331,68 @@ export function albumShuffleTracks(
   const at = current ? out.findIndex((e) => isPlayingRow(e, current)) : -1;
   if (at >= 0) out.push(out.splice(at, 1)[0]);
   return out.map((episode) => ({ episode, podcast }));
+}
+
+/**
+ * The playlist shuffle's list (docs/ui.md, "The playlist shuffle and repeat"):
+ * every loaded track of ONE playlist that can play, in a random order, the
+ * track playing now last.
+ *
+ * **Each item is the pair a row TAP plays — the track with the PLAYLIST as its
+ * show** — never the track's own album. That pair is what `<EpisodeList>` hands
+ * `play()` for a playlist row, and every guard on the curator is built for it:
+ * `payableValue` refuses the container's block for a `musicL` show and for any
+ * row whose `podcastGuid` names another feed, so the track's OWN feed is read
+ * (`/api/item-value`) when it starts, exactly as after a tap. A shuffled track
+ * therefore pays what the same row tapped pays — the curator nothing — and the
+ * boost note says it was heard on this playlist, as a tap's does. Building the
+ * show from the track instead would be a second pairing nothing else plays.
+ *
+ * The rows arrive with no value block (`valueNotRead`), and none is added.
+ */
+export function playlistShuffleTracks(
+  episodes: readonly Episode[],
+  playlist: Podcast,
+  current: { episode: RowIds; podcast: Pick<Podcast, 'id' | 'podcastGuid'> } | null,
+  random: () => number = Math.random,
+): QueueItem[] {
+  return albumShuffleTracks(episodes, playlist, current, random);
+}
+
+/**
+ * Which list a REPEAT setting names (`repeatList` in lib/store.ts): the show's
+ * guid, else its feed URL, else its id. A playlist row and a shuffled playlist
+ * track both play with the playlist as their show, so this is the same key for
+ * both, and for the page that set it.
+ */
+export function listKey(p: Pick<Podcast, 'id' | 'podcastGuid' | 'url'>): string {
+  return p.podcastGuid || p.url || `id:${p.id}`;
+}
+
+/**
+ * Where a FORWARD step lands with REPEAT on: `nextPlayableIndexBy`, and past the
+ * last playable row, the first playable one. Nothing else changes: a back step,
+ * repeat off, and a `from` outside the list answer exactly what
+ * `nextPlayableIndexBy` answers. It never answers `from` itself — a one-track
+ * list does not "repeat" by reloading the file it is playing, which `<Player>`
+ * keys on `episode.id` and would not restart. ONE walk for the store's step,
+ * the end of a track and `<TransportControls>`, so ⏭ is never lit over a press
+ * that does nothing, nor dark over one that wraps.
+ */
+export function nextPlayableIndexRepeating<T>(
+  queue: readonly T[],
+  from: number,
+  step: 1 | -1,
+  row: (item: T) => Pick<Episode, 'enclosureUrl' | 'unresolved'>,
+  passOver: ((item: T) => boolean) | undefined,
+  repeat: boolean,
+): number {
+  const to = nextPlayableIndexBy(queue, from, step, row, passOver);
+  if (to >= 0 || !repeat || step !== 1 || from < 0 || from >= queue.length) return to;
+  for (let i = 0; i < from; i++) {
+    if (isPlayableRow(row(queue[i])) && !passOver?.(queue[i])) return i;
+  }
+  return -1;
 }
 
 /**
