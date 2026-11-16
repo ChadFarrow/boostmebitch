@@ -249,8 +249,8 @@ const BUNKER_PING_TIMEOUT_MS = 10_000;
 // THE MONEY PATH ARGUES FOR THE LARGER BUDGET, NOT THE SMALLER. publishBoostNote
 // signs AFTER the sats have moved (CLAUDE.md boost invariant 1), so a long wait
 // costs a spinner beside a payment the user has already been told succeeded.
-// Failing early costs the note outright: <PublishStatus> renders "Publish
-// failed" with no retry control, and nothing re-tries a kind:1.
+// Failing early costs the note until the user acts: <PublishStatus> renders
+// "Note not posted" with RETRY NOTE, and nothing else re-tries a kind:1.
 //
 // THE GAPS ARE A SCHEDULE, NOT ONE NUMBER, and the shape carries the argument.
 // A single 8 s interval was right about the long tail and wrong about the first
@@ -480,7 +480,7 @@ let callsInFlight = 0;
  * takes the pending kind:24133 subscription down with it — so a probe fired
  * while a `sign_event` is in flight can destroy the very request it is meant to
  * protect. That is the money path: `publishBoostNote` signs AFTER the sats have
- * moved, so the note is unrecoverable and `<PublishStatus>` offers no retry.
+ * moved, so the note fails, and only the user's RETRY NOTE can post it again.
  *
  * BOTH HALVES ARE NEEDED, and each covers an interval the other does not.
  * `callsInFlight` is zero during `withApprovalWait`'s gap between re-issues —
