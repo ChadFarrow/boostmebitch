@@ -100,7 +100,10 @@ export async function PUT(req: Request, ctx: Ctx) {
     });
     const out = await updatePlaylist(
       id,
-      { ...v.draft, songs: stored, title: cleanText(v.draft.title), description: cleanText(v.draft.description) },
+      {
+        ...v.draft, songs: stored,
+        title: cleanText(v.draft.title), description: cleanText(v.draft.description), ownerName: cleanText(v.draft.ownerName),
+      },
       raw.expectedUpdatedAt,
     );
     if (out === 'gone') return gone();

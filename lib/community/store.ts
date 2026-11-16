@@ -68,6 +68,7 @@ export function communityStoreConfigured(): boolean {
 interface Row {
   id: string;
   owner_pubkey: string;
+  owner_name: string | null;
   title: string;
   description: string;
   art_url: string | null;
@@ -77,7 +78,7 @@ interface Row {
   updated_at: Date;
 }
 
-const COLS = 'id, owner_pubkey, title, description, art_url, songs, podcast_guid, created_at, updated_at';
+const COLS = 'id, owner_pubkey, owner_name, title, description, art_url, songs, podcast_guid, created_at, updated_at';
 
 // `timestamptz` has microsecond precision and a JS Date has milliseconds, so a
 // round trip through Date would break the `updated_at = $n` compare. The
@@ -92,6 +93,7 @@ function toStored(r: Row): StoredRow {
   return {
     id: r.id,
     ownerPubkey: r.owner_pubkey,
+    ownerName: r.owner_name ?? '',
     title: r.title,
     description: r.description,
     artUrl: r.art_url,
@@ -108,12 +110,12 @@ export async function createPlaylist(owner: string, d: PlaylistDraft): Promise<S
   const guid = communityFeedGuid(communityFeedUrl(id));
   const { rows } = await db().query<Row>(
     `insert into community_playlists
-       (id, owner_pubkey, title, description, art_url, songs, podcast_guid, created_at, updated_at)
-     select $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::jsonb, $7::text,
+       (id, owner_pubkey, title, description, art_url, songs, podcast_guid, owner_name, created_at, updated_at)
+     select $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::jsonb, $7::text, $8::text,
             date_trunc('milliseconds', now()), date_trunc('milliseconds', now())
       where not exists (select 1 from community_bans where pubkey = $2::text)
      returning ${COLS}`,
-    [id, owner, d.title, d.description, d.artUrl, JSON.stringify(d.songs), guid],
+    [id, owner, d.title, d.description, d.artUrl, JSON.stringify(d.songs), guid, d.ownerName || null],
   );
   return rows[0] ? toStored(rows[0]) : 'banned';
 }
@@ -131,11 +133,12 @@ export async function updatePlaylist(
   const { rows } = await db().query<Row>(
     `update community_playlists
         set title = $2, description = $3, art_url = $4, songs = $5::jsonb,
+            owner_name = $7::text,
             updated_at = greatest(date_trunc('milliseconds', now()), updated_at + interval '1 millisecond')
       where id = $1 and deleted_at is null and updated_at = $6
         and not exists (select 1 from community_bans b where b.pubkey = community_playlists.owner_pubkey)
       returning ${COLS}`,
-    [id, d.title, d.description, d.artUrl, JSON.stringify(d.songs), expected],
+    [id, d.title, d.description, d.artUrl, JSON.stringify(d.songs), expected, d.ownerName || null],
   );
   if (rows[0]) return toStored(rows[0]);
   const cur = await getPlaylist(id);

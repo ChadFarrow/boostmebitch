@@ -5,6 +5,8 @@ export const MIN_SONGS = 10;
 export const MAX_SONGS = 500;
 export const MAX_TITLE_LEN = 120;
 export const MAX_DESCRIPTION_LEN = 1000;
+/** The longest maker name: a label under the title, not a paragraph. */
+export const MAX_OWNER_NAME_LEN = 64;
 /**
  * The shortest side a cover link may have. Square art of 1400 to 3000 px is only
  * preferred (Chad, 2026-11-12): these feeds are not sent to Apple, whose directory
@@ -29,6 +31,12 @@ export interface PlaylistSong { feedGuid: string; itemGuid: string; feedUrl?: st
 export interface PlaylistDraft {
   title: string;
   description: string;
+  /**
+   * Who made the playlist, as the maker typed it in the NAME box ('' for none).
+   * Printed as the feed's `<itunes:author>` and shown under the title in the list
+   * (Chad, 2026-11-16: "add a box for people to enter their name into and use that").
+   */
+  ownerName: string;
   artUrl: string | null;
   songs: PlaylistSong[];
 }
@@ -37,6 +45,7 @@ export type DraftProblem =
   | { kind: 'title-missing' }
   | { kind: 'title-too-long' }
   | { kind: 'description-too-long' }
+  | { kind: 'name-too-long' }
   | { kind: 'too-few-songs'; have: number }
   | { kind: 'too-many-songs'; have: number }
   | { kind: 'duplicate-song'; itemGuid: string }
@@ -45,9 +54,15 @@ export type DraftProblem =
   /** Starts with https:// but is no usable address: no host, unparsable, or over MAX_URL_LEN. */
   | { kind: 'art-bad-link' }
   /** The field holds what looks like a secret key or an NWC string. The text is never echoed. */
-  | { kind: 'secret'; field: 'title' | 'description' };
+  | { kind: 'secret'; field: 'title' | 'description' | 'name' };
 
 const len = (s: string) => [...s].length;
+
+/** A one-line name: control characters become spaces, runs of white space one space, ends trimmed. */
+export function foldName(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ').trim();
+}
 
 /** `u` as an absolute http(s) link with a host, no longer than MAX_URL_LEN; else null. */
 function linkOf(u: unknown, protocols: readonly string[]): string | null {
@@ -76,12 +91,16 @@ export function validatePlaylistDraft(
 
   const title = typeof o.title === 'string' ? o.title.trim() : '';
   const description = typeof o.description === 'string' ? o.description.trim() : '';
+  // Absent (an older draft or client) is the same as an empty box: no name.
+  const ownerName = foldName(o.ownerName);
   // First, so the maker names it before anything else: the playlist is public.
   if (holdsSecret(title)) problems.push({ kind: 'secret', field: 'title' });
   if (holdsSecret(description)) problems.push({ kind: 'secret', field: 'description' });
+  if (holdsSecret(ownerName)) problems.push({ kind: 'secret', field: 'name' });
   if (!title) problems.push({ kind: 'title-missing' });
   else if (len(title) > MAX_TITLE_LEN) problems.push({ kind: 'title-too-long' });
   if (len(description) > MAX_DESCRIPTION_LEN) problems.push({ kind: 'description-too-long' });
+  if (len(ownerName) > MAX_OWNER_NAME_LEN) problems.push({ kind: 'name-too-long' });
 
   const artRaw = typeof o.artUrl === 'string' ? o.artUrl.trim() : '';
   const artUrl = artRaw === '' ? null : artRaw;
@@ -117,7 +136,7 @@ export function validatePlaylistDraft(
   else if (songs.length < MIN_SONGS) problems.push({ kind: 'too-few-songs', have: songs.length });
 
   if (problems.length) return { ok: false, problems };
-  return { ok: true, draft: { title, description, artUrl, songs } };
+  return { ok: true, draft: { title, description, ownerName, artUrl, songs } };
 }
 
 /**
@@ -271,6 +290,7 @@ export interface CommunityPlaylistSummary {
   podcastGuid: string;
   ownerPubkey: string;
   ownerNpub: string;
+  ownerName: string | null;
   coverUrl: string;
   songCount: number;
   createdAt: string;

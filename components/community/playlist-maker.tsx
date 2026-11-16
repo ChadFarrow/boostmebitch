@@ -65,6 +65,7 @@ function problemText(p: Refusal, labels: Labels): string {
     case 'title-missing': return 'Add a title.';
     case 'title-too-long': return 'The title is too long.';
     case 'description-too-long': return 'The description is too long.';
+    case 'name-too-long': return 'The name is too long.';
     case 'too-few-songs': return `Add ${MIN_SONGS - p.have} more ${MIN_SONGS - p.have === 1 ? 'song' : 'songs'}.`;
     case 'too-many-songs': return 'The playlist has too many songs.';
     case 'duplicate-song': return `${song(p.itemGuid)} is in the playlist twice.`;
@@ -112,6 +113,9 @@ export function PlaylistMaker() {
   const [formOwner, setFormOwner] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  // The NAME box: who made the playlist, printed as the feed's author. Typed, never
+  // read from the Nostr profile (Chad, 2026-11-16).
+  const [ownerName, setOwnerName] = useState('');
   const [artUrl, setArtUrl] = useState('');
   const [songs, setSongs] = useState<PlaylistSong[]>([]);
   const [labels, setLabels] = useState<Labels>({});
@@ -177,6 +181,11 @@ export function PlaylistMaker() {
     return () => clearTimeout(timer);
   }, []);
   const restoring = mounted && !identity && !gaveUp && !!storage.npub.get();
+  // No MADE BY box on this branch, so nothing else clears the name: an account switch
+  // must not carry one account's name into the next one's draft. Runs before the load
+  // effect below, which sets the loaded name. #576's load effect clears it itself, so
+  // this goes when #576 lands.
+  useEffect(() => { setOwnerName(''); }, [npub]);
 
   // ---- load: the saved draft, or the stored playlist in edit mode ----------
   useEffect(() => {
@@ -189,7 +198,7 @@ export function PlaylistMaker() {
     known.current = {}; checked.current = new Set(); setDead({}); setCheckReady(false);
     const id = new URLSearchParams(window.location.search).get('id');
     const apply = (c: PlaylistDraftCache) => {
-      setTitle(c.draft.title); setDescription(c.draft.description); setArtUrl(c.draft.artUrl ?? '');
+      setTitle(c.draft.title); setDescription(c.draft.description); setOwnerName(c.draft.ownerName); setArtUrl(c.draft.artUrl ?? '');
       setSongs(c.draft.songs); setLabels(c.labels); setEditingId(c.editingId); setExpectedUpdatedAt(c.expectedUpdatedAt);
     };
     if (!npub) {
@@ -242,7 +251,7 @@ export function PlaylistMaker() {
       // server's version here would overwrite that change with no word.
       if (cached) apply({ ...cached, editingId: id, expectedUpdatedAt: cached.expectedUpdatedAt ?? p.updatedAt });
       else {
-        setTitle(p.title); setDescription(p.description); setArtUrl(p.artUrl ?? '');
+        setTitle(p.title); setDescription(p.description); setOwnerName(p.ownerName ?? ''); setArtUrl(p.artUrl ?? '');
         setSongs(p.songs); setEditingId(p.id); setExpectedUpdatedAt(p.updatedAt);
       }
       setFormOwner(npub);
@@ -278,17 +287,17 @@ export function PlaylistMaker() {
   useEffect(() => {
     if (!ready || !dirty || published || deleted || loadError) return;
     const cache: PlaylistDraftCache = {
-      draft: { title, description, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
+      draft: { title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
       editingId, expectedUpdatedAt, labels,
     };
     if (!npub) guestWork.current = cache;
     const ok = storage.playlistDraft.set(npub, cache, editingId ?? undefined);
     setUnsaved(!ok);
-  }, [npub, ready, dirty, published, deleted, loadError, title, description, artUrl, songs, labels, editingId, expectedUpdatedAt]);
+  }, [npub, ready, dirty, published, deleted, loadError, title, description, ownerName, artUrl, songs, labels, editingId, expectedUpdatedAt]);
 
   const draft: PlaylistDraft = useMemo(
-    () => ({ title, description, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
-    [title, description, artUrl, songs],
+    () => ({ title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
+    [title, description, ownerName, artUrl, songs],
   );
   const verdict = useMemo(() => validatePlaylistDraft(draft, textHoldsSecret), [draft]);
   const blocked = whyNot(verdict, !!identity);

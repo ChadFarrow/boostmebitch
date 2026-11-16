@@ -1249,6 +1249,8 @@ export const storage = {
           draft: {
             title: typeof d.title === 'string' ? d.title : '',
             description: typeof d.description === 'string' ? d.description : '',
+            // A draft saved before the NAME box existed has none.
+            ownerName: typeof d.ownerName === 'string' ? d.ownerName : '',
             artUrl: typeof d.artUrl === 'string' ? d.artUrl : null,
             songs,
           },
