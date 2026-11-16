@@ -24,6 +24,7 @@
 import {
   isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
   hasValueBlock, demuValueGaps, keepWithValue, keepForDemu, mspFeedGuids, confirmValueMissing,
+  demuAppOf, DEMU_APPS,
 } from '../lib/demu.ts';
 import { DEMU_HIDE_LIST, DEMU_HIDE_AUTHORS, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
 import { remoteItemFeedGuids, feedHasValueTag } from '../lib/feed-xml.ts';
@@ -535,6 +536,47 @@ console.log('\nHomegrown Hits and the hide list:');
   const cmarks = JSON.stringify(confirmed.map((a) => [a.id, a.valueMissing === true]));
   if (cmarks !== JSON.stringify([[7744401, false], [7929072, true], [9, false], [8115349, false]])) fail(`confirmValueMissing gave ${cmarks}`);
   else ok('confirmValueMissing: the stamp stays only when the RSS was read and has no <podcast:value> (Phase 2); item-level (MOOKY) and unreadable lose it');
+}
+
+// ── Which app made the feed: the cover's corner badge (Chad, 2026-11-16) ──────
+// LNBeats' idea: a small logo per app, "just for at a glance". Wire: every generator
+// spelling on the DeMu list on 2026-11-16, plus two that must NOT match.
+console.log('\nThe app badge:');
+{
+  const vectors = [
+    ['Fountain', 'fountain'],
+    ['Music Side Project Studio', 'msp'],
+    ['MSP 2.0 - Music Side Project Studio', 'msp'],
+    ['Sovereign Feeds', 'sovereign'],
+    // A different tool: 13 feeds, all on one artist's own site — self-made.
+    ['sovereign-music-feed-generator', 'self'],
+    ['Podhome (https://www.podhome.fm)', 'podhome'],
+    ['', 'self'],
+    [undefined, 'self'],
+    ['Sunami', 'self'],
+    ['Handcrafted from Demu Open Source Template v0.1.1 ', 'self'],
+    ['Castopod - https://castopod.org/', 'self'],
+    ['Blubrry PowerPress/11.9.2', 'self'],
+    ['MSPodcaster 1.2', 'self'],
+  ];
+  for (const [gen, want] of vectors) {
+    const got = demuAppOf(gen);
+    if (got !== want) fail(`demuAppOf(${JSON.stringify(gen)}) gave ${got}, want ${want}`);
+    else ok(`demuAppOf(${JSON.stringify(gen)}) → ${want}`);
+  }
+  // The roster carries it, from the same row it reads the generator of.
+  const rows = demuRosterRows([
+    { id: 1, podcastGuid: 'a1', title: 'x', generator: 'Fountain', url: 'https://feeds.fountain.fm/x', newestItemPubdate: 5 },
+    { id: 2, podcastGuid: 'a2', title: 'y', generator: '', url: 'https://example.com/y.xml', newestItemPubdate: 6 },
+  ], () => null).map((a) => [a.id, a.app]);
+  if (JSON.stringify(rows) !== JSON.stringify([[1, 'fountain'], [2, 'self']])) fail(`demuRosterRows app gave ${JSON.stringify(rows)}`);
+  else ok('demuRosterRows sets `app` on every album');
+  // Every app but "self" has its picture in public/demu-apps/, and each label is set.
+  const { existsSync } = await import('node:fs');
+  const missing = Object.keys(DEMU_APPS).filter((k) => k !== 'self' && !existsSync(`public/demu-apps/${k}.png`));
+  const unlabeled = Object.entries(DEMU_APPS).filter(([, v]) => !v.label).map(([k]) => k);
+  if (missing.length || unlabeled.length) fail(`DEMU_APPS: no picture for ${JSON.stringify(missing)}, no label for ${JSON.stringify(unlabeled)}`);
+  else ok(`DEMU_APPS: ${Object.keys(DEMU_APPS).length} apps, each labelled, each with a picture but "self"`);
 }
 
 for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {

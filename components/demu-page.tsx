@@ -15,7 +15,7 @@ import { useRouter } from 'next/navigation';
 import { PodcastResults } from '@/components/lists';
 import { ShowMore, useAutoReveal, useRevealed } from '@/components/lists/grouping';
 import { useApp } from '@/lib/store';
-import { demuAge, demuDateLabel, demuGroups, matchesDemuQuery, sortDemuAlbums } from '@/lib/demu';
+import { DEMU_APPS, demuAge, demuDateLabel, demuGroups, matchesDemuQuery, sortDemuAlbums } from '@/lib/demu';
 import type { DemuAlbum } from '@/lib/demu';
 import { demuView } from '@/lib/demu-view';
 import type { Podcast } from '@/lib/types';
@@ -146,6 +146,36 @@ export function DemuPage() {
       </span>
     ) : null;
 
+  // Which app made the feed, as a logo in the cover's top-left corner — LNBeats'
+  // idea, "just for at a glance" (Chad, 2026-11-16). Top-left, not top-right, at
+  // Chad's choice after the mockups. A cached answer from before `app` existed
+  // draws no badge.
+  const coverBadge = (p: Podcast) => {
+    const app = (p as unknown as DemuAlbum).app;
+    if (!app) return null;
+    const label = DEMU_APPS[app].label;
+    return (
+      <span
+        data-demu-app={app}
+        role="img"
+        aria-label={label}
+        title={label}
+        className={`absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full overflow-hidden border border-ink flex items-center justify-center ${app === 'podhome' ? 'bg-bone' : 'bg-ink'}`}
+      >
+        {app === 'self' ? (
+          <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 text-bolt" fill="currentColor" aria-hidden>
+            <path d="M12 3 2 12h3v8h5v-5h4v5h5v-8h3z" />
+          </svg>
+        ) : (
+          // A 96 px file from /public, drawn at 20 px: `next/image` would only add a
+          // resize round trip for an icon this small.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={`/demu-apps/${app}.png`} alt="" width={20} height={20} className="w-full h-full object-cover" />
+        )}
+      </span>
+    );
+  };
+
   const q = query.trim();
 
   return (
@@ -193,7 +223,7 @@ export function DemuPage() {
                   <h2 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-bolt border-b border-bolt/40 pb-1.5 mb-1 px-1">
                     {g.label}
                   </h2>
-                  <PodcastResults feeds={g.albums} selected={null} onSelect={openAlbum} meta={meta} detail={detail} stamp={stamp} />
+                  <PodcastResults feeds={g.albums} selected={null} onSelect={openAlbum} meta={meta} detail={detail} stamp={stamp} coverBadge={coverBadge} />
                 </section>
               ))}
               <ShowMore remaining={remaining} onClick={more} noun="DeMu albums" innerRef={sentinel} />

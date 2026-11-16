@@ -19,6 +19,7 @@ export function PodcastRow({
   meta,
   detail,
   stamp,
+  coverBadge,
   piUnasked,
   footer,
 }: {
@@ -40,6 +41,13 @@ export function PodcastRow({
    * so it is never cut at 390px. Optional; absent changes nothing.
    */
   stamp?: React.ReactNode;
+  /**
+   * A small badge over the cover's top-left corner, positioned by the caller
+   * (`absolute`) inside a `relative` box the size of the cover — `/demu` shows
+   * which app made the feed. It is inside the row's button, so give it an
+   * accessible name. Optional; absent changes nothing.
+   */
+  coverBadge?: React.ReactNode;
   /**
    * Extra text for the secondary line, beside the author.
    *
@@ -97,13 +105,16 @@ export function PodcastRow({
         aria-current={selected || undefined}
         className="flex-1 min-w-0 flex gap-3 py-3 text-left cursor-pointer"
       >
-        <PodcastCover
-          image={podcast.image}
-          artwork={podcast.artwork}
-          title={podcast.title}
-          seed={podcast.podcastGuid ?? String(podcast.id)}
-          className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-        />
+        <div className="relative flex-shrink-0">
+          <PodcastCover
+            image={podcast.image}
+            artwork={podcast.artwork}
+            title={podcast.title}
+            seed={podcast.podcastGuid ?? String(podcast.id)}
+            className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+          />
+          {coverBadge}
+        </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-display text-base leading-tight line-clamp-2 break-words min-w-0">{podcast.title}</span>
@@ -160,6 +171,7 @@ export function PodcastResults({
   meta,
   detail,
   stamp,
+  coverBadge,
   piUnasked,
 }: {
   feeds: Podcast[];
@@ -171,6 +183,8 @@ export function PodcastResults({
   detail?: (p: Podcast) => React.ReactNode;
   /** Per-row extra stamp in the title row — see `<PodcastRow>`'s `stamp`. */
   stamp?: (p: Podcast) => React.ReactNode;
+  /** Per-row badge over the cover — see `<PodcastRow>`'s `coverBadge`. */
+  coverBadge?: (p: Podcast) => React.ReactNode;
   /** Podcast Index was never asked — see `<PodcastRow>`'s `piUnasked`. */
   piUnasked?: boolean;
   /**
@@ -215,6 +229,7 @@ export function PodcastResults({
           meta={meta?.(p)}
           detail={detail?.(p)}
           stamp={stamp?.(p)}
+          coverBadge={coverBadge?.(p)}
           piUnasked={piUnasked}
         />
       ))}

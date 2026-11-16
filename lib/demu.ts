@@ -93,6 +93,50 @@ export interface DemuAlbum {
    * never set from a guid the batch did not answer.
    */
   valueMissing?: true;
+  /**
+   * The app that made the feed, from its `generator` (`demuAppOf`): the page puts
+   * that app's logo in the cover's top-left corner, LNBeats' idea — "just for at a
+   * glance" (Chad, 2026-11-16). Optional only because a cached answer from before
+   * the field existed has none; the page then draws no badge.
+   */
+  app?: DemuApp;
+}
+
+/** Every app with a badge; `self` is anything else (a house, drawn inline). */
+export type DemuApp = 'fountain' | 'msp' | 'sovereign' | 'podhome' | 'self';
+
+/**
+ * The badge words, for the tooltip and the screen reader. The pictures are
+ * `public/demu-apps/<app>.png` (96 px), taken from each app's own site — see the
+ * DeMu page section of docs/ui.md for where each came from. `check:demu` fails
+ * when an app here has no picture.
+ */
+export const DEMU_APPS: Record<DemuApp, { label: string }> = {
+  fountain: { label: 'Fountain' },
+  msp: { label: 'MSP' },
+  sovereign: { label: 'Sovereign Feeds' },
+  podhome: { label: 'Podhome' },
+  self: { label: 'Self-hosted' },
+};
+
+/** "Made by MSP": "MSP" as a word, or "Music Side Project" — both spellings on the wire. */
+export function isMspGenerator(generator: string | undefined): boolean {
+  return /\bmsp\b|music side project/i.test(generator ?? '');
+}
+
+/**
+ * Which app made a feed, from PI's `generator`. Matched by NAME, never by host:
+ * Sovereign Feeds writes feeds that live on the artists' own sites. Only the exact
+ * tool names count — `sovereign-music-feed-generator` is a different tool (13 feeds
+ * on one artist's site, 2026-11-16) and gets the house like every other self-made feed.
+ */
+export function demuAppOf(generator: string | undefined): DemuApp {
+  const g = (generator ?? '').trim();
+  if (/^fountain\b/i.test(g)) return 'fountain';
+  if (isMspGenerator(g)) return 'msp';
+  if (/^sovereign feeds\b/i.test(g)) return 'sovereign';
+  if (/^podhome\b/i.test(g)) return 'podhome';
+  return 'self';
 }
 
 /** The fields of one `/podcasts/bymedium?medium=music` row this file reads. */
@@ -144,6 +188,7 @@ export function demuRosterRows(
       newestItemPubdate:
         typeof row.newestItemPubdate === 'number' && row.newestItemPubdate > 0 ? row.newestItemPubdate : undefined,
       episodeCount: typeof row.episodeCount === 'number' ? row.episodeCount : undefined,
+      app: demuAppOf(row.generator),
     };
     if (!a.podcastGuid) {
       noGuid.push(a);
@@ -227,7 +272,7 @@ export function demuValueGaps(
 export function mspFeedGuids(rows: readonly PiMusicRow[]): Set<string> {
   const out = new Set<string>();
   for (const r of rows) {
-    if (r.podcastGuid && /\bmsp\b|music side project/i.test(r.generator ?? '')) out.add(r.podcastGuid.toLowerCase());
+    if (r.podcastGuid && isMspGenerator(r.generator)) out.add(r.podcastGuid.toLowerCase());
   }
   return out;
 }
