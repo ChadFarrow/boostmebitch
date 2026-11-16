@@ -184,24 +184,6 @@ export interface PiMusicRow extends DemuRow {
  *
  * `generator` is read here and NOT copied out: the page has no use for it.
  */
-/**
- * A feed Fountain made or hosts: generator Fountain, or a feed on fountain.fm.
- * Chad, 2026-11-16 ("Can we also hide fountain hosted feeds?", option B): none of
- * them is on /demu — not even the 74 Homegrown Hits plays — so `demuRosterRows`
- * drops them before `keepForDemu`'s played rule can bring one back. The DEMU
- * search type is NOT changed: `isDemuFeed` still counts Fountain.
- */
-export function isFountainFeed(row: DemuRow): boolean {
-  if (demuAppOf(row.generator) === 'fountain') return true;
-  let host = '';
-  try {
-    host = new URL(row.url ?? '').hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  return host === 'fountain.fm' || host.endsWith('.fountain.fm');
-}
-
 export function demuRosterRows(
   rows: readonly PiMusicRow[],
   closedService: (url: string) => string | null,
@@ -209,7 +191,9 @@ export function demuRosterRows(
   const byGuid = new Map<string, DemuAlbum>();
   const noGuid: DemuAlbum[] = [];
   for (const row of rows) {
-    if (row.dead === 1 || !isDemuFeed(row, closedService) || isFountainFeed(row)) continue;
+    // `isDemuFeed` drops Fountain too (`isFountainFeed`, Chad's option B: even the
+    // 74 Homegrown Hits plays), here, before `keepForDemu`'s played rule.
+    if (row.dead === 1 || !isDemuFeed(row, closedService)) continue;
     const a: DemuAlbum = {
       id: row.id,
       podcastGuid: row.podcastGuid || undefined,

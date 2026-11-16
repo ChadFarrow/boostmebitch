@@ -552,7 +552,8 @@ console.log('\nHomegrown Hits and the hide list:');
 // "Can we also hide fountain hosted feeds?" — all of them, even the 74 Homegrown
 // Hits plays, so the drop happens in the roster, before keepForDemu's played rule.
 // "Fountain hosted": generator Fountain OR a feed on fountain.fm (364 and 364, the
-// same albums that day). The DEMU search type keeps its own rule (isDemuFeed).
+// same albums that day). The DEMU search type drops them too ("Fountain needs
+// removed there too"), so both read one rule: isDemuFeed → isFountainFeed.
 console.log('\nFountain off /demu:');
 {
   const rows = demuRosterRows([
@@ -564,9 +565,9 @@ console.log('\nFountain off /demu:');
   ], () => null).map((a) => a.id);
   if (JSON.stringify(rows) !== JSON.stringify([4, 7287540])) fail(`demuRosterRows kept ${JSON.stringify(rows)}`);
   else ok('the roster drops a Fountain generator or a fountain.fm feed; a look-alike host and MSP stay');
-  // The search lane is unchanged: a Fountain album is still DeMu there.
-  if (!isDemuFeed({ generator: 'Fountain', url: 'https://feeds.fountain.fm/x' }, () => null)) fail('isDemuFeed dropped Fountain — the search type changed too');
-  else ok('isDemuFeed (the DEMU search type) still counts Fountain');
+  // The search lane reads the same rule: a Fountain album is not DeMu there either.
+  if (isDemuFeed({ generator: 'Fountain', url: 'https://feeds.fountain.fm/x' }, () => null)) fail('isDemuFeed (the DEMU search type) still counts Fountain');
+  else ok('isDemuFeed (the DEMU search type) drops Fountain too');
 }
 
 // ── Which app made the feed: the cover's corner badge (Chad, 2026-11-16) ──────
