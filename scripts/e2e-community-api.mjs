@@ -347,13 +347,13 @@ check('publisher feed -> 200 rss+xml, medium publisher, a guid, the cache header
   && pubXml.includes('<podcast:medium>publisher</podcast:medium>') && /^[0-9a-f-]{36}$/.test(pubGuid)
   && /s-maxage=60/.test(pubRes.headers.get('cache-control') ?? ''), `${pubRes.status} ${pubXml.slice(0, 300)}`);
 check('publisher feed lists the owner\'s one playlist, medium="musicL", with its guid and feed URL',
-  pubItems.length === 1 && pubItems[0].includes('medium="musicL"')
+  pubItems.length === 1 && pubItems[0].includes('medium="musicL"') && pubItems[0].includes('rel="curator"')
   && pubItems[0].includes(`feedGuid="${got.body?.playlist?.podcastGuid}"`) && pubItems[0].includes(`feedUrl="${post.body.feedUrl}"`),
   pubItems.join(' '));
 {
   const back = (feedXml.match(/<podcast:publisher>[\s\S]*?<\/podcast:publisher>/) ?? [''])[0];
   check('the playlist feed names that publisher feed back (guid and URL)',
-    back.includes('medium="publisher"') && back.includes(`feedGuid="${pubGuid}"`) && back.includes(`feedUrl="${pubUrl}"`), back);
+    back.includes('medium="publisher"') && back.includes('rel="curator"') && back.includes(`feedGuid="${pubGuid}"`) && back.includes(`feedUrl="${pubUrl}"`), back);
 }
 {
   const r = await fetch(pubUrl, { redirect: 'manual', headers: { 'x-forwarded-host': 'beta.example.test', 'x-forwarded-proto': 'https' } });

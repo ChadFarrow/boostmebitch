@@ -12,7 +12,7 @@ import {
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
 import {
-  escapeXml, communityFeedGuid, buildPlaylistFeedXml, FEED_TEMPLATE_UPDATED_AT, buildPublisherFeedXml,
+  escapeXml, communityFeedGuid, buildPlaylistFeedXml, FEED_TEMPLATE_UPDATED_AT, buildPublisherFeedXml, PLAYLIST_MAKER_REL,
 } from '../lib/community/feed-doc.ts';
 import { channelSlice, parsePlaylistRemoteItems, parseFeedNpubs, decodeXmlText } from '../lib/feed-xml.ts';
 import { npubEncode, noteEncode, nprofileEncode, nsecEncode } from 'nostr-tools/nip19';
@@ -299,7 +299,7 @@ const docVectors = [
   { kind: 'publisher back-link', build: (b) => b(stored, opts), test: (xml) => {
     const blocks = channelSlice(xml).match(/<podcast:publisher>([\s\S]*?)<\/podcast:publisher>/g) ?? [];
     const items = blocks.length === 1 ? blocks[0].match(/<podcast:remoteItem [^>]*\/>/g) ?? [] : [];
-    return items.length === 1 && items[0].includes('medium="publisher"')
+    return items.length === 1 && items[0].includes('medium="publisher"') && items[0].includes('rel="curator"')
       && items[0].includes(`feedGuid="${PUB_GUID}"`) && items[0].includes(`feedUrl="${escapeXml(PUB_URL)}"`)
       && !items[0].includes('itemGuid') && (xml.match(/<podcast:publisher>/g) ?? []).length === 1;
   } },
@@ -376,7 +376,7 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   // medium="musicL", never "music": a music index then lists the maker as a curator of
   // playlists and not as a musician (Chad, 2026-11-16).
   check('pubfeed: one remoteItem per playlist, in order, medium="musicL", feedGuid/feedUrl/feedImg',
-    items.length === 2 && items.every((t, i) => t.includes('medium="musicL"')
+    items.length === 2 && items.every((t, i) => t.includes('medium="musicL"') && t.includes('rel="curator"')
       && t.includes(`feedGuid="${entries[i].podcastGuid}"`) && t.includes(`feedUrl="${escapeXml(entries[i].feedUrl)}"`)
       && t.includes(`feedImg="${escapeXml(entries[i].coverUrl)}"`)) && !/medium="music"/.test(xml));
   check('pubfeed: no itemGuid, no <item>, no value block', !xml.includes('itemGuid') && !/<item/.test(xml) && !/<podcast:value/.test(xml));
@@ -406,6 +406,10 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const pl = buildPlaylistFeedXml(stored, opts);
   const back = (channelSlice(pl).match(/<podcast:publisher>[\s\S]*?<\/podcast:publisher>/) ?? [''])[0];
   const one = buildPublisherFeedXml([{ feedUrl: opts.feedUrl, podcastGuid: opts.podcastGuid, coverUrl: opts.coverUrl, updatedAt: stored.updatedAt }], popts);
+  const relOf = (tag) => (/ rel="([^"]*)"/.exec(tag) ?? [])[1];
+  check('the role is "curator", the same on both sides of the link (musicindex counts only an agreed role)',
+    PLAYLIST_MAKER_REL === 'curator' && relOf(back) === 'curator'
+    && relOf((channelSlice(one).match(/<podcast:remoteItem [^>]*\/>/) ?? [''])[0]) === relOf(back));
   check('pubfeed and playlist link both ways',
     back.includes(`feedGuid="${PUB_GUID}"`) && back.includes(`feedUrl="${escapeXml(PUB_URL)}"`)
     && one.includes(`<podcast:guid>${PUB_GUID}</podcast:guid>`)
