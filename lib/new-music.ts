@@ -13,7 +13,9 @@
  * 1. `<FavoritesNewMusic>` reads each favorited publisher feed through
  *    `/api/publisher` (the route the playlists page and the publisher view
  *    already use), which answers with the albums it lists, resolved.
- * 2. `planPublisher` (here) splits that list into what was seen and what was
+ * 2. `splitListing` (here) drops the playlists from that list. A feed that
+ *    lists only playlists is a playlist maker's, and not an artist's.
+ *    `planPublisher` (here) splits the albums into what was seen and what was
  *    not, against what this device remembers for that artist.
  * 3. The component asks `/api/new-episodes?latest=1` for each candidate's
  *    newest track, which is the nearest thing an album has to a release date.
@@ -124,6 +126,9 @@ export interface NewMusicRecord {
   dismissed?: string[];
   /** Artists a request was made for that did not come back, last pass. */
   uncovered?: number;
+  /** Publisher guids whose last read listed playlists and no album: playlist
+   *  MAKERS, not artists (`splitListing`). No rows, no `seen`, not counted. */
+  makers?: string[];
 }
 
 /**
@@ -194,6 +199,33 @@ export function capKeys(keys: readonly string[], n: number): string[] {
     out.push(k);
   }
   return out.filter(Boolean).slice(-n);
+}
+
+/**
+ * A publisher feed's listing with every PLAYLIST taken out, and whether what is
+ * left makes the feed an artist's.
+ *
+ * **A PLAYLIST MAKER IS NOT AN ARTIST** (the owner's choice, 2026-11-17). Since
+ * #586 each community playlist maker has a publisher feed too, and it lists the
+ * maker's playlists (`medium="musicL"`) where an artist's lists albums. Read as
+ * an artist's, each playlist the maker publishes is announced as a new album,
+ * and the heading counts the maker among "the artists you follow".
+ *
+ * The test is each child's OWN medium, as Podcast Index or its RSS gives it,
+ * through the caller's `isPlaylist` — `isPlaylistMedium` from `lib/util.ts`,
+ * which this module may not import. A child with no medium stays an album: that
+ * is the reading NEW MUSIC had before this rule, and the safe direction.
+ *
+ * `maker` is true only when the feed listed something and none of it is an
+ * album. A listing of nothing is an artist with no albums yet, as before; a
+ * listing of albums AND playlists is an artist, and only its albums count.
+ */
+export function splitListing<T extends NewMusicAlbum>(
+  feeds: readonly T[],
+  isPlaylist: (f: T) => boolean,
+): { albums: T[]; maker: boolean } {
+  const albums = feeds.filter((f) => !isPlaylist(f));
+  return { albums, maker: feeds.length > 0 && albums.length === 0 };
 }
 
 export interface PublisherPlan {
@@ -334,9 +366,11 @@ export function mergeNewMusicRows(
 
 /**
  * The record with every artist the reader no longer favorites taken out: its
- * rows, its `seen` and its check time. Dropping `seen` is what makes a
- * re-favorite a first look again rather than a flood of everything released
- * since. Returns a new record; the argument is not changed.
+ * rows, its `seen`, its check time and its maker mark. Dropping `seen` is what
+ * makes a re-favorite a first look again rather than a flood of everything
+ * released since. The rows of a playlist MAKER go too, whoever follows it: a
+ * row stored before the pass found it out is a playlist, not an album. Returns
+ * a new record; the argument is not changed.
  */
 export function pruneNewMusic(record: NewMusicRecord, publisherGuids: readonly string[]): NewMusicRecord {
   const keep = new Set(publisherGuids);
@@ -345,11 +379,14 @@ export function pruneNewMusic(record: NewMusicRecord, publisherGuids: readonly s
     for (const [k, v] of Object.entries(m)) if (keep.has(k)) out[k] = v;
     return out;
   };
+  const makers = (record.makers ?? []).filter((g) => keep.has(g));
+  const isMaker = new Set(makers);
   return {
     ...record,
     seen: pick(record.seen),
     checked: pick(record.checked),
-    rows: record.rows.filter((r) => keep.has(r.publisherGuid)),
+    rows: record.rows.filter((r) => keep.has(r.publisherGuid) && !isMaker.has(r.publisherGuid)),
+    makers,
   };
 }
 

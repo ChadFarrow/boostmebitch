@@ -31,6 +31,11 @@
 //      `bmb:artists` and leaves the shared favorites list unchanged, NEW MUSIC
 //      then follows the artist and lists the follow with a ✕ that stops it. An
 //      artist already in favorites gets a stamp, not a control.
+//  10. A first look whose dates do not come back is not spent.
+//  11. A playlist maker's publisher feed (#586) is NOT an artist: its new
+//      playlists make no row and are not asked for a date, the heading does not
+//      count it, and with only makers followed there is no section. A maker
+//      that starts to list an album becomes an artist, with a first look.
 //
 // Signed out: favorites live in `bmb:favorites:guest` and nothing reaches a
 // relay. `/api/publisher`, `/api/new-episodes` and `/api/feed` are answered
@@ -396,6 +401,47 @@ t.equal('and keeps no seen list, so the first look is not spent', P9.podcastGuid
 latestRateLimited = false;
 await forcePass();
 t.equal('the next check names the latest album', await rowTitles(), ['Album 901']);
+
+// ---- 11. a playlist maker is not an artist --------------------------------
+// The owner's choice, 2026-11-17. A maker's publisher feed lists playlists
+// (`medium="musicL"`), and nothing but those children tells it from an artist's.
+console.log('11. a playlist maker');
+const P11 = PUB(11, 'A Playlist Maker');
+const playlist = (k) => ({ ...album(k, { title: `Playlist ${k}` }), medium: 'musicL' });
+listing[pubUrl(11)] = [playlist(1101), playlist(1102)];
+AGE[10101] = 1;
+AGE[10102] = 3;
+await seed({ 'bmb:favorites:guest': FAVS([P9, P11]) });
+const latestBefore = asked.latest.length;
+await openFavorites();
+await until(`!!document.querySelector('[data-new-music]')`, 10000);
+await wait(2800);
+await settle();
+rec = await record();
+t.equal('the maker\'s new playlists make no row', await rowTitles(), ['Album 901']);
+t.ok('the heading counts the artist and not the maker', /New albums from the 1 artist you follow/.test(await sectionText()), await sectionText());
+t.equal('the record names the maker', rec.makers, [P11.podcastGuid]);
+t.equal('a maker keeps no seen list', P11.podcastGuid in rec.seen, false);
+t.equal('no playlist is asked for a date', asked.latest.slice(latestBefore).some((id) => id === 10101 || id === 10102), false);
+t.equal('a maker is not "could not check"', /Could not check/.test(await sectionText()), false);
+
+await seed({ 'bmb:favorites:guest': FAVS([P11]) }, { clear: false });
+await openFavorites();
+await wait(3500);
+t.equal('with only a maker followed, there is no section', await js(`!!document.querySelector('[data-new-music]')`), false);
+
+// The maker lists an album one day: it is an artist from then on.
+listing[pubUrl(11)] = [...listing[pubUrl(11)], album(1103)];
+AGE[10103] = 2;
+await js(`(() => { const r = JSON.parse(localStorage.getItem('bmb:newmusic:guest')); r.checkedAt = 0;
+  localStorage.setItem('bmb:newmusic:guest', JSON.stringify(r)); return true; })()`);
+await openFavorites();
+await wait(2800);
+await until(`!!document.querySelector('[data-new-music]')`, 15000);
+await settle();
+rec = await record();
+t.equal('a maker that lists an album becomes an artist, with a first look', await rowTitles(), ['Album 1103']);
+t.equal('and leaves the makers', rec.makers, []);
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails}/${t.count} passed`);

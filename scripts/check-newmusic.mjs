@@ -14,12 +14,19 @@
 //   after PI was rate limiting.
 // - A failed read of a publisher feed must not move what was seen, and an
 //   unfavorited artist's rows and memory must go.
+// - A playlist maker's publisher feed (#586) is NOT an artist (the owner's
+//   choice, 2026-11-17). It lists playlists, and the medium of its children is
+//   the only thing that says so: without `splitListing`, each playlist it
+//   publishes is announced as a new album. `parsePublisherRef` must not name a
+//   maker as an album's artist either.
 
 import {
   albumKeys, rowKey, planPublisher, selectNewMusic, mergeNewMusicRows, pruneNewMusic, stalestFirst, capKeys, newMusicArtists,
-  NEW_MUSIC_WINDOW_SECS, NEW_MUSIC_CAP, NEW_MUSIC_SEEN_CAP,
+  splitListing, NEW_MUSIC_WINDOW_SECS, NEW_MUSIC_CAP, NEW_MUSIC_SEEN_CAP,
 } from '../lib/new-music.ts';
 import { parsePublisherRef } from '../lib/feed-xml.ts';
+import { isPlaylistMedium } from '../lib/util.ts';
+import { buildPlaylistFeedXml, buildPublisherFeedXml, communityFeedGuid, PLAYLIST_MAKER_REL } from '../lib/community/feed-doc.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
@@ -160,6 +167,54 @@ check('an unfavorited artist loses what was seen, so a re-favorite is a first lo
 check('an unfavorited artist loses its check time', Object.keys(pruned.checked), ['P']);
 check('prune keeps checkedAt', pruned.checkedAt, 5);
 check('prune does not mutate', Object.keys(rec.seen), ['P', 'Q']);
+const recM = { ...rec, makers: ['P', 'Q'] };
+check('a playlist maker\'s rows go, even while it is followed',
+  pruneNewMusic({ ...rec, makers: ['P'] }, ['P', 'Q']).rows.map((x) => x.publisherGuid), ['Q']);
+check('a followed maker stays a maker', pruneNewMusic(recM, ['P', 'Q']).makers, ['P', 'Q']);
+check('an unfavorited maker loses its mark', pruneNewMusic(recM, ['P']).makers, ['P']);
+check('a record from before makers prunes to none', pruneNewMusic(rec, ['P']).makers, []);
+
+// ---- splitListing — a playlist maker is not an artist ---------------------
+// The children's medium comes from the WIRE: the maker's publisher feed #586
+// builds, and the playlist feed each entry points at.
+console.log('splitListing');
+const MAKER_URL = 'https://feeds.example.com/community/publisher/npub1maker.xml';
+const MAKER = { feedGuid: communityFeedGuid(MAKER_URL), feedUrl: MAKER_URL };
+const PL_URL = 'https://feeds.example.com/community/11111111-1111-4111-8111-111111111111.xml';
+const playlistDoc = buildPlaylistFeedXml(
+  {
+    id: '11111111-1111-4111-8111-111111111111', ownerPubkey: 'ab'.repeat(32), createdAt: '2026-11-01T00:00:00.000Z',
+    updatedAt: '2026-11-12T00:00:00.000Z', title: 'Mix', description: 'd', ownerName: 'Maker', artUrl: null,
+    songs: [{ feedGuid: 'aa909244-7555-4b52-ad88-7233860c6fb4', itemGuid: 'item-1' }],
+  },
+  {
+    feedUrl: PL_URL, coverUrl: 'https://img.example/c.jpg', ownerNpub: 'npub1maker', fallbackDescription: 'f',
+    podcastGuid: communityFeedGuid(PL_URL), generator: 'g', publisher: { feedUrl: MAKER.feedUrl, podcastGuid: MAKER.feedGuid },
+  },
+);
+const makerDoc = buildPublisherFeedXml(
+  [{ feedUrl: PL_URL, podcastGuid: communityFeedGuid(PL_URL), coverUrl: 'https://img.example/c.jpg', updatedAt: '2026-11-12T00:00:00.000Z' }],
+  { feedUrl: MAKER.feedUrl, podcastGuid: MAKER.feedGuid, ownerNpub: 'npub1maker', ownerName: 'Maker', siteName: 'x', generator: 'g' },
+);
+const wireMedium = (playlistDoc.match(/<podcast:medium>([^<]*)<\/podcast:medium>/) ?? [])[1];
+check('the maker feed lists its playlists as musicL', /<podcast:remoteItem medium="musicL"/.test(makerDoc), true);
+check('the playlist feed says musicL', wireMedium, 'musicL');
+const PL = (n) => A(n, { medium: wireMedium });
+const albumsOnly = [A(1, { medium: 'music' }), A(2, { medium: 'music' })];
+check('an artist: every album stays', splitListing(albumsOnly, isPlaylistMedium).albums.map((a) => a.id), [101, 102]);
+check('an artist is not a maker', splitListing(albumsOnly, isPlaylistMedium).maker, false);
+const playlistsOnly = [PL(5), PL(6)];
+check('a maker: no playlist is an album', splitListing(playlistsOnly, isPlaylistMedium).albums, []);
+check('a feed that lists only playlists is a maker', splitListing(playlistsOnly, isPlaylistMedium).maker, true);
+check('naive: with no split, a first look offers a maker\'s playlists as albums (can fail)',
+  planPublisher(undefined, playlistsOnly).candidates.length, 2);
+check('with the split, a maker offers nothing',
+  planPublisher(undefined, splitListing(playlistsOnly, isPlaylistMedium).albums).candidates.length, 0);
+check('albums AND playlists: an artist, and only its albums count',
+  splitListing([A(1, { medium: 'music' }), PL(5)], isPlaylistMedium), { albums: [A(1, { medium: 'music' })], maker: false });
+check('a child with no medium stays an album', splitListing([A(1)], isPlaylistMedium), { albums: [A(1)], maker: false });
+check('a listing of nothing is an artist with no albums yet, not a maker', splitListing([], isPlaylistMedium).maker, false);
+check('the medium is compared without case', splitListing([A(7, { medium: 'MUSICL' })], isPlaylistMedium).maker, true);
 
 console.log('stalestFirst');
 check('never checked first, then oldest check',
@@ -234,6 +289,19 @@ check('a decoy x-feedUrl does not steer it (readAttr)',
   parsePublisherRef(`<podcast:remoteItem medium="publisher" x-feedUrl="https://evil.example/f" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/>`), NJ);
 check('the wrapper wins over a bare one', parsePublisherRef(`${WAVLAKE}${FOUNTAIN}`), HALEEN);
 check('an album that names no artist', parsePublisherRef('<channel><title>x</title><podcast:medium>music</podcast:medium>'), undefined);
+// A community playlist names its MAKER's publisher feed, with rel="curator".
+// The fixture is #586's own builder, so a change to PLAYLIST_MAKER_REL fails here.
+check('a community playlist names its maker, and a maker is not the artist', parsePublisherRef(playlistDoc), undefined);
+check('it is the rel that decides: without it the maker reads as the artist (can fail)',
+  parsePublisherRef(playlistDoc.replace(` rel="${PLAYLIST_MAKER_REL}"`, '')), MAKER);
+check('naive() takes the maker as the artist', naivePublisherRef(playlistDoc.replace(/ rel="[^"]*"/, '')), MAKER);
+check('the rel is compared without case',
+  parsePublisherRef(`<podcast:publisher><podcast:remoteItem medium="publisher" rel="Curator" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/></podcast:publisher>`),
+  undefined);
+check('a bare curator link is not the artist either',
+  parsePublisherRef(`<podcast:remoteItem medium="publisher" rel="curator" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/>`), undefined);
+check('any other rel is still the artist',
+  parsePublisherRef(`<podcast:publisher><podcast:remoteItem medium="publisher" rel="artist" feedGuid="${NJ.feedGuid}" feedUrl="${NJ.feedUrl}"/></podcast:publisher>`), NJ);
 
 const problems = importFreeProblems('lib/new-music.ts');
 if (problems.length) {

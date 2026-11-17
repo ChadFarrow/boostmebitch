@@ -84,7 +84,7 @@ const KEYS = {
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
   newMarksPrefix: 'bmb:newmarks',     // + ':<npub>' — `{ checkedAt, marks: { [podcastGuid]: datePublished }, rows, uncovered, failed }`: the "new episodes" list on /favorites AND what this device has already shown you of it. The rows are the persisted thing and the marks describe them — holding the rows in React state alone made the CHECK consume the list rather than the reader. Seconds, because that is the unit Podcast Index's `since` takes back. A user-facing READ MARKER, not a cache — nothing on any wire records what this device showed somebody — so deliberately absent from EVICTABLE_PREFIXES, same class as bmb:listen_queue and bmb:ep_order. Evicting it does not cost a refetch, it re-announces a week of episodes as new. Pruned to the current favorites on every write (lib/util.ts `pruneMarks`).
   artistFollowsPrefix: 'bmb:artists', // + ':<npub>' — `{ [feedGuid]: { feedGuid, feedUrl, title, addedAt } }`: artists followed with ♡ ARTIST on an album page, for NEW MUSIC. ON THIS DEVICE ONLY and on purpose: never on the shared kind:10333 list until cross-app artist favorites are decided (owner, 2026-11-15) — see `ArtistFollow` in lib/new-music.ts. A user DECISION, not a cache, so deliberately absent from EVICTABLE_PREFIXES.
-  newMusicPrefix: 'bmb:newmusic',     // + ':<npub>' — `{ checkedAt, seen: { [publisherGuid]: albumKey[] }, checked, rows, dismissed, uncovered }`: the "new music" list on /favorites (new albums from favorited PUBLISHER feeds) AND which albums this device has seen each artist list. A user-facing READ MARKER like bmb:newmarks, not a cache, so deliberately absent from EVICTABLE_PREFIXES: evicting it makes every artist a first look again and drops the list the reader has not read. Pruned to the current publisher favorites on every pass (lib/new-music.ts `pruneNewMusic`).
+  newMusicPrefix: 'bmb:newmusic',     // + ':<npub>' — `{ checkedAt, seen: { [publisherGuid]: albumKey[] }, checked, rows, dismissed, uncovered, makers }`: the "new music" list on /favorites (new albums from favorited PUBLISHER feeds) AND which albums this device has seen each artist list. `makers` names the publisher feeds that list only playlists — a playlist maker's, never an artist's (lib/new-music.ts `splitListing`). A user-facing READ MARKER like bmb:newmarks, not a cache, so deliberately absent from EVICTABLE_PREFIXES: evicting it makes every artist a first look again and drops the list the reader has not read. Pruned to the current publisher favorites on every pass (lib/new-music.ts `pruneNewMusic`).
   listenQueuePrefix: 'bmb:listen_queue', // + ':<npub>' — the "Up Next" cross-show listen queue. An ORDERED ARRAY, never a keyed object: the order IS the data. A user DECISION, not a network-regenerable cache — deliberately absent from EVICTABLE_PREFIXES, same class as bmb:ep_order and bmb:list_unlock. Items are trimmed at ENQUEUE (lib/util.ts `trimForQueue`) and capped at LISTEN_QUEUE_CAP. No migration from any global key: there has never been one.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
@@ -2269,6 +2269,11 @@ export const storage = {
             ? capKeys(parsed.dismissed.filter((k: unknown) => typeof k === 'string'), NEW_MUSIC_DISMISSED_CAP)
             : undefined,
           uncovered: Number.isInteger(parsed.uncovered) && parsed.uncovered > 0 ? parsed.uncovered : 0,
+          // Lost, a playlist maker counts as an artist again until the next
+          // pass reads it — no row is ever shown from it in between.
+          makers: Array.isArray(parsed.makers)
+            ? parsed.makers.filter((g: unknown): g is string => typeof g === 'string')
+            : undefined,
         };
       } catch {
         return empty;

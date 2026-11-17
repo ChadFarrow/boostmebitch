@@ -6,9 +6,10 @@ import { storage } from '@/lib/storage';
 import { loadCollection } from '@/lib/playlist-collection';
 import { readCappedJson } from '@/lib/capped-body';
 import { fmtDate } from '@/lib/format';
-import { fnvHash, NEW_EPISODES_LATEST_MAX_FEEDS } from '@/lib/util';
+import { fnvHash, isPlaylistMedium, NEW_EPISODES_LATEST_MAX_FEEDS } from '@/lib/util';
 import {
-  albumKeys, mergeNewMusicRows, newMusicArtists, planPublisher, pruneNewMusic, rowKey, selectNewMusic, stalestFirst,
+  albumKeys, mergeNewMusicRows, newMusicArtists, planPublisher, pruneNewMusic, rowKey, selectNewMusic, splitListing,
+  stalestFirst,
   type NewMusicAlbum, type NewMusicArtist, type NewMusicRecord, type NewMusicRow, type PublisherPlan,
 } from '@/lib/new-music';
 import { setArtistFollow, useArtistFollows } from '@/lib/use-artist-follows';
@@ -53,6 +54,13 @@ import type { FavoritePodcast, Podcast } from '@/lib/types';
  * Every state is named, the NEW EPISODES way: a read that failed is "could not
  * check", never "nothing new", and an artist the pass did not reach is
  * "not checked yet", never a failure.
+ *
+ * **A PLAYLIST MAKER'S PUBLISHER FEED IS NOT AN ARTIST** (the owner's choice,
+ * 2026-11-17). It looks like one until it is read: the medium is `publisher`
+ * either way, and only the children say `musicL`. So the pass finds it out
+ * (`splitListing`), keeps it in the record's `makers`, and from then on it
+ * makes no row and is not counted. It is still read each pass, so a feed that
+ * starts to list albums becomes an artist again, with a first look.
  */
 
 /** A pass runs at most this often. Publisher feeds change far more slowly than
@@ -201,6 +209,7 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
     const seen = { ...stored.seen };
     const checked = { ...stored.checked };
     const plans: { pub: NewMusicArtist; plan: PublisherPlan }[] = [];
+    const makers = new Set(stored.makers ?? []);
     let failed = 0;
 
     try {
@@ -210,10 +219,19 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
         // it lists is skipped over, and it counts as not checked.
         const c = await loadCollection(pub.url!);
         if (c) {
-          const plan = planPublisher(stored.seen[pub.podcastGuid], c.feeds);
-          seen[pub.podcastGuid] = plan.nextSeen;
           checked[pub.podcastGuid] = Date.now();
-          plans.push({ pub, plan });
+          const { albums, maker } = splitListing(c.feeds, isPlaylistMedium);
+          if (maker) {
+            // A playlist maker: nothing it lists is an album, so it keeps no
+            // `seen`. If it lists albums one day, that is a first look.
+            makers.add(pub.podcastGuid);
+            delete seen[pub.podcastGuid];
+          } else {
+            makers.delete(pub.podcastGuid);
+            const plan = planPublisher(stored.seen[pub.podcastGuid], albums);
+            seen[pub.podcastGuid] = plan.nextSeen;
+            plans.push({ pub, plan });
+          }
         } else {
           failed += 1;
         }
@@ -281,7 +299,9 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
       // started from would otherwise bring them back.
       const latest = storage.newMusic.get(npub);
       const dismissedKeys = new Set([...(stored.dismissed ?? []), ...(latest.dismissed ?? [])]);
-      const keptRows = stored.rows.filter((r) => latest.rows.some((l) => rowKey(l) === rowKey(r)));
+      const keptRows = stored.rows.filter(
+        (r) => !makers.has(r.publisherGuid) && latest.rows.some((l) => rowKey(l) === rowKey(r)),
+      );
       const next: NewMusicRecord = {
         checkedAt: now,
         seen,
@@ -289,6 +309,7 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
         rows: mergeNewMusicRows(keptRows, fresh, dismissedKeys),
         dismissed: latest.dismissed ?? stored.dismissed,
         uncovered: failed + noAddress,
+        makers: [...makers],
       };
       const ok = storage.newMusic.set(npub, next);
       if (onScreen()) {
@@ -339,9 +360,16 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
    * at render, never deleted here: an unhydrated store is not a removal.
    */
   const visible = useMemo(() => {
+    const makers = new Set(record.makers ?? []);
     const live = new Set(publishers.map((f) => f.podcastGuid));
-    return rows.filter((r) => live.has(r.publisherGuid));
-  }, [rows, publishers]);
+    return rows.filter((r) => live.has(r.publisherGuid) && !makers.has(r.publisherGuid));
+  }, [rows, publishers, record.makers]);
+  /** The artists the heading counts: every publisher not found to be a
+   *  playlist maker. Before its first read, a maker still counts. */
+  const artistCount = useMemo(() => {
+    const makers = new Set(record.makers ?? []);
+    return publishers.filter((f) => !makers.has(f.podcastGuid)).length;
+  }, [publishers, record.makers]);
 
   // Signed in, the library is not settled until the relay read lands — the
   // `<FavoritesNewEpisodes>` rule: a pass over the cached subset stamps
@@ -355,14 +383,14 @@ export function FavoritesNewMusic({ onOpen }: { onOpen?: (p: Podcast) => void })
   }, [mounted, askKey, check, hydrating]);
 
   // Hidden with no favorited artist: a heading over an empty list would be a
-  // claim about artists nobody follows.
-  if (!mounted || !publishers.length) return null;
+  // claim about artists nobody follows. A playlist maker is not one.
+  if (!mounted || !artistCount) return null;
 
   const key = 'favpage:newmusic';
   const isCollapsed = collapsed.has(key);
   const stale = Date.now() - record.checkedAt >= CHECK_MIN_MS;
   const when = record.checkedAt ? fmtDate(Math.floor(record.checkedAt / 1000)) : null;
-  const artists = `${publishers.length} ${publishers.length === 1 ? 'artist' : 'artists'}`;
+  const artists = `${artistCount} ${artistCount === 1 ? 'artist' : 'artists'}`;
   const followList = Object.values(follows).sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''));
 
   return (

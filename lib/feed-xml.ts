@@ -872,6 +872,9 @@ export interface PublisherRef {
 }
 
 const FEED_GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `PLAYLIST_MAKER_REL` in lib/community/feed-doc.ts, which this module cannot
+ *  import (that one is server-only). `check:newmusic` asserts the two agree. */
+const NOT_THE_ARTIST_REL = 'curator';
 
 /**
  * The artist (publisher) feed an album's channel names, or undefined.
@@ -895,11 +898,18 @@ const FEED_GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * would write, so it must be guid-shaped, and `feedUrl` must be http(s). The
  * caller still has to establish that Podcast Index can RESOLVE the guid before
  * it offers a favorite — see `previewPodcastFromChannel` in lib/pi.ts.
+ *
+ * **A `rel="curator"` link is NOT the artist.** A community playlist names its
+ * MAKER's publisher feed with that role (`PLAYLIST_MAKER_REL`,
+ * lib/community/feed-doc.ts, #586), and a playlist maker is not an artist (the
+ * owner's choice, 2026-11-17). The album page offers ♡ ARTIST on an album only,
+ * so this is the second guard, in the reader every caller goes through.
  */
 export function parsePublisherRef(channelXml: string): PublisherRef | undefined {
   const take = (attrs: string, needMedium: boolean): PublisherRef | undefined => {
     const medium = readAttr(attrs, 'medium');
     if (medium !== undefined ? asciiLower(medium.trim()) !== 'publisher' : needMedium) return undefined;
+    if (asciiLower(readAttr(attrs, 'rel')?.trim() ?? '') === NOT_THE_ARTIST_REL) return undefined;
     const feedGuid = readAttr(attrs, 'feedGuid')?.trim();
     const feedUrl = readAttr(attrs, 'feedUrl')?.trim();
     if (!feedGuid || !FEED_GUID_RE.test(feedGuid)) return undefined;
