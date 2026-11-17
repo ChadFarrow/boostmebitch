@@ -5,7 +5,7 @@ import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost, ValueBlock, ValueRecipient, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, payStampInvoice, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
 import { getErrorMessage, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playsAsTracks, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
@@ -455,8 +455,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // signed-in "Post via boostmebitch.com" choice. The share choice and the
   // mentions are the SNAPSHOT's, for the reason logStoredBoost gives.
   //
-  // Returns whether the note went out (or was never wanted), so `finishBoost`
-  // can keep the modal open over a failure: the modal closing 1.5 s after the
+  // Returns whether the note went out as asked (or was never wanted), so
+  // `finishBoost` can keep the modal open over a failure — or over a note a
+  // one-time key posted in the site's place: the modal closing 1.5 s after the
   // payment is how a lost note used to go unseen.
   async function maybePublishNote(
     sent: SentBoost,
@@ -521,26 +522,42 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       relays,
       as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
     });
+    // The site signs only with a paid 1-sat stamp (lib/site-stamp.ts), paid on
+    // the rail the boost used. `sent.siteNote` carries the template, the paid
+    // stamp and the signed event, so RETRY NOTE never pays a second stamp. Any
+    // failure posts the same note from a one-time key and says why.
+    const publishViaSite = async () => {
+      const r = await publishBoostNoteViaSite(
+        { podcast, episode, boostagram, results, mentions, summaryReceipt: summaryReceipt ?? undefined, track, itemArtist },
+        {
+          // No rail means nothing to pay with: the ladder signs one-time.
+          payStamp: (bolt11) => (rail ? payStampInvoice(rail, bolt11) : Promise.reject(new Error('no wallet'))),
+          state: sent.siteNote,
+          onStamp: () => setPubState({ kind: 'publishing', step: 'stamp' }),
+        },
+      );
+      return {
+        note: r.note,
+        notice: r.signer === 'one-time' && r.why
+          ? `Posted from a one-time key, not ${BRAND.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`
+          : undefined,
+      };
+    };
     try {
       const receipt = summaryReceipt ?? undefined;
-      const note = self
-        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track, itemArtist })
-        // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
-        // what each may do with them — the body always, the `p` tags only when
-        // the user's own key signs — and that decision belongs there, not in a
-        // caller that would have to remember it at every site.
-        : (await publishBoostNoteViaSite(
-            { podcast, episode, boostagram, results, mentions, summaryReceipt: receipt, track, itemArtist },
-            {
-              // No rail means nothing to pay with: the ladder signs one-time.
-              payStamp: (bolt11) => (rail ? payStampInvoice(rail, bolt11) : Promise.reject(new Error('no wallet'))),
-              state: sent.siteNote,
-            },
-          )).note;
-      setPubState({ kind: 'done', note });
+      // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
+      // what each may do with them — the body always, the `p` tags only when
+      // the user's own key signs — and that decision belongs there, not in a
+      // caller that would have to remember it at every site.
+      const { note, notice } = self
+        ? { note: await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track, itemArtist }), notice: undefined }
+        : await publishViaSite();
+      setPubState({ kind: 'done', note, notice });
       storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
       bumpBoosts();
-      return true;
+      // A note from a one-time key keeps the modal open, so the reason the
+      // site's name is not on it stays on screen.
+      return !notice;
     } catch (e) {
       setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed'), retry });
       return false;

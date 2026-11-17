@@ -49,8 +49,10 @@ export function ShareNostrPicker({
             Share boost on Nostr
           </div>
           <div className="text-muted mt-0.5 leading-relaxed">
+            {/* The site signs only a note whose 1-sat stamp was paid
+                (lib/site-stamp.ts). The words are Chad's (2026-11-17). */}
             {share
-              ? `${noteNoun} posted from ${BRAND.domain}'s Nostr account.`
+              ? `${noteNoun} posted from ${BRAND.domain}'s Nostr account, for 1 sat plus a small network fee after the boost.`
               : 'Lightning only — nothing posted publicly.'}
           </div>
         </div>
@@ -68,15 +70,16 @@ export function ShareNostrPicker({
     {
       value: 'site',
       label: 'Anonymous',
-      // Kept short enough to fit ONE line at full modal width, like the other
-      // two descs — a second line grows the modal past its cap and toggles the
-      // scrollbar (width jitter) when flipping options. The budget is PIXELS,
+      // Never MORE lines than "My feed"'s desc, so flipping options does not
+      // move the modal: measured under `boostmebuddy.com`, both take 2 lines at
+      // 390 px and 1 at 1280 px (e2e:sitestamp section 9). The budget is PIXELS,
       // not characters: the two brand domains are both 16 characters, but `uddy`
       // sets wider than `itch`, so `boostmebuddy.com` is the longer of the two
-      // on screen. Measure this line under the BUDDY brand, at the narrowest
-      // viewport, or the measurement proves nothing about the deploy that can
-      // actually wrap.
-      desc: `${noteNoun} posted from ${BRAND.domain}'s account, not your npub.`,
+      // on screen. Measure this line under the BUDDY brand, or the measurement
+      // proves nothing about the deploy that can actually wrap. The noun is
+      // dropped to make room for the stamp's cost (lib/site-stamp.ts) in the
+      // words Chad approved: "1 sat plus a small network fee".
+      desc: `Posted by ${BRAND.domain}, not your npub: 1 sat plus a small network fee.`,
     },
     {
       value: 'off',

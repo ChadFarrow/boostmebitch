@@ -5,7 +5,7 @@ import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, payStampInvoice, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, checkSignerLink, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import type { Event } from 'nostr-tools';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
@@ -534,21 +534,30 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         // User's own key only when signed in AND they picked "Post to my Nostr
         // feed"; otherwise the site's Nostr identity (signed out, or the
         // signed-in "Post via boostmebitch.com" choice).
-        const note = identity && shareAs === 'self'
-          ? await publishBoostNote({
-              podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
-              mentions, summaryReceipt: summaryReceipt ?? undefined,
-            })
-          : (await publishBoostNoteViaSite({
-              podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
-              mentions, summaryReceipt: summaryReceipt ?? undefined,
-            }, {
-              // No rail means nothing to pay with: the ladder signs one-time.
-              payStamp: (bolt11) => (stampRail ? payStampInvoice(stampRail, bolt11) : Promise.reject(new Error('no wallet'))),
-              state: siteNote,
-            })).note;
+        let notice: string | undefined;
+        let note;
+        if (identity && shareAs === 'self') {
+          note = await publishBoostNote({
+            podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
+            mentions, summaryReceipt: summaryReceipt ?? undefined,
+          });
+        } else {
+          const r = await publishBoostNoteViaSite({
+            podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
+            mentions, summaryReceipt: summaryReceipt ?? undefined,
+          }, {
+            // No rail means nothing to pay with: the ladder signs one-time.
+            payStamp: (bolt11) => (stampRail ? payStampInvoice(stampRail, bolt11) : Promise.reject(new Error('no wallet'))),
+            state: siteNote,
+            onStamp: () => { if (!cancelled.current) setPubState({ kind: 'publishing', step: 'stamp' }); },
+          });
+          note = r.note;
+          if (r.signer === 'one-time' && r.why) {
+            notice = `Posted from a one-time key, not ${BRAND.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`;
+          }
+        }
         if (cancelled.current) return;
-        setPubState({ kind: 'done', note });
+        setPubState({ kind: 'done', note, notice });
       } catch (e) {
         if (cancelled.current) return;
         setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed'), retry });
