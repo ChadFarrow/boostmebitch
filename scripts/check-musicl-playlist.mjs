@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -643,6 +643,124 @@ console.log('\nA matching playlist is lifted out of where PI buried it');
   else fail('a non-matching query must not reorder anything');
   if (eq(rankPlaylistsFirst([], [], 'mutton', 6), [])) ok('an empty result set stays empty');
   else fail('empty in, empty out');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nA matching publisher feed is shown first, above PI\'s leader');
+// ---------------------------------------------------------------------------
+{
+  // THE WIRE, NOT A STRUCT. The production `/api/search?q=longy&type=all`
+  // answer on 2026-11-16, all 40 rows in order, trimmed to the fields that
+  // decide the order. No playlist matches `longy`, so this is byterm's own
+  // ranking. The publisher feed is row 37, after 31 of Longy's albums and
+  // podcasts by Longie B., Longi Frank and a parish in Longi — Chad: "these
+  // should be shown first". Row 1 is a podcast by "Longy, Biz & Burgz", which is
+  // why PI's leader is not held here the way `rankPlaylistsFirst` holds it.
+  const LONGY = [
+    { id: 6464400, title: "NRL Fantasy with The Casual Athlete", author: "Longy, Biz & Burgz", medium: "podcast" },
+    { id: 7712919, title: "Songs From The Seaside", author: "Longy", medium: "music" },
+    { id: 7697615, title: "Positively Unemployed", author: "Longy", medium: "music" },
+    { id: 7695783, title: "Substitute", author: "Longy", medium: "music" },
+    { id: 7693865, title: "Healing Hands", author: "Longy", medium: "music" },
+    { id: 7688232, title: "Lady, You Shot Me!", author: "Longy", medium: "music" },
+    { id: 7569233, title: "Auto Inter Woven Minds", author: "Longy", medium: "music" },
+    { id: 7354536, title: "Into the Valueverse 1", author: "Longy - Joe Martin - Nathan Abbott", medium: "music" },
+    { id: 7353237, title: "Into the Valueverse - Full Show", author: "Joe Martin - Longy - Nathan Abbott", medium: "music" },
+    { id: 7277418, title: "Live at the 606 club", author: "Longy", medium: "music" },
+    { id: 7146493, title: "Bringing it all back home to you now", author: "Longy", medium: "music" },
+    { id: 7117890, title: "iMerica", author: "Longy", medium: "music" },
+    { id: 7273908, title: "You've Got Yourself EP Live", author: "Longy", medium: "music" },
+    { id: 7273907, title: "Trust in Life", author: "Longy", medium: "music" },
+    { id: 7287540, title: "Katherines Wheel", author: "Longy", medium: "music" },
+    { id: 6443203, title: "Katherines Wheel", author: "Longy", medium: "music" },
+    { id: 6429328, title: "No one goes cold on my watch", author: "Longy", medium: "music" },
+    { id: 6420972, title: "Trust in Life (Single)", author: "Longy", medium: "music" },
+    { id: 6459228, title: "Longy presents Mix Sets", author: "Longy", medium: "podcast" },
+    { id: 6420987, title: "The Underclass (Single)", author: "Longy", medium: "music" },
+    { id: 7471701, title: "Tape Up", author: "Longy", medium: "music" },
+    { id: 7471709, title: "The Underclass", author: "Longy", medium: "music" },
+    { id: 6424758, title: "iMerica (Single)", author: "Longy", medium: "music" },
+    { id: 7133539, title: "I'm Still Here", author: "Longy", medium: "music" },
+    { id: 7086566, title: "Live at the 606 club", author: "Longy", medium: "music" },
+    { id: 6622967, title: "Who's your boss", author: "Longy", medium: "music" },
+    { id: 6560453, title: "Don't Get Me Started", author: "Longy", medium: "music" },
+    { id: 6518226, title: "You've Got Yourself EP", author: "Longy", medium: "music" },
+    { id: 6459323, title: "Promise to my people", author: "Longy", medium: "music" },
+    { id: 6448121, title: "Potential", author: "Longy", medium: "music" },
+    { id: 6437660, title: "Tape Up", author: "Longy", medium: "music" },
+    { id: 6420986, title: "Akecheta", author: "Longy", medium: "music" },
+    { id: 6420990, title: "Trash Talking, Filthy Love", author: "Longy", medium: "music" },
+    { id: 254568, title: "Let's Talk About It W/ Longie", author: "Longie B.", medium: "podcast" },
+    { id: 3820521, title: "ASCOLTA I GRANDI SUCCESSI DI MUSICA ROCK DI IERI E DI OGGI", author: "Longi Frank", medium: "podcast" },
+    { id: 4579880, title: "Parrocchia San Michele Arcangelo – Longi (ME)", author: "", medium: "podcast" },
+    { id: 7696544, title: "Longy - Everything", author: "Longy", medium: "publisher" },
+    { id: 2110865, title: "EFCA COACHING ACADEMY", author: "LONGY AGOHA TRAINING ACADEMY", medium: "podcast" },
+    { id: 6361432, title: "קווארק היקום ומה שבניהם", author: "blondy&longy", medium: "podcast" },
+    { id: 972777, title: "Longi Mashale", author: "Batika NGO", medium: "podcast" },
+  ];
+  const PUB = 7696544;
+  const ids = (a) => a.map((f) => f.id);
+  const longyIds = ids(LONGY);
+  const publisherFirst = [PUB, ...longyIds.filter((i) => i !== PUB)];
+  const row = (id) => LONGY.find((f) => f.id === id);
+
+  // What somebody writes: sort every publisher row to the top. It gets the
+  // reported case right, which is what makes it tempting. It lifts a publisher
+  // the query does not name — byterm runs with `fulltext`, so a publisher that
+  // credits a collaborator only in its description comes back for that name —
+  // it has no cap, so a word many publishers share pushes PI's whole answer
+  // down, and it lifts on a blank query.
+  const naive = (feeds) => [
+    ...feeds.filter((f) => f.medium === 'publisher'),
+    ...feeds.filter((f) => f.medium !== 'publisher'),
+  ];
+
+  const vectors = [];
+  const vec = (label, args, expect, opts = {}) => vectors.push({ label, args, expect, ...opts });
+
+  // ── The report, and what must keep working ──────────────────────────────
+  vec('longy: the publisher moves 37th → 1st, above PI\'s leader', [LONGY, 'longy', 3], publisherFirst, { alsoNaive: true });
+  vec('every term in its title: still lifted', [LONGY, 'longy everything', 3], publisherFirst, { alsoNaive: true });
+  vec('the query is case-folded', [LONGY, 'LONGY', 3], publisherFirst, { alsoNaive: true });
+  vec('no publisher in the results ⇒ PI order untouched', [LONGY.slice(0, 3), 'longy', 3], longyIds.slice(0, 3), { alsoNaive: true });
+  vec('a publisher already first stays first', [[row(PUB), ...LONGY.slice(0, 2)], 'longy', 3], [PUB, ...longyIds.slice(0, 2)], { alsoNaive: true });
+  // `publisherL` is a LIST of publishers — a playlist. `rankPlaylistsFirst`
+  // owns it, and lifting it here would put it above the leader that rule holds.
+  vec('a publisherL list is not a publisher', [[LONGY[0], { ...row(PUB), medium: 'publisherL' }], 'longy', 3], [LONGY[0].id, PUB], { alsoNaive: true });
+  // The literal `=== 'publisher'` is what `<PodcastRow>` stamps `▸ ALBUMS` by
+  // and `<HomePage>` opens the publisher view by. A row lifted on any other
+  // spelling would sit first with no stamp and open as a show.
+  vec('a medium spelled "Publisher" is not lifted', [[LONGY[0], { ...row(PUB), medium: 'Publisher' }], 'longy', 3], [LONGY[0].id, PUB], { alsoNaive: true });
+
+  // ── What naive() gets wrong ─────────────────────────────────────────────
+  vec('a term its title and author lack: not lifted', [LONGY, 'longy seaside', 3], longyIds);
+  // Row 8 of the wire answer credits Joe Martin; the publisher does not, so a
+  // fulltext hit on its description must not jump the album that names him.
+  vec('a publisher only its description could match stays where PI put it', [[row(7354536), row(PUB)], 'joe martin', 3], [7354536, PUB]);
+  vec('the cap: a fourth matching publisher keeps its place', [[
+    LONGY[0],
+    row(PUB),
+    { id: 1, title: 'Longy Live', author: 'Longy', medium: 'publisher' },
+    { id: 2, title: 'Longy Band', author: 'Longy', medium: 'publisher' },
+    { id: 3, title: 'Longy Remixes', author: 'Longy', medium: 'publisher' },
+  ], 'longy', 3], [PUB, 1, 2, LONGY[0].id, 3]);
+  vec('a blank query lifts nothing', [LONGY, '   ', 3], longyIds);
+  vec('a zero cap lifts nothing', [LONGY, 'longy', 0], longyIds);
+
+  const ser = (v) => JSON.stringify(v);
+  const invoke = (impl, v) => {
+    try {
+      return ser(ids((impl === 'real' ? rankPublishersFirst : naive)(...v.args)));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  for (const v of vectors) {
+    const got = invoke('real', v);
+    if (got === ser(v.expect)) ok(v.label);
+    else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+  }
+  replayVectors({ vectors, invoke, fail });
 }
 
 // ---------------------------------------------------------------------------

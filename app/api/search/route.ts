@@ -4,7 +4,7 @@ import { searchCuratedPlaylists } from '@/lib/curated-roster';
 import type { CuratedHits } from '@/lib/curated-roster';
 import {
   curatedNotListed, filterPlaylistsByQuery, matchesSearchType, mergeRssOverPi, mergeSearchLanes,
-  parseSearchType, piRecordIsBlank, rankPlaylistsFirst,
+  parseSearchType, piRecordIsBlank, rankPlaylistsFirst, rankPublishersFirst,
 } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
@@ -26,6 +26,16 @@ const SEARCH_CACHE = { 'Cache-Control': 'public, max-age=30, s-maxage=60, stale-
  * was actually looking for.
  */
 const MAX_PLAYLIST_HITS = 6;
+
+/**
+ * How many publisher feeds may be moved to the top of a search.
+ *
+ * They go above Podcast Index's own leader (`rankPublishersFirst`), so the cap
+ * is what keeps a word many publishers share from pushing the show somebody
+ * wanted off the first screen. A query naming one artist matches one publisher,
+ * or two when a solo name and a band name share it.
+ */
+const MAX_PUBLISHER_HITS = 3;
 
 /**
  * How many rows a TYPED search returns.
@@ -216,8 +226,15 @@ export async function GET(req: Request) {
       // one. `matchesSearchType('podcast')` is a RESIDUAL test — "not music, not
       // a list medium" — because Podcast Index leaves the tag blank on most of
       // what it holds, and an inclusion test would silently empty the chip.
+      //
+      // A `publisher` feed lands in this residual bucket, so it is lifted here
+      // too, by the same rule as under ALL: shown first wherever it is shown.
       const feeds = await searchPodcasts(query, 50);
-      return answer(feeds.filter((f) => matchesSearchType(f, 'podcast')), feeds.length, type);
+      return answer(
+        rankPublishersFirst(feeds.filter((f) => matchesSearchType(f, 'podcast')), query, MAX_PUBLISHER_HITS),
+        feeds.length,
+        type,
+      );
     }, 'search failed');
   }
 
@@ -246,7 +263,16 @@ export async function GET(req: Request) {
     // displacing PI's own leader. The whole rule — and the measurements behind
     // it — lives in `rankPlaylistsFirst`, which `check:musicl` pins against the
     // real `mutton` and `flowgnar` responses.
-    const ranked = rankPlaylistsFirst(feeds, [...rosterHits, ...curated], query, MAX_PLAYLIST_HITS);
+    //
+    // Then a matching PUBLISHER feed goes above all of it, PI's leader
+    // included: it is the artist's whole catalogue, and PI ranks it under every
+    // album it lists (`longy`: row 37 of 40). `rankPublishersFirst` holds the
+    // rule and the measurements, pinned by `check:musicl`.
+    const ranked = rankPublishersFirst(
+      rankPlaylistsFirst(feeds, [...rosterHits, ...curated], query, MAX_PLAYLIST_HITS),
+      query,
+      MAX_PUBLISHER_HITS,
+    );
     return answer(ranked, ranked.length, 'all', curatedHits.answered);
   }, 'search failed');
 }
