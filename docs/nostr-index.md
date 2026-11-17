@@ -33,12 +33,18 @@ current directory, so it cannot be run from a worktree. → [`ops.md`](ops.md)
 
 `cd services/nostr-index && npm run typecheck && DATABASE_URL=... npm run verify`.
 `verify/check-ingest.mjs` follows the same total-replay-against-`naive()` shape as
-the repo's `check:*` scripts; `check-api.mjs`, `check-search.mjs` and
-`check-indexer.mjs` need a Postgres, and the indexer one drives a scripted local
-relay (`verify/mock-relay.mjs`). `verify:ingest`, `verify:yield` and
-`verify:rejections` run with no database. No Postgres on the machine and no
-Docker? `embedded-postgres` from npm, installed in a scratch directory, runs a
-real one without root — the whole suite ran green that way on 2026-09-19.
+the repo's `check:*` scripts; `check-api.mjs`, `check-live-heads.mjs`,
+`check-search.mjs` and `check-indexer.mjs` need a Postgres, and the indexer one
+drives a scripted local relay (`verify/mock-relay.mjs`). `verify:ingest`,
+`verify:yield` and `verify:rejections` run with no database. No Postgres on the
+machine and no Docker? `embedded-postgres` from npm, installed in a scratch
+directory, runs a real one without root — the whole suite ran green that way on
+2026-09-19. Homebrew's `postgresql@17` works too; give it `-c
+unix_socket_directories=''` and TCP when the data directory's path is long.
+
+**`check-indexer.mjs` prints `ok` and then does not exit** (seen on `main` at
+9f9959dd, 2026-11-17), so `npm run verify` never reaches `verify:yield` and
+`verify:rejections`. Run those two by name until that is fixed.
 
 ## A `void` on a background loop ends the process
 
@@ -117,12 +123,8 @@ INVALID index that the migration would skip while every query keeps scanning.
 
 Built that way on 2026-11-17: 19.4 s, valid, 19 MB. `max(seen_at)` went from
 10.1–12.4 s to 0.2 ms (`Index Scan Backward`), `/health` to 0.1 s, and
-`/feed/podcast/<guid>` on www to 200 in 0.6 s. **Two routes still pass the 6 s
-proxy timeout on queries of their own, and this index does not touch them:**
-`globalNotes` (`/feed/global`) takes 2–7 s depending on the cache — it reads
-every `k` tag, then fetches ~11,800 events one by one — and `liveStreams`
-(`/feed/live`) takes ~30 s, because 7 days hold 58,535 kind:30311 versions
-against 739 kind:1 notes and each version costs a `d`-tag lookup. Open.
+`/feed/podcast/<guid>` on www to 200 in 0.6 s. `/feed/global` and `/feed/live`
+still passed the proxy timeout on queries of their own; see the next section.
 
 **The database has no public address**: `postgres.railway.internal` only. Reach
 it over SSH: the Mac mini key `mac-mini-id_ed25519` is registered on the Railway
@@ -131,6 +133,64 @@ account (2026-11-17). `railway ssh` (CLI 4.8.0) fails on every service, and CLI
 from `railway ssh config --dry-run -s Postgres` and use plain `ssh` with
 `StrictHostKeyChecking=accept-new`. Run a long build under `nohup` in the
 container, so a dropped session cannot cancel it.
+
+## A query the proxy gave up on still runs, unless the database is told
+
+The app proxy stops waiting after 6 s; Postgres did not know. On 2026-11-17
+every `/feed/live` call left a 29.7 s query running after the 503, and every
+home page load started another. **The read API has its own pool, and that pool
+carries `statement_timeout` = 5 s** (`createApiPool`, `API_STATEMENT_TIMEOUT_MS`
+in `src/db.ts`); a cancelled statement (`57014`) answers 503 `index query timed
+out`. Two rules ride on it:
+
+- **Never give the indexer's pool the cap.** Migrations, backfill pages and the
+  head promotion below may rightly run longer, and the cap would cancel them in a
+  loop. `check-live-heads.mjs` asserts the indexer pool reads `0`.
+- **Not lower than 5 s.** `zapsReceived` for a much-zapped artist measured
+  2.2 s on production; a 3 s cap would fail a page that works.
+
+Still open, and not fixed by the cap — only stopped sooner: for the one host
+pubkey that 91,777 `p` tags name (most of them its own kind:30311 versions),
+`notesMentioning` measured 8.1 s and `zapsReceived` 8.9 s. Both start from the
+`p` tags, as `globalNotes` used to start from the `k` tags.
+
+## The two feed queries, and why each has the shape it has
+
+**`globalNotes` tests the `k` tag with a per-row scalar subquery, never
+`exists`.** Postgres turns `exists` into a semi-join and planned it from the tag
+side — every podcast `k` tag, ~11,800 events fetched one by one, then a sort:
+5.9 s on production. A scalar subquery cannot become a join, so the plan walks
+`events_kind_created_idx` newest-first and stops at `limit`: 92 ms cold on
+production, and on a synthetic copy at production's row counts 696 pages read
+against 39,403. Same rows, same order — compared for limits 1–200 and five
+`until` pages.
+
+**`liveStreams` reads `live_heads` (`migrations/007_live_heads.sql`), one row
+per broadcast, instead of deduping versions at read time.** A streaming client
+republishes kind:30311 every few seconds: 58,612 versions in the 7-day window
+for 262 broadcasts, and the read-time dedupe cost 29.7 s. Ingest keeps the
+table: `liveHeadAddress` (`src/ingest.ts`) is the old query's per-version rules
+(status `live`/`planned`, the FIRST indexable `d`, the event id without one);
+`offerLiveHead` replaces a head only with a newer `created_at`, and runs also for
+a version already stored, so the hourly live re-subscribe repairs a head missed
+while an old process ingested during a deploy; a kind:5 that removes a head
+promotes the next-newest servable version (`retireLiveHeads`). The oracle in
+`check-live-heads.mjs` is the old query verbatim, against every case and a
+random replay with deletions.
+
+The promotion walks the HOST's versions newest-first and looks back only
+`LIVE_WINDOW_SECS` (`src/ingest.ts`, one constant for the route, the indexer and
+the promotion — `live_heads` is exact only while the promotion looks back at
+least as far as the route serves). **Never start it from every version that
+carries the `d` value**: one production broadcast has ~91,000 versions, and that
+form passed 20 s. Its `@>` pre-filter cut the worst case for the busiest host
+(19,914 versions in the window) from 16.6 s to 1.6 s.
+
+**Migration 007 backfills with the old query itself, about 30 s on
+production**, inside the migration transaction and before the API listens, so
+the index answers nothing for that long on the first deploy. It reads `events`
+and writes only the new table, so ingest by the previous process is not blocked.
+Its indexes are on a table the file creates, so nothing has to be built by hand.
 
 ## Everything a caller can name has to be bounded
 

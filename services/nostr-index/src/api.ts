@@ -11,6 +11,7 @@ import {
   zapsReceived,
 } from './queries.ts';
 import { indexedThrough } from './store.ts';
+import { LIVE_WINDOW_SECS } from './ingest.ts';
 import { fetchEpisodeByGuid, fetchPodcastByFeedUrl, fetchPodcastByGuid, piConfigured } from './pi.ts';
 
 /** Only the config the API actually reads. Narrower than the service Config on
@@ -80,9 +81,6 @@ function isGuid(v: unknown): v is string {
  *  A function rather than the Indexer itself so `buildApi` stays constructible
  *  from a check script with no relays and no pool. */
 export type HealthProbe = () => Promise<Record<string, unknown>>;
-
-// The kind:30311 window served by /feed/live, matching the client's own.
-const LIVE_WINDOW_SECS = 7 * 86_400;
 
 // How stale `indexedThrough` may be before /feed/live refuses to answer.
 //
@@ -392,6 +390,13 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
     // SQL, and a PI error carries an upstream body. Same rule as the app's own
     // withErrorHandling.
     console.error('[api]', err instanceof Error ? err.message : String(err));
+    // 57014 is query_canceled: the API pool's statement timeout fired
+    // (`createApiPool` in db.ts). That is the database being slow, not this
+    // request being wrong, so it is a 503 like any other "cannot answer now".
+    if ((err as { code?: unknown } | null)?.code === '57014') {
+      await reply.code(503).send({ error: 'index query timed out' });
+      return;
+    }
     await reply.code(500).send({ error: 'index request failed' });
   });
 
