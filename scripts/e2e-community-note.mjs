@@ -506,7 +506,7 @@ async function boostSong(feedUrl, title, shareAs, { buddy = 'nocors', relays = [
     i.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
   t.ok('Send 100 sats is live', await until(`[...document.querySelectorAll('[role="dialog"] button')].some((b) => /send 100 sat/i.test(b.innerText) && !b.disabled)`, 30000), await dialogText());
   await pressInDialog('/send 100 sat/i');
-  const settled = await until(`/Published to|Publish failed/.test(document.querySelector('[role="dialog"]')?.innerText ?? '')`, 60000);
+  const settled = await until(`/Published to|Note not posted/.test(document.querySelector('[role="dialog"]')?.innerText ?? '')`, 60000);
   t.ok('the note publish settles (published or failed)', settled, await dialogText());
   return settled;
 }
@@ -565,7 +565,7 @@ if (TEST_ORIGIN) {
   t.ok('the template has no Buddy word', !!tmplT2 && !BUDDY_WORDS.test(wordsIn(tmplT2)), wordsIn(tmplT2));
   t.ok(`the template's imeta is on ${BITCH.origin}`, tag1(tmplT2, 'imeta')?.[1]?.startsWith(`url ${BITCH.origin}/api/og/boost.png?`), JSON.stringify(tag1(tmplT2, 'imeta')));
   t.ok("the template names the deploy's own anonymous sender", tmplT2?.content?.includes(`${BITCH.senderName} boosted 100 sats`), tmplT2?.content);
-  t.ok('the modal says the publish failed (only because this test refuses the route)', /Publish failed/.test(await dialogText()), await dialogText());
+  t.ok('the modal says the publish failed (only because this test refuses the route)', /Note not posted/.test(await dialogText()), await dialogText());
   await wait(2500);
   t.equal('no boost note reached any relay', published.slice(before).filter((e) => e.kind === 1).length, 0);
 } else {
@@ -617,7 +617,7 @@ if (TEST_ORIGIN) {
   signBefore = rec.sign.length;
   await boostSong(created.feedUrl, song.title, 'site', { relays: [FAKE_WSS] });
   t.ok('the payment still went out', wallet.payments.length - paidBefore === 1, `payments +${wallet.payments.length - paidBefore}`);
-  t.ok('the modal says the publish failed', /Publish failed/.test(await dialogText()), await dialogText());
+  t.ok('the modal says the publish failed', /Note not posted/.test(await dialogText()), await dialogText());
   const asked2 = rec.sign.slice(signBefore);
   t.equal("the page asked Buddy's two routes, and only those", asked2.map((x) => x.url), [`${BUDDY.origin}/api/nostr/zap-receipt-sign`, `${BUDDY.origin}/api/nostr/site-sign`]);
   const hints2 = receiptHints(asked2[0]?.body);
