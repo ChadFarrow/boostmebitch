@@ -461,7 +461,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     //
     // Omitted when the paid tracks divide differently from one another — a
     // per-track `remotePercentage` makes that ordinary, and one number cannot
-    // describe them. Singular tracks skip it: "for 100 sats (100 each)" reads
+    // describe them. Singular tracks skip it: "100 sats to 1 track (100 each)" reads
     // as a fault.
     const paidLegs = successfulIdx.map((i) => trackLegs[i]);
     const uniform = paidLegs.length > 1 && paidLegs.every(
@@ -472,8 +472,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       : uniform.host.sats > 0
         ? ` (${uniform.track.sats} to the artist + ${uniform.host.sats} to the show, each)`
         : ` (${uniform.track.sats} each)`;
+    // The same order as every other note's sentence (`boostSentence`): the
+    // sats, WHAT they went to, then where it was found.
     lines.push(
-      `${senderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats${each}`,
+      `${senderName} boosted ${totalSats} sats to ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} from ${podcast.title}${each}`,
     );
     if (trackList.length) {
       lines.push('');

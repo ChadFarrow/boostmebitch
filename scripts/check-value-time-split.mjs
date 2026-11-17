@@ -690,6 +690,7 @@ const ITDV = { title: 'ITDV music playlist', medium: 'musicL', podcastGuid: '88b
 const SING = { title: 'Sing For You', podcastGuid: 'b2a87a4c-86f0-5194-9eb3-dcba42ce0695' };
 const DISCO = { title: 'Disco Swag - The Album', author: 'The Doerfels', medium: 'music', podcastGuid: 'b2a87a4c-86f0-5194-9eb3-dcba42ce0695' };
 const HGH_SHOW = { title: 'Homegrown Hits', author: 'Two Dudes', medium: 'podcast', podcastGuid: 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f' };
+const ITDV_PREVIEW = { title: 'ITDV music playlist', author: 'ChadF', medium: 'musicl' };
 const EP146 = { title: 'Episode 146', podcastGuid: 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f' };
 const SENTENCE_VECTORS = [
   { label: "rev.hodl's note: a playlist row names its artist, then the playlist",
@@ -725,6 +726,16 @@ const SENTENCE_VECTORS = [
   { label: 'an item with no title is a show boost',
     args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: { ...EP146, title: '' } },
     expect: 'ChadF boosted 100 sats to Homegrown Hits' },
+  // The ITDV playlist opened by its `…/main/docs/…` URL, which is not the URL
+  // Podcast Index holds (`…/refs/heads/main/docs/…`): `/api/playlist` answers a
+  // preview with NO guid, in production as here (measured 2026-11-16). The
+  // author is the CURATOR's, and must never be printed as the song's artist.
+  { label: 'a playlist the index does not hold names the artist, never the curator',
+    args: { sender: 'rev.hodl', sats: 121, show: ITDV_PREVIEW, item: SING, itemArtist: 'The Doerfels' },
+    expect: 'rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist' },
+  { label: 'a playlist the index does not hold, artist lookup missed: no "by"', alsoNaive: true,
+    args: { sender: 'rev.hodl', sats: 121, show: ITDV_PREVIEW, item: SING },
+    expect: 'rev.hodl boosted 121 sats to Sing For You from ITDV music playlist' },
   { label: 'a show with no title names nothing',
     args: { sender: 'ChadF', sats: 100, show: { ...HGH_SHOW, title: '' } },
     expect: 'ChadF boosted 100 sats' },
@@ -741,13 +752,18 @@ replayVectors({
 // ── itemFeedGuid ────────────────────────────────────────────────────────────
 // Narrow on purpose, as queueShowFor and payableValue are: BOTH guids must be
 // present to disagree. A feed with no <podcast:guid> is still the parent of its
-// own episodes.
+// own episodes — EXCEPT a `*L` playlist, which publishes no items of its own, so
+// a row naming a feed is from that feed even when the playlist's guid is unknown
+// (the preview `/api/playlist` answers for a URL the index does not hold).
 console.log('\nitemFeedGuid — does this row live in another feed than its list?');
 check('a playlist row names its album', itemFeedGuid(ITDV, SING), SING.podcastGuid);
 check('an album track is its own feed', itemFeedGuid(DISCO, SING), undefined);
 check('a row with no guid of its own keeps the container', itemFeedGuid(ITDV, { title: 'x' }), undefined);
 check('a container with no guid is the parent', itemFeedGuid({ title: 'x' }, SING), undefined);
 check('no item at all', itemFeedGuid(ITDV, undefined), undefined);
+check('a playlist the index does not hold still names the row\'s album', itemFeedGuid(ITDV_PREVIEW, SING), SING.podcastGuid);
+check('...and a row of it with no guid names nothing', itemFeedGuid(ITDV_PREVIEW, { title: 'x' }), undefined);
+check('an ALBUM with no guid is still the parent of its tracks', itemFeedGuid({ medium: 'music' }, SING), undefined);
 
 // ── Music at 1× ───────────────────────────────
 // The "track marker" of docs/superpowers/specs/2026-11-02-music-plays-at-1x-design.md.

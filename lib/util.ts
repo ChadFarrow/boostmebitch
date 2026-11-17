@@ -3466,6 +3466,15 @@ export function boostNoteTrack(args: {
  * so does a container with none — a feed publishing no `<podcast:guid>` is
  * still the parent of its own episodes.
  *
+ * **Except a `*L` playlist, which has no episodes of its own** (it publishes no
+ * `<item>`), so a row that names a feed is from that feed even when the
+ * playlist's own guid is unknown. That is ordinary, not an outage: the ITDV
+ * playlist opened by its `…/main/docs/…` URL is not the URL Podcast Index holds
+ * (`…/refs/heads/main/docs/…`), and `/api/playlist` answers a preview with no
+ * guid, in production as in a test (measured 2026-11-16). The narrow rule then
+ * tagged no feed at all, never started the artist lookup, and printed the
+ * playlist's author — the CURATOR — as the song's artist.
+ *
  * The boost note asks it three times, because each is the container-as-parent
  * mistake in a permanent kind:1: the sentence ("→ ITDV music playlist" named the
  * curator for a song that paid The Doerfels), the `i` tags (the playlist's guid
@@ -3473,11 +3482,13 @@ export function boostNoteTrack(args: {
  * banner art (the playlist's cover offered for the track).
  */
 export function itemFeedGuid(
-  podcast: Pick<Podcast, 'podcastGuid'>,
+  podcast: Pick<Podcast, 'podcastGuid' | 'medium'>,
   episode?: Pick<Episode, 'podcastGuid'> | null,
 ): string | undefined {
   const own = episode?.podcastGuid;
-  return own && podcast.podcastGuid && own !== podcast.podcastGuid ? own : undefined;
+  if (!own) return undefined;
+  if (!podcast.podcastGuid) return isPlaylistMedium(podcast) ? own : undefined;
+  return own !== podcast.podcastGuid ? own : undefined;
 }
 
 /**
