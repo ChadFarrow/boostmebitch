@@ -46,6 +46,11 @@
 //  12. Every relay refuses the note: RETRY NOTE posts it; still one stamp.
 //  13. The message says "boosted 5000 sats" over a 100-sat boost: the page asks
 //      for no stamp and pays none, and the note posts one-time with the reason.
+//  14. One leg fails: the quoted receipt is for less than the note, and the site
+//      still signs. Section 1 also refuses a note quoting a receipt for MORE
+//      (a free 1,000,000-sat site receipt under a 1-sat stamp), a quote with no
+//      receipt, an edited receipt, another key's, and a malformed one (400, not
+//      500); section 2 checks that the real flow quotes the site's receipt.
 //
 // The page talks to the public relays through a WebSocket stand-in installed
 // before any script runs: it answers the four DEFAULT_RELAYS with OK/EOSE and
@@ -221,7 +226,10 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       isEnabled: async () => true,
       getInfo: async () => ({ node: { alias: 'e2e' }, methods: ['getInfo', 'getBalance', 'keysend', 'sendPayment'] }),
       getBalance: async () => ({ balance: 1000000 }),
-      keysend: async (a) => { window.__paid.push({ kind: 'keysend', at: Date.now(), amount: a.amount }); await new Promise((r) => setTimeout(r, 200)); return { preimage: '00'.repeat(32) }; },
+      keysend: async (a) => {
+        if (window.__failKeysends > 0) { window.__failKeysends -= 1; throw new Error('e2e: this keysend failed'); }
+        window.__paid.push({ kind: 'keysend', at: Date.now(), amount: a.amount }); await new Promise((r) => setTimeout(r, 200)); return { preimage: '00'.repeat(32) };
+      },
       sendPayment: (invoice) => {
         window.__paid.push({ kind: 'invoice', at: Date.now(), invoice });
         return new Promise((resolve, reject) => { const rid = 'p' + (++n); waiting.set(rid, { resolve, reject }); window.bmbPay(JSON.stringify({ rid, invoice })); });
@@ -343,6 +351,47 @@ if (runs(1)) {
     t.equal('a note with no amount tag → 400', [untagged?.status, untagged?.body?.error], [400, 'a site note needs exactly one amount tag']);
     t.equal('...and neither one minted an invoice', stampAddr.minted.length, pricedBefore);
 
+    {
+      // The quoted receipt: Fountain draws the ⚡ figure from it, so it may not
+      // claim more than the note the stamp is priced at. Signed here with the
+      // throwaway SITE key — exactly what the receipt route would sign.
+      const receiptFor = (sats, sk = siteSk) => finalizeEvent({
+        kind: 9735, created_at: nowSecs(), content: '',
+        tags: [['p', sitePk], ['P', sitePk], ['description', '{}'], ['amount', String(sats * 1000)]],
+      }, sk);
+      const quotingNote = (sats, receiptId) => {
+        const n = template({ sats });
+        n.tags.push(['q', receiptId, 'wss://relay.example', sitePk]);
+        return n;
+      };
+      const quoteBefore = stampAddr.minted.length;
+      const whole = receiptFor(100);
+      const ok100 = await post('/api/nostr/site-stamp', { template: quotingNote(100, whole.id), receipt: whole });
+      t.equal('a note quoting the site\'s receipt for its whole boost → 200 and an invoice', [ok100?.status, typeof ok100?.body?.invoice], [200, 'string']);
+      const part = receiptFor(640);
+      const okPart = await post('/api/nostr/site-stamp', { template: quotingNote(1000, part.id), receipt: part });
+      t.equal('...for less (a leg failed: 640 of 1000) → 200, priced at the note: 10 sats',
+        [okPart?.status, stampAddr.minted.at(-1)?.amount], [200, 10_000]);
+      const minted2 = stampAddr.minted.length;
+      const huge = receiptFor(1_000_000);
+      const overQuote = await post('/api/nostr/site-stamp', { template: quotingNote(100, huge.id), receipt: huge });
+      t.equal('a 100-sat note quoting a FREE 1,000,000-sat site receipt → 400',
+        [overQuote?.status, overQuote?.body?.error], [400, 'the quoted receipt claims more than the note']);
+      const missing = await post('/api/nostr/site-stamp', { template: quotingNote(100, whole.id) });
+      t.equal('a quote with no receipt sent → 400', [missing?.status, missing?.body?.error], [400, 'the note quotes a receipt it did not send']);
+      const forged = { ...huge, tags: huge.tags.map((tag) => (tag[0] === 'amount' ? ['amount', '100000'] : tag)) };
+      const edited = await post('/api/nostr/site-stamp', { template: quotingNote(100, forged.id), receipt: forged });
+      t.equal('a site receipt whose amount was edited after signing → 400', [edited?.status, edited?.body?.error], [400, 'the quoted receipt is not the site’s']);
+      const otherReceipt = finalizeEvent({ kind: 9735, created_at: nowSecs(), content: '', tags: forged.tags }, generateSecretKey());
+      const strangers = await post('/api/nostr/site-stamp', { template: quotingNote(100, otherReceipt.id), receipt: otherReceipt });
+      t.equal('a receipt another key signed → 400', [strangers?.status, strangers?.body?.error], [400, 'the quoted receipt is not the site’s']);
+      const malformed = { id: whole.id, kind: 9735, pubkey: sitePk, tags: [['amount', '100000']] };
+      const bad = await post('/api/nostr/site-stamp', { template: quotingNote(100, whole.id), receipt: malformed });
+      t.equal('a receipt with fields missing → 400, never a 500', [bad?.status, bad?.body?.error], [400, 'the quoted receipt is not the site’s']);
+      t.equal('...and no refused one minted an invoice', stampAddr.minted.length, minted2);
+      t.ok('(both accepted ones did)', minted2 - quoteBefore === 2);
+    }
+
     stampAddr.mode.mint = 'fail';
     const mintFail = await post('/api/nostr/site-stamp', { template: template() });
     t.equal('the address refuses to make the invoice → 502', [mintFail?.status, mintFail?.body?.error], [502, 'could not create the stamp invoice']);
@@ -450,6 +499,8 @@ async function noteAfter(ms = 30000) {
   return null;
 }
 const paidLog = async () => (await js('window.__paid')) ?? [];
+/** A kind:9735 the page published, by id. */
+const receiptById = async (id) => ((await js(`window.__published.map((p) => p.event)`)) ?? []).find((e) => e.kind === 9735 && e.id === id) ?? null;
 const mark = () => ({ asks: stampAsks.length, pays: stampPays.length, minted: stampAddr.minted.length });
 const since = (m) => ({ asks: stampAsks.length - m.asks, pays: stampPays.length - m.pays, minted: stampAddr.minted.length - m.minted });
 const failText = (why) => `${ONE_TIME}, not Boost Me Bitch: ${why}.`;
@@ -496,6 +547,9 @@ if (runs(2)) {
   t.equal('one stamp asked, minted and paid', since(m), { asks: 1, pays: 1, minted: 1 });
   t.equal('...for 1% of the 1000-sat boost: 10 sats', stampAddr.minted.at(-1)?.amount, 10_000);
   t.ok('...and the note says "boosted 1000 sats"', /boosted 1000 sats/.test(note?.content ?? ''), note?.content);
+  const q2 = note?.tags.find((tag) => tag[0] === 'q');
+  t.equal('...and quotes the site\'s summary receipt (which site-stamp checked)', q2?.[3], sitePk);
+  t.equal('...for the whole 1000 sats', (await receiptById(q2?.[1]))?.tags.find((tag) => tag[0] === 'amount')?.[1], '1000000');
   const paid = await paidLog();
   const lastLeg = Math.max(...paid.filter((p) => p.kind === 'keysend').map((p) => p.at));
   const stampAt = paid.find((p) => p.kind === 'invoice')?.at ?? 0;
@@ -537,6 +591,33 @@ if (runs(13)) {
   await oneTimeCase('message claims another amount', () => typeMessage('I boosted 5000 sats last week too'),
     'the note names a different amount than the boost',
     async (m) => t.equal('...nothing was asked, minted or paid', since(m), { asks: 0, pays: 0, minted: 0 }));
+}
+
+if (runs(14)) {
+  // The receipt states the sats that SETTLED; the note states the boost. When a
+  // leg fails the receipt is smaller, and the stamp must still pass: "not more
+  // than", never "equal". A real boost may never lose the site's name to it.
+  section('14. one leg fails: the receipt is less than the note, and the site still signs');
+  stampAddr.reset();
+  t.ok('the episode page opens', await openEpisode());
+  t.ok('the boost modal opens', await openBoost());
+  await typeAmount('1000');
+  await js('window.__failKeysends = 1');
+  const m = mark();
+  t.ok('SEND is pressed', await pressSend());
+  const note = await noteAfter(30000);
+  t.ok('the note reaches the relays', !!note, note ? '' : await dialogText());
+  t.equal('...signed by the site key, not a one-time key', note?.pubkey, sitePk);
+  t.equal('...after one 10-sat stamp', [since(m), stampAddr.minted.at(-1)?.amount], [{ asks: 1, pays: 1, minted: 1 }, 10_000]);
+  const q = note?.tags.find((tag) => tag[0] === 'q');
+  const amount = Number((await receiptById(q?.[1]))?.tags.find((tag) => tag[0] === 'amount')?.[1]);
+  t.ok(`...quoting the site's receipt for LESS than the 1000 sats (${amount / 1000})`, amount > 0 && amount < 1_000_000, String(amount));
+  t.equal('...while the note still states the boost', note?.tags.find((tag) => tag[0] === 'amount')?.[1], '1000000');
+  t.ok('the modal shows the failed leg (✗) and no one-time notice', (await dialogText()).includes('✗') && !(await dialogText()).includes(ONE_TIME), await dialogText());
+  await js('window.__failKeysends = 0');
+  await js(`${CLOSE}?.click()`);
+  await until(`!${DIALOG}`, 5000);
+  stampAddr.reset();
 }
 
 if (runs(7)) {

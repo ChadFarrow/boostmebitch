@@ -329,3 +329,25 @@ no Lightning address. Nothing in the stamp used either one. `SITE_STAMP_LNADDRES
 provider's own domain. Chad plans one for the stamps only, separate from his main Alby address, and will
 send it before the merge.
 
+## Change (2026-11-17, later): the quoted receipt may not claim more than the note
+
+Asked whether the receipt route needs the stamp too, the answer was no — a note from the user's own key
+quotes a receipt under the user's name, and Chad's rule exempts that note — but a SITE note had a gap:
+Fountain draws the ⚡ figure from the receipt the note quotes, and the receipt route signs a site receipt
+for any amount up to 1,000,000 sats with no payment, so a 1-sat stamp on a "boosted 100 sats" note could
+quote a free 1,000,000-sat receipt. Chad: *"Add that fix."*
+
+- **The page sends the receipt with the stamp request** (`{ template, receipt }`) when the template has a
+  `q` tag. `QuotedZapReceipt` carries the signed `event`; `SiteNoteState.receipt` is set with the template
+  and kept across RETRY NOTE.
+- **site-stamp checks it** (`quotedReceiptFits`, pure, plus `verifyEvent` in the route): the event the
+  `q` names, kind:9735, the site's key, ONE whole-sats `amount`, **not more than** the note's. Not "equal":
+  the receipt states the sats that settled, and a failed leg makes it smaller (invariant 7).
+- **The page checks first** and, on a mismatch, posts one-time with the new reason `'receipt'` ("the
+  receipt the note quotes does not match the boost"), asking nothing and paying nothing.
+- **site-sign is unchanged**: the stamp binds the note id, and the id covers the `q` tag.
+- **site-stamp's body limit: 40 KB** — site-sign's 32 KB for the template plus the largest receipt the
+  site can sign (7,425 bytes, measured with the real builders; `check:sitestamp` keeps the margin).
+- **Not changed:** the receipt route itself stays free and open. A receipt quoted by the user's own note
+  is not checked.
+

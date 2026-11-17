@@ -99,7 +99,7 @@ npm run dev / build / start / lint
 | `check:gif` | `lib/gif-first-frame.ts` — the block walk cutting an animated cover to frame one | attacker-chosen bytes on a truncated prefix |
 | `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to; `noteOwnItemGuid` | an attacker's link sits under a real show's artwork |
 | `check:zapreceipt` | `zapRequestTags` — the kind:9734 the server mirrors; `validateSummaryRequest` — the summary receipt the site signs and the note quotes | the site attests a stranger's payment, under its key and the user's |
-| `check:sitestamp` | `lib/site-stamp.ts` — the stamp token, the sign gate, the 1% price, the Lightning address wire, the client ladder | the site signs an unpaid note; RETRY NOTE pays twice |
+| `check:sitestamp` | `lib/site-stamp.ts` — the stamp token, the sign gate, the 1% price, the quoted receipt, the Lightning address wire, the client ladder | the site signs an unpaid note; RETRY NOTE pays twice |
 | `check:cache` | `createBoundedCache` — the age, entry AND byte bounds both RSS caches share | an entry cap is not a memory bound |
 | `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load, forever |
 | `check:playlistdb` | `dbRowToEpisode` — another app's DB row as a track we render, with no payee | a mapped column type-checks and pays the wrong payee |

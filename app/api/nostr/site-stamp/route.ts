@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
+import { verifyEvent } from 'nostr-tools/pure';
+import type { Event } from 'nostr-tools';
 import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE, withCors, corsPreflight } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { sitePubkey } from '@/lib/nostr/site-key';
 import { validateBoostTemplate } from '@/lib/site-sign-template';
 import { stampMac, siteEventId } from '@/lib/site-stamp-server';
 import { stampAddressConfigured, createStampInvoice } from '@/lib/stamp-address';
-import { encodeStamp, stampDue, STAMP_TTL_SECS } from '@/lib/site-stamp';
+import { encodeStamp, stampDue, quotedReceiptFits, STAMP_TTL_SECS } from '@/lib/site-stamp';
 import { BRAND } from '@/lib/brand';
 
 // The NOTE STAMP: before `/api/nostr/site-sign` will sign a boost note under
@@ -23,7 +25,10 @@ import { BRAND } from '@/lib/brand';
 // invoice — cheap, but a row on its node — so the per-IP limit matches
 // site-sign's.
 
-const MAX_REQUEST_BYTES = 32 * 1024;
+// site-sign's 32 KB for the template, plus the ONE receipt it may quote: the
+// largest the receipt route signs is 7,425 bytes. check:sitestamp keeps the
+// margin above the largest receipt, built with the real builders.
+const MAX_REQUEST_BYTES = 40 * 1024;
 
 async function handlePost(req: Request) {
   const limited = rateLimit(req, 'site-stamp', 30);
@@ -59,6 +64,24 @@ async function handlePost(req: Request) {
     // boost costs more to fake. Every `why` is a literal (lib/site-stamp.ts).
     const due = stampDue(template);
     if (!due.ok) return NextResponse.json({ error: due.why }, { status: 400 });
+    // The receipt the note quotes is what Fountain draws the ⚡ figure from,
+    // and the receipt route signs one for any amount with no payment — so it
+    // may not claim more than the note this stamp is priced at. Its fields
+    // first (pure), then its id and signature: only a receipt THIS key signed,
+    // byte for byte, passes. `verifyEvent` hashes outside its own try and
+    // throws on a malformed object, hence the catch.
+    const receipt = body && typeof body === 'object' ? (body as { receipt?: unknown }).receipt : undefined;
+    const fit = quotedReceiptFits(template, receipt, site);
+    if (!fit.ok) return NextResponse.json({ error: fit.why }, { status: 400 });
+    if (template.tags.some((tag) => tag[0] === 'q')) {
+      let signed = false;
+      try {
+        signed = verifyEvent(receipt as Event);
+      } catch {
+        signed = false;
+      }
+      if (!signed) return NextResponse.json({ error: 'the quoted receipt is not the site’s' }, { status: 400 });
+    }
     const id = siteEventId(template, site);
     let invoice: { bolt11: string; verifyUrl: string };
     try {

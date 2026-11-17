@@ -661,7 +661,12 @@ export async function publishBoostNoteViaSite(
   // the site's NIP-05-verified identity, so the sender's @mentions lose their
   // `p` tags here. The feed's own npubs keep theirs. A one-time-key fallback
   // signs this same template, which is still not the sender's own key.
-  state.template ??= buildBoostNoteTemplate(args, false);
+  if (!state.template) {
+    state.template = buildBoostNoteTemplate(args, false);
+    // The receipt its `q` tag quotes, set WITH the template: site-stamp checks
+    // that it is the site's and claims no more than the note.
+    state.receipt = args.summaryReceipt?.event;
+  }
   const origin = opts.origin ?? '';
   // `state` itself, never a copy: the ladder records the paid stamp and the
   // signed event ON it, which is what makes RETRY NOTE free.

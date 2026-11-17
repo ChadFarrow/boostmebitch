@@ -519,7 +519,13 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   // long: filter.nostr.wine puts the npub and a query in the URL. Three of
   // those, the most the nevent carries.
   const relayHints = many.slice(0, 3).map((m) => `wss://filter.nostr.wine/${m.npub}?broadcast=true`);
-  const RECEIPT = { id: 'a'.repeat(64), pubkey: 'b'.repeat(64), relays: relayHints };
+  // The signed receipt rides with the quote: site-stamp refuses one that claims
+  // more than the note (lib/site-stamp.ts, `quotedReceiptFits`), and the page
+  // checks its fields before it asks. 1 sat is under every note here.
+  const RECEIPT = {
+    id: 'a'.repeat(64), pubkey: 'b'.repeat(64), relays: relayHints,
+    event: { id: 'a'.repeat(64), pubkey: 'b'.repeat(64), kind: 9735, created_at: 0, content: '', tags: [['amount', '1000']], sig: '' },
+  };
   // This site's own link carries the episode guid: sized so the link is 512.
   const siteBase = siteLandingUrl(podcast.podcastGuid, 'g').length - 1;
   // Every part at the most a real boost carries: a 250-character message (the

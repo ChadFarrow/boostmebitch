@@ -37,7 +37,7 @@ if (problems.length) {
 }
 
 const {
-  STAMP_MAX_FEE_SATS, STAMP_TTL_SECS, stampSats, stampDue,
+  STAMP_MAX_FEE_SATS, STAMP_TTL_SECS, stampSats, stampDue, quotedReceiptFits,
   STAMP_PAY_TIMEOUT_MS, STAMP_RECHECK_DELAYS_MS, STAMP_NOT_PAID, STAMP_UNCONFIRMED, STAMP_FAILURE_TEXT,
   encodeStamp, readStamp, splitSignBody, stampGate, signSiteNote,
   stampAddress, readPayRequest, stampCallbackUrl, readCallbackAnswer, readVerifyAnswer,
@@ -45,6 +45,9 @@ const {
 // The REAL sentence builders (pinned by check:vts), so a price vector reads
 // exactly the sentence a note carries.
 const { boostSentence, boostAllLines } = await import('../lib/util.ts');
+// The REAL receipt builders (pinned by check:zapreceipt), so a receipt vector is
+// the event the site's receipt route signs, not a shape written here.
+const { summaryRequestTemplateFromSpec, summaryReceiptTemplate } = await import('../lib/nostr/zap-request.ts');
 
 let failures = 0;
 const fail = (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); };
@@ -332,6 +335,95 @@ eq('a note with no readable amount is refused',
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n  the quoted receipt: never more than the note states');
+
+// Fountain draws a boost's ⚡ figure from the receipt a note QUOTES, not from
+// the note's text. The receipt route signs a site receipt for any amount up to
+// 1,000,000 sats with no payment, so without this a 1-sat stamp on a "boosted
+// 100 sats" note could quote a free 1,000,000-sat receipt and show ⚡1,000,000
+// under the site's name. The receipt carries the sats that SETTLED, which is
+// LESS than the note's intent when a leg failed (invariant 7) — so the rule is
+// "not more than", never "equal". naive() is the code before this rule: it
+// never looks at the receipt.
+const SITE_PK = 'a1'.repeat(32);
+const OTHER_PK = 'b2'.repeat(32);
+const RID = 'c3'.repeat(32);
+/** A summary receipt for `sats`, built by the receipt route's own builders. */
+const receiptOf = (sats, over = {}) => {
+  const request = { ...summaryRequestTemplateFromSpec({ amountMsat: sats * 1000, relays: ['wss://relay.example'], refs: { podcastGuid: SHOW.podcastGuid } }, SITE_PK, NOW), id: 'd4'.repeat(32), pubkey: SITE_PK, sig: 'e5'.repeat(64) };
+  return { ...summaryReceiptTemplate(request, SITE_PK, NOW), id: RID, pubkey: SITE_PK, sig: 'f6'.repeat(64), ...over };
+};
+/** A boost note for `sats` that quotes receipt `id`, as boost-notes.ts writes the tag. */
+const quoting = (sats, id = RID, author = SITE_PK) => {
+  const n = noteOf(sats);
+  return { ...n, tags: [...n.tags, ['q', id, 'wss://relay.example', author]] };
+};
+const withTags = (r, tags) => ({ ...r, tags });
+const naiveFits = () => ({ ok: true });
+const R = (label, args, extra = {}) => ({ label, kind: 'fits', args, ...extra });
+const RECEIPT = [
+  R('a note that quotes nothing needs no receipt', [noteOf(100), undefined, SITE_PK], { alsoNaive: true }),
+  R('...and one sent anyway is ignored', [noteOf(100), receiptOf(1_000_000), SITE_PK], { alsoNaive: true }),
+  R('a receipt for the whole boost', [quoting(100), receiptOf(100), SITE_PK], { alsoNaive: true }),
+  R('a receipt for less: a leg failed', [quoting(1000), receiptOf(640), SITE_PK], { alsoNaive: true }),
+  R('the page checks with the author the note names', [quoting(100), receiptOf(100), null], { alsoNaive: true }),
+  R('a receipt for MORE than the note', [quoting(100), receiptOf(1_000_000), SITE_PK]),
+  R('...by one sat', [quoting(100), receiptOf(101), SITE_PK]),
+  R('the note quotes a receipt it did not send', [quoting(100), undefined, SITE_PK]),
+  R('...or sent as text', [quoting(100), JSON.stringify(receiptOf(100)), SITE_PK]),
+  R('the receipt sent is another one', [quoting(100, 'c4'.repeat(32)), receiptOf(100), SITE_PK]),
+  R('the receipt is signed by another key', [quoting(100), receiptOf(100, { pubkey: OTHER_PK }), SITE_PK]),
+  R('...on the page, against the author the note names', [quoting(100), receiptOf(100, { pubkey: OTHER_PK }), null]),
+  R('the quoted event is not a receipt', [quoting(100), receiptOf(100, { kind: 1 }), SITE_PK]),
+  R('the receipt has no amount', [quoting(100), withTags(receiptOf(100), receiptOf(100).tags.filter((t) => t[0] !== 'amount')), SITE_PK]),
+  R('...or two', [quoting(100), withTags(receiptOf(100), [...receiptOf(100).tags, ['amount', '1000']]), SITE_PK]),
+  R('...or one that is not whole sats', [quoting(100), withTags(receiptOf(100), receiptOf(100).tags.map((t) => (t[0] === 'amount' ? ['amount', '1e5'] : t))), SITE_PK]),
+  R('two q tags', [{ ...quoting(100), tags: [...quoting(100).tags, ['q', RID, '', SITE_PK]] }, receiptOf(100), SITE_PK]),
+];
+function invokeReceipt(which, v) {
+  try {
+    return JSON.stringify(which === 'real' ? quotedReceiptFits(...v.args) : naiveFits(...v.args));
+  } catch (e) {
+    return `threw ${e?.message ?? e}`;
+  }
+}
+const fits = (label) => JSON.parse(invokeReceipt('real', RECEIPT.find((v) => v.label === label)));
+eq('what a real boost sends passes: no quote, the whole boost, less after a failed leg',
+  ['a note that quotes nothing needs no receipt', '...and one sent anyway is ignored', 'a receipt for the whole boost', 'a receipt for less: a leg failed', 'the page checks with the author the note names'].map(fits),
+  Array(5).fill({ ok: true }));
+eq('a receipt for more than the note is refused, by even one sat',
+  ['a receipt for MORE than the note', '...by one sat'].map((l) => fits(l).why),
+  Array(2).fill('the quoted receipt claims more than the note'));
+eq('a receipt that is missing, another one, or not the site\'s is refused',
+  ['the note quotes a receipt it did not send', '...or sent as text', 'the receipt sent is another one', 'the receipt is signed by another key', '...on the page, against the author the note names', 'the quoted event is not a receipt'].map((l) => fits(l).why),
+  ['the note quotes a receipt it did not send', 'the note quotes a receipt it did not send', 'the receipt sent is not the one the note quotes',
+    'the quoted receipt is not the site’s', 'the quoted receipt is not the site’s', 'the quoted receipt is not the site’s']);
+eq('a receipt whose amount cannot be read is refused',
+  ['the receipt has no amount', '...or two', '...or one that is not whole sats', 'two q tags'].map((l) => fits(l).why),
+  ['the quoted receipt has no single amount', 'the quoted receipt has no single amount', 'the quoted receipt has no single amount', 'a site note quotes one receipt at most']);
+{
+  const { proved } = replayVectors({ vectors: RECEIPT, invoke: invokeReceipt, fail });
+  if (proved === 0) fail('the receipt replay proved nothing');
+}
+{
+  // site-stamp takes the template site-sign takes, PLUS the receipt it quotes,
+  // so its body limit must exceed site-sign's by the largest receipt the site
+  // can sign: 8 relays and 4 refs at the receipt route's own caps.
+  const { readFileSync } = await import('node:fs');
+  const limitIn = (route) => {
+    const m = readFileSync(new URL(`../app/api/nostr/${route}/route.ts`, import.meta.url), 'utf8').match(/MAX_REQUEST_BYTES = (\d+) \* 1024;/);
+    return m ? Number(m[1]) * 1024 : NaN;
+  };
+  const relays = Array.from({ length: 8 }, (_, i) => `wss://${String(i).padEnd(248, 'r')}.x`);
+  const refs = { podcastGuid: 'g'.repeat(512), episodeGuid: 'e'.repeat(512), podcastUrl: `https://${'u'.repeat(504)}`, episodeUrl: `https://${'v'.repeat(504)}` };
+  const spec = summaryRequestTemplateFromSpec({ amountMsat: 1_000_000_000, relays, refs }, SITE_PK, NOW);
+  const largest = { ...summaryReceiptTemplate({ ...spec, id: RID, pubkey: SITE_PK, sig: 'f6'.repeat(64) }, SITE_PK, NOW), id: RID, pubkey: SITE_PK, sig: 'f6'.repeat(64) };
+  const bytes = Buffer.byteLength(JSON.stringify({ receipt: largest }));
+  eq(`site-stamp's body limit exceeds site-sign's by the largest receipt (${bytes} bytes)`,
+    [spec.tags.find((t) => t[0] === 'relays').length - 1, limitIn('site-stamp') - limitIn('site-sign') >= bytes], [8, true]);
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n  the client ladder');
 
 const SITE_EVENT = { id: 'site-event', pubkey: 'site', sig: 's' };
@@ -382,6 +474,30 @@ const paths = (h) => h.calls.map((c) => c.path.replace('/api/nostr/', ''));
   const before = h.calls.length;
   await signSiteNote(s, h.deps);
   eq('RETRY NOTE on a signed state asks nothing and pays nothing', [h.calls.length - before, h.paid.length], [0, 1]);
+}
+{
+  // The receipt is checked by the route, so it rides with the stamp request,
+  // and RETRY NOTE keeps the one it started with.
+  const h = harness();
+  const s = { ...fresh(quoting(100)), receipt: receiptOf(100) };
+  await signSiteNote(s, h.deps);
+  eq('a quoting note: the stamp request carries the template AND its receipt', h.calls[0].body, { template: s.template, receipt: receiptOf(100) });
+  eq('...and the sign request does not need it', h.calls[1].body, { template: s.template, stamp: 'tok' });
+  eq('...signed by the site after one 1-sat stamp', [s.signer, h.paid], ['site', [['lnbc10n1x', 1]]]);
+}
+{
+  const h = harness();
+  const s = { ...fresh(quoting(1000)), receipt: receiptOf(640) };
+  await signSiteNote(s, h.deps);
+  eq('a leg failed: the receipt is less than the note, and the site still signs', [s.signer, h.paid], ['site', [['lnbc10n1x', 10]]]);
+}
+{
+  // What the route would refuse costs nobody a request or a payment.
+  const h = harness();
+  const s = { ...fresh(quoting(100)), receipt: receiptOf(1_000_000) };
+  await signSiteNote(s, h.deps);
+  eq('a receipt over the note: one-time key, "receipt", nothing asked or paid',
+    [s.signer, s.why, h.calls.length, h.paid.length], ['one-time', 'receipt', 0, 0]);
 }
 {
   const notPaid = res(402, { error: STAMP_NOT_PAID });
@@ -493,7 +609,7 @@ for (const [label, answer] of [
   eq('a note whose text claims another amount: one-time "amount", nothing asked or paid',
     [s.signer, s.why, h.calls.length, h.paid.length], ['one-time', 'amount', 0, 0]);
 }
-eq('every failure has its text', Object.keys(STAMP_FAILURE_TEXT).sort(), ['amount', 'no-invoice', 'not-configured', 'not-signed', 'unconfirmed', 'wallet']);
+eq('every failure has its text', Object.keys(STAMP_FAILURE_TEXT).sort(), ['amount', 'no-invoice', 'not-configured', 'not-signed', 'receipt', 'unconfirmed', 'wallet']);
 eq('no failure text names a fixed price', Object.values(STAMP_FAILURE_TEXT).some((t) => /1-sat|1 sat/.test(t)), false);
 eq('no failure text claims the sat stayed', Object.values(STAMP_FAILURE_TEXT).some((t) => /refund|not charged|still have|nothing was (paid|sent)/i.test(t)), false);
 

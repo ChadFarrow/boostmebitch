@@ -88,6 +88,56 @@ export function stampDue(template: { content: string; tags: string[][] }): Stamp
   return { ok: true, sats: stampSats(msat) };
 }
 
+// The quoted receipt.
+
+export type ReceiptFit = { ok: true } | { ok: false; why: string };
+
+const readMsat = (tags: unknown): number | null => {
+  if (!Array.isArray(tags)) return null;
+  const amounts = tags.filter((tag) => Array.isArray(tag) && tag[0] === 'amount');
+  const raw = amounts.length === 1 ? (amounts[0] as unknown[])[1] : undefined;
+  return typeof raw === 'string' && WHOLE_SATS_MSAT.test(raw) ? Number(raw) : null;
+};
+
+/**
+ * Whether the receipt a site note QUOTES may go under the site's name with it.
+ * Fountain draws a boost's ⚡ figure from that receipt, not from the note, and
+ * the receipt route signs a site receipt for any amount up to 1,000,000 sats
+ * with no payment — so a stamp priced at the note's amount must also bound the
+ * receipt's. The receipt states the sats that SETTLED, which is less than the
+ * note's intent when a leg failed (boost invariant 7): "not more than", never
+ * "equal". A note that quotes nothing needs no receipt.
+ *
+ * `sitePubkey` is the key the receipt must be signed by: the server passes its
+ * own; the page passes `null` and checks the author the note's `q` tag names.
+ * This reads the receipt's fields only. The route ALSO verifies its id and
+ * signature, which this import-free leaf cannot. Every `why` is a literal.
+ */
+export function quotedReceiptFits(
+  template: { tags: string[][] },
+  receipt: unknown,
+  sitePubkey: string | null,
+): ReceiptFit {
+  const quotes = template.tags.filter((tag) => tag[0] === 'q');
+  if (quotes.length === 0) return { ok: true };
+  if (quotes.length > 1) return { ok: false, why: 'a site note quotes one receipt at most' };
+  const [, quotedId, , author] = quotes[0]!;
+  if (!receipt || typeof receipt !== 'object') return { ok: false, why: 'the note quotes a receipt it did not send' };
+  const r = receipt as Record<string, unknown>;
+  if (r.id !== quotedId) return { ok: false, why: 'the receipt sent is not the one the note quotes' };
+  if (r.kind !== 9735 || r.pubkey !== (sitePubkey ?? author)) {
+    return { ok: false, why: 'the quoted receipt is not the site’s' };
+  }
+  // summaryReceiptTemplate writes the top-level `amount` from the request's, so
+  // a receipt the site signed carries one number twice; the signature binds it.
+  const receiptMsat = readMsat(r.tags);
+  if (receiptMsat === null) return { ok: false, why: 'the quoted receipt has no single amount' };
+  const noteMsat = readMsat(template.tags);
+  if (noteMsat === null) return { ok: false, why: 'a site note needs exactly one amount tag' };
+  if (receiptMsat > noteMsat) return { ok: false, why: 'the quoted receipt claims more than the note' };
+  return { ok: true };
+}
+
 // The token.
 
 export interface StampClaims {
@@ -323,7 +373,7 @@ export interface NoteTemplate {
   content: string;
 }
 
-export type StampFailure = 'amount' | 'not-configured' | 'no-invoice' | 'wallet' | 'unconfirmed' | 'not-signed';
+export type StampFailure = 'amount' | 'receipt' | 'not-configured' | 'no-invoice' | 'wallet' | 'unconfirmed' | 'not-signed';
 
 /**
  * Why a note went out under a one-time key. None says the sats stayed in the
@@ -331,6 +381,7 @@ export type StampFailure = 'amount' | 'not-configured' | 'no-invoice' | 'wallet'
  */
 export const STAMP_FAILURE_TEXT: Record<StampFailure, string> = {
   amount: 'the note names a different amount than the boost',
+  receipt: 'the receipt the note quotes does not match the boost',
   'not-configured': 'note stamps are not set up on this site',
   'no-invoice': 'the site could not make the stamp invoice',
   wallet: 'your wallet did not confirm the stamp payment',
@@ -345,6 +396,12 @@ export const STAMP_FAILURE_TEXT: Record<StampFailure, string> = {
  */
 export interface SiteNoteState<E> {
   template?: NoteTemplate;
+  /**
+   * The signed summary receipt the template's `q` tag quotes, if it quotes one.
+   * Set WITH the template and never apart from it: site-stamp checks the one
+   * against the other (`quotedReceiptFits`).
+   */
+  receipt?: unknown;
   stamp?: string;
   signed?: E;
   signer?: 'site' | 'one-time';
@@ -401,7 +458,11 @@ export async function signSiteNote<E>(
     // a note it would refuse costs nobody a request, an invoice or a payment.
     const due = stampDue(template);
     if (!due.ok) return oneTime('amount');
-    const minted = await ask('/api/nostr/site-stamp', { template });
+    if (!quotedReceiptFits(template, state.receipt, null).ok) return oneTime('receipt');
+    const minted = await ask(
+      '/api/nostr/site-stamp',
+      state.receipt === undefined ? { template } : { template, receipt: state.receipt },
+    );
     if (minted.status === 503) return oneTime('not-configured');
     const invoice = field(minted.body, 'invoice');
     const stamp = field(minted.body, 'stamp');
