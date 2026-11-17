@@ -117,6 +117,58 @@ export function noteMentionTags(
   };
 }
 
+/** After a name, a character that means the word or the address goes on. */
+const CONTINUES = /^(?:[\p{L}\p{N}_@]|[.:/-][\p{L}\p{N}])/u;
+
+/**
+ * Whether the `@name` at `at`..`end` stands on its own, the way the picker
+ * writes it, rather than inside a link or an address.
+ *
+ * BEFORE: the start of the text or whitespace, and nothing else. That is the
+ * exact rule `activeMention` in components/message-input.tsx opens the picker
+ * on, so every `@name` the picker wrote passes it, and the `/` of a link path
+ * (https://host/@handle/…) and the local part of an email (me@handle.org) fail
+ * it. Checked by hand, never with a lookbehind: a regex literal with one is a
+ * SyntaxError on Safari before 16.4, which would take the whole module down.
+ *
+ * AFTER: anything but a letter, a digit, `_` or `@`, and no `.`, `:`, `/` or
+ * `-` that a letter or digit follows. That rejects the fediverse handle
+ * @handle@host — Castopod shows have one — @handle.bsky.social, and a longer
+ * word, while "@Reed," "@Reed." and "@Reed's" are still placed.
+ *
+ * WHEN IN DOUBT, DO NOT PLACE. A name not placed goes to the trailing run, so
+ * the note still names and tags the person; a name placed inside an address
+ * breaks the address, permanently.
+ */
+function standsAlone(text: string, at: number, end: number): boolean {
+  if (at > 0 && !/\s/.test(text[at - 1])) return false;
+  return !CONTINUES.test(text.slice(end, end + 2));
+}
+
+/**
+ * Every `needle` that stands alone, replaced; `null` when none did. A needle
+ * inside an address is skipped one character on, so a later one in the same
+ * text is still found.
+ */
+function replaceStandalone(text: string, needle: string, uri: string): string | null {
+  let out = '';
+  let from = 0;
+  let placed = false;
+  let at = text.indexOf(needle);
+  while (at !== -1) {
+    const end = at + needle.length;
+    if (standsAlone(text, at, end)) {
+      out += text.slice(from, at) + uri;
+      from = end;
+      placed = true;
+      at = text.indexOf(needle, end);
+    } else {
+      at = text.indexOf(needle, at + 1);
+    }
+  }
+  return placed ? out + text.slice(from) : null;
+}
+
 /**
  * Put each mention's `nostr:npub…` where the sender typed the name, and report
  * the ones that could not be placed.
@@ -144,6 +196,12 @@ export function noteMentionTags(
  * both times, and leaving the second as plain text would look like the same bug
  * this fixes. Duplicate `nostr:` references to one pubkey are ordinary.
  *
+ * ONLY WHERE THE NAME STANDS ALONE — see `standsAlone`. An `@name` inside a
+ * link is part of the link: a Castopod episode is https://host/@handle/…, and
+ * a plain string replace turned it into https://host/nostr:npub1…/…, a dead
+ * link in a note that can never be edited. A name that occurs only inside an
+ * address was not placed, so it comes back in `remaining` like any other.
+ *
  * A mention whose name is absent from the text — the sender edited it away
  * after picking — comes back in `remaining` so the caller can still append it.
  * `docs/nostr.md` requires the mention to reach the body on every path: a name
@@ -165,9 +223,9 @@ export function inlineMentions(
   for (const m of ordered) {
     const name = m.name?.trim();
     if (!name) { remaining.push(m); continue; }
-    const needle = `@${name}`;
-    if (!out.includes(needle)) { remaining.push(m); continue; }
-    out = out.split(needle).join(`nostr:${m.npub}`);
+    const placed = replaceStandalone(out, `@${name}`, `nostr:${m.npub}`);
+    if (placed === null) { remaining.push(m); continue; }
+    out = placed;
   }
   // Preserve the caller's original order for whatever is left, so the trailing
   // run does not reorder itself depending on how long the names happened to be.
