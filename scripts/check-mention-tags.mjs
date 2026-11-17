@@ -353,6 +353,65 @@ console.log('\ninlineMentions puts the identifier where the sender typed the nam
     '\u26a1 Boost \u26a1\n\nta @Reed', [REED],
     { content: '\u26a1 Boost \u26a1\n\nta nostr:npub1reed', remaining: [] }, { alsoNaive: true });
 
+  // A NAME INSIDE AN ADDRESS IS NOT A MENTION. The picker only ever writes
+  // `@name` at the start of the text or after whitespace (activeMention in
+  // components/message-input.tsx), so an `@name` anywhere else was typed or
+  // pasted as part of something else \u2014 and replacing it breaks that thing in a
+  // kind:1 that can never be edited. Reported on a Castopod episode link, whose
+  // path is /@<handle>/episodes/<slug>: a mention named "handle" turned the
+  // link into https://host/nostr:npub1\u2026/episodes/x, a dead link.
+  const HANDLE = { npub: 'npub1handle', pubkey: 'ee'.repeat(32), name: 'handle' };
+
+  icheck('a Castopod link keeps its /@handle path, and the typed mention is still placed',
+    'listen https://podcasts.example/@handle/episodes/ep-1 thanks @handle', [HANDLE],
+    { content: 'listen https://podcasts.example/@handle/episodes/ep-1 thanks nostr:npub1handle', remaining: [] });
+
+  // The name occurs ONLY inside the link, so nothing was placed and the
+  // mention must reach the body through the trailing run instead.
+  icheck('a name found only inside a link is left alone and comes back as remaining',
+    'https://podcasts.example/@handle/episodes/ep-1', [HANDLE],
+    { content: 'https://podcasts.example/@handle/episodes/ep-1', remaining: [HANDLE] });
+
+  icheck('a link that ends in /@handle keeps it',
+    'https://www.youtube.com/@handle and thanks @handle', [HANDLE],
+    { content: 'https://www.youtube.com/@handle and thanks nostr:npub1handle', remaining: [] });
+
+  icheck('an email address keeps its domain',
+    'mail me@handle.org or @handle', [HANDLE],
+    { content: 'mail me@handle.org or nostr:npub1handle', remaining: [] });
+
+  // Castopod shows are on the fediverse too, so their handles sit in notes.
+  icheck('a fediverse handle @handle@host is left whole',
+    'follow @handle@podcasts.example and @handle', [HANDLE],
+    { content: 'follow @handle@podcasts.example and nostr:npub1handle', remaining: [] });
+
+  icheck('a dotted handle @handle.bsky.social is left whole',
+    'see @handle.bsky.social, ta @handle', [HANDLE],
+    { content: 'see @handle.bsky.social, ta nostr:npub1handle', remaining: [] });
+
+  icheck('a longer word that starts with the name is not the name',
+    '@handlebar and @handle', [HANDLE],
+    { content: '@handlebar and nostr:npub1handle', remaining: [] });
+
+  // Must-still-work: punctuation the sender types straight after a name ends
+  // the name, it does not continue it. Each of these was placed before the
+  // fix and must still be \u2014 naive() places them too.
+  icheck('a comma straight after the name still places it',
+    'thanks @Reed, great show', [REED],
+    { content: 'thanks nostr:npub1reed, great show', remaining: [] }, { alsoNaive: true });
+
+  icheck('a full stop at the end of the text still places it',
+    'great show @Reed.', [REED],
+    { content: 'great show nostr:npub1reed.', remaining: [] }, { alsoNaive: true });
+
+  icheck('a possessive still places it',
+    "@Reed's song", [REED],
+    { content: "nostr:npub1reed's song", remaining: [] }, { alsoNaive: true });
+
+  icheck('a name at the start of a new line is placed',
+    'great show\n@Reed', [REED],
+    { content: 'great show\nnostr:npub1reed', remaining: [] }, { alsoNaive: true });
+
   const iNaive = (content, mentions) => {
     let out = content;
     for (const m of mentions ?? []) {
