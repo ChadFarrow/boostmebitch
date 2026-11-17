@@ -114,8 +114,23 @@ events_seen_at_idx on events (seen_at)`; the migration is then a no-op there and
 exists for a rebuild. `if not exists` matches the name only, so after a hand
 build check `indisvalid` in `pg_index` — a failed concurrent build leaves an
 INVALID index that the migration would skip while every query keeps scanning.
-**The database has no public address**: `postgres.railway.internal` only, and
-`railway ssh` (CLI 5.x) needs an SSH key registered on the Railway account.
+
+Built that way on 2026-11-17: 19.4 s, valid, 19 MB. `max(seen_at)` went from
+10.1–12.4 s to 0.2 ms (`Index Scan Backward`), `/health` to 0.1 s, and
+`/feed/podcast/<guid>` on www to 200 in 0.6 s. **Two routes still pass the 6 s
+proxy timeout on queries of their own, and this index does not touch them:**
+`globalNotes` (`/feed/global`) takes 2–7 s depending on the cache — it reads
+every `k` tag, then fetches ~11,800 events one by one — and `liveStreams`
+(`/feed/live`) takes ~30 s, because 7 days hold 58,535 kind:30311 versions
+against 739 kind:1 notes and each version costs a `d`-tag lookup. Open.
+
+**The database has no public address**: `postgres.railway.internal` only. Reach
+it over SSH: the Mac mini key `mac-mini-id_ed25519` is registered on the Railway
+account (2026-11-17). `railway ssh` (CLI 4.8.0) fails on every service, and CLI
+5.x stops at its host-key prompt without a terminal, so take the host and user
+from `railway ssh config --dry-run -s Postgres` and use plain `ssh` with
+`StrictHostKeyChecking=accept-new`. Run a long build under `nohup` in the
+container, so a dropped session cannot cancel it.
 
 ## Everything a caller can name has to be bounded
 
