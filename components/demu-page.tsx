@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PodcastResults } from '@/components/lists';
 import { ShowMore, useAutoReveal, useRevealed } from '@/components/lists/grouping';
+import { useAlbumCoverPlay } from '@/components/lists/use-album-cover-play';
 import { useApp } from '@/lib/store';
 import { DEMU_APPS, demuAge, demuDateLabel, demuGroups, matchesDemuQuery, sortDemuAlbums } from '@/lib/demu';
 import type { DemuAlbum } from '@/lib/demu';
@@ -47,6 +48,8 @@ export function DemuPage() {
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
   const router = useRouter();
+  // A press on a cover plays the album; the rest of the row opens it.
+  const coverPlay = useAlbumCoverPlay();
 
   const fetchList = useCallback(async () => {
     setLoad({ status: 'loading' });
@@ -223,7 +226,7 @@ export function DemuPage() {
                   <h2 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-bolt border-b border-bolt/40 pb-1.5 mb-1 px-1">
                     {g.label}
                   </h2>
-                  <PodcastResults feeds={g.albums} selected={null} onSelect={openAlbum} meta={meta} detail={detail} stamp={stamp} coverBadge={coverBadge} />
+                  <PodcastResults feeds={g.albums} selected={null} onSelect={openAlbum} meta={meta} detail={detail} stamp={stamp} coverBadge={coverBadge} coverPlay={coverPlay} />
                 </section>
               ))}
               <ShowMore remaining={remaining} onClick={more} noun="DeMu albums" innerRef={sentinel} />

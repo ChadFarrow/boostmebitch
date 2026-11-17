@@ -352,6 +352,42 @@ export function listHolding(
   return listenQueue.some((i) => epKey(i.episode) === key) ? 'queue' : null;
 }
 
+/**
+ * Is the item playing now a track of `album`, playing AS that album? Then the
+ * album's ▶ pauses and resumes it; otherwise the ▶ STARTS the album.
+ *
+ * Two surfaces press it: the album page's header cover (`<EpisodeList>`) and a
+ * cover in a list of albums (`useAlbumCoverPlay`, `/demu`). One rule, because a
+ * second copy is how the two came to disagree about the same album.
+ *
+ * The show matches by `podcastGuid`, else by `id`. A track the favorites shuffle
+ * or Up Next holds is NOT the album's (`listHolding`): resuming it would play
+ * that one song and leave the other list owning what comes after (Chad,
+ * 2026-11-14).
+ */
+export function albumHoldsCurrent(
+  album: Pick<Podcast, 'id' | 'podcastGuid'>,
+  current: { episode: Pick<Episode, 'guid' | 'feedId' | 'id'>; podcast: Pick<Podcast, 'id' | 'podcastGuid'> } | null,
+  shuffle: readonly QueueItem[] | null,
+  listenQueue: readonly QueueItem[],
+): boolean {
+  if (!current) return false;
+  const sameShow = (!!album.podcastGuid && current.podcast.podcastGuid === album.podcastGuid)
+    || current.podcast.id === album.id;
+  return sameShow && listHolding(shuffle, listenQueue, current.episode) === null;
+}
+
+/**
+ * The track an album's ▶ starts: the first row in `rows`' order that is not a
+ * scheduled live item and not an unresolved playlist placeholder, else the first
+ * that is not a placeholder. A placeholder has no enclosure, so it can never be
+ * the thing a ▶ starts. Undefined for a list with nothing to start.
+ */
+export function firstPlayableTrack<T extends Pick<Episode, 'liveStatus' | 'unresolved'>>(rows: readonly T[]): T | undefined {
+  return rows.find((e) => e.liveStatus !== 'pending' && !e.unresolved)
+    ?? rows.find((e) => !e.unresolved);
+}
+
 type RowIds = Pick<Episode, 'id' | 'guid' | 'feedId' | 'podcastGuid'>;
 
 /**

@@ -11,6 +11,37 @@ import { carriesV4V, isPlaylistMedium } from '@/lib/util';
 import { PodcastCover } from '../podcast-cover';
 import { FavHeart } from '../fav-heart';
 
+/**
+ * A cover that is its own control — see `<PodcastRow>`'s `coverPlay`. Built by
+ * `useAlbumCoverPlay` (`components/lists/use-album-cover-play.ts`).
+ *
+ * `state` is what the badge draws and what a press does next:
+ * - `idle` ▶ — the album is not playing; a press starts it at its first track.
+ * - `loading` … — the press is waiting for the album's feed.
+ * - `playing` ❚❚ — a track of this album plays; a press pauses it.
+ * - `paused` ▶ — a track of this album is paused; a press resumes it.
+ * - `failed` ! — the last press could not load the album; a press tries again.
+ */
+export interface CoverPlay {
+  state: 'idle' | 'loading' | 'playing' | 'paused' | 'failed';
+  onPress: () => void;
+}
+
+const COVER_PLAY_GLYPH: Record<CoverPlay['state'], string> = {
+  idle: '▶', loading: '…', playing: '❚❚', paused: '▶', failed: '!',
+};
+// `title` is the short word a pointer user reads; the accessible name carries
+// the album too, because a list of covers is a list of identical buttons to a
+// screen reader otherwise.
+const COVER_PLAY_TITLE: Record<CoverPlay['state'], string> = {
+  idle: 'Play album', loading: 'Loading the album…', playing: 'Pause', paused: 'Resume',
+  failed: 'Could not load the album. Press to try again.',
+};
+const coverPlayLabel = (state: CoverPlay['state'], title: string) => ({
+  idle: `Play ${title}`, loading: `Loading ${title}`, playing: `Pause ${title}`, paused: `Resume ${title}`,
+  failed: `Could not load ${title}. Press to try again.`,
+})[state];
+
 export function PodcastRow({
   podcast,
   selected,
@@ -20,6 +51,7 @@ export function PodcastRow({
   detail,
   stamp,
   coverBadge,
+  coverPlay,
   piUnasked,
   footer,
 }: {
@@ -48,6 +80,16 @@ export function PodcastRow({
    * accessible name. Optional; absent changes nothing.
    */
   coverBadge?: React.ReactNode;
+  /**
+   * Make the COVER its own control: a press plays the album, and the rest of
+   * the row still opens it — `/demu` (Chad, 2026-11-16: "if I click the
+   * artwork could it just play it?"). The cover then leaves the row's button
+   * and becomes a SIBLING button, because a button may not contain another
+   * button. It always draws a round ▶ badge in its bottom-right corner, never
+   * only on hover: a phone has no hover, and a control must look like one
+   * before it is touched. Optional; absent changes nothing.
+   */
+  coverPlay?: CoverPlay;
   /**
    * Extra text for the secondary line, beside the author.
    *
@@ -82,6 +124,37 @@ export function PodcastRow({
    */
   footer?: React.ReactNode;
 }) {
+  const cover = (
+    <div className="relative flex-shrink-0">
+      <PodcastCover
+        image={podcast.image}
+        artwork={podcast.artwork}
+        title={podcast.title}
+        seed={podcast.podcastGuid ?? String(podcast.id)}
+        className={`w-14 h-14 border border-bone/20 flex-shrink-0 text-xl ${coverPlay ? 'group-hover/cover:border-bolt' : ''}`}
+      />
+      {coverBadge}
+      {coverPlay ? (
+        // The badge mirrors the app badge in the opposite corner. Bolt-filled
+        // while this album holds the player, playing or paused: that follows
+        // WHICH album is current, the glyph follows the transport — the episode
+        // row's rule, so a paused album still shows where its ▶ is.
+        <span
+          aria-hidden
+          data-cover-play-glyph
+          className={`absolute -bottom-1.5 -right-1.5 w-6 h-6 rounded-full border grid place-items-center text-[10px] leading-none ${
+            coverPlay.state === 'playing' || coverPlay.state === 'paused'
+              ? 'bg-bolt text-ink border-bolt'
+              : coverPlay.state === 'loading'
+                ? 'bg-ink text-bolt border-bolt animate-pulse'
+                : 'bg-ink text-bone border-bone/60 group-hover/cover:text-bolt group-hover/cover:border-bolt'
+          }`}
+        >
+          {COVER_PLAY_GLYPH[coverPlay.state]}
+        </span>
+      ) : null}
+    </div>
+  );
   return (
     // The row's opening control is a real <button>, with <FavHeart> as its
     // SIBLING — the same shape <EpisodeContents> uses for its seek row, and for
@@ -99,22 +172,28 @@ export function PodcastRow({
         selected ? 'bg-bolt/10' : 'hover:bg-bone/5'
       }`}
     >
+      {coverPlay ? (
+        // Full row height with the row button's `py-3`, so the cover sits where
+        // it sat inside that button and the whole left column is the target.
+        <button
+          type="button"
+          data-cover-play={coverPlay.state}
+          onClick={coverPlay.onPress}
+          aria-label={coverPlayLabel(coverPlay.state, podcast.title)}
+          aria-busy={coverPlay.state === 'loading' || undefined}
+          title={COVER_PLAY_TITLE[coverPlay.state]}
+          className="group/cover flex-shrink-0 py-3 cursor-pointer"
+        >
+          {cover}
+        </button>
+      ) : null}
       <button
         type="button"
         onClick={() => onSelect(podcast)}
         aria-current={selected || undefined}
         className="flex-1 min-w-0 flex gap-3 py-3 text-left cursor-pointer"
       >
-        <div className="relative flex-shrink-0">
-          <PodcastCover
-            image={podcast.image}
-            artwork={podcast.artwork}
-            title={podcast.title}
-            seed={podcast.podcastGuid ?? String(podcast.id)}
-            className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-          />
-          {coverBadge}
-        </div>
+        {coverPlay ? null : cover}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-display text-base leading-tight line-clamp-2 break-words min-w-0">{podcast.title}</span>
@@ -172,6 +251,7 @@ export function PodcastResults({
   detail,
   stamp,
   coverBadge,
+  coverPlay,
   piUnasked,
 }: {
   feeds: Podcast[];
@@ -185,6 +265,8 @@ export function PodcastResults({
   stamp?: (p: Podcast) => React.ReactNode;
   /** Per-row badge over the cover — see `<PodcastRow>`'s `coverBadge`. */
   coverBadge?: (p: Podcast) => React.ReactNode;
+  /** Per-row cover control, or null for a row whose cover stays inside the row — see `<PodcastRow>`'s `coverPlay`. */
+  coverPlay?: (p: Podcast) => CoverPlay | null;
   /** Podcast Index was never asked — see `<PodcastRow>`'s `piUnasked`. */
   piUnasked?: boolean;
   /**
@@ -230,6 +312,7 @@ export function PodcastResults({
           detail={detail?.(p)}
           stamp={stamp?.(p)}
           coverBadge={coverBadge?.(p)}
+          coverPlay={coverPlay?.(p) ?? undefined}
           piUnasked={piUnasked}
         />
       ))}
