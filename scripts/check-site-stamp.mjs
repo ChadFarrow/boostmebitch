@@ -1,6 +1,7 @@
 // `npm run check:sitestamp` — pins lib/site-stamp.ts: the note stamp that lets
-// `/api/nostr/site-sign` sign ONLY a boost note whose 1-sat invoice was paid,
-// and the client ladder that pays it and falls back to a one-time key.
+// `/api/nostr/site-sign` sign ONLY a boost note whose stamp invoice was paid,
+// its price (1% of the boost the note STATES), and the client ladder that pays
+// it and falls back to a one-time key.
 //
 // WHAT BREAKS IF THIS GOES WRONG. The site key signs under the site's
 // NIP-05-verified name. A gate that accepts a token it did not mint — a flipped
@@ -15,7 +16,8 @@
 // old path, so sign it" and "any stamp that decodes names its verify link".
 // The Lightning address half has one too: trust whatever callback and verify
 // link the address hands back, and read any `settled` that is not true as
-// "unpaid".
+// "unpaid". So does the price: round 1% to the nearest sat, and read the
+// `amount` tag alone — never the sentence a person reads.
 // Every refusal below must be one `naive()` gets wrong; the two inputs both
 // must accept are exempted one at a time with `{ alsoNaive: true }`.
 //
@@ -35,11 +37,14 @@ if (problems.length) {
 }
 
 const {
-  STAMP_SATS, STAMP_MAX_FEE_SATS, STAMP_TTL_SECS,
+  STAMP_MAX_FEE_SATS, STAMP_TTL_SECS, stampSats, stampDue,
   STAMP_PAY_TIMEOUT_MS, STAMP_RECHECK_DELAYS_MS, STAMP_NOT_PAID, STAMP_UNCONFIRMED, STAMP_FAILURE_TEXT,
   encodeStamp, readStamp, splitSignBody, stampGate, signSiteNote,
   stampAddress, readPayRequest, stampCallbackUrl, readCallbackAnswer, readVerifyAnswer,
 } = await import('../lib/site-stamp.ts');
+// The REAL sentence builders (pinned by check:vts), so a price vector reads
+// exactly the sentence a note carries.
+const { boostSentence, boostAllLines } = await import('../lib/util.ts');
 
 let failures = 0;
 const fail = (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); };
@@ -52,7 +57,6 @@ const eq = (label, got, want) => {
 
 // ---------------------------------------------------------------------------
 console.log('\n  the constants the spec fixes');
-eq('1 sat a stamp', STAMP_SATS, 1);
 eq('Spark fee cap 10 sats (Chad, 2026-11-17)', STAMP_MAX_FEE_SATS, 10);
 eq('token lifetime 24 h', STAMP_TTL_SECS, 86_400);
 eq('wallet gets 30 s', STAMP_PAY_TIMEOUT_MS, 30_000);
@@ -95,7 +99,17 @@ const naiveSplit = (body) => ({ template: body, stamp: undefined, legacy: true }
 const gate = (label, stamp, legacy, eventId, requireStamp, extra = {}) =>
   ({ label, kind: 'gate', args: [stamp, legacy, eventId, { requireStamp, mac: MAC, nowSecs: NOW }], ...extra });
 
-const TEMPLATE = { kind: 1, created_at: NOW, tags: [['t', 'boostagram'], ['t', 'value4value']], content: '⚡ Boost ⚡ hi' };
+const SHOW = { title: 'Homegrown Hits', author: 'Bowl After Bowl', medium: 'podcast', podcastGuid: 'f9d8a1b2-0000-4000-8000-000000000001' };
+/** A note's content as formatContent lays it out (lib/nostr/boost-notes.ts), its sentence from the real builder. */
+const noteContent = ({ message = '', sentence }) =>
+  ['⚡ Boost ⚡', '', ...(message ? [message, ''] : []), sentence, '', 'https://homegrownhits.example/146'].join('\n');
+const noteOf = (sats, { message = '', sentence, amount = String(sats * 1000) } = {}) => ({
+  kind: 1,
+  created_at: NOW,
+  tags: [['amount', amount], ['t', 'boostagram'], ['t', 'value4value']],
+  content: noteContent({ message, sentence: sentence ?? boostSentence({ sender: 'ChadF', sats, show: SHOW, via: 'BoostMeBitch' }) }),
+});
+const TEMPLATE = noteOf(100);
 
 const VECTORS = [
   gate('a valid stamp for this event is checked at its verify link', VALID, false, ID, true, { alsoNaive: true }),
@@ -238,6 +252,86 @@ eq('verify: an error or an odd shape is "unknown", never "unpaid"',
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n  the price: 1% of the boost the note states');
+
+// Chad, 2026-11-17: "Let's do 1% instead with no maximum" — and he liked that a
+// note claiming a LARGER boost then costs more to fake. So the price is read
+// from the note, and the sentence a person reads must state the same number as
+// the `amount` tag an app reads; otherwise a script pays 1% of a small tag under
+// a large sentence. naive() is the obvious version: round to the nearest sat,
+// read the tag, never the text.
+const naiveSats = (msat) => Math.round(msat / 100_000);
+const naiveDue = (t) => ({ ok: true, sats: naiveSats(Number(t.tags.find((x) => x[0] === 'amount')?.[1] ?? 0)) });
+
+const allNote = boostAllLines({ sender: 'ChadF', sats: 300, count: 3, showTitle: 'Two For Tunestr', each: ' (100 each)', tracks: ['Sing For You', 'Copenhagen', 'Kurtis'], via: 'BoostMeBitch' });
+const P = (label, kind, args, extra = {}) => ({ label, kind, args, ...extra });
+const PRICE = [
+  P('a 100-sat boost pays 1 sat', 'sats', [100_000], { alsoNaive: true }),
+  P('a 1000-sat boost pays 10', 'sats', [1_000_000], { alsoNaive: true }),
+  P('a 50,000-sat boost pays 500 — no maximum', 'sats', [50_000_000], { alsoNaive: true }),
+  P('a 120-sat boost rounds UP to 2', 'sats', [120_000]),
+  P('a 40-sat boost still pays the 1-sat minimum', 'sats', [40_000]),
+  P('a boost note as the modal writes it', 'due', [noteOf(1000)], { alsoNaive: true }),
+  P('...with a message that claims nothing', 'due', [noteOf(1000, { message: 'Great show!' })], { alsoNaive: true }),
+  P('...with no sender ("Boosted 100 sats")', 'due', [noteOf(100, { sentence: boostSentence({ sats: 100, show: SHOW, via: 'BoostMeBitch' }) })], { alsoNaive: true }),
+  P('...to a show whose title names sats', 'due', [noteOf(100, { sentence: boostSentence({ sender: 'ChadF', sats: 100, show: { ...SHOW, title: 'Stacking 5000000 sats' }, via: 'BoostMeBitch' }) })], { alsoNaive: true }),
+  P('a BOOST ALL summary', 'due', [noteOf(300, { sentence: allNote.join('\n') })], { alsoNaive: true }),
+  P('the sentence claims more than the tag', 'due', [noteOf(100, { sentence: boostSentence({ sender: 'ChadF', sats: 10_000, show: SHOW, via: 'BoostMeBitch' }) })]),
+  P('the message claims a bigger boost above a true sentence', 'due', [noteOf(100, { message: 'Satoshi boosted 1000000 sats to the moon' })]),
+  P('...written with separators', 'due', [noteOf(100, { message: 'boosted 1,000,000 sats' })]),
+  P('...written in full-width digits', 'due', [noteOf(100, { message: 'boosted １０００００ sats' })]),
+  P('no amount tag', 'due', [{ ...noteOf(100), tags: [['t', 'boostagram'], ['t', 'value4value']] }]),
+  P('two amount tags', 'due', [{ ...noteOf(100), tags: [['amount', '100000'], ['amount', '100000000'], ['t', 'boostagram']] }]),
+  P('an amount that is not whole sats', 'due', [noteOf(100, { amount: '100500' })]),
+  P('an amount that is not a plain number', 'due', [noteOf(100, { amount: '1e8' })]),
+  P('no sentence at all', 'due', [{ ...noteOf(100), content: '⚡ Boost ⚡\n\nbuy my thing' }]),
+];
+
+function invokePrice(which, v) {
+  const real = which === 'real';
+  try {
+    if (v.kind === 'sats') return JSON.stringify(real ? stampSats(...v.args) : naiveSats(...v.args));
+    if (v.kind === 'due') return JSON.stringify(real ? stampDue(...v.args) : naiveDue(...v.args));
+    return `unknown kind ${v.kind}`;
+  } catch (e) {
+    return `threw ${e?.message ?? e}`;
+  }
+}
+const price = (label) => JSON.parse(invokePrice('real', PRICE.find((v) => v.label === label)));
+
+eq('1% of the boost, rounded up, at least 1, no maximum',
+  ['a 100-sat boost pays 1 sat', 'a 1000-sat boost pays 10', 'a 50,000-sat boost pays 500 — no maximum', 'a 120-sat boost rounds UP to 2', 'a 40-sat boost still pays the 1-sat minimum'].map(price),
+  [1, 10, 500, 2, 1]);
+eq('real notes are priced at 1% of their stated boost',
+  ['a boost note as the modal writes it', '...with a message that claims nothing', '...with no sender ("Boosted 100 sats")', '...to a show whose title names sats', 'a BOOST ALL summary'].map(price),
+  [{ ok: true, sats: 10 }, { ok: true, sats: 10 }, { ok: true, sats: 1 }, { ok: true, sats: 1 }, { ok: true, sats: 3 }]);
+eq('a claim the tag does not back is refused',
+  ['the sentence claims more than the tag', 'the message claims a bigger boost above a true sentence', '...written with separators', '...written in full-width digits'].map((l) => price(l).why),
+  Array(4).fill('the note claims a different amount than its amount tag'));
+eq('a note with no readable amount is refused',
+  ['no amount tag', 'two amount tags', 'an amount that is not whole sats', 'an amount that is not a plain number', 'no sentence at all'].map((l) => price(l).why),
+  ['a site note needs exactly one amount tag', 'a site note needs exactly one amount tag',
+    'the amount tag is not a whole number of sats', 'the amount tag is not a whole number of sats',
+    'the note does not say how many sats it boosted']);
+{
+  const { proved } = replayVectors({ vectors: PRICE, invoke: invokePrice, fail });
+  if (proved === 0) fail('the price replay proved nothing');
+}
+{
+  // The site-stamp route has no login, so the claim scan must stay LINEAR: a
+  // pattern whose digit group and trailing \s* can share the same spaces takes
+  // the square of a run of whitespace. The route caps a body at 5,500
+  // characters; 50,000 makes the growth plain (the quadratic one took 1.2 s).
+  for (const [label, run] of [['spaces', ' '], ['newlines', '\n']]) {
+    const t = { content: `⚡ Boost ⚡\n\nboosted 1${run.repeat(50_000)}`, tags: [['amount', '100000']] };
+    const started = performance.now();
+    const r = stampDue(t);
+    const ms = Math.round(performance.now() - started);
+    eq(`a 50,000-character run of ${label} after "boosted 1" is read in under 100 ms (${ms} ms)`, [r.ok, ms < 100], [false, true]);
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n  the client ladder');
 
 const SITE_EVENT = { id: 'site-event', pubkey: 'site', sig: 's' };
@@ -245,7 +339,7 @@ const res = (status, body) => ({ status, body });
 
 /** Fake dependencies that record every call. `stamp`/`sign` answer by call number. */
 function harness({ stamp = [res(200, { invoice: 'lnbc10n1x', stamp: 'tok' })], sign = [res(200, { event: SITE_EVENT })], pay = 'ok' } = {}) {
-  const h = { calls: [], sleeps: [], paid: [], oneTime: [], stampAsks: 0, signAsks: 0, stamped: 0 };
+  const h = { calls: [], sleeps: [], paid: [], oneTime: [], stampAsks: 0, signAsks: 0, stamped: 0, stampedSats: [] };
   h.deps = {
     post: async (path, body) => {
       h.calls.push({ path, body });
@@ -253,8 +347,8 @@ function harness({ stamp = [res(200, { invoice: 'lnbc10n1x', stamp: 'tok' })], s
       if (path === '/api/nostr/site-sign') return sign[Math.min(h.signAsks++, sign.length - 1)];
       return res(404, null);
     },
-    payStamp: (bolt11) => {
-      h.paid.push(bolt11);
+    payStamp: (bolt11, sats) => {
+      h.paid.push([bolt11, sats]);
       if (pay === 'throw') return Promise.reject(new Error('user rejected'));
       if (pay === 'hang') return new Promise(() => {});
       return Promise.resolve();
@@ -266,11 +360,11 @@ function harness({ stamp = [res(200, { invoice: 'lnbc10n1x', stamp: 'tok' })], s
       if (ms === STAMP_PAY_TIMEOUT_MS) return pay === 'hang' ? Promise.resolve() : new Promise(() => {});
       return Promise.resolve();
     },
-    onStamp: () => { h.stamped += 1; },
+    onStamp: (sats) => { h.stamped += 1; h.stampedSats.push(sats); },
   };
   return h;
 }
-const fresh = () => ({ template: { ...TEMPLATE, tags: TEMPLATE.tags.map((t) => [...t]) } });
+const fresh = (t = TEMPLATE) => ({ template: { ...t, tags: t.tags.map((x) => [...x]) } });
 const paths = (h) => h.calls.map((c) => c.path.replace('/api/nostr/', ''));
 
 {
@@ -280,8 +374,8 @@ const paths = (h) => h.calls.map((c) => c.path.replace('/api/nostr/', ''));
   eq('happy: stamp, then sign', paths(h), ['site-stamp', 'site-sign']);
   eq('happy: the stamp request carries the template', h.calls[0].body, { template: s.template });
   eq('happy: the sign request carries template + stamp', h.calls[1].body, { template: s.template, stamp: 'tok' });
-  eq('happy: paid once, the invoice the site gave', h.paid, ['lnbc10n1x']);
-  eq('happy: onStamp told the screen once', h.stamped, 1);
+  eq('happy: paid once, the invoice the site gave, for 1% of a 100-sat boost', h.paid, [['lnbc10n1x', 1]]);
+  eq('happy: onStamp told the screen once, with the price', [h.stamped, h.stampedSats], [1, [1]]);
   eq('happy: signed by the site', [s.signer, s.signed, s.why], ['site', SITE_EVENT, undefined]);
   eq('happy: no one-time key', h.oneTime.length, 0);
 
@@ -383,7 +477,24 @@ for (const [label, answer] of [
   try { await signSiteNote(s, h.deps); } catch (e) { threw = e; }
   eq('a throwing post is read as status 0, never thrown', [threw, s.signer, s.why], [null, 'one-time', 'no-invoice']);
 }
-eq('every failure has its text', Object.keys(STAMP_FAILURE_TEXT).sort(), ['no-invoice', 'not-configured', 'not-signed', 'unconfirmed', 'wallet']);
+{
+  const h = harness({ stamp: [res(200, { invoice: 'lnbc100n1x', stamp: 'tok' })] });
+  const s = fresh(noteOf(1000));
+  await signSiteNote(s, h.deps);
+  eq('a 1000-sat boost: the wallet is asked for 10 sats', [h.paid, h.stampedSats, s.signer], [[['lnbc100n1x', 10]], [10], 'site']);
+}
+{
+  // The page checks the claim before it asks: a note whose text names another
+  // amount would be refused by the route anyway, so nothing is asked, minted
+  // or paid, and the screen says why.
+  const h = harness();
+  const s = fresh(noteOf(100, { message: 'I boosted 5000 sats last week too' }));
+  await signSiteNote(s, h.deps);
+  eq('a note whose text claims another amount: one-time "amount", nothing asked or paid',
+    [s.signer, s.why, h.calls.length, h.paid.length], ['one-time', 'amount', 0, 0]);
+}
+eq('every failure has its text', Object.keys(STAMP_FAILURE_TEXT).sort(), ['amount', 'no-invoice', 'not-configured', 'not-signed', 'unconfirmed', 'wallet']);
+eq('no failure text names a fixed price', Object.values(STAMP_FAILURE_TEXT).some((t) => /1-sat|1 sat/.test(t)), false);
 eq('no failure text claims the sat stayed', Object.values(STAMP_FAILURE_TEXT).some((t) => /refund|not charged|still have|nothing was (paid|sent)/i.test(t)), false);
 
 if (failures) {

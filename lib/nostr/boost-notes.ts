@@ -629,8 +629,8 @@ export async function publishBoostNote(
 /**
  * Publish the boost note as the SITE, for a signed-out user or the signed-in
  * "Anonymous" choice — and only with a paid NOTE STAMP (lib/site-stamp.ts):
- * `/api/nostr/site-stamp` gets a 1-sat invoice for exactly this note from the
- * site's own Lightning address, `payStamp` pays it on the boost's rail, and
+ * `/api/nostr/site-stamp` gets an invoice for exactly this note, priced at 1%
+ * of its boost, from the site's own Lightning address, `payStamp` pays it on the boost's rail, and
  * `/api/nostr/site-sign` signs once that invoice's verify link says settled. ANY failure on that path signs
  * the SAME template with a one-time key instead, so the note always goes out;
  * `signer` and `why` say which happened, for the screen.
@@ -650,9 +650,9 @@ export async function publishBoostNote(
 export async function publishBoostNoteViaSite(
   args: PublishArgs,
   opts: {
-    payStamp: (bolt11: string) => Promise<void>;
+    payStamp: (bolt11: string, sats: number) => Promise<void>;
     state: SiteNoteState<Event>;
-    onStamp?: () => void;
+    onStamp?: (sats: number) => void;
     origin?: string;
   },
 ): Promise<{ note: PublishedNote; signer: 'site' | 'one-time'; why?: StampFailure }> {

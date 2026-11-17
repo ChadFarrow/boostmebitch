@@ -483,7 +483,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // RETRY NOTE quotes it rather than minting a second: two receipts for one
     // boost would count its sats twice wherever receipts are summed.
     minted: QuotedZapReceipt | null = null,
-    // The rail the boost paid on; a site-signed note's 1-sat stamp goes out on
+    // The rail the boost paid on; a site-signed note's stamp goes out on
     // it too. RETRY NOTE passes the same one.
     rail?: Rail,
   ): Promise<boolean> {
@@ -533,7 +533,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       relays,
       as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
     });
-    // The site signs only with a paid 1-sat stamp (lib/site-stamp.ts), paid on
+    // The site signs only with a paid stamp (lib/site-stamp.ts), paid on
     // the rail the boost used. `sent.siteNote` carries the template, the paid
     // stamp and the signed event, so RETRY NOTE never pays a second stamp. Any
     // failure posts the same note from a one-time key and says why.
@@ -542,9 +542,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         { podcast, episode, boostagram, results, mentions, summaryReceipt: summaryReceipt ?? undefined, track, itemArtist },
         {
           // No rail means nothing to pay with: the ladder signs one-time.
-          payStamp: (bolt11) => (rail ? payStampInvoice(rail, bolt11) : Promise.reject(new Error('no wallet'))),
+          payStamp: (bolt11, sats) => (rail ? payStampInvoice(rail, bolt11, sats) : Promise.reject(new Error('no wallet'))),
           state: sent.siteNote,
-          onStamp: () => setPubState({ kind: 'publishing', step: 'stamp' }),
+          onStamp: (sats) => setPubState({ kind: 'publishing', step: 'stamp', sats }),
         },
       );
       return {

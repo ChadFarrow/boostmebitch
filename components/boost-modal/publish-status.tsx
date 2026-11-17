@@ -5,8 +5,8 @@ import { BunkerRestoreNotice } from '../bunker-restore-notice';
 
 export type PublishState =
   | { kind: 'idle' }
-  /** `step: 'stamp'` while a site-signed note's 1-sat stamp is being paid. */
-  | { kind: 'publishing'; step?: 'stamp' }
+  /** `step: 'stamp'` while a site-signed note's stamp (1% of the boost, `sats`) is being paid. */
+  | { kind: 'publishing'; step?: 'stamp'; sats?: number }
   /**
    * `notice`: why the note went out from a one-time key instead of the site's
    * (lib/site-stamp.ts). The note IS posted; this says by whom.
@@ -46,7 +46,13 @@ export function PublishStatus({ state }: { state: PublishState }) {
     // ping — never shows it.
     return (
       <div role="status" className="text-xs text-nostr space-y-1">
-        <div>{state.step === 'stamp' ? '◆ Paying the 1-sat stamp…' : '◆ Publishing to nostr…'}</div>
+        <div>
+          {state.step !== 'stamp'
+            ? '◆ Publishing to nostr…'
+            : state.sats
+              ? `◆ Paying the ${state.sats}-sat stamp (1%)…`
+              : '◆ Paying the stamp (1%)…'}
+        </div>
         <BunkerApprovalNotice />
         <BunkerRestoreNotice />
       </div>

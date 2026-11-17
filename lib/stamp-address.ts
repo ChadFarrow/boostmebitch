@@ -1,12 +1,12 @@
 // SERVER-ONLY. The note stamp's two calls to the deploy's own Lightning address
-// (`SITE_STAMP_LNADDRESS`, `name@domain`): get a 1-sat invoice for it, and ask
+// (`SITE_STAMP_LNADDRESS`, `name@domain`): get an invoice for the stamp's price, and ask
 // that invoice's LUD-21 verify link whether it settled. No key: an address can
 // be paid and asked, never spent from. What each answer must look like is in
 // lib/site-stamp.ts (pure, pinned by check:sitestamp against Alby's real
 // answers); this file only fetches.
 //
 //   GET <origin>/.well-known/lnurlp/<name>          → LUD-06 pay request
-//   GET <callback>?amount=1000[&comment=…]           → { pr, verify }      (LUD-21)
+//   GET <callback>?amount=<msat>[&comment=…]         → { pr, verify }      (LUD-21)
 //   GET <verify>                                     → { settled, preimage, pr }
 //
 // Every URL is on the configured address's own origin — the readers refuse a
@@ -23,13 +23,12 @@
 import { readCappedJson } from '@/lib/capped-body';
 import { bolt11AmountMsat } from '@/lib/v4v/bolt11';
 import {
-  STAMP_SATS, stampAddress, readPayRequest, stampCallbackUrl, readCallbackAnswer, readVerifyAnswer,
+  stampAddress, readPayRequest, stampCallbackUrl, readCallbackAnswer, readVerifyAnswer,
   type StampAddress,
 } from '@/lib/site-stamp';
 
 const TIMEOUT_MS = 8_000;
 const MAX_ANSWER_BYTES = 64 * 1024;
-const STAMP_MSAT = STAMP_SATS * 1000;
 
 function address(): StampAddress | null {
   return stampAddress(process.env.SITE_STAMP_LNADDRESS ?? '');
@@ -65,19 +64,20 @@ async function getJson(url: string, signal: AbortSignal): Promise<{ status: numb
   }
 }
 
-/** A 1-sat invoice from the address, and its verify link. Throws on any refusal. */
-export async function createStampInvoice(comment: string): Promise<{ bolt11: string; verifyUrl: string }> {
+/** An invoice for exactly `sats` from the address, and its verify link. Throws on any refusal. */
+export async function createStampInvoice(comment: string, sats: number): Promise<{ bolt11: string; verifyUrl: string }> {
   const a = address();
-  if (!a) throw new StampAddressError();
+  if (!a || !Number.isSafeInteger(sats) || sats < 1) throw new StampAddressError();
+  const msat = sats * 1000;
   const deadline = AbortSignal.timeout(TIMEOUT_MS);
-  const pay = readPayRequest((await getJson(a.wellKnown, deadline)).json, a.origin, STAMP_MSAT);
+  const pay = readPayRequest((await getJson(a.wellKnown, deadline)).json, a.origin, msat);
   if (!pay.ok) refuse(pay.why);
   const answer = readCallbackAnswer(
-    (await getJson(stampCallbackUrl(pay.callback, STAMP_MSAT, comment, pay.commentAllowed), deadline)).json,
+    (await getJson(stampCallbackUrl(pay.callback, msat, comment, pay.commentAllowed), deadline)).json,
     a.origin,
   );
   if (!answer.ok) refuse(answer.why);
-  if (bolt11AmountMsat(answer.pr) !== STAMP_MSAT) refuse('the address sent an invoice that is not for 1 sat');
+  if (bolt11AmountMsat(answer.pr) !== msat) refuse('the address sent an invoice for another amount');
   return { bolt11: answer.pr, verifyUrl: answer.verify };
 }
 

@@ -5,13 +5,13 @@ import { sitePubkey } from '@/lib/nostr/site-key';
 import { validateBoostTemplate } from '@/lib/site-sign-template';
 import { stampMac, siteEventId } from '@/lib/site-stamp-server';
 import { stampAddressConfigured, createStampInvoice } from '@/lib/stamp-address';
-import { encodeStamp, STAMP_TTL_SECS } from '@/lib/site-stamp';
+import { encodeStamp, stampDue, STAMP_TTL_SECS } from '@/lib/site-stamp';
 import { BRAND } from '@/lib/brand';
 
 // The NOTE STAMP: before `/api/nostr/site-sign` will sign a boost note under
-// the site's verified name, the browser pays a 1-sat invoice fetched here from
-// the site's own Lightning address (SITE_STAMP_LNADDRESS), for EXACTLY that
-// note. This route validates the template with the same rules site-sign applies
+// the site's verified name, the browser pays an invoice fetched here from the
+// site's own Lightning address (SITE_STAMP_LNADDRESS), for EXACTLY that note,
+// priced at 1% of the boost the note states (`stampDue`, check:sitestamp). This route validates the template with the same rules site-sign applies
 // — so nobody pays for a note that would be refused — computes the event id the
 // site key will give it, and answers the invoice plus a token binding that id to
 // the invoice's LUD-21 verify link. site-sign signs once that link says
@@ -54,11 +54,16 @@ async function handlePost(req: Request) {
         { status: 400 },
       );
     }
+    // The price is read from the note: 1% of its ONE `amount` tag, and only
+    // when its sentence states the same number — so a note claiming a larger
+    // boost costs more to fake. Every `why` is a literal (lib/site-stamp.ts).
+    const due = stampDue(template);
+    if (!due.ok) return NextResponse.json({ error: due.why }, { status: 400 });
     const id = siteEventId(template, site);
     let invoice: { bolt11: string; verifyUrl: string };
     try {
-      // The comment is what the owner's wallet shows beside the sat.
-      invoice = await createStampInvoice(`${BRAND.displayName} note stamp`);
+      // The comment is what the owner's wallet shows beside the sats.
+      invoice = await createStampInvoice(`${BRAND.displayName} note stamp`, due.sats);
     } catch {
       return NextResponse.json({ error: 'could not create the stamp invoice' }, { status: 502 });
     }

@@ -547,9 +547,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             mentions, summaryReceipt: summaryReceipt ?? undefined,
           }, {
             // No rail means nothing to pay with: the ladder signs one-time.
-            payStamp: (bolt11) => (stampRail ? payStampInvoice(stampRail, bolt11) : Promise.reject(new Error('no wallet'))),
+            payStamp: (bolt11, sats) => (stampRail ? payStampInvoice(stampRail, bolt11, sats) : Promise.reject(new Error('no wallet'))),
             state: siteNote,
-            onStamp: () => { if (!cancelled.current) setPubState({ kind: 'publishing', step: 'stamp' }); },
+            onStamp: (sats) => { if (!cancelled.current) setPubState({ kind: 'publishing', step: 'stamp', sats }); },
           });
           note = r.note;
           if (r.signer === 'one-time' && r.why) {

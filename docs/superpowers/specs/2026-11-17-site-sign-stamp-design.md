@@ -274,3 +274,45 @@ unchanged.
 - **Not checked (builder's call):** the preimage against the invoice. The provider is trusted by
   configuration and each verify link names one invoice, so it adds no proof the link does not give; it
   would need a BOLT11 decoder this repo does not have.
+
+## Change (2026-11-17, later): 1% of the boost, no maximum
+
+Chad asked what the stamp was for, then whether the network fee on a 1-sat payment would not cost more
+than the stamp. It can: a 1-sat payment pays mostly base fees, 0 to a few sats, and that fee is about the
+same for 1 sat or 10. He then asked: *"Could I do the same thing, but at a 1% split?"*, and decided:
+
+- *"Let's do 1% instead with no maximum. And this applies to anyone not using their own Nostr account to
+  post to Nostr using my apps."* — so signed-out notes AND the signed-in "Anonymous" choice; "My feed"
+  pays nothing.
+- *"because 1% still is one sat, which I didn't think about would also cost people if they try to spoof
+  a larger amount, which I like."*
+
+The design that follows:
+
+- **Price:** `stampSats(boostMsat) = max(1, ceil(boostMsat / 100_000))` — 1% of the boost, rounded UP to a
+  whole sat, at least 1, no maximum. 100 sats → 1, 120 → 2, 1000 → 10, 50,000 → 500.
+- **Read from the note, by the server** (`stampDue`, in the pure leaf, so the route and the page run the
+  same code): the note must carry ONE `amount` tag holding a whole number of sats, and every
+  `boosted N sats` in its body (NFKC, separators allowed) must state that same N. The reason is Chad's
+  second sentence: pricing the tag alone would let a script pay 1% of a 100-sat tag under a sentence that
+  says "boosted 1000000 sats". Text in other words is free text, as on any Nostr note — stated as the
+  limit, not hidden.
+- **The page checks first.** The ladder runs `stampDue` before it asks: a note the route would refuse costs
+  no request, no invoice and no payment, and posts one-time with the new reason `'amount'` ("the note
+  names a different amount than the boost"). A real user meets it only by typing "boosted N sats" into
+  the message.
+- **The wallet pays exactly the price the page read from its own note** (`payStampInvoice(rail, bolt11,
+  sats)`), so a stamp route that overcharges is still never paid. The server checks the invoice against
+  the same price first.
+- **Added on top of the boost, never taken from the artists' share** (builder's call: Chad answered the
+  other two questions and did not overrule the recommendation). Taking it from the split would put the
+  site in every value block.
+- **Copy:** signed out, "for 1% of the boost (at least 1 sat) plus a small network fee after the boost";
+  Anonymous, "1% of the boost + network fee." ("+ a small network fee" took a second line at 1280 px
+  under Buddy, which the layout rule forbids); status, "◆ Paying the N-sat stamp (1%)…"; the failure
+  texts no longer name 1 sat.
+- **Unchanged:** the token, the gate, the address wire, the Spark fee cap (10 sats — a very large stamp on
+  Spark whose fee passes it posts one-time, never pays twice), and phase 1/2.
+- **Coupling:** `boostSentence`'s "boosted N sats" is now read by the stamp, so rewording it is a stamp
+  change; `check:sitestamp` builds its vectors with the real builder and goes red first.
+

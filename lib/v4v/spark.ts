@@ -185,7 +185,7 @@ async function doInitFromMnemonic(args: {
  * Pay a BOLT11 invoice via the Spark SDK. The preimage is NOT returned
  * synchronously by payLightningInvoice, so we return '' — BoostResult.preimage
  * is optional and unread by the UI. `maxFeeSats`: a boost leg allows 100; a
- * 1-sat note stamp passes its own cap (STAMP_MAX_FEE_SATS).
+ * note stamp passes its own cap (STAMP_MAX_FEE_SATS).
  */
 export async function sparkPayInvoice(invoice: string, maxFeeSats = 100): Promise<string> {
   if (!sdk) throw new Error('Spark wallet not initialized');

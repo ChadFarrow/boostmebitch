@@ -49,10 +49,10 @@ export function ShareNostrPicker({
             Share boost on Nostr
           </div>
           <div className="text-muted mt-0.5 leading-relaxed">
-            {/* The site signs only a note whose 1-sat stamp was paid
-                (lib/site-stamp.ts). The words are Chad's (2026-11-17). */}
+            {/* The site signs only a note whose stamp was paid: 1% of the
+                boost, at least 1 sat (lib/site-stamp.ts; Chad, 2026-11-17). */}
             {share
-              ? `${noteNoun} posted from ${BRAND.domain}'s Nostr account, for 1 sat plus a small network fee after the boost.`
+              ? `${noteNoun} posted from ${BRAND.domain}'s Nostr account, for 1% of the boost (at least 1 sat) plus a small network fee after the boost.`
               : 'Lightning only — nothing posted publicly.'}
           </div>
         </div>
@@ -77,9 +77,10 @@ export function ShareNostrPicker({
       // sets wider than `itch`, so `boostmebuddy.com` is the longer of the two
       // on screen. Measure this line under the BUDDY brand, or the measurement
       // proves nothing about the deploy that can actually wrap. The noun is
-      // dropped to make room for the stamp's cost (lib/site-stamp.ts) in the
-      // words Chad approved: "1 sat plus a small network fee".
-      desc: `Posted by ${BRAND.domain}, not your npub: 1 sat plus a small network fee.`,
+      // dropped to make room for the stamp's cost (lib/site-stamp.ts): 1% of
+      // the boost (Chad, 2026-11-17), in the place of his "1 sat plus a small
+      // network fee". "+ a small network fee" took a second line at 1280 px.
+      desc: `Posted by ${BRAND.domain}, not your npub: 1% of the boost + network fee.`,
     },
     {
       value: 'off',

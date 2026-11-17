@@ -19,7 +19,7 @@ import { storeBoostMetadata, boostboxIdFromUrl } from './boostbox';
 import { storage } from '@/lib/storage';
 import { recipientOrder, isLnAddressRecipient, splitSats } from '@/lib/util';
 import { bolt11AmountMsat } from './bolt11';
-import { STAMP_SATS, STAMP_MAX_FEE_SATS } from '@/lib/site-stamp';
+import { STAMP_MAX_FEE_SATS } from '@/lib/site-stamp';
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
 // sender TLV — that key (696969) is also reused by some shared nodes (e.g.
@@ -70,20 +70,20 @@ function nwcEngine(): NwcEngine {
 }
 
 /**
- * Pays a site-note STAMP on the rail the boost used: the 1-sat invoice
- * `/api/nostr/site-stamp` minted so the site will sign the note
- * (lib/site-stamp.ts). Called by `publishBoostNoteViaSite` through the
+ * Pays a site-note STAMP on the rail the boost used: the invoice
+ * `/api/nostr/site-stamp` minted so the site will sign the note, for 1% of the
+ * boost (lib/site-stamp.ts, `stampDue`). Called by `publishBoostNoteViaSite` through the
  * `payStamp` the modal hands it, which keeps `lib/nostr/` free of wallets.
  *
  * The amount is checked BEFORE any wallet sees the invoice, as every LNURL
- * invoice is (boost invariant 9): whatever answers that route, the wallet is
- * never asked for more than the stamp. Spark's fee cap is the stamp's, not a
+ * invoice is (boost invariant 9): `sats` is the price the PAGE read from its
+ * own note, so whatever answers that route, the wallet is never asked for more. Spark's fee cap is the stamp's, not a
  * boost leg's 100. Never retried — a rejection is the caller's cue to post from
  * a one-time key, and a wallet that never answered may still have paid.
  */
-export async function payStampInvoice(rail: Rail, bolt11: string): Promise<void> {
-  if (bolt11AmountMsat(bolt11) !== STAMP_SATS * 1000) {
-    throw new Error(`the stamp invoice is not for exactly ${STAMP_SATS} sat`);
+export async function payStampInvoice(rail: Rail, bolt11: string, sats: number): Promise<void> {
+  if (!Number.isSafeInteger(sats) || sats < 1 || bolt11AmountMsat(bolt11) !== sats * 1000) {
+    throw new Error(`the stamp invoice is not for exactly ${sats} sats`);
   }
   if (rail === 'nwc') await (await loadNwcEngine()).nwcPayInvoice(bolt11);
   else if (rail === 'spark') await sparkPayInvoice(bolt11, STAMP_MAX_FEE_SATS);

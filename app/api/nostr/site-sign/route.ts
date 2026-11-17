@@ -16,7 +16,7 @@ import { splitSignBody, stampGate, STAMP_NOT_PAID, STAMP_UNCONFIRMED } from '@/l
 // client POSTs an unsigned boost-note template here; we sign it and return the
 // signed event, which the client then publishes to relays itself.
 //
-// THE STAMP. A note is signed only with proof that its 1-sat stamp invoice —
+// THE STAMP. A note is signed only with proof that its stamp invoice —
 // fetched by /api/nostr/site-stamp from the site's own Lightning address for
 // EXACTLY this event — settled, by that invoice's LUD-21 verify link. The body is `{ template, stamp }`; a bare template
 // (what a page from before the stamp sends) is still signed while

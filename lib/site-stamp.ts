@@ -7,9 +7,9 @@
 // name and is unauthenticated, so without proof of payment anyone with `curl`
 // posts their own text as the site. A boost's own legs cannot prove anything to
 // the site — a keysend preimage is made by the SENDER — so the proof is a payment
-// to the site itself: a 1-sat invoice from the site's own Lightning address
-// (`SITE_STAMP_LNADDRESS`), bound to exactly ONE event id, and confirmed by that
-// invoice's LUD-21 verify link. Asking twice for that id yields the same event (relays
+// to the site itself: an invoice for 1% of the boost the note states, from the
+// site's own Lightning address (`SITE_STAMP_LNADDRESS`), bound to exactly ONE
+// event id, and confirmed by that invoice's LUD-21 verify link. Asking twice for that id yields the same event (relays
 // dedupe it), so a paid stamp cannot be replayed into many notes, while RETRY
 // NOTE may ask as often as it needs. No server state.
 //
@@ -19,8 +19,6 @@
 // It never throws and never pays twice. Reasoning: docs/money-boosts.md and
 // docs/security.md, "the site-sign stamp".
 
-/** The stamp's price. A change is a money change: the client refuses any other amount. */
-export const STAMP_SATS = 1;
 /** Spark's routing-fee cap for a stamp (Chad, 2026-11-17). NWC and WebLN set their own. */
 export const STAMP_MAX_FEE_SATS = 10;
 /** How long a token is honoured — a paid stamp's note may be re-signed until then. */
@@ -43,6 +41,54 @@ const STAMP_REQUIRED = 'a note stamp is required';
 const STAMP_INVALID = 'the note stamp is not valid';
 const STAMP_EXPIRED = 'the note stamp has expired';
 const STAMP_OTHER_NOTE = 'the note stamp is for a different note';
+
+// The price.
+
+/**
+ * 1% of a boost of `boostMsat`, rounded UP to a whole sat, never under 1, with
+ * no maximum (Chad, 2026-11-17). A change is a money change: the server asks
+ * for exactly this and the client pays exactly this.
+ */
+export function stampSats(boostMsat: number): number {
+  return Math.max(1, Math.ceil(boostMsat / 100_000));
+}
+
+// A positive whole number of sats, in msat, short enough to stay a safe integer.
+const WHOLE_SATS_MSAT = /^[1-9][0-9]{0,11}000$/;
+// "boosted N sats" — the sentence's own words (boostSentence, boostAllLines) —
+// with the separators and digit forms a reader would take for the same number.
+// Read over NFKC, so full-width digits are digits. The number's class already
+// holds whitespace, so nothing sits between it and "sat": a `\s*` there shares
+// every space with the lazy group, and a run of spaces then costs its SQUARE
+// on a route with no login (1.2 s for 50,000, timed by check:sitestamp).
+const BOOST_CLAIM = /\bboosted\s+([0-9][0-9.,'_\s]*?)sat(?:s|oshis?)?\b/gi;
+
+export type StampDue = { ok: true; sats: number } | { ok: false; why: string };
+
+/**
+ * What a note's stamp costs: 1% of its ONE `amount` tag — and only when every
+ * "boosted N sats" in its text states that same number, so the sentence a
+ * person reads cannot claim a larger boost than the one the stamp was priced
+ * at. Text in other words ("sent a million sats") is the writer's own, as on
+ * any Nostr note; this binds the tag apps read and the sentence the note opens
+ * with. Every `why` is a fixed literal: the route answers it as a 400.
+ */
+export function stampDue(template: { content: string; tags: string[][] }): StampDue {
+  const amounts = template.tags.filter((tag) => tag[0] === 'amount');
+  if (amounts.length !== 1) return { ok: false, why: 'a site note needs exactly one amount tag' };
+  const raw = amounts[0]![1] ?? '';
+  if (!WHOLE_SATS_MSAT.test(raw)) return { ok: false, why: 'the amount tag is not a whole number of sats' };
+  const msat = Number(raw);
+  const claims = [...template.content.normalize('NFKC').matchAll(BOOST_CLAIM)]
+    .map((m) => Number((m[1] ?? '').replace(/[^0-9]/g, '')));
+  if (!claims.length) return { ok: false, why: 'the note does not say how many sats it boosted' };
+  if (claims.some((n) => n !== msat / 1000)) {
+    return { ok: false, why: 'the note claims a different amount than its amount tag' };
+  }
+  return { ok: true, sats: stampSats(msat) };
+}
+
+// The token.
 
 export interface StampClaims {
   v: 1;
@@ -226,7 +272,7 @@ export function readPayRequest(json: unknown, origin: string, msat: number): Pay
   if (!onOrigin(o.callback, origin)) return { ok: false, why: "the callback is not on the address's own domain" };
   const { minSendable: min, maxSendable: max } = o;
   if (typeof min !== 'number' || typeof max !== 'number' || msat < min || msat > max) {
-    return { ok: false, why: 'the address does not take 1 sat' };
+    return { ok: false, why: 'the address does not take this amount' };
   }
   const allowed = typeof o.commentAllowed === 'number' && o.commentAllowed > 0 ? Math.floor(o.commentAllowed) : 0;
   return { ok: true, callback: o.callback, commentAllowed: allowed };
@@ -277,17 +323,18 @@ export interface NoteTemplate {
   content: string;
 }
 
-export type StampFailure = 'not-configured' | 'no-invoice' | 'wallet' | 'unconfirmed' | 'not-signed';
+export type StampFailure = 'amount' | 'not-configured' | 'no-invoice' | 'wallet' | 'unconfirmed' | 'not-signed';
 
 /**
- * Why a note went out under a one-time key. None says the sat stayed in the
- * wallet: after a paid stamp whose signature failed, it did not.
+ * Why a note went out under a one-time key. None says the sats stayed in the
+ * wallet: after a paid stamp whose signature failed, they did not.
  */
 export const STAMP_FAILURE_TEXT: Record<StampFailure, string> = {
+  amount: 'the note names a different amount than the boost',
   'not-configured': 'note stamps are not set up on this site',
   'no-invoice': 'the site could not make the stamp invoice',
-  wallet: 'your wallet did not confirm the 1-sat stamp',
-  unconfirmed: 'the site could not confirm the 1-sat stamp',
+  wallet: 'your wallet did not confirm the stamp payment',
+  unconfirmed: 'the site could not confirm the stamp payment',
   'not-signed': 'the site did not sign the note',
 };
 
@@ -309,13 +356,17 @@ export type SitePath = '/api/nostr/site-stamp' | '/api/nostr/site-sign';
 export interface LadderDeps<E> {
   /** POST JSON. A network error or timeout is `status: 0` — never a throw. */
   post(path: SitePath, body: unknown): Promise<{ status: number; body: unknown }>;
-  /** Pays the stamp invoice on the boost's rail. Rejects on any failure. */
-  payStamp(bolt11: string): Promise<void>;
+  /**
+   * Pays the stamp invoice on the boost's rail — and refuses one that is not
+   * for exactly `sats`, the price this page read from its own note. Rejects on
+   * any failure.
+   */
+  payStamp(bolt11: string, sats: number): Promise<void>;
   /** Signs with a fresh key that is never stored. */
   signOneTime(template: NoteTemplate): E;
   sleep(ms: number): Promise<void>;
-  /** Called just before the wallet is asked, so the screen can say so. */
-  onStamp?(): void;
+  /** Called just before the wallet is asked, with the price, so the screen can say so. */
+  onStamp?(sats: number): void;
 }
 
 const field = (body: unknown, key: string): unknown =>
@@ -346,6 +397,10 @@ export async function signSiteNote<E>(
   };
 
   if (!state.stamp) {
+    // The route prices the note the same way and refuses what this refuses, so
+    // a note it would refuse costs nobody a request, an invoice or a payment.
+    const due = stampDue(template);
+    if (!due.ok) return oneTime('amount');
     const minted = await ask('/api/nostr/site-stamp', { template });
     if (minted.status === 503) return oneTime('not-configured');
     const invoice = field(minted.body, 'invoice');
@@ -353,20 +408,20 @@ export async function signSiteNote<E>(
     if (minted.status !== 200 || typeof invoice !== 'string' || typeof stamp !== 'string') {
       return oneTime('no-invoice');
     }
-    deps.onStamp?.();
+    deps.onStamp?.(due.sats);
     // A marker, not a throwing timer: a timer that rejects after the wallet
     // already answered is an unhandled rejection with nobody listening.
     const TIMED_OUT = 'timed-out';
     let outcome: string;
     try {
       outcome = await Promise.race([
-        deps.payStamp(invoice).then(() => 'paid', () => 'refused'),
+        deps.payStamp(invoice, due.sats).then(() => 'paid', () => 'refused'),
         deps.sleep(STAMP_PAY_TIMEOUT_MS).then(() => TIMED_OUT),
       ]);
     } catch {
       outcome = 'refused';
     }
-    // A wallet that never answered may still pay. That sat is lost, never paid
+    // A wallet that never answered may still pay. Those sats are lost, never paid
     // twice: this state is not re-stamped (boost invariant 11).
     if (outcome !== 'paid') return oneTime('wallet');
     state.stamp = stamp;

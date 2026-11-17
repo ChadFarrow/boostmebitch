@@ -1,5 +1,5 @@
 // End-to-end for THE NOTE STAMP: `/api/nostr/site-sign` signs a boost note under
-// the site's verified name only when a 1-sat invoice the site minted for EXACTLY
+// the site's verified name only when an invoice the site minted for EXACTLY
 // that event was paid, and every boost that cannot get the stamp still posts its
 // note — from a one-time key. Reasoning: docs/security.md and
 // docs/money-boosts.md, "the site-sign stamp".
@@ -27,11 +27,14 @@
 //      402; a paid stamp signs exactly its own event, as often as asked; a
 //      changed note, a flipped MAC and a refused template are 400; an address
 //      that refuses, has no verify link, or whose verify link hangs is a 502
-//      inside the route's own timeout.
-//   2. Signed out, WebLN: one stamp, paid AFTER every leg; the note is the site's.
+//      inside the route's own timeout. The price is 1% of the boost the note
+//      states (1000 sats → 10, 50,000 → 500); a note whose text claims more
+//      than its `amount` tag, or that has none, is 400 with no invoice.
+//   2. Signed out, WebLN, 1000 sats: one 10-sat stamp, paid AFTER every leg;
+//      the note is the site's.
 //   3–6. The wallet refuses / the address cannot make the invoice / the invoice
-//      is not 1 sat / the verify link hangs: the note still posts, from a one-time key, and the
-//      modal stays open and says why — never that the sat stayed.
+//      is for another amount / the verify link hangs: the note still posts, from a one-time key, and the
+//      modal stays open and says why — never that the sats stayed.
 //   7. × pressed while the stamp is being paid: one note, one stamp, and a
 //      second modal opened at once is not closed when the first note lands.
 //   8. BOOST ALL, signed out: one stamp for the summary note.
@@ -41,6 +44,8 @@
 //  10. NWC: the stamp goes out as `pay_invoice` through a stub NIP-47 wallet.
 //  11. "Don't post" and "My feed": no stamp is ever asked for.
 //  12. Every relay refuses the note: RETRY NOTE posts it; still one stamp.
+//  13. The message says "boosted 5000 sats" over a 100-sat boost: the page asks
+//      for no stamp and pays none, and the note posts one-time with the reason.
 //
 // The page talks to the public relays through a WebSocket stand-in installed
 // before any script runs: it answers the four DEFAULT_RELAYS with OK/EOSE and
@@ -239,12 +244,16 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
 
 // ---- helpers ----------------------------------------------------------------
 const nowSecs = () => Math.floor(Date.now() / 1000);
-/** The smallest template the validator takes: the prefix and the two `t` markers. */
-const template = (content = '⚡ Boost ⚡\n\ne2e: a note stamp test') => ({
+/**
+ * The smallest template the routes take: the prefix, the two `t` markers, and —
+ * for the stamp's price, 1% of the boost — one `amount` tag and a sentence that
+ * states the same number.
+ */
+const template = ({ sats = 100, tail = 'a note stamp test', message = '', content } = {}) => ({
   kind: 1,
   created_at: nowSecs(),
-  tags: [['t', 'boostagram'], ['t', 'value4value'], ['client', 'e2e']],
-  content,
+  tags: [['amount', String(sats * 1000)], ['t', 'boostagram'], ['t', 'value4value'], ['client', 'e2e']],
+  content: content ?? `⚡ Boost ⚡\n\n${message ? `${message}\n\n` : ''}e2e boosted ${sats} sats to ${tail}`,
 });
 /** POST from INSIDE the page, so the browser's own fetch is what is refused. */
 const post = (path, body) => js(`fetch(${JSON.stringify(path)}, {
@@ -277,7 +286,7 @@ if (runs(1)) {
     t.equal('site-stamp answers 200', minted?.status, 200);
     t.equal('...and minted one invoice', stampAddr.minted.length - before, 1);
     const inv = stampAddr.minted.at(-1);
-    t.ok('...for 1 sat (1000 msat)', inv?.amount === 1000, JSON.stringify(inv));
+    t.ok('...for 1% of a 100-sat boost: 1 sat (1000 msat)', inv?.amount === 1000, JSON.stringify(inv));
     t.ok('...with the brand\'s stamp comment', / note stamp$/.test(inv?.comment ?? ''), inv?.comment);
     t.equal('...and handed back that invoice', minted?.body?.invoice, inv?.bolt11);
     const stamp = minted?.body?.stamp;
@@ -314,9 +323,25 @@ if (runs(1)) {
     t.equal('another payload under the paid MAC → 400', [smuggled?.status, smuggled?.body?.error], [400, 'the note stamp is not valid']);
 
     const mintedBefore = stampAddr.minted.length;
-    const refused = await post('/api/nostr/site-stamp', { template: template('not a boost note') });
+    const refused = await post('/api/nostr/site-stamp', { template: template({ content: 'not a boost note' }) });
     t.equal('a template the validator refuses → 400 from site-stamp', [refused?.status, refused?.body?.error], [400, 'not a boost note']);
     t.equal('...and no invoice was minted for it', stampAddr.minted.length, mintedBefore);
+
+    // The price: 1% of the boost the note states, read by the SERVER.
+    const big = await post('/api/nostr/site-stamp', { template: template({ sats: 1000 }) });
+    t.equal('a 1000-sat note: 200, and an invoice for 10 sats (10,000 msat)',
+      [big?.status, stampAddr.minted.at(-1)?.amount, big?.body?.invoice === stampAddr.minted.at(-1)?.bolt11], [200, 10_000, true]);
+    const fifty = await post('/api/nostr/site-stamp', { template: template({ sats: 50_000 }) });
+    t.equal('a 50,000-sat note: 500 sats — no maximum', [fifty?.status, stampAddr.minted.at(-1)?.amount], [200, 500_000]);
+    const pricedBefore = stampAddr.minted.length;
+    const claimsMore = await post('/api/nostr/site-stamp', { template: template({ message: 'Satoshi boosted 1000000 sats to the moon' }) });
+    t.equal('a note whose text claims more than its amount tag → 400',
+      [claimsMore?.status, claimsMore?.body?.error], [400, 'the note claims a different amount than its amount tag']);
+    const noAmount = template();
+    noAmount.tags = noAmount.tags.filter((tag) => tag[0] !== 'amount');
+    const untagged = await post('/api/nostr/site-stamp', { template: noAmount });
+    t.equal('a note with no amount tag → 400', [untagged?.status, untagged?.body?.error], [400, 'a site note needs exactly one amount tag']);
+    t.equal('...and neither one minted an invoice', stampAddr.minted.length, pricedBefore);
 
     stampAddr.mode.mint = 'fail';
     const mintFail = await post('/api/nostr/site-stamp', { template: template() });
@@ -330,7 +355,7 @@ if (runs(1)) {
 
     stampAddr.mode.mint = 'overcharge';
     const over = await post('/api/nostr/site-stamp', { template: template() });
-    t.equal('an invoice that is not for 1 sat → 502, never handed to the page', [over?.status, over?.body?.error, over?.body?.invoice], [502, 'could not create the stamp invoice', undefined]);
+    t.equal('an invoice for another amount → 502, never handed to the page', [over?.status, over?.body?.error, over?.body?.invoice], [502, 'could not create the stamp invoice', undefined]);
     stampAddr.reset();
 
     // The mint is TWO calls in a row. One deadline covers both, or a slow pay
@@ -344,7 +369,7 @@ if (runs(1)) {
     t.ok(`...inside 10 s for both calls together (took ${mintTook} ms)`, mintTook < 10_000);
     stampAddr.reset();
 
-    const second = template('⚡ Boost ⚡\n\ne2e: the lookup hangs');
+    const second = template({ tail: 'the lookup hangs' });
     const m2 = await post('/api/nostr/site-stamp', { template: second });
     stampAddr.markPaid(m2?.body?.invoice);
     stampAddr.mode.lookup = 'hang';
@@ -400,6 +425,12 @@ async function typeAmount(text) {
   await send('Input.insertText', { text });
   await wait(200);
 }
+async function typeMessage(text) {
+  await js(`(() => { const f = ${DIALOG}?.querySelector('textarea'); f.focus(); return 1; })()`);
+  await wait(50);
+  await send('Input.insertText', { text });
+  await wait(200);
+}
 async function pressSend(button = SEND) {
   if (!(await until(`!!(${button}) && !(${button}).disabled`, 20000))) return false;
   await js(`(${button}).click()`);
@@ -432,7 +463,7 @@ async function oneTimeCase(label, setup, why, extra = async () => {}) {
   t.ok('...the boost modal opens', await openBoost());
   await typeAmount('100');
   const m = mark();
-  setup();
+  await setup();
   t.ok('...SEND is pressed', await pressSend());
   const started = Date.now();
   const note = await noteAfter(40000);
@@ -454,14 +485,17 @@ if (runs(2)) {
   stampAddr.reset();
   t.ok('the episode page opens', await openEpisode());
   t.ok('the boost modal opens', await openBoost());
-  t.ok('the signed-out share line names the 1 sat', (await until(`/1 sat/.test(${DIALOG}?.innerText ?? '')`, 20000)) === true, await dialogText());
-  await typeAmount('100');
+  t.ok('the signed-out share line names the 1%', (await until(`/1% of the boost/.test(${DIALOG}?.innerText ?? '')`, 20000)) === true, await dialogText());
+  // 1000 sats, so the price is 10 sats and not the 1-sat minimum.
+  await typeAmount('1000');
   const m = mark();
   t.ok('SEND is pressed', await pressSend());
   const note = await noteAfter(30000);
   t.ok('the note reaches the relays', !!note, note ? '' : await dialogText());
   t.equal('...signed by the site key', note?.pubkey, sitePk);
   t.equal('one stamp asked, minted and paid', since(m), { asks: 1, pays: 1, minted: 1 });
+  t.equal('...for 1% of the 1000-sat boost: 10 sats', stampAddr.minted.at(-1)?.amount, 10_000);
+  t.ok('...and the note says "boosted 1000 sats"', /boosted 1000 sats/.test(note?.content ?? ''), note?.content);
   const paid = await paidLog();
   const lastLeg = Math.max(...paid.filter((p) => p.kind === 'keysend').map((p) => p.at));
   const stampAt = paid.find((p) => p.kind === 'invoice')?.at ?? 0;
@@ -472,7 +506,7 @@ if (runs(2)) {
 
 if (runs(3)) {
   section('3. the wallet refuses the stamp');
-  await oneTimeCase('wallet refuses', () => { payMode = 'refuse'; }, 'your wallet did not confirm the 1-sat stamp',
+  await oneTimeCase('wallet refuses', () => { payMode = 'refuse'; }, 'your wallet did not confirm the stamp payment',
     async (m) => t.equal('...the wallet was asked once', since(m).pays, 1));
 }
 
@@ -483,7 +517,7 @@ if (runs(4)) {
 }
 
 if (runs(5)) {
-  section('5. the stamp invoice is not for 1 sat');
+  section('5. the stamp invoice is for another amount');
   // The server refuses it now, so the page never holds it: "could not make".
   await oneTimeCase('overcharge', () => { stampAddr.mode.mint = 'overcharge'; }, 'the site could not make the stamp invoice',
     async (m) => t.equal('...the wallet was never asked', since(m).pays, 0));
@@ -491,8 +525,18 @@ if (runs(5)) {
 
 if (runs(6)) {
   section('6. the verify link hangs');
-  await oneTimeCase('lookup hangs', () => { stampAddr.mode.lookup = 'hang'; }, 'the site could not confirm the 1-sat stamp',
+  await oneTimeCase('lookup hangs', () => { stampAddr.mode.lookup = 'hang'; }, 'the site could not confirm the stamp payment',
     async (m) => t.equal('...the stamp was paid once', since(m).pays, 1));
+}
+
+if (runs(13)) {
+  // The price is read from the note, and a "boosted N sats" in the message that
+  // is not the boost would be refused by the route — so the page asks nothing,
+  // pays nothing, and says why. A real user can only meet this by typing it.
+  section('13. the message claims another amount: no stamp, a one-time note');
+  await oneTimeCase('message claims another amount', () => typeMessage('I boosted 5000 sats last week too'),
+    'the note names a different amount than the boost',
+    async (m) => t.equal('...nothing was asked, minted or paid', since(m), { asks: 0, pays: 0, minted: 0 }));
 }
 
 if (runs(7)) {
@@ -504,8 +548,8 @@ if (runs(7)) {
   const m = mark();
   payMode = 'slow';
   t.ok('SEND is pressed', await pressSend());
-  const paying = await until(`(${DIALOG}?.innerText ?? '').includes('Paying the 1-sat stamp')`, 30000);
-  t.ok('the modal says "Paying the 1-sat stamp…"', paying === true, await dialogText());
+  const paying = await until(`(${DIALOG}?.innerText ?? '').includes('Paying the 1-sat stamp (1%)')`, 30000);
+  t.ok('the modal says "Paying the 1-sat stamp (1%)…"', paying === true, await dialogText());
   await js(`${CLOSE}?.click()`);
   t.ok('× closes the modal', !!(await until(`!${DIALOG}`, 5000)));
   // A second boost opened at once must not be closed by the first one's
@@ -532,7 +576,7 @@ if (runs(8)) {
   await js(`[...document.querySelectorAll('[role="menuitem"]')].find((b) => /boost all \\d+ tracks/i.test(b.textContent))?.click()`);
   t.ok('the boost-all modal opens', !!(await until(`!!(${FIELD})`, 20000)));
   // The share line renders once the tracks resolve, not with the modal.
-  t.ok('...and its share line names the 1 sat', (await until(`/1 sat/.test(${DIALOG}?.innerText ?? '')`, 30000)) === true, await dialogText());
+  t.ok('...and its share line names the 1%', (await until(`/1% of the boost/.test(${DIALOG}?.innerText ?? '')`, 30000)) === true, await dialogText());
   await typeAmount('100');
   const m = mark();
   t.ok('BOOST ALL is pressed', await pressSend(BOOST_ALL));
@@ -572,7 +616,7 @@ if (runs(9)) {
   })()`);
   const phone = await measure();
   t.equal('Anonymous is the selected choice', phone?.pressed, 'true');
-  t.ok('...its line names "1 sat plus a small network fee"', /1 sat plus a small network fee/.test(phone?.text ?? ''), phone?.text);
+  t.ok('...its line names "1% of the boost + network fee"', /1% of the boost \+ network fee/.test(phone?.text ?? ''), phone?.text);
   t.ok(`...under Buddy, no more lines than "My feed" at 390 px (${phone?.buddy} vs ${phone?.myFeed})`, !!phone && phone.buddy <= phone.myFeed, phone?.buddyText);
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await wait(500);
