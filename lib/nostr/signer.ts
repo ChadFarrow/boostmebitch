@@ -27,7 +27,7 @@
 import { storage } from '@/lib/storage';
 import { AmberSigner } from './amber';
 import { LocalSigner } from './local-signer';
-import { sendBunkerLogout, type BunkerAdapter } from './bunker';
+import { closeBunkerSigner, sendBunkerLogout, type BunkerAdapter } from './bunker';
 
 let amberInstance: AmberSigner | null = null;
 let bunkerInstance: BunkerAdapter | null = null;
@@ -239,7 +239,7 @@ function closeBunkerTransport() {
   // pool is a separate object. Destroying the pool is what actually returns the
   // connections — and it is safe to destroy outright only because lib/nostr/
   // bunker.ts hands us a pool it created for this one connection.
-  try { bunkerInstance.inner.close(); } catch { /* ignore */ }
+  closeBunkerSigner(bunkerInstance.inner);
   try { bunkerInstance.pool.destroy(); } catch { /* ignore */ }
 }
 
@@ -313,7 +313,7 @@ export function revokeBunkerSession() {
   notifySigner();
   if (!adapter) return;
   void sendBunkerLogout(adapter).finally(() => {
-    try { adapter.inner.close(); } catch { /* ignore */ }
+    closeBunkerSigner(adapter.inner);
     try { adapter.pool.destroy(); } catch { /* ignore */ }
   });
 }

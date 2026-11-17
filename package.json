@@ -17,6 +17,7 @@
     "android:release": "cd android && npx --yes -p @bubblewrap/core@1.25.0 -p @bubblewrap/cli@1.25.0 bubblewrap build --skipPwaValidation",
     "android:advance": "node scripts/android-advance.mjs",
     "check": "node scripts/run-checks.mjs",
+    "check:sitestamp": "node --experimental-strip-types scripts/check-site-stamp.mjs",
     "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs",
     "check:sanitizer": "node --experimental-strip-types scripts/check-sanitizer.mjs",
     "check:ssrf": "node --experimental-strip-types scripts/check-ssrf-guard.mjs",
@@ -79,6 +80,10 @@
     "e2e:resume": "node scripts/e2e-resume.mjs",
     "e2e:mutes": "node scripts/e2e-mutes.mjs",
     "e2e:bunkerrestore": "node scripts/e2e-bunker-restore.mjs",
+    "e2e:boostnote": "node scripts/e2e-boost-note-signer.mjs",
+    "e2e:sitestamp": "node scripts/e2e-site-stamp.mjs",
+    "e2e:notewording": "node scripts/e2e-boost-note-wording.mjs",
+    "e2e:bunkerrevive": "node scripts/e2e-bunker-revive.mjs",
     "e2e:twosigners": "node scripts/e2e-two-signers.mjs",
     "e2e:mentions": "node --experimental-strip-types scripts/e2e-mentions.mjs",
     "e2e:playlist": "node scripts/e2e-playlist.mjs",
@@ -123,7 +128,8 @@
     "check:deletions": "node --experimental-strip-types scripts/check-note-deletions.mjs",
     "check:opml": "node --experimental-strip-types scripts/check-opml.mjs",
     "check:moved": "node --experimental-strip-types scripts/check-moved.mjs",
-    "e2e:moved": "node scripts/e2e-moved.mjs"
+    "e2e:moved": "node scripts/e2e-moved.mjs",
+    "e2e:mentionlinks": "node scripts/e2e-mention-links.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",

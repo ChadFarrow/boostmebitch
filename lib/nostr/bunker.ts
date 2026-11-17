@@ -249,8 +249,8 @@ const BUNKER_PING_TIMEOUT_MS = 10_000;
 // THE MONEY PATH ARGUES FOR THE LARGER BUDGET, NOT THE SMALLER. publishBoostNote
 // signs AFTER the sats have moved (CLAUDE.md boost invariant 1), so a long wait
 // costs a spinner beside a payment the user has already been told succeeded.
-// Failing early costs the note outright: <PublishStatus> renders "Publish
-// failed" with no retry control, and nothing re-tries a kind:1.
+// Failing early costs the note until the user acts: <PublishStatus> renders
+// "Note not posted" with RETRY NOTE, and nothing else re-tries a kind:1.
 //
 // THE GAPS ARE A SCHEDULE, NOT ONE NUMBER, and the shape carries the argument.
 // A single 8 s interval was right about the long tail and wrong about the first
@@ -480,7 +480,7 @@ let callsInFlight = 0;
  * takes the pending kind:24133 subscription down with it — so a probe fired
  * while a `sign_event` is in flight can destroy the very request it is meant to
  * protect. That is the money path: `publishBoostNote` signs AFTER the sats have
- * moved, so the note is unrecoverable and `<PublishStatus>` offers no retry.
+ * moved, so the note fails, and only the user's RETRY NOTE can post it again.
  *
  * BOTH HALVES ARE NEEDED, and each covers an interval the other does not.
  * `callsInFlight` is zero during `withApprovalWait`'s gap between re-issues —
@@ -722,6 +722,11 @@ type BunkerCallOpts = {
    * passes ITS deadline so the two budgets cannot stack into one call.
    */
   deadline?: number;
+  /**
+   * Whether the transport this call rides has been CLOSED under it — by a
+   * reconnect that rebuilt it, or by a sign-out. See `closeBunkerSigner`.
+   */
+  superseded?: () => boolean;
 };
 
 /**
@@ -785,7 +790,7 @@ async function trackBunkerCall<T>(
 async function runBunkerCall<T>(
   issue: () => Promise<T>,
   label: string,
-  { probe, deadline }: BunkerCallOpts = {},
+  { probe, deadline, superseded }: BunkerCallOpts = {},
 ): Promise<T> {
   // ISSUED ONCE, outside the loop. Awaiting a settled promise again is free and
   // cannot re-send; calling `issue()` again would be the second approval.
@@ -800,6 +805,17 @@ async function runBunkerCall<T>(
       if (bunkerStale) clearBunkerStale();
       return v;
     } catch (e) {
+      // ITS TRANSPORT WAS CLOSED UNDER IT, so the health flag is not this
+      // call's to move. Only a reconnect or a sign-out closes a live signer,
+      // and each owns the flag: the reconnect sets or clears it on its own
+      // answer. This call cannot know that answer — and the probe it would ask
+      // is a ping on the CLOSED signer, which fails every time. That is how the
+      // red dot went up 30 s after a revive had rebuilt a working link: a
+      // request issued while the revive was still probing rode the old
+      // transport, `inner.close()` does not reject what is pending on it, so it
+      // sat out its bound and then accused the session. Reported as "the red
+      // reconnect thing pops up with Clave a lot" (docs/signers.md).
+      if (superseded?.()) throw e;
       if (isRemoteSignerError(e)) {
         // The signer answered. An error RESPONSE proves the round trip worked.
         if (bunkerStale) clearBunkerStale();
@@ -1077,6 +1093,32 @@ export interface BunkerAdapter {
 }
 
 /**
+ * Every `BunkerSigner` this app has closed. A signer cannot say so itself: its
+ * `isOpen` is private in the pinned nostr-tools 2.19.4. A WeakSet, so a closed
+ * signer is still collected once nothing else holds it.
+ */
+const closedSigners = new WeakSet<BunkerSigner>();
+
+/**
+ * Close a session's signer, and remember that it is closed — the one way every
+ * live signer is closed (`closeBunkerTransport` and the sign-out in
+ * ./signer.ts). The memory is what `superseded` reads: a call still pending on
+ * this signer must not move the health flag when it fails.
+ *
+ * NEVER THROWS, AND IT MUST CATCH THE PROMISE, NOT THE CALL. `close()` is async
+ * in 2.19.4, so a `try` around it catches nothing, and a signer closed twice
+ * rejects — `close()` reads `this.subCloser`, which the first close ended.
+ * Every reconnect after a failed ping closes one twice
+ * (`closeStaleBunkerTransport`, then `activateBunkerSigner` over the same
+ * adapter), and each used to leave an unhandled "Cannot read properties of
+ * undefined (reading 'close')".
+ */
+export function closeBunkerSigner(inner: BunkerSigner): void {
+  closedSigners.add(inner);
+  try { Promise.resolve(inner.close()).catch(() => { /* already closed */ }); } catch { /* ignore */ }
+}
+
+/**
  * Wrap a connected BunkerSigner in the Window['nostr'] shape. Every call goes
  * through trackBunkerCall so timeouts / errors flip the stale flag for the
  * reconnect UI, and four of the six also go through withApprovalWait so a
@@ -1123,6 +1165,8 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
       return false;
     }
   };
+  /** Closed under a pending call — see `closeBunkerSigner` and `runBunkerCall`. */
+  const superseded = (): boolean => closedSigners.has(signer);
   /**
    * MEASURE BEFORE SENDING, so the failure names itself.
    *
@@ -1147,17 +1191,17 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
     return run();
   };
   return {
-    getPublicKey: () => withApprovalWait(() => signer.getPublicKey(), 'get_public_key', { probe }),
+    getPublicKey: () => withApprovalWait(() => signer.getPublicKey(), 'get_public_key', { probe, superseded }),
     // The params are the ones nostr-tools itself builds for this method —
     // `sendRequest('sign_event', [JSON.stringify(event)])` — so the measurement
     // is of the real payload rather than of a shape that resembles it.
     signEvent: (template: EventTemplate): Promise<Event> =>
       sizedBy('sign_event', [JSON.stringify(template)], () =>
-        withApprovalWait(() => signer.signEvent(template), `sign_event kind:${template.kind}`, { probe })) as Promise<Event>,
+        withApprovalWait(() => signer.signEvent(template), `sign_event kind:${template.kind}`, { probe, superseded })) as Promise<Event>,
     nip04: {
       encrypt: (peerPubkey, plaintext) =>
         sizedBy('nip04_encrypt', [peerPubkey, plaintext], () =>
-          withApprovalWait(() => signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt', { probe })),
+          withApprovalWait(() => signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt', { probe, superseded })),
       // No approval wait — capped at 10 s by withDecryptTimeout above this. See
       // the block comment.
       //
@@ -1171,16 +1215,16 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
       // unlocked them. The probe stops a capped decrypt from accusing a live
       // signer; it does not make the decrypt succeed.
       decrypt: (peerPubkey, ciphertext) =>
-        trackBunkerCall(() => signer.nip04Decrypt(peerPubkey, ciphertext), 'nip04_decrypt', { probe }),
+        trackBunkerCall(() => signer.nip04Decrypt(peerPubkey, ciphertext), 'nip04_decrypt', { probe, superseded }),
     },
     nip44: {
       encrypt: (peerPubkey, plaintext) =>
         sizedBy('nip44_encrypt', [peerPubkey, plaintext], () =>
-          withApprovalWait(() => signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt', { probe })),
+          withApprovalWait(() => signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt', { probe, superseded })),
       // No approval wait — capped at 10 s by decryptWithTimeout above this, and
       // the probe for the same reason as the NIP-04 half above.
       decrypt: (peerPubkey, ciphertext) =>
-        trackBunkerCall(() => signer.nip44Decrypt(peerPubkey, ciphertext), 'nip44_decrypt', { probe }),
+        trackBunkerCall(() => signer.nip44Decrypt(peerPubkey, ciphertext), 'nip44_decrypt', { probe, superseded }),
     },
   };
 }
