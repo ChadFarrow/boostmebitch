@@ -843,6 +843,40 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
   return out;
 }
 
+/**
+ * What a `medium=publisher` feed publishes: the `medium` its channel-level
+ * `<podcast:remoteItem>`s name, lower-cased, deduplicated, in wire order.
+ *
+ * The search box uses it to put a publisher under the choice it is FOR (Chad,
+ * 2026-11-16: "pubfeeds should show up for whatever they are for") — Longy's
+ * lists 24 `music` albums, so it belongs under MUSIC, and ChadF's playlist
+ * publisher lists 14 `musicL` playlists, so it belongs under PLAYLISTS. Podcast
+ * Index keeps none of this, so the feed itself is the only source.
+ *
+ * Takes the WHOLE document and scopes itself, because both exclusions are a
+ * reason to read the wrong answer and neither shows on the entry:
+ * `channelSlice` drops a `<podcast:liveItem>` and its current song, and the
+ * podroll strip drops the host's recommended shows. A caller cannot forget a
+ * guard that is inside the function.
+ *
+ * The attribute is read through `readAttr`, so an `x-medium` decoy does not
+ * count. A value that is not a plain word is dropped rather than carried, and
+ * the walk is capped like the playlist one, because the list is feed-supplied.
+ * An entry with no `medium` says nothing and adds nothing: The Doerfels'
+ * publisher names 19 of its 23 children (and 7 podroll entries none), and the
+ * 19 are the answer.
+ */
+export function parsePublisherMediums(xml: string): string[] {
+  const scoped = stripBlocks(channelSlice(xml), [PODROLL_BLOCK_TAG]);
+  const out: string[] = [];
+  for (const { attrs } of findTags(scoped, 'podcast:remoteItem', { max: MAX_PLAYLIST_REFS })) {
+    const medium = readAttr(attrs, 'medium')?.trim().toLowerCase();
+    if (!medium || !/^[a-z]{1,24}$/.test(medium) || out.includes(medium)) continue;
+    out.push(medium);
+  }
+  return out;
+}
+
 // ── OPML: the subscription list another podcast app exported ───────────────
 
 /** One `<outline xmlUrl=…>` from an OPML file — decoded, NOT yet validated. */

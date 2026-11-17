@@ -116,9 +116,14 @@ console.log('\nThe DEMU selector type:');
 
   if (matchesSearchType({ medium: 'music' }, 'demu') !== true) fail('a music row does not match demu');
   else ok('a music row matches demu');
-  // "Longy - Everything" (7696544) is Longy's publisher feed, not an album.
-  if (matchesSearchType({ medium: 'publisher' }, 'demu') !== false) fail('a publisher row matches demu');
-  else ok('a publisher row does not match demu');
+  // "Longy - Everything" (7696544) is Longy's publisher feed, not an album. It
+  // is under DEMU only once its feed has said it publishes music (the route's
+  // `withPublisherMediums`; Chad, 2026-11-16: "demu publisher should be in music
+  // and demu"). Unread, it stays in the PODCASTS residual bucket.
+  if (matchesSearchType({ medium: 'publisher' }, 'demu') !== false) fail('an unread publisher row matches demu');
+  else ok('an unread publisher row does not match demu');
+  if (matchesSearchType({ medium: 'publisher', publisherMediums: ['music'] }, 'demu') !== true) fail('a publisher of music does not match demu');
+  else ok('a publisher of music matches demu');
 
   const music = [
     ROWS.wavlakeAlbum, ROWS.wheelOnWavlake, ROWS.wavlakeQa, ROWS.wheelOnMsp,
@@ -132,7 +137,19 @@ console.log('\nThe DEMU selector type:');
   const keep = (f) => isDemuFeed(f, closedService);
   const ids = mergeSearchLanes(music.filter(keep), byterm.filter(keep), 'demu', 50).map((f) => f.id);
   if (JSON.stringify(ids) !== JSON.stringify([7287540, 46385])) fail(`the DEMU lane returned ${JSON.stringify(ids)}`);
-  else ok('the DEMU lane keeps 7287540, 46385: Wavlake, Fountain, RSS Blue and the publisher feed out, the repeat deduped');
+  else ok('the DEMU lane keeps 7287540, 46385: Wavlake, Fountain, RSS Blue and the unread publisher feed out, the repeat deduped');
+
+  // The same lane once both publisher feeds were read. Longy's is self-hosted
+  // and stays; DJ Yo!'s (8096868, PI's record per #587: generator "Fountain",
+  // 46 `music` children) is MUSIC but not DeMu, so `isDemuFeed` drops it.
+  const read = [
+    { ...byterm[0], publisherMediums: ['music'] },
+    { id: 8096868, medium: 'publisher', generator: 'Fountain', url: 'https://feeds.fountain.fm/RUasFqfffS7e3HGkHo24', publisherMediums: ['music'] },
+    ...byterm.slice(1),
+  ];
+  const readIds = mergeSearchLanes(music.filter(keep), read.filter(keep), 'demu', 50).map((f) => f.id);
+  if (JSON.stringify(readIds) !== JSON.stringify([7287540, 46385, 7696544])) fail(`the DEMU lane with read publishers returned ${JSON.stringify(readIds)}`);
+  else ok('a read DeMu publisher (7696544) joins the DEMU lane; a Fountain publisher (8096868) does not');
 }
 
 // ── The /demu list: roster rows, order, groups, ages, dates, search ──────────
