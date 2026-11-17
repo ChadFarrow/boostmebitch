@@ -242,22 +242,6 @@ export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]
 }
 
 /**
- * Podcast Index's own keyword search, restricted to feeds it holds as MUSIC.
- *
- * The point of a separate endpoint is that `/search/byterm` has no medium
- * parameter, so narrowing its 50 ranked rows client-side cannot reach an album
- * it ranked at position 60 — and an absent row reads as "the index does not have
- * this record", which is the failure the playlist lane already exists to fix.
- * This asks the index the question directly instead.
- *
- * **A miss here is never an outage**, exactly as in `getFeedsByMedium` below and
- * for the same reason: an index that will not serve this path is
- * indistinguishable, from the caller's side, from one holding no music for the
- * term. Both answer `[]`, `/api/search` falls back to filtering byterm's rows,
- * and the MUSIC chip degrades to a shorter answer rather than a broken one. Only
- * auth and 5xx propagate.
- */
-/**
  * Podcast Index's loose TITLE match — `/search/bytitle` with `similar`.
  *
  * `/search/byterm` has no typo tolerance, so `/api/search` asks this as well
@@ -274,6 +258,22 @@ export async function searchSimilarTitles(query: string, max = 20): Promise<Podc
   return (data.feeds ?? []).map(buildPodcast);
 }
 
+/**
+ * Podcast Index's own keyword search, restricted to feeds it holds as MUSIC.
+ *
+ * The point of a separate endpoint is that `/search/byterm` has no medium
+ * parameter, so narrowing its 50 ranked rows client-side cannot reach an album
+ * it ranked at position 60 — and an absent row reads as "the index does not have
+ * this record", which is the failure the playlist lane already exists to fix.
+ * This asks the index the question directly instead.
+ *
+ * **A miss here is never an outage**, exactly as in `getFeedsByMedium` below and
+ * for the same reason: an index that will not serve this path is
+ * indistinguishable, from the caller's side, from one holding no music for the
+ * term. Both answer `[]`, `/api/search` falls back to filtering byterm's rows,
+ * and the MUSIC chip degrades to a shorter answer rather than a broken one. Only
+ * auth and 5xx propagate.
+ */
 export async function searchMusicPodcasts(query: string, max = 50): Promise<Podcast[]> {
   try {
     const data = await pi<any>(
