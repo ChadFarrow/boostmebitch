@@ -242,23 +242,6 @@ export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]
 }
 
 /**
- * Podcast Index's loose TITLE match — `/search/bytitle` with `similar`.
- *
- * `/search/byterm` has no typo tolerance, so `/api/search` asks this as well
- * when byterm comes back thin (`nearTitles` in the route). It matches titles
- * only, never authors. How many typos PI's `similar` forgives is PI's
- * decision and is not documented.
- *
- * An accelerator: the caller treats any failure as no rows.
- */
-export async function searchSimilarTitles(query: string, max = 20): Promise<Podcast[]> {
-  const data = await pi<any>(
-    `/search/bytitle?q=${encodeURIComponent(query)}&max=${max}&similar`,
-  );
-  return (data.feeds ?? []).map(buildPodcast);
-}
-
-/**
  * Podcast Index's own keyword search, restricted to feeds it holds as MUSIC.
  *
  * The point of a separate endpoint is that `/search/byterm` has no medium

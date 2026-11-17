@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { searchPodcasts, searchMusicPodcasts, searchPlaylistFeeds, searchSimilarTitles, getPodcast, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
+import { searchPodcasts, searchMusicPodcasts, searchPlaylistFeeds, getPodcast, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
 import { searchCuratedPlaylists } from '@/lib/curated-roster';
 import type { CuratedHits } from '@/lib/curated-roster';
 import {
@@ -48,39 +48,6 @@ const MAX_PUBLISHER_HITS = 3;
  * and nothing here jumps anything.
  */
 const MAX_TYPED_HITS = 50;
-
-/**
- * Below this many rows, a search also asks Podcast Index for loose title matches.
- *
- * `/search/byterm` forgives no typo, so `muton` finds nothing about mutton. The
- * extra call runs only when the answer is thin, which keeps a normal search at
- * the PI cost it had before.
- */
-const NEAR_TITLES_BELOW = 5;
-
-/** How many loose title matches one search may add. */
-const MAX_NEAR_TITLES = 20;
-
-/**
- * Podcast Index's loose title matches for a thin answer — only the rows of the
- * chip's type, after everything already listed, and none already listed.
- *
- * `added` is how many NEW rows PI returned before the type filter, for `total`.
- *
- * An ACCELERATOR, the same contract as the playlist lanes: every failure is no
- * rows, so it can make an answer longer and never break one. It runs after the
- * other lanes because only their answer says whether it is needed.
- */
-async function nearTitles(
-  query: string,
-  listed: readonly Podcast[],
-  type: SearchType,
-): Promise<{ rows: Podcast[]; added: number }> {
-  if (listed.length >= NEAR_TITLES_BELOW || query.length < 3) return { rows: [], added: 0 };
-  const similar = await searchSimilarTitles(query, MAX_NEAR_TITLES).catch(() => [] as Podcast[]);
-  const fresh = curatedNotListed(similar, listed);
-  return { rows: fresh.filter((f) => matchesSearchType(f, type)), added: fresh.length };
-}
 
 /**
  * One response shape for every branch.
@@ -283,9 +250,12 @@ export async function GET(req: Request) {
         searchPodcasts(query, 50).then(withPublisherMediums),
       ]);
       const merged = mergeSearchLanes(music, feeds, 'music', Infinity);
-      const listed = rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS);
-      const near = await nearTitles(query, listed, type);
-      return answer([...listed, ...near.rows], feeds.length + near.added, type, answered);
+      return answer(
+        rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
+        feeds.length,
+        type,
+        answered,
+      );
     }, 'search failed');
   }
 
@@ -330,9 +300,12 @@ export async function GET(req: Request) {
         'playlist',
         Infinity,
       );
-      const listed = rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS);
-      const near = await nearTitles(query, listed, type);
-      return answer([...listed, ...near.rows], feeds.length + near.added, type, curatedHits.answered && answered);
+      return answer(
+        rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
+        feeds.length,
+        type,
+        curatedHits.answered && answered,
+      );
     }, 'search failed');
   }
 
@@ -348,9 +321,12 @@ export async function GET(req: Request) {
       // under MUSIC instead. It is lifted as under ALL: first wherever it is
       // shown.
       const { feeds, answered } = await searchPodcasts(query, 50).then(withPublisherMediums);
-      const listed = rankPublishersFirst(feeds.filter((f) => matchesSearchType(f, 'podcast')), query, MAX_PUBLISHER_HITS);
-      const near = await nearTitles(query, listed, type);
-      return answer([...listed, ...near.rows], feeds.length + near.added, type, answered);
+      return answer(
+        rankPublishersFirst(feeds.filter((f) => matchesSearchType(f, 'podcast')), query, MAX_PUBLISHER_HITS),
+        feeds.length,
+        type,
+        answered,
+      );
     }, 'search failed');
   }
 
@@ -396,8 +372,6 @@ export async function GET(req: Request) {
       MAX_PUBLISHER_HITS,
     );
     const listed = [...ranked, ...curatedNotListed(nearPlaylistsByQuery(lanes, query, MAX_PLAYLIST_HITS), ranked)];
-    const near = await nearTitles(query, listed, 'all');
-    const all = [...listed, ...near.rows];
-    return answer(all, all.length, 'all', curatedHits.answered);
+    return answer(listed, listed.length, 'all', curatedHits.answered);
   }, 'search failed');
 }
