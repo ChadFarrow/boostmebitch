@@ -150,3 +150,39 @@ format (my calls, each pinned by a test):
 now ends with `via BoostMeBitch`. My call: the card leaves its label out when a line of the body
 already ends with `via <that client>`; a note without it (every note written before the format,
 and other apps' notes) keeps the label.
+
+## Addendum, 2026-11-17: the site-sign length limit (Chad chose "choice 4")
+
+A note the SITE signs (signed out, or Anonymous) goes through `/api/nostr/site-sign`, which refused
+any body over 2000 characters. A real boost could pass that: a summary receipt, a 250-character
+message, 4 feed npubs and 2 typed mentions measured 2032 after every shed, so the note failed and
+RETRY NOTE failed the same way. The limit exists because the route is unauthenticated and asks for
+no proof of payment — it bounds how much free text a stranger can publish under the site's verified
+name. Chad's call: real boosts must never fail on it. Choice 4: measure the largest REAL note and set
+the limit just above it.
+
+**Measured with the shipping builder (2026-11-17):** every part at the most a real boost carries — a
+250-character message with 4 typed mentions placed inline, 120-character names (the cap
+`noteTrackText` already applies), a song inside an episode with its artist, 4 feed npubs, a receipt
+with the three longest default relay hints, 500-character feed URLs, 300-character titles — is
+**4,757** characters. The banner URL is the largest part (2,219), because it carries up to three cover
+URLs and both raw titles.
+
+Some parts have no maximum today, so "the largest real note" needs caps first. My calls:
+
+| Part | Today | Change |
+|---|---|---|
+| Banner `title` / `ep` | the raw title, any length | cut to 120 characters — the banner draws at most 47, so no picture changes |
+| A landing link (body + `r` tag) | any length | left out over 512 characters, never cut. The route already refused an `r` tag over 512, so such a note failed before |
+| The limit | 2000 | the measured largest real note, rounded up: route `MAX_CONTENT` and builder `SITE_SIGN_MAX_CONTENT` together |
+| The shed | song, then `by` | song, then `by`, then the banner line, then the receipt line (its `q` tag stays) |
+
+The two new shed steps make it total: once the links are capped, what is left (message, sentence,
+links, mentions) is far under the limit, so a note past every real maximum — a cover URL thousands of
+characters long, a title of non-Latin text that percent-encodes nine times over — loses its picture,
+then its ⚡ line on Fountain, and still posts. Cover URLs stay uncapped: the route tries them in order,
+and the shed drops the banner rather than a candidate.
+
+A stranger calling the route directly can now have the site sign about 5,000 characters of their own
+text per note instead of 2,000; the rate limit (30 a minute per IP, 600 per route) is unchanged. The
+lasting fix is a route that asks for proof of payment — a separate change.

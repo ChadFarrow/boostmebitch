@@ -172,3 +172,20 @@
 - Tests first: check:vts vectors; e2e:feedbuttons — a new-format BMB note shows no label, an old one keeps it.
 
 ### Task 9: Ship checks — as Task 5, plus `e2e:notewording` and `e2e:feedbuttons` on a fresh build.
+
+## Follow-up 2: the site-sign length limit — see the spec's 2026-11-17 addendum
+
+### Task 10: A real note always fits
+- Tests first, in `e2e-mentions` (the site path, `capture`):
+  - the largest real note (every part at its real maximum, URLs at 512) fits with NOTHING given way — song, `by`, banner and receipt line all present;
+  - a note past every real maximum (3 × 3,000-character cover URLs, non-Latin titles) fits by dropping the banner line, then the receipt line; its `q` tag stays;
+  - a landing link over 512 characters is in neither the body nor an `r` tag;
+  - the banner URL carries at most 120 characters of each title.
+- `lib/nostr/boost-notes.ts`: `noteLink` (null over 512), used by the body and the `r` tags; banner titles cut to 120; `Shed` gains `'banner'` and `'receipt'`; `SITE_SIGN_MAX_CONTENT` = route `MAX_CONTENT` = the measured maximum rounded up.
+- `app/api/nostr/site-sign/route.ts`: `MAX_CONTENT`, and its comment.
+- Docs: `docs/security.md` (why the number), `docs/nostr.md` (the shed and the limit).
+
+### Task 11: Ship checks, plus the route itself
+- `npm run check`, typecheck, lint, build.
+- On `next start`: POST the largest real note's template to `/api/nostr/site-sign` → 200; a body one character over the limit → 400. Sign only; publish nothing.
+- `e2e:mentions`, `e2e:notewording`, `e2e:feedbuttons`.
