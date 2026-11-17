@@ -673,7 +673,10 @@ console.log('\nexplainPaymentError');
     ['LNURL lookup failed for x@example.com', 'recipient', /did not answer/],
     ['LNURL server for x@example.com returned an amountless invoice', 'recipient', /wrong amount/],
     ['Zap invoice amount mismatch: requested 1000 msat, invoice is for 2000', 'recipient', /wrong amount/],
-    ['Spark rail does not support keysend (node-pubkey recipient)', 'yours', /keysend/],
+    ['Spark rail does not support keysend (node-pubkey recipient)', 'yours', /your Spark wallet cannot pay a node/],
+    // `weblnKeysend`'s own refusal: a WebLN wallet with no `keysend`. It once
+    // read "your Spark wallet" too — the arm matched the words, not the wallet.
+    ['This WebLN wallet does not support keysend', 'yours', /your WebLN wallet cannot pay a node/],
     ['No payment provider available (connect NWC, Spark, or WebLN)', 'yours', /No wallet/],
     ['payment engine failed to load — nothing was sent (x)', 'unknown', /did not load/],
     // A keysend that provably sent nothing, retried over LNURL: the retry decides.

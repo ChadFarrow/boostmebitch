@@ -54,6 +54,15 @@
 //      settle's own sats — streaming's total is a separate decision (redirect
 //      invariant 8), pinned here as it is. Streaming is switched on at 60
 //      sats a minute for ~35 s of silent play; the pause is the settle edge.
+//   7. Section 5's boost from a wallet that CANNOT KEYSEND — Spark is one, and
+//      the 2026-11-17 boost was paid from Spark. The stand-in is a WebLN wallet
+//      with no `keysend`, which takes the same `canKeysend === 'no'` path (a
+//      real Spark wallet needs its SDK and its network). Its four Lightning-
+//      address legs are paid here against invoices this script mints; the
+//      song's two node legs are refused before anything is sent. Every record
+//      still says the typed 100000 — a refused leg changes no other leg — and
+//      the modal names the two refused payees, says nothing was sent to them,
+//      and names the wallet that refused.
 //
 // APP_URL may also be a deployed site (a Vercel deployment URL, or production):
 // its host is the one Chrome may resolve then, and every rule above still holds.
@@ -121,6 +130,13 @@ await send('Network.setBypassServiceWorker', { bypass: true });
 // ---- the wire this script answers ---------------------------------------------
 const nostrAsked = [];
 const boostbox = [];
+const keysendProbes = [];
+// Section 7 answers LNURL-pay itself: a payRequest for any address, then an
+// invoice for exactly the amount asked. `bolt11AmountMsat` reads the amount
+// from the prefix, and the stand-in wallet pays nothing, so a well-formed
+// prefix over filler is enough. Everywhere else /api/lnurl stays a 502.
+let lnurlPays = false;
+const invoicesAsked = [];
 let addLnaddrToShow = false;
 const feedRewrites = [];
 const json = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
@@ -185,8 +201,31 @@ page.on(async (m) => {
       await fulfill(403, json({ error: 'e2e: no nostr' }));
       return;
     }
-    if (u.pathname === '/api/keysend') { await fulfill(404, json({ error: 'e2e: lnurl only' })); return; }
-    if (u.pathname === '/api/lnurl') { await fulfill(502, json({ error: 'e2e: no lnurl' })); return; }
+    if (u.pathname === '/api/keysend') {
+      keysendProbes.push(u.search);
+      await fulfill(404, json({ error: 'e2e: lnurl only' }));
+      return;
+    }
+    if (u.pathname === '/api/lnurl') {
+      if (!lnurlPays) { await fulfill(502, json({ error: 'e2e: no lnurl' })); return; }
+      let post = request.postData;
+      if (!post && request.hasPostData) {
+        post = (await send('Network.getRequestPostData', { requestId: networkId }).catch(() => ({})))?.result?.postData;
+      }
+      const target = new URL(JSON.parse(post).url);
+      const answer = (o) => fulfill(200, json({ status: 200, text: JSON.stringify(o) }));
+      if (target.pathname.startsWith('/.well-known/lnurlp/')) {
+        await answer({
+          tag: 'payRequest', callback: `https://${target.host}/e2e-callback/${target.pathname.split('/').pop()}`,
+          minSendable: 1000, maxSendable: 100000000000, commentAllowed: 255, metadata: '[["text/plain","e2e"]]',
+        });
+      } else {
+        const msat = Number(target.searchParams.get('amount'));
+        invoicesAsked.push({ host: target.host, msat });
+        await answer({ pr: `lnbc${msat / 100}n1${'q'.repeat(80)}`, routes: [] });
+      }
+      return;
+    }
     if (u.pathname === '/api/lightning/boostbox') {
       let post = request.postData;
       if (!post && request.hasPostData) {
@@ -207,6 +246,10 @@ page.on(async (m) => {
 // The wallet: records every keysend and its TLV 7629169, pays nothing.
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   window.__legs = [];
+  window.__paid = [];
+  // Section 7 sets 'e2e:no_keysend' before it loads the episode: a wallet with
+  // no keysend at all, which pays invoices (and records them) instead.
+  const noKeysend = (() => { try { return localStorage.getItem('e2e:no_keysend') === '1'; } catch { return false; } })();
   window.webln = {
     enable: async () => {},
     isEnabled: async () => true,
@@ -217,9 +260,18 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       await new Promise((r) => setTimeout(r, 40));
       return { preimage: '00'.repeat(32) };
     },
-    sendPayment: async () => { throw new Error('e2e: keysend only'); },
+    sendPayment: async (pr) => {
+      if (!noKeysend) throw new Error('e2e: keysend only');
+      window.__paid.push(pr);
+      await new Promise((r) => setTimeout(r, 40));
+      return { preimage: '00'.repeat(32) };
+    },
     makeInvoice: async () => { throw new Error('e2e: keysend only'); },
   };
+  if (noKeysend) {
+    delete window.webln.keysend;
+    window.webln.getInfo = async () => ({ node: { alias: 'e2e' }, methods: ['getInfo', 'getBalance', 'sendPayment'] });
+  }
 ` });
 
 // ---- helpers ----------------------------------------------------------------
@@ -569,6 +621,76 @@ if (section(6, 'A streaming settle in the same song window: its BoostBox record 
     JSON.stringify({ settled, record: r.value_msat_total, tlv: one(keysent.map((l) => l.b?.value_msat_total)) }));
   t.equal('the keysend legs say action auto (a song) and name the song in remote_*',
     [one(keysent.map((l) => l.b?.action)), one(keysent.map((l) => l.b?.remote_feed_guid))], [['auto'], [SONG_FEED]]);
+}
+
+// ---------------------------------------------------------------------------
+if (section(7, 'The same boost from a wallet that cannot keysend (the 2026-11-17 boost was paid from Spark)')) {
+  lnurlPays = true;
+  t.ok('the episode page opens with a wallet that has no keysend',
+    await open(`${APP}/?podcast=${CANDR}&episode=${encodeURIComponent(CANDR_014)}`, { 'e2e:no_keysend': '1' }));
+  t.equal('the stand-in wallet has no keysend method', await js('typeof window.webln.keysend'), 'undefined');
+  const parked = await parkInFirstWindow(IN_SONG);
+  t.ok('the player sits inside the song window (7520–7733 s)', parked.at >= 7520 && parked.at < 7733, `at ${parked.at} s`);
+  await js(`${BOOST_EPISODE}.click()`);
+  t.ok('the boost modal opens', await until(`!!(${FIELD})`, 20000));
+  const fromField = `(() => { const l = [...(${DIALOG}?.querySelectorAll('label') ?? [])].find((x) => /^from/i.test(x.textContent.trim())); return l ? document.getElementById(l.htmlFor) : null; })()`;
+  await js(`(() => { const f = ${fromField}; f.focus(); f.select(); return 1; })()`);
+  await send('Input.insertText', { text: FROM });
+  await js(`(() => { const m = ${DIALOG}?.querySelector('textarea'); m.focus(); return 1; })()`);
+  await send('Input.insertText', { text: MSG });
+  await typeAmount('100');
+  // What the listener reads BEFORE paying. Recorded, not asserted: whether to
+  // warn here is a product decision, and a check would pin today's answer.
+  await until(`!!(${SEND}) && !(${SEND}).disabled`, 30000);
+  const before = String(await js(`${DIALOG}?.innerText ?? ''`));
+  console.log(`  before SEND, the modal ${/keysend|cannot pay|can.t pay/i.test(before) ? 'DOES' : 'does NOT'} say that this wallet cannot pay the song's two nodes`);
+  const mark = await js('window.__legs.length');
+  const paidMark = await js('window.__paid.length');
+  const boxMark = boostbox.length;
+  const probeMark = keysendProbes.length;
+  const askMark = invoicesAsked.length;
+  t.ok('SEND is pressable once the song resolves', await pressSend(SEND), await why());
+  const done = `/failed — why/.test(${DIALOG}?.innerText ?? '') && window.__paid.length >= ${paidMark + 4}`;
+  t.ok('the boost settles: four legs paid, the rest explained', await until(done, 90000), await why());
+  await wait(1500);
+  const records = boostbox.slice(boxMark).filter(Boolean);
+  const asked = invoicesAsked.slice(askMark);
+  const paid = JSON.parse(await js('JSON.stringify(window.__paid)')).slice(paidMark);
+  const keysent = await legsAfter(mark, 2000);
+  const after = String(await js(`${DIALOG}?.innerText ?? ''`));
+  if (process.env.DEBUG) console.log(JSON.stringify({ records, asked, paid: paid.length, after }, null, 1));
+
+  console.log('  the wallet');
+  t.equal('no keysend was attempted', keysent.length, 0);
+  t.equal('no .well-known/keysend lookup: the wallet\'s "no" is read before any leg', keysendProbes.slice(probeMark), []);
+  t.equal('the four Lightning-address legs asked for a 1-sat invoice each', asked.map((a) => a.msat), [1000, 1000, 1000, 1000]);
+  t.equal('...and the wallet paid all four', paid.length, 4);
+
+  console.log('  the BoostBox records — a refused leg changes no other leg');
+  t.equal('one record per Lightning-address leg', records.map((r) => r.recipient_name).sort(), Object.keys(LNURL_LEGS).sort());
+  t.equal('each leg is 1 sat (value_msat)', one(records.map((r) => r.value_msat)), [1000]);
+  t.equal('value_msat_total is the typed 100000 — not the 4 sats that moved, nor a group\'s share',
+    one(records.map((r) => r.value_msat_total)), [TYPED_MSAT]);
+  t.equal('feed_guid is the show\'s feed', one(records.map((r) => r.feed_guid)), [CANDR]);
+  t.equal('remote_feed_guid and remote_item_guid name the song',
+    [one(records.map((r) => r.remote_feed_guid)), one(records.map((r) => r.remote_item_guid))], [[SONG_FEED], [SONG_ITEM]]);
+  const msp = records.find((r) => r.recipient_name === 'MSP 2.0');
+  const show = records.filter((r) => r.recipient_name !== 'MSP 2.0');
+  t.ok('MSP 2.0 is in the song\'s group, the other three in one show group',
+    !!msp && one(show.map((r) => r.group)).length === 1 && show[0]?.group !== msp.group,
+    JSON.stringify(records.map((r) => [r.recipient_name, r.group])));
+  t.equal('sender_name and message are what was typed', [one(records.map((r) => r.sender_name)), one(records.map((r) => r.message))], [[FROM], [MSG]]);
+
+  console.log('  what the listener reads after SEND');
+  t.ok('the modal counts 4 of 6 legs sent', /Lightning: 4\/6 sent/.test(after), after.replace(/\s+/g, ' ').slice(0, 400));
+  t.ok('...and says 2 failed', /2 failed — why/.test(after));
+  const nodeCause = String(await js(`[...(${DIALOG}?.querySelectorAll('details li') ?? [])].find((li) => /Lightning node/.test(li.textContent))?.innerText ?? ''`));
+  t.ok('the refusal names the wallet that refused (WebLN here, Spark for a Spark wallet)',
+    /your WebLN wallet cannot pay a node directly \(keysend\)/.test(nodeCause), nodeCause);
+  t.ok('...says nothing was sent to those two', /Nothing was sent to these recipients/.test(nodeCause), nodeCause);
+  t.equal('...and names exactly the song\'s two nodes',
+    (nodeCause.trim().split('\n').pop() ?? '').split(' · ').map((x) => x.trim()).sort(), Object.keys(SONG_NODES).sort());
+  lnurlPays = false;
 }
 
 // ---------------------------------------------------------------------------
