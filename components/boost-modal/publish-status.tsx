@@ -5,8 +5,13 @@ import { BunkerRestoreNotice } from '../bunker-restore-notice';
 
 export type PublishState =
   | { kind: 'idle' }
-  | { kind: 'publishing' }
-  | { kind: 'done'; note: PublishedNote }
+  /** `step: 'stamp'` while a site-signed note's stamp (1% of the boost, `sats`) is being paid. */
+  | { kind: 'publishing'; step?: 'stamp'; sats?: number }
+  /**
+   * `notice`: why the note went out from a one-time key instead of the site's
+   * (lib/site-stamp.ts). The note IS posted; this says by whom.
+   */
+  | { kind: 'done'; note: PublishedNote; notice?: string }
   /**
    * `retry` posts the SAME note again — same boost, same receipt if one was
    * already published. Absent where there is nothing to retry with.
@@ -41,7 +46,13 @@ export function PublishStatus({ state }: { state: PublishState }) {
     // ping — never shows it.
     return (
       <div role="status" className="text-xs text-nostr space-y-1">
-        <div>◆ Publishing to nostr…</div>
+        <div>
+          {state.step !== 'stamp'
+            ? '◆ Publishing to nostr…'
+            : state.sats
+              ? `◆ Paying the ${state.sats}-sat stamp (1%)…`
+              : '◆ Paying the stamp (1%)…'}
+        </div>
         <BunkerApprovalNotice />
         <BunkerRestoreNotice />
       </div>
@@ -76,6 +87,7 @@ export function PublishStatus({ state }: { state: PublishState }) {
       <div className="text-nostr">
         ◆ Published to {state.note.acceptedRelays.length}/{total} relays
       </div>
+      {state.notice && <div className="text-muted leading-relaxed">{state.notice}</div>}
       <a
         href={`https://njump.me/${encodeURIComponent(state.note.nevent)}`}
         target="_blank"

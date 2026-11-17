@@ -144,7 +144,10 @@ if (OFF) {
   t.ok('the Community section is there', await waitFor(`${section('Community playlists')}`, 30000));
   t.ok('the old blurb', await js(`${section('Community playlists')}.innerText.includes('Built on other hosts, and mostly by other people in the V4V community.')`));
   t.ok('not the new blurb', await js(`!document.body.innerText.includes('Made by listeners on BMB')`));
-  await waitFor(`!document.body.innerText.includes('loading playlists')`, 60000);
+  // The line is `uppercase` in CSS, and innerText returns the transformed text
+  // ("LOADING PLAYLISTS…"), so a case-sensitive test never sees it and the wait
+  // ends at once: the count then raced the second section's load (7 of 21).
+  await waitFor(`!/loading playlists/i.test(document.body.innerText)`, 60000);
   const rowsAll = `[...document.querySelectorAll('section li')].filter((l) => l.innerText.includes('PLAYLIST'))`;
   const countable = await js(`${rowsAll}.length`);
   t.ok('there are more than 12 playlist rows to count', countable > 12, String(countable));
@@ -552,7 +555,7 @@ await js(`localStorage.setItem('bmb:npub', ${JSON.stringify(npub)}); 1`);
 // the store cannot be reached: the curated rows stay, and the page says something is missing
 await js(`localStorage.setItem('__e2eStore', 'down'); 1`);
 await go('/playlists');
-t.ok('store down: the curated rows are still listed', await waitFor(`${community} && ${comRows}.length >= 1 && !${community}.innerText.includes('loading playlists')`, 40000));
+t.ok('store down: the curated rows are still listed', await waitFor(`${community} && ${comRows}.length >= 1 && !/loading playlists/i.test(${community}.innerText)`, 40000));
 t.ok('store down: the line names the missing half, with a RETRY', await js(`${community}.innerText.includes("Playlists made on BMB couldn't be loaded just now.") && !![...${community}.querySelectorAll('[data-testid=store-down] button')].find((b) => b.textContent.includes('RETRY'))`));
 t.ok('store down: not folded into a count ("1 more")', await js(`!/\\d+ more couldn't be loaded/.test(${community}.innerText) && !/\\d+ of \\d+ playlists/i.test(${community}.innerText)`));
 t.ok('store down: no stored row, no EDIT', await js(`!${community}.innerText.includes('e2e community playlist') && !document.querySelector('a[data-edit-playlist]')`));
@@ -560,7 +563,7 @@ t.ok('store down: no stored row, no EDIT', await js(`!${community}.innerText.inc
 await js(`localStorage.setItem('__e2eStore', 'dupe'); 1`);
 await go('/playlists');
 t.ok('same feed URL: the stored row shows', await waitFor(`${community} && ${comRows}.some((l) => l.innerText.includes('DUPE STORED'))`, 40000));
-await waitFor(`!${community}.innerText.includes('loading playlists')`, 40000);
+await waitFor(`!/loading playlists/i.test(${community}.innerText)`, 40000);
 t.equal('same feed URL: it appears once, and the count line equals the rows', await js(`(() => { const n = ${comRows}.length; const m = /^(\\d+)(?: of \\d+)? playlists$/mi.exec(${community}.innerText); return [${comRows}.filter((l) => l.innerText.includes('DUPE STORED')).length, m && Number(m[1]) === n && n <= 7]; })()`), [1, true]);
 t.ok('same feed URL: that row has no EDIT', await js(`!${comRows}[0].querySelector('a[data-edit-playlist]')`));
 await js(`localStorage.removeItem('__e2eStore'); 1`);
