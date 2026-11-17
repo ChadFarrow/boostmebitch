@@ -18,6 +18,7 @@
 // extension and expands `@/`, so the graph it builds is the one webpack builds.
 
 import { register } from 'node:module';
+import { readFileSync } from 'node:fs';
 register('./e2e-resolve-hook.mjs', import.meta.url);
 
 import { createRelay } from './local-relay.mjs';
@@ -460,26 +461,95 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('worst case: at most 40 tags', worst.tags.length <= 40, true);
   check('worst case: every tag name is in the route allowlist',
     worst.tags.every((t) => ['i','k','r','p','amount','client','t','imeta','q'].includes(t[0])), true);
-  const worstNoTrack = await capture({
-    podcast: { ...podcast, nostrNpubs: many.slice(0, 4) }, episode: longEp,
-    boostagram: boostagram('m'.repeat(280)), results: [], mentions: many,
-  });
-  check('worst case: body within 2000', worst.content.length <= 2000, true);
-  // Without the track this body is already within a few characters of the
-  // cap, and the line adds up to ~250: it must be the line that goes, never
-  // the note.
-  check('worst case: a body the line would overfill drops the LINE',
-    worst.content, worstNoTrack.content);
+  // The site-sign route refuses a body over its limit — it is unauthenticated,
+  // so the limit bounds how much free text a stranger can have the site sign.
+  // A REAL boost must never meet it (Chad, 2026-11-17): the limit sits just
+  // above the largest real note, and past every real maximum the body gives
+  // way part by part, never the note. Read from BOTH sources, which must agree:
+  // the route cannot load here (next/server), and a copy would pass green
+  // while the shipping numbers drift apart.
+  const constIn = (file, name) => Number((readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
+    .match(new RegExp(`const ${name} = (\\d+);`)) ?? [])[1]);
+  const LIMIT = constIn('app/api/nostr/site-sign/route.ts', 'MAX_CONTENT');
+  check('the builder\'s limit is the route\'s', constIn('lib/nostr/boost-notes.ts', 'SITE_SIGN_MAX_CONTENT'), LIMIT);
+  check('worst case: body within the limit', worst.content.length <= LIMIT, true);
   check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
-  // The ALBUM's author is the other optional part: an album track's sentence
-  // says "by <author>", up to 124 characters the old body never carried. On
-  // the same worst-case body it must give way with the song, never the note.
+
+  const fill = (n, tag) => { const h = `https://example.com/${tag}/`; return h + 'x'.repeat(n - h.length); };
+  const relayHints = [...DEFAULT_RELAYS].sort((a, b) => b.length - a.length).slice(0, 3);
+  const RECEIPT = { id: 'a'.repeat(64), pubkey: 'b'.repeat(64), relays: relayHints };
+  // Every part at the most a real boost carries: a 250-character message (the
+  // modal's cap) with 4 typed mentions placed inline, names past the 120 the
+  // sentence keeps, a song with its artist inside an episode, 4 feed npubs,
+  // URLs at 512 (the route's cap on a tag item, which the links also are), and
+  // the summary receipt with the three longest default relays as hints.
+  const largestArgs = {
+    podcast: { ...podcast, title: 'P'.repeat(300), author: 'A'.repeat(300), url: fill(512, 'feed'),
+      image: fill(512, 'img'), artwork: fill(512, 'art'), nostrNpubs: many.slice(0, 4) },
+    episode: { ...episode, title: 'T'.repeat(300), guid: fill(220, 'guid'), link: fill(512, 'link'),
+      image: fill(512, 'epimg'), feedImage: fill(512, 'feedimg') },
+    boostagram: { ...boostagram('@m4 @m5 @m6 @m7 ' + 'x'.repeat(250 - 16)), sender_name: 'S'.repeat(300),
+      value_msat_total: 9999999999 * 1000 },
+    results: [], mentions: many.slice(4),
+    track: { split: { title: 'G'.repeat(300), artist: 'R'.repeat(300),
+      remoteItem: { feedGuid: 'f'.repeat(200), itemGuid: 'g'.repeat(200) } }, results: [{ ok: true, sats: 1 }] },
+    summaryReceipt: RECEIPT,
+  };
+  const largest = await capture(largestArgs);
+  const bannerOf = (e) => (e?.content.match(/https:\/\/\S+\/api\/og\/boost\.png\S*/) ?? [])[0];
+  const sentenceOf = (e) => (e?.content.split('\n') ?? []).find((l) => / boosted \d+ sats/.test(l)) ?? '';
+  const neventIn = (e) => /nostr:nevent1/.test(e?.content ?? '');
+  console.log(`  (the largest real note: ${largest?.content.length} characters)`);
+  check('the largest real note fits the limit', largest?.content.length <= LIMIT, true);
+  check('...with nothing given way: the song and its artist', sentenceOf(largest).includes(` by ${'R'.repeat(119)}…`), true);
+  check('...the banner', !!bannerOf(largest), true);
+  check('...and the receipt line', neventIn(largest), true);
+  check('...and the limit sits just above it, not far above', LIMIT - (largest?.content.length ?? 0) < 1000, true);
+  const banner = new URL(bannerOf(largest) ?? 'https://x/');
+  check('the banner carries at most 120 characters of each title',
+    [banner.searchParams.get('title')?.length, banner.searchParams.get('ep')?.length], [120, 120]);
+
+  // Past every real maximum: covers at thousands of characters each and titles
+  // in a script that percent-encodes nine times over. The picture goes first —
+  // never the note, and never the song for the sake of a picture.
+  const huge = await capture({ ...largestArgs,
+    podcast: { ...largestArgs.podcast, title: '音'.repeat(300), image: fill(3000, 'img'), artwork: fill(3000, 'art') },
+    episode: { ...largestArgs.episode, title: '楽'.repeat(300), image: fill(3000, 'epimg'), feedImage: fill(3000, 'feedimg') } });
+  check('a note past every real maximum still fits', huge?.content.length <= LIMIT, true);
+  check('...the banner gave way', bannerOf(huge), undefined);
+  check('...and nothing else: the song stays', sentenceOf(huge).includes(` by ${'R'.repeat(119)}…`), true);
+  check('...the receipt line stays', neventIn(huge), true);
+  // And relay hints no real relay has, so the receipt line alone is too long:
+  // it goes last, after the song and its artist, and its `q` tag stays. The
+  // hints are kept under the 5,000 characters bech32 allows a `nevent`, past
+  // which nostr-tools throws before any note is built.
+  const wss = (n, tag) => fill(n, tag).replace('https', 'wss');
+  const hugeReceipt = await capture({ ...largestArgs,
+    podcast: { ...largestArgs.podcast, image: fill(3000, 'img'), artwork: fill(3000, 'art') },
+    summaryReceipt: { ...RECEIPT, relays: [wss(400, 'r0'), wss(1000, 'r1'), wss(1000, 'r2')] } });
+  check('relay hints past every real one: the note still fits', hugeReceipt?.content.length <= LIMIT, true);
+  check('...the receipt line gave way', neventIn(hugeReceipt), false);
+  check('...after the banner, the song and the "by"', [!!bannerOf(hugeReceipt), / by R/.test(sentenceOf(hugeReceipt))], [false, false]);
+  check('...and its q tag stays', hugeReceipt?.tags.filter((t) => t[0] === 'q').map((t) => t[1]), ['a'.repeat(64)]);
+
+  // A link longer than the route takes in an `r` tag is left out — of the tag
+  // AND the body, never cut — and the next landing page stands in for it.
+  const longLink = await capture({ ...base, episode: { ...episode, link: fill(600, 'link') } });
+  check('a landing link over 512 characters is in no r tag', longLink?.tags.some((t) => t[0] === 'r' && t[1].length > 512), false);
+  check('...and not in the body', longLink?.content.includes(fill(600, 'link')), false);
+  // The order is podcastLandingUrl's: the episode's page, then its guid when
+  // that is a URL (this fixture's is), then the show's pages.
+  check('...the next landing page stands in', longLink?.content.split('\n').includes(episode.guid), true);
+  const longSite = await capture({ ...base, episode: { ...episode, guid: `https://example.com/?${'a=b&'.repeat(70)}` } });
+  check('a site link over 512 characters is left out too', longSite?.tags.some((t) => t[0] === 'r' && t[1].length > 512), false);
+  check('...of the body as well', /podcast=[^\s]*&episode=/.test(longSite?.content ?? ''), false);
+
   const worstAlbum = await capture({
     podcast: { ...podcast, medium: 'music', author: 'A'.repeat(300), nostrNpubs: many.slice(0, 4) }, episode: longEp,
     boostagram: boostagram('m'.repeat(280)), results: [], mentions: many,
   });
-  check('worst case, a music feed: body within 2000', worstAlbum.content.length <= 2000, true);
-  check('...the "by" gave way', worstAlbum.content.includes(' by A'), false);
+  check('worst case, a music feed: body within the limit', worstAlbum.content.length <= LIMIT, true);
+  check('...and it keeps its "by"', worstAlbum.content.includes(' by A'), true);
   const roomyAlbum = await capture({ ...base, podcast: { ...podcast, medium: 'music', author: 'The Doerfels' } });
   check('a body with room keeps the album\'s "by"', roomyAlbum?.content.includes(` by The Doerfels from ${podcast.title}`), true);
   const roomy = await capture({ ...base, track: { ...track, split: { ...track.split,

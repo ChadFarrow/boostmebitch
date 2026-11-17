@@ -175,12 +175,15 @@ Some parts have no maximum today, so "the largest real note" needs caps first. M
 | Banner `title` / `ep` | the raw title, any length | cut to 120 characters — the banner draws at most 47, so no picture changes |
 | A landing link (body + `r` tag) | any length | left out over 512 characters, never cut. The route already refused an `r` tag over 512, so such a note failed before |
 | The limit | 2000 | the measured largest real note, rounded up: route `MAX_CONTENT` and builder `SITE_SIGN_MAX_CONTENT` together |
-| The shed | song, then `by` | song, then `by`, then the banner line, then the receipt line (its `q` tag stays) |
+| The shed | song, then `by` | the banner line (with its `imeta`), then the song, then `by`, then the receipt line (its `q` tag stays) |
 
 The two new shed steps make it total: once the links are capped, what is left (message, sentence,
 links, mentions) is far under the limit, so a note past every real maximum — a cover URL thousands of
-characters long, a title of non-Latin text that percent-encodes nine times over — loses its picture,
-then its ⚡ line on Fountain, and still posts. Cover URLs stay uncapped: the route tries them in order,
+characters long, a title of non-Latin text that percent-encodes nine times over — loses its picture
+first (the song's name is worth more than a picture of it), and still posts.
+
+**Measured after the change: 4,445 characters**, with URLs at 512 and titles cut to 120; the limit is
+5,000. Cover URLs stay uncapped: the route tries them in order,
 and the shed drops the banner rather than a candidate.
 
 A stranger calling the route directly can now have the site sign about 5,000 characters of their own

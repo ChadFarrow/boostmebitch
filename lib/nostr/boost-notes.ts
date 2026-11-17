@@ -74,10 +74,31 @@ function noteTrack(args: PublishArgs): BoostNoteTrack | null {
  * give way before the note does. Keep the two numbers together.
  */
 const SITE_SIGN_TAGS_TOTAL_LEN = 4096;
-/** The site-sign route's MAX_CONTENT, for the same reason: the sentence's
- *  optional parts — the song and the "by <artist>" — give way before the note
- *  does. */
-const SITE_SIGN_MAX_CONTENT = 2000;
+/**
+ * The site-sign route's MAX_CONTENT. Keep the two numbers together.
+ *
+ * It sits JUST ABOVE THE LARGEST REAL NOTE, so a real boost never meets it
+ * (Chad, 2026-11-17: the route refused 2032 characters at 2000, and RETRY NOTE
+ * with it). The route is unauthenticated and asks for no proof of payment, so
+ * the limit is what bounds the free text a stranger can have the site sign —
+ * not far above, then. Every part of the body has a maximum: the modal's
+ * 250-character message, 120 characters a name (`noteTrackText`), eight
+ * mentions, links within 512 (`noteLink`), banner titles within 120. Measured
+ * with all of them at once, a song inside an episode and the summary receipt:
+ * about 4,450 (`e2e:mentions` prints it and fails if the limit drifts 1,000
+ * above it). Past every real maximum the body gives way part by part (`SHEDS`).
+ */
+const SITE_SIGN_MAX_CONTENT = 5000;
+
+/**
+ * The longest link the note carries, in its body or its `r` tags or as an `i`
+ * tag's hint: the site-sign route's MAX_TAG_ITEM_LEN, which refuses the whole
+ * template past it. A longer link is LEFT OUT, never cut — a cut URL is a dead
+ * link in a note nobody can edit.
+ */
+const NOTE_LINK_MAX = 512;
+const noteLink = (url: string | null | undefined): string | null =>
+  url && url.length <= NOTE_LINK_MAX ? url : null;
 const tagsLen = (tags: string[][]) =>
   tags.reduce((n, t) => n + t.reduce((m, x) => m + x.length, 0), 0);
 
@@ -106,11 +127,12 @@ const tagsLen = (tags: string[][]) =>
  * either way.
  */
 function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
-  const episodePage = httpUrl(episode?.link) ?? httpUrl(episode?.guid);
+  // Each candidate within `noteLink`'s length, or the next one stands in.
+  const episodePage = noteLink(httpUrl(episode?.link)) ?? noteLink(httpUrl(episode?.guid));
   if (episodePage) return episodePage;
   if (podcast.itunesId) return `https://pod.link/${podcast.itunesId}`;
   if (podcast.id) return `https://podcastindex.org/podcast/${podcast.id}`;
-  return podcast.url ?? null;
+  return noteLink(podcast.url);
 }
 
 /**
@@ -134,7 +156,9 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  */
 function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   if (!podcast.podcastGuid) return null;
-  return siteLandingUrl(podcast.podcastGuid, episode?.guid);
+  // A long URL guid, percent-encoded, can pass `noteLink`'s length: then the
+  // note goes without this link (and without it as an `i` hint), never cut.
+  return noteLink(siteLandingUrl(podcast.podcastGuid, episode?.guid));
 }
 
 /**
@@ -201,6 +225,9 @@ function boostArtUrls(podcast: Podcast, episode?: Episode): string[] {
  */
 const SITE_ORIGIN = BRAND.origin;
 
+/** The most of a title the banner URL carries; see `boostBannerUrl`. */
+const BANNER_TITLE_MAX = 120;
+
 /**
  * The picture the note shows: `/api/og/boost.png`, drawn from the artwork, the
  * sats and the titles.
@@ -241,8 +268,12 @@ function boostBannerUrl(
   // every note already published names `art` alone.
   const arts = boostArtUrls(podcast, episode);
   arts.forEach((url, i) => params.set(i === 0 ? 'art' : `art${i + 1}`, url));
-  if (podcast.title) params.set('title', podcast.title);
-  if (episode?.title) params.set('ep', episode.title);
+  // At most 120 characters of each title: the banner draws 47 at most, and a
+  // raw feed title has no length of its own, so the rest only made the note
+  // longer (the site-sign limit counts it).
+  const title = (t: string) => Array.from(t).slice(0, BANNER_TITLE_MAX).join('');
+  if (podcast.title) params.set('title', title(podcast.title));
+  if (episode?.title) params.set('ep', title(episode.title));
   const sats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
   if (sats > 0) params.set('sats', String(sats));
   return `${SITE_ORIGIN}/api/og/boost.png?${params.toString()}`;
@@ -345,12 +376,29 @@ export function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
 
 
 /**
- * What the sentence leaves out to fit the site-sign cap, in the order it gives
- * way: nothing, then the song, then the "by <artist>" too.
+ * What the body leaves out to fit the site-sign cap. A real note never needs
+ * any of it (`SITE_SIGN_MAX_CONTENT`); a note past every real maximum — a cover
+ * URL thousands of characters long, relay hints no relay has — gives way part
+ * by part rather than be refused whole.
  */
-type Shed = 'none' | 'song' | 'song+by';
+interface Shed { banner: boolean; song: boolean; by: boolean; receipt: boolean }
 
-function formatContent(args: PublishArgs, shed: Shed = 'none'): string {
+/**
+ * The order it gives way in, each step keeping the last. The BANNER first: a
+ * picture URL is the one part with no real maximum (its cover URLs), and the
+ * song's name is worth more than a picture of it. Then the song, then the
+ * "by <artist>", then the receipt's `nostr:nevent` line LAST — its `q` tag
+ * stays, so Fountain still lists the note and only its ⚡ figure is lost.
+ */
+const SHEDS: readonly Shed[] = [
+  { banner: false, song: false, by: false, receipt: false },
+  { banner: true, song: false, by: false, receipt: false },
+  { banner: true, song: true, by: false, receipt: false },
+  { banner: true, song: true, by: true, receipt: false },
+  { banner: true, song: true, by: true, receipt: true },
+];
+
+function formatContent(args: PublishArgs, shed: Shed = SHEDS[0]): string {
   const { podcast, episode, boostagram } = args;
   const totalSats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
 
@@ -364,9 +412,10 @@ function formatContent(args: PublishArgs, shed: Shed = 'none'): string {
   // identity, so without it the sender appears nowhere. The song the boost
   // paid is named only when a track leg settled (boostNoteTrack). The song and
   // the "by <artist>" — up to ~250 characters the sentence can do without —
-  // are what give way when the body would pass the site-sign cap (`shed`).
-  const track = shed === 'none' ? noteTrack(args) : null;
-  const keepBy = shed !== 'song+by';
+  // are what the sentence gives way when the body would pass the site-sign cap
+  // (`SHEDS`; a real note never does).
+  const track = shed.song ? null : noteTrack(args);
+  const keepBy = !shed.by;
   lines.push(boostSentence({
     sender: boostagram.sender_name,
     sats: totalSats,
@@ -532,30 +581,28 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     }
   }
 
+  // Inline first, then append only what could not be placed. The two halves
+  // are one decision: a mention put where the sender typed it must NOT also
+  // appear in the trailing run, or the note names the same person twice.
+  const build = (shed: Shed) => {
+    const body = withArt(args.contentOverride ?? formatContent(args, shed), shed.banner ? null : banner);
+    const { content: inlined, remaining } = inlineMentions(body, inBody);
+    return withZapReceipts(withMentionRun(inlined, remaining), shed.receipt ? [] : receipts);
+  };
+  // The first body the route takes, measured on both paths so a note never
+  // differs by which key signs it. The last step always fits a real note: its
+  // message, sentence, links and mentions all have maximums far under the cap.
+  const shed = SHEDS.find((s) => build(s).length <= SITE_SIGN_MAX_CONTENT) ?? SHEDS[SHEDS.length - 1];
+  const content = build(shed);
+  // NIP-92's `imeta` describes a picture the body names; once the body gives
+  // the banner up, it describes nothing.
+  const finalTags = shed.banner ? tags.filter((t) => t[0] !== 'imeta') : tags;
+
   return {
     kind: 1,
     created_at: Math.floor(Date.now() / 1000),
-    tags,
-    // Inline first, then append only what could not be placed. The two halves
-    // are one decision: a mention put where the sender typed it must NOT also
-    // appear in the trailing run, or the note names the same person twice.
-    content: (() => {
-      const build = (shed: Shed) => {
-        const body = withArt(args.contentOverride ?? formatContent(args, shed), banner);
-        const { content: inlined, remaining } = inlineMentions(body, inBody);
-        return withZapReceipts(withMentionRun(inlined, remaining), receipts);
-      };
-      // The song and the "by <artist>" are the optional parts of the sentence,
-      // so they are what goes when a long message, many mentions and long
-      // links fill the body: the route refuses the WHOLE note past its cap. Measured on both
-      // paths so a note never differs by which key signs it.
-      // The song goes first; the "by" only when that is not enough.
-      for (const shed of ['none', 'song'] as const) {
-        const body = build(shed);
-        if (body.length <= SITE_SIGN_MAX_CONTENT) return body;
-      }
-      return build('song+by');
-    })(),
+    tags: finalTags,
+    content,
   };
 }
 
