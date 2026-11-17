@@ -755,6 +755,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           // case, so this pairing is the one thing that must stay together.
           totalSats: primaryLeg.sats,
           boostagram: sent.primaryBoostagram,
+          // The show the listener played, for an LNURL leg's BoostBox record —
+          // `showGuid` below, never the track the boostagram's remote_* names.
+          feedGuid: sent.hostRefs.podcastGuid,
           rail,
           // By index, never appended: legs settle biggest-share-first, so append
           // order is not recipient order and every ✓/✗ would land on the wrong
@@ -790,6 +793,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           value: sent.hostValue,
           totalSats: hostLeg!.sats,
           boostagram: sent.hostBoostagram,
+          feedGuid: sent.hostRefs.podcastGuid,
           rail,
           onProgress: (res, index) =>
             setHostResults((prev) => {
@@ -856,6 +860,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         value: { ...block, recipients: [prev.recipient] },
         totalSats: prev.sats,
         boostagram,
+        feedGuid: sent.hostRefs.podcastGuid,
         rail,
       });
       retried.push(r);

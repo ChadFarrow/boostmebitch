@@ -161,12 +161,14 @@ async function payLnurl(
   sats: number,
   rail: Rail,
   boostagram: Boostagram,
+  feedGuid: string | undefined,
 ): Promise<BoostResult> {
   const stored = await storeBoostMetadata({
     boostagram,
     recipient,
     splitWeight: recipient.split,
     legMsat: sats * 1000,
+    feedGuid,
   });
   // Handed over separately, NOT pre-joined: the two truncate differently and
   // fetchLnInvoice is the only place that knows the recipient's commentAllowed.
@@ -311,6 +313,7 @@ async function payOne(
   rail: Rail,
   boostagram: Boostagram,
   canKeysend: KeysendCapability,
+  feedGuid: string | undefined,
 ): Promise<BoostResult> {
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
@@ -362,7 +365,7 @@ async function payOne(
                 : 'no .well-known/keysend endpoint'
         })`,
       );
-      return await payLnurl(recipient, sats, rail, boostagram);
+      return await payLnurl(recipient, sats, rail, boostagram, feedGuid);
     }
     console.info(
       `[keysend] ${recipient.address} → keysend ${upgraded.address.slice(0, 12)}…` +
@@ -452,7 +455,7 @@ async function payOne(
         })`,
       );
       try {
-        return await payLnurl(recipient, sats, rail, boostagram);
+        return await payLnurl(recipient, sats, rail, boostagram, feedGuid);
       } catch (retryErr) {
         // Name BOTH attempts. The user watched this leg try a keysend, so
         // surfacing only the LNURL error reports a cause they never saw and
@@ -502,6 +505,16 @@ export async function sendBoost(args: {
   value: ValueBlock;
   totalSats: number;
   boostagram: Boostagram;
+  /**
+   * The `<podcast:guid>` of the feed that holds the item the listener PLAYED:
+   * `episode.podcastGuid ?? podcast.podcastGuid`. An LNURL leg's BoostBox
+   * record carries it as `feed_guid`. NOT read off the boostagram — inside a
+   * valueTimeSplit or a live redirect its `remote_feed_guid` names the TRACK,
+   * and a field added to the boostagram is bytes in every keysend onion.
+   * Required, with `undefined` allowed, so a new caller has to answer it: a
+   * default would put the song's feed back under the show's name.
+   */
+  feedGuid: string | undefined;
   rail?: Rail;
   // `index` is the recipient's position in `value.recipients` — NOT the order
   // the legs settle in (see the traversal below). Callers tracking progress
@@ -564,7 +577,7 @@ export async function sendBoost(args: {
   // Still strictly sequential: NWC is one relay connection, WebLN prompts per
   // payment, and streaming.ts settles serially by design. Never parallelize.
   for (const i of recipientOrder(recipients)) {
-    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend);
+    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend, args.feedGuid);
     results[i] = r;
     args.onProgress?.(r, i, recipients.length);
   }

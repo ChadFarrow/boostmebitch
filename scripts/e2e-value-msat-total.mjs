@@ -40,6 +40,23 @@
 //      a share and never the album total; each track's groups paid 100.
 //   4. The show's block names a Lightning address: its BoostBox record (the
 //      metadata an LNURL leg carries) says 100000 too, while its own leg is 1.
+//   5. The boost Chad reported on 2026-11-17, rebuilt exactly: Chad and Reeds
+//      Podcast 014, 100 sats pressed at 7525 s, inside its one song window
+//      (7520 s for 213 s; the show keeps 3%). EVERY FIELD of every leg is read:
+//      the song's two keysend TLVs, and the BoostBox records of the four
+//      Lightning-address legs (the song's MSP 2.0, and ChadF, Reed and "candr
+//      show" in the show's group). A BoostBox record names the feed the
+//      listener PLAYED in `feed_guid` — the feed that holds its `item_guid` —
+//      and the song only in `remote_*`. And the TLV carries no key beyond the
+//      ones listed: its bytes ride in the keysend onion (BOOSTAGRAM_MAX).
+//   6. A STREAMING settle in the same window: its BoostBox record names the
+//      show's feed in `feed_guid` too. Its `value_msat_total` stays the
+//      settle's own sats — streaming's total is a separate decision (redirect
+//      invariant 8), pinned here as it is. Streaming is switched on at 60
+//      sats a minute for ~35 s of silent play; the pause is the settle edge.
+//
+// APP_URL may also be a deployed site (a Vercel deployment URL, or production):
+// its host is the one Chrome may resolve then, and every rule above still holds.
 
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
@@ -62,7 +79,8 @@ const section = (n, s) => {
   return on;
 };
 
-// A 60 s silent WAV: long enough to sit inside the first song window.
+// A silent WAV long enough for section 5's window at 7520 s. 8 kHz, 8-bit:
+// about 62 MB, held here and served in ranges, never sent whole.
 function silentWav(seconds) {
   const rate = 8000;
   const n = rate * seconds;
@@ -73,19 +91,23 @@ function silentWav(seconds) {
   b.write('data', 36); b.writeUInt32LE(n, 40);
   return b;
 }
-const AUDIO = silentWav(60);
+const AUDIO = silentWav(7740);
+const MAX_CHUNK = 2 * 1024 * 1024;
 
 // ---- the browser --------------------------------------------------------------
 const { page } = await launchChrome({
   name: 'value-msat-total',
   autoplay: true,
-  args: ['--disable-gpu', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1'],
+  args: ['--disable-gpu', `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1, EXCLUDE ${new URL(APP).hostname}`],
 });
 const { send, js, until } = page;
 const exceptions = [];
 page.on((m) => {
   if (m.method === 'Runtime.exceptionThrown') {
     exceptions.push((m.params.exceptionDetails?.exception?.description ?? 'exception').slice(0, 300));
+  }
+  if (process.env.DEBUG && m.method === 'Runtime.consoleAPICalled') {
+    console.log('  [console]', m.params.type, (m.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 300));
   }
 });
 await send('Page.enable');
@@ -142,7 +164,9 @@ page.on(async (m) => {
       const range = Object.entries(request.headers).find(([k]) => k.toLowerCase() === 'range')?.[1];
       const mm = range && /bytes=(\d+)-(\d*)/.exec(range);
       const start = mm ? Number(mm[1]) : 0;
-      const end = mm && mm[2] ? Math.min(Number(mm[2]), AUDIO.length - 1) : AUDIO.length - 1;
+      // An open-ended range is answered with one chunk; the element asks for
+      // the next. A whole 62 MB body would not fit in one CDP message.
+      const end = Math.min(mm && mm[2] ? Number(mm[2]) : start + MAX_CHUNK - 1, AUDIO.length - 1);
       const part = AUDIO.subarray(start, end + 1);
       await send('Fetch.fulfillRequest', {
         requestId, responseCode: mm ? 206 : 200,
@@ -206,15 +230,20 @@ const buttonIn = (re) => `[...(${DIALOG}?.querySelectorAll('button') ?? [])].fin
 const SEND = buttonIn(/^send \d+ sats?$/i);
 const BOOST_ALL = buttonIn(/^boost \d+ tracks?$/i);
 const BOOST_EPISODE = `document.querySelector('button[aria-label="Boost this episode"]')`;
-const PLAY = `[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '▶ PLAY')`;
+// "▶ RESUME 2:05:25" when the episode has a saved position. A section that
+// plays the episode the previous one played meets it: the page `open()` passes
+// through loads with that player state and writes it back as it unloads.
+const PLAY = `[...document.querySelectorAll('button')].find((b) => /^▶ (PLAY|RESUME)/.test(b.textContent.trim()))`;
 
-async function open() {
+async function open(url = EPISODE, extra = {}) {
   await send('Page.navigate', { url: `${APP}/privacy` });
   await until('document.readyState === "complete"');
   await js(`(() => { localStorage.clear();
     localStorage.setItem('bmb:rail_pref', 'webln');
-    localStorage.setItem('bmb:share_nostr', '0'); return 1; })()`);
-  await send('Page.navigate', { url: EPISODE });
+    localStorage.setItem('bmb:share_nostr', '0');
+    for (const [k, v] of Object.entries(${JSON.stringify(extra)})) localStorage.setItem(k, v);
+    return 1; })()`);
+  await send('Page.navigate', { url });
   await until('document.readyState === "complete"');
   const ok = await until(`!!${BOOST_EPISODE}`, 60000);
   await wait(800);
@@ -273,12 +302,14 @@ if (section(1, 'A plain episode boost: every leg says the typed amount')) {
 }
 
 // ---------------------------------------------------------------------------
-/** Plays the episode and parks the player inside the first song window. */
-async function parkInFirstWindow() {
-  await until(`!!(${PLAY})`, 20000);
+/** Plays the episode and parks the player at `sec`, inside a song window. */
+async function parkInFirstWindow(sec = INSIDE_FIRST_WINDOW) {
+  // 60 s, not 20: after a run of sections the episode can wait on a Podcast
+  // Index 429, and a missing ▶ PLAY reads later as "no <audio>" (`at -1 s`).
+  await until(`!!(${PLAY})`, 60000);
   await js(`(${PLAY}).click()`);
-  const loaded = await until(`(() => { const a = document.querySelector('audio'); return !!a && a.readyState >= 1 && a.duration > ${INSIDE_FIRST_WINDOW}; })()`, 30000);
-  await js(`(() => { const a = document.querySelector('audio'); a.currentTime = ${INSIDE_FIRST_WINDOW}; return 1; })()`);
+  const loaded = await until(`(() => { const a = document.querySelector('audio'); return !!a && a.readyState >= 1 && a.duration > ${sec}; })()`, 30000);
+  await js(`(() => { const a = document.querySelector('audio'); a.currentTime = ${sec}; return 1; })()`);
   await wait(1500);
   await js(`(() => { const a = document.querySelector('audio'); a.pause(); return 1; })()`);
   await wait(800);
@@ -330,6 +361,9 @@ if (section(3, 'BOOST ALL: every leg of every track says the per-track amount'))
   const lnurl = boostbox.slice(boxMark).map((r) => ({ amount: 0, b: { ...r, uuid: r.group } }));
   const legs = [...keysent, ...lnurl];
   t.ok('the wallet was asked for legs', keysent.length > 0, await why());
+  t.ok('some tracks paid a Lightning address, so BoostBox records exist', lnurl.length > 0);
+  t.equal('every BoostBox record names the episode\'s own feed in feed_guid, never a track\'s',
+    [...new Set(lnurl.map((l) => l.b.feed_guid))], [SHOW]);
   t.equal('EVERY leg says value_msat_total 100000 — never a share, never the album total', totals(legs), [TYPED_MSAT]);
   const byTrack = new Map();
   for (const g of groupsOf(legs)) {
@@ -366,8 +400,175 @@ if (section(4, 'An LNURL leg\'s BoostBox record says the typed amount too')) {
   t.equal('one BoostBox record, for the show\'s Lightning-address leg', records.length, 1);
   const r = records[0] ?? {};
   t.equal('...its value_msat_total is 100000', r.value_msat_total, TYPED_MSAT);
+  t.equal('...its feed_guid is the show\'s feed, while remote_feed_guid names the track', [r.feed_guid, r.remote_feed_guid], [SHOW, FIRST_TRACK_FEED]);
   t.ok('...while its own leg is a share of the show\'s 10 sats', r.value_msat > 0 && r.value_msat < 10000, `value_msat ${r.value_msat}`);
   t.equal('the keysend legs say 100000 as well', totals(legs), [TYPED_MSAT]);
+}
+
+// ---------------------------------------------------------------------------
+const CANDR = '7c6f7875-2b73-491e-b32c-e2c8d6e91d53'; // Chad and Reeds Podcast
+const CANDR_FEED_URL = `https://serve.podhome.fm/rss/${CANDR}`;
+const CANDR_014 = '84c10ff3-cbc3-4871-97f4-ef1283878261';
+const CANDR_014_TITLE = '014. What is a musicL playlist?';
+const SONG_FEED = 'a2d2e313-9cbd-5169-b89c-ab07b33ecc33'; // The Heycitizen Experience
+const SONG_ITEM = 'ae81976d-a05e-4ff9-9adf-cdb11a33fff9'; // Porkchops Fried
+const IN_SONG = 7525;
+const FROM = 'ChadF and 33 others'; // Chad's kind:0 name, the From field's default
+const MSG = 'e2e leg check';
+const WIRE_NAMES = ['BoostMeBitch', 'BoostMeBuddy'];
+// Every key a keysend TLV of this boost may carry, signed out. A new key is
+// bytes in the onion every hop shares, so it is a decision, not a side effect.
+const TLV_KEYS = ['action', 'app_name', 'app_version', 'episode', 'episode_guid', 'feedID', 'itemID',
+  'message', 'name', 'podcast', 'remote_feed_guid', 'remote_item_guid', 'sender_name', 'ts', 'url',
+  'uuid', 'value_msat', 'value_msat_total'];
+// The song's payees (97 sats) and the show's (3 sats), as the two feeds name them.
+const SONG_NODES = { HeyCitizenNode: 67000, 'The Doerfels': 29000 };
+const LNURL_LEGS = {
+  'MSP 2.0': { address: 'musicsideproject@getalby.com', split: 1, group: 'song' },
+  ChadF: { address: 'chadf@getalby.com', split: 33, group: 'show' },
+  Reed: { address: 'reed@getalby.com', split: 33, group: 'show' },
+  'candr show': { address: 'greyturkey26@primal.net', split: 33, group: 'show' },
+};
+const one = (xs) => [...new Set(xs.map((x) => (x === undefined ? '(absent)' : x)))];
+
+if (section(5, 'Chad and Reeds 014 at 7525 s, 100 sats: every field on every leg (the 2026-11-17 report)')) {
+  t.ok('the episode page opens', await open(`${APP}/?podcast=${CANDR}&episode=${encodeURIComponent(CANDR_014)}`));
+  const parked = await parkInFirstWindow(IN_SONG);
+  t.ok('the silent enclosure loaded', parked.loaded);
+  t.ok('the player sits inside the song window (7520–7733 s)', parked.at >= 7520 && parked.at < 7733, `at ${parked.at} s`);
+  await js(`${BOOST_EPISODE}.click()`);
+  t.ok('the boost modal opens', await until(`!!(${FIELD})`, 20000));
+  const fromField = `(() => { const l = [...(${DIALOG}?.querySelectorAll('label') ?? [])].find((x) => /^from/i.test(x.textContent.trim())); return l ? document.getElementById(l.htmlFor) : null; })()`;
+  t.ok('the From field is there', !!(await js(`!!${fromField}`)));
+  await js(`(() => { const f = ${fromField}; f.focus(); f.select(); return 1; })()`);
+  await send('Input.insertText', { text: FROM });
+  await js(`(() => { const m = ${DIALOG}?.querySelector('textarea'); m.focus(); return 1; })()`);
+  await send('Input.insertText', { text: MSG });
+  await typeAmount('100');
+  const mark = await js('window.__legs.length');
+  const boxMark = boostbox.length;
+  t.ok('SEND is pressable once the song resolves', await pressSend(SEND), await why());
+  // The legs go out biggest share first and one at a time; the four LNURL
+  // legs end when their invoice is refused, so wait for all four records.
+  const end = Date.now() + 90000;
+  while (Date.now() < end && boostbox.length - boxMark < 4) await wait(250);
+  const keysent = await legsAfter(mark, 20000);
+  await wait(1500);
+  const records = boostbox.slice(boxMark).filter(Boolean);
+  if (process.env.DEBUG) console.log(JSON.stringify({ keysent: keysent.map((l) => l.b), records }, null, 1));
+
+  console.log('  the song\'s keysend legs (TLV 7629169)');
+  const tlvs = keysent.map((l) => l.b);
+  t.equal('two keysend legs, to the song\'s two nodes', tlvs.map((b) => b?.name).sort(), Object.keys(SONG_NODES).sort());
+  t.ok('each pays its share of the song\'s 97 sats', keysent.every((l) => SONG_NODES[l.b?.name] === l.amount * 1000 && l.b?.value_msat === l.amount * 1000),
+    JSON.stringify(keysent.map((l) => [l.b?.name, l.amount, l.b?.value_msat])));
+  t.equal('value_msat_total is the typed 100000', one(tlvs.map((b) => b?.value_msat_total)), [TYPED_MSAT]);
+  t.equal('one uuid for the song\'s group', one(tlvs.map((b) => b?.uuid)).length, 1);
+  t.equal('podcast is the show the listener played', one(tlvs.map((b) => b?.podcast)), ['Chad and Reeds Podcast']);
+  t.equal('url is the show\'s feed', one(tlvs.map((b) => b?.url)), [CANDR_FEED_URL]);
+  t.ok('feedID is the show\'s Podcast Index id', tlvs.every((b) => Number.isInteger(b?.feedID) && b.feedID > 0), JSON.stringify(one(tlvs.map((b) => b?.feedID))));
+  t.equal('episode is episode 014', one(tlvs.map((b) => b?.episode)), [CANDR_014_TITLE]);
+  t.equal('episode_guid is episode 014', one(tlvs.map((b) => b?.episode_guid)), [CANDR_014]);
+  t.ok('itemID is a Podcast Index episode id', tlvs.every((b) => Number.isInteger(b?.itemID) && b.itemID > 0), JSON.stringify(one(tlvs.map((b) => b?.itemID))));
+  t.equal('remote_feed_guid is the song\'s feed', one(tlvs.map((b) => b?.remote_feed_guid)), [SONG_FEED]);
+  t.equal('remote_item_guid is the song', one(tlvs.map((b) => b?.remote_item_guid)), [SONG_ITEM]);
+  t.ok('ts is inside the window', tlvs.every((b) => b?.ts >= 7520 && b.ts < 7733), JSON.stringify(one(tlvs.map((b) => b?.ts))));
+  t.equal('sender_name is what From says', one(tlvs.map((b) => b?.sender_name)), [FROM]);
+  t.equal('message is what was typed', one(tlvs.map((b) => b?.message)), [MSG]);
+  t.equal('action is boost', one(tlvs.map((b) => b?.action)), ['boost']);
+  t.ok('app_name is a wire name, app_version is 0.1.0', tlvs.every((b) => WIRE_NAMES.includes(b?.app_name) && b?.app_version === '0.1.0'));
+  t.equal('no key beyond the listed ones (the onion\'s bytes are budgeted)',
+    one(tlvs.flatMap((b) => Object.keys(b ?? {}).filter((k) => !TLV_KEYS.includes(k)))), []);
+
+  console.log('  the BoostBox records of the four Lightning-address legs');
+  t.equal('one record per Lightning-address leg (boostr\'s 0 sats send nothing)',
+    records.map((r) => r.recipient_name).sort(), Object.keys(LNURL_LEGS).sort());
+  const songUuid = tlvs[0]?.uuid;
+  const groupOf = (r) => (r.group === songUuid ? 'song' : 'show');
+  t.ok('each record is in its own group: MSP 2.0 with the song\'s keysend legs, the others in one show group',
+    records.every((r) => LNURL_LEGS[r.recipient_name]?.group === groupOf(r))
+      && one(records.filter((r) => groupOf(r) === 'show').map((r) => r.group)).length === 1,
+    JSON.stringify(records.map((r) => [r.recipient_name, r.group])));
+  t.ok('each names its payee\'s address and weight', records.every((r) => {
+    const e = LNURL_LEGS[r.recipient_name];
+    return e && r.recipient_address === e.address && r.split === e.split;
+  }), JSON.stringify(records.map((r) => [r.recipient_name, r.recipient_address, r.split])));
+  t.equal('each leg is 1 sat (value_msat)', one(records.map((r) => r.value_msat)), [1000]);
+  t.equal('value_msat_total is the typed 100000 — never the show\'s 3000', one(records.map((r) => r.value_msat_total)), [TYPED_MSAT]);
+  t.equal('feed_guid is the show\'s feed, the one that holds item_guid — never the song\'s', one(records.map((r) => r.feed_guid)), [CANDR]);
+  t.equal('feed_title is the show', one(records.map((r) => r.feed_title)), ['Chad and Reeds Podcast']);
+  t.equal('item_guid is episode 014', one(records.map((r) => r.item_guid)), [CANDR_014]);
+  t.equal('item_title is episode 014', one(records.map((r) => r.item_title)), [CANDR_014_TITLE]);
+  t.equal('remote_feed_guid is the song\'s feed', one(records.map((r) => r.remote_feed_guid)), [SONG_FEED]);
+  t.equal('remote_item_guid is the song', one(records.map((r) => r.remote_item_guid)), [SONG_ITEM]);
+  t.equal('boost_link is the show\'s feed', one(records.map((r) => r.boost_link)), [CANDR_FEED_URL]);
+  t.equal('sender_name is what From says', one(records.map((r) => r.sender_name)), [FROM]);
+  t.equal('message is what was typed', one(records.map((r) => r.message)), [MSG]);
+  t.equal('action is boost', one(records.map((r) => r.action)), ['boost']);
+  t.ok('app_name is a wire name, app_version is 0.1.0', records.every((r) => WIRE_NAMES.includes(r.app_name) && r.app_version === '0.1.0'));
+  t.equal('signed out: no sender_id, no sender_npub', one(records.flatMap((r) => [r.sender_id, r.sender_npub])), ['(absent)']);
+  t.ok('timestamp is an ISO time', records.every((r) => !Number.isNaN(Date.parse(r.timestamp))));
+
+  console.log('  the two groups');
+  t.equal('the song\'s group paid 97 sats, the show\'s 3',
+    [sumMsat(keysent) + records.filter((r) => groupOf(r) === 'song').reduce((s, r) => s + r.value_msat, 0),
+      records.filter((r) => groupOf(r) === 'show').reduce((s, r) => s + r.value_msat, 0)], [97000, 3000]);
+}
+
+// ---------------------------------------------------------------------------
+if (section(6, 'A streaming settle in the same song window: its BoostBox record names the show\'s feed')) {
+  t.ok('the episode page opens with streaming on at 60 sats a minute',
+    await open(`${APP}/?podcast=${CANDR}&episode=${encodeURIComponent(CANDR_014)}`, { 'bmb:stream_on': '1', 'bmb:stream_rate': '60' }));
+  // Streaming pays only through a CONNECTED rail (pickRail), and WebLN counts
+  // as connected once the page has enabled it — signed out, that is Sign in ▾
+  // → Connect wallet → the WebLN row. Without it the settle refunds the bucket
+  // and sends nothing (the boost modal enables WebLN as it pays; this does not).
+  const SIGN_IN = `[...document.querySelectorAll('button')].find((b) => /^sign in/i.test(b.textContent.trim()))`;
+  const CONNECT = `[...document.querySelectorAll('[role="menuitem"]')].find((b) => /connect wallet/i.test(b.textContent))`;
+  const WEBLN_ROW = `[...document.querySelectorAll('[role="dialog"] button')].find((b) => /WebLN/.test(b.textContent) && /tap to enable/i.test(b.textContent))`;
+  await until(`!!(${SIGN_IN})`, 20000);
+  await js(`(${SIGN_IN}).click()`);
+  t.ok('the Sign in menu offers Connect wallet', await until(`!!(${CONNECT})`, 10000));
+  await js(`(${CONNECT}).click()`);
+  t.ok('the wallet modal offers WebLN', await until(`!!(${WEBLN_ROW})`, 20000));
+  await js(`(${WEBLN_ROW}).click()`);
+  t.ok('WebLN connects and the wallet modal closes', await until(`!document.querySelector('[role="dialog"]')`, 20000));
+  const parked = await parkInFirstWindow(IN_SONG);
+  t.ok('the player sits inside the song window', parked.at >= 7520 && parked.at < 7733, `at ${parked.at} s`);
+  const mark = await js('window.__legs.length');
+  const boxMark = boostbox.length;
+  await js(`document.querySelector('audio').play().then(() => 1)`);
+  await wait(35000);
+  const at = await js(`Math.round(document.querySelector('audio')?.currentTime ?? -1)`);
+  t.ok('~35 s played, still inside the window', at > 7550 && at < 7733, `at ${at} s`);
+  // The player's own Pause, not the element's: <Player> takes isPlaying from
+  // its controls, and the settle edge is that store value going false.
+  const PAUSE = `[...document.querySelectorAll('button[aria-label="Pause"]')].find((b) => b.offsetParent !== null)`;
+  t.ok('the player\'s Pause control is there', await until(`!!(${PAUSE})`, 10000));
+  await js(`(${PAUSE}).click()`);
+  // The pause is a settle edge: the song's bucket goes out as one sendBoost.
+  const end = Date.now() + 60000;
+  while (Date.now() < end && boostbox.length === boxMark) await wait(250);
+  const keysent = await legsAfter(mark, 20000);
+  await wait(1500);
+  const records = boostbox.slice(boxMark).filter(Boolean);
+  if (process.env.DEBUG) {
+    console.log(await js(`JSON.stringify(Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith('bmb:stream'))))`));
+    console.log(JSON.stringify({ keysent: keysent.map((l) => [l.amount, l.b]), records }, null, 1));
+  }
+  t.equal('the song\'s two nodes were paid by keysend', keysent.map((l) => l.b?.name).sort(), Object.keys(SONG_NODES).sort());
+  t.equal('one BoostBox record, for MSP 2.0\'s Lightning-address leg', records.map((r) => r.recipient_name), ['MSP 2.0']);
+  const r = records[0] ?? {};
+  t.equal('...feed_guid is the show\'s feed — never the song\'s', r.feed_guid, CANDR);
+  t.equal('...remote_feed_guid and remote_item_guid name the song', [r.remote_feed_guid, r.remote_item_guid], [SONG_FEED, SONG_ITEM]);
+  t.equal('...item_guid and feed_title name the episode and the show', [r.item_guid, r.feed_title], [CANDR_014, 'Chad and Reeds Podcast']);
+  t.equal('...action is stream (a music leg\'s auto, which BoostBox does not take)', r.action, 'stream');
+  const settled = sumMsat(keysent) + (r.value_msat ?? 0);
+  t.ok('...value_msat_total is the settle\'s own sats, as streaming has always sent it',
+    settled > 0 && r.value_msat_total === settled && keysent.every((l) => l.b?.value_msat_total === settled),
+    JSON.stringify({ settled, record: r.value_msat_total, tlv: one(keysent.map((l) => l.b?.value_msat_total)) }));
+  t.equal('the keysend legs say action auto (a song) and name the song in remote_*',
+    [one(keysent.map((l) => l.b?.action)), one(keysent.map((l) => l.b?.remote_feed_guid))], [['auto'], [SONG_FEED]]);
 }
 
 // ---------------------------------------------------------------------------
