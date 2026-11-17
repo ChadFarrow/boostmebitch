@@ -14,6 +14,10 @@
 // BACK AND FORWARD ARE THE BROWSER'S OWN: `Page.navigateToHistoryEntry`, the
 // path the toolbar buttons take, not a `history.back()` the page could watch for.
 //
+// Section 11 is the fullscreen player (#556): an overlay on every route, and a
+// history entry of its own while it is open, so Android's back closes it rather
+// than stepping through the pages hidden under it and then closing the app.
+//
 // It talks to Podcast Index through the app, like a visitor: a search, a show,
 // its newest episodes and the playlists collection. Run it against a build:
 //
@@ -23,7 +27,7 @@
 //
 // The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
 // paths; muted, on a free debug port, and closed on any exit.
-import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { MINI_BAR, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 const MOBILE = process.argv.includes('--mobile');
@@ -276,6 +280,70 @@ t.ok('back → the aside, its feeds listed again', await C.until(ASIDE_UP, 30000
 t.equal('…with no show selected', [(await C.view()).podcast, (await C.view()).playlist], [null, null]);
 t.equal('…and nothing pushed on the way', await C.count(), pubBase + 2);
 t.ok('no page load', await C.js(SAME_DOC));
+
+console.log('11. the open fullscreen player is a step: back closes it, as its ← back does (#556)');
+// Reported from the Android app, playing, on /favorites: "Nothing happens the
+// first two or three 'back' actions but then another back action will close the
+// app." The player is an overlay, not a route, and opening it added no entry, so
+// each back stepped through the pages UNDER it — /favorites, then the views on
+// `/` it was opened from — while the player covered them, and the next one left
+// the site. Measured on main with this sequence: three backs changed the URL
+// behind the open player, the fourth reached about:blank.
+const D = await tab(await browser.openTab('about:blank'));
+await wait(500);
+const PLAYER_UP = `(() => { const x = document.querySelector('[aria-label="Close fullscreen player"]'); return !!x && getComputedStyle(x).visibility !== 'hidden'; })()`;
+const PLAYER_DOWN = `!${PLAYER_UP}`;
+const PLAYER_CONTROL = (label) => `document.querySelector('[aria-label="Close fullscreen player"]')?.closest('div.fixed')?.querySelector('button[aria-label=${JSON.stringify(label)}]')`;
+await D.send('Page.navigate', { url: `${APP}/?podcast=${show}` });
+t.ok('a show link restored the show view', await D.until(SHOW_UP, 30000));
+await D.js(MARK);
+const showUrl = await D.js('location.href');
+t.ok('an episode row was there to open', !!(await D.openFirstEpisode()));
+t.ok('the episode view came up', await D.until(EPISODE_UP));
+const episodeUrl = await D.js('location.href');
+t.ok('▶ PLAY was there to press', await D.click(`[...document.querySelectorAll('main button')].find((b) => /▶ (PLAY|RESUME)/.test(b.textContent))`));
+t.ok('the mini-player came up', await D.until(`!!document.querySelector(${JSON.stringify(MINI_BAR)})`, 15000));
+await wait(800);
+
+// On `/` first: the entry it pushes must carry the view of the entry under it.
+let before = await D.count();
+await D.click(`document.querySelector('[aria-label^="Open fullscreen player"]')`);
+t.ok('the fullscreen player opened over the episode view', await D.until(PLAYER_UP, 10000));
+t.equal('…and pushed one entry, on the same URL', [await D.count(), await D.js('location.href')], [before + 1, episodeUrl]);
+await D.step(-1);
+t.ok('back → the player closed', await D.until(PLAYER_DOWN, 5000));
+t.ok('…over the episode view, still there', await D.until(EPISODE_UP, 5000));
+t.equal('…on its URL, in this document', [await D.js('location.href'), await D.js(SAME_DOC)], [episodeUrl, true]);
+t.equal('…and the next back goes to the show, as before the player opened', await D.behind(), showUrl);
+
+// /favorites: the report's own page.
+await D.click(`document.querySelector('nav[aria-label="Main"] a[href="/favorites"]')`);
+t.ok('the Favorites tab → /favorites', await D.until(`location.pathname === '/favorites'`));
+await wait(800);
+const favUrl = await D.js('location.href');
+before = await D.count();
+await D.click(`document.querySelector('[aria-label^="Open fullscreen player"]')`);
+t.ok('the fullscreen player opened over /favorites', await D.until(PLAYER_UP, 10000));
+t.equal('…and pushed one entry, on the same URL', [await D.count(), await D.js('location.href')], [before + 1, favUrl]);
+await D.step(-1);
+t.ok('back → the player closed', await D.until(PLAYER_DOWN, 5000));
+t.equal('…on /favorites still, in this document', [await D.js('location.href'), await D.js(SAME_DOC)], [favUrl, true]);
+t.equal('…and the next back goes to the episode view, not to a copy of /favorites', await D.behind(), episodeUrl);
+await D.step(1);
+t.ok('forward → the player again, the screen that entry was', await D.until(PLAYER_UP, 5000));
+t.ok('its ← back was there to press', await D.click(PLAYER_CONTROL('Back')));
+t.ok('← back closed it', await D.until(PLAYER_DOWN, 5000));
+t.equal('…by stepping back: no entry left behind for it', [await D.js('location.href'), await D.behind()], [favUrl, episodeUrl]);
+await D.click(`document.querySelector('[aria-label^="Open fullscreen player"]')`);
+t.ok('opened once more', await D.until(PLAYER_UP, 10000));
+t.equal('…pushing over the old forward entry, not beside it', await D.count(), before + 1);
+t.ok('its ✕ was there to press', await D.click(PLAYER_CONTROL('Close fullscreen player')));
+t.ok('✕ closed it', await D.until(PLAYER_DOWN, 5000));
+t.equal('…the same way', [await D.js('location.href'), await D.behind()], [favUrl, episodeUrl]);
+await D.step(-1);
+t.ok('back from /favorites → the episode view, with the player still closed', await D.until(`location.pathname === '/' && ${EPISODE_UP} && ${PLAYER_DOWN}`, 10000));
+t.equal('…of this episode', await D.js('location.href'), episodeUrl);
+t.ok('no page load', await D.js(SAME_DOC));
 
 t.equal('no uncaught exceptions', exceptions, []);
 console.log(t.fails ? `\nSMOKE FAILED (${t.fails} of ${t.count})` : `\nSMOKE OK (${t.count} checks)`);
