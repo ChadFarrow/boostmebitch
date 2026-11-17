@@ -1,7 +1,7 @@
 import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult, ValueTimeSplit } from '../types';
-import { boostNoteTrack, httpUrl, type BoostNoteTrack } from '../util';
+import { boostNoteTrack, boostSentence, httpUrl, itemFeedGuid, type BoostNoteTrack } from '../util';
 import type { QuotedZapReceipt } from './zap-summary-receipt';
 import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
@@ -36,15 +36,23 @@ interface PublishArgs {
   /**
    * The TRACK this boost paid, when it paid one — a `<podcast:valueTimeSplit>`
    * window or a live show's Split Kit block — with the legs that paid that
-   * track's block (not the show's remainder). The note then names the song in a
-   * `🎵` line and tags its NIP-73 identifiers; `boostNoteTrack` (lib/util.ts)
-   * decides whether it may, and says nothing unless a track leg settled.
-   * Ignored by `contentOverride`'s body, never by its tags.
+   * track's block (not the show's remainder). The note's sentence then names the
+   * song (`boostSentence`) and the tags carry its NIP-73 identifiers;
+   * `boostNoteTrack` (lib/util.ts) decides whether it may, and says nothing
+   * unless a track leg settled. Ignored by `contentOverride`'s body, never by
+   * its tags.
    */
   track?: {
     split: Pick<ValueTimeSplit, 'title' | 'artist' | 'remoteItem'>;
     results: BoostResult[];
   };
+  /**
+   * Who made a playlist ROW — an item whose own feed is not the container
+   * (`itemFeedGuid`). Display only: the sentence's "by <artist>". The boost
+   * modal looks it up while the wallet pays and gives up after two seconds, so
+   * a missing one costs those words and nothing else.
+   */
+  itemArtist?: string;
 }
 
 /** The note's track, decided against the guids this note tags as its own. */
@@ -53,7 +61,9 @@ function noteTrack(args: PublishArgs): BoostNoteTrack | null {
   return boostNoteTrack({
     split: args.track.split,
     trackResults: args.track.results,
-    showGuid: args.podcast.podcastGuid,
+    // The show the note's FIRST tag names: a playlist row's own feed when it
+    // has one, so a song in that feed is not tagged twice.
+    showGuid: itemFeedGuid(args.podcast, args.episode) ?? args.podcast.podcastGuid,
     episodeGuid: args.episode?.guid,
   });
 }
@@ -169,7 +179,10 @@ const MAX_ART_CANDIDATES = 3;
 
 function boostArtUrls(podcast: Podcast, episode?: Episode): string[] {
   const out: string[] = [];
-  for (const c of [episode?.image, episode?.feedImage, podcast.image, podcast.artwork]) {
+  // A playlist row's container is not its parent, so the playlist's cover is
+  // not the track's art — the row's own image and its feed's are.
+  const showArt = itemFeedGuid(podcast, episode) ? [] : [podcast.image, podcast.artwork];
+  for (const c of [episode?.image, episode?.feedImage, ...showArt]) {
     const url = httpUrl(c);
     if (url && !out.includes(url)) out.push(url);
     if (out.length >= MAX_ART_CANDIDATES) break;
@@ -337,17 +350,21 @@ function formatContent(args: PublishArgs, withTrack = true): string {
   if (boostagram.message?.trim()) {
     lines.push(boostagram.message.trim(), '');
   }
-  // Attribute the sender by their "From" name when set. Load-bearing for
-  // site-signed notes (signed-out users): the note is authored by the site's
-  // identity, so without this their name appears nowhere. Natural for the
-  // self-signed case too ("ChadF boosted …").
-  const sender = boostagram.sender_name?.trim();
-  lines.push(`${sender ? `${sender} boosted` : 'Boosted'} ${totalSats} sats → ${podcast.title}`);
-  if (episode?.title) lines.push(`📻 ${episode.title}`);
-  // The song the boost paid, right under the episode it played in. Only when a
-  // track leg settled — see boostNoteTrack.
+  // ONE sentence: what got the sats, by whom, then where it was found
+  // (`boostSentence`, pinned by check:vts). The sender's "From" name opens it —
+  // load-bearing for site-signed notes, which are authored by the site's
+  // identity, so without it the sender appears nowhere. The song the boost
+  // paid is named only when a track leg settled (boostNoteTrack), and it is the
+  // part that gives way when the body would pass the site-sign cap.
   const track = withTrack ? noteTrack(args) : null;
-  if (track?.line) lines.push(track.line);
+  lines.push(boostSentence({
+    sender: boostagram.sender_name,
+    sats: totalSats,
+    show: podcast,
+    item: episode,
+    itemArtist: args.itemArtist,
+    song: track?.title ? { title: track.title, artist: track.artist } : null,
+  }));
   const link = podcastLandingUrl(podcast, episode);
   if (link) lines.push('', link);
   const bmbLink = bmbLandingUrl(podcast, episode);
@@ -380,7 +397,19 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   const tags: string[][] = [];
   const showHint = bmbLandingUrl(podcast);
   const itemHint = episode ? bmbLandingUrl(podcast, episode) : null;
-  if (podcast.podcastGuid) {
+  // A playlist ROW lives in another feed than the playlist, and readers take a
+  // note's FIRST `podcast:guid:` as the item's show (`useNoteMeta`, and every
+  // client that looks an item up by its feed). Pairing the playlist's guid with
+  // the row's item named a feed that item is not in, so no reader could resolve
+  // it — rev.hodl's note b1d67bdd… unfurled as the playlist alone. The row's own
+  // feed goes first, the item second, and the playlist after them, so the
+  // playlist's page still lists the note. The boostagram's `remote_feed_guid`
+  // and the summary receipt already name the row's own feed.
+  const ownFeed = itemFeedGuid(podcast, episode);
+  if (ownFeed) {
+    tags.push(['i', `podcast:guid:${ownFeed}`, siteLandingUrl(ownFeed)]);
+    tags.push(['k', 'podcast:guid']);
+  } else if (podcast.podcastGuid) {
     tags.push(showHint
       ? ['i', `podcast:guid:${podcast.podcastGuid}`, showHint]
       : ['i', `podcast:guid:${podcast.podcastGuid}`]);
@@ -392,6 +421,12 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
       : ['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
+  // No second `k`: the kind is declared above.
+  if (ownFeed && podcast.podcastGuid) {
+    tags.push(showHint
+      ? ['i', `podcast:guid:${podcast.podcastGuid}`, showHint]
+      : ['i', `podcast:guid:${podcast.podcastGuid}`]);
+  }
   // The TRACK the boost paid, as NIP-73 identifiers after the show's and the
   // episode's own, which stay first. No `k` tag: `k` names the KIND of
   // identifier, and both kinds are already declared above — a second pair would
@@ -402,7 +437,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   const trackTags = (withHints: boolean): string[][] => {
     if (!track) return [];
     const out: string[][] = [];
-    const feed = track.feedGuid ?? podcast.podcastGuid;
+    const feed = track.feedGuid ?? ownFeed ?? podcast.podcastGuid;
     if (track.feedGuid) {
       const hint = withHints ? siteLandingUrl(track.feedGuid) : null;
       out.push(hint ? ['i', `podcast:guid:${track.feedGuid}`, hint] : ['i', `podcast:guid:${track.feedGuid}`]);
@@ -492,10 +527,10 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
         const { content: inlined, remaining } = inlineMentions(body, inBody);
         return withMentionRun(withZapReceipts(inlined, receipts), remaining);
       };
-      // The track line is the one optional line, so it is the one that goes
-      // when a long message, many mentions and long links fill the body: the
-      // route refuses the WHOLE note past its cap. Measured on both paths so a
-      // note never differs by which key signs it.
+      // The song is the one optional part of the sentence, so it is the one
+      // that goes when a long message, many mentions and long links fill the
+      // body: the route refuses the WHOLE note past its cap. Measured on both
+      // paths so a note never differs by which key signs it.
       const full = build(true);
       return full.length > SITE_SIGN_MAX_CONTENT ? build(false) : full;
     })(),

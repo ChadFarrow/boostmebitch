@@ -1726,15 +1726,16 @@ own. No count on list rows (one `#i` per row), and no list of who liked.
 `publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
 
 - NIP-73 `i`/`k` pairs for `podcast:guid:<feed-guid>` and (per-episode) `podcast:item:guid:<item-guid>`.
-- **The TRACK the boost paid, when it paid one** (`PublishArgs.track`): a boost pressed inside a `<podcast:valueTimeSplit>` window, or on a live show whose on-air Split Kit block is a song, adds the track's `podcast:guid:` and `podcast:item:guid:` `i` tags right after the episode pair, and a `🎵 <title> — <artist>` line under the `📻` line. `boostNoteTrack` (`lib/util.ts`, pinned by `check:vts`) decides it, and every rule there is a claim the note must not make:
+- **A playlist ROW tags its OWN feed first** (`itemFeedGuid`, `lib/util.ts`): `podcast:guid:<the row's feed>`, then the item, then `podcast:guid:<the playlist>` with no second `k`. Readers take a note's first `podcast:guid:` as the item's show, so the playlist's guid paired with an item from another feed named a feed the item is not in — rev.hodl's note `b1d67bdd…` (2026-11-16) unfurled as the playlist alone, with no track. The playlist tag stays so the playlist's own page still lists the note; the boostagram's `remote_feed_guid` and the summary receipt already named the row's own feed. Narrow, like `queueShowFor`: both guids must be present and differ. The same test keeps the playlist's cover out of the banner art.
+- **The TRACK the boost paid, when it paid one** (`PublishArgs.track`): a boost pressed inside a `<podcast:valueTimeSplit>` window, or on a live show whose on-air Split Kit block is a song, adds the track's `podcast:guid:` and `podcast:item:guid:` `i` tags right after the episode pair, and makes the song the WHAT of the note's sentence: `to <title> by <artist> from <episode> of <show>`. `boostNoteTrack` (`lib/util.ts`, pinned by `check:vts`) decides it, and every rule there is a claim the note must not make:
   - **Only when a TRACK leg settled** (`ok && sats > 0` on the legs that paid the track's block). A boost whose track leg failed while the show's remainder went through would otherwise name an artist who got nothing, in a note nobody can edit.
   - **No extra `k` tag.** `k` names the identifier's KIND, and both kinds are already declared by the show/episode pairs.
   - **A guid the note already tags is not repeated** — a `musicL` playlist row already IS the track. **An over-long guid is dropped, never truncated**: a truncated guid names a different item.
   - **Title and artist are feed text: flattened to one line and capped at 120 characters each.** A newline in a title would otherwise forge a second line of a note the SITE may sign.
-  - **The line and the tags give way before the note does.** `/api/nostr/site-sign` refuses the whole template past 2000 characters of body or 4096 of tag text, so the builder drops the `🎵` line when the body would pass 2000, and the track's hints, then its tags, when the tags would pass 4096 (`SITE_SIGN_*` in `boost-notes.ts`, kept beside the route's numbers). A long message with eight mentions measured 1975 characters before the line.
+  - **The line and the tags give way before the note does.** `/api/nostr/site-sign` refuses the whole template past 2000 characters of body or 4096 of tag text, so the builder drops the song from the sentence (it then names the episode) when the body would pass 2000, and the track's hints, then its tags, when the tags would pass 4096 (`SITE_SIGN_*` in `boost-notes.ts`, kept beside the route's numbers). A long message with eight mentions measured 1975 characters before the line.
   - **The live source is the SAME snapshot the boostagram's `remote_*` came from** (`liveTargetSnapshot()`, read once in `go()`), so the note and the boostagram name one song. A block the played-tracks list would not keep — the show's own default block, a host segment with no item — is not named (`isNotPlayed`, `lib/live-played.ts`).
-  - **The artist is display text**, from `/api/remote-item` (`fetchRemoteItemParent`, shared with the played list) or the played list's own row. It is asked for while the wallet pays and waited for at most 2 s (`NOTE_ARTIST_WAIT_MS`); a miss drops only the "— artist" half.
-  - `contentOverride` (Boost-all) never gets the line — its summary names every track itself.
+  - **The artist is display text**, from `/api/remote-item` (`fetchRemoteItemParent`, shared with the played list) or the played list's own row. It is asked for while the wallet pays and waited for at most 2 s (`NOTE_ARTIST_WAIT_MS`); a miss drops only the "by <artist>" words. A playlist row's artist is looked up the same way (`PublishArgs.itemArtist`).
+  - `contentOverride` (Boost-all) never gets the song — its summary names every track itself.
 - **Two `r` tags** when the URLs differ: a listen-link via `podcastLandingUrl` and a BMB deep-link via `bmbLandingUrl`. Both are appended to the body so readers see "listen elsewhere" and "boost back on BMB" as separate affordances. **Both take the `episode` and point at it when there is one** — a boost note about one episode that lands the reader on the show's front door makes them go hunt for it:
   - `podcastLandingUrl` prefers the **episode's own page** (`Episode.link`, the RSS `<link>`), then **the item guid when it's an http(s) URL** — RSS defines `<guid>` as a permalink unless `isPermaLink="false"`, and plenty of feeds (Bowl After Bowl) use the episode page URL verbatim; we don't parse that attribute, so it's a heuristic that only runs when the feed published no `<link>` at all, where the alternative is dropping the reader on the show. Then `https://pod.link/<itunesId>`, `https://podcastindex.org/podcast/<feedId>`, the raw RSS URL. Those last three are show-level on purpose: neither pod.link nor PI has an episode URL constructible from a guid (pod.link's episode paths key on an id of their own).
   - `bmbLandingUrl` appends `&episode=<guid>` (encodeURIComponent'd — unlike the podcast UUID, an item guid is arbitrary feed-chosen text and is routinely a URL). `?podcast=&episode=` is a restorable view per the URL contract and `app/page.tsx` emits episode-level OG tags for it, so the unfurl carries the episode's own title and art. Still null without a `podcastGuid`, which is what keeps live-stream boosts (synthetic podcast, no guid) from emitting one.
@@ -1797,9 +1798,7 @@ Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent
 
 [message, if present]
 
-[sender name] boosted N sats → [podcast title]
-📻 [episode title, omitted on show-level boosts]
-🎵 [track title — artist, only when a track leg settled]
+[sender name] boosted N sats to [what][ by artist][ from where]
 
 [pod.link or PI URL]
 [boostmebitch.com deep link]
@@ -1808,6 +1807,18 @@ Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent
 
 [nostr:npub… mentions, when the feed declared any]
 ```
+
+**The sentence is `boostSentence` (`lib/util.ts`, pinned by `check:vts`): what got the sats first, where it was found second.** It replaced `boosted N sats → <show>` with a `📻 <episode>` and a `🎵 <song>` line under it, whose arrow named the show whatever was paid — on a playlist row it named the curator, who was paid nothing. Chad's wording, on that note: *"boosted 121 sats to Sing For You from the ITDV music playlist"*.
+
+| Boost | what | by | where |
+|---|---|---|---|
+| A show (no episode) | show title | — | — |
+| An episode | episode title | — | show title |
+| A track on an album (`playsAsTracks`, container is the parent) | track | the album's `author`, via `authorLine` | album title |
+| A playlist row (`itemFeedGuid` answers) | item | `PublishArgs.itemArtist`, music rows only | playlist title |
+| A song inside an episode or live show (a track leg settled) | song | its artist | `<episode> of <show>` |
+
+An episode never says `by` (a podcast's author is its host). Every name goes through `noteTrackText`, so a feed title cannot add a line; a part that comes out empty is left out with its word. The amount is `value_msat_total`, the intent (invariant 7). Nothing in this repo parses the sentence back — `boostEchoIds` matches on tags — so its words are free to change; notes already published keep theirs.
 
 `signAndPublish` handles both kind:1 boost notes and kind:10333 favorites — a third event kind is ~10 lines.
 

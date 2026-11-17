@@ -207,7 +207,7 @@ console.log('\n--- 3. BOOST-ALL: contentOverride keeps the mention run ---');
 {
   // The path a mention added inside formatContent would silently miss, because
   // BoostAllModal replaces the whole body.
-  const contentOverride = '⚡ Boost ⚡\n\nTester boosted 3 tracks on Homegrown Hits for 300 sats';
+  const contentOverride = '⚡ Boost ⚡\n\nTester boosted 300 sats to 3 tracks from Homegrown Hits';
   const note = await publishBoostNote({
     podcast, episode, boostagram: boostagram(undefined),
     results: [], relays: [RELAY], mentions: [mentionA], contentOverride,
@@ -402,8 +402,9 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   const e = received.find((x) => x.id === note.id);
   check('the track note reached the relay', !!e, true);
   const lines = e?.content.split('\n') ?? [];
-  check('the 🎵 line sits right under the 📻 line',
-    lines[lines.indexOf(`📻 ${episode.title}`) + 1], '🎵 Copenhagen Time — Matt Finlay');
+  check('one sentence: the song, its artist, the episode of the show',
+    lines.includes(`Tester boosted 1000 sats to Copenhagen Time by Matt Finlay from ${episode.title} of ${podcast.title}`), true);
+  check('no 📻 or 🎵 line is left', /📻|🎵|→/.test(e?.content ?? '📻'), false);
   check('the show and episode pairs stay FIRST, unchanged', e?.tags.slice(0, 4).map((t) => t[0] + ' ' + t[1]), [
     `i podcast:guid:${podcast.podcastGuid}`, 'k podcast:guid',
     `i podcast:item:guid:${episode.guid}`, 'k podcast:item:guid',
@@ -436,7 +437,7 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('an UNPAID track leg leaves the note identical to no track at all',
     JSON.stringify(unpaid), JSON.stringify(plain));
   const paid = await capture({ ...base, track });
-  check('the site path carries the 🎵 line too', paid?.content.includes('🎵 Copenhagen Time — Matt Finlay'), true);
+  check('the site path names the song too', paid?.content.includes('to Copenhagen Time by Matt Finlay from'), true);
   check('...and the prefix the route validates on', paid?.content.startsWith('⚡ Boost ⚡'), true);
 
   // The route's caps, in the worst case this builder can meet: the most p
@@ -473,7 +474,63 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   const roomy = await capture({ ...base, track: { ...track, split: { ...track.split,
     title: 'S'.repeat(300), artist: 'A'.repeat(300) } } });
   check('a body with room keeps the capped line',
-    roomy?.content.includes(`🎵 ${'S'.repeat(119)}… — ${'A'.repeat(119)}…`), true);
+    roomy?.content.includes(`to ${'S'.repeat(119)}… by ${'A'.repeat(119)}… from ${episode.title} of ${podcast.title}`), true);
+}
+
+// ===========================================================================
+console.log('\n--- 5c. A PLAYLIST ROW names its own feed — sentence, tags and art ---');
+// ===========================================================================
+// rev.hodl's note b1d67bdd… (2026-11-16), as the builder now writes it. The
+// container is the ITDV musicL playlist; the row lives in The Doerfels' album
+// "Disco Swag - The Album". The old note said "→ ITDV music playlist", tagged
+// the playlist's guid with the album's item, and offered the playlist cover as
+// banner art — three statements that the playlist is the track's parent.
+{
+  const ITDV = 'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/main/docs/ITDV-music-playlist.webp';
+  const playlist = {
+    id: 7443423, title: 'ITDV music playlist', author: 'ChadF', medium: 'musicL',
+    podcastGuid: '88b0640a-489f-4920-be4f-00f85af5b2d4',
+    url: 'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/main/docs/ITDV-music-playlist.xml',
+    image: ITDV, artwork: ITDV,
+  };
+  const row = {
+    id: 44828612182, title: 'Sing For You', guid: '12711f57-2d41-4794-8cb9-154ecebb7cf7',
+    podcastGuid: 'b2a87a4c-86f0-5194-9eb3-dcba42ce0695', feedId: 7571834, feedTitle: 'Disco Swag - The Album',
+    image: 'https://www.doerfelverse.com/art/sing-for-you.png',
+    feedImage: 'https://www.doerfelverse.com/art/discoswag-thealbum.gif',
+    enclosureUrl: 'https://www.doerfelverse.com/tracks/sing-for-you.mp3', datePublished: 1762493210,
+  };
+  const rowBoostagram = { ...boostagram('This is catchy.'), podcast: playlist.title, episode: row.title,
+    value_msat_total: 121000, sender_name: 'rev.hodl' };
+  const note = await publishBoostNote({
+    podcast: playlist, episode: row, boostagram: rowBoostagram, results: [], relays: [RELAY],
+    itemArtist: 'The Doerfels',
+  });
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  check('the playlist note reached the relay', !!e, true);
+  check('the sentence names the track, its artist, then the playlist',
+    e?.content.includes('rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist'), true);
+  check('the item\'s OWN feed is the first show tag, then the item, then the playlist',
+    e?.tags.filter((t) => t[0] === 'i').map((t) => t[1]), [
+      'podcast:guid:b2a87a4c-86f0-5194-9eb3-dcba42ce0695',
+      'podcast:item:guid:12711f57-2d41-4794-8cb9-154ecebb7cf7',
+      'podcast:guid:88b0640a-489f-4920-be4f-00f85af5b2d4',
+    ]);
+  check('one k tag per kind, as before', e?.tags.filter((t) => t[0] === 'k').map((t) => t[1]),
+    ['podcast:guid', 'podcast:item:guid']);
+  const banner = new URL((e?.content.match(/https:\/\/\S+\/api\/og\/boost\.png\S*/) ?? ['https://x/'])[0]);
+  check('the banner offers the track and album art', [banner.searchParams.get('art'), banner.searchParams.get('art2')],
+    [row.image, row.feedImage]);
+  check('...and never the playlist cover', [...banner.searchParams.values()].includes(ITDV), false);
+
+  // Without the lookup's answer the note still says what and where.
+  const noArtist = await publishBoostNote({
+    podcast: playlist, episode: row, boostagram: rowBoostagram, results: [], relays: [RELAY],
+  });
+  await wait(400);
+  check('an artist the lookup did not return is left out, nothing else',
+    received.find((x) => x.id === noArtist.id)?.content.includes('rev.hodl boosted 121 sats to Sing For You from ITDV music playlist'), true);
 }
 
 // ===========================================================================

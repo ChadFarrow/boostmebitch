@@ -3378,8 +3378,9 @@ export function redirectLegs(args: {
 }
 
 /**
- * What a boost note says about the TRACK a boost paid — the `🎵` line and the
- * track's NIP-73 identifiers — or `null` when it says nothing.
+ * What a boost note says about the TRACK a boost paid — its title and artist,
+ * which `boostSentence` puts in the note's one sentence, and the track's NIP-73
+ * identifiers — or `null` when it says nothing.
  *
  * A boost pressed during a song pays the song (a `<podcast:valueTimeSplit>`
  * window, or a live show's Split Kit block), and the boostagram names it in
@@ -3405,8 +3406,10 @@ export function redirectLegs(args: {
  *   a different item, and the site-sign route rejects a tag value over 512.
  */
 export interface BoostNoteTrack {
-  /** `🎵 <title>[ — <artist>]`, or null when there is no title to name. */
-  line: string | null;
+  /** The song's title, flattened and capped — null when there is none to name. */
+  title: string | null;
+  /** Its artist, the same way; absent without a title or when it repeats it. */
+  artist?: string;
   /** The track's parent feed guid, when it is not the note's show guid. */
   feedGuid?: string;
   /** The track's item guid, when it is not the note's episode guid. */
@@ -3442,15 +3445,109 @@ export function boostNoteTrack(args: {
   const title = noteTrackText(split.title);
   let artist = noteTrackText(split.artist);
   if (artist.toLowerCase() === title.toLowerCase()) artist = '';
-  const line = title ? `🎵 ${title}${artist ? ` — ${artist}` : ''}` : null;
   const feedGuid = noteTrackGuid(split.remoteItem?.feedGuid, args.showGuid);
   const itemGuid = noteTrackGuid(split.remoteItem?.itemGuid, args.episodeGuid);
-  if (!line && !feedGuid && !itemGuid) return null;
+  if (!title && !feedGuid && !itemGuid) return null;
   return {
-    line,
+    title: title || null,
+    ...(title && artist ? { artist } : {}),
     ...(feedGuid ? { feedGuid } : {}),
     ...(itemGuid ? { itemGuid } : {}),
   };
+}
+
+/**
+ * The item's OWN feed guid, when it lives in a different feed from the one
+ * listing it — a row of a `*L` playlist — or `undefined` when the container is
+ * its parent.
+ *
+ * Narrow, the way `queueShowFor` and `payableValue` refuse: BOTH guids must be
+ * present to disagree. An item with no guid of its own keeps the container, and
+ * so does a container with none — a feed publishing no `<podcast:guid>` is
+ * still the parent of its own episodes.
+ *
+ * The boost note asks it three times, because each is the container-as-parent
+ * mistake in a permanent kind:1: the sentence ("→ ITDV music playlist" named the
+ * curator for a song that paid The Doerfels), the `i` tags (the playlist's guid
+ * paired with an item from another feed, so no reader could resolve it), and the
+ * banner art (the playlist's cover offered for the track).
+ */
+export function itemFeedGuid(
+  podcast: Pick<Podcast, 'podcastGuid'>,
+  episode?: Pick<Episode, 'podcastGuid'> | null,
+): string | undefined {
+  const own = episode?.podcastGuid;
+  return own && podcast.podcastGuid && own !== podcast.podcastGuid ? own : undefined;
+}
+
+/**
+ * The one sentence a boost note says about what was boosted:
+ *
+ *     <sender> boosted N sats to <what>[ by <artist>][ from <where>]
+ *
+ * WHAT GETS THE SATS COMES FIRST, WHERE IT WAS FOUND SECOND. The note used to
+ * say `boosted N sats → <show>` and put the episode, then the song, on lines of
+ * their own, so the arrow pointed at the show whatever was paid. Chad, on
+ * rev.hodl's note (b1d67bdd…, 2026-11-16), which read "boosted 121 sats → ITDV
+ * music playlist / 📻 Sing For You" while the playlist was paid nothing: *"if
+ * it said … boosted 121 sats to Sing For You from the ITDV music playlist,
+ * maybe it would make a little more sense"* — and the wording was never worked
+ * on, so the pattern is every note's, not the playlist's alone.
+ *
+ * - **A song inside the item** (`song`, from `boostNoteTrack`, so only when a
+ *   track leg settled) is the WHAT, and the item is where it played:
+ *   `to <song> by <artist> from <episode> of <show>`.
+ * - **An item** is the what and the show is the where. On a feed whose rows are
+ *   songs (`playsAsTracks`) it says who made it: a playlist row's artist comes
+ *   from the caller (`itemArtist`, looked up), an album track's from the album's
+ *   own `author`, through `authorLine` so a feed that names itself twice says
+ *   nothing. An EPISODE never says `by` — a podcast's author is its host.
+ * - **No item**, or one with no title, is a boost to the show.
+ * - The amount is the one the sender meant (invariant 7), never the settled sum.
+ *
+ * Every name is a string a feed wrote about itself, and this sentence may be
+ * signed by the SITE, so each goes through `noteTrackText`: a newline would let
+ * a feed forge a line of the note. A part that comes out empty is left out with
+ * its word, so the sentence never reads "to " or "from " with nothing after it.
+ */
+export function boostSentence(a: {
+  sender?: string;
+  sats: number;
+  show: Pick<Podcast, 'title' | 'author' | 'medium' | 'podcastGuid'>;
+  item?: Pick<Episode, 'title' | 'podcastGuid'> | null;
+  /** A playlist row's artist, looked up — display only. */
+  itemArtist?: string;
+  /** The song inside the item a track leg paid. */
+  song?: { title: string; artist?: string } | null;
+}): string {
+  const sender = noteTrackText(a.sender);
+  const showTitle = noteTrackText(a.show.title);
+  const itemTitle = noteTrackText(a.item?.title);
+  const songTitle = noteTrackText(a.song?.title);
+  const tracks = playsAsTracks(a.show);
+  let what: string;
+  let by = '';
+  let where = '';
+  if (songTitle) {
+    what = songTitle;
+    by = noteTrackText(a.song?.artist);
+    where = itemTitle && showTitle ? `${itemTitle} of ${showTitle}` : itemTitle || showTitle;
+  } else if (itemTitle) {
+    what = itemTitle;
+    if (tracks) {
+      by = a.item && itemFeedGuid(a.show, a.item)
+        ? noteTrackText(a.itemArtist)
+        : noteTrackText(authorLine(a.show.title, a.show.author) ?? undefined);
+    }
+    where = showTitle;
+  } else {
+    what = showTitle;
+  }
+  if (by.toLowerCase() === what.toLowerCase()) by = '';
+  return `${sender ? `${sender} boosted` : 'Boosted'} ${a.sats} sats`
+    + (what ? ` to ${what}` : '')
+    + (by ? ` by ${by}` : '')
+    + (where ? ` from ${where}` : '');
 }
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
