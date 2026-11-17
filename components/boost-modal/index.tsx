@@ -133,7 +133,8 @@ interface SentBoost {
    * only (`PublishArgs.itemArtist`).
    */
   itemArtist: Promise<string | undefined>;
-  /** The trimmed block and per-group boostagram each leg group went out with. */
+  /** The trimmed block and boostagram each leg group went out with — the two
+   *  boostagrams differ by `uuid` only; both carry the typed `value_msat_total`. */
   primaryValue: ValueBlock;
   primaryBoostagram: Boostagram;
   hostValue: ValueBlock | null;
