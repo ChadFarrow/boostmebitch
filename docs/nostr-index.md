@@ -95,12 +95,27 @@ It **reflected the raw thrown message** — `connect ECONNREFUSED
 any caller who found the hostname. That is the rule `setErrorHandler` states in
 the same file, broken on the route with no key. It is logged now, not returned.
 
-It also runs `max(seen_at)` over `events`, which carries **no index on
-`seen_at`**, so every call is a sequential scan of the largest table. There is no
+It also runs `max(seen_at)` over `events` (`indexedThrough()`), and so does
+**every feed answer**. With no index on `seen_at` that was a sequential scan of
+the largest table: 10.3 s on production on 2026-11-17, against the app proxy's
+6 s timeout (`lib/nostr-index-server.ts`) — so every index read on www answered
+503 "index unavailable" and every feed fell back to the relays. There is no
 rate limiter in this service at all; only the Vercel proxy has one, and `/health`
-does not go through the proxy. That remains open — the fix is an index or a
-cached answer, not removing the probe, because a `/health` that never touches the
-database is what let this service sit stalled for hours reporting `{ok:true}`.
+does not go through the proxy. The fix is the
+index `events_seen_at_idx` (`migrations/006_events_seen_at_index.sql`), not
+removing the probe, because a `/health` that never touches the database is what
+let this service sit stalled for hours reporting `{ok:true}`.
+
+**On production that index is built BY HAND, never by the migration.**
+`migrate.ts` runs each file in a transaction, so the file can only hold a plain
+`create index`, which blocks every insert into `events` for the whole build, at
+service start. Build it first with `create index concurrently if not exists
+events_seen_at_idx on events (seen_at)`; the migration is then a no-op there and
+exists for a rebuild. `if not exists` matches the name only, so after a hand
+build check `indisvalid` in `pg_index` — a failed concurrent build leaves an
+INVALID index that the migration would skip while every query keeps scanning.
+**The database has no public address**: `postgres.railway.internal` only, and
+`railway ssh` (CLI 5.x) needs an SSH key registered on the Railway account.
 
 ## Everything a caller can name has to be bounded
 
