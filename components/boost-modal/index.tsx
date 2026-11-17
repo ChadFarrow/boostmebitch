@@ -8,7 +8,7 @@ import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, type QuotedZapReceipt, type SignerCheck } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playsAsTracks, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -97,7 +97,7 @@ async function noteTrackArtist(split: ValueTimeSplit, t: LiveTarget | null): Pro
 
 /**
  * The longest the note waits for the artist. The sats have already moved when
- * it publishes, and a missing artist costs only the "— artist" half of one line.
+ * it publishes, and a missing artist costs only the "by <artist>" words.
  */
 const NOTE_ARTIST_WAIT_MS = 2000;
 
@@ -125,6 +125,13 @@ interface SentBoost {
   hostRefs: Nip73Refs;
   noteSplit: ValueTimeSplit | null;
   noteArtist: Promise<string | undefined>;
+  /**
+   * The artist of a playlist ROW — a track from another feed, which the row
+   * itself does not name (`/api/playlist` maps no author). Looked up while the
+   * wallet pays, like `noteArtist`, and raced against the same cap; display
+   * only (`PublishArgs.itemArtist`).
+   */
+  itemArtist: Promise<string | undefined>;
   /** The trimmed block and per-group boostagram each leg group went out with. */
   primaryValue: ValueBlock;
   primaryBoostagram: Boostagram;
@@ -450,6 +457,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // The track the boost paid, with the legs that paid it — see
     // PublishArgs.track. The note names it only if one of those legs settled.
     track?: { split: ValueTimeSplit; results: BoostResult[] },
+    // A playlist row's artist, already raced against its cap — carried by
+    // RETRY NOTE so a retry names the same artist without asking again.
+    itemArtist?: string,
     // A summary receipt an earlier attempt at THIS note already published.
     // RETRY NOTE quotes it rather than minting a second: two receipts for one
     // boost would count its sats twice wherever receipts are summed.
@@ -472,7 +482,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       if (pressed) return;
       pressed = true;
       if (self) sent.signerCheck = checkSignerLink();
-      void maybePublishNote(sent, results, track, summaryReceipt);
+      void maybePublishNote(sent, results, track, itemArtist, summaryReceipt);
     };
 
     // ASK BEFORE SIGNING. On a link that cannot answer, both signatures below
@@ -504,12 +514,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     try {
       const receipt = summaryReceipt ?? undefined;
       const note = self
-        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track })
+        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track, itemArtist })
         // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
         // what each may do with them — the body always, the `p` tags only when
         // the user's own key signs — and that decision belongs there, not in a
         // caller that would have to remember it at every site.
-        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions, summaryReceipt: receipt, track });
+        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions, summaryReceipt: receipt, track, itemArtist });
       setPubState({ kind: 'done', note });
       storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
       bumpBoosts();
@@ -550,6 +560,13 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     const noteSplit = redirect ?? liveNoteSplit(liveTarget, episode?.guid, podcast.podcastGuid);
     const noteArtist = shareNostr && noteSplit
       ? noteTrackArtist(noteSplit, liveTarget).catch(() => undefined)
+      : Promise.resolve(undefined);
+    // A playlist row names a feed the playlist is not: the sentence says who
+    // made the track, which only that feed's record knows. Music rows only —
+    // a `podcastL` row's author is a host, and the sentence never prints one.
+    const ownFeed = itemFeedGuid(podcast, episode);
+    const itemArtist = shareNostr && ownFeed && episode?.guid && playsAsTracks(podcast)
+      ? fetchRemoteItemParent(ownFeed, episode.guid).then((p) => p?.artist).catch(() => undefined)
       : Promise.resolve(undefined);
 
     const boostagram: Boostagram = {
@@ -640,6 +657,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       },
       noteSplit,
       noteArtist,
+      itemArtist,
       primaryValue: value,
       // Per LEG GROUP, not per boost. `boostagram` carries the whole typed
       // amount, because that is what the NOTE must say (invariant 7: note
@@ -932,16 +950,20 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // sends it to the on-air block (the show's share, if any, is
     // `hostCollected`). `boostNoteTrack` names nothing
     // unless one of them settled.
-    const artist = sent.noteSplit
-      ? await Promise.race([
-          sent.noteArtist,
-          new Promise<undefined>((r) => setTimeout(() => r(undefined), NOTE_ARTIST_WAIT_MS)),
-        ])
-      : undefined;
+    // Both lookups started when the boost was sent, so they share ONE cap
+    // rather than waiting it out one after the other.
+    const capped = (p: Promise<string | undefined>) => Promise.race([
+      p,
+      new Promise<undefined>((r) => setTimeout(() => r(undefined), NOTE_ARTIST_WAIT_MS)),
+    ]);
+    const [artist, itemArtist] = await Promise.all([
+      sent.noteSplit ? capped(sent.noteArtist) : undefined,
+      capped(sent.itemArtist),
+    ]);
     const track = sent.noteSplit
       ? { split: artist ? { ...sent.noteSplit, artist } : sent.noteSplit, results: collected }
       : undefined;
-    const posted = await maybePublishNote(sent, allLegs, track);
+    const posted = await maybePublishNote(sent, allLegs, track, itemArtist);
     // The close held back above. A note that failed keeps the modal open, with
     // its reason and RETRY NOTE on screen.
     if (noteToPost && posted && !retryLeft) setTimeout(() => onClose(), 1500);

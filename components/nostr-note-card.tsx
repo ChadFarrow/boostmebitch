@@ -19,7 +19,7 @@ import { DefaultAmountControl, MIN_BOOST_SATS, readAmountDefault } from './boost
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
-import { episodeLinkInNote, landingLinksInNote, getErrorMessage } from '@/lib/util';
+import { episodeLinkInNote, landingLinksInNote, getErrorMessage, noteNamesClient } from '@/lib/util';
 import { BRANDS } from '@/lib/brand';
 import { extractImages, removeUrl, renderNostrText, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
@@ -448,7 +448,11 @@ function NoteCardImpl({
           {isPodcastComment(note) && (
             <span className="stamp text-nostr border-nostr/60">💬 comment</span>
           )}
-          {note.client && <span className="text-muted">via {note.client}</span>}
+          {/* Left out when the body already ends a line "via <client>" — the
+              shared boost-note sentence does (noteNamesClient). */}
+          {note.client && !noteNamesClient(note.content, note.client) && (
+            <span className="text-muted">via {note.client}</span>
+          )}
         </div>
 
         {/* Suppressed when the card unfurls below: it names the same show and

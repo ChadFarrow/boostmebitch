@@ -10,7 +10,7 @@ import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { getErrorMessage, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { boostAllLines, getErrorMessage, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
@@ -461,7 +461,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     //
     // Omitted when the paid tracks divide differently from one another — a
     // per-track `remotePercentage` makes that ordinary, and one number cannot
-    // describe them. Singular tracks skip it: "for 100 sats (100 each)" reads
+    // describe them. Singular tracks skip it: "100 sats to 1 track (100 each)" reads
     // as a fault.
     const paidLegs = successfulIdx.map((i) => trackLegs[i]);
     const uniform = paidLegs.length > 1 && paidLegs.every(
@@ -472,13 +472,18 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       : uniform.host.sats > 0
         ? ` (${uniform.track.sats} to the artist + ${uniform.host.sats} to the show, each)`
         : ` (${uniform.track.sats} each)`;
-    lines.push(
-      `${senderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats${each}`,
-    );
-    if (trackList.length) {
-      lines.push('');
-      for (const t of trackList) lines.push(`• ${t}`);
-    }
+    // The same order as every other note's sentence (`boostSentence`): the
+    // sats, WHAT they went to, then where it was found — and every name cleaned
+    // to one line, since the site signs this note for a signed-out user.
+    lines.push(...boostAllLines({
+      sender: senderName,
+      sats: totalSats,
+      count: successfulIdx.length,
+      showTitle: podcast.title,
+      each,
+      tracks: trackList,
+      via: summaryBoostagram.app_name,
+    }));
     const contentOverride = lines.join('\n');
 
     // A summary receipt an attempt has already published. RETRY NOTE quotes it

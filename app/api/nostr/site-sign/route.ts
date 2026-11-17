@@ -18,7 +18,13 @@ import { BRAND } from '@/lib/brand';
 // (the checkbox still shows; the note just isn't posted). Mirrors the graceful
 // degradation used elsewhere (e.g. the non-fatal Libre postinstall).
 
-const MAX_CONTENT = 2000;
+// Just above the largest REAL boost note (about 5,030 characters, measured by
+// `e2e:mentions` with every part at its maximum), so a real boost never meets
+// it — at 2000 a real note measured 2032 and was refused, RETRY NOTE with it.
+// It is still the bound on the free text a caller can have this key sign, so
+// not far above. lib/nostr/boost-notes.ts keeps the same number
+// (SITE_SIGN_MAX_CONTENT); change both together.
+const MAX_CONTENT = 5500;
 const MAX_TAGS = 40;
 // MAX_TAGS bounds the tag COUNT; these bound their size. Without them the
 // oracle would sign an event whose tags carry megabytes of attacker-chosen
@@ -199,7 +205,7 @@ async function handlePost(req: Request) {
     // never — and this route is UNAUTHENTICATED at 30 requests a minute per
     // IP, which makes it the one with the least standing between a caller and
     // the instance's heap. The bound is far above any real template: the
-    // validator below already refuses content over 2000 characters and total
+    // validator below already refuses content over 5500 characters and total
     // tag bytes over 4096.
     const read = await readCappedRequestJson(req, MAX_REQUEST_BYTES);
     if (!read.ok) return read.response;
