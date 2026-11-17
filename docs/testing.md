@@ -68,6 +68,20 @@ NEWER event with an older one, in the file whose job is to prove replacement wor
 must be in the PAST, or the app's own republish is the older event and the relay
 rejects it.
 
+**A script that publishes from NODE imports `scripts/no-public-relays.mjs` FIRST,
+and proves it with `expectRefusal` before it publishes anything.** The guard
+replaces the global `WebSocket` with one that opens to 127.0.0.1 only and ends
+the run on any other URL. It has to come before nostr-tools loads, which reads
+the global once; imported later it guards nothing and records nothing, which is
+what a guard with nothing to block also does — hence the proof. `e2e:mentions`
+is the reference. It used to PROBE the public relays and skip the one section it
+believed published to them; another section called the same function, and nine
+runs on 2026-11-17 put 117 test notes on the public relays under one-time keys,
+where nobody can ever delete them (docs/nostr.md, "Test notes a script leaked").
+The guard covers Node's sockets only. A Chrome-driven script that publishes
+needs its own fence: `e2e:boostnote` and `e2e:mentionlinks` start Chrome
+resolving no host but this one.
+
 ## Every `e2e:*` script drives Chrome through `scripts/cdp.mjs` — never a copy
 
 Eleven scripts each carried their own Chrome-and-CDP boilerplate, and the copies

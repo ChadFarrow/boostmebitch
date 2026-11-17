@@ -30,7 +30,7 @@ async function waitFor(fn, what, timeoutMs = 8000) {
 
 const db = getPool(DATABASE_URL);
 await migrate(DATABASE_URL);
-await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state, deletion_requests cascade');
+await db.query('truncate events, event_tags, profiles, tracked_pubkeys, pi_queue, pi_podcasts, pi_episodes, indexer_state, deletion_requests, live_heads cascade');
 
 const SK = generateSecretKey();
 const PK = getPublicKey(SK);
@@ -287,7 +287,7 @@ await relay.close();
 // again here over a table seeded the way production looked: every pubkey the
 // loop touched stamped `now()`, corpus and stranger alike.
 {
-  await db.query('truncate events, event_tags, profiles, tracked_pubkeys cascade');
+  await db.query('truncate events, event_tags, profiles, tracked_pubkeys, live_heads cascade');
   const T = NOW - 30 * 86_400;
   const skA = generateSecretKey(), A = getPublicKey(skA);    // corpus author
   const skZ = generateSecretKey(), Z = getPublicKey(skZ);    // LNURL server
@@ -371,7 +371,7 @@ await relay.close();
      `the largest REQs (tracked ${biggestTracked} B, replies ${biggestReply} B) fit MAX_REQ_BYTES`);
   ok(MAX_REQ_BYTES < 134_064, 'MAX_REQ_BYTES is under the 134,064-byte REQ that made nos.lol drop the socket');
 
-  await db.query('truncate events, event_tags, profiles, tracked_pubkeys, indexer_state cascade');
+  await db.query('truncate events, event_tags, profiles, tracked_pubkeys, indexer_state, live_heads cascade');
   await db.query(
     `insert into tracked_pubkeys (pubkey, reason, seen_at)
      select lpad(to_hex(g), 64, '0'), 'author', now() - make_interval(secs => g) from generate_series(1, 5000) g`,

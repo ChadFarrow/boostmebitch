@@ -1,0 +1,29 @@
+-- An index on events(seen_at), for `indexedThrough()` (src/store.ts).
+--
+-- Every feed answer and every /health call runs
+--   select max(seen_at) from events where deleted_at is null
+-- and with no index on seen_at that is a sequential scan of the largest table.
+-- Measured on production 2026-11-17 through /health, whose only database work
+-- is that query: 10.3 s, three times in a row (about 3.4 GB of data on a
+-- Postgres with 1 GB of memory). The app's proxy (lib/nostr-index-server.ts)
+-- gives up after 6 s, so
+-- every index read on www answered 503 "index unavailable" and every feed fell
+-- back to the relays. A plain btree answers max() with one backward index step,
+-- and it also serves `order by seen_at desc`.
+--
+-- ON PRODUCTION, BUILD IT BY HAND FIRST, before this file is ever deployed:
+--   create index concurrently if not exists events_seen_at_idx on events (seen_at);
+-- migrate.ts runs every file inside a transaction, and CONCURRENTLY cannot run
+-- in one. Run from here, a plain `create index` holds a lock that blocks every
+-- insert into `events` for the whole build — longer than one full scan of the
+-- table, which alone takes 10 s — at service start, before the API listens. This file is for a REBUILD (a new or small
+-- database), where the build is instant, and it is a no-op wherever the
+-- hand-built index already exists under this exact name.
+--
+-- `if not exists` matches the NAME only. A failed CONCURRENTLY build leaves an
+-- INVALID index under that name, which this would then skip while every query
+-- keeps scanning. After a hand build, check
+--   select indisvalid from pg_index where indexrelid = 'events_seen_at_idx'::regclass;
+-- and drop an invalid one (`drop index concurrently events_seen_at_idx`) before
+-- building again. docs/nostr-index.md, "/health is the only unauthenticated route".
+create index if not exists events_seen_at_idx on events (seen_at);

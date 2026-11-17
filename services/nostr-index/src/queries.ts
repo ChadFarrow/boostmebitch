@@ -40,15 +40,32 @@ export function clampLimit(raw: unknown): number {
 
 const SELECT_EVENT = `id, pubkey, kind, created_at, content, tags, sig`;
 
-/** Top-level notes carrying a NIP-73 podcast reference — the global feed. */
+/**
+ * Top-level notes carrying a NIP-73 podcast reference — the global feed.
+ *
+ * The tag test is a per-row scalar subquery, NOT `exists (...)`, and that is
+ * the whole fix. Postgres turns an `exists` into a semi-join, and on
+ * production it planned that join from the tag side: all ~23,000 podcast `k`
+ * tags, then ~11,800 events fetched one at a time from disk, then a sort —
+ * 2.1–6.8 s by cache state, against the app proxy's 6 s timeout. A scalar
+ * subquery cannot become a join, so the only cheap plan left walks
+ * `events_kind_created_idx` newest-first and stops at `limit`: ~90 rows for 50
+ * notes, 92 ms cold on production (`limit 1` because one matching tag is
+ * enough). Same rows, same order.
+ *
+ * Cost grows with how far back the walk must go before `limit` notes match,
+ * so a deep `until` page into history with few podcast notes is the slow case;
+ * the API pool's statement timeout bounds it.
+ */
 export async function globalNotes(db: Db, limit: number, until?: number): Promise<StoredEvent[]> {
   const { rows } = await db.query<StoredEvent>(
     `select ${SELECT_EVENT} from events e
        where e.kind = 1 and e.deleted_at is null
          and ($2::bigint is null or e.created_at < $2)
-         and exists (select 1 from event_tags t
-                       where t.event_id = e.id and t.name = 'k'
-                         and t.value in ('podcast:guid', 'podcast:item:guid'))
+         and (select true from event_tags t
+               where t.event_id = e.id and t.name = 'k'
+                 and t.value in ('podcast:guid', 'podcast:item:guid')
+               limit 1)
        order by e.created_at desc
        limit $1`,
     [limit, until ?? null],
@@ -61,9 +78,15 @@ export async function globalNotes(db: Db, limit: number, until?: number): Promis
  *
  * kind:30311 is ADDRESSABLE, so `(pubkey, d)` names one broadcast and every
  * event at that address is a version of it. `events` is keyed by `id` with
- * `on conflict do nothing`, so the versions accumulate and the dedupe has to
- * happen here — `distinct on` over the address, newest `created_at` first,
- * which is the same rule `parseNostrLiveStream` applies client-side.
+ * `on conflict do nothing`, so the versions accumulate — and a streaming
+ * client republishes every few seconds: 58,612 versions in the window for 262
+ * broadcasts on production (2026-11-17). Deduping them here, at read time, cost
+ * every version's row and a `d` lookup each: 29.7 s, against the app proxy's
+ * 6 s, so this route answered 503 on every call. The dedupe now happens at
+ * ingest, into `live_heads` (007_live_heads.sql, `liveHeadAddress` in
+ * ingest.ts): one row per broadcast holding its newest servable version, newest
+ * `created_at` first — the same rule `parseNostrLiveStream` applies
+ * client-side. This reads at most `limit` of those rows.
  *
  * `sinceSecs` filters on `created_at`, i.e. when the streamer last UPDATED the
  * event. A broadcast whose client stopped updating it hours ago is over,
@@ -84,41 +107,30 @@ export async function globalNotes(db: Db, limit: number, until?: number): Promis
  * one part that cannot change — an explicit `ended`, or no status to be live by
  * — leaves the time-dependent half where it belongs.
  *
- * `status` is not in `event_tags`: `indexableTags` stores single-letter tags
- * only, per NIP-01's indexed-tag rule. `d` is one and `status` is not, so this
- * reads the whole tag array out of the jsonb column instead. The scan is over
- * the window's few hundred rows, not the table.
+ * The status test is applied per VERSION before the dedupe (an address whose
+ * newest version says `ended` keeps its newest live-or-planned one), exactly as
+ * the read-time query did; `liveHeadAddress` holds it now.
  *
  * The `d` tag can be absent, in which case the event id stands in for it —
  * matching the client, where `?? e.id` does the same. Coalescing to a constant
  * instead would collapse every d-less stream from one pubkey into one row.
  *
- * The `d` lookup is a LATERAL taking the lowest `pos`, not `pos = 0`.
- * `event_tags.pos` is the tag's index in the event's own `tags` array, not a
- * rank among `d` tags — a `d` sitting behind a `title` or a `status` is
- * ordinary, and `pos = 0` would find no `d` at all for it, silently falling
- * back to the event id. Every version of that broadcast would then read as a
- * separate address and none would ever be deduped, so an ended stream would
- * sit in the list beside its own live replacement.
+ * The address is the FIRST indexable `d`, not the `d` at position 0. A `d`
+ * sitting behind a `title` or a `status` is ordinary, and reading position 0
+ * would find no `d` at all for it, silently falling back to the event id.
+ * Every version of that broadcast would then read as a separate address and
+ * none would ever be deduped, so an ended stream would sit in the list beside
+ * its own live replacement. `verify/check-live-heads.mjs` replays that case and
+ * the others against the read-time query this replaced.
  */
 export async function liveStreams(db: Db, limit: number, sinceSecs: number): Promise<StoredEvent[]> {
   const { rows } = await db.query<StoredEvent>(
-    `select ${SELECT_EVENT} from (
-       select distinct on (e.pubkey, coalesce(d.value, e.id))
-              e.id, e.pubkey, e.kind, e.created_at, e.content, e.tags, e.sig
-         from events e
-         left join lateral (
-           select t.value from event_tags t
-            where t.event_id = e.id and t.name = 'd'
-            order by t.pos limit 1
-         ) d on true
-        where e.kind = 30311 and e.deleted_at is null and e.created_at >= $2
-          and exists (select 1 from jsonb_array_elements(e.tags) tag
-                       where tag->>0 = 'status' and tag->>1 in ('live', 'planned'))
-        order by e.pubkey, coalesce(d.value, e.id), e.created_at desc
-     ) e
-     order by e.created_at desc
-     limit $1`,
+    `select e.id, e.pubkey, e.kind, e.created_at, e.content, e.tags, e.sig
+       from live_heads h
+       join events e on e.id = h.event_id
+      where h.created_at >= $2 and e.deleted_at is null
+      order by h.created_at desc
+      limit $1`,
     [limit, sinceSecs],
   );
   return rows;
