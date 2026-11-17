@@ -155,6 +155,36 @@ boost whose legs all failed.
 - **After, site key:** as today ("posted as Boost Me Bitch").
 - **After, one-time key:** "Posted from a one-time key — the 1-sat stamp did not go through (<reason>)."
 
+### The other brand's notes (PR #540) — my call
+
+PR #540 (open; its head is already on `origin/beta`) sends a note for a song from a hosted playlist to
+the OTHER deploy's `site-sign` (`${brand.origin}/api/nostr/site-sign`, `lib/nostr/boost-notes.ts:699` on
+beta). The stamp must follow the note's signer, so:
+
+- The client sends **both** requests (`site-stamp` and `site-sign`) to the origin of the deploy whose key
+  signs the note — chosen by the note's brand, never by `BRAND`. One helper picks that origin, and both
+  requests use it.
+- `site-stamp` carries the same cross-brand CORS as the two signing routes, and `check:brand` covers it.
+- A hosted-playlist note on boostmebitch.com pays its stamp into **Buddy's** LNbits wallet, because
+  Buddy's key signs it. Each Vercel project needs its own `LNBITS_*` settings.
+- Whichever of #540 and this branch merges second rebases onto the other; the conflict is in
+  `publishBoostNoteViaSite`, and the helper above is the shape both need.
+
+### Rollout in two phases — my call
+
+A route that demands a stamp breaks every client that does not send one: a page loaded before the deploy,
+and — through #540 — beta.boostmebitch.com, whose code sends bare templates to Buddy production and has
+no fallback. So the demand is a switch, not a deploy:
+
+1. **Phase 1 (this PR).** Clients stamp every site note and fall back to a one-time key. The route
+   signs a stamped request after checking it, and still signs a bare template while
+   `SITE_SIGN_REQUIRE_STAMP` is not `on` — so no deployed client breaks.
+2. **Phase 2 (Chad flips the switch).** After production on both brands and beta carry the stamping
+   client, Chad sets `SITE_SIGN_REQUIRE_STAMP=on` on both Vercel projects. From then on a bare template
+   gets 402. No code change, and it can be turned off again in a minute.
+
+The switch goes on Chad's to-do list with the condition for flipping it.
+
 ### Deploy order
 
 `LNBITS_URL` and `LNBITS_INVOICE_KEY` must be set on **both** Vercel projects before the merge. If they
@@ -163,8 +193,8 @@ disappears from anonymous notes until they are set. Recommended: a **dedicated L
 so the key on Vercel can read only that wallet's history. Chad creates the wallet and types the key into
 Vercel and `.env.local` himself; it is never sent in chat.
 
-A browser holding JavaScript from before the deploy sends a bare template and gets 402: its note fails
-until the page reloads. The service worker is network-first, so this window is short.
+A browser holding JavaScript from before the deploy sends a bare template; in phase 1 it is still signed,
+and in phase 2 it gets 402 until the page reloads.
 
 ### Tests
 
@@ -175,7 +205,7 @@ until the page reloads. The service worker is network-first, so this window is s
 - **`e2e:sitestamp`** in headless Chrome over CDP, against `next start` with `LNBITS_URL` pointed at a
   **fake LNbits** server inside the script (mints fake invoices, marks one paid when the WebLN stand-in
   "pays" it). Cases:
-  1. Refusals, by direct POST: a bare template → 402; a stamp for an unpaid invoice → 402; a paid stamp
+  1. Refusals, by direct POST: a bare template with the switch on → 402 (and signed with it off); a stamp for an unpaid invoice → 402; a paid stamp
      with a changed template → 400; an expired token → 400; a token from the other brand's key → 400.
   2. Signed out, WebLN: boost → one stamp paid → the note on the local relay is signed by the site key.
   3. Stamp refused by the wallet → the note is on the relay under a one-time key; the screen says so.
