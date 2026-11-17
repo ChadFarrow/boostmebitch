@@ -19,6 +19,10 @@
 //   5. A record with no guid, stored on a device by an older build, does not hold
 //      the controls back. It is read as absent and replaced.
 //   6. No horizontal overflow at 390 and 320, and each control clears 24×24.
+//   8. A playlist track's boost note in the NEW tag order (the row's own feed
+//      first) unfurls the TRACK under its album. One in the OLD order —
+//      rev.hodl's b1d67bdd…, the playlist's guid first — still renders as
+//      before, naming the playlist: notes already published are not changed.
 //   7. An episode whose own art fails still shows the SHOW's cover, never the
 //      initial tile. Homegrown Hits 157's `episode-157.gif` was a 404 on the
 //      show's server, and the card had no show art behind it, because
@@ -50,6 +54,9 @@ const LIVE_ITEM = 'c1fbf44d-3e12-4c7c-a1a0-1b8fc385ee1d'; // its live item, not 
 const HGH = 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f'; // Homegrown Hits
 const HGH_ITEM = 'de330c86-439f-46d5-a83e-ee870aa20c1c'; // Episode 157
 const HGH_ART = 'episode-157.gif'; // that episode's own art, answered 404 below
+const ITDV = '88b0640a-489f-4920-be4f-00f85af5b2d4'; // ITDV music playlist (musicL)
+const DISCO = 'b2a87a4c-86f0-5194-9eb3-dcba42ce0695'; // Disco Swag - The Album, The Doerfels
+const SING = '12711f57-2d41-4794-8cb9-154ecebb7cf7'; // Sing For You, a row of both
 
 const now = Math.floor(Date.now() / 1000);
 const sk = generateSecretKey();
@@ -58,9 +65,9 @@ const npub = nip19.npubEncode(pubkey);
 let n = 0;
 // The feed's own cached shape. Signed by a throwaway key that nothing else uses,
 // so a card a later relay pass tries to thread or resolve is still a real event.
-const note = (marker, { tags, client = null, isBoost = true, podcastGuid = null, episodeGuids = [] }) => {
+const note = (marker, { tags, client = null, isBoost = true, podcastGuid = null, episodeGuids = [], body = null }) => {
   n += 1;
-  const rawEvent = finalizeEvent({ kind: 1, created_at: now + 3600 - n, tags, content: `${marker} a note` }, sk);
+  const rawEvent = finalizeEvent({ kind: 1, created_at: now + 3600 - n, tags, content: body ?? `${marker} a note` }, sk);
   return {
     id: rawEvent.id, pubkey, npub, nevent: nip19.neventEncode({ id: rawEvent.id }),
     createdAt: rawEvent.created_at, content: rawEvent.content, isBoost, client, podcastGuid, episodeGuids,
@@ -87,6 +94,23 @@ const NOTES = [
   note('E2E-MISS', {
     client: 'BoostMeBitch', podcastGuid: LIVE, episodeGuids: [LIVE_ITEM],
     tags: [['i', `podcast:guid:${LIVE}`], ['i', `podcast:item:guid:${LIVE_ITEM}`]],
+  }),
+  note('E2E-PL-NEW', {
+    client: 'BoostMeBitch', podcastGuid: DISCO, episodeGuids: [SING],
+    body: '⚡ Boost ⚡\n\nE2E-PL-NEW\n\nrev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist via BoostMeBitch',
+    tags: [
+      ['i', `podcast:guid:${DISCO}`], ['k', 'podcast:guid'],
+      ['i', `podcast:item:guid:${SING}`], ['k', 'podcast:item:guid'],
+      ['i', `podcast:guid:${ITDV}`],
+    ],
+  }),
+  note('E2E-PL-OLD', {
+    client: 'BoostMeBitch', podcastGuid: ITDV, episodeGuids: [SING],
+    body: '⚡ Boost ⚡\n\nE2E-PL-OLD\n\nrev.hodl boosted 121 sats → ITDV music playlist\n📻 Sing For You',
+    tags: [
+      ['i', `podcast:guid:${ITDV}`], ['k', 'podcast:guid'],
+      ['i', `podcast:item:guid:${SING}`], ['k', 'podcast:item:guid'],
+    ],
   }),
   note('E2E-ART', {
     client: 'BoostMeBuddy', podcastGuid: HGH, episodeGuids: [HGH_ITEM],
@@ -234,6 +258,29 @@ t.ok('the cover is an image that loaded, not the initial tile',
     return JSON.stringify({ src: i.getAttribute('src'), currentSrc: i.currentSrc, complete: i.complete, w: i.naturalWidth, top: Math.round(r.top), vh: innerHeight }); })()`));
 t.ok('the image is not the failed episode art',
   !String(await js(`${COVER}?.currentSrc ?? ''`)).includes(HGH_ART));
+
+// ---------------------------------------------------------------------------
+console.log('\n8. A playlist track: the new tag order, and an old note');
+const PL_CARD = (mk) => `${ARTICLE(mk)}?.querySelector('.mt-2.border.border-line')`;
+await js(`${ARTICLE('E2E-PL-NEW')}?.scrollIntoView({ block: 'center' })`);
+t.ok('the new note unfurls a card', await until(`!!${PL_CARD('E2E-PL-NEW')}`, 40000));
+t.ok('...naming the track', await until(`(${PL_CARD('E2E-PL-NEW')}?.innerText ?? '').includes('Sing For You')`, 40000),
+  await js(`${PL_CARD('E2E-PL-NEW')}?.innerText ?? ''`));
+const plCard = String(await js(`${PL_CARD('E2E-PL-NEW')}?.innerText ?? ''`));
+// The card sets the show line in capitals, and `innerText` returns them so.
+t.ok('...under its album', /disco swag - the album/i.test(plCard), plCard.replace(/\s+/g, ' ').slice(0, 300));
+t.ok('the body says what, then where',
+  (await textOf('E2E-PL-NEW')).includes('rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist via BoostMeBitch'));
+// The card's own "via <client>" label, above the body. The shared format's
+// sentence already ends "via BoostMeBitch", so the card leaves it out there;
+// a note from before the format keeps it (noteNamesClient).
+const LABEL = (mk) => `[...(${ARTICLE(mk)}?.querySelectorAll('span.text-muted') ?? [])].some((el) => el.textContent.trim() === 'via BoostMeBitch')`;
+t.equal('the new note does not name the app twice', await js(LABEL('E2E-PL-NEW')), false);
+await js(`${ARTICLE('E2E-PL-OLD')}?.scrollIntoView({ block: 'center' })`);
+t.ok('an old note still renders, naming the playlist',
+  await until(`(${ARTICLE('E2E-PL-OLD')}?.innerText ?? '').includes('ITDV music playlist')`, 40000),
+  (await textOf('E2E-PL-OLD')).slice(0, 300));
+t.equal('...and keeps its "via BoostMeBitch" label', await js(LABEL('E2E-PL-OLD')), true);
 
 t.equal('no page exception', pageErrors, []);
 

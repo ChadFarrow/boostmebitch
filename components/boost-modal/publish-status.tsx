@@ -1,12 +1,34 @@
 'use client';
-import type { PublishedNote } from '@/lib/nostr';
+import type { PublishedNote, SignerCheck } from '@/lib/nostr';
 import { BunkerApprovalNotice } from '../bunker-approval-notice';
+import { BunkerRestoreNotice } from '../bunker-restore-notice';
 
 export type PublishState =
   | { kind: 'idle' }
-  | { kind: 'publishing' }
-  | { kind: 'done'; note: PublishedNote }
-  | { kind: 'error'; message: string };
+  /** `step: 'stamp'` while a site-signed note's stamp (1% of the boost, `sats`) is being paid. */
+  | { kind: 'publishing'; step?: 'stamp'; sats?: number }
+  /**
+   * `notice`: why the note went out from a one-time key instead of the site's
+   * (lib/site-stamp.ts). The note IS posted; this says by whom.
+   */
+  | { kind: 'done'; note: PublishedNote; notice?: string }
+  /**
+   * `retry` posts the SAME note again — same boost, same receipt if one was
+   * already published. Absent where there is nothing to retry with.
+   */
+  | { kind: 'error'; message: string; retry?: () => void };
+
+/**
+ * Why a boost note was not signed, when the signer check said so BEFORE the
+ * signature was asked for. A refusal is quoted, never paraphrased — the same
+ * rule <BunkerHealthBanner> follows: "Pairing limit reached" and "Client not
+ * paired" want different next moves, and only the reader can pick.
+ */
+export function signerCheckMessage(check: Exclude<SignerCheck, { kind: 'ok' }>): string {
+  return check.kind === 'refused'
+    ? `your signer refused: “${check.message}”`
+    : 'your signer did not answer, so nothing was signed';
+}
 
 export function PublishStatus({ state }: { state: PublishState }) {
   if (state.kind === 'idle') return null;
@@ -16,19 +38,43 @@ export function PublishStatus({ state }: { state: PublishState }) {
     // user, so this costs a signed-out or extension user nothing. It is here
     // because this is where the wait bites: a signer that queues its approvals
     // can hold a boost note for up to 90 s, and "Publishing to nostr…" alone
-    // would read as a hang. It matters more here than anywhere else because
-    // there is no retry control below — a publish that gives up is a kind:1
-    // nothing re-attempts.
+    // would read as a hang.
+    //
+    // The restore notice is the other wait: `checkSignerLink` runs before the
+    // note signs, and on a dead link it probes for 10 s and then reconnects.
+    // It renders nothing for the first five seconds, so a healthy check — one
+    // ping — never shows it.
     return (
       <div role="status" className="text-xs text-nostr space-y-1">
-        <div>◆ Publishing to nostr…</div>
+        <div>
+          {state.step !== 'stamp'
+            ? '◆ Publishing to nostr…'
+            : state.sats
+              ? `◆ Paying the ${state.sats}-sat stamp (1%)…`
+              : '◆ Paying the stamp (1%)…'}
+        </div>
         <BunkerApprovalNotice />
+        <BunkerRestoreNotice />
       </div>
     );
   }
 
   if (state.kind === 'error') {
-    return <div role="status" className="text-xs text-nostr">◆ Publish failed: {state.message}</div>;
+    // The note is the one part of a boost that nothing else re-attempts: the
+    // sats have moved, the modal's payment Retry covers legs, and a kind:1
+    // that was never signed is gone unless this button posts it. A retry is
+    // safe against a duplicate — nothing published the first attempt, since
+    // the event is published only after the signer's answer arrives.
+    return (
+      <div role="status" className="text-xs text-nostr space-y-1">
+        <div>◆ Note not posted: {state.message}</div>
+        {state.retry && (
+          <button onClick={state.retry} className="btn-ghost text-nostr">
+            Retry note
+          </button>
+        )}
+      </div>
+    );
   }
 
   // state.kind === 'done'
@@ -41,6 +87,7 @@ export function PublishStatus({ state }: { state: PublishState }) {
       <div className="text-nostr">
         ◆ Published to {state.note.acceptedRelays.length}/{total} relays
       </div>
+      {state.notice && <div className="text-muted leading-relaxed">{state.notice}</div>}
       <a
         href={`https://njump.me/${encodeURIComponent(state.note.nevent)}`}
         target="_blank"

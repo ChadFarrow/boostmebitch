@@ -4,11 +4,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost, ValueBlock, ValueRecipient, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
+import { sendBoost, pickRail, paidAny, payStampInvoice, type BoostResult, type Rail } from '@/lib/v4v/boost';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableLeg, payableValue, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playsAsTracks, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -29,9 +29,10 @@ import { NowPayingRow, splitTargetLabel, useLiveTarget } from '../live-now-playi
 import { useActiveSplit } from './use-active-split';
 import type { LiveTarget } from '@/lib/v4v/live-value';
 import { fetchRemoteItemParent, isNotPlayed, livePlayedKey, livePlayedSnapshot } from '@/lib/live-played';
-import { PublishStatus, type PublishState } from './publish-status';
+import { PublishStatus, signerCheckMessage, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
 import { activeNostr } from '@/lib/nostr/signer';
+import type { Event } from 'nostr-tools';
 
 /**
  * Boostagram fields for a live show whose payment target has been redirected.
@@ -97,7 +98,7 @@ async function noteTrackArtist(split: ValueTimeSplit, t: LiveTarget | null): Pro
 
 /**
  * The longest the note waits for the artist. The sats have already moved when
- * it publishes, and a missing artist costs only the "— artist" half of one line.
+ * it publishes, and a missing artist costs only the "by <artist>" words.
  */
 const NOTE_ARTIST_WAIT_MS = 2000;
 
@@ -125,6 +126,13 @@ interface SentBoost {
   hostRefs: Nip73Refs;
   noteSplit: ValueTimeSplit | null;
   noteArtist: Promise<string | undefined>;
+  /**
+   * The artist of a playlist ROW — a track from another feed, which the row
+   * itself does not name (`/api/playlist` maps no author). Looked up while the
+   * wallet pays, like `noteArtist`, and raced against the same cap; display
+   * only (`PublishArgs.itemArtist`).
+   */
+  itemArtist: Promise<string | undefined>;
   /** The trimmed block and per-group boostagram each leg group went out with. */
   primaryValue: ValueBlock;
   primaryBoostagram: Boostagram;
@@ -135,6 +143,20 @@ interface SentBoost {
   hostCollected: BoostResult[];
   /** Whether the StoredBoost and the note already exist. */
   logged: boolean;
+  /**
+   * Whether the user's signer can answer — `checkSignerLink`, started at the
+   * tap so it runs WHILE the wallet pays, and awaited before the first thing
+   * the user's key signs. Null when nothing will be signed by it. A payment
+   * retry that is the first to pay starts a fresh one; RETRY NOTE starts its
+   * own.
+   */
+  signerCheck: Promise<SignerCheck> | null;
+  /**
+   * A site-signed note's progress: its template, the paid stamp and the signed
+   * event (lib/site-stamp.ts). One per boost, kept here so RETRY NOTE posts
+   * the SAME note and never pays a second stamp.
+   */
+  siteNote: SiteNoteState<Event>;
 }
 
 interface Props {
@@ -213,6 +235,17 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // The boost as sent — see SentBoost. A ref, not state: nothing renders from
   // it, and the retry mutates its results in place between awaits.
   const sentRef = useRef<SentBoost | null>(null);
+  // Whether THIS modal is still mounted. A boost's work outlives its modal —
+  // the note keeps posting after × — and the parent's `onClose` is shared
+  // state (`setBoostFor(null)`), so a deferred close from a modal the user
+  // already closed would shut the NEXT one, mid-payment. Reset on mount, so a
+  // StrictMode remount in dev does not leave it set.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const closeIfOpen = () => { if (mountedRef.current) onClose(); };
 
   // Share picker + the `anonymous` flag derived from it. Shared with
   // <BoostAllModal> via the hook rather than restated here — see
@@ -432,33 +465,113 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // server-side (publishBoostNoteViaSite) — the signed-out path and the
   // signed-in "Post via boostmebitch.com" choice. The share choice and the
   // mentions are the SNAPSHOT's, for the reason logStoredBoost gives.
+  //
+  // Returns whether the note went out as asked (or was never wanted), so
+  // `finishBoost` can keep the modal open over a failure — or over a note a
+  // one-time key posted in the site's place: the modal closing 1.5 s after the
+  // payment is how a lost note used to go unseen.
   async function maybePublishNote(
     sent: SentBoost,
     results: BoostResult[],
-    // The one receipt the note quotes — see PublishArgs.summaryReceipt. Both
-    // paths carry it: a self-signed note's request was signed by the user, a
-    // site-published note's by the site, so neither names anyone it shouldn't.
-    summaryReceipt?: QuotedZapReceipt,
     // The track the boost paid, with the legs that paid it — see
     // PublishArgs.track. The note names it only if one of those legs settled.
     track?: { split: ValueTimeSplit; results: BoostResult[] },
-  ) {
-    if (!sent.shareNostr) return;
+    // A playlist row's artist, already raced against its cap — carried by
+    // RETRY NOTE so a retry names the same artist without asking again.
+    itemArtist?: string,
+    // A summary receipt an earlier attempt at THIS note already published.
+    // RETRY NOTE quotes it rather than minting a second: two receipts for one
+    // boost would count its sats twice wherever receipts are summed.
+    minted: QuotedZapReceipt | null = null,
+    // The rail the boost paid on; a site-signed note's stamp goes out on
+    // it too. RETRY NOTE passes the same one.
+    rail?: Rail,
+  ): Promise<boolean> {
+    if (!sent.shareNostr) return true;
     const { boostagram, mentions } = sent;
+    const self = !!identity && sent.shareAs === 'self';
     setPubState({ kind: 'publishing' });
+    // The one receipt the note quotes — see PublishArgs.summaryReceipt. Both
+    // paths carry it: a self-signed note's request was signed by the user, a
+    // site-published note's by the site, so neither names anyone it shouldn't.
+    let summaryReceipt = minted;
+    // Reads `summaryReceipt` when PRESSED, not now, so a receipt minted below
+    // is the one a retry quotes. A fresh signer check each press: the one this
+    // attempt used is the one that failed. Once per failure — a second tap
+    // landing before the re-render would sign and publish the note twice.
+    let pressed = false;
+    const retry = () => {
+      if (pressed) return;
+      pressed = true;
+      if (self) sent.signerCheck = checkSignerLink();
+      void maybePublishNote(sent, results, track, itemArtist, summaryReceipt, rail);
+    };
+
+    // ASK BEFORE SIGNING. On a link that cannot answer, both signatures below
+    // would each wait out the bunker's 30 s bound and a ping before failing,
+    // and the failure would say only "timed out". A check that says no skips
+    // them and names the reason; RETRY NOTE checks again.
+    if (self) {
+      const check = await (sent.signerCheck ??= checkSignerLink());
+      if (check.kind !== 'ok') {
+        setPubState({ kind: 'error', message: signerCheckMessage(check), retry });
+        return false;
+      }
+    }
+
+    // The sats that actually settled — both groups, ok legs only. Never the
+    // typed amount: the note's `amount` tag carries intent (invariant 7), and
+    // the receipt is the record that tells the truth when a leg failed.
+    // Asked NOW, not at the tap: after a retry the receipt is signed now, by
+    // whatever signer is present now. Never throws; null quotes nothing.
+    // Written as the note's own signer rule, in the words `check:zapreceipt`
+    // scans for.
+    const { shareAs } = sent;
+    summaryReceipt ??= await mintSummaryReceipt({
+      paidSats: results.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0),
+      refs: sent.hostRefs,
+      relays,
+      as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
+    });
+    // The site signs only with a paid stamp (lib/site-stamp.ts), paid on
+    // the rail the boost used. `sent.siteNote` carries the template, the paid
+    // stamp and the signed event, so RETRY NOTE never pays a second stamp. Any
+    // failure posts the same note from a one-time key and says why.
+    const publishViaSite = async () => {
+      const r = await publishBoostNoteViaSite(
+        { podcast, episode, boostagram, results, mentions, summaryReceipt: summaryReceipt ?? undefined, track, itemArtist },
+        {
+          // No rail means nothing to pay with: the ladder signs one-time.
+          payStamp: (bolt11, sats) => (rail ? payStampInvoice(rail, bolt11, sats) : Promise.reject(new Error('no wallet'))),
+          state: sent.siteNote,
+          onStamp: (sats) => setPubState({ kind: 'publishing', step: 'stamp', sats }),
+        },
+      );
+      return {
+        note: r.note,
+        notice: r.signer === 'one-time' && r.why
+          ? `Posted from a one-time key, not ${BRAND.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`
+          : undefined,
+      };
+    };
     try {
-      const note = identity && sent.shareAs === 'self'
-        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt, track })
-        // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
-        // what each may do with them — the body always, the `p` tags only when
-        // the user's own key signs — and that decision belongs there, not in a
-        // caller that would have to remember it at every site.
-        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions, summaryReceipt, track });
-      setPubState({ kind: 'done', note });
+      const receipt = summaryReceipt ?? undefined;
+      // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
+      // what each may do with them — the body always, the `p` tags only when
+      // the user's own key signs — and that decision belongs there, not in a
+      // caller that would have to remember it at every site.
+      const { note, notice } = self
+        ? { note: await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track, itemArtist }), notice: undefined }
+        : await publishViaSite();
+      setPubState({ kind: 'done', note, notice });
       storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
       bumpBoosts();
+      // A note from a one-time key keeps the modal open, so the reason the
+      // site's name is not on it stays on screen.
+      return !notice;
     } catch (e) {
-      setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
+      setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed'), retry });
+      return false;
     }
   }
 
@@ -492,6 +605,13 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     const noteSplit = redirect ?? liveNoteSplit(liveTarget, episode?.guid, podcast.podcastGuid);
     const noteArtist = shareNostr && noteSplit
       ? noteTrackArtist(noteSplit, liveTarget).catch(() => undefined)
+      : Promise.resolve(undefined);
+    // A playlist row names a feed the playlist is not: the sentence says who
+    // made the track, which only that feed's record knows. Music rows only —
+    // a `podcastL` row's author is a host, and the sentence never prints one.
+    const ownFeed = itemFeedGuid(podcast, episode);
+    const itemArtist = shareNostr && ownFeed && episode?.guid && playsAsTracks(podcast)
+      ? fetchRemoteItemParent(ownFeed, episode.guid).then((p) => p?.artist).catch(() => undefined)
       : Promise.resolve(undefined);
 
     const boostagram: Boostagram = {
@@ -582,6 +702,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       },
       noteSplit,
       noteArtist,
+      itemArtist,
       primaryValue: value,
       // Per LEG GROUP, not per boost. `boostagram` carries the whole typed
       // amount, because that is what the NOTE must say (invariant 7: note
@@ -608,6 +729,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       collected: [],
       hostCollected: [],
       logged: false,
+      // Started NOW, before the first leg, so a dead link's 10 s probe and its
+      // reconnect run while the sats move rather than after them. No payment
+      // rail touches the signer, so nothing it does can reach a leg.
+      signerCheck: maySignAsSelf ? checkSignerLink() : null,
+      siteNote: {},
     };
     sentRef.current = sent;
 
@@ -717,6 +843,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     if (primaryIdx.length === 0 && hostIdx.length === 0) return;
     primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
     setSendErr(null);
+    // Nothing paid the first time, so the note is still to come — and the check
+    // `go()` started may be minutes old. A fresh one, for the same reason as
+    // there: it runs while these legs pay.
+    if (!sent.logged && sent.maySignAsSelf) sent.signerCheck = checkSignerLink();
     setRunning(true);
     const retried: BoostResult[] = [];
     // Stop at the first leg whose wallet relay still cannot be reached. Every
@@ -783,12 +913,17 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     }
 
     // Auto-close after a successful send (brief delay so the confetti + "sent"
-    // state register). The Nostr note + chat publishes below continue in the
-    // background; their post-close setState is a no-op in React 18. A fully
-    // failed boost leaves the modal open so the user sees the error.
-    // A boost with legs left to retry also stays open: closing would take the
-    // Retry button away while those recipients are still unpaid.
-    if (anyPaid && !retryLeft) setTimeout(() => onClose(), 1500);
+    // state register). A fully failed boost leaves the modal open so the user
+    // sees the error. A boost with legs left to retry also stays open: closing
+    // would take the Retry button away while those recipients are still unpaid.
+    //
+    // A boost with a NOTE still to post closes only once the note is out — see
+    // the end of this function. It used to close here and let the note publish
+    // behind it, so a note that failed (a Clave link that had gone deaf, signing
+    // into nothing for 40 s) failed with the modal gone: no message, and no
+    // RETRY NOTE to press. The chat line still publishes in the background.
+    const noteToPost = anyPaid && !sent.logged && sent.shareNostr;
+    if (anyPaid && !retryLeft && !noteToPost) setTimeout(closeIfOpen, 1500);
 
     if (!anyPaid) return;
     if (sent.logged) {
@@ -811,9 +946,16 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // relocated the leak rather than closed it. Same inversion
     // `streamingMayPublish()` names — a user who chose to publish LESS must
     // not end up publishing under their own key by a different door.
+    //
+    // After the signer check, like the note: a kind:1311 into a deaf link waits
+    // out the same 40 s and then fails, and its failure is the one nothing
+    // reports. Not awaited here — the log below must not wait on the signer.
     if (sent.maySignAsSelf && sent.liveStreamId) {
       const chatMsg = `⚡ Boosted ${sent.sats.toLocaleString()} sats${sent.msg ? `: ${sent.msg}` : ''}`;
-      publishLiveChat(sent.liveStreamId, chatMsg).catch(() => { /* non-fatal */ });
+      const liveStreamId = sent.liveStreamId;
+      (sent.signerCheck ??= checkSignerLink())
+        .then((check) => (check.kind === 'ok' ? publishLiveChat(liveStreamId, chatMsg) : undefined))
+        .catch(() => { /* non-fatal */ });
     }
 
     // Remember the rail that actually paid as the user's preference (local +
@@ -844,35 +986,33 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // boost that posts ("Don't post" is the only thing that skips it): the
     // user signs its request when their key publishes the note, the site
     // does when the note is site-published, so an Anonymous boost's receipt
-    // names the site and not the user. Never throws; null quotes nothing.
-    // No leg is a zap, so there is no provider receipt to wait for.
+    // names the site and not the user. Minted inside `maybePublishNote`, after
+    // the signer check, so RETRY NOTE can mint it when the first attempt never
+    // reached the signer. No leg is a zap, so there is no provider receipt to
+    // wait for.
     const allLegs = [...collected, ...hostCollected];
-    const paidSats = allLegs.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);
-    const { shareAs } = sent;
-    // Asked NOW, not at the tap: after a retry the receipt is signed now, by
-    // whatever signer is present now.
-    const hasSigner = !!activeNostr();
-    const summaryReceipt = sent.shareNostr
-      ? await mintSummaryReceipt({
-          paidSats, refs: sent.hostRefs, relays,
-          as: identity && shareAs === 'self' && hasSigner ? 'self' : 'site',
-        })
-      : null;
     // `collected` is the TRACK's legs whenever there is a track to name: a
     // redirect sends the primary leg to the window's block, and a live show
     // sends it to the on-air block (the show's share, if any, is
     // `hostCollected`). `boostNoteTrack` names nothing
     // unless one of them settled.
-    const artist = sent.noteSplit
-      ? await Promise.race([
-          sent.noteArtist,
-          new Promise<undefined>((r) => setTimeout(() => r(undefined), NOTE_ARTIST_WAIT_MS)),
-        ])
-      : undefined;
+    // Both lookups started when the boost was sent, so they share ONE cap
+    // rather than waiting it out one after the other.
+    const capped = (p: Promise<string | undefined>) => Promise.race([
+      p,
+      new Promise<undefined>((r) => setTimeout(() => r(undefined), NOTE_ARTIST_WAIT_MS)),
+    ]);
+    const [artist, itemArtist] = await Promise.all([
+      sent.noteSplit ? capped(sent.noteArtist) : undefined,
+      capped(sent.itemArtist),
+    ]);
     const track = sent.noteSplit
       ? { split: artist ? { ...sent.noteSplit, artist } : sent.noteSplit, results: collected }
       : undefined;
-    await maybePublishNote(sent, allLegs, summaryReceipt ?? undefined, track);
+    const posted = await maybePublishNote(sent, allLegs, track, itemArtist, null, opts.rail);
+    // The close held back above. A note that failed keeps the modal open, with
+    // its reason and RETRY NOTE on screen.
+    if (noteToPost && posted && !retryLeft) setTimeout(closeIfOpen, 1500);
   }
 
   return (

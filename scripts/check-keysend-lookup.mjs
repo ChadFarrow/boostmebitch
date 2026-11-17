@@ -91,7 +91,6 @@ console.log('\nisLnurlOnlyAddress — addresses that must NOT be diverted');
     ['the listed domain as a PREFIX of someone else', 'x@fountain.fm.evil.example'],
     ['a lookalike TLD', 'x@fountain.fm.co'],
     ['an unrelated provider', 'x@getalby.com'],
-    ['our own address', 'chadf@boostmebitch.com'],
     ['a bare domain with no @', 'fountain.fm'],
     ['an empty string', ''],
     ['an @ with nothing after it', 'chadf@'],

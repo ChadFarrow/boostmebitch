@@ -11,6 +11,7 @@ export {
   restoreAmberSigner,
   restoreBunkerSigner,
   startBunkerRevive,
+  checkSignerLink,
   restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,
@@ -18,6 +19,7 @@ export {
   shortNpub,
   coerceProfileMetadata,
   type BunkerRestoreResult,
+  type SignerCheck,
   type NostrIdentity,
   type ProfileMetadata,
 } from './auth';
@@ -100,6 +102,7 @@ export {
   publishBoostNoteViaSite,
   noteNpubs,
 } from './boost-notes';
+export { STAMP_FAILURE_TEXT, type SiteNoteState, type StampFailure } from '../site-stamp';
 
 export {
   type PublishedNote,
