@@ -16,7 +16,14 @@
 //
 // The extensionless-import resolver in e2e-resolve-hook.mjs only appends an
 // extension and expands `@/`, so the graph it builds is the one webpack builds.
+//
+// NOTHING LEAVES THIS MACHINE, and it is ENFORCED: the first import below
+// replaces the global WebSocket before nostr-tools loads, with one that opens
+// to 127.0.0.1 only and ends the run on any other URL. See the section after
+// the signer for why that replaced a probe, and what it cost.
 
+// FIRST, before anything that imports nostr-tools. Moving it down disarms it.
+import { relayGuard, expectRefusal } from './no-public-relays.mjs';
 import { register } from 'node:module';
 import { readFileSync } from 'node:fs';
 register('./e2e-resolve-hook.mjs', import.meta.url);
@@ -46,59 +53,33 @@ globalThis.window.nostr = {
 };
 globalThis.window.location = { origin: 'http://localhost:3000' };
 
-// NOTHING MAY LEAVE THIS MACHINE, and this is the part that has to be true
-// rather than merely intended.
+// NOTHING MAY LEAVE THIS MACHINE, and it is enforced rather than checked.
 //
-// publishBoostNoteViaSite takes no `relays` argument: it publishes to the
-// hardcoded DEFAULT_RELAYS. So running this script on a machine with working
-// outbound WebSockets fires test notes at damus.io, primal.net, nos.lol and
-// fountain.fm, under a throwaway key, with no way to unsend them.
+// THIS USED TO BE A PROBE, AND IT LEAKED. The script opened a socket to each of
+// the four DEFAULT_RELAYS, and when one answered it skipped section 2 — the one
+// section it believed published to them, because publishBoostNoteViaSite took
+// no `relays` argument. Section 5b called that same function, through
+// `capture()`, thirteen times a run, under a comment saying it "runs only
+// isolated"; its stamp stand-in answers 599, so every call signed with a
+// one-time key and published. Nine runs on 2026-11-17 put 117 test notes on
+// relay.primal.net and relay.fountain.fm, under keys nobody holds, so they can
+// never be deleted — every feed here hides them now
+// (lib/nostr/test-boost-notes.ts), and other apps showed them.
 //
-// An in-process guard was tried first and is NOT what is here, because it did
-// not work and said it did: ESM imports are hoisted, so nostr-tools had already
-// captured the real WebSocket before any override ran, and swapping it through
-// `useWebSocketImplementation` did not reach the constructor either. It
-// recorded zero interceptions and reported success — indistinguishable, in its
-// output, from a guard with nothing to block.
+// So now:
+//   - every publish names this machine's relay, including both site-signed
+//     sections (publishBoostNoteViaSite takes `relays` since then);
+//   - the first import replaces the global WebSocket with one that opens to
+//     127.0.0.1 only, and ENDS THE RUN on any other URL before a byte is sent
+//     (scripts/no-public-relays.mjs). No list of "unsafe sections" to keep
+//     right: a section added tomorrow that reaches for a public relay stops the
+//     run the moment it tries;
+//   - the guard proves it is in front of the shipping publish path before
+//     anything runs (the self-test below), or the script refuses to run. An
+//     earlier in-process guard recorded nothing and reported success, which a
+//     guard with nothing to block also does — this one must refuse a URL.
 //
-// So the isolation is checked instead of installed: probe the four relays and
-// refuse to run if any of them answers. On a sandbox with no outbound WSS this
-// passes in milliseconds; on a laptop it stops the script before it publishes.
-const DEFAULT_RELAYS = [
-  'wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.fountain.fm',
-];
-const reachable = [];
-await Promise.all(DEFAULT_RELAYS.map((u) => new Promise((res) => {
-  let done = false;
-  const finish = (v) => { if (!done) { done = true; res(v); } };
-  try {
-    const ws = new WebSocket(u);
-    const t = setTimeout(() => { try { ws.close(); } catch { /* */ } finish(); }, 5000);
-    ws.onopen = () => { clearTimeout(t); reachable.push(u); try { ws.close(); } catch { /* */ } finish(); };
-    ws.onerror = () => { clearTimeout(t); finish(); };
-  } catch { finish(); }
-})));
-//
-// THE REFUSAL IS SCOPED TO SECTION 2, and widening it back to the whole script
-// is a false economy. Section 2 is the only one that publishes to
-// DEFAULT_RELAYS; every other section passes `relays: [RELAY]` explicitly and
-// cannot reach anything but the local relay. Refusing the entire run meant that
-// on any machine with internet — which is every developer laptop — NOTHING here
-// was checked, including the wiring assertions that are the whole point of the
-// file. A guard that turns the suite off is not protecting the suite.
-//
-// So: skip the one unsafe section, say so loudly, and make the exit code honest
-// about having run a subset.
-const ISOLATED = reachable.length === 0;
-let skipped = 0;
-if (ISOLATED) {
-  console.log(`  isolation: all ${DEFAULT_RELAYS.length} DEFAULT_RELAYS unreachable from here`);
-} else {
-  console.log('  isolation: NOT isolated — these public relays answered:');
-  for (const u of reachable) console.log(`    ${u}`);
-  console.log('  section 2 (site-signed) will be SKIPPED: publishBoostNoteViaSite takes no');
-  console.log('  `relays` argument and would put test notes on them permanently.');
-}
+// Every section runs on every machine. There is no isolation to detect.
 
 const received = [];
 const relay = createRelay({ port: 0, log: null, onEvent: (e) => received.push(e) });
@@ -144,6 +125,33 @@ const bodyNpubs = (e) => (e.content.match(/nostr:npub1[0-9a-z]+/g) ?? []).map((s
 console.log(`\n  throwaway npub ${nip19.npubEncode(pk).slice(0, 20)}…   relay ${RELAY}\n`);
 
 // ===========================================================================
+console.log('--- 0. The guard stands in front of the function that leaked ---');
+// ===========================================================================
+// Before anything publishes: aim publishBoostNoteViaSite — the function whose
+// one-time-key notes leaked — at a public-looking relay, and require the guard
+// to refuse it. A guard that is not in the path refuses nothing, so this run
+// stops here instead of trusting it. The host is `.invalid` (RFC 2606): were
+// the guard missing, the connection would still fail on DNS and carry nothing.
+{
+  const GUARD_PROBE = 'wss://e2e-relay-guard.invalid';
+  const realFetch = globalThis.fetch;
+  // The stamp route's 599 sends the ladder to the one-time key, then to publish.
+  globalThis.fetch = async () => ({ ok: false, status: 599, json: async () => ({}) });
+  const refused = await expectRefusal(GUARD_PROBE, () => publishBoostNoteViaSite(
+    { podcast, episode, boostagram: boostagram('guard self-test'), results: [] },
+    { payStamp: async () => {}, state: {}, relays: [GUARD_PROBE] },
+  ));
+  globalThis.fetch = realFetch;
+  if (!refused) {
+    console.error('  REFUSING TO RUN: the relay guard did not see a publish aimed at a public URL.');
+    console.error('  It must be the FIRST import of this file (scripts/no-public-relays.mjs).');
+    relay.close?.();
+    process.exit(1);
+  }
+  console.log(`  ok    a publish aimed at ${GUARD_PROBE} was refused before it connected`);
+}
+
+// ===========================================================================
 console.log('--- 1. SELF-SIGNED: the sender\'s mention gets a real p tag ---');
 // ===========================================================================
 {
@@ -166,51 +174,53 @@ console.log('--- 1. SELF-SIGNED: the sender\'s mention gets a real p tag ---');
 }
 
 // ===========================================================================
-if (!ISOLATED) {
-  skipped += 1;
-  console.log('\n--- 2. SITE-SIGNED: SKIPPED (not isolated) ---');
-} else {
-  // ===========================================================================
-  {
-    // publishBoostNoteViaSite asks /api/nostr/site-stamp for the note stamp,
-    // pays it, then POSTs { template, stamp } to /api/nostr/site-sign. Both are
-    // intercepted here so the test needs no server, no site key and no wallet —
-    // what is under test is which TEMPLATE the client hands over, which is the
-    // whole selfSigned decision.
-    let sent = null;
-    let firstUrl = null;
-    const siteSk = generateSecretKey();
-    globalThis.fetch = async (url, init) => {
-      const body = JSON.parse(init.body);
-      firstUrl ??= String(url);
-      if (String(url).endsWith('/api/nostr/site-stamp')) {
-        sent = body.template;
-        return { ok: true, status: 200, json: async () => ({ invoice: 'lnbc10n1e2e', stamp: 'e2e.stamp' }) };
-      }
-      return { ok: true, status: 200, json: async () => ({ event: finalizeEvent({ ...body.template }, siteSk) }) };
-    };
-    await publishBoostNoteViaSite({
-      podcast, episode, boostagram: boostagram('great track @fiatjaf'),
-      results: [], mentions: [mentionA],
-      // Isolated, no relay takes the note, and that now throws (RETRY NOTE).
-    }, { payStamp: async () => {}, state: {} }).catch(() => {});
-    await wait(400);
-    // Asserted on the TEMPLATE the route was handed, not on a relay round trip:
-    // this path publishes to DEFAULT_RELAYS by construction, and the template is
-    // where the whole selfSigned decision shows up anyway.
-    const e = sent;
-    check('a template was posted to /api/nostr/site-stamp', !!e, true);
-    check('the site path asked for a stamp first', firstUrl?.endsWith('/api/nostr/site-stamp'), true);
-    check('the feed npub keeps its p tag', pTags(e).includes(feedA.pubkey), true);
-    check('the SENDER mention has NO p tag', pTags(e).includes(mentionA.pubkey), false);
-    check('...and the feed npub is the only p tag left', pTags(e).length, 1);
-    check('but the mention still reaches the body', bodyNpubs(e).includes(mentionA.npub), true);
-    check('the prefix the route validates on survives', e?.content.startsWith('⚡ Boost ⚡'), true);
-    check('every tag name is in the route allowlist',
-      e?.tags.every((t) => ['i','k','r','p','amount','client','t','imeta'].includes(t[0])), true);
-    check('p tags are under the route MAX_P_TAGS of 8',
-      e?.tags.filter((t) => t[0] === 'p').length <= 8, true);
-  }
+console.log('\n--- 2. SITE-SIGNED: the sender\'s mention is body-only ---');
+// ===========================================================================
+{
+  // publishBoostNoteViaSite asks /api/nostr/site-stamp for the note stamp,
+  // pays it, then POSTs { template, stamp } to /api/nostr/site-sign. Both are
+  // intercepted here so the test needs no server, no site key and no wallet —
+  // what is under test is which TEMPLATE the client hands over, which is the
+  // whole selfSigned decision.
+  let sent = null;
+  let firstUrl = null;
+  const siteSk = generateSecretKey();
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    firstUrl ??= String(url);
+    if (String(url).endsWith('/api/nostr/site-stamp')) {
+      sent = body.template;
+      return { ok: true, status: 200, json: async () => ({ invoice: 'lnbc10n1e2e', stamp: 'e2e.stamp' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ event: finalizeEvent({ ...body.template }, siteSk) }) };
+  };
+  // `relays: [RELAY]`: this machine's relay, like every other section. This
+  // section was once SKIPPED on any machine with internet, because the
+  // function could only publish to DEFAULT_RELAYS (see the top of the file).
+  const out = await publishBoostNoteViaSite({
+    podcast, episode, boostagram: boostagram('great track @fiatjaf'),
+    results: [], mentions: [mentionA],
+  }, { payStamp: async () => {}, state: {}, relays: [RELAY] });
+  await wait(400);
+  const e = sent;
+  check('a template was posted to /api/nostr/site-stamp', !!e, true);
+  check('the site path asked for a stamp first', firstUrl?.endsWith('/api/nostr/site-stamp'), true);
+  check('the feed npub keeps its p tag', pTags(e).includes(feedA.pubkey), true);
+  check('the SENDER mention has NO p tag', pTags(e).includes(mentionA.pubkey), false);
+  check('...and the feed npub is the only p tag left', pTags(e).length, 1);
+  check('but the mention still reaches the body', bodyNpubs(e).includes(mentionA.npub), true);
+  check('the prefix the route validates on survives', e?.content.startsWith('⚡ Boost ⚡'), true);
+  check('every tag name is in the route allowlist',
+    e?.tags.every((t) => ['i','k','r','p','amount','client','t','imeta'].includes(t[0])), true);
+  check('p tags are under the route MAX_P_TAGS of 8',
+    e?.tags.filter((t) => t[0] === 'p').length <= 8, true);
+  // The relay round trip, which this section could not assert while it could
+  // only publish to the public relays.
+  const landed = received.find((x) => x.id === out.note.id);
+  check('the site-signed note reached THIS MACHINE\'s relay', !!landed, true);
+  check('...signed by the site key the stand-in route used', landed?.pubkey, getPublicKey(siteSk));
+  check('...and the relay it names is the local one, and only that one',
+    JSON.stringify(out.note.acceptedRelays), JSON.stringify([RELAY]));
 }
 
 // ===========================================================================
@@ -379,7 +389,9 @@ console.log('\n--- 5. The relay really holds them (read back over NIP-01) ---');
   const pool = new SimplePool();
   // Filtered on `#t: boostagram`, so the reply above is deliberately not in
   // this count — it is a kind:1 without that tag, which is what a reply is.
-  const back = await pool.querySync([RELAY], { kinds: [1], '#t': ['boostagram'] });
+  // And on the USER's key: section 2's site-signed note lands here too now,
+  // and it is the one that must NOT p-tag the mention.
+  const back = await pool.querySync([RELAY], { kinds: [1], '#t': ['boostagram'], authors: [pk] });
   check('every self-signed boost note is queryable', back.length, 3);
   const tagged = back.filter((e) => e.tags.some((t) => t[0] === 'p' && t[1] === mentionA.pubkey));
   check('all three p-tag the mentioned person', tagged.length, 3);
@@ -457,17 +469,27 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   // A track leg that did NOT settle must leave the note byte-for-byte as a
   // boost with no track at all — the only way to prove "unchanged" without
   // pinning a per-brand banner URL here.
+  // A 599 from the stamp route makes the ladder sign with a ONE-TIME key and
+  // PUBLISH. That is the publish that leaked: this comment once said the section
+  // "runs only isolated, so that publish reaches nobody", and it ran everywhere,
+  // thirteen times a run, onto DEFAULT_RELAYS. It goes to this machine's relay
+  // now (`relays: [RELAY]`), and the guard ends the run if it ever does not.
+  const oneTimeIds = [];
   const capture = async (args) => {
     let sent = null;
     const realFetch = globalThis.fetch;
-    // A 599 from the stamp route makes the ladder post from a one-time key. This
-    // section runs only isolated, so that publish reaches nobody.
     globalThis.fetch = async (_u, init) => {
       sent ??= JSON.parse(init.body).template;
       return { ok: false, status: 599, json: async () => ({}) };
     };
-    await publishBoostNoteViaSite(args, { payStamp: async () => {}, state: {} }).catch(() => {});
-    globalThis.fetch = realFetch;
+    try {
+      const out = await publishBoostNoteViaSite(args, { payStamp: async () => {}, state: {}, relays: [RELAY] });
+      oneTimeIds.push(out.note.id);
+    } catch {
+      oneTimeIds.push(null);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
     if (sent) delete sent.created_at;
     return sent;
   };
@@ -624,6 +646,13 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
     title: 'S'.repeat(300), artist: 'A'.repeat(300) } } });
   check('a body with room keeps the capped line',
     roomy?.content.includes(`to ${'S'.repeat(119)}… by ${'A'.repeat(119)}… from ${episode.title} of ${podcast.title}`), true);
+
+  // Every one-time-key note above was PUBLISHED. Each must be on this
+  // machine's relay — the proof the leak path now ends here.
+  await wait(400);
+  check('every one-time-key publish in this section succeeded', oneTimeIds.includes(null), false);
+  check(`...and all ${oneTimeIds.length} landed on THIS MACHINE's relay`,
+    oneTimeIds.every((id) => received.some((x) => x.id === id)), true);
 }
 
 // ===========================================================================
@@ -724,33 +753,21 @@ console.log('\n--- 5c. A PLAYLIST ROW names its own feed — sentence, tags and 
 // ===========================================================================
 console.log('\n--- 6. Nothing left this machine ---');
 // ===========================================================================
-if (!ISOLATED) {
-  skipped += 1;
-  console.log('  SKIPPED (not isolated) — the claim this makes is false here by construction.');
-  check('every event this run produced landed on the LOCAL relay',
-    received.every((e) => !!e.id), true);
-} else {
-  // Re-probed AFTER the publishes, not just before: the claim is about the
-  // whole run, and a relay that came up halfway through would invalidate it.
-  const stillDown = [];
-  await Promise.all(DEFAULT_RELAYS.map((u) => new Promise((res) => {
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; res(v); } };
-    try {
-      const ws = new WebSocket(u);
-      const t = setTimeout(() => { try { ws.close(); } catch { /* */ } stillDown.push(u); finish(); }, 5000);
-      ws.onopen = () => { clearTimeout(t); try { ws.close(); } catch { /* */ } finish(); };
-      ws.onerror = () => { clearTimeout(t); stillDown.push(u); finish(); };
-    } catch { stillDown.push(u); finish(); }
-  })));
-  check('every public relay was still unreachable after the publishes',
-    stillDown.length, DEFAULT_RELAYS.length);
+// Enforced, not probed: the guard refuses every non-local socket and ENDS the
+// run on any but section 0's probe, so reaching this line already means none
+// was attempted. These checks hold the guard to having been in the path — an
+// earlier guard recorded nothing and passed, which is what an absent one does.
+{
+  const opened = new Set(relayGuard.opened.map((u) => new URL(u).host));
+  check('the guard saw this run\'s publishes (it opened the local relay)', opened.size > 0, true);
+  check('...and the local relay is the ONLY place a socket was opened to',
+    [...opened], [new URL(RELAY).host]);
+  check('the only socket refused was section 0\'s probe',
+    [...new Set(relayGuard.refused.map((u) => new URL(u).hostname))], ['e2e-relay-guard.invalid']);
   check('every event this run produced landed on the LOCAL relay',
     received.every((e) => !!e.id), true);
 }
 
 relay.close?.();
-// A partial run must not read as a full one. `ok` alone is the claim that
-// everything here passed; when a section was skipped the line says which.
-console.log(`\n${t.fails ? `${t.fails} FAILED` : 'ok'}${skipped ? ` (${skipped} section(s) SKIPPED — not isolated)` : ''}`);
+console.log(`\n${t.fails ? `${t.fails} FAILED` : 'ok'}`);
 await exit(t.fails ? 1 : 0);

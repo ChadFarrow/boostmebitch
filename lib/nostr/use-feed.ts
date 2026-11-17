@@ -4,6 +4,7 @@ import { storage } from '../storage';
 import { noteHasSubstance, type DiscoveredNote } from './discover';
 import { dropBoostEchoes } from './boost-echo';
 import { withoutDeleted } from './note-deletions';
+import { isTestBoostNote } from './test-boost-notes';
 
 /**
  * Stale-while-revalidate hook for any DiscoveredNote[] surface.
@@ -310,8 +311,10 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
 
 /**
  * The notes a feed actually renders: the muted authors dropped, the notes with
- * nothing to show (`noteHasSubstance`) dropped, and a bot's announcement of a
- * boost dropped when the note the sender signed about it is on screen too
+ * nothing to show (`noteHasSubstance`) dropped, the test notes this repo's own
+ * scripts leaked to public relays dropped (`isTestBoostNote`, docs/nostr.md
+ * "Test notes a script leaked"), and a bot's announcement of a boost dropped
+ * when the note the sender signed about it is on screen too
  * (`dropBoostEchoes`, docs/nostr.md "Bot announcements of a boost").
  *
  * ONE definition, because the podcast feed and the episode feed each carried a
@@ -319,16 +322,21 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
  * explorer carried two more — the shape that drifts. A surface that renders
  * `<NoteCard>`s from a fetched list goes through this.
  *
- * The echo pass runs LAST, on what survived the other two, on purpose: it may
+ * The echo pass runs LAST, on what survived the other three, on purpose: it may
  * only hide an announcement when the sender's own card is actually rendered.
  * Run first, a muted sender or an empty-bodied note would take the bot's card
  * with it and the boost would leave the feed altogether.
+ *
+ * The test-note pass reads `rawEvent`, the signed wire event, because its marks
+ * are tags the parsed note does not keep. Top level only: the leaked notes are
+ * boosts, never replies.
  */
 export function visibleNotes(
   notes: readonly DiscoveredNote[],
   mutedPubkeys: ReadonlySet<string>,
 ): DiscoveredNote[] {
-  return dropBoostEchoes(notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)));
+  return dropBoostEchoes(notes.filter((n) =>
+    !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n) && !isTestBoostNote(n.rawEvent)));
 }
 
 /** `visibleNotes`, memoised on its two inputs: a feed can hold hundreds of
