@@ -6,7 +6,7 @@ import { siteSecretKey, sitePubkey } from '@/lib/nostr/site-key';
 import { validateBoostTemplate } from '@/lib/site-sign-template';
 import { stampMac, requireStamp, siteEventId } from '@/lib/site-stamp-server';
 import { lnbitsConfigured, stampInvoicePaid } from '@/lib/lnbits';
-import { splitSignBody, stampGate, STAMP_SATS, STAMP_NOT_PAID } from '@/lib/site-stamp';
+import { splitSignBody, stampGate, STAMP_SATS, STAMP_NOT_PAID, STAMP_UNCONFIRMED } from '@/lib/site-stamp';
 
 // Server-side signer for the SITE's own Nostr identity. Lets a signed-OUT user
 // still post their boost note to Nostr — signed by the app's key, not theirs.
@@ -105,7 +105,7 @@ async function handlePost(req: Request) {
       try {
         paid = await stampInvoicePaid(gate.paymentHash, STAMP_SATS);
       } catch {
-        return NextResponse.json({ error: 'could not confirm the stamp' }, { status: 502 });
+        return NextResponse.json({ error: STAMP_UNCONFIRMED }, { status: 502 });
       }
       if (!paid) return NextResponse.json({ error: STAMP_NOT_PAID }, { status: 402 });
     }

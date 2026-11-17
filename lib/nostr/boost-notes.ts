@@ -1,4 +1,4 @@
-import { nip19 } from 'nostr-tools';
+import { nip19, finalizeEvent, generateSecretKey } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult, ValueTimeSplit } from '../types';
 import { boostNoteTrack, boostSentence, httpUrl, itemFeedGuid, type BoostNoteTrack } from '../util';
@@ -7,6 +7,10 @@ import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
 import { noteMentionTags, type MentionNpub, inlineMentions, withMentionRun } from './mention-tags';
+import { signSiteNote, type SiteNoteState, type StampFailure, type NoteTemplate } from '../site-stamp';
+
+/** How long either site route may take before the ladder reads it as no answer. */
+const SITE_ROUTE_TIMEOUT_MS = 15_000;
 
 interface PublishArgs {
   podcast: Podcast;
@@ -623,29 +627,61 @@ export async function publishBoostNote(
 }
 
 /**
- * Publish the boost note signed by the SITE's own Nostr identity, for users who
- * aren't signed into Nostr. The unsigned template is sent to /api/nostr/site-sign
- * (which holds the server-only key), and the signed event is published from here
- * to DEFAULT_RELAYS. Throws on a 503 (feature not configured) / 400 / network
- * error — callers (maybePublishNote) already swallow publish failures, so a boost
- * still succeeds even if the note can't be posted.
+ * Publish the boost note as the SITE, for a signed-out user or the signed-in
+ * "Anonymous" choice — and only with a paid NOTE STAMP (lib/site-stamp.ts):
+ * `/api/nostr/site-stamp` mints a 1-sat invoice for exactly this note,
+ * `payStamp` pays it on the boost's rail, and `/api/nostr/site-sign` signs once
+ * the site's LNbits wallet holds the payment. ANY failure on that path signs
+ * the SAME template with a one-time key instead, so the note always goes out;
+ * `signer` and `why` say which happened, for the screen.
+ *
+ * Pass the SAME `state` on every attempt at one boost's note (RETRY NOTE): it
+ * keeps the template, the paid stamp and the signed event, so a retry never
+ * pays a second stamp and never builds a second note.
+ *
+ * `origin` prefixes both routes — `''` is this deploy. A note signed by the
+ * other brand's key must ask THAT deploy for both the stamp and the signature.
+ *
+ * Does not throw on a refused stamp or signature; it can still throw where
+ * publishing itself throws.
  */
 export async function publishBoostNoteViaSite(
   args: PublishArgs,
-): Promise<PublishedNote> {
+  opts: {
+    payStamp: (bolt11: string) => Promise<void>;
+    state: SiteNoteState<Event>;
+    onStamp?: () => void;
+    origin?: string;
+  },
+): Promise<{ note: PublishedNote; signer: 'site' | 'one-time'; why?: StampFailure }> {
+  const { state } = opts;
   // `false`: this template goes to an UNAUTHENTICATED endpoint that signs under
   // the site's NIP-05-verified identity, so the sender's @mentions lose their
-  // `p` tags here. The feed's own npubs keep theirs.
-  const template = buildBoostNoteTemplate(args, false);
-  const res = await fetch('/api/nostr/site-sign', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(template),
+  // `p` tags here. The feed's own npubs keep theirs. A one-time-key fallback
+  // signs this same template, which is still not the sender's own key.
+  state.template ??= buildBoostNoteTemplate(args, false);
+  const origin = opts.origin ?? '';
+  // `state` itself, never a copy: the ladder records the paid stamp and the
+  // signed event ON it, which is what makes RETRY NOTE free.
+  await signSiteNote(state as SiteNoteState<Event> & { template: NoteTemplate }, {
+    post: async (path, body) => {
+      try {
+        const res = await fetch(`${origin}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(SITE_ROUTE_TIMEOUT_MS),
+        });
+        return { status: res.status, body: await res.json().catch(() => null) };
+      } catch {
+        return { status: 0, body: null };
+      }
+    },
+    payStamp: opts.payStamp,
+    // Never stored: the key exists for this one signature.
+    signOneTime: (t) => finalizeEvent({ ...t, tags: t.tags.map((tag) => [...tag]) }, generateSecretKey()),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    onStamp: opts.onStamp,
   });
-  if (!res.ok) {
-    const msg = await res.json().catch(() => null);
-    throw new Error(msg?.error ?? `site-sign ${res.status}`);
-  }
-  const { event } = (await res.json()) as { event: Event };
-  return publishSignedEvent(event, DEFAULT_RELAYS);
+  return { note: await publishSignedEvent(state.signed!, DEFAULT_RELAYS), signer: state.signer!, why: state.why };
 }

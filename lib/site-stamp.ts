@@ -32,6 +32,8 @@ export const STAMP_PAY_TIMEOUT_MS = 30_000;
 export const STAMP_RECHECK_DELAYS_MS = [1500, 3000];
 /** The route's 402 after LNbits says unpaid. The ladder re-asks on exactly this. */
 export const STAMP_NOT_PAID = 'the note stamp is not paid';
+/** The route's 502 when it could not ASK LNbits. The sat may have landed: "unconfirmed". */
+export const STAMP_UNCONFIRMED = 'could not confirm the stamp';
 
 const STAMP_REQUIRED = 'a note stamp is required';
 const STAMP_INVALID = 'the note stamp is not valid';
@@ -259,7 +261,7 @@ export async function signSiteNote<E>(
     state.stamp = stamp;
   }
 
-  let notPaid = false;
+  let unconfirmed = false;
   for (const delay of [0, ...STAMP_RECHECK_DELAYS_MS]) {
     if (delay) await deps.sleep(delay);
     const signed = await ask('/api/nostr/site-sign', { template, stamp: state.stamp });
@@ -270,8 +272,13 @@ export async function signSiteNote<E>(
       state.why = undefined;
       return;
     }
-    notPaid = signed.status === 402 && field(signed.body, 'error') === STAMP_NOT_PAID;
+    const error = field(signed.body, 'error');
+    const notPaid = signed.status === 402 && error === STAMP_NOT_PAID;
+    // Re-ask only "not paid": a settle trailing the payer's answer clears in a
+    // second or two. "Could not ask LNbits" is not re-asked — each ask of a
+    // hung LNbits costs the route's whole timeout.
+    unconfirmed = notPaid || (signed.status === 502 && error === STAMP_UNCONFIRMED);
     if (!notPaid) break;
   }
-  oneTime(notPaid ? 'unconfirmed' : 'not-signed');
+  oneTime(unconfirmed ? 'unconfirmed' : 'not-signed');
 }

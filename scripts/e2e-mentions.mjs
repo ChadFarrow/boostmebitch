@@ -172,25 +172,34 @@ if (!ISOLATED) {
 } else {
   // ===========================================================================
   {
-    // publishBoostNoteViaSite POSTs to /api/nostr/site-sign. Intercepted here so
-    // the test needs no dev server and no site key — what is under test is which
-    // TEMPLATE the client hands over, which is the whole selfSigned decision.
+    // publishBoostNoteViaSite asks /api/nostr/site-stamp for the note stamp,
+    // pays it, then POSTs { template, stamp } to /api/nostr/site-sign. Both are
+    // intercepted here so the test needs no server, no site key and no wallet —
+    // what is under test is which TEMPLATE the client hands over, which is the
+    // whole selfSigned decision.
     let sent = null;
+    let firstUrl = null;
     const siteSk = generateSecretKey();
     globalThis.fetch = async (url, init) => {
-      sent = JSON.parse(init.body);
-      return { ok: true, json: async () => ({ event: finalizeEvent(sent, siteSk) }) };
+      const body = JSON.parse(init.body);
+      firstUrl ??= String(url);
+      if (String(url).endsWith('/api/nostr/site-stamp')) {
+        sent = body.template;
+        return { ok: true, status: 200, json: async () => ({ invoice: 'lnbc10n1e2e', stamp: 'e2e.stamp' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ event: finalizeEvent({ ...body.template }, siteSk) }) };
     };
     await publishBoostNoteViaSite({
       podcast, episode, boostagram: boostagram('great track @fiatjaf'),
       results: [], mentions: [mentionA],
-    });
+    }, { payStamp: async () => {}, state: {} });
     await wait(400);
     // Asserted on the TEMPLATE the route was handed, not on a relay round trip:
     // this path publishes to DEFAULT_RELAYS by construction, and the template is
     // where the whole selfSigned decision shows up anyway.
     const e = sent;
-    check('a template was posted to /api/nostr/site-sign', !!e, true);
+    check('a template was posted to /api/nostr/site-stamp', !!e, true);
+    check('the site path asked for a stamp first', firstUrl?.endsWith('/api/nostr/site-stamp'), true);
     check('the feed npub keeps its p tag', pTags(e).includes(feedA.pubkey), true);
     check('the SENDER mention has NO p tag', pTags(e).includes(mentionA.pubkey), false);
     check('...and the feed npub is the only p tag left', pTags(e).length, 1);
@@ -426,9 +435,13 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   const capture = async (args) => {
     let sent = null;
     const realFetch = globalThis.fetch;
-    // ok:false stops publishBoostNoteViaSite before it publishes anywhere.
-    globalThis.fetch = async (_u, init) => { sent = JSON.parse(init.body); return { ok: false, status: 599, json: async () => ({}) }; };
-    await publishBoostNoteViaSite(args).catch(() => {});
+    // A 599 from the stamp route makes the ladder post from a one-time key. This
+    // section runs only isolated, so that publish reaches nobody.
+    globalThis.fetch = async (_u, init) => {
+      sent ??= JSON.parse(init.body).template;
+      return { ok: false, status: 599, json: async () => ({}) };
+    };
+    await publishBoostNoteViaSite(args, { payStamp: async () => {}, state: {} }).catch(() => {});
     globalThis.fetch = realFetch;
     if (sent) delete sent.created_at;
     return sent;

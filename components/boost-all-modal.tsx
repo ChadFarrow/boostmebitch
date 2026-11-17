@@ -4,8 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, checkSignerLink, type QuotedZapReceipt, type SignerCheck } from '@/lib/nostr';
+import { sendBoost, pickRail, paidAny, payStampInvoice, type Rail } from '@/lib/v4v/boost';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, checkSignerLink, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
+import type { Event } from 'nostr-tools';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
@@ -490,6 +491,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // rather than minting a second: two receipts for one boost would count its
     // sats twice wherever receipts are summed.
     let summaryReceipt: QuotedZapReceipt | null = null;
+    // A site-signed summary's progress (lib/site-stamp.ts): the template, the
+    // paid stamp and the signed event, so RETRY NOTE never pays a second stamp.
+    // The stamp goes out on the rail the boosts paid on.
+    const siteNote: SiteNoteState<Event> = {};
+    const stampRail = rail;
     // The note step as a function, so RETRY NOTE can run it again with a fresh
     // signer check — the check this attempt used is the one that failed.
     const postSummary = async (check: Promise<SignerCheck> | null): Promise<void> => {
@@ -533,10 +539,14 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
               mentions, summaryReceipt: summaryReceipt ?? undefined,
             })
-          : await publishBoostNoteViaSite({
+          : (await publishBoostNoteViaSite({
               podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
               mentions, summaryReceipt: summaryReceipt ?? undefined,
-            });
+            }, {
+              // No rail means nothing to pay with: the ladder signs one-time.
+              payStamp: (bolt11) => (stampRail ? payStampInvoice(stampRail, bolt11) : Promise.reject(new Error('no wallet'))),
+              state: siteNote,
+            })).note;
         if (cancelled.current) return;
         setPubState({ kind: 'done', note });
       } catch (e) {
