@@ -13,7 +13,7 @@ import type { Db } from './db.ts';
 import type { Config } from './config.ts';
 import { emptyStats, indexedThrough, ingestEvent, recentNoteIds, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByGuid, piConfigured } from './pi.ts';
-import { LIVE_STREAM_KIND } from './ingest.ts';
+import { LIVE_STREAM_KIND, LIVE_WINDOW_SECS } from './ingest.ts';
 
 /** The two filters that define this index's universe. Both mirror queries the
  *  app already makes of relays — `fetchAllPodcastNotes` and the tag half of
@@ -111,12 +111,11 @@ export function replyReqs(ids: string[]): Filter[][] {
   return chunks(filters, ID_FILTERS_PER_REQ);
 }
 
-// The live-activity window, matching `LIVE_STREAM_RELAYS`' own 7-day `since`
-// in lib/nostr/live-streams.ts: wide enough to carry a stream scheduled ahead
-// of time, narrow enough not to drag in broadcasts that ended months ago.
-// Re-subscribed hourly so the `since` does not go stale on a long-lived
-// process — a subscription filter is evaluated once, at REQ time.
-const LIVE_WINDOW_SECS = 7 * 86_400;
+// The live-activity window (`LIVE_WINDOW_SECS`, ingest.ts): wide enough to
+// carry a stream scheduled ahead of time, narrow enough not to drag in
+// broadcasts that ended months ago. Re-subscribed hourly so the `since` does
+// not go stale on a long-lived process — a subscription filter is evaluated
+// once, at REQ time.
 const LIVE_RESUBSCRIBE_MS = 3_600_000;
 const LIVE_SEED_LIMIT = 500;
 

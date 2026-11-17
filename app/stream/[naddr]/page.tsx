@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, usePathname, useRouter } from 'next/navigation';
 import { nip19 } from 'nostr-tools';
 import {
   fetchLiveStreamByAddr,
@@ -12,6 +12,7 @@ import {
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { NostrAuth } from '@/components/nostr-auth';
+import { leavePlayerPage } from '@/components/player/use-player-history';
 
 // Dedicated standalone page for a single Nostr live stream. Renders ONLY a
 // loading / not-found state — the app-global <Player> (mounted in the root
@@ -27,6 +28,11 @@ export default function StreamPage() {
 
   const [status, setStatus] = useState<'loading' | 'open' | 'notfound'>('loading');
   const wasOpen = useRef(false);
+  /** This page's own path, held from its first render — `leavePlayerPage` acts
+   *  only while it is the address. The router's, not `window.location`: on a
+   *  client navigation the address changes AFTER the new page first renders. */
+  const pathname = usePathname();
+  const ownPath = useRef(pathname);
 
   // Decode the naddr, fetch the stream, open the player. Enrich (host name +
   // boost value) in the background — episode.id is stable so the video/hls
@@ -88,9 +94,13 @@ export default function StreamPage() {
   // When the user collapses the fullscreen player (← back / ✕), leave this
   // standalone page and go home — the stream keeps playing in the mini-bar
   // (the Player lives in the layout, so it survives the navigation).
+  //
+  // Through `leavePlayerPage`, never a bare `router.push('/')` (#556): the open
+  // player is a history entry now, so a push here leaves this page behind home
+  // and the back button loops between them. See use-player-history.ts.
   useEffect(() => {
     if (playerExpanded) wasOpen.current = true;
-    else if (wasOpen.current) router.push('/');
+    else if (wasOpen.current) leavePlayerPage(router, ownPath.current);
   }, [playerExpanded, router]);
 
   return (

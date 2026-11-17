@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, usePathname, useRouter } from 'next/navigation';
 import { nip19 } from 'nostr-tools';
 import {
   fetchLatestStreamByPubkey,
@@ -13,6 +13,7 @@ import {
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { useApp } from '@/lib/store';
 import { NostrAuth } from '@/components/nostr-auth';
+import { leavePlayerPage } from '@/components/player/use-player-history';
 import { Avatar } from '@/components/avatar';
 import { fmtLiveTime } from '@/lib/format';
 
@@ -41,6 +42,11 @@ export default function LivePage() {
     stream: null,
   });
   const wasOpen = useRef(false);
+  /** This page's own path, held from its first render — `leavePlayerPage` acts
+   *  only while it is the address. The router's, not `window.location`: on a
+   *  client navigation the address changes AFTER the new page first renders. */
+  const pathname = usePathname();
+  const ownPath = useRef(pathname);
 
   useEffect(() => {
     let pubkey = '';
@@ -96,9 +102,13 @@ export default function LivePage() {
 
   // When the user collapses the fullscreen player, leave this page and go home —
   // the stream keeps playing in the mini-bar (the Player lives in the layout).
+  //
+  // Through `leavePlayerPage`, never a bare `router.push('/')` (#556): the open
+  // player is a history entry now, so a push here leaves this page behind home
+  // and the back button loops between them. See use-player-history.ts.
   useEffect(() => {
     if (playerExpanded) wasOpen.current = true;
-    else if (wasOpen.current) router.push('/');
+    else if (wasOpen.current) leavePlayerPage(router, ownPath.current);
   }, [playerExpanded, router]);
 
   const displayName =
