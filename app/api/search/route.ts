@@ -4,10 +4,11 @@ import { searchCuratedPlaylists } from '@/lib/curated-roster';
 import type { CuratedHits } from '@/lib/curated-roster';
 import {
   curatedNotListed, filterPlaylistsByQuery, matchesSearchType, mergeRssOverPi, mergeSearchLanes,
-  parseSearchType, piRecordIsBlank, rankPlaylistsFirst,
+  parseSearchType, piRecordIsBlank, rankPlaylistsFirst, rankPublishersFirst,
 } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
+import { getPublisherMediums } from '@/lib/musicl-resolver';
 import { isDemuFeed } from '@/lib/demu';
 import { closedService } from '@/lib/moved-feeds';
 import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
@@ -29,6 +30,16 @@ const SEARCH_CACHE = { 'Cache-Control': 'public, max-age=30, s-maxage=60, stale-
  * was actually looking for.
  */
 const MAX_PLAYLIST_HITS = 6;
+
+/**
+ * How many publisher feeds may be moved to the top of a search.
+ *
+ * They go above Podcast Index's own leader (`rankPublishersFirst`), so the cap
+ * is what keeps a word many publishers share from pushing the show somebody
+ * wanted off the first screen. A query naming one artist matches one publisher,
+ * or two when a solo name and a band name share it.
+ */
+const MAX_PUBLISHER_HITS = 3;
 
 /**
  * How many rows a TYPED search returns.
@@ -53,10 +64,11 @@ const MAX_TYPED_HITS = 50;
  * albums match, 23 results across all types" is a different sentence from "no
  * results". It costs nothing — every typed lane runs byterm anyway.
  *
- * `cacheable: false` answers `no-store`. Only the curated lane sets it, when its
- * roster was cold and did not resolve in time (`CuratedHits.answered`): the rows
- * are then missing because nobody asked, and a 60-second CDN copy would serve
- * "0 playlists" for an exact title long after the roster had loaded.
+ * `cacheable: false` answers `no-store`. Two reads set it: the curated lane, when
+ * its roster was cold and did not resolve in time (`CuratedHits.answered`), and
+ * a publisher feed still unread at its deadline (`withPublisherMediums`). The
+ * rows are then missing because nobody asked, and a 60-second CDN copy would
+ * serve "0 playlists" for an exact title long after the roster had loaded.
  */
 function answer(feeds: unknown[], total: number, type: SearchType, cacheable = true) {
   return NextResponse.json({ feeds, total, type }, { headers: cacheable ? SEARCH_CACHE : NO_STORE });
@@ -64,6 +76,58 @@ function answer(feeds: unknown[], total: number, type: SearchType, cacheable = t
 
 /** The curated lane's answer when it could not be asked at all. */
 const CURATED_UNANSWERED: CuratedHits = { feeds: [], answered: false };
+
+/**
+ * How many publisher feeds one typed search reads, all at once.
+ *
+ * A cap on the FAN-OUT, not only on the rows: each one is an outbound RSS read
+ * of a URL Podcast Index holds. byterm returned no publisher row at all for
+ * `music`, `the` or `everything` on 2026-11-16, and one each for three artist
+ * names, so five is room to spare. A publisher past it stays unread, which
+ * leaves it under PODCASTS as before.
+ */
+const MAX_PUBLISHER_READS = 5;
+
+/**
+ * How long a typed search waits for those reads.
+ *
+ * The reads go through `fetchFeedXml`, which caches for five minutes, so this is
+ * the cost of a COLD publisher only. Past it the search answers without the
+ * unread ones and `no-store`, and the reads finish behind it for the next
+ * search — the curated roster's rule (`CuratedHits.answered`).
+ */
+const PUBLISHER_READ_WAIT_MS = 1500;
+
+/**
+ * byterm's rows, each `publisher` row told what it publishes
+ * (`publisherMediums`), so `matchesSearchType` can list it under the choice it
+ * is FOR. Only a typed search asks; ALL lists every row anyway.
+ *
+ * `answered` is false when a read was still running at the deadline. A read
+ * that FAILED was asked and answered nothing, so it does not clear `answered`:
+ * that publisher stays under PODCASTS, and a dead feed must not make every
+ * search for its artist uncacheable.
+ */
+async function withPublisherMediums(feeds: Podcast[]): Promise<{ feeds: Podcast[]; answered: boolean }> {
+  const targets = feeds.filter((f) => f.medium === 'publisher' && f.url).slice(0, MAX_PUBLISHER_READS);
+  if (!targets.length) return { feeds, answered: true };
+  const read = new Map<string, string[] | null>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answered = await Promise.race([
+    Promise.all(targets.map(async (f) => {
+      read.set(f.url!, await getPublisherMediums(f.url!).catch(() => null));
+    })).then(() => true),
+    new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), PUBLISHER_READ_WAIT_MS); }),
+  ]);
+  clearTimeout(timer);
+  return {
+    feeds: feeds.map((f) => {
+      const mediums = f.medium === 'publisher' && f.url ? read.get(f.url) : undefined;
+      return mediums?.length ? { ...f, publisherMediums: mediums } : f;
+    }),
+    answered,
+  };
+}
 
 // A pasted feed URL — parseable http(s) URL with a dotted hostname. The parse
 // guard keeps a half-typed "https://" from firing a PI + outbound RSS fetch on
@@ -177,11 +241,23 @@ export async function GET(req: Request) {
       // would discard the rows it was asked for. byterm's rows carry no such
       // answer and must pass `matchesSearchType`. `mergeSearchLanes` owns both
       // halves of that rule.
-      const [music, feeds] = await Promise.all([
+      //
+      // A PUBLISHER of music is one of byterm's rows, and passes that test only
+      // once its feed has said what it publishes (`withPublisherMediums`, read
+      // while the music lane is still running). It is lifted to the top as under
+      // ALL. The cap comes AFTER the lift: the music lane alone can fill all 50
+      // rows, and a cap first would cut the publisher byterm appended after them.
+      const [music, { feeds, answered }] = await Promise.all([
         searchMusicPodcasts(query, MAX_TYPED_HITS).catch(() => [] as Awaited<ReturnType<typeof searchMusicPodcasts>>),
-        searchPodcasts(query, 50),
+        searchPodcasts(query, 50).then(withPublisherMediums),
       ]);
-      return answer(mergeSearchLanes(music, feeds, 'music', MAX_TYPED_HITS), feeds.length, type);
+      const merged = mergeSearchLanes(music, feeds, 'music', Infinity);
+      return answer(
+        rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
+        feeds.length,
+        type,
+        answered,
+      );
     }, 'search failed');
   }
 
@@ -199,15 +275,24 @@ export async function GET(req: Request) {
       // of PI's 60 music rows are Wavlake). The upgrade, if that bites, is a
       // `/podcasts/bymedium?medium=music` roster as a third lane — see
       // docs/feeds.md and docs/superpowers/specs/2026-11-15-demu-search-design.md.
-      const [music, feeds] = await Promise.all([
+      //
+      // A DeMu PUBLISHER is under MUSIC and DEMU (Chad, 2026-11-16): its feed
+      // is read as under MUSIC (`withPublisherMediums`), `matchesSearchType`
+      // takes its `music` children, `isDemuFeed` reads the publisher row's own
+      // generator and URL, and it is lifted to the top, capped after the lift.
+      // A Fountain publisher (DJ Yo!, PI 8096868, generator "Fountain") is
+      // MUSIC only: `selfHosted` drops it before the merge.
+      const [music, { feeds, answered }] = await Promise.all([
         searchMusicPodcasts(query, MAX_TYPED_HITS).catch(() => [] as Awaited<ReturnType<typeof searchMusicPodcasts>>),
-        searchPodcasts(query, 50),
+        searchPodcasts(query, 50).then(withPublisherMediums),
       ]);
       const selfHosted = (f: Podcast) => isDemuFeed(f, closedService);
+      const merged = mergeSearchLanes(music.filter(selfHosted), feeds.filter(selfHosted), 'demu', Infinity);
       return answer(
-        mergeSearchLanes(music.filter(selfHosted), feeds.filter(selfHosted), 'demu', MAX_TYPED_HITS),
+        rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
         feeds.length,
         type,
+        answered,
       );
     }, 'search failed');
   }
@@ -224,18 +309,26 @@ export async function GET(req: Request) {
       // includes ones Podcast Index has not indexed yet (#529). It adds only
       // what neither PI lane returned — `curatedNotListed` dedupes by feed URL
       // as well as id, because an RSS-built record's id is never PI's.
-      const [feeds, rosterHits, curatedHits] = await Promise.all([
-        searchPodcasts(query, 50),
+      //
+      // A PUBLISHER of playlists (ChadF's lists 14 `musicL` feeds) joins them
+      // through `matchesSearchType`, once its feed has said what it publishes,
+      // and is lifted to the top as under ALL — capped after the lift, as under
+      // MUSIC. Only byterm's publisher rows are offered: its other rows reach
+      // this list through `filterPlaylistsByQuery` alone.
+      const [{ feeds, answered }, rosterHits, curatedHits] = await Promise.all([
+        searchPodcasts(query, 50).then(withPublisherMediums),
         searchPlaylistFeeds(query, MAX_TYPED_HITS).catch(() => [] as Awaited<ReturnType<typeof searchPlaylistFeeds>>),
         searchCuratedPlaylists(query, MAX_TYPED_HITS).catch(() => CURATED_UNANSWERED),
       ]);
       const fromByterm = filterPlaylistsByQuery(feeds, query, MAX_TYPED_HITS);
       const curated = curatedNotListed(curatedHits.feeds, [...fromByterm, ...rosterHits]);
+      const publishers = feeds.filter((f) => f.medium === 'publisher');
+      const merged = mergeSearchLanes(fromByterm, [...rosterHits, ...curated, ...publishers], 'playlist', Infinity);
       return answer(
-        mergeSearchLanes(fromByterm, [...rosterHits, ...curated], 'playlist', MAX_TYPED_HITS),
+        rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
         feeds.length,
         type,
-        curatedHits.answered,
+        curatedHits.answered && answered,
       );
     }, 'search failed');
   }
@@ -246,8 +339,18 @@ export async function GET(req: Request) {
       // one. `matchesSearchType('podcast')` is a RESIDUAL test — "not music, not
       // a list medium" — because Podcast Index leaves the tag blank on most of
       // what it holds, and an inclusion test would silently empty the chip.
-      const feeds = await searchPodcasts(query, 50);
-      return answer(feeds.filter((f) => matchesSearchType(f, 'podcast')), feeds.length, type);
+      //
+      // A PUBLISHER is here when its feed lists a podcast, or when what it
+      // lists is unknown (`matchesSearchType`); a publisher of music only is
+      // under MUSIC instead. It is lifted as under ALL: first wherever it is
+      // shown.
+      const { feeds, answered } = await searchPodcasts(query, 50).then(withPublisherMediums);
+      return answer(
+        rankPublishersFirst(feeds.filter((f) => matchesSearchType(f, 'podcast')), query, MAX_PUBLISHER_HITS),
+        feeds.length,
+        type,
+        answered,
+      );
     }, 'search failed');
   }
 
@@ -276,7 +379,16 @@ export async function GET(req: Request) {
     // displacing PI's own leader. The whole rule — and the measurements behind
     // it — lives in `rankPlaylistsFirst`, which `check:musicl` pins against the
     // real `mutton` and `flowgnar` responses.
-    const ranked = rankPlaylistsFirst(feeds, [...rosterHits, ...curated], query, MAX_PLAYLIST_HITS);
+    //
+    // Then a matching PUBLISHER feed goes above all of it, PI's leader
+    // included: it is the artist's whole catalogue, and PI ranks it under every
+    // album it lists (`longy`: row 37 of 40). `rankPublishersFirst` holds the
+    // rule and the measurements, pinned by `check:musicl`.
+    const ranked = rankPublishersFirst(
+      rankPlaylistsFirst(feeds, [...rosterHits, ...curated], query, MAX_PLAYLIST_HITS),
+      query,
+      MAX_PUBLISHER_HITS,
+    );
     return answer(ranked, ranked.length, 'all', curatedHits.answered);
   }, 'search failed');
 }
