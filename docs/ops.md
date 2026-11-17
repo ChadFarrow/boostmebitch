@@ -496,13 +496,16 @@ spent from, so nothing on Vercel can move money.
   comment `<brand> note stamp`. Buddy's note pays Buddy's
   setting: a hosted-playlist note signed by Buddy's key (PR #540) asks Buddy's
   deploy for both the stamp and the signature. The two projects may name the
-  same address.
-- **`chadf@boostmebitch.com` cannot be it.** Its `/.well-known/lnurlp` on
-  `boostmebitch.com` is a rewrite to the LNbits instance at
-  `pay.boostmebitch.com`, which builds its callback on its own domain — so the
-  same-origin rule refuses it. `chadf@pay.boostmebitch.com` keeps both on one
-  domain, but that instance did not answer on 2026-11-17 (TLS "unrecognized
-  name"; the rewrite answered 502), and its LUD-21 support is untested.
+  same address. Chad plans an address for the stamps only, separate from his
+  main Alby address (2026-11-17), so stamps do not mix with boosts he receives.
+- **This site serves no Lightning address, so the stamp cannot be paid to one
+  of its own.** `chadf@boostmebitch.com` was a test address: a `vercel.json`
+  rewrite to an LNbits instance at `pay.boostmebitch.com`. Chad turned that
+  instance off, and PR #591 removed the rewrite and the keysend route
+  (`docs/money-boosts.md`, "Serving our own lightning address"). Any address
+  whose `.well-known/lnurlp` is a rewrite to another host cannot be it either:
+  that host builds the callback on its own domain, and the same-origin rule
+  refuses it.
 - **Phase 2.** When production on both brands AND beta run the stamping client,
   set `SITE_SIGN_REQUIRE_STAMP=on` on both projects and redeploy. From then a
   bare template is 402. A tab opened before the deploy gets 402 until it

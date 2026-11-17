@@ -1,5 +1,7 @@
 # Site-sign stamp Implementation Plan
 
+> **Superseded in part — read the spec's "Change" sections first.** This plan was executed with LNbits. The stamp now pays a Lightning address (`SITE_STAMP_LNADDRESS`), its price is 1% of the boost, and `pay.boostmebitch.com` no longer exists (PR #591). The LNbits steps below are history, not instructions.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** `/api/nostr/site-sign` signs a boost note under the site's key only when a 1-sat invoice the site minted for exactly that event was paid; every other outcome posts the same note from a one-time key.

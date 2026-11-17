@@ -409,9 +409,9 @@ const paths = (h) => h.calls.map((c) => c.path.replace('/api/nostr/', ''));
   eq('never settles: one-time key, "unconfirmed"', [s.signer, s.why, h.signAsks, h.paid.length], ['one-time', 'unconfirmed', 5, 1]);
 }
 {
-  // The route could not ASK LNbits (it failed or hung): the sat may well have
-  // landed, so the screen says "could not confirm", never "did not sign". Not
-  // re-asked — each ask of a hung LNbits costs the route's whole timeout.
+  // The route could not ASK the address (it failed or hung): the sats may well
+  // have landed, so the screen says "could not confirm", never "did not sign".
+  // Not re-asked — each ask of a hung verify link costs the route's whole timeout.
   const h = harness({ sign: [res(502, { error: STAMP_UNCONFIRMED })] });
   const s = fresh();
   await signSiteNote(s, h.deps);

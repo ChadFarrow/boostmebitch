@@ -32,10 +32,12 @@ flagged by relays hurts every real anonymous boost, which is the harm worth prev
   without paying.
 - The summary receipt the site signs (`/api/nostr/zap-receipt-sign`) is not proof either: that route
   also signs on request with no payment check.
-- **The one payment the site can check for certain is a payment to itself.** `chadf@boostmebitch.com`
-  is an LNbits instance (`pay.boostmebitch.com`) in front of Chad's LND node (`docs/money-boosts.md`
-  "Serving our own lightning address"); an LNbits invoice/read key lets the server mint an invoice and
-  ask whether it was paid, and that key cannot spend.
+- **The one payment the site can check for certain is a payment to itself.** When this was written,
+  `chadf@boostmebitch.com` was a `vercel.json` rewrite to an LNbits instance (`pay.boostmebitch.com`) in
+  front of Chad's LND node, and an LNbits invoice/read key let the server mint an invoice and ask whether
+  it was paid, without the power to spend. **Neither exists now:** the stamp pays a Lightning address
+  (the first "Change" below), and Chad turned the LNbits instance off — PR #591 removed the rewrite and
+  the keysend route (the last "Change" below).
 
 ## Approaches considered
 
@@ -317,4 +319,13 @@ The design that follows:
   Spark whose fee passes it posts one-time, never pays twice), and phase 1/2.
 - **Coupling:** `boostSentence`'s "boosted N sats" is now read by the stamp, so rewording it is a stamp
   change; `check:sitestamp` builds its vectors with the real builder and goes red first.
+
+## Change (2026-11-17, later): the old address is gone
+
+`chadf@boostmebitch.com` was a test address. Chad turned off the LNbits instance at
+`pay.boostmebitch.com` and receives through his Alby Hub; PR #591 (base `main`) removes the `vercel.json`
+rewrite of `/.well-known/lnurlp/:user` and the `app/.well-known/keysend/[name]` route, so the site serves
+no Lightning address. Nothing in the stamp used either one. `SITE_STAMP_LNADDRESS` names an address on a
+provider's own domain. Chad plans one for the stamps only, separate from his main Alby address, and will
+send it before the merge.
 
