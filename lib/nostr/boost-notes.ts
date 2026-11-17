@@ -289,9 +289,10 @@ function quotedReceipts(args: PublishArgs): QuotedZapReceipt[] {
  * emits only the body form, with `kind: 9735` in the nevent. So the body line
  * is the price of the figure, and there is exactly one of it now.
  *
- * Placed below the artwork and above the mention run, for the reason `withArt`
- * gives: the trailing `nostr:npub…` run is what a compose box writes last. The
- * relay hints are the relays that accepted the receipt (`mintSummaryReceipt`).
+ * Placed LAST, below the mention run: the shared format's block order
+ * (PC20-Nostr pc20-boost-notes.md, rule 12 — the receiver bots already write
+ * it so). It sat above the mentions until 2026-11-16. The relay hints are the
+ * relays that accepted the receipt (`mintSummaryReceipt`).
  */
 function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
   if (receipts.length === 0) return content;
@@ -435,12 +436,6 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
       : ['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
-  // No second `k`: the kind is declared above.
-  if (ownFeed && podcast.podcastGuid) {
-    tags.push(showHint
-      ? ['i', `podcast:guid:${podcast.podcastGuid}`, showHint]
-      : ['i', `podcast:guid:${podcast.podcastGuid}`]);
-  }
   // The TRACK the boost paid, as NIP-73 identifiers after the show's and the
   // episode's own, which stay first. No `k` tag: `k` names the KIND of
   // identifier, and both kinds are already declared above — a second pair would
@@ -448,6 +443,15 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // playlist row); see boostNoteTrack. Placed here, sized below.
   const track = noteTrack(args);
   const trackAt = tags.length;
+  // The playlist the row was found on comes LAST, after the song's pair: the
+  // shared format's rule 15 (PC20-Nostr pc20-boost-notes.md) keeps each item
+  // guid right after its own feed's guid, so a reader pairs them by order. No
+  // second `k`: the kind is declared above.
+  if (ownFeed && podcast.podcastGuid) {
+    tags.push(showHint
+      ? ['i', `podcast:guid:${podcast.podcastGuid}`, showHint]
+      : ['i', `podcast:guid:${podcast.podcastGuid}`]);
+  }
   const trackTags = (withHints: boolean): string[][] => {
     if (!track) return [];
     const out: string[][] = [];
@@ -539,7 +543,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
       const build = (shed: Shed) => {
         const body = withArt(args.contentOverride ?? formatContent(args, shed), banner);
         const { content: inlined, remaining } = inlineMentions(body, inBody);
-        return withMentionRun(withZapReceipts(inlined, receipts), remaining);
+        return withZapReceipts(withMentionRun(inlined, remaining), receipts);
       };
       // The song and the "by <artist>" are the optional parts of the sentence,
       // so they are what goes when a long message, many mentions and long

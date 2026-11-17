@@ -544,6 +544,45 @@ console.log('\n--- 5c. A PLAYLIST ROW names its own feed — sentence, tags and 
     received.find((x) => x.id === noArtist.id)?.content.includes('rev.hodl boosted 121 sats to Sing For You from ITDV music playlist via BoostMeBitch'), true);
 }
 
+// PC20-Nostr pc20-boost-notes.md (#51): the order of the `i` tags (rule 15)
+// and of the body's blocks (rule 12). Wiring the builder owns, so here.
+{
+  const P = '11111111-1111-4111-8111-111111111111'; // the playlist
+  const F = '22222222-2222-4222-8222-222222222222'; // the episode's own feed
+  const E = 'episode-146-guid';
+  const B = 'e88a4a67-877c-5e03-b8fd-a70cebc821af'; // the song's album
+  const S = '9f515f93-eda1-4146-8637-7def160879b5'; // the song
+  const podL = { id: 9, title: 'Pod Picks', author: 'A Curator', medium: 'podcastL', podcastGuid: P,
+    url: 'https://example.com/picks.xml' };
+  const row = { id: 10, title: 'Episode 146', guid: E, podcastGuid: F, feedTitle: 'Homegrown Hits',
+    enclosureUrl: 'https://example.com/146.mp3', datePublished: 1 };
+  const song = {
+    split: { title: 'Copenhagen Time', artist: 'Matt Finlay', remoteItem: { feedGuid: B, itemGuid: S } },
+    results: [{ ok: true, sats: 340 }],
+  };
+  const note = await publishBoostNote({
+    podcast: podL, episode: row, boostagram: boostagram('nice'), results: [], relays: [RELAY], track: song,
+  });
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  check('a playlist row with a paid song reached the relay', !!e, true);
+  check('rule 15: the item\'s pair, then the song\'s, then the playlist',
+    e?.tags.filter((t) => t[0] === 'i').map((t) => t[1]),
+    [`podcast:guid:${F}`, `podcast:item:guid:${E}`, `podcast:guid:${B}`, `podcast:item:guid:${S}`, `podcast:guid:${P}`]);
+
+  const quoted = await publishBoostNote({
+    podcast, episode, boostagram: boostagram('nice'), results: [], relays: [RELAY],
+    summaryReceipt: { id: 'a'.repeat(64), pubkey: pk, relays: [RELAY] },
+  });
+  await wait(400);
+  const q = received.find((x) => x.id === quoted.id);
+  const at = (re) => (q?.content ?? '').search(re);
+  check('a note with a mention and a quoted receipt reached the relay', !!q, true);
+  check('...carries both', [at(/nostr:npub1/) >= 0, at(/nostr:nevent1/) >= 0], [true, true]);
+  check('rule 12: the mentions come before the quoted receipt', at(/nostr:npub1/) < at(/nostr:nevent1/), true);
+  check('...so the receipt is the last line', /^nostr:nevent1\S+$/.test((q?.content ?? '').split('\n').at(-1)), true);
+}
+
 // ===========================================================================
 console.log('\n--- 6. Nothing left this machine ---');
 // ===========================================================================
