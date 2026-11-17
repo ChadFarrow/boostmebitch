@@ -131,7 +131,7 @@ Reachability, which is what actually matters here:
 - **`postcss` — build-time only.** The advisories are `sourceMappingURL`-driven arbitrary `.map` reads while processing CSS. This repo's CSS is its own; no untrusted stylesheet is ever compiled.
 - **`sharp` / libvips is NOT unreachable, and this section used to say it was.** `/_next/image` sees only `public/hero.jpg` (the `images` block carries `formats` and no `remotePatterns`, which is why the wildcard must never return) — but `app/api/art` hands sharp a body fetched from a feed-supplied URL on every cover it resizes, the app's busiest route. Keep `sharp` current on its own merits; the art route's own guards (12 MB cap, `limitInputPixels`, a 3 s `.timeout`, a `Content-Type` allowlist) are the ones that matter.
 - **`GHSA-68g3-v927-f742` (cache confusion of response bodies for requests with bodies) — worth a second look on the Next 16 branch.** These routes set `s-maxage` on 200s, so a caching bug in the framework is the one advisory here with a plausible path to our behaviour. The one route taking a body (`/api/lightning/boostbox`) is `POST` and uncached.
-- **`GHSA-p9j2-gv94-2wf4` (SSRF in rewrites via attacker-controlled destination hostname)** — `vercel.json` has exactly one rewrite, to a hardcoded host, with the user-supplied segment only in the path.
+- **`GHSA-p9j2-gv94-2wf4` (SSRF in rewrites via attacker-controlled destination hostname)** — `vercel.json` has no rewrite since 2026-11-17 (the one it had went to a hardcoded host, with the user-supplied segment only in the path), and `next.config.mjs` defines none.
 
 Re-check this list when the Next 16 branch lands; do not let it rot into a reason to ignore `npm audit`.
 
