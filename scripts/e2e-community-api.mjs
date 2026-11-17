@@ -113,18 +113,25 @@ if (process.argv.includes('--feeds')) {
   const id = crypto.randomUUID();
   const guid = crypto.randomUUID();
   const title = `e2e feeds-only ${id.slice(0, 8)}`;
+  const ownerHex = getPublicKey(newKey());
   try {
     await db.query(
       `insert into community_playlists (id, owner_pubkey, title, description, art_url, songs, podcast_guid)
        values ($1, $2, $3, '', null, $4::jsonb, $5)`,
-      [id, getPublicKey(newKey()), title, JSON.stringify(real), guid],
+      [id, ownerHex, title, JSON.stringify(real), guid],
     );
     const feedUrl = `${APP}/feeds/playlists/${id}.xml`;
     const x = await fetch(feedUrl);
     const xml = await x.text();
     check('feeds only: GET feed .xml -> 200 with its stored guid and 12 songs',
-      x.status === 200 && xml.includes(`<podcast:guid>${guid}</podcast:guid>`) && (xml.match(/<podcast:remoteItem/g) ?? []).length === 12,
+      x.status === 200 && xml.includes(`<podcast:guid>${guid}</podcast:guid>`) && (xml.match(/<podcast:remoteItem [^>]*itemGuid=/g) ?? []).length === 12,
       `${x.status} ${xml.slice(0, 200)}`);
+    const pubUrl = `${APP}/feeds/publishers/${npubEncode(ownerHex)}.xml`;
+    const pr = await fetch(pubUrl);
+    const pubXml = await pr.text();
+    check('feeds only: the maker\'s publisher feed -> 200, lists the playlist, and the playlist names it back',
+      pr.status === 200 && pubXml.includes(`feedGuid="${guid}"`) && pubXml.includes(`feedUrl="${feedUrl}"`)
+      && xml.includes(`medium="publisher"`) && xml.includes(`feedUrl="${pubUrl}"`), `${pr.status} ${pubXml.slice(0, 300)}`);
     const cover = (xml.match(/<itunes:image href="([^"]+)"/) ?? [])[1] ?? '';
     const c = await fetch(cover.replace(/&amp;/g, '&'));
     check('feeds only: GET its cover -> 200 image/jpeg', c.status === 200 && c.headers.get('content-type') === 'image/jpeg', `${c.status} ${cover}`);
@@ -308,23 +315,62 @@ const feedXml = await feedRes.text();
 check('GET feed .xml -> 200 rss+xml with the cache header',
   feedRes.status === 200 && /^application\/rss\+xml; charset=utf-8$/i.test(feedRes.headers.get('content-type') ?? '')
   && /s-maxage=60/.test(feedRes.headers.get('cache-control') ?? ''), `${feedRes.status} ${feedRes.headers.get('content-type')}`);
-check('feed has 12 remoteItems, the owner npub and medium musicL',
-  (feedXml.match(/<podcast:remoteItem/g) ?? []).length === 12 && feedXml.includes(npubEncode(ownerPub))
+check('feed has 12 song remoteItems, the owner npub and medium musicL',
+  (feedXml.match(/<podcast:remoteItem [^>]*itemGuid=/g) ?? []).length === 12 && feedXml.includes(npubEncode(ownerPub))
   && feedXml.includes('<podcast:medium>musicL'), feedXml.slice(0, 300));
 check('the feed names where it was made: <generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>',
   feedXml.includes('<generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>'), (feedXml.match(/<generator>[^<]*<\/generator>/) ?? ['none'])[0]);
 check('the client\'s made-up feedUrl is NOT in the public feed', !feedXml.includes('forged.e2e.invalid'),
-  (feedXml.match(/<podcast:remoteItem [^>]*>/) ?? [''])[0]);
+  (feedXml.match(/<podcast:remoteItem [^>]*itemGuid=[^>]*>/) ?? [''])[0]);
 {
   // What Podcast Index holds for song 0's feed, read the way the app reads it.
   const pi = await call('GET', `/api/by-guid?guid=${encodeURIComponent(songs[0].feedGuid)}`);
   const piUrl = pi.body?.podcast?.url;
-  const item0 = (feedXml.match(/<podcast:remoteItem [^>]*>/) ?? [''])[0];
+  // The first SONG: the channel's first remoteItem is the <podcast:publisher> back-link.
+  const item0 = (feedXml.match(/<podcast:remoteItem [^>]*itemGuid=[^>]*>/) ?? [''])[0];
   check('song 0\'s remoteItem carries Podcast Index\'s feedUrl for its feed (or none when PI has none)',
     piUrl ? item0.includes(`feedUrl="${piUrl.replace(/&/g, '&amp;')}"`) : !item0.includes('feedUrl='), `${item0} / PI: ${piUrl}`);
 }
 check('the feed\'s podcast:guid is the stored one', feedXml.includes(`<podcast:guid>${got.body?.playlist?.podcastGuid}</podcast:guid>`),
   (feedXml.match(/<podcast:guid>[^<]*<\/podcast:guid>/) ?? [''])[0]);
+
+// ── the maker's publisher feed ──────────────────────────────────────────────
+// /feeds/publishers/<npub>.xml lists every playlist of the maker, and each playlist names
+// it back in <podcast:publisher>: the spec trusts the link only both ways.
+const pubUrl = `${APP}/feeds/publishers/${npubEncode(ownerPub)}.xml`;
+const pubRes = await fetch(pubUrl);
+const pubXml = await pubRes.text();
+const pubGuid = (pubXml.match(/<podcast:guid>([^<]+)<\/podcast:guid>/) ?? [])[1] ?? '';
+const pubItems = pubXml.match(/<podcast:remoteItem [^>]*\/>/g) ?? [];
+check('publisher feed -> 200 rss+xml, medium publisher, a guid, the cache header',
+  pubRes.status === 200 && /^application\/rss\+xml; charset=utf-8$/i.test(pubRes.headers.get('content-type') ?? '')
+  && pubXml.includes('<podcast:medium>publisher</podcast:medium>') && /^[0-9a-f-]{36}$/.test(pubGuid)
+  && /s-maxage=60/.test(pubRes.headers.get('cache-control') ?? ''), `${pubRes.status} ${pubXml.slice(0, 300)}`);
+check('publisher feed lists the owner\'s one playlist, medium="musicL", with its guid and feed URL',
+  pubItems.length === 1 && pubItems[0].includes('medium="musicL"') && pubItems[0].includes('rel="curator"')
+  && pubItems[0].includes(`feedGuid="${got.body?.playlist?.podcastGuid}"`) && pubItems[0].includes(`feedUrl="${post.body.feedUrl}"`),
+  pubItems.join(' '));
+{
+  const back = (feedXml.match(/<podcast:publisher>[\s\S]*?<\/podcast:publisher>/) ?? [''])[0];
+  check('the playlist feed names that publisher feed back (guid and URL)',
+    back.includes('medium="publisher"') && back.includes('rel="curator"') && back.includes(`feedGuid="${pubGuid}"`) && back.includes(`feedUrl="${pubUrl}"`), back);
+}
+{
+  const r = await fetch(pubUrl, { redirect: 'manual', headers: { 'x-forwarded-host': 'beta.example.test', 'x-forwarded-proto': 'https' } });
+  check('publisher feed on another host -> 301 to the same path on the feed origin, no Cache-Control',
+    r.status === 301 && r.headers.get('location') === pubUrl && !r.headers.get('cache-control'), `${r.status} ${r.headers.get('location')}`);
+}
+for (const [label, file] of [
+  ['a key with no playlist', npubEncode(getPublicKey(newKey()))],
+  ['the hex key', ownerPub],
+  ['an upper-case npub', npubEncode(ownerPub).toUpperCase()],
+  ['a bad checksum', npubEncode(ownerPub).slice(0, -1) + (npubEncode(ownerPub).endsWith('q') ? 'p' : 'q')],
+  ['junk', 'npub1nope'],
+]) {
+  const r = await fetch(`${APP}/feeds/publishers/${file}.xml`);
+  check(`publisher feed for ${label} -> 404, no Cache-Control`, r.status === 404 && !r.headers.get('cache-control'), String(r.status));
+}
+
 const coverRes = await fetch(`${APP}/feeds/playlists/${id}.jpg`);
 const coverBuf = Buffer.from(await coverRes.arrayBuffer());
 // JPEG size: the first SOF marker holds height then width.
@@ -532,6 +578,11 @@ check('PUT on a deleted playlist -> 410', putGone.status === 410, show(putGone))
 // Anything still live (after a failed run) is removed with its owner's key.
 for (const pid of created) {
   for (const sk of [owner, other]) await call('DELETE', `${PLAYLISTS}/${pid}`, { sk });
+}
+{
+  // The owner has no live playlist left, so the owner has no publisher feed.
+  const r = await fetch(`${APP}/feeds/publishers/${npubEncode(ownerPub)}.xml`);
+  check('publisher feed after the owner\'s last playlist is deleted -> 404', r.status === 404, String(r.status));
 }
 console.log(`${count - fails}/${count} passed`);
 process.exit(fails ? 1 : 0);

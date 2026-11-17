@@ -23,10 +23,22 @@ export function escapeXml(s: string): string {
  * every feed at once (Chad, 2026-11-13: he updates all hosted feeds with a push, and no
  * listener has to republish). `<lastBuildDate>` is the later of this and the playlist's
  * own `updatedAt`, so an app that checks it reads every feed again after the change.
- * Set it to the time of the commit that changes the template. The songs, their order,
+ * Set it to the time of the commit that changes the template. `<pubDate>` is the row's own
+ * `updatedAt` alone: the content (songs, order, title, name) changed then, and a
+ * template change publishes nothing new. The songs, their order,
  * the title, description, art and guid come only from the stored row, never from here.
  */
-export const FEED_TEMPLATE_UPDATED_AT = '2026-11-13T12:50:00.000Z';
+export const FEED_TEMPLATE_UPDATED_AT = '2026-11-16T18:30:00.000Z';
+
+/**
+ * The maker's role on each playlist, written the same on both sides of the publisher link:
+ * the publisher feed's entry and the playlist's back-link (podcast-namespace PR #793).
+ * musicindex.org counts a role only when both sides agree, and with no agreed role it
+ * calls a publisher an artist when the names match. A playlist maker curates, and makes no
+ * music (Chad, 2026-11-16). `curator` is not one of the PR's starting tokens yet; it is
+ * proposed there.
+ */
+export const PLAYLIST_MAKER_REL = 'curator';
 
 // Podcasting 2.0 guid namespace (podcastindex-org/podcast-namespace, `guid`).
 const PODCAST_GUID_NAMESPACE = 'ead4c236-bf58-58c6-a2c6-a6b28d128cb6';
@@ -51,7 +63,11 @@ export function communityFeedGuid(feedUrl: string): string {
  */
 export function buildPlaylistFeedXml(
   p: StoredPlaylist,
-  o: { feedUrl: string; coverUrl: string; ownerNpub: string; fallbackDescription: string; podcastGuid: string; generator: string },
+  o: {
+    feedUrl: string; coverUrl: string; ownerNpub: string; fallbackDescription: string; podcastGuid: string; generator: string;
+    /** The maker's publisher feed (`buildPublisherFeedXml`), named back in `<podcast:publisher>`. */
+    publisher: { feedUrl: string; podcastGuid: string };
+  },
 ): string {
   const e = escapeXml;
   const description = p.description || o.fallbackDescription;
@@ -66,15 +82,69 @@ export function buildPlaylistFeedXml(
     <description>${e(description)}</description>
     <link>${e(o.feedUrl)}</link>
     <language>en</language>
+    <pubDate>${new Date(p.updatedAt).toUTCString()}</pubDate>
     <lastBuildDate>${new Date(Math.max(Date.parse(p.updatedAt), Date.parse(FEED_TEMPLATE_UPDATED_AT))).toUTCString()}</lastBuildDate>
     <generator>${e(o.generator)}</generator>
     <podcast:guid>${e(o.podcastGuid)}</podcast:guid>
+    <podcast:publisher>
+      <podcast:remoteItem medium="publisher" rel="${PLAYLIST_MAKER_REL}" feedGuid="${e(o.publisher.podcastGuid)}" feedUrl="${e(o.publisher.feedUrl)}"/>
+    </podcast:publisher>
     <podcast:medium>musicL</podcast:medium>
     <podcast:txt purpose="npub">${e(o.ownerNpub)}</podcast:txt>
-    <itunes:image href="${e(o.coverUrl)}"/>
+${p.ownerName ? `    <itunes:author>${e(p.ownerName)}</itunes:author>\n` : ''}    <itunes:image href="${e(o.coverUrl)}"/>
     <image>
       <url>${e(o.coverUrl)}</url>
       <title>${e(p.title)}</title>
+      <link>${e(o.feedUrl)}</link>
+    </image>
+${items}
+  </channel>
+</rss>
+`;
+}
+
+/** One playlist as its maker's publisher feed lists it. */
+export interface PublisherFeedEntry { feedUrl: string; podcastGuid: string; coverUrl: string; updatedAt: string }
+
+/**
+ * A maker's publisher feed (`<podcast:medium>publisher`): one `<podcast:remoteItem>` per
+ * published playlist, newest first, and nothing else. Each playlist names this feed back
+ * in `<podcast:publisher>` (`buildPlaylistFeedXml`); the spec trusts the link only both
+ * ways. Each entry is `medium="musicL"`, never `music` (a playlist, not an album), and
+ * carries `rel="curator"` like the back-link (`PLAYLIST_MAKER_REL`), so a music index does
+ * not call the maker a musician (Chad, 2026-11-16). `entries` must not be
+ * empty: the spec requires at least one remoteItem, and the route answers 404 instead.
+ * `podcastGuid` is the UUIDv5 of the feed URL (`communityFeedGuid`), so it moves if
+ * COMMUNITY_FEED_ORIGIN ever moves; no row stores it.
+ */
+export function buildPublisherFeedXml(
+  entries: PublisherFeedEntry[],
+  o: { feedUrl: string; podcastGuid: string; ownerNpub: string; ownerName: string; siteName: string; generator: string },
+): string {
+  const e = escapeXml;
+  const newest = entries.reduce((t, x) => Math.max(t, Date.parse(x.updatedAt)), 0);
+  const title = o.ownerName ? `${o.ownerName}'s playlists` : `Playlists by ${o.ownerNpub.slice(0, 16)}…`;
+  const items = entries
+    .map((x) => `    <podcast:remoteItem medium="musicL" rel="${PLAYLIST_MAKER_REL}" feedGuid="${e(x.podcastGuid)}" feedUrl="${e(x.feedUrl)}" feedImg="${e(x.coverUrl)}"/>`)
+    .join('\n');
+  const cover = entries[0]?.coverUrl ?? '';
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>${e(title)}</title>
+    <description>${e(`Every playlist ${o.ownerName || 'this listener'} published on ${o.siteName}.`)}</description>
+    <link>${e(o.feedUrl)}</link>
+    <language>en</language>
+    <pubDate>${new Date(newest).toUTCString()}</pubDate>
+    <lastBuildDate>${new Date(Math.max(newest, Date.parse(FEED_TEMPLATE_UPDATED_AT))).toUTCString()}</lastBuildDate>
+    <generator>${e(o.generator)}</generator>
+    <podcast:guid>${e(o.podcastGuid)}</podcast:guid>
+    <podcast:medium>publisher</podcast:medium>
+    <podcast:txt purpose="npub">${e(o.ownerNpub)}</podcast:txt>
+${o.ownerName ? `    <itunes:author>${e(o.ownerName)}</itunes:author>\n` : ''}    <itunes:image href="${e(cover)}"/>
+    <image>
+      <url>${e(cover)}</url>
+      <title>${e(title)}</title>
       <link>${e(o.feedUrl)}</link>
     </image>
 ${items}
