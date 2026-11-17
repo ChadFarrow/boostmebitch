@@ -74,8 +74,9 @@ function noteTrack(args: PublishArgs): BoostNoteTrack | null {
  * give way before the note does. Keep the two numbers together.
  */
 const SITE_SIGN_TAGS_TOTAL_LEN = 4096;
-/** The site-sign route's MAX_CONTENT, for the same reason: the `🎵` line gives
- *  way before the note does. */
+/** The site-sign route's MAX_CONTENT, for the same reason: the sentence's
+ *  optional parts — the song and the "by <artist>" — give way before the note
+ *  does. */
 const SITE_SIGN_MAX_CONTENT = 2000;
 const tagsLen = (tags: string[][]) =>
   tags.reduce((n, t) => n + t.reduce((m, x) => m + x.length, 0), 0);
@@ -342,7 +343,13 @@ export function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
 }
 
 
-function formatContent(args: PublishArgs, withTrack = true): string {
+/**
+ * What the sentence leaves out to fit the site-sign cap, in the order it gives
+ * way: nothing, then the song, then the "by <artist>" too.
+ */
+type Shed = 'none' | 'song' | 'song+by';
+
+function formatContent(args: PublishArgs, shed: Shed = 'none'): string {
   const { podcast, episode, boostagram } = args;
   const totalSats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
 
@@ -354,15 +361,19 @@ function formatContent(args: PublishArgs, withTrack = true): string {
   // (`boostSentence`, pinned by check:vts). The sender's "From" name opens it —
   // load-bearing for site-signed notes, which are authored by the site's
   // identity, so without it the sender appears nowhere. The song the boost
-  // paid is named only when a track leg settled (boostNoteTrack), and it is the
-  // part that gives way when the body would pass the site-sign cap.
-  const track = withTrack ? noteTrack(args) : null;
+  // paid is named only when a track leg settled (boostNoteTrack). The song and
+  // the "by <artist>" — up to ~250 characters the sentence can do without —
+  // are what give way when the body would pass the site-sign cap (`shed`).
+  const track = shed === 'none' ? noteTrack(args) : null;
+  const keepBy = shed !== 'song+by';
   lines.push(boostSentence({
     sender: boostagram.sender_name,
     sats: totalSats,
-    show: podcast,
+    // Without an author there is no album "by"; the title, medium and guid
+    // still decide everything else.
+    show: keepBy ? podcast : { ...podcast, author: undefined },
     item: episode,
-    itemArtist: args.itemArtist,
+    itemArtist: keepBy ? args.itemArtist : undefined,
     song: track?.title ? { title: track.title, artist: track.artist } : null,
   }));
   const link = podcastLandingUrl(podcast, episode);
@@ -522,17 +533,21 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     // are one decision: a mention put where the sender typed it must NOT also
     // appear in the trailing run, or the note names the same person twice.
     content: (() => {
-      const build = (withTrack: boolean) => {
-        const body = withArt(args.contentOverride ?? formatContent(args, withTrack), banner);
+      const build = (shed: Shed) => {
+        const body = withArt(args.contentOverride ?? formatContent(args, shed), banner);
         const { content: inlined, remaining } = inlineMentions(body, inBody);
         return withMentionRun(withZapReceipts(inlined, receipts), remaining);
       };
-      // The song is the one optional part of the sentence, so it is the one
-      // that goes when a long message, many mentions and long links fill the
-      // body: the route refuses the WHOLE note past its cap. Measured on both
+      // The song and the "by <artist>" are the optional parts of the sentence,
+      // so they are what goes when a long message, many mentions and long
+      // links fill the body: the route refuses the WHOLE note past its cap. Measured on both
       // paths so a note never differs by which key signs it.
-      const full = build(true);
-      return full.length > SITE_SIGN_MAX_CONTENT ? build(false) : full;
+      // The song goes first; the "by" only when that is not enough.
+      for (const shed of ['none', 'song'] as const) {
+        const body = build(shed);
+        if (body.length <= SITE_SIGN_MAX_CONTENT) return body;
+      }
+      return build('song+by');
     })(),
   };
 }

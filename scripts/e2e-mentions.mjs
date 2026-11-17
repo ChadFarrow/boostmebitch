@@ -471,6 +471,17 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('worst case: a body the line would overfill drops the LINE',
     worst.content, worstNoTrack.content);
   check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
+  // The ALBUM's author is the other optional part: an album track's sentence
+  // says "by <author>", up to 124 characters the old body never carried. On
+  // the same worst-case body it must give way with the song, never the note.
+  const worstAlbum = await capture({
+    podcast: { ...podcast, medium: 'music', author: 'A'.repeat(300), nostrNpubs: many.slice(0, 4) }, episode: longEp,
+    boostagram: boostagram('m'.repeat(280)), results: [], mentions: many,
+  });
+  check('worst case, a music feed: body within 2000', worstAlbum.content.length <= 2000, true);
+  check('...the "by" gave way', worstAlbum.content.includes(' by A'), false);
+  const roomyAlbum = await capture({ ...base, podcast: { ...podcast, medium: 'music', author: 'The Doerfels' } });
+  check('a body with room keeps the album\'s "by"', roomyAlbum?.content.includes(` by The Doerfels from ${podcast.title}`), true);
   const roomy = await capture({ ...base, track: { ...track, split: { ...track.split,
     title: 'S'.repeat(300), artist: 'A'.repeat(300) } } });
   check('a body with room keeps the capped line',

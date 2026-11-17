@@ -1732,7 +1732,7 @@ own. No count on list rows (one `#i` per row), and no list of who liked.
   - **No extra `k` tag.** `k` names the identifier's KIND, and both kinds are already declared by the show/episode pairs.
   - **A guid the note already tags is not repeated** — a `musicL` playlist row already IS the track. **An over-long guid is dropped, never truncated**: a truncated guid names a different item.
   - **Title and artist are feed text: flattened to one line and capped at 120 characters each.** A newline in a title would otherwise forge a second line of a note the SITE may sign.
-  - **The line and the tags give way before the note does.** `/api/nostr/site-sign` refuses the whole template past 2000 characters of body or 4096 of tag text, so the builder drops the song from the sentence (it then names the episode) when the body would pass 2000, and the track's hints, then its tags, when the tags would pass 4096 (`SITE_SIGN_*` in `boost-notes.ts`, kept beside the route's numbers). A long message with eight mentions measured 1975 characters before the line.
+  - **The line and the tags give way before the note does.** `/api/nostr/site-sign` refuses the whole template past 2000 characters of body or 4096 of tag text, so the builder drops the song from the sentence (it then names the episode) when the body would pass 2000, and the "by <artist>" too only if that is not enough (`Shed` in `boost-notes.ts`), and the track's hints, then its tags, when the tags would pass 4096 (`SITE_SIGN_*` in `boost-notes.ts`, kept beside the route's numbers). A long message with eight mentions measured 1975 characters before the line.
   - **The live source is the SAME snapshot the boostagram's `remote_*` came from** (`liveTargetSnapshot()`, read once in `go()`), so the note and the boostagram name one song. A block the played-tracks list would not keep — the show's own default block, a host segment with no item — is not named (`isNotPlayed`, `lib/live-played.ts`).
   - **The artist is display text**, from `/api/remote-item` (`fetchRemoteItemParent`, shared with the played list) or the played list's own row. It is asked for while the wallet pays and waited for at most 2 s (`NOTE_ARTIST_WAIT_MS`); a miss drops only the "by <artist>" words. A playlist row's artist is looked up the same way (`PublishArgs.itemArtist`).
   - `contentOverride` (Boost-all) never gets the song — its summary names every track itself.
@@ -1815,10 +1815,10 @@ Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent
 | A show (no episode) | show title | — | — |
 | An episode | episode title | — | show title |
 | A track on an album (`playsAsTracks`, container is the parent) | track | the album's `author`, via `authorLine` | album title |
-| A playlist row (`itemFeedGuid` answers) | item | `PublishArgs.itemArtist`, music rows only | playlist title |
+| A playlist row (`itemFeedGuid` answers) | item | `PublishArgs.itemArtist`, music rows only — never the playlist's `author`, which is the curator, even when the row names no feed | playlist title |
 | A song inside an episode or live show (a track leg settled) | song | its artist | `<episode> of <show>` |
 
-An episode never says `by` (a podcast's author is its host). Every name goes through `noteTrackText`, so a feed title cannot add a line; a part that comes out empty is left out with its word. The amount is `value_msat_total`, the intent (invariant 7). Nothing in this repo parses the sentence back — `boostEchoIds` matches on tags — so its words are free to change; notes already published keep theirs.
+BOOST ALL builds its own body (`contentOverride`) with `boostAllLines`: `boosted N sats to M tracks from <show>`, then one `• <track>` per paid track, every name through the same cleaner — the site signs that note for a signed-out user. An episode never says `by` (a podcast's author is its host). Every name goes through `noteTrackText`, so a feed title cannot add a line; a part that comes out empty is left out with its word. The amount is `value_msat_total`, the intent (invariant 7). Nothing in this repo parses the sentence back — `boostEchoIds` matches on tags — so its words are free to change; notes already published keep theirs.
 
 `signAndPublish` handles both kind:1 boost notes and kind:10333 favorites — a third event kind is ~10 lines.
 

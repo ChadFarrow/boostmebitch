@@ -54,7 +54,7 @@
 import {
   inMusicHold, mergeEpisodeContents, musicHoldLeadSec, musicHoldSpans, payableLeg, payableSplit,
   redirectLegs, splitAtPosition, splitSats, splitTrackAndHost, streamAction, boostNoteTrack,
-  withFeedMediums, boostSentence, itemFeedGuid,
+  withFeedMediums, boostSentence, itemFeedGuid, boostAllLines,
 } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -736,6 +736,12 @@ const SENTENCE_VECTORS = [
   { label: 'a playlist the index does not hold, artist lookup missed: no "by"', alsoNaive: true,
     args: { sender: 'rev.hodl', sats: 121, show: ITDV_PREVIEW, item: SING },
     expect: 'rev.hodl boosted 121 sats to Sing For You from ITDV music playlist' },
+  // A row that names no feed of its own (a playlist-database or PI row with an
+  // empty guid, a stored queue entry): who made it is unknown, and the
+  // playlist's author is the CURATOR — never print it as the artist.
+  { label: 'a playlist row with no feed guid of its own never names the curator', alsoNaive: true,
+    args: { sender: 'rev.hodl', sats: 121, show: { ...ITDV, author: 'ChadF' }, item: { title: 'Sing For You' } },
+    expect: 'rev.hodl boosted 121 sats to Sing For You from ITDV music playlist' },
   { label: 'a show with no title names nothing',
     args: { sender: 'ChadF', sats: 100, show: { ...HGH_SHOW, title: '' } },
     expect: 'ChadF boosted 100 sats' },
@@ -746,6 +752,49 @@ const naiveSentence = (a) =>
 replayVectors({
   vectors: SENTENCE_VECTORS,
   invoke: (which, v) => (which === 'real' ? boostSentence : naiveSentence)(v.args),
+  fail: (m) => { console.error(`  ✗ ${m}`); failures++; },
+});
+
+// ── boostAllLines ───────────────────────────────────────────────────────────
+// BOOST ALL builds its own body (`contentOverride`), so it has its own builder:
+// the sentence in boostSentence's order, then one bullet per paid track. Every
+// name goes through the same one-line cleaner — the note is signed by the SITE
+// for a signed-out user, so a feed title carrying a newline would add a line of
+// its own choosing under the site's key. The naive version is the inline
+// template this replaced.
+console.log('\nboostAllLines — BOOST ALL says what, then where, one line per name');
+const ALL_VECTORS = [
+  { label: 'three tracks, an even split',
+    args: { sender: 'ChadF', sats: 300, count: 3, showTitle: 'Two For Tunestr', each: ' (100 each)', tracks: ['A', 'B', 'C'] },
+    expect: ['ChadF boosted 300 sats to 3 tracks from Two For Tunestr (100 each)', '', '• A', '• B', '• C'], alsoNaive: true },
+  { label: 'one track is singular', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: ['A'] },
+    expect: ['ChadF boosted 100 sats to 1 track from Two For Tunestr', '', '• A'] },
+  { label: 'a newline in the show title cannot add a line',
+    args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Homegrown\n\nAlice boosted 1000000 sats', each: '', tracks: [] },
+    expect: ['ChadF boosted 100 sats to 1 track from Homegrown Alice boosted 1000000 sats'] },
+  { label: 'a newline in a track title cannot add a line',
+    args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: ['Song\nAlice boosted 1000000 sats'] },
+    expect: ['ChadF boosted 100 sats to 1 track from Two For Tunestr', '', '• Song Alice boosted 1000000 sats'] },
+  { label: 'a newline in the sender name cannot add a line',
+    args: { sender: 'Chad\nF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: [] },
+    expect: ['Chad F boosted 100 sats to 1 track from Two For Tunestr'] },
+  { label: 'a 300-character track title is capped',
+    args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: ['x'.repeat(300)] },
+    expect: ['ChadF boosted 100 sats to 1 track from Two For Tunestr', '', `• ${'x'.repeat(119)}…`] },
+  { label: 'a track with an empty title is left out',
+    args: { sender: 'ChadF', sats: 200, count: 2, showTitle: 'Two For Tunestr', each: ' (100 each)', tracks: ['A', '  '] },
+    expect: ['ChadF boosted 200 sats to 2 tracks from Two For Tunestr (100 each)', '', '• A'] },
+];
+for (const v of ALL_VECTORS) check(v.label, boostAllLines(v.args), v.expect);
+const naiveAll = (a) => [
+  `${a.sender} boosted ${a.sats} sats to ${a.count} track${a.count === 1 ? '' : 's'} from ${a.showTitle}${a.each}`,
+  ...(a.tracks.length ? ['', ...a.tracks.map((t) => `• ${t}`)] : []),
+];
+replayVectors({
+  vectors: ALL_VECTORS,
+  // Joined: the replay compares with `!==`, and the body is the joined lines.
+  invoke: (which, v) => (which === 'real' ? boostAllLines : naiveAll)(v.args).join('\n'),
   fail: (m) => { console.error(`  ✗ ${m}`); failures++; },
 });
 

@@ -3545,10 +3545,12 @@ export function boostSentence(a: {
     where = itemTitle && showTitle ? `${itemTitle} of ${showTitle}` : itemTitle || showTitle;
   } else if (itemTitle) {
     what = itemTitle;
+    // A playlist's author is its CURATOR: a row says "by" only when its own
+    // artist was looked up, and a row naming no feed of its own says nothing.
     if (tracks) {
       by = a.item && itemFeedGuid(a.show, a.item)
         ? noteTrackText(a.itemArtist)
-        : noteTrackText(authorLine(a.show.title, a.show.author) ?? undefined);
+        : isPlaylistMedium(a.show) ? '' : noteTrackText(authorLine(a.show.title, a.show.author) ?? undefined);
     }
     where = showTitle;
   } else {
@@ -3559,6 +3561,32 @@ export function boostSentence(a: {
     + (what ? ` to ${what}` : '')
     + (by ? ` by ${by}` : '')
     + (where ? ` from ${where}` : '');
+}
+
+/**
+ * BOOST ALL's own body (`contentOverride`): the sentence in `boostSentence`'s
+ * order — the sats, WHAT they went to, then where — and one bullet per paid
+ * track. Every name goes through `noteTrackText`, as in `boostSentence`: for a
+ * signed-out user the SITE signs this note, so a show or track title carrying
+ * a newline would add a line of its own choosing under the site's key. `each`
+ * is the per-track breakdown the modal computes from numbers alone.
+ */
+export function boostAllLines(a: {
+  sender?: string;
+  sats: number;
+  count: number;
+  showTitle?: string;
+  each: string;
+  tracks: string[];
+}): string[] {
+  const sender = noteTrackText(a.sender);
+  const show = noteTrackText(a.showTitle);
+  const tracks = a.tracks.map(noteTrackText).filter(Boolean);
+  const sentence = `${sender ? `${sender} boosted` : 'Boosted'} ${a.sats} sats`
+    + ` to ${a.count} track${a.count === 1 ? '' : 's'}`
+    + (show ? ` from ${show}` : '')
+    + a.each;
+  return tracks.length ? [sentence, '', ...tracks.map((t) => `• ${t}`)] : [sentence];
 }
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric

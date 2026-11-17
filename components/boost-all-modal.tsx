@@ -10,7 +10,7 @@ import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { getErrorMessage, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { boostAllLines, getErrorMessage, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
@@ -473,14 +473,16 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         ? ` (${uniform.track.sats} to the artist + ${uniform.host.sats} to the show, each)`
         : ` (${uniform.track.sats} each)`;
     // The same order as every other note's sentence (`boostSentence`): the
-    // sats, WHAT they went to, then where it was found.
-    lines.push(
-      `${senderName} boosted ${totalSats} sats to ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} from ${podcast.title}${each}`,
-    );
-    if (trackList.length) {
-      lines.push('');
-      for (const t of trackList) lines.push(`• ${t}`);
-    }
+    // sats, WHAT they went to, then where it was found — and every name cleaned
+    // to one line, since the site signs this note for a signed-out user.
+    lines.push(...boostAllLines({
+      sender: senderName,
+      sats: totalSats,
+      count: successfulIdx.length,
+      showTitle: podcast.title,
+      each,
+      tracks: trackList,
+    }));
     const contentOverride = lines.join('\n');
 
     // A summary receipt an attempt has already published. RETRY NOTE quotes it
