@@ -192,7 +192,8 @@ if (!ISOLATED) {
     await publishBoostNoteViaSite({
       podcast, episode, boostagram: boostagram('great track @fiatjaf'),
       results: [], mentions: [mentionA],
-    }, { payStamp: async () => {}, state: {} });
+      // Isolated, no relay takes the note, and that now throws (RETRY NOTE).
+    }, { payStamp: async () => {}, state: {} }).catch(() => {});
     await wait(400);
     // Asserted on the TEMPLATE the route was handed, not on a relay round trip:
     // this path publishes to DEFAULT_RELAYS by construction, and the template is

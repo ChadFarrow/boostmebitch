@@ -235,6 +235,17 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // The boost as sent — see SentBoost. A ref, not state: nothing renders from
   // it, and the retry mutates its results in place between awaits.
   const sentRef = useRef<SentBoost | null>(null);
+  // Whether THIS modal is still mounted. A boost's work outlives its modal —
+  // the note keeps posting after × — and the parent's `onClose` is shared
+  // state (`setBoostFor(null)`), so a deferred close from a modal the user
+  // already closed would shut the NEXT one, mid-payment. Reset on mount, so a
+  // StrictMode remount in dev does not leave it set.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const closeIfOpen = () => { if (mountedRef.current) onClose(); };
 
   // Share picker + the `anonymous` flag derived from it. Shared with
   // <BoostAllModal> via the hook rather than restated here — see
@@ -912,7 +923,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // into nothing for 40 s) failed with the modal gone: no message, and no
     // RETRY NOTE to press. The chat line still publishes in the background.
     const noteToPost = anyPaid && !sent.logged && sent.shareNostr;
-    if (anyPaid && !retryLeft && !noteToPost) setTimeout(() => onClose(), 1500);
+    if (anyPaid && !retryLeft && !noteToPost) setTimeout(closeIfOpen, 1500);
 
     if (!anyPaid) return;
     if (sent.logged) {
@@ -1001,7 +1012,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     const posted = await maybePublishNote(sent, allLegs, track, itemArtist, null, opts.rail);
     // The close held back above. A note that failed keeps the modal open, with
     // its reason and RETRY NOTE on screen.
-    if (noteToPost && posted && !retryLeft) setTimeout(() => onClose(), 1500);
+    if (noteToPost && posted && !retryLeft) setTimeout(closeIfOpen, 1500);
   }
 
   return (

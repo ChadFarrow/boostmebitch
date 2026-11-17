@@ -30,13 +30,15 @@
 //   3–6. The wallet refuses / LNbits cannot mint / the invoice is not 1 sat / the
 //      LNbits lookup hangs: the note still posts, from a one-time key, and the
 //      modal stays open and says why — never that the sat stayed.
-//   7. × pressed while the stamp is being paid: one note, one stamp.
+//   7. × pressed while the stamp is being paid: one note, one stamp, and a
+//      second modal opened at once is not closed when the first note lands.
 //   8. BOOST ALL, signed out: one stamp for the summary note.
 //   9. Signed in, Anonymous: the site's note; the user's signer signs no kind:1;
 //      under the Buddy domain the Anonymous line takes no more lines than
 //      "My feed"'s, at 390 px and at 1280 px.
 //  10. NWC: the stamp goes out as `pay_invoice` through a stub NIP-47 wallet.
 //  11. "Don't post" and "My feed": no stamp is ever asked for.
+//  12. Every relay refuses the note: RETRY NOTE posts it; still one stamp.
 //
 // The page talks to the public relays through a WebSocket stand-in installed
 // before any script runs: it answers the four DEFAULT_RELAYS with OK/EOSE and
@@ -190,7 +192,9 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       }
       send(data) {
         let m; try { m = JSON.parse(data); } catch { return; }
-        if (m[0] === 'EVENT') { window.__published.push({ url: this.url, event: m[1] }); this._reply(['OK', m[1].id, true, '']); }
+        // __relaysDown: every relay refuses, as on a phone between networks.
+        if (m[0] === 'EVENT' && window.__relaysDown) this._reply(['OK', m[1].id, false, 'e2e: relay down']);
+        else if (m[0] === 'EVENT') { window.__published.push({ url: this.url, event: m[1] }); this._reply(['OK', m[1].id, true, '']); }
         else if (m[0] === 'REQ') this._reply(['EOSE', m[1]]);
       }
       close() { if (this.readyState < 2) this._emit(new CloseEvent('close', { code: 1000 }), 'onclose', 3); }
@@ -482,7 +486,13 @@ if (runs(7)) {
   t.ok('the modal says "Paying the 1-sat stamp…"', paying === true, await dialogText());
   await js(`${CLOSE}?.click()`);
   t.ok('× closes the modal', !!(await until(`!${DIALOG}`, 5000)));
+  // A second boost opened at once must not be closed by the first one's
+  // deferred close when that first note lands.
+  t.ok('a second boost modal opens', await openBoost());
   await wait(10000);
+  t.ok('...and is still open after the first note posts', !!(await js(`!!(${FIELD})`)));
+  await js(`${CLOSE}?.click()`);
+  await until(`!${DIALOG}`, 5000);
   const all = await notes();
   t.equal('exactly one note reached the relays', all.length, 1);
   t.equal('...signed by the site key', all[0]?.pubkey, sitePk);
@@ -635,6 +645,29 @@ if (runs(11)) {
   t.ok('the note reaches the relays', !!note, note ? '' : await dialogText());
   t.equal('...signed by the user\'s own key', note?.pubkey, userPk);
   t.equal('no stamp asked or minted', [since(m).asks, since(m).minted], [0, 0]);
+}
+
+if (runs(12)) {
+  section('12. no relay takes the note: RETRY NOTE posts it, and pays no second stamp');
+  lnbits.reset();
+  t.ok('the episode page opens', await openEpisode());
+  t.ok('the boost modal opens', await openBoost());
+  await typeAmount('100');
+  const m = mark();
+  await js('window.__relaysDown = true');
+  t.ok('SEND is pressed (every relay refuses)', await pressSend());
+  const RETRY = buttonIn(/^retry note$/i);
+  const offered = await until(`!!(${RETRY})`, 40000);
+  t.ok('the modal offers RETRY NOTE', !!offered, await dialogText());
+  t.ok('...and says the note was not posted', (await dialogText()).includes('Note not posted'), await dialogText());
+  t.equal('nothing reached a relay', (await notes()).length, 0);
+  t.equal('one stamp paid so far', since(m).pays, 1);
+  await js('window.__relaysDown = false');
+  await js(`(${RETRY})?.click()`);
+  const note = await noteAfter(20000);
+  t.ok('RETRY NOTE posts the note', !!note, note ? '' : await dialogText());
+  t.equal('...signed by the site key', note?.pubkey, sitePk);
+  t.equal('...with no second stamp asked, minted or paid', since(m), { asks: 1, pays: 1, minted: 1 });
 }
 
 // =============================================================================

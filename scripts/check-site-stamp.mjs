@@ -53,7 +53,9 @@ eq('Spark fee cap 10 sats (Chad, 2026-11-17)', STAMP_MAX_FEE_SATS, 10);
 eq('invoice expiry 10 min', STAMP_INVOICE_EXPIRY_SECS, 600);
 eq('token lifetime 24 h', STAMP_TTL_SECS, 86_400);
 eq('wallet gets 30 s', STAMP_PAY_TIMEOUT_MS, 30_000);
-eq('two re-asks for a lagging settle', STAMP_RECHECK_DELAYS_MS, [1500, 3000]);
+// Four re-asks, ~17.5 s in all: Spark's payLightningInvoice answers when the
+// send STARTS, and its service pays the invoice after (final review, 2026-11-17).
+eq('four re-asks for a lagging settle', STAMP_RECHECK_DELAYS_MS, [1500, 3000, 5000, 8000]);
 
 // ---------------------------------------------------------------------------
 console.log('\n  the token and the sign gate');
@@ -204,11 +206,20 @@ const paths = (h) => h.calls.map((c) => c.path.replace('/api/nostr/', ''));
   eq('lagging settle: still paid once', h.paid.length, 1);
 }
 {
+  // A Spark send settles after its call returns: the fifth ask, ~17.5 s on.
+  const notPaid = res(402, { error: STAMP_NOT_PAID });
+  const h = harness({ sign: [notPaid, notPaid, notPaid, notPaid, res(200, { event: SITE_EVENT })] });
+  const s = fresh();
+  await signSiteNote(s, h.deps);
+  eq('a slow (Spark) settle: signed by the site on the fifth ask', [s.signer, h.signAsks, h.paid.length], ['site', 5, 1]);
+  eq('lagging settle: still paid once', h.paid.length, 1);
+}
+{
   const notPaid = res(402, { error: STAMP_NOT_PAID });
   const h = harness({ sign: [notPaid] });
   const s = fresh();
   await signSiteNote(s, h.deps);
-  eq('never settles: one-time key, "unconfirmed"', [s.signer, s.why, h.signAsks, h.paid.length], ['one-time', 'unconfirmed', 3, 1]);
+  eq('never settles: one-time key, "unconfirmed"', [s.signer, s.why, h.signAsks, h.paid.length], ['one-time', 'unconfirmed', 5, 1]);
 }
 {
   // The route could not ASK LNbits (it failed or hung): the sat may well have

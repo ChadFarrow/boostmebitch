@@ -28,8 +28,13 @@ export const STAMP_INVOICE_EXPIRY_SECS = 600;
 export const STAMP_TTL_SECS = 86_400;
 /** How long the ladder waits for the wallet before it posts from a one-time key. */
 export const STAMP_PAY_TIMEOUT_MS = 30_000;
-/** Re-asks after a "not paid" answer: settlement can trail the payer's answer. */
-export const STAMP_RECHECK_DELAYS_MS = [1500, 3000];
+/**
+ * Re-asks after a "not paid" answer: settlement can trail the payer's answer.
+ * ~17.5 s in all, because Spark's `payLightningInvoice` answers when the send
+ * STARTS and its service pays the invoice after; a wallet that answers late
+ * has paid the sat, and a shorter wait would post its note one-time anyway.
+ */
+export const STAMP_RECHECK_DELAYS_MS = [1500, 3000, 5000, 8000];
 /** The route's 402 after LNbits says unpaid. The ladder re-asks on exactly this. */
 export const STAMP_NOT_PAID = 'the note stamp is not paid';
 /** The route's 502 when it could not ASK LNbits. The sat may have landed: "unconfirmed". */

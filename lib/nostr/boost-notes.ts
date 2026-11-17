@@ -642,8 +642,10 @@ export async function publishBoostNote(
  * `origin` prefixes both routes — `''` is this deploy. A note signed by the
  * other brand's key must ask THAT deploy for both the stamp and the signature.
  *
- * Does not throw on a refused stamp or signature; it can still throw where
- * publishing itself throws.
+ * Does not throw on a refused stamp or signature. It THROWS when no relay took
+ * the note — a phone between networks — so the modal shows RETRY NOTE; `state`
+ * keeps the signed event, so the retry posts the same note and pays nothing.
+ * (`publishSignedEvent` itself never rejects: a 0/N answer is the only sign.)
  */
 export async function publishBoostNoteViaSite(
   args: PublishArgs,
@@ -683,5 +685,7 @@ export async function publishBoostNoteViaSite(
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     onStamp: opts.onStamp,
   });
-  return { note: await publishSignedEvent(state.signed!, DEFAULT_RELAYS), signer: state.signer!, why: state.why };
+  const note = await publishSignedEvent(state.signed!, DEFAULT_RELAYS);
+  if (note.acceptedRelays.length === 0) throw new Error('no relay accepted the note');
+  return { note, signer: state.signer!, why: state.why };
 }
