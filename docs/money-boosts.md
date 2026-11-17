@@ -167,6 +167,11 @@ It used to be a verbatim copy in each modal: the same two `useState`s seeded fro
 
 One definition is the structural fix for that class of bug: there is no longer a second place for the rule to be learned late.
 
+**Where `DEFAULT_SENDER_NAME` lives, and why it moved twice** (moved here from `CLAUDE.md` on 2026-11-17, which keeps the two rules):
+
+- **The arrow only points one way, and `DEFAULT_SENDER_NAME` is where that nearly broke.** It lived in `components/boost-modal/sender-name.tsx` until `lib/v4v/streaming.ts` imported it from there, inverting the boundary and dragging a `'use client'` React module into the payment engine. It now lives in **`lib/brand.ts`** (with `resolveSenderName`), and `sender-name.tsx` re-exports it. Not `lib/v4v/`, because it's a *product string*: swapping the toolkit must not delete it.
+- **`lib/brand.ts` is an import-free leaf and must stay one.** `DEFAULT_SENDER_NAME` and `resolveSenderName` used to be in `lib/util.ts` — they had to move DOWN rather than have the brand table imported UP, because `lib/util.ts` must keep only type-only imports or `check:vts` and `check:musicl` die at load with `ERR_MODULE_NOT_FOUND`. Same move `mute-state.ts` and `profile-metadata.ts` already made.
+
 **`senderName` deliberately stays at the call site.** It needs each modal's own "From" input state, so `resolveSenderName(name, anonymous)` is computed per modal. The *flag* is the invariant worth centralizing; the string is formatting. Substituting `DEFAULT_SENDER_NAME` rather than omitting the field matters for its own reason — `JSON.stringify` drops an `undefined` key entirely, leaving presentation to each recipient's aggregator, so the same boost renders blank in one and "Unknown" in the next.
 
 **The `!!identity` gate is load-bearing and survives the extraction unchanged.** Signed out, the picker degrades to a bare checkbox with no anonymous option, every note is site-signed, and the typed "From" name is that note's *only* attribution. But `bmb:share_nostr_as` is a single **global** key, not per-identity — so without the gate a user who chose Anonymous while signed in would sign out and silently have their name replaced by the default, with no control anywhere on screen to turn it back on. `sender_id` is unaffected either way: it is `identity?.pubkey`, already absent when signed out.
@@ -435,6 +440,18 @@ Five rules:
 Pinned by `npm run e2e:gifgrid` (pure section with `--pure`; section 1 against a `NEXT_PUBLIC_BRAND=buddy` server, sections 2–3 against the default one; `--real-nb` drives the real API from `127.0.0.1`). Breaking the release, the pool's reuse, or the off-screen pause each turns a check red.
 
 No `imeta` tag is written for the GIF: `/api/nostr/site-sign` allows one `imeta` (`MAX_IMETA_TAGS`), and the banner holds it — nostr.build's guide asks for one, and this is the known gap. The body URL is what renders the picture anyway.
+
+### The site-note stamp (`payStampInvoice`, `lib/site-stamp.ts`)
+
+A note the SITE signs — signed out, or the signed-in "Anonymous" choice — costs **1 sat plus the network fee**, paid to the deploy's own LNbits wallet, because that is the one payment the site can verify (`docs/security.md`, "The stamp"). It is a payment, so it follows this file's rules:
+
+- **When: after every leg settles, and only for a site note.** `publishBoostNoteViaSite` asks `/api/nostr/site-stamp` for the invoice, pays it through the `payStamp` the modal hands it, then asks `/api/nostr/site-sign` to sign. "My feed" and "Don't post" never ask for one (`e2e:sitestamp` section 11).
+- **Which rail: the one the boost used.** `payStampInvoice(rail, bolt11)` in `lib/v4v/boost.ts` — `lib/nostr/` reaches no wallet, so the modal passes the payer in. NWC `pay_invoice`, WebLN `sendPayment`, Spark `payLightningInvoice` with **`maxFeeSats` 10** (`STAMP_MAX_FEE_SATS`) instead of a boost leg's 100; NWC and WebLN use the wallet's own limits.
+- **The amount is checked before any wallet sees the invoice**, as every LNURL invoice is (invariant 9): `bolt11AmountMsat(bolt11) === 1000` or it throws — whatever answers the stamp route, the wallet is never asked for more than 1 sat.
+- **Never retried, and never paid twice.** The pay is raced against 30 s with a marker, not a throwing timer. A wallet that refuses, or does not answer, ends the attempt: the note posts from a one-time key and the screen says so. A wallet that never answered may still pay; that sat is lost, never sent twice (invariant 11). The state — template, paid stamp, signed event — lives on the boost (`SentBoost.siteNote`; BOOST ALL's `siteNote`), so RETRY NOTE re-posts the same event and pays nothing.
+- **A settle that trails the payer's answer** reads as 402 "not paid": site-sign is asked again at 1.5 s and 3 s, then the note posts one-time with "the site could not confirm the 1-sat stamp". The screen never says the sat stayed in the wallet — it may not have.
+- **It is not a value-block leg.** No boostagram, no TLV, not in `results`, not in `StoredBoost.legs`, not in the note's amount. Its memo is `<BRAND.displayName> note stamp`.
+- **The other brand's note pays the other brand.** A hosted-playlist note signed by Buddy's key (PR #540) asks Buddy's deploy for both the stamp and the signature (`opts.origin`), so the sat lands in Buddy's wallet.
 
 ### Serving our own lightning address
 

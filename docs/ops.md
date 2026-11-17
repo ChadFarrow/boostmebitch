@@ -462,6 +462,42 @@ gets it when someone notices the feature is missing there. Treat "set the
 variable" as a two-project step, and `.env.example`'s warning about the
 **copied** `ANDROID_*` pair as the one exception where copying is the bug.
 
+## The note stamp's LNbits wallet — one per project, set before the merge
+
+`/api/nostr/site-sign` signs a boost note under the site's name only with a
+paid 1-sat stamp (`docs/security.md`, "The stamp"). Three server-only
+variables, each set on **both** Vercel projects separately — the previous
+section is why "separately" matters:
+
+| Variable | Value | Missing |
+| --- | --- | --- |
+| `LNBITS_URL` | the LNbits base URL, e.g. `https://pay.boostmebitch.com` | every site note posts from a one-time key |
+| `LNBITS_INVOICE_KEY` | the wallet's **invoice/read** key (mints and reads, never spends) — store as *sensitive* | same |
+| `SITE_SIGN_REQUIRE_STAMP` | `on` only in phase 2 | phase 1: a bare template is still signed |
+
+- **Set the two LNbits variables BEFORE the merge deploys.** Without them
+  `/api/nostr/site-stamp` answers 503 and every anonymous and signed-out note
+  goes out from a one-time key: nothing breaks, but the site's name is gone
+  from those notes until they are set.
+- **A dedicated wallet per project.** The key reads its wallet's whole history;
+  a wallet that holds only stamps keeps that history to 1-sat rows. Buddy's
+  stamps go to Buddy's wallet: a hosted-playlist note signed by Buddy's key
+  (PR #540) asks Buddy's deploy for both the stamp and the signature.
+- **The owner types the key** into Vercel and `.env.local` / `.env.buddy.local`;
+  it is never sent in chat, like `SITE_NOSTR_SK`.
+- **Confirm the wire shape on the real instance once.** `lib/lnbits.ts` was
+  written from LNbits `main` source on 2026-11-17, because
+  `pay.boostmebitch.com` did not answer that day (TLS "unrecognized name";
+  the `/.well-known/lnurlp/chadf` rewrite answered 502). If the instance
+  answers differently, every stamp reads as unpaid and every site note goes out
+  one-time — fail closed, but not what was meant. One real signed-out boost per
+  deploy, whose note shows the site's name, is the check.
+- **Phase 2.** When production on both brands AND beta run the stamping client,
+  set `SITE_SIGN_REQUIRE_STAMP=on` on both projects and redeploy. From then a
+  bare template is 402. A tab opened before the deploy gets 402 until it
+  reloads, and its note posts from nobody — which is why this waits. Unset it
+  to go back.
+
 ## The beta site
 
 `beta.boostmebitch.com` is a domain on the `boostmebitch` Vercel project, bound
