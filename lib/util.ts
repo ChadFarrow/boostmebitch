@@ -1868,6 +1868,31 @@ function termNearlyIn(term: string, words: readonly string[]): boolean {
     || (w.length > term.length && editDistanceWithin(term, w.slice(0, term.length), max)));
 }
 
+/** A query's terms for the near-match test: folded, punctuation dropped, blanks gone. */
+export function nearMatchTerms(q: string): string[] {
+  return foldForNearMatch(q).split(/\s+/).map((t) => t.replace(/[^\p{L}\p{N}]/gu, '')).filter(Boolean);
+}
+
+/**
+ * How a row's title and author answer the terms: `'exact'` when every term is a
+ * substring of them, `'near'` when every term is a substring or within
+ * `nearTermBudget` edits of one of their words, `null` otherwise.
+ *
+ * The ONE typo test: `nearPlaylistsByQuery` asks it of a playlist roster and
+ * `matchSavedShows` (`lib/saved-show-search.ts`) of the shows a device has
+ * saved, so the two cannot drift apart on what a typo is.
+ */
+export function nearMatchKind(
+  terms: readonly string[],
+  title: string | undefined,
+  author: string | undefined,
+): 'exact' | 'near' | null {
+  const hay = foldForNearMatch(`${title ?? ''} ${author ?? ''}`);
+  if (terms.every((t) => hay.includes(t))) return 'exact';
+  const words = hay.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return terms.every((t) => hay.includes(t) || termNearlyIn(t, words)) ? 'near' : null;
+}
+
 /**
  * The playlists a query reaches only THROUGH A TYPO — every row
  * `filterPlaylistsByQuery` already returns is left out.
@@ -1888,15 +1913,13 @@ export function nearPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author' 
   q: string,
   limit: number,
 ): T[] {
-  const terms = foldForNearMatch(q).split(/\s+/).map((t) => t.replace(/[^\p{L}\p{N}]/gu, '')).filter(Boolean);
+  const terms = nearMatchTerms(q);
   if (!terms.length || limit <= 0) return [];
   const exact = new Set(filterPlaylistsByQuery(feeds, q, feeds.length));
   const out: T[] = [];
   for (const f of feeds) {
     if (exact.has(f) || !isPlaylistMedium(f)) continue;
-    const hay = foldForNearMatch(`${f.title ?? ''} ${f.author ?? ''}`);
-    const words = hay.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-    if (!terms.every((t) => hay.includes(t) || termNearlyIn(t, words))) continue;
+    if (!nearMatchKind(terms, f.title, f.author)) continue;
     out.push(f);
     if (out.length >= limit) break;
   }
