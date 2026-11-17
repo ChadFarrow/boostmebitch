@@ -36,8 +36,8 @@
 // URL, and a genuinely repeated pair (that feed writes 1770 entries of which
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
-import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
+import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -577,6 +577,63 @@ console.log('\nWhich playlists a typed query surfaces');
 }
 
 // ---------------------------------------------------------------------------
+console.log('\nWhich playlists a query reaches only through a typo');
+// ---------------------------------------------------------------------------
+{
+  // `/api/search` PROMOTES an exact playlist match above Podcast Index's own
+  // ranking and appends a near one after it. So the two directions cost
+  // different things: a near match leaking into the exact tier lifts a
+  // `mutton` playlist over somebody who typed `button` on purpose, and an exact
+  // match leaking into the near tier lists one playlist twice.
+  const F = [
+    { title: 'ChadF Homegrown Hits Music Playlist', author: 'ChadFarrow', medium: 'musicL' },
+    { title: 'Mutton, Mead & Music Playlist', author: 'ChadF', medium: 'musicL' },
+    { title: 'LocalBitcoiners Community Playlist', author: 'Øystein', medium: 'podcastL' },
+    { title: 'Homegrown Hits', author: 'Various', medium: 'podcast' },   // the SHOW, not a list
+  ];
+  const near = (s, n = 10) => nearPlaylistsByQuery(F, s, n).map((f) => f.title);
+  const both = (s, n = 10) => matchPlaylistsByQuery(F, s, n).map((f) => f.title);
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const cases = [
+    ['muton', [F[1].title], 'one letter missing finds the playlist'],
+    ['mtuton', [F[1].title], 'two letters swapped is ONE edit'],
+    ['homegrwn hits', [F[0].title], 'every term must still land, one of them by typo'],
+    ['localbitconers', [F[2].title], 'a long word forgives a typo'],
+    ['oystein', [F[2].title], 'accents fold away in the near test'],
+    ['mutto', [], 'a word on its way to a match is already an EXACT substring, so it is not near'],
+    ['mutton', [], 'an exact match is never repeated in the near tier'],
+    ['mutten mead', [F[1].title], 'exact and near terms mix'],
+    ['muttn zzzz', [], 'one term that lands nowhere sinks the row'],
+    ['pod', [], 'a term under four letters forgives nothing'],
+    ['homegrwn', [F[0].title], 'the same-named SHOW never surfaces: the medium is re-checked'],
+    ['xxxxxx', [], 'two edits is past a six-letter budget'],
+    ['', [], 'a blank query matches nothing'],
+  ];
+  for (const [term, want, why] of cases) {
+    if (eq(near(term), want)) ok(`near ${JSON.stringify(term)}: ${why}`);
+    else fail(`near ${JSON.stringify(term)}: ${why}\n          got  ${JSON.stringify(near(term))}\n          want ${JSON.stringify(want)}`);
+  }
+  // `naive()` is the exact matcher: it must miss every typo vector above, or the
+  // vector proves nothing about the near tier.
+  for (const term of ['muton', 'mtuton', 'homegrwn hits', 'localbitconers', 'mutten mead']) {
+    if (filterPlaylistsByQuery(F, term, 10).length === 0) ok(`naive: the exact matcher misses ${JSON.stringify(term)}`);
+    else fail(`vector ${JSON.stringify(term)} is not a typo — the exact matcher already finds it`);
+  }
+  if (eq(both('playlist muton'), [F[1].title])) ok('matchPlaylistsByQuery: a near match alone is returned');
+  else fail(`matchPlaylistsByQuery near-only: ${JSON.stringify(both('playlist muton'))}`);
+  const tiered = [{ title: 'Muton Mix Playlist', author: '', medium: 'musicL' }, F[1]];
+  const order = matchPlaylistsByQuery(tiered, 'mutton', 10).map((f) => f.title);
+  if (eq(order, [F[1].title, 'Muton Mix Playlist'])) ok('an exact match outranks a near one even when PI listed it later');
+  else fail(`exact-before-near order wrong: ${JSON.stringify(order)}`);
+  if (matchPlaylistsByQuery(tiered, 'mutton', 1).length === 1) ok('the limit counts both tiers');
+  else fail('the limit must cover exact and near together');
+  if (nearPlaylistsByQuery(F, 'muton', 0).length === 0) ok('a 0 limit yields nothing, never everything');
+  else fail('limit 0 must yield nothing');
+  if (editDistanceWithin('kitten', 'sitting', 3) && !editDistanceWithin('kitten', 'sitting', 2)) ok('editDistanceWithin: kitten → sitting is 3');
+  else fail('editDistanceWithin must answer 3 for kitten → sitting');
+}
+
+// ---------------------------------------------------------------------------
 console.log('\nA matching playlist is lifted out of where PI buried it');
 // ---------------------------------------------------------------------------
 {
@@ -643,6 +700,250 @@ console.log('\nA matching playlist is lifted out of where PI buried it');
   else fail('a non-matching query must not reorder anything');
   if (eq(rankPlaylistsFirst([], [], 'mutton', 6), [])) ok('an empty result set stays empty');
   else fail('empty in, empty out');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nA matching publisher feed is shown first, above PI\'s leader');
+// ---------------------------------------------------------------------------
+{
+  // THE WIRE, NOT A STRUCT. The production `/api/search?q=longy&type=all`
+  // answer on 2026-11-16, all 40 rows in order, trimmed to the fields that
+  // decide the order. No playlist matches `longy`, so this is byterm's own
+  // ranking. The publisher feed is row 37, after 31 of Longy's albums and
+  // podcasts by Longie B., Longi Frank and a parish in Longi — Chad: "these
+  // should be shown first". Row 1 is a podcast by "Longy, Biz & Burgz", which is
+  // why PI's leader is not held here the way `rankPlaylistsFirst` holds it.
+  const LONGY = [
+    { id: 6464400, title: "NRL Fantasy with The Casual Athlete", author: "Longy, Biz & Burgz", medium: "podcast" },
+    { id: 7712919, title: "Songs From The Seaside", author: "Longy", medium: "music" },
+    { id: 7697615, title: "Positively Unemployed", author: "Longy", medium: "music" },
+    { id: 7695783, title: "Substitute", author: "Longy", medium: "music" },
+    { id: 7693865, title: "Healing Hands", author: "Longy", medium: "music" },
+    { id: 7688232, title: "Lady, You Shot Me!", author: "Longy", medium: "music" },
+    { id: 7569233, title: "Auto Inter Woven Minds", author: "Longy", medium: "music" },
+    { id: 7354536, title: "Into the Valueverse 1", author: "Longy - Joe Martin - Nathan Abbott", medium: "music" },
+    { id: 7353237, title: "Into the Valueverse - Full Show", author: "Joe Martin - Longy - Nathan Abbott", medium: "music" },
+    { id: 7277418, title: "Live at the 606 club", author: "Longy", medium: "music" },
+    { id: 7146493, title: "Bringing it all back home to you now", author: "Longy", medium: "music" },
+    { id: 7117890, title: "iMerica", author: "Longy", medium: "music" },
+    { id: 7273908, title: "You've Got Yourself EP Live", author: "Longy", medium: "music" },
+    { id: 7273907, title: "Trust in Life", author: "Longy", medium: "music" },
+    { id: 7287540, title: "Katherines Wheel", author: "Longy", medium: "music" },
+    { id: 6443203, title: "Katherines Wheel", author: "Longy", medium: "music" },
+    { id: 6429328, title: "No one goes cold on my watch", author: "Longy", medium: "music" },
+    { id: 6420972, title: "Trust in Life (Single)", author: "Longy", medium: "music" },
+    { id: 6459228, title: "Longy presents Mix Sets", author: "Longy", medium: "podcast" },
+    { id: 6420987, title: "The Underclass (Single)", author: "Longy", medium: "music" },
+    { id: 7471701, title: "Tape Up", author: "Longy", medium: "music" },
+    { id: 7471709, title: "The Underclass", author: "Longy", medium: "music" },
+    { id: 6424758, title: "iMerica (Single)", author: "Longy", medium: "music" },
+    { id: 7133539, title: "I'm Still Here", author: "Longy", medium: "music" },
+    { id: 7086566, title: "Live at the 606 club", author: "Longy", medium: "music" },
+    { id: 6622967, title: "Who's your boss", author: "Longy", medium: "music" },
+    { id: 6560453, title: "Don't Get Me Started", author: "Longy", medium: "music" },
+    { id: 6518226, title: "You've Got Yourself EP", author: "Longy", medium: "music" },
+    { id: 6459323, title: "Promise to my people", author: "Longy", medium: "music" },
+    { id: 6448121, title: "Potential", author: "Longy", medium: "music" },
+    { id: 6437660, title: "Tape Up", author: "Longy", medium: "music" },
+    { id: 6420986, title: "Akecheta", author: "Longy", medium: "music" },
+    { id: 6420990, title: "Trash Talking, Filthy Love", author: "Longy", medium: "music" },
+    { id: 254568, title: "Let's Talk About It W/ Longie", author: "Longie B.", medium: "podcast" },
+    { id: 3820521, title: "ASCOLTA I GRANDI SUCCESSI DI MUSICA ROCK DI IERI E DI OGGI", author: "Longi Frank", medium: "podcast" },
+    { id: 4579880, title: "Parrocchia San Michele Arcangelo – Longi (ME)", author: "", medium: "podcast" },
+    { id: 7696544, title: "Longy - Everything", author: "Longy", medium: "publisher" },
+    { id: 2110865, title: "EFCA COACHING ACADEMY", author: "LONGY AGOHA TRAINING ACADEMY", medium: "podcast" },
+    { id: 6361432, title: "קווארק היקום ומה שבניהם", author: "blondy&longy", medium: "podcast" },
+    { id: 972777, title: "Longi Mashale", author: "Batika NGO", medium: "podcast" },
+  ];
+  const PUB = 7696544;
+  const ids = (a) => a.map((f) => f.id);
+  const longyIds = ids(LONGY);
+  const publisherFirst = [PUB, ...longyIds.filter((i) => i !== PUB)];
+  const row = (id) => LONGY.find((f) => f.id === id);
+
+  // What somebody writes: sort every publisher row to the top. It gets the
+  // reported case right, which is what makes it tempting. It lifts a publisher
+  // the query does not name — byterm runs with `fulltext`, so a publisher that
+  // credits a collaborator only in its description comes back for that name —
+  // it has no cap, so a word many publishers share pushes PI's whole answer
+  // down, and it lifts on a blank query.
+  const naive = (feeds) => [
+    ...feeds.filter((f) => f.medium === 'publisher'),
+    ...feeds.filter((f) => f.medium !== 'publisher'),
+  ];
+
+  const vectors = [];
+  const vec = (label, args, expect, opts = {}) => vectors.push({ label, args, expect, ...opts });
+
+  // ── The report, and what must keep working ──────────────────────────────
+  vec('longy: the publisher moves 37th → 1st, above PI\'s leader', [LONGY, 'longy', 3], publisherFirst, { alsoNaive: true });
+  vec('every term in its title: still lifted', [LONGY, 'longy everything', 3], publisherFirst, { alsoNaive: true });
+  vec('the query is case-folded', [LONGY, 'LONGY', 3], publisherFirst, { alsoNaive: true });
+  vec('no publisher in the results ⇒ PI order untouched', [LONGY.slice(0, 3), 'longy', 3], longyIds.slice(0, 3), { alsoNaive: true });
+  vec('a publisher already first stays first', [[row(PUB), ...LONGY.slice(0, 2)], 'longy', 3], [PUB, ...longyIds.slice(0, 2)], { alsoNaive: true });
+  // `publisherL` is a LIST of publishers — a playlist. `rankPlaylistsFirst`
+  // owns it, and lifting it here would put it above the leader that rule holds.
+  vec('a publisherL list is not a publisher', [[LONGY[0], { ...row(PUB), medium: 'publisherL' }], 'longy', 3], [LONGY[0].id, PUB], { alsoNaive: true });
+  // The literal `=== 'publisher'` is what `<PodcastRow>` stamps `▸ ALBUMS` by
+  // and `<HomePage>` opens the publisher view by. A row lifted on any other
+  // spelling would sit first with no stamp and open as a show.
+  vec('a medium spelled "Publisher" is not lifted', [[LONGY[0], { ...row(PUB), medium: 'Publisher' }], 'longy', 3], [LONGY[0].id, PUB], { alsoNaive: true });
+
+  // ── What naive() gets wrong ─────────────────────────────────────────────
+  vec('a term its title and author lack: not lifted', [LONGY, 'longy seaside', 3], longyIds);
+  // Row 8 of the wire answer credits Joe Martin; the publisher does not, so a
+  // fulltext hit on its description must not jump the album that names him.
+  vec('a publisher only its description could match stays where PI put it', [[row(7354536), row(PUB)], 'joe martin', 3], [7354536, PUB]);
+  vec('the cap: a fourth matching publisher keeps its place', [[
+    LONGY[0],
+    row(PUB),
+    { id: 1, title: 'Longy Live', author: 'Longy', medium: 'publisher' },
+    { id: 2, title: 'Longy Band', author: 'Longy', medium: 'publisher' },
+    { id: 3, title: 'Longy Remixes', author: 'Longy', medium: 'publisher' },
+  ], 'longy', 3], [PUB, 1, 2, LONGY[0].id, 3]);
+  vec('a blank query lifts nothing', [LONGY, '   ', 3], longyIds);
+  vec('a zero cap lifts nothing', [LONGY, 'longy', 0], longyIds);
+
+  const ser = (v) => JSON.stringify(v);
+  const invoke = (impl, v) => {
+    try {
+      return ser(ids((impl === 'real' ? rankPublishersFirst : naive)(...v.args)));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  for (const v of vectors) {
+    const got = invoke('real', v);
+    if (got === ser(v.expect)) ok(v.label);
+    else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+  }
+  replayVectors({ vectors, invoke, fail });
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nWhich search choice lists a publisher: what its feed publishes');
+// ---------------------------------------------------------------------------
+{
+  // Chad, 2026-11-16: "pubfeeds should show up for whatever they are for". Two
+  // functions decide it, and both fail SILENTLY:
+  //
+  //   `parsePublisherMediums` reads the `medium` of a publisher's remoteItems.
+  //   Read a podroll entry or a live item's current song and a music publisher
+  //   is listed under PODCASTS for a show it only recommends.
+  //
+  //   `matchesSearchType` puts a publisher under each choice one of those
+  //   mediums matches. The obvious version is the one on main before this: a
+  //   publisher is a residual "podcast", so a music publisher sits under
+  //   PODCASTS and is absent from MUSIC, where somebody looks for an artist.
+  //
+  // FIXTURES FROM THE WIRE, the remoteItem lines verbatim, read 2026-11-16:
+  // Longy's (headstarts.uk, 24 children, all `music`), The Doerfels'
+  // (doerfelverse.com, a podroll of 7 plus 23 children: 18 `music`, 1 `podcast`,
+  // 4 with no medium) and ChadF's playlist publisher (14 `musicL`).
+  const wrap = (inner) => '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<rss xmlns:podcast="https://podcastindex.org/namespace/1.0" version="2.0">\n  <channel>\n'
+    + '    <podcast:medium>publisher</podcast:medium>\n' + inner + '\n  </channel>\n</rss>';
+  const LONGY_XML = wrap([
+    '        <podcast:remoteItem feedGuid="c5f25062-40b8-4ac4-88d3-a2c3af1f7310" feedUrl="https://headstarts.uk/msp/longy/Healing Hands/Healing_Hands.xml" medium="music" feedImg="https://headstarts.uk/msp/longy/Healing%20Hands/Healing_Fc.jpg">Healing Hands</podcast:remoteItem>',
+    '        <podcast:remoteItem feedGuid="337c3158-cd40-5011-aa2c-05f99b095b89" feedUrl="https://headstarts.uk/msp/longy/Auto Inter Woven Minds/auto inter woven minds.xml" medium="music" feedImg="https://headstarts.uk/msp/longy/Auto%20Inter%20Woven%20Minds/AUTO%20INTERWOVEN%20MINDS%20cover.jpg">Auto Inter Woven Minds</podcast:remoteItem>',
+  ].join('\n'));
+  const DOERFELS_PODROLL = [
+    '    <podcast:podroll>',
+    '      <podcast:remoteItem feedGuid="5bb8f186-2460-54dc-911d-54f642e8adf6" feedUrl="https://www.sirtjthewrathful.com/wp-content/uploads/2023/08/CityBeach.xml"/>',
+    '      <podcast:remoteItem feedGuid="08604071-83cc-5810-bec2-bea0f0cd0033" feedUrl="https://www.doerfelverse.com/feeds/ben-doerfel.xml"/>',
+    '    </podcast:podroll>',
+  ].join('\n');
+  const DOERFELS_XML = wrap([
+    DOERFELS_PODROLL,
+    '    <podcast:remoteItem medium="music" feedGuid="2b62ef49-fcff-523c-b81a-0a7dde2b0609" feedUrl="https://www.doerfelverse.com/feeds/music-from-the-doerfelverse.xml" feedImg="https://www.doerfelverse.com/art/carol-of-the-bells.png"/>',
+    '    <podcast:remoteItem medium="podcast" feedGuid="41aace28-8679-5ef1-9958-75cf76c2b5f0" feedUrl="https://www.doerfelverse.com/feeds/intothedoerfelverse.xml" feedImg="https://www.doerfelverse.com/art/v4v-music-podcast.png"/>',
+    '    <podcast:remoteItem feedGuid="75b2ec36-bf48-5950-a104-b77cafc8356b" feedUrl="https://www.doerfelverse.com/feeds/them.xml" feedImg="https://www.doerfelverse.com/art/them.png"/>',
+  ].join('\n'));
+  const CHADF_XML = wrap(
+    '    <podcast:remoteItem medium="musicL" rel="curator" feedGuid="30b31f6c-6b44-4a14-a525-81a8fcd7cb19" feedUrl="https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/IAM-music-playlist.xml" feedImg="https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/IAM-music-playlist.webp"/>',
+  );
+  const ALBUM = '    <podcast:remoteItem medium="music" feedGuid="c5f25062-40b8-4ac4-88d3-a2c3af1f7310" feedUrl="https://example.com/album.xml"/>';
+
+  const naive = {
+    // What somebody writes: every `medium="…"` in the document. It agrees on all
+    // three real feeds, which is what makes it tempting.
+    mediums: (xml) => [...new Set([...xml.matchAll(/medium="([^"]*)"/g)].map((m) => m[1].toLowerCase()))],
+    // The code on main before this: a publisher is in the residual bucket.
+    matches: (p, type) => {
+      const music = (p.medium ?? '').toLowerCase() === 'music';
+      switch (type) {
+        case 'all': return true;
+        case 'music': return music;
+        case 'playlist': return isPlaylistMedium(p);
+        case 'podcast': return !music && !isPlaylistMedium(p);
+        default: return false;
+      }
+    },
+  };
+  const real = { mediums: parsePublisherMediums, matches: matchesSearchType };
+
+  const vectors = [];
+  const vec = (kind, label, args, expect, opts = {}) => vectors.push({ kind, label, args, expect, ...opts });
+
+  // ── parsePublisherMediums ───────────────────────────────────────────────
+  vec('mediums', 'Longy\'s publisher lists music', [LONGY_XML], ['music'], { alsoNaive: true });
+  vec('mediums', 'The Doerfels\' lists music and a podcast; an unnamed child adds nothing', [DOERFELS_XML], ['music', 'podcast'], { alsoNaive: true });
+  vec('mediums', 'ChadF\'s lists playlists, lower-cased', [CHADF_XML], ['musicl'], { alsoNaive: true });
+  vec('mediums', 'a feed that names no medium answers none', [wrap(DOERFELS_PODROLL)], [], { alsoNaive: true });
+  // The two scopes. Real podroll entries above carry no medium, so these name
+  // one — the spec allows it, and the entry is a recommendation, not a child.
+  vec('mediums', 'a podroll entry is a recommended show, not a child', [wrap([
+    '    <podcast:podroll>',
+    '      <podcast:remoteItem medium="podcast" feedGuid="41aace28-8679-5ef1-9958-75cf76c2b5f0" feedUrl="https://www.doerfelverse.com/feeds/intothedoerfelverse.xml"/>',
+    '    </podcast:podroll>',
+    ALBUM,
+  ].join('\n'))], ['music']);
+  vec('mediums', 'a live item\'s current song is not a child', [wrap([
+    '    <podcast:remoteItem medium="podcast" feedGuid="41aace28-8679-5ef1-9958-75cf76c2b5f0" feedUrl="https://www.doerfelverse.com/feeds/intothedoerfelverse.xml"/>',
+    '    <podcast:liveItem status="live" start="2026-11-16T20:00:00Z">',
+    '  ' + ALBUM,
+    '    </podcast:liveItem>',
+  ].join('\n'))], ['podcast']);
+  vec('mediums', 'an x-medium decoy ahead of the real attribute is not read', [wrap(
+    '    <podcast:remoteItem x-medium="podcast" medium="music" feedGuid="c5f25062-40b8-4ac4-88d3-a2c3af1f7310" feedUrl="https://example.com/album.xml"/>',
+  )], ['music']);
+  vec('mediums', 'a value that is not one word is dropped', [wrap(
+    '    <podcast:remoteItem medium="music video" feedGuid="c5f25062-40b8-4ac4-88d3-a2c3af1f7310" feedUrl="https://example.com/album.xml"/>',
+  )], []);
+
+  // ── matchesSearchType on a publisher row ────────────────────────────────
+  const pub = (publisherMediums) => ({ medium: 'publisher', ...(publisherMediums ? { publisherMediums } : {}) });
+  vec('matches', 'a music publisher is under MUSIC', [pub(['music']), 'music'], true);
+  vec('matches', 'a music publisher is not under PODCASTS', [pub(['music']), 'podcast'], false);
+  vec('matches', 'a playlist publisher is under PLAYLISTS', [pub(['musicl']), 'playlist'], true);
+  vec('matches', 'a playlist publisher is not under PODCASTS', [pub(['musicl']), 'podcast'], false);
+  vec('matches', 'music and a podcast: under MUSIC', [pub(['music', 'podcast']), 'music'], true);
+  vec('matches', 'music and a podcast: under PODCASTS too', [pub(['music', 'podcast']), 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'a playlist publisher is not under MUSIC', [pub(['musicl']), 'music'], false, { alsoNaive: true });
+  vec('matches', 'a video publisher is under PODCASTS, the residual', [pub(['video']), 'podcast'], true, { alsoNaive: true });
+  // Unknown — unread in time, or naming nothing — keeps the old place.
+  vec('matches', 'unknown: still under PODCASTS', [pub(), 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'unknown: not claimed as MUSIC', [pub(), 'music'], false, { alsoNaive: true });
+  vec('matches', 'read and naming none: still under PODCASTS', [pub([]), 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'a publisher of publishers says nothing: under PODCASTS', [pub(['publisher']), 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'a publisher of publishers is not MUSIC', [pub(['publisher']), 'music'], false, { alsoNaive: true });
+  vec('matches', 'every publisher is under ALL', [pub(['music']), 'all'], true, { alsoNaive: true });
+  vec('matches', 'no publisher is a person', [pub(['music']), 'npub'], false, { alsoNaive: true });
+
+  const ser = (v) => JSON.stringify(v);
+  const invoke = (impl, v) => {
+    try {
+      return ser((impl === 'real' ? real : naive)[v.kind](...v.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  for (const v of vectors) {
+    const got = invoke('real', v);
+    if (got === ser(v.expect)) ok(v.label);
+    else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+  }
+  replayVectors({ vectors, invoke, fail });
 }
 
 // ---------------------------------------------------------------------------
