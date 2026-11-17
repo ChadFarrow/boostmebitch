@@ -387,6 +387,30 @@ console.log('\n--- 5. The relay really holds them (read back over NIP-01) ---');
 }
 
 // ===========================================================================
+console.log('\n--- 5a. A link the APP writes keeps its /@handle beside a mention of that name ---');
+// ===========================================================================
+// The body carries the episode's own page, from RSS <link>. On a Castopod show
+// that page is https://host/@<handle>/episodes/<slug>, so a sender who
+// @mentioned someone named "<handle>" broke a link they never typed: the
+// mention step replaced the name everywhere in the body. e2e:mentionlinks
+// covers a link the SENDER typed, through the real picker; this is the one
+// buildBoostNoteTemplate writes itself. After section 5 on purpose, so its
+// count of boost notes is not moved.
+{
+  const castopod = 'https://castopod.example/@handle/episodes/ep-1';
+  const note = await publishBoostNote({
+    podcast, episode: { ...episode, link: castopod }, boostagram: boostagram('thanks @handle'),
+    results: [], relays: [RELAY], mentions: [{ ...mentionA, name: 'handle' }],
+  });
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  check('the Castopod note reached the relay', !!e, true);
+  check('the episode link reaches the body whole', e?.content.includes(castopod), true);
+  check('...with no URI written into it', e?.content.includes('/nostr:'), false);
+  check('the typed @handle became the URI', e?.content.includes(`thanks nostr:${mentionA.npub}`), true);
+}
+
+// ===========================================================================
 console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the tags ---');
 // ===========================================================================
 // Wiring, not arithmetic: check:vts pins boostNoteTrack, and cannot see where
