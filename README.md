@@ -59,7 +59,6 @@ deploys never collide.
 - **Search lanes** — a content-type selector that picks which lanes to search rather than filtering results after the fact.
 - **A kind:0 profile editor** that merges over the raw event and refuses entirely on an untrustworthy read.
 - **Music albums** render as albums (play overlay, tracklist, track order); episode lists can run oldest-first.
-- **We serve a Lightning address too** — `chadf@boostmebitch.com`, LNURL + keysend.
 - **Installable PWA**, **light/dark** themes.
 
 ---
@@ -120,7 +119,7 @@ vercel
 #                                      empty and no Android app verifies)
 ```
 
-Podcast Index credentials live only in API routes (`app/api/*`) so they never reach the browser. The Spark SDK talks straight to Spark's signing operators, so it needs no key. `vercel.json` also carries the LNURL rewrite for our own Lightning address (see below) — **`next dev` does not apply `vercel.json`**, so that path only exists on a deploy.
+Podcast Index credentials live only in API routes (`app/api/*`) so they never reach the browser. The Spark SDK talks straight to Spark's signing operators, so it needs no key.
 
 ## Android apps
 
@@ -181,7 +180,6 @@ The **dock** (`components/tab-bar.tsx`) fronts three of them — **Home / Live /
 | `api/nostr/index` | `services/nostr-index` | keeps the shared key server-side; `path` matched against a fixed allowlist |
 | `api/nostr/site-sign` | — | signs a boost note with `SITE_NOSTR_SK`, which may never reach the browser |
 | `.well-known/nostr.json` | — | NIP-05 for the site identity, derived from `SITE_NOSTR_SK` |
-| `.well-known/keysend/[name]` | — | our own Lightning address's keysend doc, multi-domain aware |
 | `.well-known/assetlinks.json` | — | Digital Asset Links, built from the `ANDROID_*` env |
 
 Every route starts with `rateLimit(req, '<route>', N)`, sets `Cache-Control` on 200 responses only, and returns `{ error }` through `getErrorMessage(e, fallback)` — never a raw exception message, which would turn the SSRF guard into an oracle.
@@ -437,17 +435,6 @@ The header's combined **"Sign in ▾"** control opens a modal with **Continue wi
 - **`/favorites` is a real route**, not a panel — it replaced a collapsed aside on the home page that showed twelve rows per medium, which was untenable at ~200 favorites. It groups by medium under collapsible headings, sorts and filters, reveals twelve rows at a time (a bytes cap on third-party covers), and carries the **public / private / off** visibility control, a **private-half audit and repair** tool, and **export/import of the kind:10333 event itself**. A new user arriving from another podcast app brings their shows with **OPML import** (each feed looked up in Podcast Index by its address, a paid feed's address never sent anywhere), and **OPML export** takes the favorite shows to another app. A per-npub localStorage cache paints it instantly — and that cache is an *input* to the next sync, not just a render cache, so a surface may only claim the library is empty once the read has actually answered.
 - **Mutes** (kind:10000) — 🚫 on a note card. Interoperates with Damus/Amethyst. The private half is **whatever cipher the writer used** — NIP-51 specified NIP-04 and later moved to NIP-44, so the list is republished in the form it was read in; rewriting a NIP-44 list as NIP-04 makes it unreadable to the client that wrote it, from a publish that looks entirely successful here. An unreadable blob from another client is carried verbatim, and said so on screen. Filtered at render time across all feeds.
 - **Follows** (NIP-02 kind:3) — `+ Follow` on note cards and on npubs in show notes, through one shared singleton (a 20-card feed does **one** kind:3 fetch, and toggles are serialized). Publishing preserves the existing content and every existing tag, changing exactly one `p`. **The invariant: never publish a list you didn't reliably fetch** — buttons stay disabled until the load is trustworthy, and an empty-base publish is re-confirmed against relays and a last-known-good cache first. A blind republish is the classic way clients nuke someone's follow list.
-
----
-
-## Serving our own Lightning address
-
-The mirror image of the boost path: `chadf@boostmebitch.com` is an address other apps pay.
-
-- **LNURL** is a `vercel.json` **rewrite** — `/.well-known/lnurlp/:user` → an LNbits instance fronting the node. An edge rewrite, so the hottest path in a payment costs no lambda invocation. Not applied by `next dev`.
-- **Keysend** is a route handler (`app/.well-known/keysend/[name]/route.ts`), deliberately not a static file. It validates the pubkey on the way *out* against the same `/^0[23][0-9a-f]{64}$/` the reader enforces, and serves 404 rather than publishing a malformed one — a payer that trusts a bad pubkey sends a keysend that can never arrive. Each name carries its own `domain`, so one brand's deploy never answers for the other's address.
-
-The two aren't independent: discovery *starts* at lnurlp, and every BOLT11-only wallet (Spark among them) can only pay that way.
 
 ---
 
