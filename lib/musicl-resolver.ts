@@ -15,7 +15,7 @@
 import type { ValueBlock, ValueRecipient } from './types';
 import { safeFetch } from './safe-fetch';
 import { readCappedText } from './capped-body';
-import { readAttr, decodeXmlEntities, findTags, firstTag, findBlocks, firstBlock } from './feed-xml';
+import { readAttr, decodeXmlEntities, findTags, firstTag, findBlocks, firstBlock, parsePublisherMediums } from './feed-xml';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { mapLimit, FEED_FANOUT } from './util';
@@ -210,6 +210,23 @@ export async function getPublisherAlbumUrls(feedUrl: string): Promise<string[] |
   if (!xml) return null;
   if (!isPublisherFeed(xml)) return [];
   return publisherRemoteItemUrls(xml);
+}
+
+/**
+ * What a publisher feed publishes — the `medium` its remoteItems name
+ * (`parsePublisherMediums`) — for the search box to list it under that choice.
+ *
+ * The same two answers as `getPublisherAlbumUrls`: `null` when the feed could
+ * not be READ, `[]` when it was read and is not a publisher or names no medium.
+ * Both leave the row where it was before this existed, but only `null` is a
+ * failure to ask. Through the same `fetchFeedXml`, so the cache it fills is the
+ * one `/api/publisher` reads when the row is opened.
+ */
+export async function getPublisherMediums(feedUrl: string): Promise<string[] | null> {
+  const xml = await fetchFeedXml(feedUrl);
+  if (!xml) return null;
+  if (!isPublisherFeed(xml)) return [];
+  return parsePublisherMediums(xml);
 }
 
 export interface ResolvedRemoteItem {
