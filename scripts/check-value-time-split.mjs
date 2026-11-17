@@ -9,6 +9,8 @@
  *   mergeEpisodeContents — which rows of the one contents list may carry a heart
  *   streamAction      — 'auto' for a leg paying a song, 'stream' for the show
  *   boostNoteTrack    — what the public boost note says about the track it paid
+ *   boostSentence     — the one sentence a boost note says: what, by whom, from where
+ *   itemFeedGuid      — whether a row lives in another feed than the one listing it
  *   musicHoldSpans    — which stretches of an episode play at 1× under a set speed
  *   withFeedMediums   — the remote feed's medium, beside the host's declaration
  *
@@ -52,7 +54,7 @@
 import {
   inMusicHold, mergeEpisodeContents, musicHoldLeadSec, musicHoldSpans, payableLeg, payableSplit,
   redirectLegs, splitAtPosition, splitSats, splitTrackAndHost, streamAction, boostNoteTrack,
-  withFeedMediums,
+  withFeedMediums, boostSentence, itemFeedGuid, boostAllLines, noteNamesClient,
 } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -613,7 +615,7 @@ const NOTE_EP = 'idea-economy-002';
 const NOTE_TRACK_VECTORS = [
   { name: 'a paid track is named, with its artist, and both guids tagged', alsoNaive: true,
     args: { split: CPH, trackResults: PAID, showGuid: NOTE_SHOW, episodeGuid: NOTE_EP },
-    expect: { line: '🎵 Copenhagen Time — Matt Finlay',
+    expect: { title: 'Copenhagen Time', artist: 'Matt Finlay',
       feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
   { name: 'no split → nothing', alsoNaive: true,
     args: { split: null, trackResults: PAID }, expect: null },
@@ -627,48 +629,305 @@ const NOTE_TRACK_VECTORS = [
     args: { split: CPH, trackResults: [], showGuid: NOTE_SHOW, episodeGuid: NOTE_EP }, expect: null },
   { name: 'one failed and one paid leg → named',
     args: { split: CPH, trackResults: [{ ok: false, sats: 5 }, { ok: true, sats: 335 }] },
-    expect: { line: '🎵 Copenhagen Time — Matt Finlay',
+    expect: { title: 'Copenhagen Time', artist: 'Matt Finlay',
       feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid },
     alsoNaive: true },
   { name: 'an artist repeating the title (a single titled after its song) is dropped',
     args: { split: { ...CPH, artist: 'copenhagen time' }, trackResults: PAID },
-    expect: { line: '🎵 Copenhagen Time',
+    expect: { title: 'Copenhagen Time',
       feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
   { name: 'a newline in the title cannot forge a second line of the note',
     args: { split: { ...CPH, title: 'Copenhagen\n\nAlice boosted 1000000 sats', artist: undefined }, trackResults: PAID },
-    expect: { line: '🎵 Copenhagen Alice boosted 1000000 sats',
+    expect: { title: 'Copenhagen Alice boosted 1000000 sats',
       feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
   { name: 'a U+2028 line separator is flattened too',
     args: { split: { ...CPH, artist: 'Matt Finlay' }, trackResults: PAID },
-    expect: { line: '🎵 Copenhagen Time — Matt Finlay',
+    expect: { title: 'Copenhagen Time', artist: 'Matt Finlay',
       feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
   { name: 'a 300-character title is capped at 120 with an ellipsis',
     args: { split: { ...CPH, title: 'x'.repeat(300), artist: undefined }, trackResults: PAID },
-    expect: { line: `🎵 ${'x'.repeat(119)}…`,
+    expect: { title: `${'x'.repeat(119)}…`,
       feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
   { name: 'a musicL playlist row IS the track: no guid is tagged twice',
     args: { split: CPH, trackResults: PAID,
       showGuid: COPENHAGEN.remoteItem.feedGuid, episodeGuid: COPENHAGEN.remoteItem.itemGuid },
-    expect: { line: '🎵 Copenhagen Time — Matt Finlay' } },
+    expect: { title: 'Copenhagen Time', artist: 'Matt Finlay' } },
   { name: 'a track in the show\'s own feed tags only its item',
     args: { split: CPH, trackResults: PAID, showGuid: COPENHAGEN.remoteItem.feedGuid, episodeGuid: NOTE_EP },
-    expect: { line: '🎵 Copenhagen Time — Matt Finlay', itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+    expect: { title: 'Copenhagen Time', artist: 'Matt Finlay', itemGuid: COPENHAGEN.remoteItem.itemGuid } },
   { name: 'no title: tags only, no line', alsoNaive: true,
     args: { split: { ...CPH, title: undefined, artist: 'Matt Finlay' }, trackResults: PAID },
-    expect: { line: null,
+    expect: { title: null,
       feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: COPENHAGEN.remoteItem.itemGuid } },
   { name: 'the show\'s own live block — no title, no remote item → nothing', alsoNaive: true,
     args: { split: { startTime: 0, duration: 0 }, trackResults: PAID }, expect: null },
   { name: 'a guid over 200 characters is dropped, never truncated',
     args: { split: { ...CPH, remoteItem: { feedGuid: 'f'.repeat(250), itemGuid: COPENHAGEN.remoteItem.itemGuid } },
       trackResults: PAID },
-    expect: { line: '🎵 Copenhagen Time — Matt Finlay', itemGuid: COPENHAGEN.remoteItem.itemGuid } },
+    expect: { title: 'Copenhagen Time', artist: 'Matt Finlay', itemGuid: COPENHAGEN.remoteItem.itemGuid } },
   { name: 'a guid carrying whitespace is dropped',
     args: { split: { ...CPH, remoteItem: { feedGuid: COPENHAGEN.remoteItem.feedGuid, itemGuid: 'a b' } },
       trackResults: PAID },
-    expect: { line: '🎵 Copenhagen Time — Matt Finlay', feedGuid: COPENHAGEN.remoteItem.feedGuid } },
+    expect: { title: 'Copenhagen Time', artist: 'Matt Finlay', feedGuid: COPENHAGEN.remoteItem.feedGuid } },
 ];
 for (const v of NOTE_TRACK_VECTORS) check(v.name, boostNoteTrack(v.args), v.expect);
+
+// ── boostSentence ───────────────────────────────────────────────────────────
+// The one sentence of a boost note: `<sender> boosted N sats to <what>[ by
+// <artist>][ from <where>]`. Chad's words, on rev.hodl's note b1d67bdd… of
+// 2026-11-16, which read "boosted 121 sats → ITDV music playlist / 📻 Sing For
+// You": "if it said … boosted 121 sats to Sing For You from the ITDV music
+// playlist, maybe it would make a little more sense". The arrow named the
+// container, which was paid nothing; the sats went to The Doerfels.
+//
+// Lifted from the wire: the ITDV show and row are that event's own `i` tags,
+// `/api/by-guid` for the album (author "The Doerfels", medium "music"), and
+// `/api/remote-item` for the row's artist. Replayed totally against
+// naiveSentence(), the obvious version: the item, else the show, then "from"
+// the show — no artist, no cleaning, no fallbacks.
+console.log('\nboostSentence — what was boosted, then where it was found');
+const ITDV = { title: 'ITDV music playlist', medium: 'musicL', podcastGuid: '88b0640a-489f-4920-be4f-00f85af5b2d4' };
+const SING = { title: 'Sing For You', podcastGuid: 'b2a87a4c-86f0-5194-9eb3-dcba42ce0695' };
+const DISCO = { title: 'Disco Swag - The Album', author: 'The Doerfels', medium: 'music', podcastGuid: 'b2a87a4c-86f0-5194-9eb3-dcba42ce0695' };
+const HGH_SHOW = { title: 'Homegrown Hits', author: 'Two Dudes', medium: 'podcast', podcastGuid: 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f' };
+const ITDV_PREVIEW = { title: 'ITDV music playlist', author: 'ChadF', medium: 'musicl' };
+const EP146 = { title: 'Episode 146', podcastGuid: 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f' };
+const SENTENCE_VECTORS = [
+  { label: "rev.hodl's note: a playlist row names its artist, then the playlist",
+    args: { sender: 'rev.hodl', sats: 121, show: ITDV, item: SING, itemArtist: 'The Doerfels' },
+    expect: 'rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist' },
+  { label: 'a playlist row whose artist lookup missed', alsoNaive: true,
+    args: { sender: 'rev.hodl', sats: 121, show: ITDV, item: SING },
+    expect: 'rev.hodl boosted 121 sats to Sing For You from ITDV music playlist' },
+  { label: "an album track names the album's author",
+    args: { sender: 'ChadF', sats: 100, show: DISCO, item: SING },
+    expect: 'ChadF boosted 100 sats to Sing For You by The Doerfels from Disco Swag - The Album' },
+  // PC20-Nostr pc20-boost-notes.md rule 6: `by` is dropped when it equals
+  // <what> — never because it repeats the album, which is <where> here.
+  { label: 'a track on a self-titled album still says by',
+    args: { sender: 'ChadF', sats: 100, show: { ...DISCO, title: 'The Doerfels' }, item: SING },
+    expect: 'ChadF boosted 100 sats to Sing For You by The Doerfels from The Doerfels' },
+  // The format's vector 6: track `Kurtis`, artist `kurtis`, album `Night Drive`.
+  { label: 'an artist equal to the track title is dropped, ignoring case', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { title: 'Night Drive', author: 'kurtis', medium: 'music' }, item: { title: 'Kurtis' } },
+    expect: 'ChadF boosted 100 sats to Kurtis from Night Drive' },
+  // Chad, 2026-11-16, on the format's open question: an album boost says who
+  // made it — "ChadF boosted 100 sats to Disco Swag - The Album by The Doerfels".
+  { label: 'an album boost names its artist',
+    args: { sender: 'ChadF', sats: 100, show: DISCO },
+    expect: 'ChadF boosted 100 sats to Disco Swag - The Album by The Doerfels' },
+  { label: 'a self-titled album boost does not say by', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { title: 'Kurtis', author: 'kurtis', medium: 'music' } },
+    expect: 'ChadF boosted 100 sats to Kurtis' },
+  { label: 'a playlist boost never names its curator', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { ...ITDV, author: 'ChadF' } },
+    expect: 'ChadF boosted 100 sats to ITDV music playlist' },
+  // The format's own vectors (pc20-boost-notes.md "Test vectors", app `Fountain`).
+  { label: 'format vector 1: a podcast, via the app', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits via Fountain' },
+  { label: 'format vector 2: no sender name',
+    args: { sender: '', sats: 100, show: HGH_SHOW, item: EP146, via: 'Fountain' },
+    expect: 'Boosted 100 sats to Episode 146 from Homegrown Hits via Fountain' },
+  { label: 'format vector 3: an empty episode title',
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: { ...EP146, title: '' }, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits via Fountain' },
+  { label: 'format vector 7: a podcast author is never a by', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { ...HGH_SHOW, author: 'Chad' }, item: EP146, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Episode 146 from Homegrown Hits via Fountain' },
+  { label: 'format vector 10: a newline in the episode title',
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: { ...EP146, title: 'Episode\n146' }, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Episode 146 from Homegrown Hits via Fountain' },
+  { label: 'format vector 16: an album, via the app',
+    args: { sender: 'ChadF', sats: 100, show: DISCO, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Disco Swag - The Album by The Doerfels via Fountain' },
+  { label: 'format vector 17: the app\'s default sender name', alsoNaive: true,
+    args: { sender: 'boostmebitch.com user', sats: 100, show: HGH_SHOW, item: EP146, via: 'BoostMeBitch' },
+    expect: 'boostmebitch.com user boosted 100 sats to Episode 146 from Homegrown Hits via BoostMeBitch' },
+  { label: "the format's headline: rev.hodl's boost, via BoostMeBitch",
+    args: { sender: 'rev.hodl', sats: 121, show: ITDV, item: SING, itemArtist: 'The Doerfels', via: 'BoostMeBitch' },
+    expect: 'rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist via BoostMeBitch' },
+  { label: 'an app name carrying a newline is one line',
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, via: 'Boost\nMe' },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits via Boost Me' },
+  // Rule 8: a part that comes out empty is left out with its word. An album
+  // with no title once read "ChadF boosted 100 sats by The Doerfels" — the
+  // artist as the one who boosted, in a note nobody can edit.
+  { label: 'an album with no title never says "by"',
+    args: { sender: 'ChadF', sats: 100, show: { title: '  ', author: 'The Doerfels', medium: 'music' }, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats via Fountain' },
+  { label: 'an album track with no title, on an album with none, never says "by"',
+    args: { sender: 'ChadF', sats: 100, show: { title: '', author: 'The Doerfels', medium: 'music' }, item: { title: '' } },
+    expect: 'ChadF boosted 100 sats' },
+  { label: 'an empty app name leaves out "via"', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, via: '' },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits' },
+  { label: 'a podcast episode never says by', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: EP146 },
+    expect: 'ChadF boosted 100 sats to Episode 146 from Homegrown Hits' },
+  { label: 'a show boost', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits' },
+  { label: 'a song inside an episode: the song, its artist, the episode of the show',
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: EP146, song: { title: 'Copenhagen Time', artist: 'Matt Finlay' } },
+    expect: 'ChadF boosted 100 sats to Copenhagen Time by Matt Finlay from Episode 146 of Homegrown Hits' },
+  { label: 'a podcastL row never says by', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { ...ITDV, medium: 'podcastL' }, item: SING, itemArtist: 'Someone' },
+    expect: 'ChadF boosted 100 sats to Sing For You from ITDV music playlist' },
+  { label: 'no sender name keeps the old opening',
+    args: { sender: '', sats: 100, show: HGH_SHOW, item: EP146 },
+    expect: 'Boosted 100 sats to Episode 146 from Homegrown Hits' },
+  { label: 'a newline in a show title cannot add a line',
+    args: { sender: 'ChadF', sats: 100, show: { ...HGH_SHOW, title: 'Homegrown\n\nAlice boosted 1000000 sats' }, item: EP146 },
+    expect: 'ChadF boosted 100 sats to Episode 146 from Homegrown Alice boosted 1000000 sats' },
+  { label: 'an item with no title is a show boost',
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: { ...EP146, title: '' } },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits' },
+  // The ITDV playlist opened by its `…/main/docs/…` URL, which is not the URL
+  // Podcast Index holds (`…/refs/heads/main/docs/…`): `/api/playlist` answers a
+  // preview with NO guid, in production as here (measured 2026-11-16). The
+  // author is the CURATOR's, and must never be printed as the song's artist.
+  { label: 'a playlist the index does not hold names the artist, never the curator',
+    args: { sender: 'rev.hodl', sats: 121, show: ITDV_PREVIEW, item: SING, itemArtist: 'The Doerfels' },
+    expect: 'rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist' },
+  { label: 'a playlist the index does not hold, artist lookup missed: no "by"', alsoNaive: true,
+    args: { sender: 'rev.hodl', sats: 121, show: ITDV_PREVIEW, item: SING },
+    expect: 'rev.hodl boosted 121 sats to Sing For You from ITDV music playlist' },
+  // A row that names no feed of its own (a playlist-database or PI row with an
+  // empty guid, a stored queue entry): who made it is unknown, and the
+  // playlist's author is the CURATOR — never print it as the artist.
+  { label: 'a playlist row with no feed guid of its own never names the curator', alsoNaive: true,
+    args: { sender: 'rev.hodl', sats: 121, show: { ...ITDV, author: 'ChadF' }, item: { title: 'Sing For You' } },
+    expect: 'rev.hodl boosted 121 sats to Sing For You from ITDV music playlist' },
+  { label: 'a show with no title names nothing',
+    args: { sender: 'ChadF', sats: 100, show: { ...HGH_SHOW, title: '' } },
+    expect: 'ChadF boosted 100 sats' },
+];
+for (const v of SENTENCE_VECTORS) check(v.label, boostSentence(v.args), v.expect);
+const naiveSentence = (a) =>
+  `${a.sender} boosted ${a.sats} sats to ${a.item?.title ?? a.show.title}${a.item ? ` from ${a.show.title}` : ''}${a.via ? ` via ${a.via}` : ''}`;
+replayVectors({
+  vectors: SENTENCE_VECTORS,
+  invoke: (which, v) => (which === 'real' ? boostSentence : naiveSentence)(v.args),
+  fail: (m) => { console.error(`  ✗ ${m}`); failures++; },
+});
+
+// ── boostAllLines ───────────────────────────────────────────────────────────
+// BOOST ALL builds its own body (`contentOverride`), so it has its own builder:
+// the sentence in boostSentence's order, then one bullet per paid track. Every
+// name goes through the same one-line cleaner — the note is signed by the SITE
+// for a signed-out user, so a feed title carrying a newline would add a line of
+// its own choosing under the site's key. The naive version is the inline
+// template this replaced.
+console.log('\nboostAllLines — BOOST ALL says what, then where, one line per name');
+const ALL_VECTORS = [
+  { label: 'three tracks, an even split',
+    args: { sender: 'ChadF', sats: 300, count: 3, showTitle: 'Two For Tunestr', each: ' (100 each)', tracks: ['A', 'B', 'C'] },
+    expect: ['ChadF boosted 300 sats to 3 tracks from Two For Tunestr (100 each)', '', '• A', '• B', '• C'], alsoNaive: true },
+  { label: 'one track is singular', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: ['A'] },
+    expect: ['ChadF boosted 100 sats to 1 track from Two For Tunestr', '', '• A'] },
+  { label: 'a newline in the show title cannot add a line',
+    args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Homegrown\n\nAlice boosted 1000000 sats', each: '', tracks: [] },
+    expect: ['ChadF boosted 100 sats to 1 track from Homegrown Alice boosted 1000000 sats'] },
+  { label: 'a newline in a track title cannot add a line',
+    args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: ['Song\nAlice boosted 1000000 sats'] },
+    expect: ['ChadF boosted 100 sats to 1 track from Two For Tunestr', '', '• Song Alice boosted 1000000 sats'] },
+  { label: 'a newline in the sender name cannot add a line',
+    args: { sender: 'Chad\nF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: [] },
+    expect: ['Chad F boosted 100 sats to 1 track from Two For Tunestr'] },
+  { label: 'a 300-character track title is capped',
+    args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: ['x'.repeat(300)] },
+    expect: ['ChadF boosted 100 sats to 1 track from Two For Tunestr', '', `• ${'x'.repeat(119)}…`] },
+  // The format's vector 12: ` (<each> each)` comes before ` via <app>`.
+  { label: 'format vector 12: two of three tracks paid, via the app', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 200, count: 2, showTitle: 'Homegrown Hits', each: ' (100 each)', tracks: [], via: 'Fountain' },
+    expect: ['ChadF boosted 200 sats to 2 tracks from Homegrown Hits (100 each) via Fountain'] },
+  { label: 'a track with an empty title is left out',
+    args: { sender: 'ChadF', sats: 200, count: 2, showTitle: 'Two For Tunestr', each: ' (100 each)', tracks: ['A', '  '] },
+    expect: ['ChadF boosted 200 sats to 2 tracks from Two For Tunestr (100 each)', '', '• A'] },
+  // The list is the one part of this body with no maximum of its own: one
+  // bullet per paid track, and a DJ mix pays dozens. The site-sign route
+  // refuses the WHOLE note past its limit — after the sats have moved — so the
+  // list names the first twenty and counts the rest. The sentence keeps the
+  // full count.
+  { label: 'twenty-five tracks: twenty listed, then how many more',
+    args: { sender: 'ChadF', sats: 2500, count: 25, showTitle: 'A Mix', each: ' (100 each)',
+      tracks: Array.from({ length: 25 }, (_, i) => `T${i + 1}`) },
+    expect: ['ChadF boosted 2500 sats to 25 tracks from A Mix (100 each)', '',
+      ...Array.from({ length: 20 }, (_, i) => `• T${i + 1}`), '• and 5 more'] },
+  { label: 'twenty-one tracks: the one left over is counted, never dropped',
+    args: { sender: 'ChadF', sats: 2100, count: 21, showTitle: 'A Mix', each: ' (100 each)',
+      tracks: Array.from({ length: 21 }, (_, i) => `T${i + 1}`) },
+    expect: ['ChadF boosted 2100 sats to 21 tracks from A Mix (100 each)', '',
+      ...Array.from({ length: 20 }, (_, i) => `• T${i + 1}`), '• and 1 more'] },
+  { label: 'exactly twenty: every one listed, no count line', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 2000, count: 20, showTitle: 'A Mix', each: ' (100 each)',
+      tracks: Array.from({ length: 20 }, (_, i) => `T${i + 1}`) },
+    expect: ['ChadF boosted 2000 sats to 20 tracks from A Mix (100 each)', '',
+      ...Array.from({ length: 20 }, (_, i) => `• T${i + 1}`)] },
+];
+for (const v of ALL_VECTORS) check(v.label, boostAllLines(v.args), v.expect);
+const naiveAll = (a) => [
+  `${a.sender} boosted ${a.sats} sats to ${a.count} track${a.count === 1 ? '' : 's'} from ${a.showTitle}${a.each}${a.via ? ` via ${a.via}` : ''}`,
+  ...(a.tracks.length ? ['', ...a.tracks.map((t) => `• ${t}`)] : []),
+];
+replayVectors({
+  vectors: ALL_VECTORS,
+  // Joined: the replay compares with `!==`, and the body is the joined lines.
+  invoke: (which, v) => (which === 'real' ? boostAllLines : naiveAll)(v.args).join('\n'),
+  fail: (m) => { console.error(`  ✗ ${m}`); failures++; },
+});
+
+// ── noteNamesClient ─────────────────────────────────────────────────────────
+// Our card writes "via <client tag>" above a note's body. The shared format
+// ends every sentence with " via <app>", so a note in it already names the app,
+// and the card would say it twice. Only the END of a line counts: a message
+// that says "via X" mid-line is not the sentence. Every note written before the
+// format, and every other app's, keeps the card's label.
+console.log('\nnoteNamesClient — does the body already say "via <client>"?');
+const S = '⚡ Boost ⚡\n\ngreat\n\nChadF boosted 100 sats to Homegrown Hits';
+const CLIENT_VECTORS = [
+  { label: 'a sentence that ends "via <client>"', alsoNaive: true,
+    args: [`${S} via BoostMeBitch\n\nhttps://boostmebitch.com/`, 'BoostMeBitch'], expect: true },
+  { label: 'the case may differ',
+    args: [`${S} via boostmebitch`, 'BoostMeBitch'], expect: true },
+  { label: 'a note from before the format keeps the label', alsoNaive: true,
+    args: ['⚡ Boost ⚡\n\nChadF boosted 100 sats → Homegrown Hits\n📻 Episode 146', 'BoostMeBitch'], expect: false },
+  { label: '"via <client>" in the middle of a line is not the sentence',
+    args: ['⚡ Boost ⚡\n\nI found it via BoostMeBitch yesterday\n\nChadF boosted 100 sats to X', 'BoostMeBitch'], expect: false },
+  { label: 'a longer app name that ends the same is not the client', alsoNaive: true,
+    args: [`${S} via NotBoostMeBitch`, 'BoostMeBitch'], expect: false },
+  { label: 'no client tag, no answer',
+    args: [`${S} via BoostMeBitch`, ''], expect: false },
+  { label: 'a bot note naming another app keeps the bot\'s label', alsoNaive: true,
+    args: ['great\n\n⚡ 333 sats\n📱 via Fountain', 'candr_boost_bot'], expect: false },
+  { label: 'trailing spaces and a CRLF line end still count', alsoNaive: true,
+    args: [`${S} via BoostMeBitch  \r\nhttps://boostmebitch.com/`, 'BoostMeBitch'], expect: true },
+];
+for (const v of CLIENT_VECTORS) check(v.label, noteNamesClient(...v.args), v.expect);
+const naiveClient = (content, client) => content.includes(`via ${client}`);
+replayVectors({
+  vectors: CLIENT_VECTORS,
+  invoke: (which, v) => (which === 'real' ? noteNamesClient : naiveClient)(...v.args),
+  fail: (m) => { console.error(`  ✗ ${m}`); failures++; },
+});
+
+// ── itemFeedGuid ────────────────────────────────────────────────────────────
+// Narrow on purpose, as queueShowFor and payableValue are: BOTH guids must be
+// present to disagree. A feed with no <podcast:guid> is still the parent of its
+// own episodes — EXCEPT a `*L` playlist, which publishes no items of its own, so
+// a row naming a feed is from that feed even when the playlist's guid is unknown
+// (the preview `/api/playlist` answers for a URL the index does not hold).
+console.log('\nitemFeedGuid — does this row live in another feed than its list?');
+check('a playlist row names its album', itemFeedGuid(ITDV, SING), SING.podcastGuid);
+check('an album track is its own feed', itemFeedGuid(DISCO, SING), undefined);
+check('a row with no guid of its own keeps the container', itemFeedGuid(ITDV, { title: 'x' }), undefined);
+check('a container with no guid is the parent', itemFeedGuid({ title: 'x' }, SING), undefined);
+check('no item at all', itemFeedGuid(ITDV, undefined), undefined);
+check('a playlist the index does not hold still names the row\'s album', itemFeedGuid(ITDV_PREVIEW, SING), SING.podcastGuid);
+check('...and a row of it with no guid names nothing', itemFeedGuid(ITDV_PREVIEW, { title: 'x' }), undefined);
+check('an ALBUM with no guid is still the parent of its tracks', itemFeedGuid({ medium: 'music' }, SING), undefined);
 
 // ── Music at 1× ───────────────────────────────
 // The "track marker" of docs/superpowers/specs/2026-11-02-music-plays-at-1x-design.md.
@@ -1003,11 +1262,15 @@ for (const [name, caught] of naiveCaught) {
 // The obvious boostNoteTrack: name whatever the split carries, tag both guids.
 function naiveNoteTrack({ split }) {
   if (!split) return null;
-  const line = split.title ? `🎵 ${split.title}${split.artist ? ` — ${split.artist}` : ''}` : null;
+  const title = split.title || null;
+  const artist = title && split.artist ? split.artist : undefined;
   const feedGuid = split.remoteItem?.feedGuid;
   const itemGuid = split.remoteItem?.itemGuid;
-  if (!line && !feedGuid && !itemGuid) return null;
-  return { line, ...(feedGuid ? { feedGuid } : {}), ...(itemGuid ? { itemGuid } : {}) };
+  if (!title && !feedGuid && !itemGuid) return null;
+  return {
+    title, ...(artist ? { artist } : {}),
+    ...(feedGuid ? { feedGuid } : {}), ...(itemGuid ? { itemGuid } : {}),
+  };
 }
 // TOTAL replay: every vector, not a hand-picked list. Each must reject naive()
 // unless it is marked as a must-still-work vector.

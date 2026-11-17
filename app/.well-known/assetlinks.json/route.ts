@@ -65,9 +65,9 @@ export async function GET(req: Request) {
     process.env.ANDROID_PACKAGE_ID,
     process.env.ANDROID_CERT_SHA256,
   );
-  // `no-store`, where .well-known/nostr.json and .well-known/keysend both cache
-  // for an hour. The divergence is the point: those two answer a question whose
-  // answer is stable, and this one is the live statement of which certificate
+  // `no-store`, where .well-known/nostr.json caches for an hour. The
+  // divergence is the point: that one answers a question whose answer is
+  // stable, and this one is the live statement of which certificate
   // may speak for this origin. An hour of downstream caching works directly
   // against the rotation the env-driven design buys — a REMOVED fingerprint
   // keeps verifying and a newly ADDED one may not — and the release workflow

@@ -30,19 +30,21 @@
 //
 // What it boosts, 100 sats each, through the shipping modal:
 //   1. the first song of a playlist stored on the 3123 server (BMB-hosted), as "My feed";
-//   2. the same, as "Anonymous", while Buddy's routes cannot be read from the page (a browser
-//      on the bitch deploy until PR 4, branch `buddy-sign-cors`, is live on Buddy): the note
-//      must FAIL, never fall back to this deploy's key;
-//   3. the same, as "Anonymous", signed by the LOCAL Buddy server. The page's origin is not
-//      one PR 4 allows, so the page's request to Buddy is handed to this script over a CDP
-//      binding and POSTed to the local Buddy server; production is never asked;
+//   2. the same, as "Anonymous", while Buddy's routes cannot be read from the page (Buddy
+//      down, or its CORS gone): the stamp ladder posts the note from a ONE-TIME key and says
+//      so, never from this deploy's key;
+//   3. the same, as "Anonymous", stamped and signed by the LOCAL Buddy server. The page's
+//      origin is not one Buddy's CORS allows, so the page's request to Buddy is handed to
+//      this script over a CDP binding and POSTed to the local Buddy server; production is
+//      never asked. Its stamp address is a local fake (fake-stamp-address.mjs);
 //   4. the first song of one of the seven existing community feeds (Lightning Thrashes), as
 //      "My feed": the deploy's own words, with the Heard-on line.
 //
 // NOTHING LEAVES THIS MACHINE FOR MONEY OR FOR NOSTR, and each half is checked, not intended:
 //  - The wallet is a stub NIP-47 service on a local relay (copied from e2e-nwc-relay.mjs),
 //    and `/api/item-value` is answered here with one keysend stub node, so every leg is a
-//    `pay_keysend` to the stub. There is no real wallet to pay from.
+//    `pay_keysend` to the stub. The one `pay_invoice` is a note stamp the local fake address
+//    minted, which the stub marks paid. There is no real wallet to pay from.
 //  - Every WebSocket the page opens to anything but the local relay (or the dev server's own
 //    HMR socket) is REDIRECTED to the local relay and recorded. `publishBoostNoteViaSite`
 //    publishes to the hard-coded DEFAULT_RELAYS, so without this a site-signed note would
@@ -52,8 +54,8 @@
 //    NOTFOUND (`--host-resolver-rules`). Measured: `Network.setBlockedURLs` does NOT stop a
 //    WebSocket, so it is set too (for HTTP) but is not this guard. The script proves the
 //    guard first: an unredirected socket to each relay host must fail to open.
-//  - The 3123 server's OWN signing routes (/api/nostr/site-sign and /zap-receipt-sign) are
-//    refused in the page and must never be asked: .env.local holds the real BoostMeBitch
+//  - The 3123 server's OWN signing routes (/api/nostr/site-sign, /site-stamp and
+//    /zap-receipt-sign) are refused in the page and must never be asked: .env.local holds the real BoostMeBitch
 //    site key. A Buddy-worded note signed by it is the failure this task forbids.
 // Feed and Podcast Index reads still reach the public network through the 3123 server.
 import { spawn, execFileSync } from 'node:child_process';
@@ -63,6 +65,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRelay } from './local-relay.mjs';
+import { createFakeStampAddress } from './fake-stamp-address.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44 } from 'nostr-tools';
 import { getToken } from 'nostr-tools/nip98';
@@ -115,6 +118,10 @@ const freePort = () => new Promise((resolve, reject) => {
   s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
 });
 const BUDDY_PORT = Number(process.env.BUDDY_PORT) || await freePort();
+// The Buddy server's stamp address: a local fake, so a stamp is an invoice nobody can pay
+// for real. The --test-origin run asks no stamp of anyone, so it starts none.
+const stampAddr = TEST_ORIGIN ? null : createFakeStampAddress({ name: 'stamp' });
+if (stampAddr) await stampAddr.ready;
 const LOCAL_BUDDY = `http://localhost:${BUDDY_PORT}`;
 // The --test-origin run never asks Buddy, so it starts no Buddy server.
 const buddyDir = TEST_ORIGIN ? null : mkdtempSync(join(tmpdir(), `bmb-e2e-buddy-${process.env.CLAUDE_CODE_SESSION_ID || 'local'}-`));
@@ -152,6 +159,7 @@ if (buddyDir) {
       NEXT_TELEMETRY_DISABLED: '1',
       NEXT_PUBLIC_BRAND: 'buddy',
       SITE_NOSTR_SK: Buffer.from(buddySk).toString('hex'),
+      SITE_STAMP_LNADDRESS: stampAddr.address,
     },
     detached: true,
     stdio: ['ignore', logFd, logFd],
@@ -176,6 +184,7 @@ const finish = async (code) => {
     await wait(1000);
   }
   await stopBuddy();
+  try { await stampAddr?.close(); } catch { /* already closed */ }
   await exit(code);
 };
 if (buddyDir) console.log(`  local Buddy server: ${LOCAL_BUDDY} (NEXT_PUBLIC_BRAND=buddy, a throwaway SITE_NOSTR_SK), in ${buddyDir}`);
@@ -201,7 +210,9 @@ const answerFor = (method, params) => {
   if (method === 'get_info') return { methods: METHODS, alias: 'stub', pubkey: walletPub, network: 'mainnet', block_height: 1, block_hash: '00', color: '#000000' };
   if (method === 'get_balance') return { balance: 1_000_000 * 1000 };
   if (method === 'pay_keysend' || method === 'pay_invoice') {
-    wallet.payments.push({ method, params });
+    // A stamp invoice is "paid" at the fake address, so Buddy's verify link says settled.
+    const stamp = method === 'pay_invoice' && !!stampAddr?.markPaid(params?.invoice);
+    wallet.payments.push({ method, params, stamp });
     return { preimage: 'ab'.repeat(32) };
   }
   return null;
@@ -343,7 +354,7 @@ on(async (m) => {
   if (name === 'bmbBuddy') {
     const { rid, url, body } = JSON.parse(payload);
     let out;
-    const m2 = /^https:\/\/www\.boostmebuddy\.com(\/api\/nostr\/(?:site-sign|zap-receipt-sign))$/.exec(url);
+    const m2 = /^https:\/\/www\.boostmebuddy\.com(\/api\/nostr\/(?:site-sign|site-stamp|zap-receipt-sign))$/.exec(url);
     if (!m2) {
       out = { status: 599, text: '{"error":"e2e: not a Buddy signing route"}' };
     } else {
@@ -412,9 +423,9 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     }
     window.WebSocket = Redirecting;
 
-    // The signing routes: this deploy's are refused; Buddy's are unreadable ('nocors',
-    // what a browser on the bitch deploy sees until PR 4 is live) or handed to the
-    // script, which asks the LOCAL Buddy server ('proxy').
+    // The signing routes, the stamp's included: this deploy's are refused; Buddy's are
+    // unreadable ('nocors', what a browser sees while Buddy cannot be reached) or handed
+    // to the script, which asks the LOCAL Buddy server ('proxy').
     const buddyWaiting = new Map(); let b = 0;
     window.__bmbBuddyResolve = (rid, r) => { const p = buddyWaiting.get(rid); buddyWaiting.delete(rid); if (p) p(r); };
     const real = window.fetch;
@@ -422,7 +433,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url ?? '';
       let abs = url;
       try { abs = new URL(url, location.href).href; } catch {}
-      if (/\\/api\\/nostr\\/(site-sign|zap-receipt-sign)(\\?|$)/.test(abs)) {
+      if (/\\/api\\/nostr\\/(site-sign|site-stamp|zap-receipt-sign)(\\?|$)/.test(abs)) {
         let mode = 'nocors';
         try { mode = localStorage.getItem('__e2eBuddy') || 'nocors'; } catch {}
         record({ type: 'sign', url: abs, body: typeof init?.body === 'string' ? init.body : null, mode });
@@ -468,6 +479,9 @@ const tag1 = (e, name) => tagsOf(e, name)[0] ?? null;
 const BUDDY_WORDS = /boostmebuddy|boost ?me ?buddy/i;
 const BITCH_WORDS = /boostmebitch|boost ?me ?bitch/i;
 const wordsIn = (e) => `${e?.content ?? ''}\n${JSON.stringify(e?.tags ?? [])}`;
+/** The note's one sentence (`boostSentence`): "<sender> boosted N sats to <what>[ by …][ from …] via <app>". */
+const sentenceOf = (e) => (e?.content.split('\n') ?? []).find((l) => / boosted \d+ sats\b/.test(l)) ?? '';
+const ONE_TIME = (brand) => `Posted from a one-time key, not ${brand.displayName}`;
 const parse = (s) => { try { return JSON.parse(s ?? 'null'); } catch { return null; } };
 /** The note as published, for the log: the body, then the tags. */
 const show = (e) => {
@@ -543,6 +557,9 @@ if (TEST_ORIGIN) {
   t.ok('no Buddy word anywhere in the note', !BUDDY_WORDS.test(wordsIn(t1)), wordsIn(t1));
   t.ok(`imeta is on ${BITCH.origin}/api/og/boost.png?`, tag1(t1, 'imeta')?.[1]?.startsWith(`url ${BITCH.origin}/api/og/boost.png?`), JSON.stringify(tag1(t1, 'imeta')));
   t.ok("the default sender name is the deploy's own", t1?.content.includes(`${BITCH.senderName} boosted 100 sats`), t1?.content);
+  const sentenceT1 = sentenceOf(t1);
+  t.ok(`the sentence names the song, then the playlist it was heard on, via ${BITCH.wireName}`,
+    sentenceT1.startsWith(`${BITCH.senderName} boosted 100 sats to ${song.title}`) && sentenceT1.endsWith(` from ${PLAYLIST_TITLE} via ${BITCH.wireName}`), sentenceT1);
   t.ok(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:<maker npub>`, t1?.content.includes(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`), t1?.content);
   const linesT1 = t1?.content.split('\n') ?? [];
   t.equal(`the playlist's link is on the test origin (${HOSTED_ORIGIN}), where it exists`,
@@ -558,16 +575,18 @@ if (TEST_ORIGIN) {
   await boostSong(created.feedUrl, song.title, 'site', { relays: [FAKE_WSS] });
   t.ok('the payment went out', wallet.payments.length - paidBefore === 1, `payments +${wallet.payments.length - paidBefore}`);
   const askedT2 = rec.sign.slice(signBefore);
-  t.equal("the page asked THIS deploy's two routes and no other (the page refuses them: .env.local holds the real key)",
-    askedT2.map((x) => x.url), [`${APP}/api/nostr/zap-receipt-sign`, `${APP}/api/nostr/site-sign`]);
-  const tmplT2 = parse(askedT2[1]?.body);
+  t.equal("the page asked THIS deploy's receipt and stamp routes and no other (the page refuses them: .env.local holds the real key)",
+    askedT2.map((x) => x.url), [`${APP}/api/nostr/zap-receipt-sign`, `${APP}/api/nostr/site-stamp`]);
+  const tmplT2 = parse(askedT2[1]?.body)?.template;
   t.equal('the note template says client BoostMeBitch', tag1(tmplT2, 'client'), ['client', BITCH.wireName]);
   t.ok('the template has no Buddy word', !!tmplT2 && !BUDDY_WORDS.test(wordsIn(tmplT2)), wordsIn(tmplT2));
   t.ok(`the template's imeta is on ${BITCH.origin}`, tag1(tmplT2, 'imeta')?.[1]?.startsWith(`url ${BITCH.origin}/api/og/boost.png?`), JSON.stringify(tag1(tmplT2, 'imeta')));
   t.ok("the template names the deploy's own anonymous sender", tmplT2?.content?.includes(`${BITCH.senderName} boosted 100 sats`), tmplT2?.content);
-  t.ok('the modal says the publish failed (only because this test refuses the route)', /Note not posted/.test(await dialogText()), await dialogText());
-  await wait(2500);
-  t.equal('no boost note reached any relay', published.slice(before).filter((e) => e.kind === 1).length, 0);
+  t.ok(`the modal says a one-time key posted it (only because this test refuses the stamp), not ${BITCH.displayName}`, (await dialogText()).includes(ONE_TIME(BITCH)), await dialogText());
+  const nT2 = await newNote(before);
+  t.ok('the note reached the LOCAL relay', !!nT2);
+  t.ok('signed by a one-time key: not the listener, not either real site key', !!nT2 && ![userPk, BITCH_SITE_PK, BUDDY_REAL_PK].includes(nT2.pubkey), nT2?.pubkey);
+  t.equal('over the same template the site would have signed', nT2?.content, tmplT2?.content);
 } else {
   // ---- 1. a BMB-hosted playlist, "My feed" -------------------------------------------------
   section('1. a song from a playlist BMB hosts, shared to my feed: Buddy\'s words, the album, the Heard-on line');
@@ -579,14 +598,15 @@ if (TEST_ORIGIN) {
   t.ok('a kind:1 boost note reached the LOCAL relay', !!n1);
   show(n1);
   t.equal('it is signed by the listener', n1?.pubkey, userPk);
-  t.ok(`the header names the song's OWN album: "→ ${song.feedTitle}"`, n1?.content.includes(` boosted 100 sats → ${song.feedTitle}\n`), n1?.content);
-  t.ok('the header does not name the playlist', !n1?.content.includes(`→ ${PLAYLIST_TITLE}`), n1?.content);
-  t.ok(`📻 ${song.title}`, n1?.content.includes(`📻 ${song.title}`), n1?.content);
+  const sentence1 = sentenceOf(n1);
+  t.ok(`the sentence names the song, then the playlist it was heard on: "… to ${song.title} … from ${PLAYLIST_TITLE}"`,
+    sentence1.startsWith(`${BUDDY.senderName} boosted 100 sats to ${song.title}`) && sentence1.includes(` from ${PLAYLIST_TITLE} via `), sentence1);
+  t.ok(`it ends "via ${BUDDY.wireName}": the note brand's name, not the boostagram's app_name (decision 17)`, sentence1.endsWith(` via ${BUDDY.wireName}`), sentence1);
   t.ok(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:<maker npub>`, n1?.content.includes(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`), n1?.content);
   const lines1 = n1?.content.split('\n') ?? [];
   const heard1 = lines1.indexOf(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`);
   t.equal(`the next line is the playlist's link, on the hosted origin (${HOSTED_ORIGIN})`, lines1[heard1 + 1], `${HOSTED_ORIGIN}/?podcast=${encodeURIComponent(PL_GUID)}`);
-  t.ok('the Heard-on lines come after the 📻 line and before the listen links', heard1 > lines1.indexOf(`📻 ${song.title}`) && lines1.indexOf(`📻 ${song.title}`) > 0
+  t.ok("the Heard-on lines are right under the sentence, and the listen links after them name the song's OWN album", heard1 > 0 && heard1 === lines1.indexOf(sentence1) + 1
     && lines1.findIndex((l) => l.startsWith(`${BUDDY.origin}/?podcast=${encodeURIComponent(song.podcastGuid)}`)) > heard1 + 1, n1?.content);
   t.ok("the maker's npub is printed once, not again in the trailing run", (n1?.content.split(`nostr:${makerNpub}`).length ?? 0) - 1 === 1, n1?.content);
   t.ok('a p tag names the maker', tagsOf(n1, 'p').some((x) => x[1] === makerPk), JSON.stringify(tagsOf(n1, 'p')));
@@ -611,38 +631,44 @@ if (TEST_ORIGIN) {
   t.equal("the boostagram's remote_feed_guid is the song's album", bg1?.remote_feed_guid, song.podcastGuid);
 
   // ---- 2. "Anonymous", while Buddy's routes cannot be read -----------------------------------
-  section("2. Anonymous, Buddy's routes unreadable from the page (no CORS yet): the note fails, never the bitch key");
+  section("2. Anonymous, Buddy's routes unreadable from the page (Buddy down, or no CORS): a ONE-TIME key posts it, never the bitch key");
   before = published.length;
   paidBefore = wallet.payments.length;
   signBefore = rec.sign.length;
   await boostSong(created.feedUrl, song.title, 'site', { relays: [FAKE_WSS] });
-  t.ok('the payment still went out', wallet.payments.length - paidBefore === 1, `payments +${wallet.payments.length - paidBefore}`);
-  t.ok('the modal says the publish failed', /Note not posted/.test(await dialogText()), await dialogText());
+  t.equal('the payment still went out, and no stamp (none was minted)', wallet.payments.slice(paidBefore).map((p) => p.method), ['pay_keysend']);
+  t.ok(`the modal says a one-time key posted it, not ${BUDDY.displayName}`, (await dialogText()).includes(ONE_TIME(BUDDY)), await dialogText());
   const asked2 = rec.sign.slice(signBefore);
-  t.equal("the page asked Buddy's two routes, and only those", asked2.map((x) => x.url), [`${BUDDY.origin}/api/nostr/zap-receipt-sign`, `${BUDDY.origin}/api/nostr/site-sign`]);
+  t.equal("the page asked Buddy's receipt and stamp routes, and only those", asked2.map((x) => x.url), [`${BUDDY.origin}/api/nostr/zap-receipt-sign`, `${BUDDY.origin}/api/nostr/site-stamp`]);
   const hints2 = receiptHints(asked2[0]?.body);
   t.ok(`the receipt spec's URL hints are on ${BUDDY.origin} only`, hints2.length === 2 && hints2.every((h) => h.startsWith(`${BUDDY.origin}/`)), JSON.stringify(hints2));
-  const tmpl2 = parse(asked2[1]?.body);
+  const tmpl2 = parse(asked2[1]?.body)?.template;
   t.equal('the note template says client BoostMeBuddy', tag1(tmpl2, 'client'), ['client', BUDDY.wireName]);
   t.ok("the template's imeta passes Buddy's own banner rule", tag1(tmpl2, 'imeta')?.[1]?.startsWith(`url ${BUDDY.origin}/api/og/boost.png?`), JSON.stringify(tag1(tmpl2, 'imeta')));
   t.ok("the template names Buddy's anonymous sender", tmpl2?.content?.includes(`${BUDDY.senderName} boosted 100 sats`), tmpl2?.content);
-  t.ok('the template is within the route limits (2000 / 40 / 4096)',
-    (tmpl2?.content?.length ?? 9e9) <= 2000 && (tmpl2?.tags?.length ?? 99) <= 40
+  t.ok('the template is within the route limits (5500 / 40 / 4096)',
+    (tmpl2?.content?.length ?? 9e9) <= 5500 && (tmpl2?.tags?.length ?? 99) <= 40
     && (tmpl2?.tags ?? []).flat().reduce((s, x) => s + x.length, 0) <= 4096);
-  await wait(2500);
-  t.equal('no boost note reached any relay', published.slice(before).filter((e) => e.kind === 1).length, 0);
+  const n2 = await newNote(before);
+  t.ok('the note reached the LOCAL relay', !!n2);
+  t.ok('signed by a one-time key: not the listener, not any site key', !!n2 && ![userPk, BITCH_SITE_PK, BUDDY_REAL_PK, BUDDY_TEST_PK].includes(n2.pubkey), n2?.pubkey);
+  t.equal('over the same template Buddy would have signed', n2?.content, tmpl2?.content);
+  t.ok('no word of the other brand anywhere in it', !BITCH_WORDS.test(wordsIn(n2)), wordsIn(n2));
   const bg2 = boostagramOf(wallet.payments.at(-1));
   t.ok("the anonymous boostagram drops sender_id and keeps the deploy's default name", bg2 && bg2.sender_id === undefined && bg2.sender_name === BITCH.senderName && bg2.app_name === BITCH.wireName, JSON.stringify(bg2));
 
   // ---- 3. "Anonymous", signed by the LOCAL Buddy server --------------------------------------
-  section('3. Anonymous, signed by the local Buddy server (a throwaway key): Buddy signs, nothing else does');
+  section('3. Anonymous, stamped and signed by the local Buddy server (a throwaway key): Buddy signs, nothing else does');
   before = published.length;
+  paidBefore = wallet.payments.length;
   const buddyBefore = buddyAsked.length;
   await boostSong(created.feedUrl, song.title, 'site', { buddy: 'proxy', relays: [FAKE_WSS] });
   const n3 = await newNote(before, 15000);
   show(n3);
   const asked3 = buddyAsked.slice(buddyBefore);
-  t.equal('the local Buddy server was asked for the receipt, then the note', asked3.map((x) => [x.path, x.status]), [['/api/nostr/zap-receipt-sign', 200], ['/api/nostr/site-sign', 200]]);
+  t.equal('the local Buddy server was asked for the receipt, the stamp, then the note', asked3.map((x) => [x.path, x.status]), [['/api/nostr/zap-receipt-sign', 200], ['/api/nostr/site-stamp', 200], ['/api/nostr/site-sign', 200]]);
+  t.equal('a keysend for the boost, then the stamp: an invoice the local fake minted', wallet.payments.slice(paidBefore).map((p) => [p.method, p.stamp]), [['pay_keysend', false], ['pay_invoice', true]]);
+  t.ok('...for 1% of 100 sats: 1 sat (1000 msat)', stampAddr.minted.at(-1)?.amount === 1000, JSON.stringify(stampAddr.minted.at(-1)));
   const receipt3 = parse(asked3[0]?.text)?.event;
   t.ok('it answered with a 9735 signed by its throwaway key', receipt3?.kind === 9735 && receipt3?.pubkey === BUDDY_TEST_PK, JSON.stringify(receipt3 && { kind: receipt3.kind, pubkey: receipt3.pubkey }));
   t.ok(`...whose URL hints are on ${BUDDY.origin} only`, (receipt3?.tags ?? []).filter((x) => x[0] === 'i' && x[2]).every((x) => x[2].startsWith(`${BUDDY.origin}/`))
@@ -675,7 +701,9 @@ if (TEST_ORIGIN) {
       t.ok(`its playlist link is a line of its own, on ${BITCH.origin}`, (n4?.content.split('\n') ?? []).includes(`${BITCH.origin}/?podcast=${encodeURIComponent(cf.podcast.podcastGuid)}`), n4?.content);
       t.ok("the playlist's podcast:guid i tag is kept, after the song's", tagsOf(n4, 'i').findIndex((x) => x[1] === `podcast:guid:${cf.podcast.podcastGuid}`) > 1, JSON.stringify(tagsOf(n4, 'i')));
     }
-    t.ok(`the header names the song's own album: "→ ${cfSong.feedTitle}"`, !cfSong.feedTitle || n4?.content.includes(` boosted 100 sats → ${cfSong.feedTitle}\n`), n4?.content);
+    const sentence4 = sentenceOf(n4);
+    t.ok(`the sentence names the song, then the playlist: "… to ${cfSong.title} … from ${cf.podcast.title} via ${BITCH.wireName}"`,
+      sentence4.includes(` boosted 100 sats to ${cfSong.title}`) && sentence4.endsWith(` from ${cf.podcast.title} via ${BITCH.wireName}`), sentence4);
     t.ok('no Buddy words anywhere in the note', !BUDDY_WORDS.test(wordsIn(n4)), wordsIn(n4));
     t.ok(`imeta is on ${BITCH.origin}`, tag1(n4, 'imeta')?.[1]?.startsWith(`url ${BITCH.origin}/api/og/boost.png?`), JSON.stringify(tag1(n4, 'imeta')));
     const bg4 = boostagramOf(wallet.payments.slice(paidBefore)[0]);
@@ -697,7 +725,9 @@ if (TEST_ORIGIN) {
   t.equal("this deploy's own signing routes were never asked", signAsked.filter((x) => x.url.startsWith(APP)).map((x) => x.url), []);
 }
 t.ok('nothing signed by either REAL site key, ever', !published.some((e) => e.pubkey === BITCH_SITE_PK || e.pubkey === BUDDY_REAL_PK));
-t.ok('every payment was a keysend to the stub node', wallet.payments.length > 0 && wallet.payments.every((p) => p.method === 'pay_keysend' && p.params?.pubkey === STUB_NODE), JSON.stringify(wallet.payments.map((p) => [p.method, p.params?.pubkey])));
+t.ok('every keysend went to the stub node, and every invoice paid was a stamp the local fake minted', wallet.payments.length > 0
+  && wallet.payments.every((p) => (p.method === 'pay_keysend' && p.params?.pubkey === STUB_NODE) || (p.method === 'pay_invoice' && p.stamp)),
+  JSON.stringify(wallet.payments.map((p) => [p.method, p.params?.pubkey ?? p.params?.invoice?.slice(0, 24), p.stamp])));
 
 // ---- tidy: the maker deletes the stored playlist; the Buddy server and its copy go --------
 t.equal('the maker deleted the stored playlist', await tidy(), 200);

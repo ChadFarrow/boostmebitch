@@ -4,13 +4,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, receiptRefUrls, checkSignerLink, type QuotedZapReceipt, type SignerCheck } from '@/lib/nostr';
+import { sendBoost, pickRail, paidAny, payStampInvoice, type Rail } from '@/lib/v4v/boost';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, receiptRefUrls, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
+import type { Event } from 'nostr-tools';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { getErrorMessage, hasValueRecipients, payableValue, playlistBoostContext, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { boostAllLines, getErrorMessage, hasValueRecipients, payableValue, playlistBoostContext, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
 import { BRAND, noteBrandFor, resolveSenderName } from '@/lib/brand';
 import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
@@ -114,10 +115,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const senderName = resolveSenderName(name, anonymous);
 
   // The NOTE's words — Buddy's for an episode played from a playlist BMB hosts on
-  // the production Buddy origin, on either deploy (`noteBrandFor`, lib/brand.ts) —
-  // and the show it names,
-  // which for a playlist episode is its OWN feed. The boostagrams never change:
-  // `app_name` and `sender_name` name the deploy that paid.
+  // the production Buddy origin, on either deploy (`noteBrandFor`, lib/brand.ts).
+  // The sentence's `from` stays what the listener had open (the shared format's
+  // rule 3), and the note adds a Heard-on line for a playlist. The boostagrams
+  // never change: `app_name` and `sender_name` name the deploy that paid.
   const ctx = useMemo(
     () => playlistBoostContext(podcast, episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH),
     [podcast, episode],
@@ -453,8 +454,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       uuid: randomId(),
     };
 
-    // In the NOTE's words: its brand's default sender name and the show the
-    // episode belongs to (see `ctx` above). `senderName` stays on the wire.
+    // In the NOTE's words: its brand's default sender name (see `ctx` above).
+    // `senderName` stays on the wire.
     const noteSenderName = resolveSenderName(name, anonymous, noteBrand);
     const lines: string[] = ['⚡ Boost ⚡', ''];
     if (boostMsg.trim()) lines.push(boostMsg.trim(), '');
@@ -477,7 +478,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     //
     // Omitted when the paid tracks divide differently from one another — a
     // per-track `remotePercentage` makes that ordinary, and one number cannot
-    // describe them. Singular tracks skip it: "for 100 sats (100 each)" reads
+    // describe them. Singular tracks skip it: "100 sats to 1 track (100 each)" reads
     // as a fault.
     const paidLegs = successfulIdx.map((i) => trackLegs[i]);
     const uniform = paidLegs.length > 1 && paidLegs.every(
@@ -488,19 +489,31 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       : uniform.host.sats > 0
         ? ` (${uniform.track.sats} to the artist + ${uniform.host.sats} to the show, each)`
         : ` (${uniform.track.sats} each)`;
-    lines.push(
-      `${noteSenderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${ctx.show.title} for ${totalSats} sats${each}`,
-    );
-    if (trackList.length) {
-      lines.push('');
-      for (const t of trackList) lines.push(`• ${t}`);
-    }
+    // The same order as every other note's sentence (`boostSentence`): the
+    // sats, WHAT they went to, then where it was found — and every name cleaned
+    // to one line, since the site signs this note for a signed-out user. In
+    // the NOTE's words: its brand's default sender name and its app
+    // (`noteAppName` in boost-notes.ts makes the same choice for the tag).
+    lines.push(...boostAllLines({
+      sender: noteSenderName,
+      sats: totalSats,
+      count: successfulIdx.length,
+      showTitle: podcast.title,
+      each,
+      tracks: trackList,
+      via: noteBrand.id === BRAND.id ? summaryBoostagram.app_name : noteBrand.wireName,
+    }));
     const contentOverride = lines.join('\n');
 
     // A summary receipt an attempt has already published. RETRY NOTE quotes it
     // rather than minting a second: two receipts for one boost would count its
     // sats twice wherever receipts are summed.
     let summaryReceipt: QuotedZapReceipt | null = null;
+    // A site-signed summary's progress (lib/site-stamp.ts): the template, the
+    // paid stamp and the signed event, so RETRY NOTE never pays a second stamp.
+    // The stamp goes out on the rail the boosts paid on.
+    const siteNote: SiteNoteState<Event> = {};
+    const stampRail = rail;
     // The note step as a function, so RETRY NOTE can run it again with a fresh
     // signer check — the check this attempt used is the one that failed.
     const postSummary = async (check: Promise<SignerCheck> | null): Promise<void> => {
@@ -540,19 +553,34 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         // User's own key only when signed in AND they picked "Post to my Nostr
         // feed"; otherwise the site's Nostr identity (signed out, or the
         // signed-in "Post via boostmebitch.com" choice).
-        const note = identity && shareAs === 'self'
-          ? await publishBoostNote({
-              podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
-              mentions, summaryReceipt: summaryReceipt ?? undefined,
-              brand: noteBrand, senderName: noteSenderName,
-            })
-          : await publishBoostNoteViaSite({
-              podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
-              mentions, summaryReceipt: summaryReceipt ?? undefined,
-              brand: noteBrand, senderName: noteSenderName,
-            });
+        let notice: string | undefined;
+        let note;
+        if (identity && shareAs === 'self') {
+          note = await publishBoostNote({
+            podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
+            mentions, summaryReceipt: summaryReceipt ?? undefined,
+            brand: noteBrand, senderName: noteSenderName,
+          });
+        } else {
+          // A note in Buddy's words asks the Buddy deploy for its stamp and
+          // its signature (publishBoostNoteViaSite).
+          const r = await publishBoostNoteViaSite({
+            podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
+            mentions, summaryReceipt: summaryReceipt ?? undefined,
+            brand: noteBrand, senderName: noteSenderName,
+          }, {
+            // No rail means nothing to pay with: the ladder signs one-time.
+            payStamp: (bolt11, sats) => (stampRail ? payStampInvoice(stampRail, bolt11, sats) : Promise.reject(new Error('no wallet'))),
+            state: siteNote,
+            onStamp: (sats) => { if (!cancelled.current) setPubState({ kind: 'publishing', step: 'stamp', sats }); },
+          });
+          note = r.note;
+          if (r.signer === 'one-time' && r.why) {
+            notice = `Posted from a one-time key, not ${noteBrand.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`;
+          }
+        }
         if (cancelled.current) return;
-        setPubState({ kind: 'done', note });
+        setPubState({ kind: 'done', note, notice });
       } catch (e) {
         if (cancelled.current) return;
         setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed'), retry });

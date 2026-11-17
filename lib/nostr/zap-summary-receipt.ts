@@ -37,6 +37,12 @@ export interface QuotedZapReceipt {
    * reader to an empty answer.
    */
   relays: string[];
+  /**
+   * The signed receipt itself. A site-signed note sends it to site-stamp, which
+   * refuses a receipt that claims more than the note (lib/site-stamp.ts,
+   * `quotedReceiptFits`).
+   */
+  event: Event;
 }
 
 /** The site's pubkey in hex, from the per-brand pinned npub. */
@@ -105,10 +111,15 @@ export async function mintSummaryReceipt(args: {
     });
     if (!res.ok) return null;
     const { event } = (await res.json()) as { event?: Event };
-    // Only a receipt signed by the key the request named — the brand's own site
-    // key — is quoted. A note citing a receipt from any other key would claim an
-    // attestation that brand never made (and site-sign's `q` rule refuses one).
-    if (!event || event.kind !== 9735 || event.pubkey !== site) return null;
+    if (!event || event.kind !== 9735) return null;
+    // ANOTHER brand's deploy answered across origins: quote its receipt only when
+    // the key the request named — that brand's own site key — signed it. A note
+    // citing a receipt from any other key would claim an attestation that brand
+    // never made. This deploy's own route signs with the key its site notes use,
+    // and site-stamp refuses a quoted receipt that key did not sign, so it needs
+    // no pinned-npub test: that test would refuse every receipt on a deploy whose
+    // key is a test key (e2e:sitestamp).
+    if (brand.id !== BRAND.id && event.pubkey !== site) return null;
 
     const published = await publishSignedEvent(event, relays);
     // A receipt nobody holds is not worth quoting: the quote would point every
@@ -119,6 +130,7 @@ export async function mintSummaryReceipt(args: {
       id: event.id,
       pubkey: event.pubkey,
       relays: published.acceptedRelays.slice(0, 3),
+      event,
     };
   } catch {
     return null;

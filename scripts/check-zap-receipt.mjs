@@ -447,9 +447,15 @@ if (/finalizeEvent\(\s*(body|input|checked\.request)\b/.test(oracleSrc)) {
 } else {
   ok('zap-receipt-sign derives every receipt from a validated request');
 }
-const siteSignSrc = readFileSync('app/api/nostr/site-sign/route.ts', 'utf8');
+// The template rules moved to lib/site-sign-template.ts so the stamp route
+// applies the same ones; the scan follows them, and checks site-sign still
+// calls them.
+const siteSignSrc = readFileSync('lib/site-sign-template.ts', 'utf8');
+const siteSignRoute = readFileSync('app/api/nostr/site-sign/route.ts', 'utf8');
 if (!/'q'/.test(siteSignSrc) || !/author !== site/.test(siteSignSrc) || !/MAX_Q_TAGS = 1/.test(siteSignSrc)) {
   fail('site-sign no longer bounds `q` to ONE tag authored by the site’s own key.');
+} else if (!/from '@\/lib\/site-sign-template'/.test(siteSignRoute) || !/validateBoostTemplate\(/.test(siteSignRoute)) {
+  fail('app/api/nostr/site-sign/route.ts no longer calls validateBoostTemplate from lib/site-sign-template.ts.');
 } else {
   ok('site-sign allows one `q`, and only one authored by the site');
 }

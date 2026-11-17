@@ -556,6 +556,19 @@ console.log('\n  cross-brand CORS');
   ok('a look-alike (suffix) origin gets none', !(ALLOW in corsHeaders('https://www.boostmebitch.com.evil.example', 'buddy')));
   ok('http scheme gets none', !(ALLOW in corsHeaders('http://www.boostmebitch.com', 'buddy')));
   ok('the Bitch deploy opens nothing', !(ALLOW in corsHeaders('https://www.boostmebitch.com', 'bmb')));
+
+  // The Bitch site's browser reaches THREE routes on the Buddy deploy: both
+  // signing routes, and the stamp route a site note pays through before
+  // site-sign will sign it. A route that answers without the headers is
+  // unreadable cross-origin, and its stamp would never be asked for.
+  for (const name of ['site-sign', 'zap-receipt-sign', 'site-stamp']) {
+    const file = `app/api/nostr/${name}/route.ts`;
+    let src = '';
+    try { src = readFileSync(file, 'utf8'); } catch { /* reported below */ }
+    ok(`${name}: the route exists`, src.length > 0);
+    ok(`${name}: OPTIONS answers corsPreflight(req)`, /export\s+function\s+OPTIONS\s*\(\s*req[^)]*\)\s*\{\s*return\s+corsPreflight\(req\)/.test(src));
+    ok(`${name}: POST wraps its answer in withCors(`, /export\s+async\s+function\s+POST[\s\S]*?withCors\(/.test(src));
+  }
 }
 
 
