@@ -10,6 +10,15 @@ import { BRAND } from '@/lib/brand';
  * The picture a boost note shows: the show's artwork beside the sats, the
  * titles and the BMB wordmark, on one wide banner.
  *
+ * **What was boosted is the large line, and where it was found the small one**
+ * — `<ep>` over `from <title>`, or `<title>` alone for a show boost — the same
+ * order as the note's sentence (`boostSentence`). It drew the SHOW large and
+ * the episode small, so a note for a playlist track read "ITDV music playlist"
+ * over "Sing For You" while the playlist was paid nothing. Only the drawing
+ * changed: `title` is still the show and `ep` still the episode, so the
+ * contract below holds — and because every banner is drawn on request, the
+ * new order reaches every note ever published.
+ *
  * GET /api/og/boost.png?art=<url>[&art2=<url>&art3=<url>]&title=<show>&ep=<episode>&sats=<n>
  *   → image/png
  *
@@ -146,8 +155,12 @@ export async function GET(req: Request) {
   if (limited) return limited;
 
   const { searchParams } = new URL(req.url);
-  const title = line(searchParams.get('title'), 44);
-  const ep = line(searchParams.get('ep'), 52);
+  // The large line holds 44 characters and the small one 52, whichever
+  // parameter fills them.
+  const ep = line(searchParams.get('ep'), 44);
+  const show = line(searchParams.get('title'), ep ? 47 : 44);
+  const big = ep || show;
+  const small = ep && show ? `from ${show}` : '';
   const satsRaw = searchParams.get('sats') ?? '';
   const sats = /^\d{1,12}$/.test(satsRaw) ? Number(satsRaw).toLocaleString('en-US') : '';
   // `art`, `art2`, `art3` — the caller's preference order, tried until one
@@ -211,9 +224,9 @@ export async function GET(req: Request) {
               </span>
             </div>
             <span style={{ fontSize: 40, fontWeight: 700, marginTop: 14, lineHeight: 1.1 }}>
-              {title || BRAND.domain}
+              {big || BRAND.domain}
             </span>
-            {ep ? <span style={{ fontSize: 27, color: MUTED, marginTop: 10 }}>{ep}</span> : null}
+            {small ? <span style={{ fontSize: 27, color: MUTED, marginTop: 10 }}>{small}</span> : null}
           </div>
           <div
             style={{

@@ -119,6 +119,17 @@ export function communityCoverUrl(id: string, version: number): string {
   return `${COMMUNITY_FEED_ORIGIN}${COMMUNITY_FEED_PATH}${id}.jpg?v=${version}`;
 }
 
+/**
+ * Each maker's publisher feed: `<origin>/feeds/publishers/<npub>.xml` lists every playlist
+ * the maker published, and each of those playlists names it in `<podcast:publisher>`.
+ * Keyed by npub (bech32, lower case), the form a person can share and read.
+ */
+export const COMMUNITY_PUBLISHER_PATH = '/feeds/publishers/';
+
+export function communityPublisherFeedUrl(npub: string): string {
+  return `${COMMUNITY_FEED_ORIGIN}${COMMUNITY_PUBLISHER_PATH}${npub}.xml`;
+}
+
 /** Cache-busting version for a cover: whole seconds of `updatedAt`. */
 export function coverVersion(updatedAt: string): number {
   return Math.floor(Date.parse(updatedAt) / 1000);
