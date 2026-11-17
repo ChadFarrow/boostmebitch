@@ -846,6 +846,26 @@ const ALL_VECTORS = [
   { label: 'a track with an empty title is left out',
     args: { sender: 'ChadF', sats: 200, count: 2, showTitle: 'Two For Tunestr', each: ' (100 each)', tracks: ['A', '  '] },
     expect: ['ChadF boosted 200 sats to 2 tracks from Two For Tunestr (100 each)', '', '• A'] },
+  // The list is the one part of this body with no maximum of its own: one
+  // bullet per paid track, and a DJ mix pays dozens. The site-sign route
+  // refuses the WHOLE note past its limit — after the sats have moved — so the
+  // list names the first twenty and counts the rest. The sentence keeps the
+  // full count.
+  { label: 'twenty-five tracks: twenty listed, then how many more',
+    args: { sender: 'ChadF', sats: 2500, count: 25, showTitle: 'A Mix', each: ' (100 each)',
+      tracks: Array.from({ length: 25 }, (_, i) => `T${i + 1}`) },
+    expect: ['ChadF boosted 2500 sats to 25 tracks from A Mix (100 each)', '',
+      ...Array.from({ length: 20 }, (_, i) => `• T${i + 1}`), '• and 5 more'] },
+  { label: 'twenty-one tracks: the one left over is counted, never dropped',
+    args: { sender: 'ChadF', sats: 2100, count: 21, showTitle: 'A Mix', each: ' (100 each)',
+      tracks: Array.from({ length: 21 }, (_, i) => `T${i + 1}`) },
+    expect: ['ChadF boosted 2100 sats to 21 tracks from A Mix (100 each)', '',
+      ...Array.from({ length: 20 }, (_, i) => `• T${i + 1}`), '• and 1 more'] },
+  { label: 'exactly twenty: every one listed, no count line', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 2000, count: 20, showTitle: 'A Mix', each: ' (100 each)',
+      tracks: Array.from({ length: 20 }, (_, i) => `T${i + 1}`) },
+    expect: ['ChadF boosted 2000 sats to 20 tracks from A Mix (100 each)', '',
+      ...Array.from({ length: 20 }, (_, i) => `• T${i + 1}`)] },
 ];
 for (const v of ALL_VECTORS) check(v.label, boostAllLines(v.args), v.expect);
 const naiveAll = (a) => [

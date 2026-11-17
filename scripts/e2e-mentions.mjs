@@ -105,8 +105,9 @@ const relay = createRelay({ port: 0, log: null, onEvent: (e) => received.push(e)
 // Port 0 and read back, never a fixed port: another run can already hold one.
 const RELAY = `ws://127.0.0.1:${await relay.ready}`;
 
-const { publishBoostNote, publishBoostNoteViaSite } =
+const { publishBoostNote, publishBoostNoteViaSite, siteLandingUrl } =
   await import('../lib/nostr/boost-notes.ts');
+const { boostAllLines } = await import('../lib/util.ts');
 const { publishReply } = await import('../lib/nostr/interactions.ts');
 const { publishLiveChat, streamChatAddr } = await import('../lib/nostr/live-chat.ts');
 const { BRAND } = await import('../lib/brand.ts');
@@ -476,17 +477,22 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
 
   const fill = (n, tag) => { const h = `https://example.com/${tag}/`; return h + 'x'.repeat(n - h.length); };
-  const relayHints = [...DEFAULT_RELAYS].sort((a, b) => b.length - a.length).slice(0, 3);
+  // The receipt's hints are relays the user writes to, and a real one can be
+  // long: filter.nostr.wine puts the npub and a query in the URL. Three of
+  // those, the most the nevent carries.
+  const relayHints = many.slice(0, 3).map((m) => `wss://filter.nostr.wine/${m.npub}?broadcast=true`);
   const RECEIPT = { id: 'a'.repeat(64), pubkey: 'b'.repeat(64), relays: relayHints };
+  // This site's own link carries the episode guid: sized so the link is 512.
+  const siteBase = siteLandingUrl(podcast.podcastGuid, 'g').length - 1;
   // Every part at the most a real boost carries: a 250-character message (the
   // modal's cap) with 4 typed mentions placed inline, names past the 120 the
   // sentence keeps, a song with its artist inside an episode, 4 feed npubs,
-  // URLs at 512 (the route's cap on a tag item, which the links also are), and
-  // the summary receipt with the three longest default relays as hints.
+  // URLs at 512 (the route's cap on a tag item, which the links also are) —
+  // this site's own link included — and the summary receipt with long hints.
   const largestArgs = {
     podcast: { ...podcast, title: 'P'.repeat(300), author: 'A'.repeat(300), url: fill(512, 'feed'),
       image: fill(512, 'img'), artwork: fill(512, 'art'), nostrNpubs: many.slice(0, 4) },
-    episode: { ...episode, title: 'T'.repeat(300), guid: fill(220, 'guid'), link: fill(512, 'link'),
+    episode: { ...episode, title: 'T'.repeat(300), guid: 'g'.repeat(512 - siteBase), link: fill(512, 'link'),
       image: fill(512, 'epimg'), feedImage: fill(512, 'feedimg') },
     boostagram: { ...boostagram('@m4 @m5 @m6 @m7 ' + 'x'.repeat(250 - 16)), sender_name: 'S'.repeat(300),
       value_msat_total: 9999999999 * 1000 },
@@ -500,11 +506,29 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   const sentenceOf = (e) => (e?.content.split('\n') ?? []).find((l) => / boosted \d+ sats/.test(l)) ?? '';
   const neventIn = (e) => /nostr:nevent1/.test(e?.content ?? '');
   console.log(`  (the largest real note: ${largest?.content.length} characters)`);
+  check('the fixture is at the maximum: both links are 512 characters',
+    (largest?.content.split('\n') ?? []).filter((l) => /^https?:\/\/\S+$/.test(l) && l.length === 512).length, 2);
   check('the largest real note fits the limit', largest?.content.length <= LIMIT, true);
   check('...with nothing given way: the song and its artist', sentenceOf(largest).includes(` by ${'R'.repeat(119)}…`), true);
   check('...the banner', !!bannerOf(largest), true);
   check('...and the receipt line', neventIn(largest), true);
   check('...and the limit sits just above it, not far above', LIMIT - (largest?.content.length ?? 0) < 1000, true);
+  // BOOST ALL builds its own body: one bullet per paid track, which a DJ mix
+  // makes dozens of. Built as components/boost-all-modal.tsx builds it.
+  const boostAll = await capture({ ...largestArgs, track: undefined, contentOverride: [
+    '⚡ Boost ⚡', '', largestArgs.boostagram.message, '',
+    ...boostAllLines({ sender: 'S'.repeat(300), sats: 9999999999, count: 60, showTitle: 'P'.repeat(300),
+      each: ' (9999999999 to the artist + 9999999999 to the show, each)',
+      tracks: Array.from({ length: 60 }, (_, i) => `${i}`.padEnd(300, 'T')), via: BRAND.wireName }),
+  ].join('\n') });
+  console.log(`  (BOOST ALL at every real maximum: ${boostAll?.content.length} characters)`);
+  check('BOOST ALL at every real maximum fits the limit', boostAll?.content.length <= LIMIT, true);
+  check('...it lists twenty tracks, then counts the rest',
+    (boostAll?.content.split('\n') ?? []).filter((l) => l.startsWith('• ')).slice(-2).map((l) => l.slice(0, 6)), ['• 19TT', '• and ']);
+  check('...counting forty more', boostAll?.content.includes('\n• and 40 more'), true);
+  check('...the sentence keeps the full count', sentenceOf(boostAll).includes(' to 60 tracks from '), true);
+  check('...and the receipt line stays', neventIn(boostAll), true);
+
   const banner = new URL(bannerOf(largest) ?? 'https://x/');
   check('the banner carries at most 120 characters of each title',
     [banner.searchParams.get('title')?.length, banner.searchParams.get('ep')?.length], [120, 120]);

@@ -3398,7 +3398,7 @@ export function redirectLegs(args: {
  *   title — a single-track release often titles its feed after the song.
  * - **Feed text is flattened and capped.** The title and artist are strings a
  *   feed wrote about itself, and the note may be signed by the SITE through an
- *   unauthenticated route with a 2000-character body; a newline would let a
+ *   unauthenticated route with a capped body; a newline would let a
  *   feed forge a second line of the note.
  * - **An identifier the note already carries is not repeated** — a `musicL`
  *   playlist row already IS the track, so its guids are the note's own.
@@ -3606,6 +3606,15 @@ export function noteNamesClient(content: string, client: string | null | undefin
  * is the per-track breakdown the modal computes from numbers alone, and it
  * comes before ` via <app>` (the shared format's rule 9).
  */
+/**
+ * The most tracks a BOOST ALL note lists by name. The list is the one part of
+ * that body with no maximum of its own — one bullet per paid track, and a DJ
+ * mix pays dozens — while the site-sign route refuses the WHOLE note past its
+ * limit, after the sats have moved. So the note names the first twenty and
+ * counts the rest; its sentence keeps the full count.
+ */
+export const BOOST_ALL_LISTED_MAX = 20;
+
 export function boostAllLines(a: {
   sender?: string;
   sats: number;
@@ -3625,7 +3634,10 @@ export function boostAllLines(a: {
     + (show ? ` from ${show}` : '')
     + a.each
     + (via ? ` via ${via}` : '');
-  return tracks.length ? [sentence, '', ...tracks.map((t) => `• ${t}`)] : [sentence];
+  if (!tracks.length) return [sentence];
+  const listed = tracks.slice(0, BOOST_ALL_LISTED_MAX).map((t) => `• ${t}`);
+  const more = tracks.length - BOOST_ALL_LISTED_MAX;
+  return [sentence, '', ...listed, ...(more > 0 ? [`• and ${more} more`] : [])];
 }
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric

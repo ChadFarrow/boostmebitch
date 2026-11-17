@@ -81,14 +81,19 @@ const SITE_SIGN_TAGS_TOTAL_LEN = 4096;
  * (Chad, 2026-11-17: the route refused 2032 characters at 2000, and RETRY NOTE
  * with it). The route is unauthenticated and asks for no proof of payment, so
  * the limit is what bounds the free text a stranger can have the site sign —
- * not far above, then. Every part of the body has a maximum: the modal's
+ * not far above, then. The parts of the body and their maximums: the modal's
  * 250-character message, 120 characters a name (`noteTrackText`), eight
- * mentions, links within 512 (`noteLink`), banner titles within 120. Measured
- * with all of them at once, a song inside an episode and the summary receipt:
- * about 4,450 (`e2e:mentions` prints it and fails if the limit drifts 1,000
- * above it). Past every real maximum the body gives way part by part (`SHEDS`).
+ * mentions, links within 512 (`noteLink`, this site's own link included),
+ * banner titles within 120, BOOST ALL's list within `BOOST_ALL_LISTED_MAX`
+ * tracks. The receipt's relay hints are the user's own write relays and have
+ * no maximum; three long real ones (filter.nostr.wine puts the npub in the
+ * URL) add ~390 characters. Measured with all of them at once and a song
+ * inside an episode: about 5,030 (`e2e:mentions` prints it and fails if the
+ * limit drifts 1,000 above it). Past that the body gives way part by part
+ * (`SHEDS`). One body still has no maximum: a message that repeats one
+ * @mention dozens of times, since each becomes a 69-character `nostr:npub`.
  */
-const SITE_SIGN_MAX_CONTENT = 5000;
+const SITE_SIGN_MAX_CONTENT = 5500;
 
 /**
  * The longest link the note carries, in its body or its `r` tags or as an `i`
@@ -590,8 +595,9 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     return withZapReceipts(withMentionRun(inlined, remaining), shed.receipt ? [] : receipts);
   };
   // The first body the route takes, measured on both paths so a note never
-  // differs by which key signs it. The last step always fits a real note: its
-  // message, sentence, links and mentions all have maximums far under the cap.
+  // differs by which key signs it. The last step fits every real note but one
+  // shape — a message repeating an @mention dozens of times (see
+  // SITE_SIGN_MAX_CONTENT); that one the route still refuses.
   const shed = SHEDS.find((s) => build(s).length <= SITE_SIGN_MAX_CONTENT) ?? SHEDS[SHEDS.length - 1];
   const content = build(shed);
   // NIP-92's `imeta` describes a picture the body names; once the body gives

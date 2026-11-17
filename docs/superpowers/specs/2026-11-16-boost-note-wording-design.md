@@ -182,10 +182,19 @@ links, mentions) is far under the limit, so a note past every real maximum — a
 characters long, a title of non-Latin text that percent-encodes nine times over — loses its picture
 first (the song's name is worth more than a picture of it), and still posts.
 
-**Measured after the change: 4,445 characters**, with URLs at 512 and titles cut to 120; the limit is
-5,000. Cover URLs stay uncapped: the route tries them in order,
+**Measured after the change: 4,445 characters**, with URLs at 512 and titles cut to 120; the limit was
+set to 5,000.
+
+**After the review (same day):** the fixture was not the largest real note. This site's own link was
+313 characters, not 512, and the receipt's relay hints are the relays the user writes to, which can be
+long (`wss://filter.nostr.wine/<npub>?broadcast=true`, ~102 characters). With both: **5,030**. The
+limit is now **5,500** in both places. I kept the hints as they are — choosing shorter hints changes
+where a reader looks for the receipt, which is its own decision. And BOOST ALL's body had a part with
+no maximum: one bullet per paid track. It now lists at most 20 names, then `• and K more`; the sentence
+keeps the full count. One body is still unbounded and is left as it is: a message that repeats one
+@mention dozens of times (each becomes a 69-character `nostr:npub`). Cover URLs stay uncapped: the route tries them in order,
 and the shed drops the banner rather than a candidate.
 
-A stranger calling the route directly can now have the site sign about 5,000 characters of their own
+A stranger calling the route directly can now have the site sign about 5,500 characters of their own
 text per note instead of 2,000; the rate limit (30 a minute per IP, 600 per route) is unchanged. The
 lasting fix is a route that asks for proof of payment — a separate change.
