@@ -642,6 +642,16 @@ export async function publishBoostNote(
  * `origin` prefixes both routes — `''` is this deploy. A note signed by the
  * other brand's key must ask THAT deploy for both the stamp and the signature.
  *
+ * `relays` is where the signed note goes: DEFAULT_RELAYS unless a caller names
+ * others. Both modals leave it out. It exists for `e2e:mentions`, which must
+ * reach only its own local relay — without it, nine runs of that script put 117
+ * one-time-key test notes on the public relays (2026-11-17,
+ * lib/nostr/test-boost-notes.ts). It is an option here and deliberately NOT
+ * `args.relays`: that field is the sender's own NIP-65 write set, which both
+ * modals hand `publishBoostNote` for a self-signed note, so reading it here
+ * would move the site's notes off DEFAULT_RELAYS the day a caller shares one
+ * argument object between the two paths.
+ *
  * Does not throw on a refused stamp or signature. It THROWS when no relay took
  * the note — a phone between networks — so the modal shows RETRY NOTE; `state`
  * keeps the signed event, so the retry posts the same note and pays nothing.
@@ -654,6 +664,7 @@ export async function publishBoostNoteViaSite(
     state: SiteNoteState<Event>;
     onStamp?: (sats: number) => void;
     origin?: string;
+    relays?: string[];
   },
 ): Promise<{ note: PublishedNote; signer: 'site' | 'one-time'; why?: StampFailure }> {
   const { state } = opts;
@@ -690,7 +701,7 @@ export async function publishBoostNoteViaSite(
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     onStamp: opts.onStamp,
   });
-  const note = await publishSignedEvent(state.signed!, DEFAULT_RELAYS);
+  const note = await publishSignedEvent(state.signed!, opts.relays ?? DEFAULT_RELAYS);
   if (note.acceptedRelays.length === 0) throw new Error('no relay accepted the note');
   return { note, signer: state.signer!, why: state.why };
 }
