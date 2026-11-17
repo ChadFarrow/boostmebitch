@@ -15,8 +15,9 @@ import { FavHeart } from '../fav-heart';
  * A cover that is its own control — see `<PodcastRow>`'s `coverPlay`. Built by
  * `useAlbumCoverPlay` (`components/lists/use-album-cover-play.ts`).
  *
- * `state` is what the badge draws and what a press does next:
+ * `state` is what the overlay on the cover draws and what a press does next:
  * - `idle` ▶ — the album is not playing; a press starts it at its first track.
+ *   The overlay shows only under a mouse's hover or a keyboard's focus.
  * - `loading` … — the press is waiting for the album's feed.
  * - `playing` ❚❚ — a track of this album plays; a press pauses it.
  * - `paused` ▶ — a track of this album is paused; a press resumes it.
@@ -85,9 +86,13 @@ export function PodcastRow({
    * the row still opens it — `/demu` (Chad, 2026-11-16: "if I click the
    * artwork could it just play it?"). The cover then leaves the row's button
    * and becomes a SIBLING button, because a button may not contain another
-   * button. It always draws a round ▶ badge in its bottom-right corner, never
-   * only on hover: a phone has no hover, and a control must look like one
-   * before it is touched. Optional; absent changes nothing.
+   * button. Its glyph is a dark overlay ON the art — the episode row's shape —
+   * never a badge: a round ▶ badge on every cover was "too distracting" (Chad,
+   * iPhone, beta, 2026-11-17: "can it just maybe be like a transparent overlay
+   * kind of on the art … where you just kind of tap the art"). The album that
+   * holds the player keeps the overlay and a bolt border; an idle cover shows
+   * it only to a mouse's hover or a keyboard's focus. Optional; absent changes
+   * nothing.
    */
   coverPlay?: CoverPlay;
   /**
@@ -124,6 +129,10 @@ export function PodcastRow({
    */
   footer?: React.ReactNode;
 }) {
+  // The album holds the player, playing or paused. That follows WHICH album
+  // is current; the glyph follows the transport — the episode row's rule, so a
+  // paused album still shows where its ▶ is.
+  const holds = coverPlay?.state === 'playing' || coverPlay?.state === 'paused';
   const cover = (
     <div className="relative flex-shrink-0">
       <PodcastCover
@@ -131,28 +140,35 @@ export function PodcastRow({
         artwork={podcast.artwork}
         title={podcast.title}
         seed={podcast.podcastGuid ?? String(podcast.id)}
-        className={`w-14 h-14 border border-bone/20 flex-shrink-0 text-xl ${coverPlay ? 'group-hover/cover:border-bolt' : ''}`}
+        className={`w-14 h-14 border flex-shrink-0 text-xl ${
+          holds ? 'border-bolt' : coverPlay ? 'border-bone/20 [@media(hover:hover)]:group-hover/cover:border-bolt' : 'border-bone/20'
+        }`}
       />
-      {coverBadge}
       {coverPlay ? (
-        // The badge mirrors the app badge in the opposite corner. Bolt-filled
-        // while this album holds the player, playing or paused: that follows
-        // WHICH album is current, the glyph follows the transport — the episode
-        // row's rule, so a paused album still shows where its ▶ is.
+        // The overlay sits INSIDE the cover's border (`inset-px`), so the bolt
+        // border of the current album is not dimmed by it. An idle cover's
+        // overlay reveals on hover only where hover is real — `(hover: hover)`:
+        // iOS keeps `:hover` on the last element tapped, and a held reveal on
+        // an idle album would read as "this one is current". A tap still
+        // answers through `active:`, and a keyboard through `focus-visible:`.
+        // Before the app badge in the DOM, so that badge stays on top.
         <span
           aria-hidden
           data-cover-play-glyph
-          className={`absolute -bottom-1.5 -right-1.5 w-6 h-6 rounded-full border grid place-items-center text-[10px] leading-none ${
-            coverPlay.state === 'playing' || coverPlay.state === 'paused'
-              ? 'bg-bolt text-ink border-bolt'
-              : coverPlay.state === 'loading'
-                ? 'bg-ink text-bolt border-bolt animate-pulse'
-                : 'bg-ink text-bone border-bone/60 group-hover/cover:text-bolt group-hover/cover:border-bolt'
+          className={`absolute inset-px grid place-items-center bg-ink/55 text-base leading-none transition-opacity pointer-events-none ${
+            coverPlay.state === 'idle'
+              ? 'opacity-0 text-bone [@media(hover:hover)]:group-hover/cover:opacity-100 [@media(hover:hover)]:group-hover/cover:text-bolt group-focus-visible/cover:opacity-100 group-active/cover:opacity-100'
+              : coverPlay.state === 'failed'
+                ? 'opacity-100 text-nostr'
+                : 'opacity-100 text-bolt'
           }`}
         >
-          {COVER_PLAY_GLYPH[coverPlay.state]}
+          <span className={coverPlay.state === 'loading' ? 'animate-pulse' : undefined}>
+            {COVER_PLAY_GLYPH[coverPlay.state]}
+          </span>
         </span>
       ) : null}
+      {coverBadge}
     </div>
   );
   return (

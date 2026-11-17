@@ -1,7 +1,9 @@
 // End-to-end for the cover press on /demu: a press on an album's cover plays
 // the album, and the rest of the row still opens it (docs/ui.md, "The DeMu
 // page", Chad on the #583 preview, 2026-11-16: "if I click the artwork could it
-// just play it?").
+// just play it?"). The glyph is an overlay ON the art, not a badge: Chad,
+// iPhone, beta, 2026-11-17, found the round badge on every cover "too
+// distracting" and asked for "a transparent overlay kind of on the art".
 //
 // Usage:
 //   npm run dev                                   # in another terminal
@@ -10,9 +12,10 @@
 //
 // WHAT IT PINS:
 //
-//   1. The cover of an album row is its OWN button, beside the row's button,
-//      with a ▶ badge drawn without hover. A row that is not an album keeps its
-//      cover inside the row's button.
+//   1. The cover of an album row is its OWN button, beside the row's button.
+//      A row that is not an album keeps its cover inside the row's button. An
+//      idle cover shows no overlay; a mouse's hover shows it, and a held
+//      :hover on a phone (`(hover: none)`, as iOS leaves after a tap) does not.
 //   2. A press plays the album's first track on /demu, with no navigation and
 //      one feed request.
 //   3. ⏭ and a track's end walk the album: the press wrote `episodeQueue`.
@@ -21,14 +24,16 @@
 //   5. Only the last press starts anything: a slow album answered after a
 //      second press does not take the player, and a pause pressed while it
 //      loads is not undone by it. A scheduled live row is never the first track.
-//   6. A feed that does not load says so on the badge, leaves the player alone,
+//   6. A feed that does not load says so on the cover, leaves the player alone,
 //      and the next press tries again.
 //   7. The rest of the row still opens the album; the album header's ▶ (which
 //      now shares `albumHoldsCurrent` with the cover) starts it and then
 //      offers Pause; "← back to DeMu" returns to a cover that says playing.
+//      In every state but idle the overlay is drawn without hover, and the
+//      album that holds the player, playing or paused, has a bolt border.
 //   8. No horizontal overflow at 320 and 390 (phone emulation) and 1280. The
-//      cover is at least 24×24, and its badge stays inside the row and clear
-//      of the title.
+//      cover is at least 24×24, the overlay stays inside the cover's border,
+//      and the app badge stays on top of the overlay.
 //
 // Signed out: no key, so nothing reaches a relay. The roster, the feeds, the
 // audio and the player's value lookups are answered here; anything else goes
@@ -176,6 +181,9 @@ page.on(async (m) => {
 });
 await send('Page.enable');
 await send('Runtime.enable');
+// CSS.forcePseudoState needs both (forceHover below).
+await send('DOM.enable');
+await send('CSS.enable');
 
 // ---- helpers --------------------------------------------------------------
 const rowOf = (title) => `[...document.querySelectorAll('li')].find((li) => li.querySelector('span.font-display')?.textContent === ${JSON.stringify(title)})`;
@@ -186,6 +194,46 @@ const cover = (title) => js(`(() => {
   return { state: b.dataset.coverPlay, label: b.getAttribute('aria-label'), busy: b.getAttribute('aria-busy'),
            glyph: b.querySelector('[data-cover-play-glyph]')?.textContent ?? null };
 })()`);
+// What the overlay looks like, unhovered unless a test forces :hover. `bolt`,
+// `nostr` and `bone` are the palette colours, read from a probe so a palette change
+// does not break the test.
+const look = (title) => js(`JSON.stringify((() => {
+  const b = ${coverOf(title)};
+  if (!b) return null;
+  const g = getComputedStyle(b.querySelector('[data-cover-play-glyph]'));
+  const probe = document.createElement('span');
+  document.body.append(probe);
+  probe.className = 'text-bolt'; const bolt = getComputedStyle(probe).color;
+  probe.className = 'text-nostr'; const nostr = getComputedStyle(probe).color;
+  probe.className = 'text-bone'; const bone = getComputedStyle(probe).color;
+  probe.remove();
+  const border = getComputedStyle(b.querySelector('.w-14')).borderTopColor;
+  const name = (c) => (c === bolt ? 'bolt' : c === nostr ? 'nostr' : c === bone ? 'bone' : c);
+  return { shown: Number(g.opacity) === 1, hidden: Number(g.opacity) === 0, glyph: name(g.color), boltBorder: border === bolt };
+})())`).then((x) => (x ? JSON.parse(x) : null));
+/**
+ * Hold :hover on a cover, as iOS does after a tap (CSS.forcePseudoState, as in
+ * e2e-sticky-hover). The release reuses the node id of the hold: a second
+ * DOM.getDocument binds the node to a NEW id, and clearing that one leaves the
+ * hover held (measured — the overlay stayed).
+ */
+let heldNode = null;
+async function forceHover(title, on = true) {
+  if (!on) {
+    if (heldNode) await send('CSS.forcePseudoState', { nodeId: heldNode, forcedPseudoClasses: [] });
+    heldNode = null;
+    return true;
+  }
+  const marked = await js(`(() => { const b = ${coverOf(title)}; if (!b) return false; b.setAttribute('data-e2e-hover', ''); return true; })()`);
+  if (!marked) return false;
+  const root = (await send('DOM.getDocument', { depth: 0 })).result?.root;
+  const nodeId = root && (await send('DOM.querySelector', { nodeId: root.nodeId, selector: '[data-e2e-hover]' })).result?.nodeId;
+  await js(`document.querySelector('[data-e2e-hover]')?.removeAttribute('data-e2e-hover')`);
+  if (!nodeId) return false;
+  heldNode = nodeId;
+  await send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['hover'] });
+  return true;
+}
 const press = (title) => js(`(() => { const b = ${coverOf(title)}; if (!b) return false; b.click(); return true; })()`);
 const stateIs = (title, state, ms = 8000) => until(`${coverOf(title)}?.dataset.coverPlay === ${JSON.stringify(state)}`, ms);
 const src = () => js(`document.querySelector('audio')?.currentSrc ?? ''`);
@@ -213,8 +261,6 @@ const structure = JSON.parse(await js(`JSON.stringify((() => {
   const li = ${rowOf('E2E Album A')};
   const cb = li.querySelector('button[data-cover-play]');
   const rowBtn = [...li.children].find((c) => c.tagName === 'BUTTON' && !c.dataset.coverPlay);
-  const badge = cb.querySelector('[data-cover-play-glyph]');
-  const s = getComputedStyle(badge);
   const talk = ${rowOf('E2E Talk Row')};
   const talkBtn = [...talk.children].find((c) => c.tagName === 'BUTTON');
   return {
@@ -222,15 +268,37 @@ const structure = JSON.parse(await js(`JSON.stringify((() => {
     coverNotInButton: !cb.parentElement.closest('button'),
     rowButtonHasNoCover: !rowBtn.querySelector('.w-14'),
     rowButtonHasTitle: !!rowBtn.querySelector('span.font-display'),
-    badgeShown: s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity) === 1,
     talkHasNoCoverButton: !talk.querySelector('button[data-cover-play]'),
     talkCoverInRowButton: !!talkBtn?.querySelector('.w-14'),
   };
 })())`));
 t.equal('A: the cover is a sibling button and the row button keeps the text', structure, {
   coverIsChildOfLi: true, coverNotInButton: true, rowButtonHasNoCover: true, rowButtonHasTitle: true,
-  badgeShown: true, talkHasNoCoverButton: true, talkCoverInRowButton: true,
+  talkHasNoCoverButton: true, talkCoverInRowButton: true,
 });
+t.equal('A: an idle cover draws no overlay and no bolt border', await look('E2E Album A'),
+  { shown: false, hidden: true, glyph: 'bone', boltBorder: false });
+await forceHover('E2E Album A');
+await wait(400);
+t.equal('A: a mouse hover shows the overlay, a bolt ▶ and a bolt border', await look('E2E Album A'),
+  { shown: true, hidden: false, glyph: 'bolt', boltBorder: true });
+await forceHover('E2E Album A', false);
+await wait(400);
+t.ok('A: the overlay goes when the hover goes', (await look('E2E Album A'))?.hidden);
+// A phone: iOS keeps :hover on the last element tapped. A held reveal on an
+// idle album would read as "this one is current", so `(hover: none)` shows none.
+await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+t.equal('the emulated phone matches (hover: none), as an iPhone does',
+  await js(`matchMedia('(hover: none)').matches && !matchMedia('(hover: hover)').matches`), true);
+await forceHover('E2E Album A');
+await wait(400);
+t.equal('A: on a phone, a held :hover draws no overlay and no bolt border', await look('E2E Album A'),
+  { shown: false, hidden: true, glyph: 'bone', boltBorder: false });
+await forceHover('E2E Album A', false);
+await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+await wait(400);
 
 // ---------------------------------------------------------------------------
 console.log('\n2. A press plays the album from its first track');
@@ -239,6 +307,8 @@ t.ok('A: track 0 plays', await plays('A-0'));
 t.equal('A: still on /demu', await js('location.pathname'), '/demu');
 t.equal('A: the cover offers Pause', await cover('E2E Album A'), { state: 'playing', label: 'Pause E2E Album A', busy: null, glyph: '❚❚' });
 t.equal('A: one feed request', feedAsks.A, 1);
+t.equal('A: playing, the overlay shows without hover, a bolt ❚❚ in a bolt border', await look('E2E Album A'),
+  { shown: true, hidden: false, glyph: 'bolt', boltBorder: true });
 t.ok('the mini player shows', await until(`!!document.querySelector('${MINI_BAR}')`, 5000));
 
 // ---------------------------------------------------------------------------
@@ -255,6 +325,8 @@ await press('E2E Album A');
 t.ok('the press pauses', await until(`document.querySelector('audio')?.paused === true`, 5000));
 t.ok('the cover offers Resume', await stateIs('E2E Album A', 'paused'));
 t.equal('…with a ▶ and the album named', await cover('E2E Album A'), { state: 'paused', label: 'Resume E2E Album A', busy: null, glyph: '▶' });
+t.equal('…and paused, the overlay and the bolt border stay', await look('E2E Album A'),
+  { shown: true, hidden: false, glyph: 'bolt', boltBorder: true });
 await press('E2E Album A');
 t.ok('the next press resumes', await until(`document.querySelector('audio')?.paused === false`, 5000));
 t.equal('…the same track, not track 0', await track(), 'A-2');
@@ -266,12 +338,18 @@ bDelay = 1500;
 await press('E2E Album B');
 t.ok('B: the cover says it is loading', await stateIs('E2E Album B', 'loading', 1000));
 t.equal('B: …busy, with a … glyph', await cover('E2E Album B'), { state: 'loading', label: 'Loading E2E Album B', busy: 'true', glyph: '…' });
+await wait(400); // the overlay fades in over 150 ms; B answers after 1500
+t.equal('B: loading, the overlay shows without hover; the border is not bolt yet', await look('E2E Album B'),
+  { shown: true, hidden: false, glyph: 'bolt', boltBorder: false });
 await press('E2E Album E');
 t.ok('E: a second press plays E', await plays('E-1'));
 t.equal('E: the first track is the one after the scheduled live row', await track(), 'E-1');
 await wait(bDelay + 800);
 t.equal('B: answered late, and did not take the player', await track(), 'E-1');
 t.equal('B: its cover is back to Play', (await cover('E2E Album B'))?.state, 'idle');
+t.ok('B: …with no overlay', (await look('E2E Album B'))?.hidden);
+t.equal('A: no longer current, it has no overlay and no bolt border', await look('E2E Album A'),
+  { shown: false, hidden: true, glyph: 'bone', boltBorder: false });
 // A pause pressed while another album loads is the newer press.
 await press('E2E Album B');
 t.ok('B: loading again', await stateIs('E2E Album B', 'loading', 1000));
@@ -288,6 +366,8 @@ t.ok('C: the cover says it failed', await stateIs('E2E Album C', 'failed'));
 t.equal('C: …with a ! and a way to try again', await cover('E2E Album C'), {
   state: 'failed', label: 'Could not load E2E Album C. Press to try again.', busy: null, glyph: '!',
 });
+t.equal('C: failed, the overlay shows a magenta ! without hover', await look('E2E Album C'),
+  { shown: true, hidden: false, glyph: 'nostr', boltBorder: false });
 t.equal('C: the player is left alone', { track: await track(), paused: await paused() }, { track: 'E-1', paused: true });
 cFails = false;
 await press('E2E Album C');
@@ -307,6 +387,8 @@ t.ok('…and then offers Pause', await until(`!!document.querySelector('header b
 await js(`[...document.querySelectorAll('a, button')].find((x) => /back to DeMu/.test(x.textContent))?.click()`);
 t.ok('← back to DeMu returns', await until(`location.pathname === '/demu' && !!${coverOf('E2E Album A')}`, 20000));
 t.equal('A: the cover says playing', (await cover('E2E Album A'))?.state, 'playing');
+t.equal('A: …with its overlay and bolt border', await look('E2E Album A'),
+  { shown: true, hidden: false, glyph: 'bolt', boltBorder: true });
 
 // ---------------------------------------------------------------------------
 console.log('\n8. Layout');
@@ -317,21 +399,26 @@ for (const [width, height, mobile] of [[320, 700, true], [390, 844, true], [1280
     const de = document.documentElement;
     const rows = ${JSON.stringify(ALBUMS.map((a) => a.title))}.map((title) => {
       const li = [...document.querySelectorAll('li')].find((x) => x.querySelector('span.font-display')?.textContent === title);
+      // elementFromPoint sees only the viewport, and the mini player covers its foot.
+      li.scrollIntoView({ block: 'center' });
       const cb = li.querySelector('button[data-cover-play]').getBoundingClientRect();
-      const badge = li.querySelector('[data-cover-play-glyph]').getBoundingClientRect();
-      const lr = li.getBoundingClientRect();
-      const title2 = li.querySelector('span.font-display').getBoundingClientRect();
+      const art = li.querySelector('button[data-cover-play] .w-14').getBoundingClientRect();
+      const ov = li.querySelector('[data-cover-play-glyph]').getBoundingClientRect();
+      const app = li.querySelector('[data-demu-app]');
+      const ar = app.getBoundingClientRect();
+      const top = document.elementFromPoint(ar.left + ar.width / 2, ar.top + ar.height / 2);
       return {
         coverW: Math.round(cb.width), coverH: Math.round(cb.height),
-        badgeInRow: badge.left >= lr.left - 0.5 && badge.right <= lr.right + 0.5,
-        badgeClearOfTitle: badge.right <= title2.left + 0.5,
+        overlayInsideBorder: ov.left >= art.left + 0.5 && ov.right <= art.right - 0.5 && ov.top >= art.top + 0.5 && ov.bottom <= art.bottom - 0.5,
+        appBadgeOnTop: !!top && app.contains(top),
       };
     });
     return { overflow: de.scrollWidth - de.clientWidth, rows };
   })())`));
   t.equal(`${width}px: no horizontal overflow`, m.overflow, 0);
   t.ok(`${width}px: every cover is at least 24×24`, m.rows.every((r) => r.coverW >= 24 && r.coverH >= 24), JSON.stringify(m.rows));
-  t.ok(`${width}px: every badge is inside its row and clear of the title`, m.rows.every((r) => r.badgeInRow && r.badgeClearOfTitle), JSON.stringify(m.rows));
+  t.ok(`${width}px: every overlay is inside its cover's border`, m.rows.every((r) => r.overlayInsideBorder), JSON.stringify(m.rows));
+  t.ok(`${width}px: every app badge is on top of the overlay`, m.rows.every((r) => r.appBadgeOnTop), JSON.stringify(m.rows));
 }
 await send('Emulation.clearDeviceMetricsOverride');
 
