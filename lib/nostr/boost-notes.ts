@@ -75,7 +75,8 @@ function noteTrack(args: PublishArgs): BoostNoteTrack | null {
  */
 const SITE_SIGN_TAGS_TOTAL_LEN = 4096;
 /**
- * The site-sign route's MAX_CONTENT. Keep the two numbers together.
+ * The site-sign route's MAX_CONTENT (lib/site-sign-template.ts, which the stamp
+ * route applies too). Keep the two numbers together.
  *
  * It sits JUST ABOVE THE LARGEST REAL NOTE, so a real boost never meets it
  * (Chad, 2026-11-17: the route refused 2032 characters at 2000, and RETRY NOTE

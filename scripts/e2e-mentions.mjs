@@ -471,7 +471,7 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   // while the shipping numbers drift apart.
   const constIn = (file, name) => Number((readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     .match(new RegExp(`const ${name} = (\\d+);`)) ?? [])[1]);
-  const LIMIT = constIn('app/api/nostr/site-sign/route.ts', 'MAX_CONTENT');
+  const LIMIT = constIn('lib/site-sign-template.ts', 'MAX_CONTENT');
   check('the builder\'s limit is the route\'s', constIn('lib/nostr/boost-notes.ts', 'SITE_SIGN_MAX_CONTENT'), LIMIT);
   check('worst case: body within the limit', worst.content.length <= LIMIT, true);
   check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
