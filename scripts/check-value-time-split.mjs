@@ -750,6 +750,15 @@ const SENTENCE_VECTORS = [
   { label: 'an app name carrying a newline is one line',
     args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, via: 'Boost\nMe' },
     expect: 'ChadF boosted 100 sats to Homegrown Hits via Boost Me' },
+  // Rule 8: a part that comes out empty is left out with its word. An album
+  // with no title once read "ChadF boosted 100 sats by The Doerfels" — the
+  // artist as the one who boosted, in a note nobody can edit.
+  { label: 'an album with no title never says "by"',
+    args: { sender: 'ChadF', sats: 100, show: { title: '  ', author: 'The Doerfels', medium: 'music' }, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats via Fountain' },
+  { label: 'an album track with no title, on an album with none, never says "by"',
+    args: { sender: 'ChadF', sats: 100, show: { title: '', author: 'The Doerfels', medium: 'music' }, item: { title: '' } },
+    expect: 'ChadF boosted 100 sats' },
   { label: 'an empty app name leaves out "via"', alsoNaive: true,
     args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, via: '' },
     expect: 'ChadF boosted 100 sats to Homegrown Hits' },

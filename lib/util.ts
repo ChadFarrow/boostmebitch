@@ -3570,7 +3570,8 @@ export function boostSentence(a: {
     what = showTitle;
     by = albumArtist;
   }
-  if (by.toLowerCase() === what.toLowerCase()) by = '';
+  // No "by" without a "to": "boosted 100 sats by X" names X as the booster.
+  if (!what || by.toLowerCase() === what.toLowerCase()) by = '';
   const via = noteTrackText(a.via);
   return `${sender ? `${sender} boosted` : 'Boosted'} ${a.sats} sats`
     + (what ? ` to ${what}` : '')
