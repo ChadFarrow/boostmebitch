@@ -17,6 +17,7 @@
     "android:release": "cd android && npx --yes -p @bubblewrap/core@1.25.0 -p @bubblewrap/cli@1.25.0 bubblewrap build --skipPwaValidation",
     "android:advance": "node scripts/android-advance.mjs",
     "check": "node scripts/run-checks.mjs",
+    "check:sitestamp": "node --experimental-strip-types scripts/check-site-stamp.mjs",
     "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs",
     "check:sanitizer": "node --experimental-strip-types scripts/check-sanitizer.mjs",
     "check:ssrf": "node --experimental-strip-types scripts/check-ssrf-guard.mjs",
