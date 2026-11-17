@@ -122,3 +122,31 @@ other note's tags are unchanged.
   caps allow, and looked at.
 - The modal driven in headless Chrome on a playlist track, an album track and an episode, against
   `npm run relay` with a throwaway key; the published event read back from the relay.
+
+## Addendum, 2026-11-16: the shared format (PC20-Nostr #51)
+
+PC20-Nostr #51 (`pc20-boost-notes.md`, merged 2026-11-17 03:25 UTC, `draft`) made this
+sentence the format for every one of Chad's apps:
+`<who> boosted <N> sats to <what>[ by <artist>][ from <where>][ via <app>]`. Chad answered its
+open questions on 2026-11-16, and three answers change this branch:
+
+| # | Chad's answer | This branch |
+|---|---|---|
+| 1 | An album boost says `by <artist>`: *"ChadF boosted 100 sats to Disco Swag - The Album by The Doerfels"* | A show boost on a music feed (`playsAsTracks`, not a `*L` playlist) names the album's `author` |
+| 2 | Every app ends the sentence with `via <app>` (*"Yes, add the app."*) | ` via <boostagram.app_name>` — `BRAND.wireName`, the name the payment carries — on every note and on BOOST ALL, after ` (<each> each)` |
+| 3 | An auto boost posts no Nostr note | No change. The only `action: 'auto'` legs are streaming's, and streaming publishes no kind 1 (CLAUDE.md, streaming invariants); its kind 3369/33369 events are outside the rule |
+
+Three more rules of the format differ from what the branch writes, and the branch follows the
+format (my calls, each pinned by a test):
+
+- **Rule 6: `by` is dropped only when it equals `<what>`.** The branch dropped an album's author
+  when it repeated the ALBUM title, also on a track boost, where the album is `<where>`.
+- **Rule 15: the playlist's `podcast:guid` comes after the song's pair.** The boosted item's pair,
+  then the song a split paid, then the playlist.
+- **Rule 12: the mentions come before the quoted receipt's `nevent`.** The builder wrote the
+  `nevent` first.
+
+**Our note card shows the app twice.** It writes `via <client tag>` above the body, and the body
+now ends with `via BoostMeBitch`. My call: the card leaves its label out when a line of the body
+already ends with `via <that client>`; a note without it (every note written before the format,
+and other apps' notes) keeps the label.

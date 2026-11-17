@@ -153,3 +153,22 @@
 - [ ] **Step 1:** `npm run check && npm run typecheck && npm run lint && npm run build` → all pass, `check:claudemd` within budget.
 - [ ] **Step 2:** Read `CLAUDE.md`: if a line names the `📻`/`🎵` lines or `→ <show>`, fix it in this branch.
 - [ ] **Step 3:** `rm -rf .next`, remove the `node_modules`/`.env.local` symlinks, run `node ~/Vibe/vibe-kit/vibe.mjs`, and report to Chad. The push and the PR wait for his approval; the PR body lists what was verified in the browser and the gaps (no iPhone/Android check; other clients' rendering seen only as the banner PNG).
+
+## Follow-up: the shared format (PC20-Nostr #51) — see the spec's addendum
+
+### Task 6: The sentence — the album's `by`, rule 6, and `via`
+- `boostSentence` takes `via?: string` and ends with ` via <via>` (cleaned; left out when empty). A show boost on a `playsAsTracks`, non-`*L` feed says `by <author>`. `by` is compared with `<what>` only, never with the album title as `<where>`.
+- `boostAllLines` takes `via?: string`, written after `each`.
+- Callers pass `boostagram.app_name` (`formatContent`) and `summaryBoostagram.app_name` (BOOST ALL).
+- Tests first: check:vts vectors from the format's own test vectors (1, 2, 3, 6, 7, 10, 12, 16, 17) plus the self-titled album track; e2e-mentions and e2e:notewording expect ` via BoostMeBitch`.
+
+### Task 7: Order — rule 15 and rule 12
+- `buildBoostNoteTemplate`: the playlist's `podcast:guid` goes after the track tags.
+- The body: the mention run before the quoted receipt.
+- Tests first: e2e-mentions — a playlist row with a paid song gives `[A, T, B, S, P]`; a note with a mention and a receipt has the `npub` above the `nevent`.
+
+### Task 8: The card says `via` once
+- `noteNamesClient(content, client)` in `lib/util.ts`: true when a line of the content ends with ` via <client>`, ignoring case. `<NoteCard>` leaves its `via` label out when it answers true.
+- Tests first: check:vts vectors; e2e:feedbuttons — a new-format BMB note shows no label, an old one keeps it.
+
+### Task 9: Ship checks — as Task 5, plus `e2e:notewording` and `e2e:feedbuttons` on a fresh build.
