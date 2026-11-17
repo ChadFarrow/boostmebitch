@@ -24,7 +24,7 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
@@ -397,10 +397,10 @@ export async function searchPlaylistFeeds(query: string, limit: number): Promise
         rosterInFlight,
         new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ROSTER_COLD_WAIT_MS); }),
       ]).finally(() => { if (timer) clearTimeout(timer); });
-      return filterPlaylistsByQuery(feeds ?? [], query, limit);
+      return matchPlaylistsByQuery(feeds ?? [], query, limit);
     }
   }
-  return filterPlaylistsByQuery(hit?.value ?? [], query, limit);
+  return matchPlaylistsByQuery(hit?.value ?? [], query, limit);
 }
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {

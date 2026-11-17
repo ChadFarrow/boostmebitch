@@ -26,15 +26,25 @@ export const PODCAST_ITEM_PREFIX = 'podcast:item:guid:';
 export const STORABLE_KINDS = new Set([0, 1, 6, 9735, 30311]);
 
 /** NIP-53 live activities. Addressable (30000-39999), so the newest event per
- *  `(pubkey, d)` is the current one and older versions are history — the
- *  dedupe lives in the query rather than at ingest, because a relay serves
- *  versions out of order and the newest may arrive first.
+ *  `(pubkey, d)` is the current one and older versions are history. Every
+ *  version is still stored; the newest SERVABLE one per address is tracked at
+ *  ingest in `live_heads` (see `liveHeadAddress`), by `created_at` and never
+ *  by arrival order, because a relay serves versions out of order and the
+ *  newest may arrive first.
  *
  *  It is safe to index for the reason the FORBIDDEN list exists: nothing this
  *  app does WRITES a kind:30311. The forbidden kinds are all events a stale
  *  index read could talk a client into destroying; a live-stream announcement
  *  is published by the streamer and only ever read here. */
 export const LIVE_STREAM_KIND = 30311;
+
+/** How far back, by `created_at`, a kind:30311 version counts as current: the
+ *  window /feed/live serves, the window the indexer subscribes with, and the
+ *  window a head is promoted from after a delete. ONE constant because those
+ *  three must agree — `live_heads` is only exact while the promotion looks at
+ *  least as far back as the route serves. Matches `LIVE_STREAM_RELAYS`' own
+ *  7-day `since` in lib/nostr/live-streams.ts. */
+export const LIVE_WINDOW_SECS = 7 * 86_400;
 
 /** kind:5 is consumed at ingest and never stored as an event: it tombstones
  *  rows, and its targets go into `deletion_requests` so a note arriving after
@@ -143,6 +153,36 @@ export function indexableTags(event: Event): { name: string; value: string; pos:
     out.push({ name, value, pos });
   });
   return out;
+}
+
+/** The `status` values `/feed/live` serves. `parseNostrLiveStream` maps every
+ *  other value, and a missing status, to `ended`. */
+export const SERVABLE_LIVE_STATUSES: ReadonlySet<string> = new Set(['live', 'planned']);
+
+/**
+ * The address a kind:30311 version competes for in `live_heads`, or null when
+ * `/feed/live` can never serve it.
+ *
+ * Both halves are the rules the route's query applied to every version in its
+ * window before this table existed, moved to ingest unchanged:
+ *
+ *  - SERVABLE: any `status` tag whose value is `live` or `planned`. The test is
+ *    per VERSION, before the dedupe, so an address whose newest version says
+ *    `ended` keeps its newest servable one as its head. That is deliberately
+ *    the old behaviour, not a judgement on it — the client applies its own
+ *    status and freshness rules on top (see `liveStreams` in queries.ts).
+ *  - ADDRESS: the FIRST indexable `d` value — what `event_tags` holds for this
+ *    event, and what the old query read with `order by pos limit 1` — so a
+ *    `d` behind a `status` or a `title` still counts, and an empty `d` is
+ *    skipped exactly as `indexableTags` skips it. With no `d` the event id
+ *    stands in, as the client's `?? e.id` does.
+ */
+export function liveHeadAddress(event: Event): string | null {
+  if (event.kind !== LIVE_STREAM_KIND) return null;
+  const servable = event.tags.some((t) => t[0] === 'status' && SERVABLE_LIVE_STATUSES.has(t[1]));
+  if (!servable) return null;
+  const d = indexableTags(event).find((t) => t.name === 'd');
+  return d ? d.value : event.id;
 }
 
 export interface PodcastRefs {
