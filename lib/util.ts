@@ -1745,6 +1745,68 @@ export function rankPlaylistsFirst<T extends Pick<Podcast, 'id' | 'title' | 'aut
 }
 
 /**
+ * Search results with matching PUBLISHER feeds moved to the very top — above
+ * Podcast Index's own leader.
+ *
+ * A `medium=publisher` feed is one artist's whole catalogue: it lists their
+ * album feeds, and it is the one row that answers "this artist" rather than one
+ * record of theirs. Podcast Index ranks it UNDER the albums it lists. Measured
+ * on production 2026-11-16: `longy` put "Longy - Everything" (PI 7696544) at
+ * row 37 of 40, after 31 of Longy's albums and three podcasts by other people;
+ * `doerfels` put The Doerfels at 31 of 31; `sir libre` at 9 of 9. Chad: "these
+ * should be shown first".
+ *
+ * **The leader is NOT held, which is the opposite of `rankPlaylistsFirst`.** That
+ * rule protects an exact-name show from a playlist named after it. In all three
+ * measured searches PI's leader was a podcast by somebody else (an NRL show by
+ * "Longy, Biz & Burgz", "Into The Doerfel-Verse", "v4vmusic Show"), and the row
+ * the user typed the name of was the publisher. So it goes first, playlists
+ * included.
+ *
+ * Lifted only when every query term is in the TITLE or AUTHOR
+ * (`titleOrAuthorMatches`, the playlist test). byterm runs with `fulltext`, so
+ * it also returns a feed that names the term only in its description, and a
+ * publisher that merely credits a collaborator must not jump the artist that
+ * was searched for.
+ *
+ * The medium test is the literal `=== 'publisher'` on purpose: it is the test
+ * `<PodcastRow>` stamps `▸ ALBUMS` by and `<HomePage>` opens the publisher view
+ * by, so a lifted row always looks and opens as a publisher. `publisherL` is a
+ * LIST of publishers — a playlist — and `rankPlaylistsFirst` owns it.
+ *
+ * Capped at `limit`; order is kept inside both halves, and nothing is dropped or
+ * duplicated. A query that matches no publisher returns the list unchanged.
+ */
+export function rankPublishersFirst<T extends Pick<Podcast, 'title' | 'author' | 'medium'>>(
+  feeds: readonly T[],
+  q: string,
+  limit: number,
+): T[] {
+  const lifted: T[] = [];
+  for (const f of feeds) {
+    if (lifted.length >= limit) break;
+    if (f.medium === 'publisher' && titleOrAuthorMatches(f, q)) lifted.push(f);
+  }
+  if (!lifted.length) return [...feeds];
+  return [...lifted, ...feeds.filter((f) => !lifted.includes(f))];
+}
+
+/**
+ * Whether every term of a typed query is in a feed's title or author.
+ *
+ * Case-folded substrings, and EVERY whitespace-separated term must appear, so
+ * "mutton music" does not match a feed that only says "music". A blank query has
+ * no terms and matches nothing — an empty box must not promote anything. The
+ * playlist and publisher promotions both use it, so one set of words lifts both.
+ */
+function titleOrAuthorMatches(f: Pick<Podcast, 'title' | 'author'>, q: string): boolean {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return false;
+  const hay = `${f.title ?? ''} ${f.author ?? ''}`.toLowerCase();
+  return terms.every((t) => hay.includes(t));
+}
+
+/**
  * Which playlists a typed query should surface.
  *
  * Podcast Index's `/search/byterm` has **no medium parameter**, so a playlist it
@@ -1769,16 +1831,14 @@ export function filterPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author
   q: string,
   limit: number,
 ): T[] {
-  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length || limit <= 0) return [];
+  if (limit <= 0) return [];
   const out: T[] = [];
   for (const f of feeds) {
     // The medium is re-checked here rather than trusted from the caller: this
     // list is what a search surfaces as "a playlist", and a base-medium feed
     // reaching it would be stamped as one it is not.
     if (!isPlaylistMedium(f)) continue;
-    const hay = `${f.title ?? ''} ${f.author ?? ''}`.toLowerCase();
-    if (!terms.every((t) => hay.includes(t))) continue;
+    if (!titleOrAuthorMatches(f, q)) continue;
     out.push(f);
     if (out.length >= limit) break;
   }
@@ -1852,14 +1912,29 @@ export function parseSearchType(v: string | null | undefined): SearchType {
  * So the test is "not music, and not a list medium", which leaves a mediumless
  * feed findable under the one chip where somebody would look for it.
  *
- * A `medium=publisher` collection lands there too. That is a mild mislabel and
- * the right trade — the row carries its own `▸ ALBUMS` stamp, and the
- * alternative is a feed reachable under no chip but ALL.
+ * **A `medium=publisher` feed goes under the choice it is FOR** — Chad,
+ * 2026-11-16: "pubfeeds should show up for whatever they are for". A publisher
+ * holds no content of its own; its remoteItems name the mediums it lists
+ * (`publisherMediums`, read from its RSS by the route), and it matches a choice
+ * when ANY of them does. Longy's lists only `music`, so it is under MUSIC and no
+ * longer under PODCASTS; The Doerfels' lists `music` and one `podcast`, so it is
+ * under both; ChadF's lists `musicL`, so it is under PLAYLISTS. A child that is
+ * itself a `publisher` says nothing about the content and is skipped.
+ *
+ * A publisher whose mediums are UNKNOWN — the feed was not read in time, or
+ * names none — stays in the PODCASTS residual bucket, where it always was. That
+ * is the same rule as a mediumless feed: the one choice where it can still be
+ * found, never no choice at all.
  *
  * `'npub'` matches nothing: no feed is a person, and this function is only ever
  * asked about feeds.
  */
-export function matchesSearchType(p: Pick<Podcast, 'medium'>, type: SearchType): boolean {
+export function matchesSearchType(p: Pick<Podcast, 'medium' | 'publisherMediums'>, type: SearchType): boolean {
+  if (p.medium === 'publisher' && type !== 'all') {
+    const known = (p.publisherMediums ?? []).filter((m) => m.toLowerCase() !== 'publisher');
+    if (!known.length) return type === 'podcast';
+    return known.some((medium) => matchesSearchType({ medium }, type));
+  }
   switch (type) {
     case 'all': return true;
     case 'music': return isMusicMedium(p);
