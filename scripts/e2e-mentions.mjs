@@ -172,25 +172,35 @@ if (!ISOLATED) {
 } else {
   // ===========================================================================
   {
-    // publishBoostNoteViaSite POSTs to /api/nostr/site-sign. Intercepted here so
-    // the test needs no dev server and no site key — what is under test is which
-    // TEMPLATE the client hands over, which is the whole selfSigned decision.
+    // publishBoostNoteViaSite asks /api/nostr/site-stamp for the note stamp,
+    // pays it, then POSTs { template, stamp } to /api/nostr/site-sign. Both are
+    // intercepted here so the test needs no server, no site key and no wallet —
+    // what is under test is which TEMPLATE the client hands over, which is the
+    // whole selfSigned decision.
     let sent = null;
+    let firstUrl = null;
     const siteSk = generateSecretKey();
     globalThis.fetch = async (url, init) => {
-      sent = JSON.parse(init.body);
-      return { ok: true, json: async () => ({ event: finalizeEvent(sent, siteSk) }) };
+      const body = JSON.parse(init.body);
+      firstUrl ??= String(url);
+      if (String(url).endsWith('/api/nostr/site-stamp')) {
+        sent = body.template;
+        return { ok: true, status: 200, json: async () => ({ invoice: 'lnbc10n1e2e', stamp: 'e2e.stamp' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ event: finalizeEvent({ ...body.template }, siteSk) }) };
     };
     await publishBoostNoteViaSite({
       podcast, episode, boostagram: boostagram('great track @fiatjaf'),
       results: [], mentions: [mentionA],
-    });
+      // Isolated, no relay takes the note, and that now throws (RETRY NOTE).
+    }, { payStamp: async () => {}, state: {} }).catch(() => {});
     await wait(400);
     // Asserted on the TEMPLATE the route was handed, not on a relay round trip:
     // this path publishes to DEFAULT_RELAYS by construction, and the template is
     // where the whole selfSigned decision shows up anyway.
     const e = sent;
-    check('a template was posted to /api/nostr/site-sign', !!e, true);
+    check('a template was posted to /api/nostr/site-stamp', !!e, true);
+    check('the site path asked for a stamp first', firstUrl?.endsWith('/api/nostr/site-stamp'), true);
     check('the feed npub keeps its p tag', pTags(e).includes(feedA.pubkey), true);
     check('the SENDER mention has NO p tag', pTags(e).includes(mentionA.pubkey), false);
     check('...and the feed npub is the only p tag left', pTags(e).length, 1);
@@ -450,9 +460,13 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   const capture = async (args) => {
     let sent = null;
     const realFetch = globalThis.fetch;
-    // ok:false stops publishBoostNoteViaSite before it publishes anywhere.
-    globalThis.fetch = async (_u, init) => { sent = JSON.parse(init.body); return { ok: false, status: 599, json: async () => ({}) }; };
-    await publishBoostNoteViaSite(args).catch(() => {});
+    // A 599 from the stamp route makes the ladder post from a one-time key. This
+    // section runs only isolated, so that publish reaches nobody.
+    globalThis.fetch = async (_u, init) => {
+      sent ??= JSON.parse(init.body).template;
+      return { ok: false, status: 599, json: async () => ({}) };
+    };
+    await publishBoostNoteViaSite(args, { payStamp: async () => {}, state: {} }).catch(() => {});
     globalThis.fetch = realFetch;
     if (sent) delete sent.created_at;
     return sent;
@@ -495,7 +509,7 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   // while the shipping numbers drift apart.
   const constIn = (file, name) => Number((readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     .match(new RegExp(`const ${name} = (\\d+);`)) ?? [])[1]);
-  const LIMIT = constIn('app/api/nostr/site-sign/route.ts', 'MAX_CONTENT');
+  const LIMIT = constIn('lib/site-sign-template.ts', 'MAX_CONTENT');
   check('the builder\'s limit is the route\'s', constIn('lib/nostr/boost-notes.ts', 'SITE_SIGN_MAX_CONTENT'), LIMIT);
   check('worst case: body within the limit', worst.content.length <= LIMIT, true);
   check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
@@ -505,7 +519,13 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   // long: filter.nostr.wine puts the npub and a query in the URL. Three of
   // those, the most the nevent carries.
   const relayHints = many.slice(0, 3).map((m) => `wss://filter.nostr.wine/${m.npub}?broadcast=true`);
-  const RECEIPT = { id: 'a'.repeat(64), pubkey: 'b'.repeat(64), relays: relayHints };
+  // The signed receipt rides with the quote: site-stamp refuses one that claims
+  // more than the note (lib/site-stamp.ts, `quotedReceiptFits`), and the page
+  // checks its fields before it asks. 1 sat is under every note here.
+  const RECEIPT = {
+    id: 'a'.repeat(64), pubkey: 'b'.repeat(64), relays: relayHints,
+    event: { id: 'a'.repeat(64), pubkey: 'b'.repeat(64), kind: 9735, created_at: 0, content: '', tags: [['amount', '1000']], sig: '' },
+  };
   // This site's own link carries the episode guid: sized so the link is 512.
   const siteBase = siteLandingUrl(podcast.podcastGuid, 'g').length - 1;
   // Every part at the most a real boost carries: a 250-character message (the

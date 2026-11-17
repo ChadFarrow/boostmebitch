@@ -4,8 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, checkSignerLink, type QuotedZapReceipt, type SignerCheck } from '@/lib/nostr';
+import { sendBoost, pickRail, paidAny, payStampInvoice, type Rail } from '@/lib/v4v/boost';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
+import type { Event } from 'nostr-tools';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
@@ -490,6 +491,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // rather than minting a second: two receipts for one boost would count its
     // sats twice wherever receipts are summed.
     let summaryReceipt: QuotedZapReceipt | null = null;
+    // A site-signed summary's progress (lib/site-stamp.ts): the template, the
+    // paid stamp and the signed event, so RETRY NOTE never pays a second stamp.
+    // The stamp goes out on the rail the boosts paid on.
+    const siteNote: SiteNoteState<Event> = {};
+    const stampRail = rail;
     // The note step as a function, so RETRY NOTE can run it again with a fresh
     // signer check — the check this attempt used is the one that failed.
     const postSummary = async (check: Promise<SignerCheck> | null): Promise<void> => {
@@ -528,17 +534,30 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         // User's own key only when signed in AND they picked "Post to my Nostr
         // feed"; otherwise the site's Nostr identity (signed out, or the
         // signed-in "Post via boostmebitch.com" choice).
-        const note = identity && shareAs === 'self'
-          ? await publishBoostNote({
-              podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
-              mentions, summaryReceipt: summaryReceipt ?? undefined,
-            })
-          : await publishBoostNoteViaSite({
-              podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
-              mentions, summaryReceipt: summaryReceipt ?? undefined,
-            });
+        let notice: string | undefined;
+        let note;
+        if (identity && shareAs === 'self') {
+          note = await publishBoostNote({
+            podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
+            mentions, summaryReceipt: summaryReceipt ?? undefined,
+          });
+        } else {
+          const r = await publishBoostNoteViaSite({
+            podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
+            mentions, summaryReceipt: summaryReceipt ?? undefined,
+          }, {
+            // No rail means nothing to pay with: the ladder signs one-time.
+            payStamp: (bolt11, sats) => (stampRail ? payStampInvoice(stampRail, bolt11, sats) : Promise.reject(new Error('no wallet'))),
+            state: siteNote,
+            onStamp: (sats) => { if (!cancelled.current) setPubState({ kind: 'publishing', step: 'stamp', sats }); },
+          });
+          note = r.note;
+          if (r.signer === 'one-time' && r.why) {
+            notice = `Posted from a one-time key, not ${BRAND.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`;
+          }
+        }
         if (cancelled.current) return;
-        setPubState({ kind: 'done', note });
+        setPubState({ kind: 'done', note, notice });
       } catch (e) {
         if (cancelled.current) return;
         setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed'), retry });

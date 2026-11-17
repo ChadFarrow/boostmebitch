@@ -462,6 +462,56 @@ gets it when someone notices the feature is missing there. Treat "set the
 variable" as a two-project step, and `.env.example`'s warning about the
 **copied** `ANDROID_*` pair as the one exception where copying is the bug.
 
+## The note stamp's Lightning address — one per project, set before the merge
+
+`/api/nostr/site-sign` signs a boost note under the site's name only with a
+paid stamp of 1% of the boost (`docs/security.md`, "The stamp"). Two server-only variables,
+each set on **both** Vercel projects separately — the previous section is why
+"separately" matters. Set them on Preview too wherever beta runs there:
+
+| Variable | Value | Missing |
+| --- | --- | --- |
+| `SITE_STAMP_LNADDRESS` | a Lightning address the site's owner receives at, `name@domain` | every site note posts from a one-time key |
+| `SITE_SIGN_REQUIRE_STAMP` | `on` only in phase 2 | phase 1: a bare template is still signed |
+
+It was an LNbits wallet and an invoice/read key until Chad's "Remove the lnbits
+part" (2026-11-17). An address needs no key: it can be paid and asked, never
+spent from, so nothing on Vercel can move money.
+
+- **Set the address BEFORE the merge deploys.** Without it
+  `/api/nostr/site-stamp` answers 503 and every anonymous and signed-out note
+  goes out from a one-time key: nothing breaks, but the site's name is gone
+  from those notes until it is set.
+- **The provider must support LUD-21 `verify`, on its own domain.** The site
+  confirms each stamp through the invoice's verify link, and refuses a callback
+  or verify link on any domain but the address's own (that is the SSRF rule).
+  `hello@getalby.com` did both on 2026-11-17: callback and verify on
+  `getalby.com`, `commentAllowed: 255`, 1 sat accepted. A provider without them
+  is refused, and the Vercel log says why in a `[site-stamp]` line. **Test one
+  address before setting it:** one real signed-out boost per deploy, whose note
+  shows the site's name, is the check.
+- **Which address.** Any the owner controls; the stamps arrive there as
+  payments of 1% of each boost (at least 1 sat, no maximum, so its
+  `maxSendable` must allow a large one — Alby's is 10,000,000 sats) with the
+  comment `<brand> note stamp`. Buddy's note pays Buddy's
+  setting: a hosted-playlist note signed by Buddy's key (PR #540) asks Buddy's
+  deploy for both the stamp and the signature. The two projects may name the
+  same address. Chad plans an address for the stamps only, separate from his
+  main Alby address (2026-11-17), so stamps do not mix with boosts he receives.
+- **This site serves no Lightning address, so the stamp cannot be paid to one
+  of its own.** `chadf@boostmebitch.com` was a test address: a `vercel.json`
+  rewrite to an LNbits instance at `pay.boostmebitch.com`. Chad turned that
+  instance off, and PR #591 removed the rewrite and the keysend route
+  (`docs/money-boosts.md`, "Serving our own lightning address"). Any address
+  whose `.well-known/lnurlp` is a rewrite to another host cannot be it either:
+  that host builds the callback on its own domain, and the same-origin rule
+  refuses it.
+- **Phase 2.** When production on both brands AND beta run the stamping client,
+  set `SITE_SIGN_REQUIRE_STAMP=on` on both projects and redeploy. From then a
+  bare template is 402. A tab opened before the deploy gets 402 until it
+  reloads, and its note posts from nobody — which is why this waits. Unset it
+  to go back.
+
 ## The beta site
 
 `beta.boostmebitch.com` is a domain on the `boostmebitch` Vercel project, bound
