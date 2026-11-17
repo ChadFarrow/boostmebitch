@@ -333,6 +333,17 @@ if (runs(1)) {
     t.equal('an invoice that is not for 1 sat → 502, never handed to the page', [over?.status, over?.body?.error, over?.body?.invoice], [502, 'could not create the stamp invoice', undefined]);
     stampAddr.reset();
 
+    // The mint is TWO calls in a row. One deadline covers both, or a slow pay
+    // request plus a hung callback outlasts the page's 15 s wait.
+    stampAddr.mode.payreq = 'slow';
+    stampAddr.mode.mint = 'hang';
+    const mintStarted = Date.now();
+    const slowMint = await post('/api/nostr/site-stamp', { template: template() });
+    const mintTook = Date.now() - mintStarted;
+    t.equal('a slow pay request, then a callback that never answers → 502', [slowMint?.status, slowMint?.body?.error], [502, 'could not create the stamp invoice']);
+    t.ok(`...inside 10 s for both calls together (took ${mintTook} ms)`, mintTook < 10_000);
+    stampAddr.reset();
+
     const second = template('⚡ Boost ⚡\n\ne2e: the lookup hangs');
     const m2 = await post('/api/nostr/site-stamp', { template: second });
     stampAddr.markPaid(m2?.body?.invoice);

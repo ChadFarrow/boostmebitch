@@ -17,6 +17,7 @@
 //         | 'overcharge' (an invoice for twice the asked amount)
 //         | 'noverify' (no LUD-21 verify link)
 //   lookup: 'ok' | 'hang'
+//   payreq: 'ok' | 'slow' (the pay request answers after 5 s)
 
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -29,12 +30,12 @@ export function createFakeStampAddress({ port = 0, name = 'stamp' }) {
   const byBolt11 = new Map();
   const minted = [];
   const lookups = [];
-  const mode = { mint: 'ok', lookup: 'ok' };
+  const mode = { mint: 'ok', lookup: 'ok', payreq: 'ok' };
   const hung = new Set();
   const sockets = new Set();
   let origin = '';
 
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     const send = (code, body) => {
       res.writeHead(code, { 'content-type': 'application/json' });
       res.end(JSON.stringify(body));
@@ -43,6 +44,7 @@ export function createFakeStampAddress({ port = 0, name = 'stamp' }) {
     if (req.method !== 'GET') return send(405, { status: 'ERROR', reason: 'GET only' });
 
     if (url.pathname === `/.well-known/lnurlp/${name}`) {
+      if (mode.payreq === 'slow') await new Promise((r) => setTimeout(r, 5000));
       return send(200, {
         status: 'OK', tag: 'payRequest', commentAllowed: 255,
         callback: `${origin}/lnurlp/${name}/callback`,
@@ -109,6 +111,7 @@ export function createFakeStampAddress({ port = 0, name = 'stamp' }) {
     reset() {
       mode.mint = 'ok';
       mode.lookup = 'ok';
+      mode.payreq = 'ok';
       for (const r of hung) r.destroy();
       hung.clear();
     },

@@ -13,7 +13,9 @@
 // callback or a verify link anywhere else — so nothing a third party answers can
 // aim these fetches, and they are plain `fetch` with redirects refused, a
 // timeout and a capped read, not `safeFetch`. A hung address must cost a note
-// its stamp, never the modal its answer.
+// its stamp, never the modal its answer — so the mint's two calls share ONE
+// 8 s deadline: two of their own outlast the page's 15 s wait
+// (`SITE_ROUTE_TIMEOUT_MS`).
 //
 // The operator cannot see a refusal on the client, so each one writes ONE fixed
 // `console.warn` line naming what was wrong; nothing the address sent is echoed
@@ -48,12 +50,12 @@ function refuse(why: string): never {
   throw new StampAddressError();
 }
 
-async function getJson(url: string): Promise<{ status: number; json: unknown }> {
+async function getJson(url: string, signal: AbortSignal): Promise<{ status: number; json: unknown }> {
   try {
     const res = await fetch(url, {
       headers: { accept: 'application/json' },
       redirect: 'error',
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal,
       cache: 'no-store',
     });
     const json = await readCappedJson(res, MAX_ANSWER_BYTES).catch(() => null);
@@ -67,10 +69,11 @@ async function getJson(url: string): Promise<{ status: number; json: unknown }> 
 export async function createStampInvoice(comment: string): Promise<{ bolt11: string; verifyUrl: string }> {
   const a = address();
   if (!a) throw new StampAddressError();
-  const pay = readPayRequest((await getJson(a.wellKnown)).json, a.origin, STAMP_MSAT);
+  const deadline = AbortSignal.timeout(TIMEOUT_MS);
+  const pay = readPayRequest((await getJson(a.wellKnown, deadline)).json, a.origin, STAMP_MSAT);
   if (!pay.ok) refuse(pay.why);
   const answer = readCallbackAnswer(
-    (await getJson(stampCallbackUrl(pay.callback, STAMP_MSAT, comment, pay.commentAllowed))).json,
+    (await getJson(stampCallbackUrl(pay.callback, STAMP_MSAT, comment, pay.commentAllowed), deadline)).json,
     a.origin,
   );
   if (!answer.ok) refuse(answer.why);
@@ -84,7 +87,7 @@ export async function createStampInvoice(comment: string): Promise<{ bolt11: str
  * confirm" rather than "unpaid".
  */
 export async function stampInvoicePaid(verifyUrl: string): Promise<boolean> {
-  const verdict = readVerifyAnswer((await getJson(verifyUrl)).json);
+  const verdict = readVerifyAnswer((await getJson(verifyUrl, AbortSignal.timeout(TIMEOUT_MS))).json);
   if (verdict === 'settled') return true;
   if (verdict === 'unsettled') return false;
   return refuse('the verify link gave no settled answer');

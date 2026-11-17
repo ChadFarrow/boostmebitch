@@ -262,7 +262,8 @@ unchanged.
 - **Where the server may fetch (builder's call):** the callback and the verify link must be on the
   **same origin as the configured address**. The address is operator config, so nothing a third party
   sends can steer a server fetch, and the fetches are plain `fetch` with `redirect: 'error'`, a timeout
-  and a capped read, as the LNbits calls were. `https` only, except `http` on a loopback host (the e2e's
+  and a capped read, as the LNbits calls were. The mint makes two calls in a row, so they share ONE
+  8 s deadline (builder's call, after the e2e measured 13 s with one each — the page waits 15 s). `https` only, except `http` on a loopback host (the e2e's
   fake). A provider whose callback lives on another domain is refused with a warning — pick one that
   keeps both on its own domain.
 - **Measured 2026-11-17 on `hello@getalby.com`:** callback `https://getalby.com/lnurlp/hello/callback`,
