@@ -397,6 +397,99 @@ function isNewer(a: DemuAlbum, b: DemuAlbum): boolean {
 }
 
 /**
+ * The word "test" in the title or the author — a WORD, so "Latest Hits",
+ * "Contest" and "Testament" do not count. Such a feed is never hidden as a
+ * copy (`demuCopiesToHide`): "keep any feeds that say test, because some people
+ * need those for testing out apps, and Boost Me Bitch is one of those apps"
+ * (Chad, 2026-11-17).
+ */
+export function saysTest(album: { title?: string; author?: string }): boolean {
+  return /\btest\b/i.test(album.title ?? '') || /\btest\b/i.test(album.author ?? '');
+}
+
+// Case, Unicode compatibility forms (NFKC) and punctuation do not tell two
+// names apart; letters in any script do (`\p{L}`), so a Cyrillic title is not
+// blank — a Latin-only `[^a-z0-9]` emptied Iggy's and Skyline's titles.
+const looseName = (s: string | undefined): string =>
+  (s ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * The albums the copy rule must read the tracks of (`demuCopiesToHide`): an
+ * album with a track count that another album shares AND the same artist,
+ * title or cover as it. A copy has the same tracks, so the same count; every
+ * copy measured on 2026-11-17 also kept its artist, title and cover. The
+ * filter is what keeps the rule to two or three Podcast Index calls: 321 of
+ * 665 albums, 796 of 4,790 tracks that day. An album with no tracks is never
+ * a candidate.
+ */
+export function demuCopyCandidates(albums: readonly DemuAlbum[]): DemuAlbum[] {
+  const keysOf = (a: DemuAlbum): string[] => {
+    const n = a.episodeCount ?? 0;
+    if (n <= 0) return [];
+    const author = looseName(a.author);
+    const title = looseName(a.title);
+    return [
+      author ? `${n}|a|${author}` : '',
+      title ? `${n}|t|${title}` : '',
+      a.image ? `${n}|i|${a.image}` : '',
+    ].filter(Boolean);
+  };
+  const count = new Map<string, number>();
+  for (const a of albums) for (const k of new Set(keysOf(a))) count.set(k, (count.get(k) ?? 0) + 1);
+  return albums.filter((a) => keysOf(a).some((k) => (count.get(k) ?? 0) > 1));
+}
+
+/**
+ * The ids of the albums that are an older COPY of another album on the list
+ * (Chad, 2026-11-17: "what we're presenting [is] what we believe is the
+ * current version" — self-publishers put out copies "as they're learning and
+ * fixing"). Music shows pick songs to play from /demu, so a copy is a second
+ * row for the same songs.
+ *
+ * - **A copy has the SAME SET of tracks** — the same audio URLs, in any order.
+ *   One shared track is NOT a copy: an album contains its singles (18 Doerfels
+ *   and CityBeach feeds share audio that way, every one a real release), and a
+ *   per-artist feed is a subset of its catalog (Crem Road).
+ * - **The newest copy stays** — the later newest track, ties to the higher PI
+ *   id (`isNewer`, the roster's own rule for two rows of one guid). Drop BTC:
+ *   three feeds, one MP3; 8084510 stays.
+ * - **Never hidden:** a copy Homegrown Hits plays (`played`, lower-cased
+ *   guids — played wins over hidden, as in `keepForDemu`), and a feed that
+ *   `saysTest`.
+ * - **A feed whose tracks were not read is never a copy.** `tracks` maps an
+ *   album id to its audio URLs; an absent id, or an empty list, has no set to
+ *   compare, so a failed read hides nothing.
+ */
+export function demuCopiesToHide(
+  albums: readonly DemuAlbum[],
+  tracks: ReadonlyMap<number, readonly string[]>,
+  played: ReadonlySet<string>,
+): Set<number> {
+  const groups = new Map<string, DemuAlbum[]>();
+  for (const a of albums) {
+    const urls = tracks.get(a.id);
+    if (!urls) continue;
+    const set = [...new Set(urls.map((u) => u.trim()).filter(Boolean))].sort();
+    if (!set.length) continue;
+    const key = set.join('\n');
+    const g = groups.get(key);
+    if (g) g.push(a);
+    else groups.set(key, [a]);
+  }
+  const hide = new Set<number>();
+  for (const g of groups.values()) {
+    if (g.length < 2) continue;
+    const newest = g.reduce((best, a) => (isNewer(a, best) ? a : best));
+    for (const a of g) {
+      if (a === newest || saysTest(a)) continue;
+      if (a.podcastGuid && played.has(a.podcastGuid.toLowerCase())) continue;
+      hide.add(a.id);
+    }
+  }
+  return hide;
+}
+
+/**
  * Newest track first. A FUTURE date sorts as `nowSec` — a scheduled or wrong
  * date must not hold the top of the list for weeks — ties go to the higher
  * `id`, and a row with no date goes last.

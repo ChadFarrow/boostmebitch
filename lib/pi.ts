@@ -31,7 +31,7 @@ import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMediu
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
-import { confirmValueMissing, demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids, withCoverFallback } from './demu';
+import { confirmValueMissing, demuCopiesToHide, demuCopyCandidates, demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids, withCoverFallback } from './demu';
 import { DEMU_HIDE_AUTHORS, DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from './demu-hide-list';
 import type { DemuAlbum, PiMusicRow } from './demu';
 
@@ -507,6 +507,60 @@ async function batchHasValue(guids: readonly string[]): Promise<Map<string, bool
 }
 
 /**
+ * At most this many TRACKS (summed `episodeCount`) in one `/episodes/byfeedid`
+ * call for the copy rule. PI's `max` is GLOBAL across the ids and caps at
+ * `PI_EPISODE_MAX` (1000); 400 leaves room for a count that lags the feed.
+ * An album over it is never read, so it is never a copy.
+ */
+const DEMU_TRACKS_PER_CALL = 400;
+
+/**
+ * Each album's audio URLs from Podcast Index, for the copy rule
+ * (`demuCopiesToHide`, lib/demu.ts). One `/episodes/byfeedid` call takes many
+ * ids and no `since` (measured 2026-11-17: 8084427,8084476,8084510 answer one
+ * catbox MP3 each). Two or three calls for the candidates of 2026-11-17.
+ *
+ * A call that fails, or comes back FULL (`max` reached, so some feed lost
+ * tracks), leaves its albums out of the map — and an album that is not in the
+ * map is never a copy. So a PI failure here shows a copy, never hides an album,
+ * and does not fail the refresh.
+ */
+async function demuTrackLists(albums: readonly DemuAlbum[]): Promise<Map<number, string[]>> {
+  const chunks: DemuAlbum[][] = [];
+  let chunk: DemuAlbum[] = [];
+  let tracks = 0;
+  for (const a of albums) {
+    const n = a.episodeCount ?? 0;
+    if (n <= 0 || n > DEMU_TRACKS_PER_CALL) continue;
+    if (chunk.length && (tracks + n > DEMU_TRACKS_PER_CALL || chunk.length >= PI_FEED_IDS_MAX)) {
+      chunks.push(chunk);
+      chunk = [];
+      tracks = 0;
+    }
+    chunk.push(a);
+    tracks += n;
+  }
+  if (chunk.length) chunks.push(chunk);
+  const out = new Map<number, string[]>();
+  await mapLimit(chunks, PI_FANOUT, async (ids) => {
+    try {
+      const data = await pi<{ items?: unknown }>(`/episodes/byfeedid?id=${ids.map((a) => a.id).join(',')}&max=${PI_EPISODE_MAX}`);
+      const rows = Array.isArray(data?.items) ? (data.items as { feedId?: unknown; enclosureUrl?: unknown }[]) : [];
+      if (rows.length >= PI_EPISODE_MAX) return;
+      const lists = new Map<number, string[]>(ids.map((a) => [a.id, []]));
+      for (const r of rows) {
+        const list = lists.get(Number(r?.feedId));
+        if (list && typeof r?.enclosureUrl === 'string' && r.enclosureUrl.trim()) list.push(r.enclosureUrl.trim());
+      }
+      for (const [id, list] of lists) out.set(id, list);
+    } catch (e) {
+      console.warn('[pi] DeMu copy rule could not read tracks; those albums stay:', e instanceof Error ? e.message : e);
+    }
+  });
+  return out;
+}
+
+/**
  * The feeds Homegrown Hits plays — shown on /demu with or without a value
  * block, and beyond the hide list's reach (`keepForDemu`). The show's own feed
  * (1.3 MB on 2026-11-16) is read through `remoteItemFeedGuids`. A failure is
@@ -568,7 +622,12 @@ async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
     // either way, but its NO VALUE BLOCK stamp must rest on an answer, not on the
     // static file being days old (`valueMissing` in lib/demu.ts).
     const batch = await batchHasValue(demuValueGaps(candidates, valueIds, DEMU_HIDDEN));
-    const kept = keepForDemu(candidates, { valueIds, batch, played, hidden: DEMU_HIDDEN, msp, hiddenAuthors: DEMU_HIDDEN_AUTHORS });
+    const shown = keepForDemu(candidates, { valueIds, batch, played, hidden: DEMU_HIDDEN, msp, hiddenAuthors: DEMU_HIDDEN_AUTHORS });
+    // Then one row per set of tracks: an older COPY of an album on the list goes
+    // (`demuCopiesToHide`, Chad, 2026-11-17). After `keepForDemu`, so a copy is
+    // compared only with albums that are shown. A failed read hides nothing.
+    const copies = demuCopiesToHide(shown, await demuTrackLists(demuCopyCandidates(shown)), played);
+    const kept = copies.size ? shown.filter((a) => !copies.has(a.id)) : shown;
     // A NO VALUE BLOCK stamp must be true of the FEED, not of PI's channel-level
     // data: MOOKY pays from an item-level block PI does not see. So each marked
     // album's own RSS decides (a handful of feeds, through safeFetch and the RSS

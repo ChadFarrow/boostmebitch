@@ -24,7 +24,7 @@
 import {
   isDemuFeed, demuRosterRows, demuRosterFromPi, sortDemuAlbums, demuGroups, demuAge, demuDateLabel, matchesDemuQuery,
   hasValueBlock, demuValueGaps, keepWithValue, keepForDemu, mspFeedGuids, confirmValueMissing,
-  demuAppOf, DEMU_APPS, withCoverFallback,
+  demuAppOf, DEMU_APPS, withCoverFallback, saysTest, demuCopyCandidates, demuCopiesToHide,
 } from '../lib/demu.ts';
 import { DEMU_HIDE_LIST, DEMU_HIDE_AUTHORS, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
 import { remoteItemFeedGuids, feedHasValueTag, newestItemImage } from '../lib/feed-xml.ts';
@@ -614,6 +614,116 @@ console.log('\nCover from the newest track:');
   }
   if (DEMU_HIDE_LIST.some((h) => h.guid === 'baf5c0c0-7fbb-5514-9062-94106657fcea')) fail('the hide list hides the Drop BTC row we keep');
   else ok('two Drop BTC copies hidden, the newest (PI 8084510) kept');
+}
+
+// ── One row per set of tracks: an older COPY goes (Chad, 2026-11-17) ─────────
+// "what we're presenting [is] what we believe is the current version" — music
+// shows pick songs from /demu, and self-publishers put out copies "as they're
+// learning and fixing". FIXTURES FROM THE WIRE: Podcast Index's roster rows
+// and `/episodes/byfeedid` enclosure URLs, 2026-11-17. `naive()` is the obvious
+// build: ONE shared audio file makes a copy, the newest by date stays (the first
+// one on a tie), and nothing is exempt. It hides a single that sits on its own
+// album — 18 Doerfels and CityBeach feeds share audio that way, every one real.
+console.log('\nThe copy rule:');
+{
+  const DROP = { title: 'Drop BTC', author: 'Sovereign Frequency', image: 'https://files.catbox.moe/3pfuvp.png', episodeCount: 1 };
+  const DROP_MP3 = ['https://files.catbox.moe/s5rtwb.mp3'];
+  const drop = [
+    { id: 8084427, podcastGuid: 'c2eb2af5-5258-5d8a-acea-f84663a156f2', ...DROP, newestItemPubdate: 1792759703 },
+    { id: 8084476, podcastGuid: '8a9954fe-980d-5b76-b501-c83adc9a84e9', ...DROP, newestItemPubdate: 1792764185 },
+    { id: 8084510, podcastGuid: 'baf5c0c0-7fbb-5514-9062-94106657fcea', ...DROP, newestItemPubdate: 1792766160 },
+  ];
+  const dropTracks = drop.map((a) => [a.id, DROP_MP3]);
+  // MSP 2.0 Test Album on new.musicsideproject.com and on musicsideproject.com:
+  // the same four tracks, which PI lists in a different order for each feed.
+  const OP3 = 'https://op3.dev/e,pg=a8d0625c-c54b-46db-ba30-faee515b5279/podtards.com/';
+  const MSP_MP3 = ['c941852acd6651d0a2c3f39b70d93e57a921a99c3d51da91800102eb82cf77c2', '965ea5d3feeeddae033b2973b64804ca3f63bb0e993480eb28e799a21398a3d3',
+    'b367974c85b9c526604f1e456cdcbb8d82c3ce2754af3b0c786cc18dc6491b73', 'ac4a5b41d74382c34574bd5ff947b3c851e8729d4c0f884134e5355a53209b94'].map((h) => `${OP3}${h}.mp3`);
+  const MSP = { title: 'MSP 2.0 Test Album', author: 'The Doerfels', image: 'https://podtards.com/2e79148af1fb01124c874f5c765324977e28ff0c5369a1ec5933f6d96649191b.png', episodeCount: 4 };
+  const msp = [
+    { id: 7826523, podcastGuid: 'a8d0625c-c54b-46db-ba30-faee515b5279', ...MSP, newestItemPubdate: 1767657061 },
+    { id: 7909769, podcastGuid: 'de2ce8a1-29d7-4c95-9cfc-7fed65a0b787', ...MSP, newestItemPubdate: 1767589200 },
+  ];
+  const mspTracks = [[7826523, MSP_MP3], [7909769, [MSP_MP3[1], MSP_MP3[0], MSP_MP3[3], MSP_MP3[2]]]];
+  const retitled = msp.map((a) => ({ ...a, title: 'Album' }));
+  // The Doerfels: a single, and the album that carries it as track 1.
+  const DV = 'https://www.doerfelverse.com/tracks/';
+  const single = { id: 6473218, podcastGuid: 'b8b6971e-403e-568f-a4e6-7aa2b45e50d4', title: 'Bloodshot Lies - Single', author: 'The Doerfels', image: 'https://www.doerfelverse.com/art/bloodshot-lies.png', episodeCount: 1, newestItemPubdate: 1690485924 };
+  const album = { id: 7365153, podcastGuid: 'a1077af6-602b-5daf-957b-68a65a03cad1', title: 'Bloodshot Lies - The Album', author: 'The Doerfels', image: 'https://www.doerfelverse.com/art/bloodshot-lies-the-album.png', episodeCount: 20, newestItemPubdate: 1762498038 };
+  const albumMp3 = ['bloodshot-lies', 'movie', 'heartbreak', 'still-a-man', 'so-far-away', 'thought-it-was-real', 'breakaway-demo', 'some1likeyou', 'maybe-its-you', '3-years',
+    'love-is-a-war', 'another-man', 'my-brother', 'bloodshot-lies-acoustic', 'bloodshot-lies-funk', 'cinema-85', 'movie-alt', 'heartbreak-falcone-remix', 'so-far-away-early', 'porkchopsfried'].map((n) => `${DV}${n}.mp3`);
+  const doerfelTracks = [[6473218, [`${DV}bloodshot-lies.mp3`]], [7365153, albumMp3]];
+
+  const vectors = [
+    { kind: 'copies', label: 'Drop BTC: three feeds, one MP3 — the two older go, 8084510 stays', args: [drop, dropTracks, []], expect: [8084427, 8084476], alsoNaive: true },
+    { kind: 'copies', label: 'Drop BTC listed newest first — the same answer', args: [[...drop].reverse(), dropTracks, []], expect: [8084427, 8084476], alsoNaive: true },
+    { kind: 'copies', label: 'a single on its own album is not a copy (The Doerfels)', args: [[single, album], doerfelTracks, []], expect: [] },
+    { kind: 'copies', label: 'Drop BTC, the oldest played by Homegrown Hits — it stays', args: [drop, dropTracks, ['c2eb2af5-5258-5d8a-acea-f84663a156f2']], expect: [8084476] },
+    { kind: 'copies', label: 'MSP 2.0 Test Album twice — a feed that says test stays', args: [msp, mspTracks, []], expect: [] },
+    { kind: 'copies', label: 'the same two feeds retitled — the older copy goes, the track order does not matter', args: [retitled, mspTracks, []], expect: [7909769], alsoNaive: true },
+    { kind: 'copies', label: 'Drop BTC with one date for all three — the higher PI id stays', args: [drop.map((a) => ({ ...a, newestItemPubdate: 1792766160 })), dropTracks, []], expect: [8084427, 8084476] },
+    { kind: 'copies', label: 'a feed whose tracks were not read is never a copy', args: [drop, dropTracks.filter(([id]) => id !== 8084476), []], expect: [8084427], alsoNaive: true },
+    { kind: 'copies', label: 'an empty track list is never a copy', args: [drop, drop.map((a) => [a.id, []]), []], expect: [], alsoNaive: true },
+    { kind: 'candidates', label: 'Drop BTC: all three are candidates', args: [drop], expect: [8084427, 8084476, 8084510], alsoNaive: true },
+    { kind: 'candidates', label: 'a copy retitled AND re-credited keeps its count and cover — still a candidate', args: [[drop[0], { ...drop[2], title: 'Drop BTC (fixed)', author: 'SovFreq' }]], expect: [8084427, 8084510] },
+    { kind: 'candidates', label: 'a single and its album have different counts — not candidates', args: [[single, album]], expect: [], alsoNaive: true },
+    { kind: 'candidates', label: 'an album with no tracks is never a candidate', args: [drop.map((a) => ({ ...a, episodeCount: 0 }))], expect: [] },
+    { kind: 'test', label: '"MSP 2.0 Test Album" says test', args: [MSP], expect: true, alsoNaive: true },
+    { kind: 'test', label: '"test" by "test" says test', args: [{ title: 'test', author: 'test' }], expect: true, alsoNaive: true },
+    { kind: 'test', label: 'the author "ChadF Test Album" says test', args: [{ title: 'Demo Album', author: 'ChadF Test Album' }], expect: true, alsoNaive: true },
+    { kind: 'test', label: '"Latest Hits" does not say test', args: [{ title: 'Latest Hits', author: 'Someone' }], expect: false },
+    { kind: 'test', label: '"Testament" does not say test', args: [{ title: 'Testament', author: 'Someone' }], expect: false },
+    { kind: 'test', label: '"Contest Winner" does not say test', args: [{ title: 'Contest Winner', author: 'Someone' }], expect: false },
+  ];
+
+  const naiveCopies = (albums, tracks) => {
+    const parent = new Map(albums.map((a) => [a.id, a.id]));
+    const find = (x) => (parent.get(x) === x ? x : find(parent.get(x)));
+    const owner = new Map();
+    for (const [id, urls] of tracks) {
+      if (!parent.has(id)) continue;
+      for (const u of urls) {
+        if (owner.has(u)) parent.set(find(id), find(owner.get(u)));
+        else owner.set(u, id);
+      }
+    }
+    const groups = new Map();
+    for (const a of albums) { const k = find(a.id); groups.set(k, [...(groups.get(k) ?? []), a]); }
+    const hide = [];
+    for (const g of groups.values()) {
+      if (g.length < 2) continue;
+      const newest = g.reduce((b, a) => ((a.newestItemPubdate ?? 0) > (b.newestItemPubdate ?? 0) ? a : b));
+      for (const a of g) if (a !== newest) hide.push(a.id);
+    }
+    return hide;
+  };
+  const naiveCandidates = (albums) => albums.filter((a) => albums.some((b) => b !== a
+    && (a.title ?? '').toLowerCase() === (b.title ?? '').toLowerCase() && (a.author ?? '').toLowerCase() === (b.author ?? '').toLowerCase()));
+  const naiveTest = (a) => /test/i.test(`${a.title ?? ''} ${a.author ?? ''}`);
+
+  const call = (impl, v) => {
+    try {
+      const real = impl === 'real';
+      if (v.kind === 'copies') {
+        const [albums, tracks, played] = v.args;
+        const out = real ? [...demuCopiesToHide(albums, new Map(tracks), new Set(played))] : naiveCopies(albums, tracks);
+        return JSON.stringify(out.sort((a, b) => a - b));
+      }
+      if (v.kind === 'candidates') {
+        const out = (real ? demuCopyCandidates(v.args[0]) : naiveCandidates(v.args[0])).map((a) => a.id);
+        return JSON.stringify(out.sort((a, b) => a - b));
+      }
+      return JSON.stringify(real ? saysTest(v.args[0]) : naiveTest(v.args[0]));
+    } catch (e) { return `threw ${(e && e.message) || e}`; }
+  };
+  for (const v of vectors) {
+    const want = JSON.stringify(Array.isArray(v.expect) ? [...v.expect].sort((a, b) => a - b) : v.expect);
+    const got = call('real', v);
+    if (got !== want) fail(`"${v.label}" — expected ${want}, got ${got}`);
+    else ok(v.label);
+  }
+  console.log('\nThe copy rule — the replay against naive():');
+  replayVectors({ vectors, invoke: call, fail });
 }
 
 // ── Which app made the feed: the cover's corner badge (Chad, 2026-11-16) ──────

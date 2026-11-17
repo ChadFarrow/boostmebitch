@@ -8,6 +8,10 @@
 // title, and why. `check:demu` refuses a malformed or repeated guid. The guid is
 // on the feed's Podcast Index page, or in `/api/demu`'s answer.
 //
+// **An older COPY of an album needs no line:** the copy rule hides a feed whose
+// tracks are exactly a newer feed's (`demuCopiesToHide` in lib/demu.ts, Chad,
+// 2026-11-17). Add a line for a copy only when its audio URLs differ.
+//
 // **What the hide list cannot do (Chad, 2026-11-16):** remove a feed that
 // Homegrown Hits plays. Those are always shown — "items that match the remote
 // items in the Homegrown Hits feed [are] what we are looking to show here" —
@@ -57,7 +61,9 @@ export const DEMU_HIDE_LIST: readonly DemuHidden[] = [
   // three documents differ only in their dates and podcast:guid: one track (item
   // guid d082c003-…), one MP3, one payee. The newest (PI 8084510,
   // files.catbox.moe/qo1es3.xml, baf5c0c0-…) is kept: "as they make changes,
-  // the newest one should be correct" (Chad, 2026-11-17).
+  // the newest one should be correct" (Chad, 2026-11-17). The copy rule
+  // (`demuCopiesToHide`) hides them too; these lines stay so a failed track
+  // read on Podcast Index cannot bring them back.
   { guid: 'c2eb2af5-5258-5d8a-acea-f84663a156f2', title: 'Drop BTC (PI 8084427, files.catbox.moe/82qjqm.xml)', reason: 'an older copy of Drop BTC (PI 8084510)' },
   { guid: '8a9954fe-980d-5b76-b501-c83adc9a84e9', title: 'Drop BTC (PI 8084476, files.catbox.moe/h8zz4c.xml)', reason: 'an older copy of Drop BTC (PI 8084510)' },
 ];
