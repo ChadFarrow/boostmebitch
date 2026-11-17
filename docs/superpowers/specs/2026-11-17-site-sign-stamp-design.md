@@ -3,6 +3,16 @@
 **Status:** draft for Chad's review (2026-11-17). Chad chose approach A ("A", via the dispatcher).
 **Base:** stacked on PR #588 (`feat/boost-note-wording`), branch `feat/site-sign-stamp`.
 
+## Chad's decisions (2026-11-17)
+
+1. **Approach A**, the 1-sat stamp to the site.
+2. **A signed-out boost still posts as the site by default.** The "Post to Nostr" box stays on, and its
+   label says it costs 1 sat. So by default every signed-out boost pays the stamp, and on WebLN asks for
+   one more approval.
+3. **The fee:** the stamp's fee limit on Spark is **10 sats**; past it, the note posts from a one-time
+   key. NWC and WebLN let the wallet set the fee (the app cannot), so the wallet's own limits apply. The
+   screen says "1 sat plus a small network fee".
+
 ## Intent
 
 `/api/nostr/site-sign` signs boost-shaped kind:1 notes with the site's key, which carries the site's
@@ -130,9 +140,10 @@ capped and with a timeout.
    after ~2 s (settlement can lag the payer's answer).
 5. Publish the signed event to `DEFAULT_RELAYS`, as today.
 
-`payStamp` is passed in by the modal: `(bolt11) => payInvoiceOn(rail, bolt11)`, a small new export in
-`lib/v4v/boost.ts` built from the three lines that already pay an LNURL leg's invoice. This keeps
-`lib/nostr/` free of wallet imports.
+`payStamp` is passed in by the modal: `(bolt11) => payStampOn(rail, bolt11)`, a small new export in
+`lib/v4v/boost.ts`. It pays like an LNURL leg's invoice, except on Spark, where the fee limit is
+`STAMP_MAX_FEE_SATS = 10` instead of a boost leg's 100 (decision 3). This keeps `lib/nostr/` free of
+wallet imports.
 
 **Fallback.** Any failure in steps 2–4 — 503, a refused mint, a wallet that refuses, cancels or times out,
 an indeterminate payment, a 402/400 after the one re-ask — signs **the same template** in the browser
@@ -149,8 +160,9 @@ boost whose legs all failed.
 
 ### What the user sees (copy is the builder's, meaning is fixed)
 
-- **Before:** wherever the note will be site-signed (signed out with "Post to Nostr" on; signed in with
-  Anonymous), the share picker says that posting as the site costs 1 sat, paid after the boost.
+- **Before:** wherever the note will be site-signed (signed out with "Post to Nostr" on — the default,
+  decision 2; signed in with Anonymous), the share picker says that posting as the site costs 1 sat plus a
+  small network fee, paid after the boost.
 - **During:** the publish status names the stamp step ("paying the 1-sat stamp…").
 - **After, site key:** as today ("posted as Boost Me Bitch").
 - **After, one-time key:** "Posted from a one-time key — the 1-sat stamp did not go through (<reason>)."
