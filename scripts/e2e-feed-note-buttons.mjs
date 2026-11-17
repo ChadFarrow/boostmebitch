@@ -97,7 +97,7 @@ const NOTES = [
   }),
   note('E2E-PL-NEW', {
     client: 'BoostMeBitch', podcastGuid: DISCO, episodeGuids: [SING],
-    body: '⚡ Boost ⚡\n\nE2E-PL-NEW\n\nrev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist',
+    body: '⚡ Boost ⚡\n\nE2E-PL-NEW\n\nrev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist via BoostMeBitch',
     tags: [
       ['i', `podcast:guid:${DISCO}`], ['k', 'podcast:guid'],
       ['i', `podcast:item:guid:${SING}`], ['k', 'podcast:item:guid'],
@@ -270,11 +270,17 @@ const plCard = String(await js(`${PL_CARD('E2E-PL-NEW')}?.innerText ?? ''`));
 // The card sets the show line in capitals, and `innerText` returns them so.
 t.ok('...under its album', /disco swag - the album/i.test(plCard), plCard.replace(/\s+/g, ' ').slice(0, 300));
 t.ok('the body says what, then where',
-  (await textOf('E2E-PL-NEW')).includes('rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist'));
+  (await textOf('E2E-PL-NEW')).includes('rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist via BoostMeBitch'));
+// The card's own "via <client>" label, above the body. The shared format's
+// sentence already ends "via BoostMeBitch", so the card leaves it out there;
+// a note from before the format keeps it (noteNamesClient).
+const LABEL = (mk) => `[...(${ARTICLE(mk)}?.querySelectorAll('span.text-muted') ?? [])].some((el) => el.textContent.trim() === 'via BoostMeBitch')`;
+t.equal('the new note does not name the app twice', await js(LABEL('E2E-PL-NEW')), false);
 await js(`${ARTICLE('E2E-PL-OLD')}?.scrollIntoView({ block: 'center' })`);
 t.ok('an old note still renders, naming the playlist',
   await until(`(${ARTICLE('E2E-PL-OLD')}?.innerText ?? '').includes('ITDV music playlist')`, 40000),
   (await textOf('E2E-PL-OLD')).slice(0, 300));
+t.equal('...and keeps its "via BoostMeBitch" label', await js(LABEL('E2E-PL-OLD')), true);
 
 t.equal('no page exception', pageErrors, []);
 

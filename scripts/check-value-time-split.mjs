@@ -54,7 +54,7 @@
 import {
   inMusicHold, mergeEpisodeContents, musicHoldLeadSec, musicHoldSpans, payableLeg, payableSplit,
   redirectLegs, splitAtPosition, splitSats, splitTrackAndHost, streamAction, boostNoteTrack,
-  withFeedMediums, boostSentence, itemFeedGuid, boostAllLines,
+  withFeedMediums, boostSentence, itemFeedGuid, boostAllLines, noteNamesClient,
 } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -847,6 +847,40 @@ replayVectors({
   vectors: ALL_VECTORS,
   // Joined: the replay compares with `!==`, and the body is the joined lines.
   invoke: (which, v) => (which === 'real' ? boostAllLines : naiveAll)(v.args).join('\n'),
+  fail: (m) => { console.error(`  ✗ ${m}`); failures++; },
+});
+
+// ── noteNamesClient ─────────────────────────────────────────────────────────
+// Our card writes "via <client tag>" above a note's body. The shared format
+// ends every sentence with " via <app>", so a note in it already names the app,
+// and the card would say it twice. Only the END of a line counts: a message
+// that says "via X" mid-line is not the sentence. Every note written before the
+// format, and every other app's, keeps the card's label.
+console.log('\nnoteNamesClient — does the body already say "via <client>"?');
+const S = '⚡ Boost ⚡\n\ngreat\n\nChadF boosted 100 sats to Homegrown Hits';
+const CLIENT_VECTORS = [
+  { label: 'a sentence that ends "via <client>"', alsoNaive: true,
+    args: [`${S} via BoostMeBitch\n\nhttps://boostmebitch.com/`, 'BoostMeBitch'], expect: true },
+  { label: 'the case may differ',
+    args: [`${S} via boostmebitch`, 'BoostMeBitch'], expect: true },
+  { label: 'a note from before the format keeps the label', alsoNaive: true,
+    args: ['⚡ Boost ⚡\n\nChadF boosted 100 sats → Homegrown Hits\n📻 Episode 146', 'BoostMeBitch'], expect: false },
+  { label: '"via <client>" in the middle of a line is not the sentence',
+    args: ['⚡ Boost ⚡\n\nI found it via BoostMeBitch yesterday\n\nChadF boosted 100 sats to X', 'BoostMeBitch'], expect: false },
+  { label: 'a longer app name that ends the same is not the client', alsoNaive: true,
+    args: [`${S} via NotBoostMeBitch`, 'BoostMeBitch'], expect: false },
+  { label: 'no client tag, no answer',
+    args: [`${S} via BoostMeBitch`, ''], expect: false },
+  { label: 'a bot note naming another app keeps the bot\'s label', alsoNaive: true,
+    args: ['great\n\n⚡ 333 sats\n📱 via Fountain', 'candr_boost_bot'], expect: false },
+  { label: 'trailing spaces and a CRLF line end still count', alsoNaive: true,
+    args: [`${S} via BoostMeBitch  \r\nhttps://boostmebitch.com/`, 'BoostMeBitch'], expect: true },
+];
+for (const v of CLIENT_VECTORS) check(v.label, noteNamesClient(...v.args), v.expect);
+const naiveClient = (content, client) => content.includes(`via ${client}`);
+replayVectors({
+  vectors: CLIENT_VECTORS,
+  invoke: (which, v) => (which === 'real' ? noteNamesClient : naiveClient)(...v.args),
   fail: (m) => { console.error(`  ✗ ${m}`); failures++; },
 });
 

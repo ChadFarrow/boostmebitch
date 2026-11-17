@@ -3580,6 +3580,23 @@ export function boostSentence(a: {
 }
 
 /**
+ * Does a note's body already end a line with ` via <client>`? Then the card's
+ * own `via <client>` label would say it a second time.
+ *
+ * The shared boost-note format (PC20-Nostr `pc20-boost-notes.md`, rule 7) ends
+ * every sentence with ` via <app>`, and this app's notes carry the same name in
+ * their `client` tag. Only the END of a line counts, ignoring case: a message
+ * that mentions "via X" mid-line is not the sentence, and a receiver bot's
+ * `📱 via Fountain` names a different app than its own `client` tag. A plain
+ * string test, never a RegExp built from the tag — the tag is anyone's text.
+ */
+export function noteNamesClient(content: string, client: string | null | undefined): boolean {
+  const want = ` via ${(client ?? '').trim()}`.toLowerCase();
+  if (want === ' via ') return false;
+  return content.split('\n').some((line) => line.trimEnd().toLowerCase().endsWith(want));
+}
+
+/**
  * BOOST ALL's own body (`contentOverride`): the sentence in `boostSentence`'s
  * order — the sats, WHAT they went to, then where — and one bullet per paid
  * track. Every name goes through `noteTrackText`, as in `boostSentence`: for a
