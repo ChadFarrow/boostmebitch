@@ -384,7 +384,10 @@ export interface Boostagram {
   action: 'boost' | 'stream' | 'auto';
   name?: string;             // recipient name, set per leg in lib/v4v/boost.ts
   uuid?: string;             // unique boost ID — shared across all legs
-  remote_feed_guid?: string; // RSS <podcast:guid> (NIP-73)
+  /** RSS <podcast:guid> (NIP-73). Inside a song window or a live redirect it is
+   *  the TRACK's feed. The PLAYED feed's guid is deliberately not on this type —
+   *  every key here is keysend-onion bytes — see `sendBoost`'s `feedGuid`. */
+  remote_feed_guid?: string;
   episode_guid?: string;     // RSS item <guid>
   remote_item_guid?: string; // duplicate of episode_guid for aggregator compat
   /** The Split Kit's own correlation ids, echoed back when a live show's

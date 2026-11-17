@@ -80,6 +80,7 @@ function buildPayload(
   recipient: ValueRecipient,
   splitWeight: number,
   legMsat: number,
+  feedGuid: string | undefined,
 ): BoostBoxPayload {
   // 'auto' MUST be downgraded to 'stream' here, and this mapping is
   // load-bearing rather than an incidental fallthrough: BoostBox validates
@@ -110,7 +111,15 @@ function buildPayload(
     sender_npub: boostagram.sender_id ? nip19.npubEncode(boostagram.sender_id) : undefined,
     recipient_name: recipient.name,
     recipient_address: recipient.address,
-    feed_guid: boostagram.remote_feed_guid,
+    // The feed the listener PLAYED, which is the feed that holds `item_guid` —
+    // never `remote_feed_guid`. Inside a valueTimeSplit or a live redirect that
+    // field names the TRACK's feed, so this record named the song's feed under
+    // the show's `feed_title` and paired it with the show's `item_guid`, and a
+    // reader looking for that item in that feed found nothing (the C&R bot's
+    // note lost its episode tag). An argument, not a boostagram field: the
+    // boostagram IS the keysend TLV, whose bytes ride in the onion
+    // (BOOSTAGRAM_MAX). Absent, never guessed, when the feed has no guid.
+    feed_guid: feedGuid,
     feed_title: boostagram.podcast,
     item_guid: boostagram.episode_guid ?? boostagram.remote_item_guid,
     item_title: boostagram.episode,
@@ -144,13 +153,15 @@ export async function storeBoostMetadata(args: {
   recipient: ValueRecipient;
   splitWeight: number;
   legMsat: number;
+  /** The `<podcast:guid>` of the feed the listener played — see buildPayload. */
+  feedGuid: string | undefined;
 }): Promise<{ desc: string; url: string } | null> {
   try {
     const res = await fetch('/api/lightning/boostbox', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
-        buildPayload(args.boostagram, args.recipient, args.splitWeight, args.legMsat),
+        buildPayload(args.boostagram, args.recipient, args.splitWeight, args.legMsat, args.feedGuid),
       ),
       signal: AbortSignal.timeout(BOOSTBOX_TIMEOUT_MS),
     });

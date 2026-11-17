@@ -2586,8 +2586,13 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
     };
   }
   if (has(/does not support keysend/i)) {
+    // Two throw sites say this, about two different wallets: `payKeysend`
+    // ("Spark rail does not support keysend") and `weblnKeysend` ("This WebLN
+    // wallet does not support keysend"). Name the one that refused — a WebLN
+    // user told their SPARK wallet failed goes looking in the wrong place.
+    const wallet = /\bspark\b/i.test(msg) ? 'Spark wallet' : /\bwebln\b/i.test(msg) ? 'WebLN wallet' : 'wallet';
     return {
-      cause: 'This recipient is a Lightning node, and your Spark wallet cannot pay a node directly (keysend).',
+      cause: `This recipient is a Lightning node, and your ${wallet} cannot pay a node directly (keysend).`,
       action: 'Pick a different wallet for this boost.',
       whose: 'yours',
       nothingSent: true,
