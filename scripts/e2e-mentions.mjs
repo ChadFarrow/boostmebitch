@@ -18,6 +18,7 @@
 // extension and expands `@/`, so the graph it builds is the one webpack builds.
 
 import { register } from 'node:module';
+import { readFileSync } from 'node:fs';
 register('./e2e-resolve-hook.mjs', import.meta.url);
 
 import { createRelay } from './local-relay.mjs';
@@ -104,8 +105,9 @@ const relay = createRelay({ port: 0, log: null, onEvent: (e) => received.push(e)
 // Port 0 and read back, never a fixed port: another run can already hold one.
 const RELAY = `ws://127.0.0.1:${await relay.ready}`;
 
-const { publishBoostNote, publishBoostNoteViaSite } =
+const { publishBoostNote, publishBoostNoteViaSite, siteLandingUrl } =
   await import('../lib/nostr/boost-notes.ts');
+const { boostAllLines } = await import('../lib/util.ts');
 const { publishReply } = await import('../lib/nostr/interactions.ts');
 const { publishLiveChat, streamChatAddr } = await import('../lib/nostr/live-chat.ts');
 const { BRAND } = await import('../lib/brand.ts');
@@ -170,25 +172,35 @@ if (!ISOLATED) {
 } else {
   // ===========================================================================
   {
-    // publishBoostNoteViaSite POSTs to /api/nostr/site-sign. Intercepted here so
-    // the test needs no dev server and no site key — what is under test is which
-    // TEMPLATE the client hands over, which is the whole selfSigned decision.
+    // publishBoostNoteViaSite asks /api/nostr/site-stamp for the note stamp,
+    // pays it, then POSTs { template, stamp } to /api/nostr/site-sign. Both are
+    // intercepted here so the test needs no server, no site key and no wallet —
+    // what is under test is which TEMPLATE the client hands over, which is the
+    // whole selfSigned decision.
     let sent = null;
+    let firstUrl = null;
     const siteSk = generateSecretKey();
     globalThis.fetch = async (url, init) => {
-      sent = JSON.parse(init.body);
-      return { ok: true, json: async () => ({ event: finalizeEvent(sent, siteSk) }) };
+      const body = JSON.parse(init.body);
+      firstUrl ??= String(url);
+      if (String(url).endsWith('/api/nostr/site-stamp')) {
+        sent = body.template;
+        return { ok: true, status: 200, json: async () => ({ invoice: 'lnbc10n1e2e', stamp: 'e2e.stamp' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ event: finalizeEvent({ ...body.template }, siteSk) }) };
     };
     await publishBoostNoteViaSite({
       podcast, episode, boostagram: boostagram('great track @fiatjaf'),
       results: [], mentions: [mentionA],
-    });
+      // Isolated, no relay takes the note, and that now throws (RETRY NOTE).
+    }, { payStamp: async () => {}, state: {} }).catch(() => {});
     await wait(400);
     // Asserted on the TEMPLATE the route was handed, not on a relay round trip:
     // this path publishes to DEFAULT_RELAYS by construction, and the template is
     // where the whole selfSigned decision shows up anyway.
     const e = sent;
-    check('a template was posted to /api/nostr/site-sign', !!e, true);
+    check('a template was posted to /api/nostr/site-stamp', !!e, true);
+    check('the site path asked for a stamp first', firstUrl?.endsWith('/api/nostr/site-stamp'), true);
     check('the feed npub keeps its p tag', pTags(e).includes(feedA.pubkey), true);
     check('the SENDER mention has NO p tag', pTags(e).includes(mentionA.pubkey), false);
     check('...and the feed npub is the only p tag left', pTags(e).length, 1);
@@ -207,7 +219,7 @@ console.log('\n--- 3. BOOST-ALL: contentOverride keeps the mention run ---');
 {
   // The path a mention added inside formatContent would silently miss, because
   // BoostAllModal replaces the whole body.
-  const contentOverride = '⚡ Boost ⚡\n\nTester boosted 3 tracks on Homegrown Hits for 300 sats';
+  const contentOverride = '⚡ Boost ⚡\n\nTester boosted 300 sats to 3 tracks from Homegrown Hits via BoostMeBitch';
   const note = await publishBoostNote({
     podcast, episode, boostagram: boostagram(undefined),
     results: [], relays: [RELAY], mentions: [mentionA], contentOverride,
@@ -375,6 +387,30 @@ console.log('\n--- 5. The relay really holds them (read back over NIP-01) ---');
 }
 
 // ===========================================================================
+console.log('\n--- 5a. A link the APP writes keeps its /@handle beside a mention of that name ---');
+// ===========================================================================
+// The body carries the episode's own page, from RSS <link>. On a Castopod show
+// that page is https://host/@<handle>/episodes/<slug>, so a sender who
+// @mentioned someone named "<handle>" broke a link they never typed: the
+// mention step replaced the name everywhere in the body. e2e:mentionlinks
+// covers a link the SENDER typed, through the real picker; this is the one
+// buildBoostNoteTemplate writes itself. After section 5 on purpose, so its
+// count of boost notes is not moved.
+{
+  const castopod = 'https://castopod.example/@handle/episodes/ep-1';
+  const note = await publishBoostNote({
+    podcast, episode: { ...episode, link: castopod }, boostagram: boostagram('thanks @handle'),
+    results: [], relays: [RELAY], mentions: [{ ...mentionA, name: 'handle' }],
+  });
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  check('the Castopod note reached the relay', !!e, true);
+  check('the episode link reaches the body whole', e?.content.includes(castopod), true);
+  check('...with no URI written into it', e?.content.includes('/nostr:'), false);
+  check('the typed @handle became the URI', e?.content.includes(`thanks nostr:${mentionA.npub}`), true);
+}
+
+// ===========================================================================
 console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the tags ---');
 // ===========================================================================
 // Wiring, not arithmetic: check:vts pins boostNoteTrack, and cannot see where
@@ -402,8 +438,9 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   const e = received.find((x) => x.id === note.id);
   check('the track note reached the relay', !!e, true);
   const lines = e?.content.split('\n') ?? [];
-  check('the 🎵 line sits right under the 📻 line',
-    lines[lines.indexOf(`📻 ${episode.title}`) + 1], '🎵 Copenhagen Time — Matt Finlay');
+  check('one sentence: the song, its artist, the episode of the show',
+    lines.includes(`Tester boosted 1000 sats to Copenhagen Time by Matt Finlay from ${episode.title} of ${podcast.title} via BoostMeBitch`), true);
+  check('no 📻 or 🎵 line is left', /📻|🎵|→/.test(e?.content ?? '📻'), false);
   check('the show and episode pairs stay FIRST, unchanged', e?.tags.slice(0, 4).map((t) => t[0] + ' ' + t[1]), [
     `i podcast:guid:${podcast.podcastGuid}`, 'k podcast:guid',
     `i podcast:item:guid:${episode.guid}`, 'k podcast:item:guid',
@@ -423,9 +460,13 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   const capture = async (args) => {
     let sent = null;
     const realFetch = globalThis.fetch;
-    // ok:false stops publishBoostNoteViaSite before it publishes anywhere.
-    globalThis.fetch = async (_u, init) => { sent = JSON.parse(init.body); return { ok: false, status: 599, json: async () => ({}) }; };
-    await publishBoostNoteViaSite(args).catch(() => {});
+    // A 599 from the stamp route makes the ladder post from a one-time key. This
+    // section runs only isolated, so that publish reaches nobody.
+    globalThis.fetch = async (_u, init) => {
+      sent ??= JSON.parse(init.body).template;
+      return { ok: false, status: 599, json: async () => ({}) };
+    };
+    await publishBoostNoteViaSite(args, { payStamp: async () => {}, state: {} }).catch(() => {});
     globalThis.fetch = realFetch;
     if (sent) delete sent.created_at;
     return sent;
@@ -436,7 +477,7 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('an UNPAID track leg leaves the note identical to no track at all',
     JSON.stringify(unpaid), JSON.stringify(plain));
   const paid = await capture({ ...base, track });
-  check('the site path carries the 🎵 line too', paid?.content.includes('🎵 Copenhagen Time — Matt Finlay'), true);
+  check('the site path names the song too', paid?.content.includes('to Copenhagen Time by Matt Finlay from'), true);
   check('...and the prefix the route validates on', paid?.content.startsWith('⚡ Boost ⚡'), true);
 
   // The route's caps, in the worst case this builder can meet: the most p
@@ -459,21 +500,225 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('worst case: at most 40 tags', worst.tags.length <= 40, true);
   check('worst case: every tag name is in the route allowlist',
     worst.tags.every((t) => ['i','k','r','p','amount','client','t','imeta','q'].includes(t[0])), true);
-  const worstNoTrack = await capture({
-    podcast: { ...podcast, nostrNpubs: many.slice(0, 4) }, episode: longEp,
+  // The site-sign route refuses a body over its limit — it is unauthenticated,
+  // so the limit bounds how much free text a stranger can have the site sign.
+  // A REAL boost must never meet it (Chad, 2026-11-17): the limit sits just
+  // above the largest real note, and past every real maximum the body gives
+  // way part by part, never the note. Read from BOTH sources, which must agree:
+  // the route cannot load here (next/server), and a copy would pass green
+  // while the shipping numbers drift apart.
+  const constIn = (file, name) => Number((readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
+    .match(new RegExp(`const ${name} = (\\d+);`)) ?? [])[1]);
+  const LIMIT = constIn('lib/site-sign-template.ts', 'MAX_CONTENT');
+  check('the builder\'s limit is the route\'s', constIn('lib/nostr/boost-notes.ts', 'SITE_SIGN_MAX_CONTENT'), LIMIT);
+  check('worst case: body within the limit', worst.content.length <= LIMIT, true);
+  check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
+
+  const fill = (n, tag) => { const h = `https://example.com/${tag}/`; return h + 'x'.repeat(n - h.length); };
+  // The receipt's hints are relays the user writes to, and a real one can be
+  // long: filter.nostr.wine puts the npub and a query in the URL. Three of
+  // those, the most the nevent carries.
+  const relayHints = many.slice(0, 3).map((m) => `wss://filter.nostr.wine/${m.npub}?broadcast=true`);
+  // The signed receipt rides with the quote: site-stamp refuses one that claims
+  // more than the note (lib/site-stamp.ts, `quotedReceiptFits`), and the page
+  // checks its fields before it asks. 1 sat is under every note here.
+  const RECEIPT = {
+    id: 'a'.repeat(64), pubkey: 'b'.repeat(64), relays: relayHints,
+    event: { id: 'a'.repeat(64), pubkey: 'b'.repeat(64), kind: 9735, created_at: 0, content: '', tags: [['amount', '1000']], sig: '' },
+  };
+  // This site's own link carries the episode guid: sized so the link is 512.
+  const siteBase = siteLandingUrl(podcast.podcastGuid, 'g').length - 1;
+  // Every part at the most a real boost carries: a 250-character message (the
+  // modal's cap) with 4 typed mentions placed inline, names past the 120 the
+  // sentence keeps, a song with its artist inside an episode, 4 feed npubs,
+  // URLs at 512 (the route's cap on a tag item, which the links also are) —
+  // this site's own link included — and the summary receipt with long hints.
+  const largestArgs = {
+    podcast: { ...podcast, title: 'P'.repeat(300), author: 'A'.repeat(300), url: fill(512, 'feed'),
+      image: fill(512, 'img'), artwork: fill(512, 'art'), nostrNpubs: many.slice(0, 4) },
+    episode: { ...episode, title: 'T'.repeat(300), guid: 'g'.repeat(512 - siteBase), link: fill(512, 'link'),
+      image: fill(512, 'epimg'), feedImage: fill(512, 'feedimg') },
+    boostagram: { ...boostagram('@m4 @m5 @m6 @m7 ' + 'x'.repeat(250 - 16)), sender_name: 'S'.repeat(300),
+      value_msat_total: 9999999999 * 1000 },
+    results: [], mentions: many.slice(4),
+    track: { split: { title: 'G'.repeat(300), artist: 'R'.repeat(300),
+      remoteItem: { feedGuid: 'f'.repeat(200), itemGuid: 'g'.repeat(200) } }, results: [{ ok: true, sats: 1 }] },
+    summaryReceipt: RECEIPT,
+  };
+  const largest = await capture(largestArgs);
+  const bannerOf = (e) => (e?.content.match(/https:\/\/\S+\/api\/og\/boost\.png\S*/) ?? [])[0];
+  const sentenceOf = (e) => (e?.content.split('\n') ?? []).find((l) => / boosted \d+ sats/.test(l)) ?? '';
+  const neventIn = (e) => /nostr:nevent1/.test(e?.content ?? '');
+  console.log(`  (the largest real note: ${largest?.content.length} characters)`);
+  check('the fixture is at the maximum: both links are 512 characters',
+    (largest?.content.split('\n') ?? []).filter((l) => /^https?:\/\/\S+$/.test(l) && l.length === 512).length, 2);
+  check('the largest real note fits the limit', largest?.content.length <= LIMIT, true);
+  check('...with nothing given way: the song and its artist', sentenceOf(largest).includes(` by ${'R'.repeat(119)}…`), true);
+  check('...the banner', !!bannerOf(largest), true);
+  check('...and the receipt line', neventIn(largest), true);
+  check('...and the limit sits just above it, not far above', LIMIT - (largest?.content.length ?? 0) < 1000, true);
+  // BOOST ALL builds its own body: one bullet per paid track, which a DJ mix
+  // makes dozens of. Built as components/boost-all-modal.tsx builds it.
+  const boostAll = await capture({ ...largestArgs, track: undefined, contentOverride: [
+    '⚡ Boost ⚡', '', largestArgs.boostagram.message, '',
+    ...boostAllLines({ sender: 'S'.repeat(300), sats: 9999999999, count: 60, showTitle: 'P'.repeat(300),
+      each: ' (9999999999 to the artist + 9999999999 to the show, each)',
+      tracks: Array.from({ length: 60 }, (_, i) => `${i}`.padEnd(300, 'T')), via: BRAND.wireName }),
+  ].join('\n') });
+  console.log(`  (BOOST ALL at every real maximum: ${boostAll?.content.length} characters)`);
+  check('BOOST ALL at every real maximum fits the limit', boostAll?.content.length <= LIMIT, true);
+  check('...it lists twenty tracks, then counts the rest',
+    (boostAll?.content.split('\n') ?? []).filter((l) => l.startsWith('• ')).slice(-2).map((l) => l.slice(0, 6)), ['• 19TT', '• and ']);
+  check('...counting forty more', boostAll?.content.includes('\n• and 40 more'), true);
+  check('...the sentence keeps the full count', sentenceOf(boostAll).includes(' to 60 tracks from '), true);
+  check('...and the receipt line stays', neventIn(boostAll), true);
+
+  const banner = new URL(bannerOf(largest) ?? 'https://x/');
+  check('the banner carries at most 120 characters of each title',
+    [banner.searchParams.get('title')?.length, banner.searchParams.get('ep')?.length], [120, 120]);
+
+  // Past every real maximum: covers at thousands of characters each and titles
+  // in a script that percent-encodes nine times over. The picture goes first —
+  // never the note, and never the song for the sake of a picture.
+  const huge = await capture({ ...largestArgs,
+    podcast: { ...largestArgs.podcast, title: '音'.repeat(300), image: fill(3000, 'img'), artwork: fill(3000, 'art') },
+    episode: { ...largestArgs.episode, title: '楽'.repeat(300), image: fill(3000, 'epimg'), feedImage: fill(3000, 'feedimg') } });
+  check('a note past every real maximum still fits', huge?.content.length <= LIMIT, true);
+  check('...the banner gave way', bannerOf(huge), undefined);
+  check('...and nothing else: the song stays', sentenceOf(huge).includes(` by ${'R'.repeat(119)}…`), true);
+  check('...the receipt line stays', neventIn(huge), true);
+  // And relay hints no real relay has, so the receipt line alone is too long:
+  // it goes last, after the song and its artist, and its `q` tag stays. The
+  // hints are kept under the 5,000 characters bech32 allows a `nevent`, past
+  // which nostr-tools throws before any note is built.
+  const wss = (n, tag) => fill(n, tag).replace('https', 'wss');
+  const hugeReceipt = await capture({ ...largestArgs,
+    podcast: { ...largestArgs.podcast, image: fill(3000, 'img'), artwork: fill(3000, 'art') },
+    summaryReceipt: { ...RECEIPT, relays: [wss(400, 'r0'), wss(1000, 'r1'), wss(1000, 'r2')] } });
+  check('relay hints past every real one: the note still fits', hugeReceipt?.content.length <= LIMIT, true);
+  check('...the receipt line gave way', neventIn(hugeReceipt), false);
+  check('...after the banner, the song and the "by"', [!!bannerOf(hugeReceipt), / by R/.test(sentenceOf(hugeReceipt))], [false, false]);
+  check('...and its q tag stays', hugeReceipt?.tags.filter((t) => t[0] === 'q').map((t) => t[1]), ['a'.repeat(64)]);
+
+  // A link longer than the route takes in an `r` tag is left out — of the tag
+  // AND the body, never cut — and the next landing page stands in for it.
+  const longLink = await capture({ ...base, episode: { ...episode, link: fill(600, 'link') } });
+  check('a landing link over 512 characters is in no r tag', longLink?.tags.some((t) => t[0] === 'r' && t[1].length > 512), false);
+  check('...and not in the body', longLink?.content.includes(fill(600, 'link')), false);
+  // The order is podcastLandingUrl's: the episode's page, then its guid when
+  // that is a URL (this fixture's is), then the show's pages.
+  check('...the next landing page stands in', longLink?.content.split('\n').includes(episode.guid), true);
+  const longSite = await capture({ ...base, episode: { ...episode, guid: `https://example.com/?${'a=b&'.repeat(70)}` } });
+  check('a site link over 512 characters is left out too', longSite?.tags.some((t) => t[0] === 'r' && t[1].length > 512), false);
+  check('...of the body as well', /podcast=[^\s]*&episode=/.test(longSite?.content ?? ''), false);
+
+  const worstAlbum = await capture({
+    podcast: { ...podcast, medium: 'music', author: 'A'.repeat(300), nostrNpubs: many.slice(0, 4) }, episode: longEp,
     boostagram: boostagram('m'.repeat(280)), results: [], mentions: many,
   });
-  check('worst case: body within 2000', worst.content.length <= 2000, true);
-  // Without the track this body is already within a few characters of the
-  // cap, and the line adds up to ~250: it must be the line that goes, never
-  // the note.
-  check('worst case: a body the line would overfill drops the LINE',
-    worst.content, worstNoTrack.content);
-  check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
+  check('worst case, a music feed: body within the limit', worstAlbum.content.length <= LIMIT, true);
+  check('...and it keeps its "by"', worstAlbum.content.includes(' by A'), true);
+  const roomyAlbum = await capture({ ...base, podcast: { ...podcast, medium: 'music', author: 'The Doerfels' } });
+  check('a body with room keeps the album\'s "by"', roomyAlbum?.content.includes(` by The Doerfels from ${podcast.title}`), true);
   const roomy = await capture({ ...base, track: { ...track, split: { ...track.split,
     title: 'S'.repeat(300), artist: 'A'.repeat(300) } } });
   check('a body with room keeps the capped line',
-    roomy?.content.includes(`🎵 ${'S'.repeat(119)}… — ${'A'.repeat(119)}…`), true);
+    roomy?.content.includes(`to ${'S'.repeat(119)}… by ${'A'.repeat(119)}… from ${episode.title} of ${podcast.title}`), true);
+}
+
+// ===========================================================================
+console.log('\n--- 5c. A PLAYLIST ROW names its own feed — sentence, tags and art ---');
+// ===========================================================================
+// rev.hodl's note b1d67bdd… (2026-11-16), as the builder now writes it. The
+// container is the ITDV musicL playlist; the row lives in The Doerfels' album
+// "Disco Swag - The Album". The old note said "→ ITDV music playlist", tagged
+// the playlist's guid with the album's item, and offered the playlist cover as
+// banner art — three statements that the playlist is the track's parent.
+{
+  const ITDV = 'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/main/docs/ITDV-music-playlist.webp';
+  const playlist = {
+    id: 7443423, title: 'ITDV music playlist', author: 'ChadF', medium: 'musicL',
+    podcastGuid: '88b0640a-489f-4920-be4f-00f85af5b2d4',
+    url: 'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/main/docs/ITDV-music-playlist.xml',
+    image: ITDV, artwork: ITDV,
+  };
+  const row = {
+    id: 44828612182, title: 'Sing For You', guid: '12711f57-2d41-4794-8cb9-154ecebb7cf7',
+    podcastGuid: 'b2a87a4c-86f0-5194-9eb3-dcba42ce0695', feedId: 7571834, feedTitle: 'Disco Swag - The Album',
+    image: 'https://www.doerfelverse.com/art/sing-for-you.png',
+    feedImage: 'https://www.doerfelverse.com/art/discoswag-thealbum.gif',
+    enclosureUrl: 'https://www.doerfelverse.com/tracks/sing-for-you.mp3', datePublished: 1762493210,
+  };
+  const rowBoostagram = { ...boostagram('This is catchy.'), podcast: playlist.title, episode: row.title,
+    value_msat_total: 121000, sender_name: 'rev.hodl' };
+  const note = await publishBoostNote({
+    podcast: playlist, episode: row, boostagram: rowBoostagram, results: [], relays: [RELAY],
+    itemArtist: 'The Doerfels',
+  });
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  check('the playlist note reached the relay', !!e, true);
+  check('the sentence names the track, its artist, then the playlist',
+    e?.content.includes('rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist via BoostMeBitch'), true);
+  check('the item\'s OWN feed is the first show tag, then the item, then the playlist',
+    e?.tags.filter((t) => t[0] === 'i').map((t) => t[1]), [
+      'podcast:guid:b2a87a4c-86f0-5194-9eb3-dcba42ce0695',
+      'podcast:item:guid:12711f57-2d41-4794-8cb9-154ecebb7cf7',
+      'podcast:guid:88b0640a-489f-4920-be4f-00f85af5b2d4',
+    ]);
+  check('one k tag per kind, as before', e?.tags.filter((t) => t[0] === 'k').map((t) => t[1]),
+    ['podcast:guid', 'podcast:item:guid']);
+  const banner = new URL((e?.content.match(/https:\/\/\S+\/api\/og\/boost\.png\S*/) ?? ['https://x/'])[0]);
+  check('the banner offers the track and album art', [banner.searchParams.get('art'), banner.searchParams.get('art2')],
+    [row.image, row.feedImage]);
+  check('...and never the playlist cover', [...banner.searchParams.values()].includes(ITDV), false);
+
+  // Without the lookup's answer the note still says what and where.
+  const noArtist = await publishBoostNote({
+    podcast: playlist, episode: row, boostagram: rowBoostagram, results: [], relays: [RELAY],
+  });
+  await wait(400);
+  check('an artist the lookup did not return is left out, nothing else',
+    received.find((x) => x.id === noArtist.id)?.content.includes('rev.hodl boosted 121 sats to Sing For You from ITDV music playlist via BoostMeBitch'), true);
+}
+
+// PC20-Nostr pc20-boost-notes.md (#51): the order of the `i` tags (rule 15)
+// and of the body's blocks (rule 12). Wiring the builder owns, so here.
+{
+  const P = '11111111-1111-4111-8111-111111111111'; // the playlist
+  const F = '22222222-2222-4222-8222-222222222222'; // the episode's own feed
+  const E = 'episode-146-guid';
+  const B = 'e88a4a67-877c-5e03-b8fd-a70cebc821af'; // the song's album
+  const S = '9f515f93-eda1-4146-8637-7def160879b5'; // the song
+  const podL = { id: 9, title: 'Pod Picks', author: 'A Curator', medium: 'podcastL', podcastGuid: P,
+    url: 'https://example.com/picks.xml' };
+  const row = { id: 10, title: 'Episode 146', guid: E, podcastGuid: F, feedTitle: 'Homegrown Hits',
+    enclosureUrl: 'https://example.com/146.mp3', datePublished: 1 };
+  const song = {
+    split: { title: 'Copenhagen Time', artist: 'Matt Finlay', remoteItem: { feedGuid: B, itemGuid: S } },
+    results: [{ ok: true, sats: 340 }],
+  };
+  const note = await publishBoostNote({
+    podcast: podL, episode: row, boostagram: boostagram('nice'), results: [], relays: [RELAY], track: song,
+  });
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  check('a playlist row with a paid song reached the relay', !!e, true);
+  check('rule 15: the item\'s pair, then the song\'s, then the playlist',
+    e?.tags.filter((t) => t[0] === 'i').map((t) => t[1]),
+    [`podcast:guid:${F}`, `podcast:item:guid:${E}`, `podcast:guid:${B}`, `podcast:item:guid:${S}`, `podcast:guid:${P}`]);
+
+  const quoted = await publishBoostNote({
+    podcast, episode, boostagram: boostagram('nice'), results: [], relays: [RELAY],
+    summaryReceipt: { id: 'a'.repeat(64), pubkey: pk, relays: [RELAY] },
+  });
+  await wait(400);
+  const q = received.find((x) => x.id === quoted.id);
+  const at = (re) => (q?.content ?? '').search(re);
+  check('a note with a mention and a quoted receipt reached the relay', !!q, true);
+  check('...carries both', [at(/nostr:npub1/) >= 0, at(/nostr:nevent1/) >= 0], [true, true]);
+  check('rule 12: the mentions come before the quoted receipt', at(/nostr:npub1/) < at(/nostr:nevent1/), true);
+  check('...so the receipt is the last line', /^nostr:nevent1\S+$/.test((q?.content ?? '').split('\n').at(-1)), true);
 }
 
 // ===========================================================================
