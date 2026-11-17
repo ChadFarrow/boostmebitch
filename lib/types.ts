@@ -158,6 +158,11 @@ export interface Podcast {
    *  show can carry it and still have no BOOST, because only its feed names a payee.
    *  Read it through `carriesV4V`. */
   v4vHint?: boolean;
+  /** On a `medium=publisher` row of a TYPED search only: the mediums its
+   *  remoteItems name (`parsePublisherMediums`), which decide the choice it is
+   *  listed under (`matchesSearchType`). Absent means unread or unnamed, and
+   *  such a publisher stays under PODCASTS, the residual bucket. */
+  publisherMediums?: string[];
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
   /** The ARTIST (publisher) feed this album's channel names — either the
    *  spec's `<podcast:publisher>` wrapper or Wavlake's bare
