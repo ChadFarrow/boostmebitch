@@ -102,6 +102,7 @@ export {
   publishBoostNoteViaSite,
   noteNpubs,
 } from './boost-notes';
+export { STAMP_FAILURE_TEXT, type SiteNoteState, type StampFailure } from '../site-stamp';
 
 export {
   type PublishedNote,
