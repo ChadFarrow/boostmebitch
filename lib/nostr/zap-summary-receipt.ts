@@ -37,6 +37,12 @@ export interface QuotedZapReceipt {
    * reader to an empty answer.
    */
   relays: string[];
+  /**
+   * The signed receipt itself. A site-signed note sends it to site-stamp, which
+   * refuses a receipt that claims more than the note (lib/site-stamp.ts,
+   * `quotedReceiptFits`).
+   */
+  event: Event;
 }
 
 /** The site's pubkey in hex, from the per-brand pinned npub. */
@@ -100,6 +106,7 @@ export async function mintSummaryReceipt(args: {
       id: event.id,
       pubkey: event.pubkey,
       relays: published.acceptedRelays.slice(0, 3),
+      event,
     };
   } catch {
     return null;
