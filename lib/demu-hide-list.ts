@@ -52,6 +52,14 @@ export const DEMU_HIDE_LIST: readonly DemuHidden[] = [
   // catalog at cremroad.com/rss/ (4fd41d97-…, kept). Chad, 2026-11-16.
   { guid: 'c5075dbf-7937-57d9-8023-6d974d2b26de', title: 'Crem Road (cremroad.com/rss/?a=Still Living Creature)', reason: 'the same document as cremroad.com/rss/' },
   { guid: 'e65712c3-c07c-51c2-8c61-1d81caa9552f', title: 'Crem Road (cremroad.com/rss/?a=Me In The Bath)', reason: 'the same document as cremroad.com/rss/' },
+  // Sovereign Frequency published the single "Drop BTC" three times through
+  // Sovereign Feeds on 2026-10-23, as three catbox feeds with three guids. The
+  // three documents differ only in their dates and podcast:guid: one track (item
+  // guid d082c003-…), one MP3, one payee. The newest (PI 8084510,
+  // files.catbox.moe/qo1es3.xml, baf5c0c0-…) is kept: "as they make changes,
+  // the newest one should be correct" (Chad, 2026-11-17).
+  { guid: 'c2eb2af5-5258-5d8a-acea-f84663a156f2', title: 'Drop BTC (PI 8084427, files.catbox.moe/82qjqm.xml)', reason: 'an older copy of Drop BTC (PI 8084510)' },
+  { guid: '8a9954fe-980d-5b76-b501-c83adc9a84e9', title: 'Drop BTC (PI 8084476, files.catbox.moe/h8zz4c.xml)', reason: 'an older copy of Drop BTC (PI 8084510)' },
 ];
 
 /**

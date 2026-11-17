@@ -607,6 +607,13 @@ console.log('\nCover from the newest track:');
   }
   if (DEMU_HIDE_LIST.some((h) => h.guid === '4fd41d97-7be1-5cca-b933-0638f8fe22dd')) fail('the hide list hides the Crem Road row we keep');
   else ok('two Crem Road copies hidden, cremroad.com/rss/ kept');
+
+  // The Drop BTC copies: one single published three times; the newest is kept.
+  for (const g of ['c2eb2af5-5258-5d8a-acea-f84663a156f2', '8a9954fe-980d-5b76-b501-c83adc9a84e9']) {
+    if (!DEMU_HIDE_LIST.some((h) => h.guid === g)) fail(`the hide list lacks the Drop BTC copy ${g}`);
+  }
+  if (DEMU_HIDE_LIST.some((h) => h.guid === 'baf5c0c0-7fbb-5514-9062-94106657fcea')) fail('the hide list hides the Drop BTC row we keep');
+  else ok('two Drop BTC copies hidden, the newest (PI 8084510) kept');
 }
 
 // ── Which app made the feed: the cover's corner badge (Chad, 2026-11-16) ──────
