@@ -7,8 +7,9 @@
 // name and is unauthenticated, so without proof of payment anyone with `curl`
 // posts their own text as the site. A boost's own legs cannot prove anything to
 // the site — a keysend preimage is made by the SENDER — so the proof is a payment
-// to the site itself: a 1-sat invoice minted by the site's LNbits wallet, for
-// exactly ONE event id. Asking twice for that id yields the same event (relays
+// to the site itself: a 1-sat invoice from the site's own Lightning address
+// (`SITE_STAMP_LNADDRESS`), bound to exactly ONE event id, and confirmed by that
+// invoice's LUD-21 verify link. Asking twice for that id yields the same event (relays
 // dedupe it), so a paid stamp cannot be replayed into many notes, while RETRY
 // NOTE may ask as often as it needs. No server state.
 //
@@ -22,8 +23,6 @@
 export const STAMP_SATS = 1;
 /** Spark's routing-fee cap for a stamp (Chad, 2026-11-17). NWC and WebLN set their own. */
 export const STAMP_MAX_FEE_SATS = 10;
-/** How long the stamp invoice can be paid. */
-export const STAMP_INVOICE_EXPIRY_SECS = 600;
 /** How long a token is honoured — a paid stamp's note may be re-signed until then. */
 export const STAMP_TTL_SECS = 86_400;
 /** How long the ladder waits for the wallet before it posts from a one-time key. */
@@ -35,9 +34,9 @@ export const STAMP_PAY_TIMEOUT_MS = 30_000;
  * has paid the sat, and a shorter wait would post its note one-time anyway.
  */
 export const STAMP_RECHECK_DELAYS_MS = [1500, 3000, 5000, 8000];
-/** The route's 402 after LNbits says unpaid. The ladder re-asks on exactly this. */
+/** The route's 402 after the verify link says unsettled. The ladder re-asks on exactly this. */
 export const STAMP_NOT_PAID = 'the note stamp is not paid';
-/** The route's 502 when it could not ASK LNbits. The sat may have landed: "unconfirmed". */
+/** The route's 502 when the verify link gave no answer it could read. The sat may have landed: "unconfirmed". */
 export const STAMP_UNCONFIRMED = 'could not confirm the stamp';
 
 const STAMP_REQUIRED = 'a note stamp is required';
@@ -49,8 +48,12 @@ export interface StampClaims {
   v: 1;
   /** The NIP-01 id of the event the site key will sign. */
   id: string;
-  /** The stamp invoice's payment hash. */
-  ph: string;
+  /**
+   * The stamp invoice's LUD-21 verify link. One link per invoice, so it binds
+   * the event to the invoice as tightly as a payment hash; the route minted it
+   * from the configured address's own origin, and the MAC keeps it that way.
+   */
+  vu: string;
   /** Unix seconds after which the token is refused. */
   exp: number;
 }
@@ -61,6 +64,8 @@ export type Mac = (data: string) => string;
 const HEX64 = /^[0-9a-f]{64}$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
 const MAX_TOKEN_LEN = 1024;
+const MAX_VERIFY_URL_LEN = 512;
+const HTTP_URL = /^https?:\/\//;
 
 function toBase64Url(text: string): string {
   const bytes = new TextEncoder().encode(text);
@@ -86,7 +91,7 @@ function sameString(a: string, b: string): boolean {
 }
 
 export function encodeStamp(claims: StampClaims, mac: Mac): string {
-  const payload = toBase64Url(JSON.stringify({ v: claims.v, id: claims.id, ph: claims.ph, exp: claims.exp }));
+  const payload = toBase64Url(JSON.stringify({ v: claims.v, id: claims.id, vu: claims.vu, exp: claims.exp }));
   return `${payload}.${mac(payload)}`;
 }
 
@@ -109,13 +114,14 @@ export function readStamp(token: unknown, mac: Mac, nowSecs: number): StampRead 
     return { ok: false, reason: 'malformed' };
   }
   if (!c || typeof c !== 'object') return { ok: false, reason: 'malformed' };
-  const { v, id, ph, exp } = c as Record<string, unknown>;
-  if (v !== 1 || typeof id !== 'string' || !HEX64.test(id) || typeof ph !== 'string' || !HEX64.test(ph)
+  const { v, id, vu, exp } = c as Record<string, unknown>;
+  if (v !== 1 || typeof id !== 'string' || !HEX64.test(id)
+    || typeof vu !== 'string' || vu.length > MAX_VERIFY_URL_LEN || !HTTP_URL.test(vu)
     || typeof exp !== 'number' || !Number.isInteger(exp)) {
     return { ok: false, reason: 'malformed' };
   }
   if (nowSecs >= exp) return { ok: false, reason: 'expired' };
-  return { ok: true, claims: { v: 1, id, ph, exp } };
+  return { ok: true, claims: { v: 1, id, vu, exp } };
 }
 
 /**
@@ -134,11 +140,11 @@ export function splitSignBody(body: unknown): { template: unknown; stamp: unknow
 export type SignGate =
   | { kind: 'sign' }
   | { kind: 'refuse'; status: 400 | 402; error: string }
-  | { kind: 'check'; paymentHash: string };
+  | { kind: 'check'; verifyUrl: string };
 
 /**
  * What `/api/nostr/site-sign` does with a validated template whose event id is
- * `eventId`. `check` means: ask LNbits whether `paymentHash` is paid, then sign.
+ * `eventId`. `check` means: ask `verifyUrl` whether the stamp settled, then sign.
  * Only a LEGACY body with the switch OFF signs without a stamp.
  */
 export function stampGate(
@@ -157,7 +163,107 @@ export function stampGate(
     return { kind: 'refuse', status: 400, error: read.reason === 'expired' ? STAMP_EXPIRED : STAMP_INVALID };
   }
   if (read.claims.id !== eventId) return { kind: 'refuse', status: 400, error: STAMP_OTHER_NOTE };
-  return { kind: 'check', paymentHash: read.claims.ph };
+  return { kind: 'check', verifyUrl: read.claims.vu };
+}
+
+// ---------------------------------------------------------------------------
+// The site's Lightning address: what the SERVER reads on the wire. Pure, so
+// `check:sitestamp` pins it against the answers Alby gave on 2026-11-17; the
+// fetching is `lib/stamp-address.ts`.
+//
+// ONE RULE CARRIES THE SECURITY: the callback and the verify link must be on the
+// SAME ORIGIN as the configured address. The address is operator config, so a
+// third party's answer can never aim a server fetch somewhere else — which is
+// why those fetches need no `safeFetch`. A provider that keeps either on another
+// domain is refused (the note posts one-time, and the log says why).
+
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])$/i;
+
+export interface StampAddress {
+  origin: string;
+  wellKnown: string;
+}
+
+/**
+ * `name@domain` (LUD-16) → where its pay request lives. `https` always, except
+ * plain `http` on a loopback host, which only a test fake ever is. Null when
+ * the setting is not exactly one address.
+ */
+export function stampAddress(raw: string): StampAddress | null {
+  const m = /^([a-z0-9._+-]+)@([a-z0-9.-]+|\[[0-9a-f:]+\])(?::(\d{1,5}))?$/i.exec(String(raw).trim());
+  if (!m) return null;
+  const [, name, host, port] = m;
+  try {
+    const scheme = LOOPBACK_HOST.test(host) ? 'http' : 'https';
+    const origin = new URL(`${scheme}://${host}${port ? `:${port}` : ''}`).origin;
+    return { origin, wellKnown: `${origin}/.well-known/lnurlp/${name.toLowerCase()}` };
+  } catch {
+    return null;
+  }
+}
+
+function onOrigin(url: unknown, origin: string): url is string {
+  if (typeof url !== 'string') return false;
+  try {
+    return new URL(url).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
+const record = (json: unknown): Record<string, unknown> | null =>
+  json && typeof json === 'object' && !Array.isArray(json) ? (json as Record<string, unknown>) : null;
+
+export type PayRequestRead =
+  | { ok: true; callback: string; commentAllowed: number }
+  | { ok: false; why: string };
+
+/** The address's LUD-06 pay request, for an amount of `msat`. */
+export function readPayRequest(json: unknown, origin: string, msat: number): PayRequestRead {
+  const o = record(json);
+  if (!o || o.status === 'ERROR') return { ok: false, why: 'the address answered an error' };
+  if (o.tag !== 'payRequest') return { ok: false, why: 'the address is not a pay request' };
+  if (!onOrigin(o.callback, origin)) return { ok: false, why: "the callback is not on the address's own domain" };
+  const { minSendable: min, maxSendable: max } = o;
+  if (typeof min !== 'number' || typeof max !== 'number' || msat < min || msat > max) {
+    return { ok: false, why: 'the address does not take 1 sat' };
+  }
+  const allowed = typeof o.commentAllowed === 'number' && o.commentAllowed > 0 ? Math.floor(o.commentAllowed) : 0;
+  return { ok: true, callback: o.callback, commentAllowed: allowed };
+}
+
+/** The callback for `msat`, with `comment` only where the address takes that many characters. */
+export function stampCallbackUrl(callback: string, msat: number, comment: string, commentAllowed: number): string {
+  const url = new URL(callback);
+  url.searchParams.set('amount', String(msat));
+  if (comment && comment.length <= commentAllowed) url.searchParams.set('comment', comment);
+  return url.toString();
+}
+
+export type CallbackRead = { ok: true; pr: string; verify: string } | { ok: false; why: string };
+
+/** The callback's answer: an invoice, and the LUD-21 verify link the stamp is bound to. */
+export function readCallbackAnswer(json: unknown, origin: string): CallbackRead {
+  const o = record(json);
+  if (!o || o.status === 'ERROR') return { ok: false, why: 'the address refused to make the invoice' };
+  if (typeof o.pr !== 'string' || !/^ln/i.test(o.pr)) return { ok: false, why: 'the address sent no invoice' };
+  if (o.verify === undefined || o.verify === null) return { ok: false, why: 'the address has no LUD-21 verify link' };
+  if (!onOrigin(o.verify, origin)) return { ok: false, why: "the verify link is not on the address's own domain" };
+  return { ok: true, pr: o.pr, verify: o.verify };
+}
+
+/**
+ * The verify link's LUD-21 answer. Only a literal `settled: true` is paid and
+ * only `settled: false` is unpaid; an error or any other shape is "unknown" —
+ * the route says it could not confirm, rather than re-asking a link that is
+ * not answering the question.
+ */
+export function readVerifyAnswer(json: unknown): 'settled' | 'unsettled' | 'unknown' {
+  const o = record(json);
+  if (!o || o.status === 'ERROR') return 'unknown';
+  if (o.settled === true) return 'settled';
+  if (o.settled === false) return 'unsettled';
+  return 'unknown';
 }
 
 // ---------------------------------------------------------------------------
@@ -280,8 +386,8 @@ export async function signSiteNote<E>(
     const error = field(signed.body, 'error');
     const notPaid = signed.status === 402 && error === STAMP_NOT_PAID;
     // Re-ask only "not paid": a settle trailing the payer's answer clears in a
-    // second or two. "Could not ask LNbits" is not re-asked — each ask of a
-    // hung LNbits costs the route's whole timeout.
+    // second or two. "Could not confirm" is not re-asked — each ask of a hung
+    // verify link costs the route's whole timeout.
     unconfirmed = notPaid || (signed.status === 502 && error === STAMP_UNCONFIRMED);
     if (!notPaid) break;
   }

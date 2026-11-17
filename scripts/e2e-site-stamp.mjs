@@ -7,7 +7,7 @@
 // Usage (a THROWAWAY site key — never run this against the real SITE_NOSTR_SK):
 //   export E2E_SITE_SK=$(node -e "import('nostr-tools').then(m=>console.log(Buffer.from(m.generateSecretKey()).toString('hex')))")
 //   npm run build
-//   SITE_NOSTR_SK=$E2E_SITE_SK LNBITS_URL=http://127.0.0.1:3418 LNBITS_INVOICE_KEY=e2e-key \
+//   SITE_NOSTR_SK=$E2E_SITE_SK SITE_STAMP_LNADDRESS=stamp@127.0.0.1:3418 \
 //     SITE_SIGN_REQUIRE_STAMP=on npx next start -p 3417 -H 127.0.0.1
 //   APP_URL=http://127.0.0.1:3417 E2E_SITE_SK=$E2E_SITE_SK E2E_REQUIRE_STAMP=on npm run e2e:sitestamp
 // Phase 1 (the switch off): start the server WITHOUT SITE_SIGN_REQUIRE_STAMP and run
@@ -15,8 +15,9 @@
 // `ONLY=1,3` runs those sections alone; `--headed` to watch, `--keep` to leave it open.
 //
 // NOTHING LEAVES THE MACHINE. Chrome resolves no host but this one
-// (`--host-resolver-rules`); the LNbits wallet is `fake-lnbits.mjs`, started by
-// this script on port 3418, which is why the server's LNBITS_URL names it; the
+// (`--host-resolver-rules`); the site's Lightning address is
+// `fake-stamp-address.mjs`, started by this script on port 3418, which is why
+// the server's SITE_STAMP_LNADDRESS names it; the
 // site key is the throwaway above, and the first signature proves the server
 // holds it.
 //
@@ -24,11 +25,12 @@
 //   1. The routes, called with `fetch` from inside the page: a bare template is
 //      refused with the switch on and signed with it off; an unpaid stamp is
 //      402; a paid stamp signs exactly its own event, as often as asked; a
-//      changed note, a flipped MAC and a refused template are 400; an LNbits that
-//      fails or hangs is a 502 inside the route's own timeout.
+//      changed note, a flipped MAC and a refused template are 400; an address
+//      that refuses, has no verify link, or whose verify link hangs is a 502
+//      inside the route's own timeout.
 //   2. Signed out, WebLN: one stamp, paid AFTER every leg; the note is the site's.
-//   3–6. The wallet refuses / LNbits cannot mint / the invoice is not 1 sat / the
-//      LNbits lookup hangs: the note still posts, from a one-time key, and the
+//   3–6. The wallet refuses / the address cannot make the invoice / the invoice
+//      is not 1 sat / the verify link hangs: the note still posts, from a one-time key, and the
 //      modal stays open and says why — never that the sat stayed.
 //   7. × pressed while the stamp is being paid: one note, one stamp, and a
 //      second modal opened at once is not closed when the first note lands.
@@ -53,7 +55,7 @@
 
 import { finalizeEvent, generateSecretKey, getPublicKey, nip04, nip19, nip44, verifyEvent } from 'nostr-tools';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
-import { createFakeLnbits } from './fake-lnbits.mjs';
+import { createFakeStampAddress } from './fake-stamp-address.mjs';
 import { createRelay } from './local-relay.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3417';
@@ -61,8 +63,7 @@ const SITE_SK_HEX = process.env.E2E_SITE_SK ?? '';
 const REQUIRE_STAMP = process.env.E2E_REQUIRE_STAMP === 'on';
 const ONLY = (process.env.ONLY ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const runs = (n) => ONLY.length === 0 || ONLY.includes(String(n));
-const LNBITS_PORT = 3418;
-const LNBITS_KEY = 'e2e-key';
+const STAMP_PORT = 3418;
 
 if (!/^[0-9a-f]{64}$/.test(SITE_SK_HEX)) {
   console.error('E2E_SITE_SK must be the 64-hex throwaway key the server was started with (see the header).');
@@ -71,8 +72,8 @@ if (!/^[0-9a-f]{64}$/.test(SITE_SK_HEX)) {
 const siteSk = Uint8Array.from(Buffer.from(SITE_SK_HEX, 'hex'));
 const sitePk = getPublicKey(siteSk);
 
-const lnbits = createFakeLnbits({ port: LNBITS_PORT, key: LNBITS_KEY });
-await lnbits.ready;
+const stampAddr = createFakeStampAddress({ port: STAMP_PORT });
+await stampAddr.ready;
 await requireApp(`${APP}/privacy`, `Nothing is serving ${APP}. Start it as the header says.`);
 
 const t = checker();
@@ -132,7 +133,7 @@ page.on(async (m) => {
   }).catch(() => {});
 });
 
-// The stamp payment, answered from here so the fake LNbits learns it was paid.
+// The stamp payment, answered from here so the fake address learns it was paid.
 await send('Runtime.addBinding', { name: 'bmbPay' });
 page.on(async (m) => {
   if (m.method !== 'Runtime.bindingCalled' || m.params.name !== 'bmbPay') return;
@@ -140,13 +141,13 @@ page.on(async (m) => {
   let err = null;
   // Only a stamp is paid here. A BOOST ALL lnaddress leg's LNURL invoice is
   // refused, as a keysend-only wallet would, and is not counted.
-  const isStamp = lnbits.minted.some((x) => x.bolt11 === invoice);
+  const isStamp = stampAddr.minted.some((x) => x.bolt11 === invoice);
   if (isStamp) stampPays.push(invoice);
   if (!isStamp) err = 'e2e: keysend only';
   else if (payMode === 'refuse') err = 'e2e: the user rejected the payment';
   else {
     if (payMode === 'slow') await wait(3000);
-    if (!lnbits.markPaid(invoice)) err = 'e2e: an invoice the fake never minted';
+    if (!stampAddr.markPaid(invoice)) err = 'e2e: an invoice the fake never minted';
   }
   await js(`window.__bmbPayResolve(${JSON.stringify(rid)}, ${JSON.stringify(err)})`);
 });
@@ -259,7 +260,7 @@ await page.until('document.readyState === "complete"', 20000);
 // =============================================================================
 if (runs(1)) {
   section('1. the routes refuse what is not paid');
-  lnbits.reset();
+  stampAddr.reset();
 
   const bare = await post('/api/nostr/site-sign', template());
   if (REQUIRE_STAMP) {
@@ -270,29 +271,28 @@ if (runs(1)) {
   }
 
   if (!ONLY.length || REQUIRE_STAMP) {
-    const before = lnbits.minted.length;
+    const before = stampAddr.minted.length;
     const note = template();
     const minted = await post('/api/nostr/site-stamp', { template: note });
     t.equal('site-stamp answers 200', minted?.status, 200);
-    t.equal('...and minted one invoice', lnbits.minted.length - before, 1);
-    const inv = lnbits.minted.at(-1);
+    t.equal('...and minted one invoice', stampAddr.minted.length - before, 1);
+    const inv = stampAddr.minted.at(-1);
     t.ok('...for 1 sat (1000 msat)', inv?.amount === 1000, JSON.stringify(inv));
-    t.ok('...with the brand\'s stamp memo', / note stamp$/.test(inv?.memo ?? ''), inv?.memo);
-    t.equal('...expiring in 600 s', inv?.expiry, 600);
+    t.ok('...with the brand\'s stamp comment', / note stamp$/.test(inv?.comment ?? ''), inv?.comment);
     t.equal('...and handed back that invoice', minted?.body?.invoice, inv?.bolt11);
     const stamp = minted?.body?.stamp;
     const claims = stamp ? claimsOf(stamp) : {};
-    t.equal('the token names the invoice\'s payment hash', claims.ph, inv?.hash);
+    t.equal('the token names the invoice\'s verify link', claims.vu, inv?.verify);
 
     const unpaid = await post('/api/nostr/site-sign', { template: note, stamp });
     t.equal('an unpaid stamp → 402 not paid', [unpaid?.status, unpaid?.body?.error], [402, 'the note stamp is not paid']);
 
-    t.ok('the page pays it (fake LNbits)', lnbits.markPaid(inv?.bolt11));
+    t.ok('the page pays it (the fake address)', stampAddr.markPaid(inv?.bolt11));
     const signed = await post('/api/nostr/site-sign', { template: note, stamp });
     t.equal('a paid stamp → 200', signed?.status, 200);
     if (signed?.body?.event?.pubkey && signed.body.event.pubkey !== sitePk) {
       t.fail('THE SERVER IS NOT RUNNING UNDER E2E_SITE_SK — stop and restart it as the header says');
-      await lnbits.close();
+      await stampAddr.close();
       await exit(1);
     }
     t.equal('...signed by the site key', signed?.body?.event?.pubkey, sitePk);
@@ -300,7 +300,7 @@ if (runs(1)) {
 
     const again = await post('/api/nostr/site-sign', { template: note, stamp });
     t.equal('asked again (RETRY NOTE): the same event id', again?.body?.event?.id, claims.id);
-    t.equal('...and no new invoice', lnbits.minted.length - before, 1);
+    t.equal('...and no new invoice', stampAddr.minted.length - before, 1);
 
     const changed = await post('/api/nostr/site-sign', { template: { ...note, content: `${note.content}!` }, stamp });
     t.equal('the paid stamp on a changed note → 400', [changed?.status, changed?.body?.error], [400, 'the note stamp is for a different note']);
@@ -310,29 +310,39 @@ if (runs(1)) {
 
     const otherKey = generateSecretKey();
     const stranger = finalizeEvent(template(), otherKey);
-    const smuggled = await post('/api/nostr/site-sign', { template: note, stamp: `${Buffer.from(JSON.stringify({ v: 1, id: stranger.id, ph: inv?.hash, exp: nowSecs() + 60 })).toString('base64url')}.${stamp?.split('.')[1]}` });
+    const smuggled = await post('/api/nostr/site-sign', { template: note, stamp: `${Buffer.from(JSON.stringify({ v: 1, id: stranger.id, vu: inv?.verify, exp: nowSecs() + 60 })).toString('base64url')}.${stamp?.split('.')[1]}` });
     t.equal('another payload under the paid MAC → 400', [smuggled?.status, smuggled?.body?.error], [400, 'the note stamp is not valid']);
 
-    const mintedBefore = lnbits.minted.length;
+    const mintedBefore = stampAddr.minted.length;
     const refused = await post('/api/nostr/site-stamp', { template: template('not a boost note') });
     t.equal('a template the validator refuses → 400 from site-stamp', [refused?.status, refused?.body?.error], [400, 'not a boost note']);
-    t.equal('...and no invoice was minted for it', lnbits.minted.length, mintedBefore);
+    t.equal('...and no invoice was minted for it', stampAddr.minted.length, mintedBefore);
 
-    lnbits.mode.mint = 'fail';
+    stampAddr.mode.mint = 'fail';
     const mintFail = await post('/api/nostr/site-stamp', { template: template() });
-    t.equal('LNbits refuses to mint → 502', [mintFail?.status, mintFail?.body?.error], [502, 'could not create the stamp invoice']);
-    lnbits.reset();
+    t.equal('the address refuses to make the invoice → 502', [mintFail?.status, mintFail?.body?.error], [502, 'could not create the stamp invoice']);
+    stampAddr.reset();
+
+    stampAddr.mode.mint = 'noverify';
+    const noVerify = await post('/api/nostr/site-stamp', { template: template() });
+    t.equal('an address with no LUD-21 verify link → 502', [noVerify?.status, noVerify?.body?.error], [502, 'could not create the stamp invoice']);
+    stampAddr.reset();
+
+    stampAddr.mode.mint = 'overcharge';
+    const over = await post('/api/nostr/site-stamp', { template: template() });
+    t.equal('an invoice that is not for 1 sat → 502, never handed to the page', [over?.status, over?.body?.error, over?.body?.invoice], [502, 'could not create the stamp invoice', undefined]);
+    stampAddr.reset();
 
     const second = template('⚡ Boost ⚡\n\ne2e: the lookup hangs');
     const m2 = await post('/api/nostr/site-stamp', { template: second });
-    lnbits.markPaid(m2?.body?.invoice);
-    lnbits.mode.lookup = 'hang';
+    stampAddr.markPaid(m2?.body?.invoice);
+    stampAddr.mode.lookup = 'hang';
     const started = Date.now();
     const hang = await post('/api/nostr/site-sign', { template: second, stamp: m2?.body?.stamp });
     const took = Date.now() - started;
-    t.equal('LNbits never answers the lookup → 502', [hang?.status, hang?.body?.error], [502, 'could not confirm the stamp']);
+    t.equal('the verify link never answers → 502', [hang?.status, hang?.body?.error], [502, 'could not confirm the stamp']);
     t.ok(`...inside 10 s (took ${took} ms)`, took < 10_000);
-    lnbits.reset();
+    stampAddr.reset();
   }
 }
 
@@ -398,14 +408,14 @@ async function noteAfter(ms = 30000) {
   return null;
 }
 const paidLog = async () => (await js('window.__paid')) ?? [];
-const mark = () => ({ asks: stampAsks.length, pays: stampPays.length, minted: lnbits.minted.length });
-const since = (m) => ({ asks: stampAsks.length - m.asks, pays: stampPays.length - m.pays, minted: lnbits.minted.length - m.minted });
+const mark = () => ({ asks: stampAsks.length, pays: stampPays.length, minted: stampAddr.minted.length });
+const since = (m) => ({ asks: stampAsks.length - m.asks, pays: stampPays.length - m.pays, minted: stampAddr.minted.length - m.minted });
 const failText = (why) => `${ONE_TIME}, not Boost Me Bitch: ${why}.`;
 const signerIsOneTime = (e) => !!e && e.pubkey !== sitePk && e.pubkey !== userPk && verifyEvent(e);
 
 /** One signed-out boost of the episode whose stamp fails some way; the note must still post. */
 async function oneTimeCase(label, setup, why, extra = async () => {}) {
-  lnbits.reset();
+  stampAddr.reset();
   payMode = 'ok';
   t.ok(`${label}: the episode page opens`, await openEpisode());
   t.ok('...the boost modal opens', await openBoost());
@@ -424,13 +434,13 @@ async function oneTimeCase(label, setup, why, extra = async () => {}) {
   t.ok('...over legs that paid (✓)', (await dialogText()).includes('✓'), await dialogText());
   await extra(m);
   payMode = 'ok';
-  lnbits.reset();
+  stampAddr.reset();
 }
 
 // =============================================================================
 if (runs(2)) {
   section('2. signed out, WebLN: one stamp, paid after every leg; the site signs');
-  lnbits.reset();
+  stampAddr.reset();
   t.ok('the episode page opens', await openEpisode());
   t.ok('the boost modal opens', await openBoost());
   t.ok('the signed-out share line names the 1 sat', (await until(`/1 sat/.test(${DIALOG}?.innerText ?? '')`, 20000)) === true, await dialogText());
@@ -456,26 +466,27 @@ if (runs(3)) {
 }
 
 if (runs(4)) {
-  section('4. LNbits cannot mint the stamp invoice');
-  await oneTimeCase('mint fails', () => { lnbits.mode.mint = 'fail'; }, 'the site could not make the stamp invoice',
+  section('4. the address cannot make the stamp invoice');
+  await oneTimeCase('mint fails', () => { stampAddr.mode.mint = 'fail'; }, 'the site could not make the stamp invoice',
     async (m) => t.equal('...the wallet was never asked', since(m).pays, 0));
 }
 
 if (runs(5)) {
   section('5. the stamp invoice is not for 1 sat');
-  await oneTimeCase('overcharge', () => { lnbits.mode.mint = 'overcharge'; }, 'your wallet did not confirm the 1-sat stamp',
+  // The server refuses it now, so the page never holds it: "could not make".
+  await oneTimeCase('overcharge', () => { stampAddr.mode.mint = 'overcharge'; }, 'the site could not make the stamp invoice',
     async (m) => t.equal('...the wallet was never asked', since(m).pays, 0));
 }
 
 if (runs(6)) {
-  section('6. the LNbits lookup hangs');
-  await oneTimeCase('lookup hangs', () => { lnbits.mode.lookup = 'hang'; }, 'the site could not confirm the 1-sat stamp',
+  section('6. the verify link hangs');
+  await oneTimeCase('lookup hangs', () => { stampAddr.mode.lookup = 'hang'; }, 'the site could not confirm the 1-sat stamp',
     async (m) => t.equal('...the stamp was paid once', since(m).pays, 1));
 }
 
 if (runs(7)) {
   section('7. × while the stamp is being paid: one note, one stamp');
-  lnbits.reset();
+  stampAddr.reset();
   t.ok('the episode page opens', await openEpisode());
   t.ok('the boost modal opens', await openBoost());
   await typeAmount('100');
@@ -498,12 +509,12 @@ if (runs(7)) {
   t.equal('...signed by the site key', all[0]?.pubkey, sitePk);
   t.equal('exactly one stamp paid', since(m).pays, 1);
   payMode = 'ok';
-  lnbits.reset();
+  stampAddr.reset();
 }
 
 if (runs(8)) {
   section('8. BOOST ALL, signed out: one stamp for the summary note');
-  lnbits.reset();
+  stampAddr.reset();
   t.ok('the episode page opens', await openEpisode());
   await js(`document.querySelector('button[aria-label="More actions"]')?.click()`);
   await until(`[...document.querySelectorAll('[role="menuitem"]')].some((b) => /boost all \\d+ tracks/i.test(b.textContent))`, 10000);
@@ -522,7 +533,7 @@ if (runs(8)) {
 
 if (runs(9)) {
   section('9. signed in, Anonymous: the site signs; the user signs no kind:1');
-  lnbits.reset();
+  stampAddr.reset();
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   t.ok('the episode page opens (390 × 844)', await openEpisode({ signedIn: true, shareAs: 'site' }));
   await until(`!!window.nostr`, 20000);
@@ -572,7 +583,7 @@ if (runs(9)) {
 
 if (runs(10)) {
   section('10. NWC: the stamp goes out as pay_invoice');
-  lnbits.reset();
+  stampAddr.reset();
   const relay = createRelay({ port: 0, log: null });
   const relayPort = await relay.ready;
   const walletSk = generateSecretKey();
@@ -594,7 +605,7 @@ if (runs(10)) {
     if (method === 'get_info') result = { methods: METHODS, alias: 'stub', pubkey: walletPub, network: 'mainnet', block_height: 1, block_hash: '00', color: '#000000' };
     else if (method === 'get_balance') result = { balance: 1_000_000 * 1000 };
     else if (method === 'pay_keysend') result = { preimage: 'ab'.repeat(32) };
-    else if (method === 'pay_invoice') { stampPays.push(params?.invoice); result = lnbits.markPaid(params?.invoice) ? { preimage: 'ab'.repeat(32) } : null; }
+    else if (method === 'pay_invoice') { stampPays.push(params?.invoice); result = stampAddr.markPaid(params?.invoice) ? { preimage: 'ab'.repeat(32) } : null; }
     const body = result
       ? { result_type: method, result }
       : { result_type: method, result: null, error: { code: 'NOT_IMPLEMENTED', message: `${method} is not stubbed` } };
@@ -623,7 +634,7 @@ if (runs(10)) {
 
 if (runs(11)) {
   section('11. "Don\'t post" and "My feed" never ask for a stamp');
-  lnbits.reset();
+  stampAddr.reset();
   t.ok('signed in, Don\'t post: the episode page opens', await openEpisode({ signedIn: true, share: false }));
   await until(`!!window.nostr`, 20000);
   t.ok('the boost modal opens', await openBoost());
@@ -649,7 +660,7 @@ if (runs(11)) {
 
 if (runs(12)) {
   section('12. no relay takes the note: RETRY NOTE posts it, and pays no second stamp');
-  lnbits.reset();
+  stampAddr.reset();
   t.ok('the episode page opens', await openEpisode());
   t.ok('the boost modal opens', await openBoost());
   await typeAmount('100');
@@ -673,6 +684,6 @@ if (runs(12)) {
 // =============================================================================
 t.equal('no uncaught exception in the page', exceptions, []);
 console.log(`\n${t.count - t.fails}/${t.count} passed`);
-await lnbits.close();
+await stampAddr.close();
 await wait(50);
 await exit(t.fails ? 1 : 0);

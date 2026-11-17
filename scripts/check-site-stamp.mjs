@@ -12,7 +12,10 @@
 // note is the one part of a boost nothing else re-attempts.
 //
 // `naive()` is the obvious first version of the gate: "a missing stamp is the
-// old path, so sign it" and "any stamp that decodes names its payment hash".
+// old path, so sign it" and "any stamp that decodes names its verify link".
+// The Lightning address half has one too: trust whatever callback and verify
+// link the address hands back, and read any `settled` that is not true as
+// "unpaid".
 // Every refusal below must be one `naive()` gets wrong; the two inputs both
 // must accept are exempted one at a time with `{ alsoNaive: true }`.
 //
@@ -32,9 +35,10 @@ if (problems.length) {
 }
 
 const {
-  STAMP_SATS, STAMP_MAX_FEE_SATS, STAMP_INVOICE_EXPIRY_SECS, STAMP_TTL_SECS,
+  STAMP_SATS, STAMP_MAX_FEE_SATS, STAMP_TTL_SECS,
   STAMP_PAY_TIMEOUT_MS, STAMP_RECHECK_DELAYS_MS, STAMP_NOT_PAID, STAMP_UNCONFIRMED, STAMP_FAILURE_TEXT,
   encodeStamp, readStamp, splitSignBody, stampGate, signSiteNote,
+  stampAddress, readPayRequest, stampCallbackUrl, readCallbackAnswer, readVerifyAnswer,
 } = await import('../lib/site-stamp.ts');
 
 let failures = 0;
@@ -50,7 +54,6 @@ const eq = (label, got, want) => {
 console.log('\n  the constants the spec fixes');
 eq('1 sat a stamp', STAMP_SATS, 1);
 eq('Spark fee cap 10 sats (Chad, 2026-11-17)', STAMP_MAX_FEE_SATS, 10);
-eq('invoice expiry 10 min', STAMP_INVOICE_EXPIRY_SECS, 600);
 eq('token lifetime 24 h', STAMP_TTL_SECS, 86_400);
 eq('wallet gets 30 s', STAMP_PAY_TIMEOUT_MS, 30_000);
 // Four re-asks, ~17.5 s in all: Spark's payLightningInvoice answers when the
@@ -65,8 +68,8 @@ const MAC = macWith('site-key-of-this-deploy');
 const OTHER = macWith('site-key-of-the-other-brand');
 const NOW = 1_790_000_000;
 const ID = 'a'.repeat(64);
-const PH = 'b'.repeat(64);
-const claims = (over = {}) => ({ v: 1, id: ID, ph: PH, exp: NOW + 3600, ...over });
+const VU = 'https://getalby.com/lnurlp/hello/verify/5Ae4FPNJjSYRjieUwgHDU1NN';
+const claims = (over = {}) => ({ v: 1, id: ID, vu: VU, exp: NOW + 3600, ...over });
 const VALID = encodeStamp(claims(), MAC);
 const [VALID_PAYLOAD, VALID_SIG] = VALID.split('.');
 
@@ -74,15 +77,15 @@ eq('a token reads back to its claims', readStamp(VALID, MAC, NOW), { ok: true, c
 
 const flip = (s) => s.slice(0, -1) + (s.at(-1) === 'A' ? 'B' : 'A');
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
-const SWAPPED_PH = `${b64(claims({ ph: 'c'.repeat(64) }))}.${VALID_SIG}`;
+const SWAPPED_VU = `${b64(claims({ vu: 'https://getalby.com/lnurlp/hello/verify/SOMEONE-ELSES' }))}.${VALID_SIG}`;
 
 // The obvious wrong gate. See the header.
 function naiveGate(stamp /* , legacy, eventId, o */) {
   if (stamp == null) return { kind: 'sign' };
   try {
     const c = JSON.parse(Buffer.from(String(stamp).split('.')[0], 'base64url').toString());
-    if (!c || typeof c.ph !== 'string') throw new Error('no ph');
-    return { kind: 'check', paymentHash: c.ph };
+    if (!c || typeof c.vu !== 'string') throw new Error('no vu');
+    return { kind: 'check', verifyUrl: c.vu };
   } catch {
     return { kind: 'refuse', status: 400, error: 'the note stamp is not valid' };
   }
@@ -95,13 +98,14 @@ const gate = (label, stamp, legacy, eventId, requireStamp, extra = {}) =>
 const TEMPLATE = { kind: 1, created_at: NOW, tags: [['t', 'boostagram'], ['t', 'value4value']], content: '⚡ Boost ⚡ hi' };
 
 const VECTORS = [
-  gate('a valid stamp for this event is checked against LNbits', VALID, false, ID, true, { alsoNaive: true }),
+  gate('a valid stamp for this event is checked at its verify link', VALID, false, ID, true, { alsoNaive: true }),
   gate('a legacy template with the switch off is signed (phase 1)', undefined, true, ID, false, { alsoNaive: true }),
   gate('a legacy template with the switch on is refused', undefined, true, ID, true),
   gate('the new shape with no stamp is refused even with the switch off', undefined, false, ID, false),
   gate('one MAC character flipped', flip(VALID), false, ID, true),
   gate("a token minted with the other brand's key", encodeStamp(claims(), OTHER), false, ID, true),
-  gate('a payment hash swapped under the old MAC', SWAPPED_PH, false, ID, true),
+  gate('a verify link swapped under the old MAC', SWAPPED_VU, false, ID, true),
+  gate('a correctly MACed token whose verify link is not http(s)', encodeStamp(claims({ vu: 'javascript:alert(1)' }), MAC), false, ID, true),
   gate('a token one second past its exp', encodeStamp(claims({ exp: NOW - 1 }), MAC), false, ID, true),
   gate('a paid stamp moved onto a different note', VALID, false, 'd'.repeat(64), true),
   gate('a correctly MACed token whose id is not hex', encodeStamp(claims({ id: 'not-hex' }), MAC), false, 'not-hex', true),
@@ -116,13 +120,14 @@ const WANT = {
   'the new shape with no stamp is refused even with the switch off': { kind: 'refuse', status: 402, error: 'a note stamp is required' },
   'one MAC character flipped': { kind: 'refuse', status: 400, error: 'the note stamp is not valid' },
   "a token minted with the other brand's key": { kind: 'refuse', status: 400, error: 'the note stamp is not valid' },
-  'a payment hash swapped under the old MAC': { kind: 'refuse', status: 400, error: 'the note stamp is not valid' },
+  'a verify link swapped under the old MAC': { kind: 'refuse', status: 400, error: 'the note stamp is not valid' },
+  'a correctly MACed token whose verify link is not http(s)': { kind: 'refuse', status: 400, error: 'the note stamp is not valid' },
   'a token one second past its exp': { kind: 'refuse', status: 400, error: 'the note stamp has expired' },
   'a paid stamp moved onto a different note': { kind: 'refuse', status: 400, error: 'the note stamp is for a different note' },
   'a correctly MACed token whose id is not hex': { kind: 'refuse', status: 400, error: 'the note stamp is not valid' },
   'the payload alone, with no MAC': { kind: 'refuse', status: 400, error: 'the note stamp is not valid' },
   'a number for a stamp': { kind: 'refuse', status: 400, error: 'the note stamp is not valid' },
-  'a valid stamp for this event is checked against LNbits': { kind: 'check', paymentHash: PH },
+  'a valid stamp for this event is checked at its verify link': { kind: 'check', verifyUrl: VU },
   'a legacy template with the switch off is signed (phase 1)': { kind: 'sign' },
 };
 
@@ -143,6 +148,94 @@ eq('split: new shape', JSON.parse(invoke('real', VECTORS.at(-2))), { template: T
 eq('split: legacy shape', JSON.parse(invoke('real', VECTORS.at(-1))), { template: TEMPLATE, legacy: true });
 const { proved } = replayVectors({ vectors: VECTORS, invoke, fail });
 if (proved === 0) fail('the replay proved nothing');
+
+// ---------------------------------------------------------------------------
+console.log('\n  the Lightning address wire (LUD-16, LUD-06, LUD-21)');
+
+// RECORDED FROM THE WIRE, 2026-11-17: hello@getalby.com's pay request, its
+// callback for 1000 msat with the stamp comment, and that invoice's verify link
+// (UNPAID — no payment was made). Every other wire vector below is one of these
+// with one field changed. The paid shape is LUD-21's `settled: true`, not seen.
+const ALBY = 'https://getalby.com';
+const PAYREQ = {"status":"OK","tag":"payRequest","commentAllowed":255,"callback":"https://getalby.com/lnurlp/hello/callback","metadata":"[[\"text/identifier\",\"hello@getalby.com\"],[\"text/plain\",\"Sats for Alby\"]]","minSendable":1000,"maxSendable":10000000000,"payerData":{"name":{"mandatory":false},"email":{"mandatory":false},"pubkey":{"mandatory":false}},"nostrPubkey":"79f00d3f5a19ec806189fcab03c1be4ff81d18ee4f653c88fac41fe03570f432","allowsNostr":true};
+const CALLBACK = {"status":"OK","successAction":{"tag":"message","message":"Thanks, sats received!"},"verify":"https://getalby.com/lnurlp/hello/verify/gQVMzVFKcxsTe5FmxNf4nRc8","routes":[],"pr":"lnbc10n1p40cnhrdpggfhk7um5ypxk2gzzd96xx6pqdehhgefqwd6xzmtsnp4qdkt5m0tdusqvzv7ufx9nypz0aq3nt5ktpv3645cq9y6azkv3hw86pp5j6mvq9yegu2jtf03633erqc04z7h2lckw6vlufk7mqjg73g42gvssp5qh3ck2jd8jkmp8r520j8s5vc92wwsu7nevyga5xtjr0qajny798q9qyysgqcqzp2xqyz5vqrzjqwryaup9lh50kkranzgcdnn2fgvx390wgj5jd07rwr3vxeje0glc7qjcz5th34aysyqqqqlgqqqqqeqqjqrzjq26922n6s5n5undqrf78rjjhgpcczafws45tx8237y7pzx3fg8ww8apyqqqqqqqqv5qqqqqqqqqqqqqq2qrzjqw9fu4j39mycmg440ztkraa03u5qhtuc5zfgydsv6ml38qd4azymlapyqqqqqqqd0qqqqqlgqqqq86qqjq3wwkrskwnadpzks9tzat46ayd556j50f5c92h8mq9f36vj9f8vqs5ztlxn768fuwjd5aas5d8rtp0mmzf3muypffgvn9z0ef5eg04vcpqdgq2l"};
+const VERIFY_UNPAID = {"status":"OK","settled":false,"preimage":null,"pr":"lnbc10n1p40cnhrdpggfhk7um5ypxk2gzzd96xx6pqdehhgefqwd6xzmtsnp4qdkt5m0tdusqvzv7ufx9nypz0aq3nt5ktpv3645cq9y6azkv3hw86pp5j6mvq9yegu2jtf03633erqc04z7h2lckw6vlufk7mqjg73g42gvssp5qh3ck2jd8jkmp8r520j8s5vc92wwsu7nevyga5xtjr0qajny798q9qyysgqcqzp2xqyz5vqrzjqwryaup9lh50kkranzgcdnn2fgvx390wgj5jd07rwr3vxeje0glc7qjcz5th34aysyqqqqlgqqqqqeqqjqrzjq26922n6s5n5undqrf78rjjhgpcczafws45tx8237y7pzx3fg8ww8apyqqqqqqqqv5qqqqqqqqqqqqqq2qrzjqw9fu4j39mycmg440ztkraa03u5qhtuc5zfgydsv6ml38qd4azymlapyqqqqqqqd0qqqqqlgqqqq86qqjq3wwkrskwnadpzks9tzat46ayd556j50f5c92h8mq9f36vj9f8vqs5ztlxn768fuwjd5aas5d8rtp0mmzf3muypffgvn9z0ef5eg04vcpqdgq2l"};
+const VERIFY_PAID = { ...VERIFY_UNPAID, settled: true, preimage: 'e'.repeat(64) };
+
+const naiveAddress = (raw) => {
+  const [name, domain] = String(raw).split('@');
+  return { origin: `https://${domain}`, wellKnown: `https://${domain}/.well-known/lnurlp/${name}` };
+};
+const naivePayRequest = (json) => ({ ok: true, callback: json?.callback, commentAllowed: json?.commentAllowed ?? 0 });
+const naiveCallbackUrl = (cb, msat, comment) => `${cb}?${new URLSearchParams({ amount: String(msat), comment })}`;
+const naiveCallback = (json) => ({ ok: true, pr: json?.pr, verify: json?.verify });
+const naiveVerify = (json) => (json?.settled ? 'settled' : 'unsettled');
+
+const W = (label, kind, args, extra = {}) => ({ label, kind, args, ...extra });
+const WIRE = [
+  W('a public address', 'address', ['hello@getalby.com'], { alsoNaive: true }),
+  W('a loopback address is plain http (the e2e fake)', 'address', ['stamp@127.0.0.1:3418']),
+  W('no @ at all', 'address', ['getalby.com']),
+  W('two @', 'address', ['a@b@getalby.com']),
+  W('a path after the domain', 'address', ['hello@getalby.com/evil']),
+  W("Alby's pay request", 'payRequest', [PAYREQ, ALBY, 1000], { alsoNaive: true }),
+  W('a callback on another domain', 'payRequest', [{ ...PAYREQ, callback: 'https://evil.example/cb' }, ALBY, 1000]),
+  W('a minimum above 1 sat', 'payRequest', [{ ...PAYREQ, minSendable: 10_000 }, ALBY, 1000]),
+  W('not a pay request', 'payRequest', [{ ...PAYREQ, tag: 'withdrawRequest' }, ALBY, 1000]),
+  W('an ERROR for the address', 'payRequest', [{ status: 'ERROR', reason: 'user not found' }, ALBY, 1000]),
+  W('the callback URL with the comment', 'callbackUrl', [PAYREQ.callback, 1000, 'Boost Me Bitch note stamp', 255], { alsoNaive: true }),
+  W('no comment where the address allows fewer characters', 'callbackUrl', [PAYREQ.callback, 1000, 'Boost Me Bitch note stamp', 10]),
+  W('a callback that already carries a query', 'callbackUrl', ['https://getalby.com/cb?k=1', 1000, 'x', 0]),
+  W("Alby's callback answer", 'callback', [CALLBACK, ALBY], { alsoNaive: true }),
+  W('no verify link (no LUD-21)', 'callback', [{ ...CALLBACK, verify: undefined }, ALBY]),
+  W('a verify link on another domain', 'callback', [{ ...CALLBACK, verify: 'https://evil.example/v' }, ALBY]),
+  W('an ERROR from the callback', 'callback', [{ status: 'ERROR', reason: 'node offline' }, ALBY]),
+  W('an empty invoice', 'callback', [{ ...CALLBACK, pr: '' }, ALBY]),
+  W("Alby's unpaid verify answer", 'verify', [VERIFY_UNPAID], { alsoNaive: true }),
+  W('a settled verify answer', 'verify', [VERIFY_PAID], { alsoNaive: true }),
+  W('an ERROR from the verify link', 'verify', [{ status: 'ERROR', reason: 'Not found' }]),
+  W('settled as a string', 'verify', [{ ...VERIFY_UNPAID, settled: 'true' }]),
+  W('no settled field', 'verify', [{ status: 'OK' }]),
+];
+
+function invokeWire(which, v) {
+  const real = which === 'real';
+  try {
+    if (v.kind === 'address') return JSON.stringify(real ? stampAddress(...v.args) : naiveAddress(...v.args));
+    if (v.kind === 'payRequest') return JSON.stringify(real ? readPayRequest(...v.args) : naivePayRequest(...v.args));
+    if (v.kind === 'callbackUrl') return JSON.stringify(real ? stampCallbackUrl(...v.args) : naiveCallbackUrl(...v.args));
+    if (v.kind === 'callback') return JSON.stringify(real ? readCallbackAnswer(...v.args) : naiveCallback(...v.args));
+    if (v.kind === 'verify') return JSON.stringify(real ? readVerifyAnswer(...v.args) : naiveVerify(...v.args));
+    return `unknown kind ${v.kind}`;
+  } catch (e) {
+    return `threw ${e?.message ?? e}`;
+  }
+}
+const wire = (label) => JSON.parse(invokeWire('real', WIRE.find((v) => v.label === label)));
+
+eq('a public address reads at https', wire('a public address'), { origin: ALBY, wellKnown: `${ALBY}/.well-known/lnurlp/hello` });
+eq('a loopback address reads at http', wire('a loopback address is plain http (the e2e fake)'),
+  { origin: 'http://127.0.0.1:3418', wellKnown: 'http://127.0.0.1:3418/.well-known/lnurlp/stamp' });
+eq('malformed addresses read as nothing', ['no @ at all', 'two @', 'a path after the domain'].map(wire), [null, null, null]);
+eq("Alby's pay request: its callback and its comment limit", wire("Alby's pay request"),
+  { ok: true, callback: `${ALBY}/lnurlp/hello/callback`, commentAllowed: 255 });
+eq('every bad pay request is refused',
+  ['a callback on another domain', 'a minimum above 1 sat', 'not a pay request', 'an ERROR for the address'].map((l) => wire(l).ok),
+  [false, false, false, false]);
+eq('the callback URL', wire('the callback URL with the comment'), `${ALBY}/lnurlp/hello/callback?amount=1000&comment=Boost+Me+Bitch+note+stamp`);
+eq('...without a comment it may not carry', wire('no comment where the address allows fewer characters'), `${ALBY}/lnurlp/hello/callback?amount=1000`);
+eq('...keeping a query the callback has', wire('a callback that already carries a query'), `${ALBY}/cb?k=1&amount=1000`);
+eq("Alby's callback answer: the invoice and its verify link", wire("Alby's callback answer"), { ok: true, pr: CALLBACK.pr, verify: CALLBACK.verify });
+eq('every bad callback answer is refused',
+  ['no verify link (no LUD-21)', 'a verify link on another domain', 'an ERROR from the callback', 'an empty invoice'].map((l) => wire(l).ok),
+  [false, false, false, false]);
+eq('verify: unpaid, paid', [wire("Alby's unpaid verify answer"), wire('a settled verify answer')], ['unsettled', 'settled']);
+eq('verify: an error or an odd shape is "unknown", never "unpaid"',
+  ['an ERROR from the verify link', 'settled as a string', 'no settled field'].map(wire), ['unknown', 'unknown', 'unknown']);
+{
+  const { proved } = replayVectors({ vectors: WIRE, invoke: invokeWire, fail });
+  if (proved === 0) fail('the wire replay proved nothing');
+}
 
 // ---------------------------------------------------------------------------
 console.log('\n  the client ladder');

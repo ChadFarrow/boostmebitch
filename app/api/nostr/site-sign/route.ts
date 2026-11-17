@@ -5,8 +5,8 @@ import { rateLimit } from '@/lib/rate-limit';
 import { siteSecretKey, sitePubkey } from '@/lib/nostr/site-key';
 import { validateBoostTemplate } from '@/lib/site-sign-template';
 import { stampMac, requireStamp, siteEventId } from '@/lib/site-stamp-server';
-import { lnbitsConfigured, stampInvoicePaid } from '@/lib/lnbits';
-import { splitSignBody, stampGate, STAMP_SATS, STAMP_NOT_PAID, STAMP_UNCONFIRMED } from '@/lib/site-stamp';
+import { stampAddressConfigured, stampInvoicePaid } from '@/lib/stamp-address';
+import { splitSignBody, stampGate, STAMP_NOT_PAID, STAMP_UNCONFIRMED } from '@/lib/site-stamp';
 
 // Server-side signer for the SITE's own Nostr identity. Lets a signed-OUT user
 // still post their boost note to Nostr — signed by the app's key, not theirs.
@@ -17,8 +17,8 @@ import { splitSignBody, stampGate, STAMP_SATS, STAMP_NOT_PAID, STAMP_UNCONFIRMED
 // signed event, which the client then publishes to relays itself.
 //
 // THE STAMP. A note is signed only with proof that its 1-sat stamp invoice —
-// minted by /api/nostr/site-stamp for EXACTLY this event — was paid into the
-// site's own LNbits wallet. The body is `{ template, stamp }`; a bare template
+// fetched by /api/nostr/site-stamp from the site's own Lightning address for
+// EXACTLY this event — settled, by that invoice's LUD-21 verify link. The body is `{ template, stamp }`; a bare template
 // (what a page from before the stamp sends) is still signed while
 // SITE_SIGN_REQUIRE_STAMP is not `on` (phase 1), and refused with 402 after.
 // The template rules live in lib/site-sign-template.ts, shared with the stamp
@@ -98,12 +98,12 @@ async function handlePost(req: Request) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
     if (gate.kind === 'check') {
-      if (!lnbitsConfigured()) {
+      if (!stampAddressConfigured()) {
         return NextResponse.json({ error: 'note stamps are not configured' }, { status: 503 });
       }
       let paid: boolean;
       try {
-        paid = await stampInvoicePaid(gate.paymentHash, STAMP_SATS);
+        paid = await stampInvoicePaid(gate.verifyUrl);
       } catch {
         return NextResponse.json({ error: STAMP_UNCONFIRMED }, { status: 502 });
       }

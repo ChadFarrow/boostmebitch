@@ -241,3 +241,35 @@ invariant 1 gains the stamp; the check table gains `check:sitestamp`).
 
 File and function names beyond those fixed above; the exact copy within the meanings above; the
 stamp-key derivation label; the timeout values within the bounds given; the test file layout.
+
+## Change (2026-11-17, after the review): a Lightning address, not LNbits
+
+Chad: *"Remove the lnbits part."* Asked what replaces it, he chose **a Lightning address** over an NWC
+connection and over dropping the stamp. Everything above that names LNbits now reads as follows; the
+rest of the design (the token, the gate, the ladder, the phases, every failure posting one-time) is
+unchanged.
+
+- **One setting per deploy: `SITE_STAMP_LNADDRESS`** (`name@domain`). No key, no server of Chad's own.
+  `LNBITS_URL` and `LNBITS_INVOICE_KEY` are gone.
+- **Mint (site-stamp):** read `https://<domain>/.well-known/lnurlp/<name>` (LUD-16), check it is a
+  `payRequest` that takes 1000 msat, call its callback with `amount=1000` (LUD-06) and, when the address
+  allows a comment that long, `comment=<brand> note stamp`. The answer must carry `pr` for exactly 1000
+  msat and a LUD-21 `verify` link. The token binds the event id to that **verify link** (`vu`) instead of a
+  payment hash — one link per invoice, so the binding is as tight. The provider sets the invoice expiry.
+- **Check (site-sign):** GET the token's `vu`. `settled: true` signs; `settled: false` is 402 (the client
+  asks again); an error, a timeout or any other shape is 502 "could not confirm" (one-time note, no
+  re-ask). A `console.warn` names the unexpected shape, so the operator sees it in the Vercel log.
+- **Where the server may fetch (builder's call):** the callback and the verify link must be on the
+  **same origin as the configured address**. The address is operator config, so nothing a third party
+  sends can steer a server fetch, and the fetches are plain `fetch` with `redirect: 'error'`, a timeout
+  and a capped read, as the LNbits calls were. `https` only, except `http` on a loopback host (the e2e's
+  fake). A provider whose callback lives on another domain is refused with a warning — pick one that
+  keeps both on its own domain.
+- **Measured 2026-11-17 on `hello@getalby.com`:** callback `https://getalby.com/lnurlp/hello/callback`,
+  `commentAllowed: 255`, `minSendable: 1000`; the callback answers `{status:'OK', pr, verify, routes,
+  successAction}` with `verify` on `https://getalby.com/lnurlp/hello/verify/<id>`; an unpaid invoice's
+  verify answers `{status:'OK', settled:false, preimage:null, pr}`. A paid answer was not observed (no
+  payment was made); its shape is LUD-21's `settled: true`.
+- **Not checked (builder's call):** the preimage against the invoice. The provider is trusted by
+  configuration and each verify link names one invoice, so it adds no proof the link does not give; it
+  would need a BOLT11 decoder this repo does not have.

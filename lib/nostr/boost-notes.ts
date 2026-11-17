@@ -629,9 +629,9 @@ export async function publishBoostNote(
 /**
  * Publish the boost note as the SITE, for a signed-out user or the signed-in
  * "Anonymous" choice — and only with a paid NOTE STAMP (lib/site-stamp.ts):
- * `/api/nostr/site-stamp` mints a 1-sat invoice for exactly this note,
- * `payStamp` pays it on the boost's rail, and `/api/nostr/site-sign` signs once
- * the site's LNbits wallet holds the payment. ANY failure on that path signs
+ * `/api/nostr/site-stamp` gets a 1-sat invoice for exactly this note from the
+ * site's own Lightning address, `payStamp` pays it on the boost's rail, and
+ * `/api/nostr/site-sign` signs once that invoice's verify link says settled. ANY failure on that path signs
  * the SAME template with a one-time key instead, so the note always goes out;
  * `signer` and `why` say which happened, for the screen.
  *
