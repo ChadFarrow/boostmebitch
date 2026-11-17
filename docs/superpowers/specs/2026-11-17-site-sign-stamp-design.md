@@ -304,8 +304,10 @@ The design that follows:
 - **The wallet pays exactly the price the page read from its own note** (`payStampInvoice(rail, bolt11,
   sats)`), so a stamp route that overcharges is still never paid. The server checks the invoice against
   the same price first.
-- **Added on top of the boost, never taken from the artists' share** (builder's call: Chad answered the
-  other two questions and did not overrule the recommendation). Taking it from the split would put the
+- **Added on top of the boost, never taken from the artists' share.** First the builder's call; then Chad
+  confirmed it: posting from the site's account is a service, and *"I'm fine treating that as a fee on top
+  of the boost. Plus this is anti-spam prevention."* He noted that it departs from how his apps normally
+  work, and that the stamp may suit his other apps later (not now: they see less use). Taking it from the split would put the
   site in every value block.
 - **Copy:** signed out, "for 1% of the boost (at least 1 sat) plus a small network fee after the boost";
   Anonymous, "1% of the boost + network fee." ("+ a small network fee" took a second line at 1280 px
