@@ -36,7 +36,7 @@
 // URL, and a genuinely repeated pair (that feed writes 1770 entries of which
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
-import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
+import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
 import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -751,6 +751,132 @@ console.log('\nA matching publisher feed is shown first, above PI\'s leader');
   const invoke = (impl, v) => {
     try {
       return ser(ids((impl === 'real' ? rankPublishersFirst : naive)(...v.args)));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  for (const v of vectors) {
+    const got = invoke('real', v);
+    if (got === ser(v.expect)) ok(v.label);
+    else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+  }
+  replayVectors({ vectors, invoke, fail });
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nWhich search choice lists a publisher: what its feed publishes');
+// ---------------------------------------------------------------------------
+{
+  // Chad, 2026-11-16: "pubfeeds should show up for whatever they are for". Two
+  // functions decide it, and both fail SILENTLY:
+  //
+  //   `parsePublisherMediums` reads the `medium` of a publisher's remoteItems.
+  //   Read a podroll entry or a live item's current song and a music publisher
+  //   is listed under PODCASTS for a show it only recommends.
+  //
+  //   `matchesSearchType` puts a publisher under each choice one of those
+  //   mediums matches. The obvious version is the one on main before this: a
+  //   publisher is a residual "podcast", so a music publisher sits under
+  //   PODCASTS and is absent from MUSIC, where somebody looks for an artist.
+  //
+  // FIXTURES FROM THE WIRE, the remoteItem lines verbatim, read 2026-11-16:
+  // Longy's (headstarts.uk, 24 children, all `music`), The Doerfels'
+  // (doerfelverse.com, a podroll of 7 plus 23 children: 18 `music`, 1 `podcast`,
+  // 4 with no medium) and ChadF's playlist publisher (14 `musicL`).
+  const wrap = (inner) => '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<rss xmlns:podcast="https://podcastindex.org/namespace/1.0" version="2.0">\n  <channel>\n'
+    + '    <podcast:medium>publisher</podcast:medium>\n' + inner + '\n  </channel>\n</rss>';
+  const LONGY_XML = wrap([
+    '        <podcast:remoteItem feedGuid="c5f25062-40b8-4ac4-88d3-a2c3af1f7310" feedUrl="https://headstarts.uk/msp/longy/Healing Hands/Healing_Hands.xml" medium="music" feedImg="https://headstarts.uk/msp/longy/Healing%20Hands/Healing_Fc.jpg">Healing Hands</podcast:remoteItem>',
+    '        <podcast:remoteItem feedGuid="337c3158-cd40-5011-aa2c-05f99b095b89" feedUrl="https://headstarts.uk/msp/longy/Auto Inter Woven Minds/auto inter woven minds.xml" medium="music" feedImg="https://headstarts.uk/msp/longy/Auto%20Inter%20Woven%20Minds/AUTO%20INTERWOVEN%20MINDS%20cover.jpg">Auto Inter Woven Minds</podcast:remoteItem>',
+  ].join('\n'));
+  const DOERFELS_PODROLL = [
+    '    <podcast:podroll>',
+    '      <podcast:remoteItem feedGuid="5bb8f186-2460-54dc-911d-54f642e8adf6" feedUrl="https://www.sirtjthewrathful.com/wp-content/uploads/2023/08/CityBeach.xml"/>',
+    '      <podcast:remoteItem feedGuid="08604071-83cc-5810-bec2-bea0f0cd0033" feedUrl="https://www.doerfelverse.com/feeds/ben-doerfel.xml"/>',
+    '    </podcast:podroll>',
+  ].join('\n');
+  const DOERFELS_XML = wrap([
+    DOERFELS_PODROLL,
+    '    <podcast:remoteItem medium="music" feedGuid="2b62ef49-fcff-523c-b81a-0a7dde2b0609" feedUrl="https://www.doerfelverse.com/feeds/music-from-the-doerfelverse.xml" feedImg="https://www.doerfelverse.com/art/carol-of-the-bells.png"/>',
+    '    <podcast:remoteItem medium="podcast" feedGuid="41aace28-8679-5ef1-9958-75cf76c2b5f0" feedUrl="https://www.doerfelverse.com/feeds/intothedoerfelverse.xml" feedImg="https://www.doerfelverse.com/art/v4v-music-podcast.png"/>',
+    '    <podcast:remoteItem feedGuid="75b2ec36-bf48-5950-a104-b77cafc8356b" feedUrl="https://www.doerfelverse.com/feeds/them.xml" feedImg="https://www.doerfelverse.com/art/them.png"/>',
+  ].join('\n'));
+  const CHADF_XML = wrap(
+    '    <podcast:remoteItem medium="musicL" rel="curator" feedGuid="30b31f6c-6b44-4a14-a525-81a8fcd7cb19" feedUrl="https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/IAM-music-playlist.xml" feedImg="https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/IAM-music-playlist.webp"/>',
+  );
+  const ALBUM = '    <podcast:remoteItem medium="music" feedGuid="c5f25062-40b8-4ac4-88d3-a2c3af1f7310" feedUrl="https://example.com/album.xml"/>';
+
+  const naive = {
+    // What somebody writes: every `medium="…"` in the document. It agrees on all
+    // three real feeds, which is what makes it tempting.
+    mediums: (xml) => [...new Set([...xml.matchAll(/medium="([^"]*)"/g)].map((m) => m[1].toLowerCase()))],
+    // The code on main before this: a publisher is in the residual bucket.
+    matches: (p, type) => {
+      const music = (p.medium ?? '').toLowerCase() === 'music';
+      switch (type) {
+        case 'all': return true;
+        case 'music': return music;
+        case 'playlist': return isPlaylistMedium(p);
+        case 'podcast': return !music && !isPlaylistMedium(p);
+        default: return false;
+      }
+    },
+  };
+  const real = { mediums: parsePublisherMediums, matches: matchesSearchType };
+
+  const vectors = [];
+  const vec = (kind, label, args, expect, opts = {}) => vectors.push({ kind, label, args, expect, ...opts });
+
+  // ── parsePublisherMediums ───────────────────────────────────────────────
+  vec('mediums', 'Longy\'s publisher lists music', [LONGY_XML], ['music'], { alsoNaive: true });
+  vec('mediums', 'The Doerfels\' lists music and a podcast; an unnamed child adds nothing', [DOERFELS_XML], ['music', 'podcast'], { alsoNaive: true });
+  vec('mediums', 'ChadF\'s lists playlists, lower-cased', [CHADF_XML], ['musicl'], { alsoNaive: true });
+  vec('mediums', 'a feed that names no medium answers none', [wrap(DOERFELS_PODROLL)], [], { alsoNaive: true });
+  // The two scopes. Real podroll entries above carry no medium, so these name
+  // one — the spec allows it, and the entry is a recommendation, not a child.
+  vec('mediums', 'a podroll entry is a recommended show, not a child', [wrap([
+    '    <podcast:podroll>',
+    '      <podcast:remoteItem medium="podcast" feedGuid="41aace28-8679-5ef1-9958-75cf76c2b5f0" feedUrl="https://www.doerfelverse.com/feeds/intothedoerfelverse.xml"/>',
+    '    </podcast:podroll>',
+    ALBUM,
+  ].join('\n'))], ['music']);
+  vec('mediums', 'a live item\'s current song is not a child', [wrap([
+    '    <podcast:remoteItem medium="podcast" feedGuid="41aace28-8679-5ef1-9958-75cf76c2b5f0" feedUrl="https://www.doerfelverse.com/feeds/intothedoerfelverse.xml"/>',
+    '    <podcast:liveItem status="live" start="2026-11-16T20:00:00Z">',
+    '  ' + ALBUM,
+    '    </podcast:liveItem>',
+  ].join('\n'))], ['podcast']);
+  vec('mediums', 'an x-medium decoy ahead of the real attribute is not read', [wrap(
+    '    <podcast:remoteItem x-medium="podcast" medium="music" feedGuid="c5f25062-40b8-4ac4-88d3-a2c3af1f7310" feedUrl="https://example.com/album.xml"/>',
+  )], ['music']);
+  vec('mediums', 'a value that is not one word is dropped', [wrap(
+    '    <podcast:remoteItem medium="music video" feedGuid="c5f25062-40b8-4ac4-88d3-a2c3af1f7310" feedUrl="https://example.com/album.xml"/>',
+  )], []);
+
+  // ── matchesSearchType on a publisher row ────────────────────────────────
+  const pub = (publisherMediums) => ({ medium: 'publisher', ...(publisherMediums ? { publisherMediums } : {}) });
+  vec('matches', 'a music publisher is under MUSIC', [pub(['music']), 'music'], true);
+  vec('matches', 'a music publisher is not under PODCASTS', [pub(['music']), 'podcast'], false);
+  vec('matches', 'a playlist publisher is under PLAYLISTS', [pub(['musicl']), 'playlist'], true);
+  vec('matches', 'a playlist publisher is not under PODCASTS', [pub(['musicl']), 'podcast'], false);
+  vec('matches', 'music and a podcast: under MUSIC', [pub(['music', 'podcast']), 'music'], true);
+  vec('matches', 'music and a podcast: under PODCASTS too', [pub(['music', 'podcast']), 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'a playlist publisher is not under MUSIC', [pub(['musicl']), 'music'], false, { alsoNaive: true });
+  vec('matches', 'a video publisher is under PODCASTS, the residual', [pub(['video']), 'podcast'], true, { alsoNaive: true });
+  // Unknown — unread in time, or naming nothing — keeps the old place.
+  vec('matches', 'unknown: still under PODCASTS', [pub(), 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'unknown: not claimed as MUSIC', [pub(), 'music'], false, { alsoNaive: true });
+  vec('matches', 'read and naming none: still under PODCASTS', [pub([]), 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'a publisher of publishers says nothing: under PODCASTS', [pub(['publisher']), 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'a publisher of publishers is not MUSIC', [pub(['publisher']), 'music'], false, { alsoNaive: true });
+  vec('matches', 'every publisher is under ALL', [pub(['music']), 'all'], true, { alsoNaive: true });
+  vec('matches', 'no publisher is a person', [pub(['music']), 'npub'], false, { alsoNaive: true });
+
+  const ser = (v) => JSON.stringify(v);
+  const invoke = (impl, v) => {
+    try {
+      return ser((impl === 'real' ? real : naive)[v.kind](...v.args));
     } catch (e) {
       return `threw ${(e && e.message) || e}`;
     }

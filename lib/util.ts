@@ -1857,14 +1857,29 @@ export function parseSearchType(v: string | null | undefined): SearchType {
  * So the test is "not music, and not a list medium", which leaves a mediumless
  * feed findable under the one chip where somebody would look for it.
  *
- * A `medium=publisher` collection lands there too. That is a mild mislabel and
- * the right trade — the row carries its own `▸ ALBUMS` stamp, and the
- * alternative is a feed reachable under no chip but ALL.
+ * **A `medium=publisher` feed goes under the choice it is FOR** — Chad,
+ * 2026-11-16: "pubfeeds should show up for whatever they are for". A publisher
+ * holds no content of its own; its remoteItems name the mediums it lists
+ * (`publisherMediums`, read from its RSS by the route), and it matches a choice
+ * when ANY of them does. Longy's lists only `music`, so it is under MUSIC and no
+ * longer under PODCASTS; The Doerfels' lists `music` and one `podcast`, so it is
+ * under both; ChadF's lists `musicL`, so it is under PLAYLISTS. A child that is
+ * itself a `publisher` says nothing about the content and is skipped.
+ *
+ * A publisher whose mediums are UNKNOWN — the feed was not read in time, or
+ * names none — stays in the PODCASTS residual bucket, where it always was. That
+ * is the same rule as a mediumless feed: the one choice where it can still be
+ * found, never no choice at all.
  *
  * `'npub'` matches nothing: no feed is a person, and this function is only ever
  * asked about feeds.
  */
-export function matchesSearchType(p: Pick<Podcast, 'medium'>, type: SearchType): boolean {
+export function matchesSearchType(p: Pick<Podcast, 'medium' | 'publisherMediums'>, type: SearchType): boolean {
+  if (p.medium === 'publisher' && type !== 'all') {
+    const known = (p.publisherMediums ?? []).filter((m) => m.toLowerCase() !== 'publisher');
+    if (!known.length) return type === 'podcast';
+    return known.some((medium) => matchesSearchType({ medium }, type));
+  }
   switch (type) {
     case 'all': return true;
     case 'music': return isMusicMedium(p);
