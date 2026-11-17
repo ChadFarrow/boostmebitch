@@ -1,7 +1,7 @@
 import { getPublisherAlbumUrls } from '@/lib/musicl-resolver';
 import { resolveFeedUrls } from '@/lib/feed-resolve';
 import { createBoundedCache } from '@/lib/bounded-cache';
-import { feedUrlKey, filterPlaylistsByQuery, communityPlaylistToPodcast } from '@/lib/util';
+import { feedUrlKey, matchPlaylistsByQuery, communityPlaylistToPodcast } from '@/lib/util';
 import { MUSICL_PUBLISHER_URL, COMMUNITY_PLAYLIST_URLS, COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
 import { communityStoreConfigured, listPlaylists } from '@/lib/community/store';
 import { summaryOf } from '@/lib/community/http';
@@ -136,9 +136,10 @@ export interface CuratedHits {
 }
 
 /**
- * Curated playlists whose title or author matches every term of `query`.
+ * Curated playlists whose title or author matches every term of `query`,
+ * exact matches first, then the ones a typo away.
  *
- * `filterPlaylistsByQuery` is the same matcher the PI roster lane uses, so a
+ * `matchPlaylistsByQuery` is the same matcher the PI roster lane uses, so a
  * curated playlist matches exactly when an indexed one with the same title
  * would. Never throws: every failure is an empty, unanswered lane.
  */
@@ -152,7 +153,7 @@ async function searchCommunityStore(query: string, limit: number): Promise<Podca
   if (!COMMUNITY_PLAYLISTS_ON || !communityStoreConfigured()) return [];
   try {
     const rows = await listPlaylists({ limit: 200 });
-    return filterPlaylistsByQuery(rows.map((r) => communityPlaylistToPodcast(summaryOf(r))), query, limit);
+    return matchPlaylistsByQuery(rows.map((r) => communityPlaylistToPodcast(summaryOf(r))), query, limit);
   } catch {
     return [];
   }
@@ -173,8 +174,8 @@ async function searchRoster(query: string, limit: number): Promise<CuratedHits> 
         inFlight,
         new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), CURATED_COLD_WAIT_MS); }),
       ]).finally(() => { if (timer) clearTimeout(timer); });
-      return { feeds: filterPlaylistsByQuery(feeds ?? [], query, limit), answered: feeds != null };
+      return { feeds: matchPlaylistsByQuery(feeds ?? [], query, limit), answered: feeds != null };
     }
   }
-  return { feeds: filterPlaylistsByQuery(hit.value, query, limit), answered: true };
+  return { feeds: matchPlaylistsByQuery(hit.value, query, limit), answered: true };
 }
