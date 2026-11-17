@@ -3,7 +3,7 @@
 
 import type { Event } from 'nostr-tools';
 import type { Db } from './db.ts';
-import { classify, indexableTags, podcastRefs, trackedFrom } from './ingest.ts';
+import { classify, indexableTags, LIVE_WINDOW_SECS, liveHeadAddress, podcastRefs, trackedFrom } from './ingest.ts';
 
 export interface IngestStats {
   stored: number;
@@ -60,6 +60,7 @@ export async function ingestEvent(db: Db, event: Event, stats: IngestStats): Pro
            where id = any($1::text[]) and pubkey = $2 and deleted_at is null`,
         [action.targets, event.pubkey],
       );
+      if (res.rowCount) await retireLiveHeads(client, action.targets, event.pubkey);
       await client.query('commit');
       stats.deleted += res.rowCount ?? 0;
       return;
@@ -119,6 +120,14 @@ export async function ingestEvent(db: Db, event: Event, stats: IngestStats): Pro
       [event.id, event.pubkey, event.kind, event.created_at, event.content, JSON.stringify(event.tags), event.sig],
     );
 
+    // Outside the `rowCount` test on purpose: a version this index already
+    // holds is offered again on every live re-subscribe (7 days, newest 500 per
+    // relay), and that is what repairs a head missed while an old process was
+    // still ingesting during a deploy. The upsert only ever moves a head
+    // forward in `created_at`, so offering one twice changes nothing.
+    const liveAddr = liveHeadAddress(event);
+    if (liveAddr !== null) await offerLiveHead(client, event.id, liveAddr);
+
     if (ins.rowCount) {
       const tags = indexableTags(event);
       if (tags.length) {
@@ -176,6 +185,83 @@ async function lockIds(client: { query: Db['query'] }, ids: string[]): Promise<v
        from unnest($1::text[]) as id order by id`,
     [ids],
   );
+}
+
+/**
+ * Make this stored version the head of its broadcast when it is newer than the
+ * current head (007_live_heads.sql).
+ *
+ * The row is read back from `events` rather than taken from the wire, so a
+ * version stored tombstoned — its kind:5 arrived first — never becomes a head.
+ * On equal `created_at` the existing head stays: the query this table replaced
+ * broke that tie arbitrarily, so either answer is the old behaviour.
+ */
+async function offerLiveHead(client: { query: Db['query'] }, eventId: string, addr: string): Promise<void> {
+  await client.query(
+    `insert into live_heads (pubkey, addr, event_id, created_at)
+       select e.pubkey, $2, e.id, e.created_at
+         from events e
+        where e.id = $1 and e.kind = 30311 and e.deleted_at is null
+     on conflict (pubkey, addr) do update
+       set event_id = excluded.event_id, created_at = excluded.created_at
+       where live_heads.created_at < excluded.created_at`,
+    [eventId, addr],
+  );
+}
+
+/**
+ * A kind:5 just tombstoned some of `ids`. Any of them that was a broadcast's
+ * head stops being one, and the next-newest servable version that is still
+ * live takes its place — which is what the old query returned, because it
+ * deduped over the surviving versions at read time.
+ *
+ * The search walks the HOST's surviving versions newest-first on
+ * `events_author_kind_created_idx` and stops at the first one whose first `d`
+ * is this address and whose status is servable. It does NOT start from every
+ * version carrying that `d` value: production holds one broadcast with ~91,000
+ * versions, and reading all of them inside the indexer's transaction would be
+ * the old read-time query again, on the write path.
+ *
+ * It looks back only `LIVE_WINDOW_SECS`, which bounds the walk for a busy host
+ * and changes no answer: the route never serves a head older than that window,
+ * and the window only moves forward. With nothing servable inside it the
+ * broadcast simply has no head until its next version arrives.
+ *
+ * The `@>` test is a pre-filter on the row already in hand, so the per-row
+ * `event_tags` lookup runs only for versions that carry this address at all.
+ * It is necessary, never sufficient — containment ignores order inside a tag —
+ * and the exact first-`d` test still follows. Measured on production for the
+ * host above (19,914 versions in the window, 30 broadcasts), when nothing
+ * qualifies: 112,817 pages and 16.6 s without it, 13,439 pages and 1.6 s with
+ * it; the ordinary case reads 17 pages. `or e.id = $2` keeps the one shape it
+ * would miss: a d-less version, whose address is its own id.
+ */
+async function retireLiveHeads(client: { query: Db['query'] }, ids: string[], pubkey: string): Promise<void> {
+  const gone = await client.query<{ addr: string }>(
+    `delete from live_heads where event_id = any($1::text[]) and pubkey = $2 returning addr`,
+    [ids, pubkey],
+  );
+  const since = Math.floor(Date.now() / 1000) - LIVE_WINDOW_SECS;
+  for (const { addr } of gone.rows) {
+    await client.query(
+      `insert into live_heads (pubkey, addr, event_id, created_at)
+         select e.pubkey, $2::text, e.id, e.created_at
+           from events e
+          where e.pubkey = $1 and e.kind = 30311 and e.deleted_at is null and e.created_at >= $3
+            and (e.tags @> jsonb_build_array(jsonb_build_array('d', $2::text)) or e.id = $2::text)
+            and coalesce((select t.value from event_tags t
+                           where t.event_id = e.id and t.name = 'd'
+                           order by t.pos limit 1), e.id) = $2::text
+            and exists (select 1 from jsonb_array_elements(e.tags) tag
+                         where tag->>0 = 'status' and tag->>1 in ('live', 'planned'))
+          order by e.created_at desc
+          limit 1
+       on conflict (pubkey, addr) do update
+         set event_id = excluded.event_id, created_at = excluded.created_at
+         where live_heads.created_at < excluded.created_at`,
+      [pubkey, addr, since],
+    );
+  }
 }
 
 async function queuePodcastRefs(client: { query: Db['query'] }, event: Event): Promise<void> {
