@@ -127,10 +127,9 @@ const nextConfig = {
           // HSTS. Vercel sets this automatically on *.vercel.app but NOT on a
           // custom apex, which is where this app actually serves from — so
           // without it the canonical domain had no HSTS at all. Two years,
-          // subdomains included: pay.boostmebitch.com (the LNbits instance the
-          // lnurlp rewrite points at) should never be reachable over plain http
-          // either. No `preload` — that's a one-way door and belongs in a
-          // deliberate submission, not a config edit.
+          // subdomains included: no subdomain of ours should be reachable over
+          // plain http either. No `preload` — that's a one-way door and belongs
+          // in a deliberate submission, not a config edit.
           {
             key: 'Strict-Transport-Security',
             value: 'max-age=63072000; includeSubDomains',
@@ -144,12 +143,11 @@ const nextConfig = {
           // variant still cuts off any window a THIRD party opens us in, which
           // is the part worth having.
           { key: 'Cross-Origin-Opener-Policy', value: 'same-origin-allow-popups' },
-          // Deliberately NO Cross-Origin-Resource-Policy. Two of our endpoints
-          // exist to be read cross-origin — `.well-known/nostr.json` (NIP-05
-          // verification, by every Nostr client) and `.well-known/keysend`
-          // (by other podcast apps' payers) — and both send
-          // `Access-Control-Allow-Origin: *` on purpose. CORP is scoped to
-          // no-cors subresource loads so it shouldn't reach a CORS fetch, but
+          // Deliberately NO Cross-Origin-Resource-Policy. `.well-known/nostr.json`
+          // exists to be read cross-origin (NIP-05 verification, by every Nostr
+          // client) and sends `Access-Control-Allow-Origin: *` on purpose. CORP
+          // is scoped to no-cors subresource loads so it shouldn't reach a CORS
+          // fetch, but
           // the upside here is near zero (this app serves no sensitive
           // subresources to embed) and the downside is silently breaking a
           // verification path we can only observe from other people's clients.

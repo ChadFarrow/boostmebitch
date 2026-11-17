@@ -3453,8 +3453,9 @@ export function redirectLegs(args: {
 }
 
 /**
- * What a boost note says about the TRACK a boost paid — the `🎵` line and the
- * track's NIP-73 identifiers — or `null` when it says nothing.
+ * What a boost note says about the TRACK a boost paid — its title and artist,
+ * which `boostSentence` puts in the note's one sentence, and the track's NIP-73
+ * identifiers — or `null` when it says nothing.
  *
  * A boost pressed during a song pays the song (a `<podcast:valueTimeSplit>`
  * window, or a live show's Split Kit block), and the boostagram names it in
@@ -3472,7 +3473,7 @@ export function redirectLegs(args: {
  *   title — a single-track release often titles its feed after the song.
  * - **Feed text is flattened and capped.** The title and artist are strings a
  *   feed wrote about itself, and the note may be signed by the SITE through an
- *   unauthenticated route with a 2000-character body; a newline would let a
+ *   unauthenticated route with a capped body; a newline would let a
  *   feed forge a second line of the note.
  * - **An identifier the note already carries is not repeated** — a `musicL`
  *   playlist row already IS the track, so its guids are the note's own.
@@ -3480,8 +3481,10 @@ export function redirectLegs(args: {
  *   a different item, and the site-sign route rejects a tag value over 512.
  */
 export interface BoostNoteTrack {
-  /** `🎵 <title>[ — <artist>]`, or null when there is no title to name. */
-  line: string | null;
+  /** The song's title, flattened and capped — null when there is none to name. */
+  title: string | null;
+  /** Its artist, the same way; absent without a title or when it repeats it. */
+  artist?: string;
   /** The track's parent feed guid, when it is not the note's show guid. */
   feedGuid?: string;
   /** The track's item guid, when it is not the note's episode guid. */
@@ -3517,15 +3520,199 @@ export function boostNoteTrack(args: {
   const title = noteTrackText(split.title);
   let artist = noteTrackText(split.artist);
   if (artist.toLowerCase() === title.toLowerCase()) artist = '';
-  const line = title ? `🎵 ${title}${artist ? ` — ${artist}` : ''}` : null;
   const feedGuid = noteTrackGuid(split.remoteItem?.feedGuid, args.showGuid);
   const itemGuid = noteTrackGuid(split.remoteItem?.itemGuid, args.episodeGuid);
-  if (!line && !feedGuid && !itemGuid) return null;
+  if (!title && !feedGuid && !itemGuid) return null;
   return {
-    line,
+    title: title || null,
+    ...(title && artist ? { artist } : {}),
     ...(feedGuid ? { feedGuid } : {}),
     ...(itemGuid ? { itemGuid } : {}),
   };
+}
+
+/**
+ * The item's OWN feed guid, when it lives in a different feed from the one
+ * listing it — a row of a `*L` playlist — or `undefined` when the container is
+ * its parent.
+ *
+ * Narrow, the way `queueShowFor` and `payableValue` refuse: BOTH guids must be
+ * present to disagree. An item with no guid of its own keeps the container, and
+ * so does a container with none — a feed publishing no `<podcast:guid>` is
+ * still the parent of its own episodes.
+ *
+ * **Except a `*L` playlist, which has no episodes of its own** (it publishes no
+ * `<item>`), so a row that names a feed is from that feed even when the
+ * playlist's own guid is unknown. That is ordinary, not an outage: the ITDV
+ * playlist opened by its `…/main/docs/…` URL is not the URL Podcast Index holds
+ * (`…/refs/heads/main/docs/…`), and `/api/playlist` answers a preview with no
+ * guid, in production as in a test (measured 2026-11-16). The narrow rule then
+ * tagged no feed at all, never started the artist lookup, and printed the
+ * playlist's author — the CURATOR — as the song's artist.
+ *
+ * The boost note asks it three times, because each is the container-as-parent
+ * mistake in a permanent kind:1: the sentence ("→ ITDV music playlist" named the
+ * curator for a song that paid The Doerfels), the `i` tags (the playlist's guid
+ * paired with an item from another feed, so no reader could resolve it), and the
+ * banner art (the playlist's cover offered for the track).
+ */
+export function itemFeedGuid(
+  podcast: Pick<Podcast, 'podcastGuid' | 'medium'>,
+  episode?: Pick<Episode, 'podcastGuid'> | null,
+): string | undefined {
+  const own = episode?.podcastGuid;
+  if (!own) return undefined;
+  if (!podcast.podcastGuid) return isPlaylistMedium(podcast) ? own : undefined;
+  return own !== podcast.podcastGuid ? own : undefined;
+}
+
+/**
+ * The one sentence a boost note says about what was boosted:
+ *
+ *     <sender> boosted N sats to <what>[ by <artist>][ from <where>][ via <app>]
+ *
+ * **It is a SHARED format now**, not this app's alone: PC20-Nostr's
+ * `pc20-boost-notes.md` (#51, merged 2026-11-17) made it every one of Chad's
+ * apps' sentence, from this one. A change in wording is a PR there first.
+ *
+ * WHAT GETS THE SATS COMES FIRST, WHERE IT WAS FOUND SECOND. The note used to
+ * say `boosted N sats → <show>` and put the episode, then the song, on lines of
+ * their own, so the arrow pointed at the show whatever was paid. Chad, on
+ * rev.hodl's note (b1d67bdd…, 2026-11-16), which read "boosted 121 sats → ITDV
+ * music playlist / 📻 Sing For You" while the playlist was paid nothing: *"if
+ * it said … boosted 121 sats to Sing For You from the ITDV music playlist,
+ * maybe it would make a little more sense"* — and the wording was never worked
+ * on, so the pattern is every note's, not the playlist's alone.
+ *
+ * - **A song inside the item** (`song`, from `boostNoteTrack`, so only when a
+ *   track leg settled) is the WHAT, and the item is where it played:
+ *   `to <song> by <artist> from <episode> of <show>`.
+ * - **An item** is the what and the show is the where. On a feed whose rows are
+ *   songs (`playsAsTracks`) it says who made it: a playlist row's artist comes
+ *   from the caller (`itemArtist`, looked up), an album track's from the album's
+ *   own `author`. A playlist's author is its curator and never a `by`. An
+ *   EPISODE never says `by` — a podcast's author is its host.
+ * - **No item**, or one with no title, is a boost to the show — and an ALBUM
+ *   says who made it (Chad, 2026-11-16: *"ChadF boosted 100 sats to Disco Swag
+ *   - The Album by The Doerfels"*).
+ * - **`by` is dropped only when it equals the WHAT** (the format's rule 6), so
+ *   `to Kurtis by kurtis` reads `to Kurtis`, while a track on a self-titled
+ *   album keeps it: `to Sing For You by The Doerfels from The Doerfels`.
+ * - **`via <app>` ends every sentence** (rule 7; Chad: *"Yes, add the app."*):
+ *   the boostagram's `app_name`, so the note names the app the payment named.
+ * - The amount is the one the sender meant (invariant 7), never the settled sum.
+ *
+ * Every name is a string a feed wrote about itself, and this sentence may be
+ * signed by the SITE, so each goes through `noteTrackText`: a newline would let
+ * a feed forge a line of the note. A part that comes out empty is left out with
+ * its word, so the sentence never reads "to " or "from " with nothing after it.
+ */
+export function boostSentence(a: {
+  sender?: string;
+  sats: number;
+  show: Pick<Podcast, 'title' | 'author' | 'medium' | 'podcastGuid'>;
+  item?: Pick<Episode, 'title' | 'podcastGuid'> | null;
+  /** A playlist row's artist, looked up — display only. */
+  itemArtist?: string;
+  /** The song inside the item a track leg paid. */
+  song?: { title: string; artist?: string } | null;
+  /** The app the listener used — the boostagram's `app_name`. */
+  via?: string;
+}): string {
+  const sender = noteTrackText(a.sender);
+  const showTitle = noteTrackText(a.show.title);
+  const itemTitle = noteTrackText(a.item?.title);
+  const songTitle = noteTrackText(a.song?.title);
+  const tracks = playsAsTracks(a.show);
+  // A music feed's author is who made it — except a playlist's, the curator's.
+  const albumArtist = tracks && !isPlaylistMedium(a.show) ? noteTrackText(a.show.author ?? undefined) : '';
+  let what: string;
+  let by = '';
+  let where = '';
+  if (songTitle) {
+    what = songTitle;
+    by = noteTrackText(a.song?.artist);
+    where = itemTitle && showTitle ? `${itemTitle} of ${showTitle}` : itemTitle || showTitle;
+  } else if (itemTitle) {
+    what = itemTitle;
+    // A playlist's author is its CURATOR: a row says "by" only when its own
+    // artist was looked up, and a row naming no feed of its own says nothing.
+    if (tracks) {
+      by = a.item && itemFeedGuid(a.show, a.item) ? noteTrackText(a.itemArtist) : albumArtist;
+    }
+    where = showTitle;
+  } else {
+    what = showTitle;
+    by = albumArtist;
+  }
+  // No "by" without a "to": "boosted 100 sats by X" names X as the booster.
+  if (!what || by.toLowerCase() === what.toLowerCase()) by = '';
+  const via = noteTrackText(a.via);
+  return `${sender ? `${sender} boosted` : 'Boosted'} ${a.sats} sats`
+    + (what ? ` to ${what}` : '')
+    + (by ? ` by ${by}` : '')
+    + (where ? ` from ${where}` : '')
+    + (via ? ` via ${via}` : '');
+}
+
+/**
+ * Does a note's body already end a line with ` via <client>`? Then the card's
+ * own `via <client>` label would say it a second time.
+ *
+ * The shared boost-note format (PC20-Nostr `pc20-boost-notes.md`, rule 7) ends
+ * every sentence with ` via <app>`, and this app's notes carry the same name in
+ * their `client` tag. Only the END of a line counts, ignoring case: a message
+ * that mentions "via X" mid-line is not the sentence, and a receiver bot's
+ * `📱 via Fountain` names a different app than its own `client` tag. A plain
+ * string test, never a RegExp built from the tag — the tag is anyone's text.
+ */
+export function noteNamesClient(content: string, client: string | null | undefined): boolean {
+  const want = ` via ${(client ?? '').trim()}`.toLowerCase();
+  if (want === ' via ') return false;
+  return content.split('\n').some((line) => line.trimEnd().toLowerCase().endsWith(want));
+}
+
+/**
+ * BOOST ALL's own body (`contentOverride`): the sentence in `boostSentence`'s
+ * order — the sats, WHAT they went to, then where — and one bullet per paid
+ * track. Every name goes through `noteTrackText`, as in `boostSentence`: for a
+ * signed-out user the SITE signs this note, so a show or track title carrying
+ * a newline would add a line of its own choosing under the site's key. `each`
+ * is the per-track breakdown the modal computes from numbers alone, and it
+ * comes before ` via <app>` (the shared format's rule 9).
+ */
+/**
+ * The most tracks a BOOST ALL note lists by name. The list is the one part of
+ * that body with no maximum of its own — one bullet per paid track, and a DJ
+ * mix pays dozens — while the site-sign route refuses the WHOLE note past its
+ * limit, after the sats have moved. So the note names the first twenty and
+ * counts the rest; its sentence keeps the full count.
+ */
+export const BOOST_ALL_LISTED_MAX = 20;
+
+export function boostAllLines(a: {
+  sender?: string;
+  sats: number;
+  count: number;
+  showTitle?: string;
+  each: string;
+  tracks: string[];
+  /** The app the listener used — the summary boostagram's `app_name`. */
+  via?: string;
+}): string[] {
+  const sender = noteTrackText(a.sender);
+  const via = noteTrackText(a.via);
+  const show = noteTrackText(a.showTitle);
+  const tracks = a.tracks.map(noteTrackText).filter(Boolean);
+  const sentence = `${sender ? `${sender} boosted` : 'Boosted'} ${a.sats} sats`
+    + ` to ${a.count} track${a.count === 1 ? '' : 's'}`
+    + (show ? ` from ${show}` : '')
+    + a.each
+    + (via ? ` via ${via}` : '');
+  if (!tracks.length) return [sentence];
+  const listed = tracks.slice(0, BOOST_ALL_LISTED_MAX).map((t) => `• ${t}`);
+  const more = tracks.length - BOOST_ALL_LISTED_MAX;
+  return [sentence, '', ...listed, ...(more > 0 ? [`• and ${more} more`] : [])];
 }
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
