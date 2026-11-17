@@ -125,7 +125,8 @@
     "check:deletions": "node --experimental-strip-types scripts/check-note-deletions.mjs",
     "check:opml": "node --experimental-strip-types scripts/check-opml.mjs",
     "check:moved": "node --experimental-strip-types scripts/check-moved.mjs",
-    "e2e:moved": "node scripts/e2e-moved.mjs"
+    "e2e:moved": "node scripts/e2e-moved.mjs",
+    "e2e:mentionlinks": "node scripts/e2e-mention-links.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
