@@ -375,6 +375,9 @@ function formatContent(args: PublishArgs, shed: Shed = 'none'): string {
     item: episode,
     itemArtist: keepBy ? args.itemArtist : undefined,
     song: track?.title ? { title: track.title, artist: track.artist } : null,
+    // The name the payment carried, so the note and the boostagram agree on
+    // which app the listener used (pc20-boost-notes.md rule 7).
+    via: boostagram.app_name,
   }));
   const link = podcastLandingUrl(podcast, episode);
   if (link) lines.push('', link);

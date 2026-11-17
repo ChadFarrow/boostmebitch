@@ -482,6 +482,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       showTitle: podcast.title,
       each,
       tracks: trackList,
+      via: summaryBoostagram.app_name,
     }));
     const contentOverride = lines.join('\n');
 

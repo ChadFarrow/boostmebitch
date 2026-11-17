@@ -3494,7 +3494,11 @@ export function itemFeedGuid(
 /**
  * The one sentence a boost note says about what was boosted:
  *
- *     <sender> boosted N sats to <what>[ by <artist>][ from <where>]
+ *     <sender> boosted N sats to <what>[ by <artist>][ from <where>][ via <app>]
+ *
+ * **It is a SHARED format now**, not this app's alone: PC20-Nostr's
+ * `pc20-boost-notes.md` (#51, merged 2026-11-17) made it every one of Chad's
+ * apps' sentence, from this one. A change in wording is a PR there first.
  *
  * WHAT GETS THE SATS COMES FIRST, WHERE IT WAS FOUND SECOND. The note used to
  * say `boosted N sats → <show>` and put the episode, then the song, on lines of
@@ -3511,9 +3515,16 @@ export function itemFeedGuid(
  * - **An item** is the what and the show is the where. On a feed whose rows are
  *   songs (`playsAsTracks`) it says who made it: a playlist row's artist comes
  *   from the caller (`itemArtist`, looked up), an album track's from the album's
- *   own `author`, through `authorLine` so a feed that names itself twice says
- *   nothing. An EPISODE never says `by` — a podcast's author is its host.
- * - **No item**, or one with no title, is a boost to the show.
+ *   own `author`. A playlist's author is its curator and never a `by`. An
+ *   EPISODE never says `by` — a podcast's author is its host.
+ * - **No item**, or one with no title, is a boost to the show — and an ALBUM
+ *   says who made it (Chad, 2026-11-16: *"ChadF boosted 100 sats to Disco Swag
+ *   - The Album by The Doerfels"*).
+ * - **`by` is dropped only when it equals the WHAT** (the format's rule 6), so
+ *   `to Kurtis by kurtis` reads `to Kurtis`, while a track on a self-titled
+ *   album keeps it: `to Sing For You by The Doerfels from The Doerfels`.
+ * - **`via <app>` ends every sentence** (rule 7; Chad: *"Yes, add the app."*):
+ *   the boostagram's `app_name`, so the note names the app the payment named.
  * - The amount is the one the sender meant (invariant 7), never the settled sum.
  *
  * Every name is a string a feed wrote about itself, and this sentence may be
@@ -3530,12 +3541,16 @@ export function boostSentence(a: {
   itemArtist?: string;
   /** The song inside the item a track leg paid. */
   song?: { title: string; artist?: string } | null;
+  /** The app the listener used — the boostagram's `app_name`. */
+  via?: string;
 }): string {
   const sender = noteTrackText(a.sender);
   const showTitle = noteTrackText(a.show.title);
   const itemTitle = noteTrackText(a.item?.title);
   const songTitle = noteTrackText(a.song?.title);
   const tracks = playsAsTracks(a.show);
+  // A music feed's author is who made it — except a playlist's, the curator's.
+  const albumArtist = tracks && !isPlaylistMedium(a.show) ? noteTrackText(a.show.author ?? undefined) : '';
   let what: string;
   let by = '';
   let where = '';
@@ -3548,19 +3563,20 @@ export function boostSentence(a: {
     // A playlist's author is its CURATOR: a row says "by" only when its own
     // artist was looked up, and a row naming no feed of its own says nothing.
     if (tracks) {
-      by = a.item && itemFeedGuid(a.show, a.item)
-        ? noteTrackText(a.itemArtist)
-        : isPlaylistMedium(a.show) ? '' : noteTrackText(authorLine(a.show.title, a.show.author) ?? undefined);
+      by = a.item && itemFeedGuid(a.show, a.item) ? noteTrackText(a.itemArtist) : albumArtist;
     }
     where = showTitle;
   } else {
     what = showTitle;
+    by = albumArtist;
   }
   if (by.toLowerCase() === what.toLowerCase()) by = '';
+  const via = noteTrackText(a.via);
   return `${sender ? `${sender} boosted` : 'Boosted'} ${a.sats} sats`
     + (what ? ` to ${what}` : '')
     + (by ? ` by ${by}` : '')
-    + (where ? ` from ${where}` : '');
+    + (where ? ` from ${where}` : '')
+    + (via ? ` via ${via}` : '');
 }
 
 /**
@@ -3569,7 +3585,8 @@ export function boostSentence(a: {
  * track. Every name goes through `noteTrackText`, as in `boostSentence`: for a
  * signed-out user the SITE signs this note, so a show or track title carrying
  * a newline would add a line of its own choosing under the site's key. `each`
- * is the per-track breakdown the modal computes from numbers alone.
+ * is the per-track breakdown the modal computes from numbers alone, and it
+ * comes before ` via <app>` (the shared format's rule 9).
  */
 export function boostAllLines(a: {
   sender?: string;
@@ -3578,14 +3595,18 @@ export function boostAllLines(a: {
   showTitle?: string;
   each: string;
   tracks: string[];
+  /** The app the listener used — the summary boostagram's `app_name`. */
+  via?: string;
 }): string[] {
   const sender = noteTrackText(a.sender);
+  const via = noteTrackText(a.via);
   const show = noteTrackText(a.showTitle);
   const tracks = a.tracks.map(noteTrackText).filter(Boolean);
   const sentence = `${sender ? `${sender} boosted` : 'Boosted'} ${a.sats} sats`
     + ` to ${a.count} track${a.count === 1 ? '' : 's'}`
     + (show ? ` from ${show}` : '')
-    + a.each;
+    + a.each
+    + (via ? ` via ${via}` : '');
   return tracks.length ? [sentence, '', ...tracks.map((t) => `• ${t}`)] : [sentence];
 }
 

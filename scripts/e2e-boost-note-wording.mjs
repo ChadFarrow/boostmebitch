@@ -36,6 +36,10 @@
 //   4. A podcast episode: "to Open Range from Two For Tunestr", no "by".
 //   5. BOOST ALL, which only an episode with song splits offers: "boosted N
 //      sats to M tracks from Two For Tunestr".
+//   7. An album boost (the show's own BOOST): "to Disco Swag - The Album by
+//      The Doerfels" — Chad's answer on the shared format, 2026-11-16.
+// Every sentence ends "via <app>", the name the note's `client` tag carries
+// (PC20-Nostr pc20-boost-notes.md rule 7), so this runs on either brand.
 //   6. The playlist opened by a URL the index does not hold, so it has no guid:
 //      the row's album is still the first show tag and the artist is still
 //      named. The narrow rule tagged no feed and asked for no artist here.
@@ -241,6 +245,8 @@ async function pressSend(button = SEND) {
 const why = async () => `paid ${await js('window.__paid.length')}; dialog: ${String(await js(`${DIALOG}?.innerText ?? 'closed'`)).replace(/\s+/g, ' ').slice(-400)}`;
 const iTags = (e) => (e?.tags ?? []).filter((x) => x[0] === 'i').map((x) => x[1]);
 const sentenceOf = (e) => (e?.content ?? '').split('\n').find((l) => / boosted \d+ sats/.test(l)) ?? '';
+/** ` via <the app the note's client tag names>` — what every sentence ends with. */
+const via = (e) => ` via ${(e?.tags ?? []).find((x) => x[0] === 'client')?.[1] ?? '(no client tag)'}`;
 
 const titled = (title) => `[...document.querySelectorAll('ul.divide-y > li')].filter((r) => r.innerText.includes(${JSON.stringify(title)})).map((r) => JSON.stringify(r.innerText.slice(0, 120))).join(' | ') || ('no row holds it; rows: ' + [...document.querySelectorAll('ul.divide-y > li')].map((r) => r.innerText.split('\\n').filter((l) => l.trim() && l.trim() !== '▶')[0]).join(' / '))`;
 
@@ -255,7 +261,7 @@ if (section(1, 'A playlist row names the track, its artist, then the playlist'))
   const note = await noteAfter(mark);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
   t.ok('...says "to Sing For You by The Doerfels from ITDV music playlist"',
-    sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from ITDV music playlist'), sentenceOf(note));
+    sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from ITDV music playlist' + via(note)), sentenceOf(note));
   t.equal('the row\'s own feed is the first show tag', iTags(note)[0], `podcast:guid:${ALBUM}`);
   t.equal('then the item, then the playlist', iTags(note), [`podcast:guid:${ALBUM}`, 'podcast:item:guid:12711f57-2d41-4794-8cb9-154ecebb7cf7', `podcast:guid:${ITDV}`]);
   t.ok('the modal closes on its own', await until(`!${DIALOG}`, 8000));
@@ -277,7 +283,7 @@ if (section(2, 'An artist lookup that never answers costs the "by", not the note
   t.ok('the lookup was asked', remoteItemAsked.length > asked, `${remoteItemAsked.length - asked} request(s)`);
   t.ok('the note still reaches the relay, within 10 s', !!note, note ? '' : await why());
   t.ok('...without the artist',
-    sentenceOf(note).endsWith('boosted 100 sats to Sing For You from ITDV music playlist'), sentenceOf(note));
+    sentenceOf(note).endsWith('boosted 100 sats to Sing For You from ITDV music playlist' + via(note)), sentenceOf(note));
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +297,7 @@ if (section(3, 'An album track names the album\'s artist, then the album')) {
   const note = await noteAfter(mark, 30000);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
   t.ok('...says "to Sing For You by The Doerfels from Disco Swag - The Album"',
-    sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from Disco Swag - The Album'), sentenceOf(note));
+    sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from Disco Swag - The Album' + via(note)), sentenceOf(note));
   t.equal('the album is the only show tag', iTags(note).filter((x) => x.startsWith('podcast:guid:')), [`podcast:guid:${ALBUM}`]);
 }
 
@@ -308,7 +314,7 @@ if (section(4, 'A podcast episode: the episode, then the show, never "by"')) {
   const note = await noteAfter(mark);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
   t.ok('...says "to Open Range from Two For Tunestr", with no "by"',
-    sentenceOf(note).endsWith('boosted 100 sats to Open Range from Two For Tunestr'), sentenceOf(note));
+    sentenceOf(note).endsWith('boosted 100 sats to Open Range from Two For Tunestr' + via(note)), sentenceOf(note));
 }
 
 // ---------------------------------------------------------------------------
@@ -322,9 +328,10 @@ if (section(5, 'BOOST ALL says what, then where')) {
   const mark = published.length;
   await pressSend(BOOST_ALL);
   const note = await noteAfter(mark, 90000);
-  const m = sentenceOf(note).match(/ boosted (\d+) sats to (\d+) tracks? from Two For Tunestr( \(.+ each\))?$/);
+  const m = sentenceOf(note).endsWith(via(note))
+    && sentenceOf(note).slice(0, -via(note).length).match(/ boosted (\d+) sats to (\d+) tracks? from Two For Tunestr( \(.+ each\))?$/);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
-  t.ok('...says "boosted N sats to M tracks from Two For Tunestr"', !!m, sentenceOf(note));
+  t.ok('...says "boosted N sats to M tracks from Two For Tunestr[ (N each)] via <app>"', !!m, sentenceOf(note));
   t.ok('...and N is 100 × M', !!m && Number(m[1]) === 100 * Number(m[2]), sentenceOf(note));
 }
 
@@ -341,9 +348,26 @@ if (section(6, 'A playlist with no guid of its own still names the row\'s album 
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
   t.ok('the artist was looked up', remoteItemAsked.length > asked, `${remoteItemAsked.length - asked} request(s)`);
   t.ok('...says "to Sing For You by The Doerfels from ITDV music playlist"',
-    sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from ITDV music playlist'), sentenceOf(note));
+    sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from ITDV music playlist' + via(note)), sentenceOf(note));
   t.equal('the album, then the item — no playlist guid to add', iTags(note),
     [`podcast:guid:${ALBUM}`, 'podcast:item:guid:12711f57-2d41-4794-8cb9-154ecebb7cf7']);
+}
+
+// ---------------------------------------------------------------------------
+const BOOST_SHOW = `document.querySelector('button[title="Boost the show"]')`;
+if (section(7, 'An album boost names the album, then its artist')) {
+  t.ok('the album page offers BOOST', await open(`${APP}/?podcast=${ALBUM}`, `!!(${BOOST_SHOW})`),
+    String(await js(`document.title`)));
+  await js(`(${BOOST_SHOW}).click()`);
+  t.ok('the boost modal opens', await until(`!!(${FIELD})`, 20000));
+  await typeAmount('100');
+  const mark = published.length;
+  await pressSend();
+  const note = await noteAfter(mark, 30000);
+  t.ok('the note reaches the relay', !!note, note ? '' : await why());
+  t.ok('...says "to Disco Swag - The Album by The Doerfels via <app>"',
+    sentenceOf(note).endsWith('boosted 100 sats to Disco Swag - The Album by The Doerfels' + via(note)), sentenceOf(note));
+  t.equal('the album is the only i tag', iTags(note), [`podcast:guid:${ALBUM}`]);
 }
 
 // ---------------------------------------------------------------------------

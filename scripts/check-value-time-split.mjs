@@ -702,9 +702,57 @@ const SENTENCE_VECTORS = [
   { label: "an album track names the album's author",
     args: { sender: 'ChadF', sats: 100, show: DISCO, item: SING },
     expect: 'ChadF boosted 100 sats to Sing For You by The Doerfels from Disco Swag - The Album' },
-  { label: 'an author repeating the album title is dropped', alsoNaive: true,
-    args: { sender: 'ChadF', sats: 100, show: { ...DISCO, author: 'disco swag - the album' }, item: SING },
-    expect: 'ChadF boosted 100 sats to Sing For You from Disco Swag - The Album' },
+  // PC20-Nostr pc20-boost-notes.md rule 6: `by` is dropped when it equals
+  // <what> — never because it repeats the album, which is <where> here.
+  { label: 'a track on a self-titled album still says by',
+    args: { sender: 'ChadF', sats: 100, show: { ...DISCO, title: 'The Doerfels' }, item: SING },
+    expect: 'ChadF boosted 100 sats to Sing For You by The Doerfels from The Doerfels' },
+  // The format's vector 6: track `Kurtis`, artist `kurtis`, album `Night Drive`.
+  { label: 'an artist equal to the track title is dropped, ignoring case', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { title: 'Night Drive', author: 'kurtis', medium: 'music' }, item: { title: 'Kurtis' } },
+    expect: 'ChadF boosted 100 sats to Kurtis from Night Drive' },
+  // Chad, 2026-11-16, on the format's open question: an album boost says who
+  // made it — "ChadF boosted 100 sats to Disco Swag - The Album by The Doerfels".
+  { label: 'an album boost names its artist',
+    args: { sender: 'ChadF', sats: 100, show: DISCO },
+    expect: 'ChadF boosted 100 sats to Disco Swag - The Album by The Doerfels' },
+  { label: 'a self-titled album boost does not say by', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { title: 'Kurtis', author: 'kurtis', medium: 'music' } },
+    expect: 'ChadF boosted 100 sats to Kurtis' },
+  { label: 'a playlist boost never names its curator', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { ...ITDV, author: 'ChadF' } },
+    expect: 'ChadF boosted 100 sats to ITDV music playlist' },
+  // The format's own vectors (pc20-boost-notes.md "Test vectors", app `Fountain`).
+  { label: 'format vector 1: a podcast, via the app', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits via Fountain' },
+  { label: 'format vector 2: no sender name',
+    args: { sender: '', sats: 100, show: HGH_SHOW, item: EP146, via: 'Fountain' },
+    expect: 'Boosted 100 sats to Episode 146 from Homegrown Hits via Fountain' },
+  { label: 'format vector 3: an empty episode title',
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: { ...EP146, title: '' }, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits via Fountain' },
+  { label: 'format vector 7: a podcast author is never a by', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: { ...HGH_SHOW, author: 'Chad' }, item: EP146, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Episode 146 from Homegrown Hits via Fountain' },
+  { label: 'format vector 10: a newline in the episode title',
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: { ...EP146, title: 'Episode\n146' }, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Episode 146 from Homegrown Hits via Fountain' },
+  { label: 'format vector 16: an album, via the app',
+    args: { sender: 'ChadF', sats: 100, show: DISCO, via: 'Fountain' },
+    expect: 'ChadF boosted 100 sats to Disco Swag - The Album by The Doerfels via Fountain' },
+  { label: 'format vector 17: the app\'s default sender name', alsoNaive: true,
+    args: { sender: 'boostmebitch.com user', sats: 100, show: HGH_SHOW, item: EP146, via: 'BoostMeBitch' },
+    expect: 'boostmebitch.com user boosted 100 sats to Episode 146 from Homegrown Hits via BoostMeBitch' },
+  { label: "the format's headline: rev.hodl's boost, via BoostMeBitch",
+    args: { sender: 'rev.hodl', sats: 121, show: ITDV, item: SING, itemArtist: 'The Doerfels', via: 'BoostMeBitch' },
+    expect: 'rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist via BoostMeBitch' },
+  { label: 'an app name carrying a newline is one line',
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, via: 'Boost\nMe' },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits via Boost Me' },
+  { label: 'an empty app name leaves out "via"', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, via: '' },
+    expect: 'ChadF boosted 100 sats to Homegrown Hits' },
   { label: 'a podcast episode never says by', alsoNaive: true,
     args: { sender: 'ChadF', sats: 100, show: HGH_SHOW, item: EP146 },
     expect: 'ChadF boosted 100 sats to Episode 146 from Homegrown Hits' },
@@ -748,7 +796,7 @@ const SENTENCE_VECTORS = [
 ];
 for (const v of SENTENCE_VECTORS) check(v.label, boostSentence(v.args), v.expect);
 const naiveSentence = (a) =>
-  `${a.sender} boosted ${a.sats} sats to ${a.item?.title ?? a.show.title}${a.item ? ` from ${a.show.title}` : ''}`;
+  `${a.sender} boosted ${a.sats} sats to ${a.item?.title ?? a.show.title}${a.item ? ` from ${a.show.title}` : ''}${a.via ? ` via ${a.via}` : ''}`;
 replayVectors({
   vectors: SENTENCE_VECTORS,
   invoke: (which, v) => (which === 'real' ? boostSentence : naiveSentence)(v.args),
@@ -782,13 +830,17 @@ const ALL_VECTORS = [
   { label: 'a 300-character track title is capped',
     args: { sender: 'ChadF', sats: 100, count: 1, showTitle: 'Two For Tunestr', each: '', tracks: ['x'.repeat(300)] },
     expect: ['ChadF boosted 100 sats to 1 track from Two For Tunestr', '', `• ${'x'.repeat(119)}…`] },
+  // The format's vector 12: ` (<each> each)` comes before ` via <app>`.
+  { label: 'format vector 12: two of three tracks paid, via the app', alsoNaive: true,
+    args: { sender: 'ChadF', sats: 200, count: 2, showTitle: 'Homegrown Hits', each: ' (100 each)', tracks: [], via: 'Fountain' },
+    expect: ['ChadF boosted 200 sats to 2 tracks from Homegrown Hits (100 each) via Fountain'] },
   { label: 'a track with an empty title is left out',
     args: { sender: 'ChadF', sats: 200, count: 2, showTitle: 'Two For Tunestr', each: ' (100 each)', tracks: ['A', '  '] },
     expect: ['ChadF boosted 200 sats to 2 tracks from Two For Tunestr (100 each)', '', '• A'] },
 ];
 for (const v of ALL_VECTORS) check(v.label, boostAllLines(v.args), v.expect);
 const naiveAll = (a) => [
-  `${a.sender} boosted ${a.sats} sats to ${a.count} track${a.count === 1 ? '' : 's'} from ${a.showTitle}${a.each}`,
+  `${a.sender} boosted ${a.sats} sats to ${a.count} track${a.count === 1 ? '' : 's'} from ${a.showTitle}${a.each}${a.via ? ` via ${a.via}` : ''}`,
   ...(a.tracks.length ? ['', ...a.tracks.map((t) => `• ${t}`)] : []),
 ];
 replayVectors({

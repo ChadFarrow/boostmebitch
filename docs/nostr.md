@@ -1798,7 +1798,7 @@ Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent
 
 [message, if present]
 
-[sender name] boosted N sats to [what][ by artist][ from where]
+[sender name] boosted N sats to [what][ by artist][ from where][ via app]
 
 [pod.link or PI URL]
 [boostmebitch.com deep link]
@@ -1810,15 +1810,19 @@ Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent
 
 **The sentence is `boostSentence` (`lib/util.ts`, pinned by `check:vts`): what got the sats first, where it was found second.** It replaced `boosted N sats → <show>` with a `📻 <episode>` and a `🎵 <song>` line under it, whose arrow named the show whatever was paid — on a playlist row it named the curator, who was paid nothing. Chad's wording, on that note: *"boosted 121 sats to Sing For You from the ITDV music playlist"*.
 
+**The sentence is a SHARED format, not this app's alone — a change in wording is a PR at PC20-Nostr first.** [`pc20-boost-notes.md`](https://github.com/ChadFarrow/PC20-Nostr/blob/main/pc20-boost-notes.md) (#51, merged 2026-11-17, `draft`) made it every one of Chad's apps' sentence, and Chad's answers to its open questions (2026-11-16) are in the table: an ALBUM says `by <artist>`, and every sentence ends ` via <app>` — the boostagram's `app_name`, so the note names the app the payment named. `by` is dropped only when it equals the WHAT (`to Kurtis by kurtis` → `to Kurtis`), never because it repeats the album that is the WHERE.
+
 | Boost | what | by | where |
 |---|---|---|---|
-| A show (no episode) | show title | — | — |
+| A podcast show (no episode) | show title | — | — |
+| An album (a music feed, no item) | album title | the album's `author` | — |
+| A playlist (a `*L` feed, no item) | playlist title | — (its author is the curator) | — |
 | An episode | episode title | — | show title |
-| A track on an album (`playsAsTracks`, container is the parent) | track | the album's `author`, via `authorLine` | album title |
+| A track on an album (`playsAsTracks`, container is the parent) | track | the album's `author` | album title |
 | A playlist row (`itemFeedGuid` answers) | item | `PublishArgs.itemArtist`, music rows only — never the playlist's `author`, which is the curator, even when the row names no feed | playlist title |
 | A song inside an episode or live show (a track leg settled) | song | its artist | `<episode> of <show>` |
 
-BOOST ALL builds its own body (`contentOverride`) with `boostAllLines`: `boosted N sats to M tracks from <show>`, then one `• <track>` per paid track, every name through the same cleaner — the site signs that note for a signed-out user. An episode never says `by` (a podcast's author is its host). Every name goes through `noteTrackText`, so a feed title cannot add a line; a part that comes out empty is left out with its word. The amount is `value_msat_total`, the intent (invariant 7). Nothing in this repo parses the sentence back — `boostEchoIds` matches on tags — so its words are free to change; notes already published keep theirs.
+BOOST ALL builds its own body (`contentOverride`) with `boostAllLines`: `boosted N sats to M tracks from <show>[ (N each)] via <app>`, then one `• <track>` per paid track, every name through the same cleaner — the site signs that note for a signed-out user. An episode never says `by` (a podcast's author is its host). Every name goes through `noteTrackText`, so a feed title cannot add a line; a part that comes out empty is left out with its word. The amount is `value_msat_total`, the intent (invariant 7). Nothing in this repo parses the sentence back — `boostEchoIds` matches on tags — so its words are free to change; notes already published keep theirs.
 
 `signAndPublish` handles both kind:1 boost notes and kind:10333 favorites — a third event kind is ~10 lines.
 

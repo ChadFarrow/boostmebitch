@@ -207,7 +207,7 @@ console.log('\n--- 3. BOOST-ALL: contentOverride keeps the mention run ---');
 {
   // The path a mention added inside formatContent would silently miss, because
   // BoostAllModal replaces the whole body.
-  const contentOverride = '⚡ Boost ⚡\n\nTester boosted 300 sats to 3 tracks from Homegrown Hits';
+  const contentOverride = '⚡ Boost ⚡\n\nTester boosted 300 sats to 3 tracks from Homegrown Hits via BoostMeBitch';
   const note = await publishBoostNote({
     podcast, episode, boostagram: boostagram(undefined),
     results: [], relays: [RELAY], mentions: [mentionA], contentOverride,
@@ -403,7 +403,7 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('the track note reached the relay', !!e, true);
   const lines = e?.content.split('\n') ?? [];
   check('one sentence: the song, its artist, the episode of the show',
-    lines.includes(`Tester boosted 1000 sats to Copenhagen Time by Matt Finlay from ${episode.title} of ${podcast.title}`), true);
+    lines.includes(`Tester boosted 1000 sats to Copenhagen Time by Matt Finlay from ${episode.title} of ${podcast.title} via BoostMeBitch`), true);
   check('no 📻 or 🎵 line is left', /📻|🎵|→/.test(e?.content ?? '📻'), false);
   check('the show and episode pairs stay FIRST, unchanged', e?.tags.slice(0, 4).map((t) => t[0] + ' ' + t[1]), [
     `i podcast:guid:${podcast.podcastGuid}`, 'k podcast:guid',
@@ -521,7 +521,7 @@ console.log('\n--- 5c. A PLAYLIST ROW names its own feed — sentence, tags and 
   const e = received.find((x) => x.id === note.id);
   check('the playlist note reached the relay', !!e, true);
   check('the sentence names the track, its artist, then the playlist',
-    e?.content.includes('rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist'), true);
+    e?.content.includes('rev.hodl boosted 121 sats to Sing For You by The Doerfels from ITDV music playlist via BoostMeBitch'), true);
   check('the item\'s OWN feed is the first show tag, then the item, then the playlist',
     e?.tags.filter((t) => t[0] === 'i').map((t) => t[1]), [
       'podcast:guid:b2a87a4c-86f0-5194-9eb3-dcba42ce0695',
@@ -541,7 +541,7 @@ console.log('\n--- 5c. A PLAYLIST ROW names its own feed — sentence, tags and 
   });
   await wait(400);
   check('an artist the lookup did not return is left out, nothing else',
-    received.find((x) => x.id === noArtist.id)?.content.includes('rev.hodl boosted 121 sats to Sing For You from ITDV music playlist'), true);
+    received.find((x) => x.id === noArtist.id)?.content.includes('rev.hodl boosted 121 sats to Sing For You from ITDV music playlist via BoostMeBitch'), true);
 }
 
 // ===========================================================================
