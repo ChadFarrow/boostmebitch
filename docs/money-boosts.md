@@ -1,6 +1,6 @@
 # Boosts — boost-all, celebration, keysend upgrade, our LN address
 
-Read before touching `lib/v4v/boost.ts`, `components/boost-modal/`, `boost-all-modal.tsx`, `lib/v4v/keysend-lookup.ts`, `lib/boost-sound.ts`, or `app/.well-known/keysend/`. The numbered boost-flow invariants stay in the core.
+Read before touching `lib/v4v/boost.ts`, `components/boost-modal/`, `boost-all-modal.tsx`, `lib/v4v/keysend-lookup.ts`, or `lib/boost-sound.ts`. The numbered boost-flow invariants stay in the core.
 
 Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning.
 
@@ -459,12 +459,9 @@ A note the SITE signs — signed out, or the signed-in "Anonymous" choice — co
 
 ### Serving our own lightning address
 
-The mirror image of the above: `chadf@boostmebitch.com` is a recipient other apps pay, assembled from two pieces on this domain plus an LNbits instance behind `pay.boostmebitch.com` fronting Chad's LND node.
+**None, since 2026-11-17.** `chadf@boostmebitch.com` was one: a `vercel.json` rewrite sent `/.well-known/lnurlp/:user` to an LNbits instance at `pay.boostmebitch.com`, and `app/.well-known/keysend/[name]/route.ts` published the LND node behind it. Chad turned that LNbits instance off and pays through his Alby Hub, so the rewrite answered **502** (`ROUTER_EXTERNAL_TARGET_HANDSHAKE_ERROR`) on every deploy, Buddy and beta included, while the keysend document still answered `status: OK`. Both halves were removed, and both paths now answer 404.
 
-- **LNURL is a `vercel.json` rewrite**, `/.well-known/lnurlp/:user` → the pay subdomain. An edge rewrite, so the hottest path in a payment costs no lambda invocation. **`next dev` does not apply `vercel.json`**, so this is only observable on a deploy — don't conclude it's broken from a local 404.
-- **Keysend is a route handler**, `app/.well-known/keysend/[name]/route.ts`, holding the node pubkey in a `NAMES` map. **Deliberately not a file in `public/`**: an extensionless static file is served as `application/octet-stream`, and this has to be JSON, CORS-open and cacheable. It validates on the way *out* against the same `/^0[23][0-9a-f]{64}$/` the reader enforces, so a typo fails closed as one 404 here rather than in someone else's payment path — and an unset pubkey serves 404, because publishing a malformed one is worse than publishing nothing (a payer that trusts it sends a keysend that can never arrive).
-- **The two are not independent.** Discovery *starts* at lnurlp — nothing ever looks for the keysend document except a payer already holding the address — and every BOLT11-only wallet (Spark among them) can only pay that way. Drop the rewrite and the keysend doc goes dark with it.
-- **`accept-keysend` must stay enabled on the node**, and the node has to stay reachable. A rejected spontaneous payment doesn't degrade gracefully: no sender retries LNURL after attempting a keysend (that rule exists to prevent double-pays), so the leg just fails. This app's own payer now demotes an address after one such failure and sends later legs to LNURL — but that is *our* client's recovery, on *its* next leg. Every other Podcasting 2.0 app is still paying the first shape, and ours still loses the leg that discovers the problem.
-- **Known cosmetic mismatch:** LNbits returns `text/identifier` as `chadf@pay.boostmebitch.com`, so a wallet resolving the bare-domain form is handed metadata naming the subdomain. Payment is unaffected — the invoice's `description_hash` is computed over the same metadata string the wallet received — but strict LUD-16 readers may surface the discrepancy. Fixing it means changing the address domain in LNbits, not in this repo.
+- **A rewrite to a host this repo does not run fails as a SERVER ERROR, on someone else's payment.** Nothing here watches that host, so the address broke silently when the host went away. A 404 tells a payer the address does not exist; a 502 tells it to try again.
+- **An address served here again needs BOTH halves on a host that answers.** Discovery starts at `.well-known/lnurlp`, and every BOLT11-only wallet (Spark among them) can only pay that way. A keysend document without a working lnurlp is lopsided: NWC and WebLN pay it while every BOLT11-only wallet fails the leg. The removed route is in git history (`git log --diff-filter=D -- 'app/.well-known/keysend'`); its `domain` field kept one brand's deploy from answering for the other's address.
 
 
