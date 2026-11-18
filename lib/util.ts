@@ -2692,11 +2692,16 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
  *   - `PAYMENT_FAILED`, a publish timeout, anything unrecognised — no proof.
  *   - a hole — the leg never settled, so there is nothing to judge.
  *   - `sats <= 0` — `payOne` reports that as ok without contacting anyone.
+ *   - `nwcCheck` — the leg once went UNANSWERED, so its first payment may have
+ *     gone through. It is paid again only under that same payment hash
+ *     (`resendLeg`, once the wallet says it failed). This button pays under a
+ *     FRESH hash, and a resend's own "nothing was sent" says nothing about the
+ *     first attempt.
  */
 export function retryableLegs(results: readonly (BoostResult | undefined)[]): number[] {
   const out: number[] = [];
   results.forEach((r, i) => {
-    if (!r || r.ok || r.indeterminate || !(r.sats > 0)) return;
+    if (!r || r.ok || r.indeterminate || r.nwcCheck || !(r.sats > 0)) return;
     if (explainPaymentError(r.error).nothingSent) out.push(i);
   });
   // Stable, biggest share first — `recipientOrder`'s rule, applied to the legs'
@@ -5189,4 +5194,57 @@ export function communityPlaylistToPodcast(s: CommunityPlaylistSummary): Podcast
     isPreview: true,
     nostrNpubs: [{ npub: s.ownerNpub, pubkey: s.ownerPubkey }],
   };
+}
+
+/**
+ * Pay the legs of one boost in `order`, one START at a time — and, with
+ * `moveOnAfterMs`, without letting a slow leg hold the rest.
+ *
+ * Plain (no `moveOnAfterMs`), each leg settles before the next starts: the rule
+ * for WebLN (a prompt per payment), Spark, BOOST ALL and streaming. With it, a
+ * leg that has had `moveOnAfterMs` with no answer keeps waiting in the
+ * background while the next leg starts. Chad, 2026-11-18: one NWC leg that the
+ * wallet answered only after the 60 s cap held every later leg for that minute.
+ * Starts stay in order and one at a time, so only the waiting overlaps.
+ *
+ * `onAllStarted` fires once every leg has started (a redirect's show block waits
+ * on it). The promise settles only when EVERY leg has: the log, the note and the
+ * confetti read every result. A leg that throws stops the legs not yet started
+ * and rejects the run, as the plain loop did (`payOne` itself never throws).
+ * Pinned by `check:lnurl`.
+ */
+export async function payInOrder(
+  order: readonly number[],
+  pay: (index: number) => Promise<void>,
+  opts: {
+    moveOnAfterMs?: number;
+    onAllStarted?: () => void;
+    timer?: (ms: number) => { done: Promise<void>; cancel: () => void };
+  } = {},
+): Promise<void> {
+  const timer = opts.timer ?? ((ms: number) => {
+    let id: ReturnType<typeof setTimeout> | undefined;
+    const done = new Promise<void>((resolve) => { id = setTimeout(resolve, ms); });
+    return { done, cancel: () => clearTimeout(id) };
+  });
+  let failure: { error: unknown } | null = null;
+  const running: Promise<void>[] = [];
+  for (const i of order) {
+    if (failure) break;
+    const settled = pay(i).then(
+      () => undefined,
+      (error: unknown) => { failure ??= { error }; },
+    );
+    running.push(settled);
+    if (opts.moveOnAfterMs === undefined) {
+      await settled;
+      continue;
+    }
+    const t = timer(opts.moveOnAfterMs);
+    await Promise.race([settled, t.done]);
+    t.cancel();
+  }
+  if (!failure) opts.onAllStarted?.();
+  await Promise.all(running);
+  if (failure) throw (failure as { error: unknown }).error;
 }

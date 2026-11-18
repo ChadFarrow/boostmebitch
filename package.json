@@ -82,6 +82,7 @@
     "e2e:bunkerrestore": "node scripts/e2e-bunker-restore.mjs",
     "e2e:boostnote": "node scripts/e2e-boost-note-signer.mjs",
     "e2e:sitestamp": "node scripts/e2e-site-stamp.mjs",
+    "e2e:unconfirmed": "node scripts/e2e-unconfirmed-leg.mjs",
     "e2e:notewording": "node scripts/e2e-boost-note-wording.mjs",
     "e2e:bunkerrevive": "node scripts/e2e-bunker-revive.mjs",
     "e2e:twosigners": "node scripts/e2e-two-signers.mjs",
