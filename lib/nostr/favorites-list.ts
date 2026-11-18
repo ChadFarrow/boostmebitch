@@ -1875,7 +1875,104 @@ export type PublishReason =
   // unknowable). It withholds the private half rather than guess, and this is
   // what stops that being silent.
   | 'mode-ambiguous'
+  // The publish would take more than half of the entries off the list. Held
+  // until the user answers, because a signer prompt is not that question: Amber,
+  // Clave and an extension all show "sign kind 10333", never "remove 79 of 81".
+  // Issue #600. See `massRemoval`.
+  | 'mass-removal'
+  // Not a plan outcome — the hydrator's. The read found NO list and this device
+  // holds favorites, so publishing would CREATE one. A page load or a sign-in
+  // never does that on its own: it asks. Issue #600, and see `runHydrate`.
+  | 'create-pending'
   | 'publish';
+
+/**
+ * How many relays must answer "I hold no list" before this app CREATES one.
+ *
+ * A create is the one publish that cannot know what it replaces. Every other
+ * guard in the planner compares against a list it read; a create compares
+ * against nothing, so a read that missed the list turns straight into a
+ * replacement of it. `readIsTrustworthy` counts only relays that CONNECTED, so
+ * an empty answer from one relay that does not hold this user's list, while the
+ * relays that do are slow or down, used to be enough. On 2026-11-18 that
+ * replaced an 81-entry list with 2 entries at sign-in (issue #600).
+ *
+ * Two, not "all": requiring every listed relay to answer would leave one dead
+ * relay in a user's set blocking their first favorite forever. And never more
+ * than were ASKED: a `bmb:relays` override naming one relay can only ever get
+ * one answer, and that user chose it.
+ */
+export const MIN_ABSENCE_ANSWERS = 2;
+
+/** How many relays answered "no list", out of how many the read asked. */
+export interface AbsenceCount {
+  answered: number;
+  asked: number;
+}
+
+/** Is "this account has no list" believable enough to CREATE one? */
+export function absenceConfirmed({ answered, asked }: AbsenceCount): boolean {
+  return answered >= Math.min(MIN_ABSENCE_ANSWERS, Math.max(asked, 1));
+}
+
+/**
+ * The smallest removal that needs the user's OK, and the share of the list it
+ * must exceed. Both, so an ordinary unfavorite on a 2-entry list is never a
+ * question, and a burst that takes most of a big list always is.
+ */
+export const MASS_REMOVAL_MIN = 3;
+
+export interface RemovalCount {
+  /** Entries on the list we read that this publish would leave off it. */
+  removed: number;
+  /** Entries on the list we read, both halves we could open. */
+  total: number;
+}
+
+/**
+ * How much of the list we READ a publish would remove.
+ *
+ * Counted by each entry's LAST identifier — its kind lives there (`entryKind`)
+ * — so a legacy two-element item tag that the same publish rewrites into the
+ * three-element form is the same entry, not a removal and an addition. Both
+ * halves together, so a mode switch, which moves entries between halves, removes
+ * nothing.
+ */
+export function countRemoval(
+  readTags: string[][],
+  readPrivateTags: string[][],
+  outTags: string[][],
+  outPrivateTags: string[][],
+): RemovalCount {
+  const key = (t: string[]) => (t[0] === 'i' && t[1] ? t[t.length - 1] : null);
+  const read = new Set<string>();
+  for (const t of [...readTags, ...readPrivateTags]) {
+    const k = key(t);
+    if (k) read.add(k);
+  }
+  const out = new Set<string>();
+  for (const t of [...outTags, ...outPrivateTags]) {
+    const k = key(t);
+    if (k) out.add(k);
+  }
+  let removed = 0;
+  for (const k of read) if (!out.has(k)) removed += 1;
+  return { removed, total: read.size };
+}
+
+/**
+ * Does this removal need the user's OK before a signer is asked?
+ *
+ * More than half of the list, and at least {@link MASS_REMOVAL_MIN} entries.
+ * `confirmed` is the removal count the user has approved: a confirmation is for
+ * THAT removal, so a list that changed under the prompt and now loses more is
+ * asked about again.
+ */
+export function massRemoval(count: RemovalCount, confirmed?: number): boolean {
+  if (count.removed < MASS_REMOVAL_MIN) return false;
+  if (count.removed * 2 <= count.total) return false;
+  return !(confirmed !== undefined && count.removed <= confirmed);
+}
 
 /**
  * May this device re-run a degraded read on its own, without being asked?
@@ -2025,6 +2122,22 @@ export interface FavoritesPlanInput {
    * `content`: a mode stated inside a half is a claim no reader may act on.
    */
   stating?: ListVisibility | null;
+  /**
+   * How many relays ANSWERED the read with no event, out of how many it asked.
+   * Only consulted when no event exists, i.e. when this publish would CREATE
+   * the list — see {@link absenceConfirmed}.
+   *
+   * REQUIRED in the type, so neither shipping caller can forget it. `null`
+   * means "not counted" and skips the rule; it exists for the spec's
+   * conformance adapter, which plans in-memory lists that no relay was asked
+   * about. A caller that read from relays passes the count.
+   */
+  absence: AbsenceCount | null;
+  /**
+   * The removal the user approved in the "This removes N of your M favorites"
+   * prompt. See {@link massRemoval}.
+   */
+  removalConfirmed?: number;
 }
 
 export interface FavoritesPlan {
@@ -2054,6 +2167,8 @@ export interface FavoritesPlan {
    * first thing a private half breaks.
    */
   encryptPrivate: boolean;
+  /** How much of the list we read this plan leaves off. */
+  removal: RemovalCount;
 }
 
 /**
@@ -2321,6 +2436,10 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // empty private half is an empty `content`.
   const content = privateSame ? readContent : '';
 
+  // Over the halves as they will be WRITTEN. An unreadable private half is
+  // carried verbatim and its read tags are [], so it counts on neither side.
+  const removal = countRemoval(input.readTags, readPrivateTags, tags, privateTags ?? []);
+
   const plan = (publish: boolean, reason: PublishReason): FavoritesPlan => ({
     publish,
     reason,
@@ -2329,6 +2448,7 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
     privateTags,
     content,
     encryptPrivate: publish && encryptPrivate,
+    removal,
   });
 
   // Never write on top of a read that may have failed silently. Wholesale
@@ -2410,6 +2530,15 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
     return plan(false, 'nothing-to-create');
   }
 
+  // A CREATE NEEDS TWO RELAYS TO SAY THERE IS NOTHING TO REPLACE. Issue #600:
+  // one empty answer, while the relays holding an 81-entry list were not
+  // reached, published a 2-entry list over it. 'degraded', because that is
+  // what it is — we could not confirm the list — and it is the one reason the
+  // read retry re-runs on its own.
+  if (!input.exists && input.absence && !absenceConfirmed(input.absence)) {
+    return plan(false, 'degraded');
+  }
+
   // A MERGE THAT COMES OUT EMPTY OVER A LIST THAT IS NOT IS NEVER A USER ACTION.
   //
   // This is the hole the guard above only half covered: it declines to CREATE
@@ -2464,6 +2593,22 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
     : 0;
   if (publicLocalFed === 0 && privateLocalFed === 0 && readHadEntries && !input.emptyIsIntentional) {
     return plan(false, 'wholesale-delete');
+  }
+
+  // THE SAME QUESTION ONE STEP SHORT OF EMPTY, AND IT IS ASKED, NOT REFUSED.
+  //
+  // The guard above only fires when nothing at all survives. A device whose
+  // baseline names 81 entries and whose store holds 2 merges to those 2 — every
+  // other entry is "ours, and we no longer hold it" — and published them with
+  // nothing on screen. That can be a real clean-up, so it is not refused; it is
+  // held until the user answers "This removes 79 of your 81 favorites", because
+  // a signer's approval sheet never says that (issue #600, Expected Behavior 2).
+  //
+  // A deliberate delete-all and a withdrawal are the user's own request and go
+  // through, the same exemption the guard above makes.
+  if (!input.emptyIsIntentional && !input.withdraw
+    && massRemoval(removal, input.removalConfirmed)) {
+    return plan(false, 'mass-removal');
   }
 
   // A private list too big for the oldest NIP-44 in the wild reads back as

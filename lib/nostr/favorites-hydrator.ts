@@ -35,6 +35,7 @@ import {
 } from '@/lib/podcast-meta';
 import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
 import {
+  EMPTY_BASELINE,
   EMPTY_LOCAL,
   EMPTY_PARSED,
   baselineFrom,
@@ -363,7 +364,40 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     // before the debounce that would have carried it ever fires.
     emptyIsIntentional: deliberatelyEmpty,
     previousBaseline: baseline,
+    // How many relays said "no list" — the create rule's count. Issue #600.
+    absence: { answered: read.answered, asked: relays.length },
   });
+
+  // THE READ FOUND NO LIST, AND TOO FEW RELAYS SAID SO TO BELIEVE IT.
+  //
+  // The planner answers 'degraded' here only through its create rule
+  // (`absenceConfirmed`) — `trustworthy` is passed as true above. It is the
+  // same state as an untrustworthy read and gets the same treatment: keep what
+  // is on screen, paint nothing, record nothing. On 2026-11-18 this shape — one
+  // empty answer while the relays holding the list were not reached — replaced
+  // an 81-entry list with the 2 favorites this browser held (issue #600).
+  if (plan.reason === 'degraded') {
+    setFavoritesSync('degraded');
+    console.warn(
+      `[favorites] the read found no list, but only ${read.answered} relay(s) answered — `
+      + 'not enough to believe there is none. Keeping local favorites as-is.',
+    );
+    return;
+  }
+
+  // MOST OF THE LIST WOULD LEAVE IT, so nothing is painted and nothing is
+  // signed until the user answers. Painting first would write the shrunk list
+  // THROUGH to localStorage, and the next cycle would then hold only that —
+  // the question would answer itself. `<FavoritesSyncNotice>` asks, with the
+  // numbers; its "Keep them" is `keepFavoritesOnRelays`. Issue #600.
+  if (plan.reason === 'mass-removal') {
+    setFavoritesSync('degraded', 'mass-removal', plan.removal);
+    console.warn(
+      `[favorites] HOLDING — this device's state would remove ${plan.removal.removed} of the `
+      + `${plan.removal.total} entries on the list. Waiting for the user to confirm.`,
+    );
+    return;
+  }
 
   // "This device holds nothing" is not the same claim as "the user cleared their
   // favorites" — one is an unhydrated store, and the store is rebuilt from
@@ -697,7 +731,21 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // no-op republish on every page load would bump created_at for nothing, race
   // other devices, and put a signing prompt on screen for a load that changed
   // nothing. The plan is the one computed above, before the store was touched.
-  if (plan.publish) {
+  if (plan.publish && !read.exists) {
+    // A CREATE IS ASKED FOR, NEVER DONE BY A PAGE LOAD OR A SIGN-IN.
+    //
+    // The read found no list, so this publish would make one — and a create is
+    // the one publish that cannot know what it replaces. This branch used to
+    // call `requestFavoritesSync`, so signing in on a browser that held two
+    // favorites put a signer prompt on screen for a new list, and the list it
+    // made replaced the user's 81-entry one (issue #600). The rows are painted
+    // above, so nothing is hidden; the notice offers "Save as a new list", and
+    // the next ♡ does the same, because a tap is the user asking.
+    setFavoritesSync('degraded', 'create-pending', {
+      total: plan.tags.filter((t) => t[0] === 'i').length,
+    });
+    console.info('[favorites] no list on the relays — asking before creating one (issue #600)');
+  } else if (plan.publish) {
     requestFavoritesSync(identity);
   } else if (plan.reason === 'unchanged' || plan.reason === 'nothing-to-create') {
     // The relay already agrees with us. Record the baseline: without it the
@@ -745,6 +793,25 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     setFavoritesSync('degraded', plan.reason);
     console.warn(`[favorites] not recording a baseline — the planner refused this publish (${plan.reason})`);
   }
+}
+
+/**
+ * "Keep them": the answer to "This removes 79 of your 81 favorites".
+ *
+ * Every entry the publish would have removed is one this device's BASELINE
+ * claims and its store does not hold — so the removal is the baseline's doing,
+ * and dropping the baseline is what keeps them. With no claims the merge is a
+ * pure union: it cannot remove anything, so the entries come back into the
+ * store, and anything this device holds that the list lacks is added. Nothing
+ * on the wire is lost by forgetting a claim; the cost is only that an entry
+ * this device removed elsewhere, unpublished, comes back.
+ *
+ * Then a hydrate, user-initiated, because the user just pressed the button.
+ * Issue #600.
+ */
+export async function keepFavoritesOnRelays(identity: NostrIdentity): Promise<void> {
+  storage.favBaseline.set(identity.npub, EMPTY_BASELINE);
+  await hydrateFavorites(identity, 'user-initiated');
 }
 
 /**

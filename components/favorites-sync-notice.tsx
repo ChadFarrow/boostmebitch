@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
-import { hydrateFavorites, syncFavoritesNow } from '@/lib/nostr';
+import { hydrateFavorites, keepFavoritesOnRelays, syncFavoritesNow } from '@/lib/nostr';
 import { resetPiBreaker } from '@/lib/podcast-meta';
 
 // "We couldn't reach the relays" made visible.
@@ -63,6 +63,7 @@ export function FavoritesSyncNotice() {
   const identity = useApp((s) => s.identity);
   const degraded = useApp((s) => s.favoritesSync === 'degraded');
   const reason = useApp((s) => s.favoritesSyncReason);
+  const count = useApp((s) => s.favoritesSyncCount);
   const [retrying, setRetrying] = useState(false);
 
   // 'idle' is NOT a failure — it is the pre-hydration and signed-out state, and
@@ -81,6 +82,48 @@ export function FavoritesSyncNotice() {
   const privateUnreadable = reason === 'private-unreadable' || privateWithheld;
   const tooLarge = reason === 'private-too-large';
   const ambiguous = reason === 'mode-ambiguous';
+
+  // TWO QUESTIONS, NOT FAULTS (issue #600). Each one holds a publish that a
+  // signer's approval sheet would never describe — "sign kind 10333" is all
+  // Amber, Clave or an extension shows — so the numbers have to be HERE, and
+  // nothing is signed until a button is pressed.
+  //
+  // 'mass-removal': this device's state would take most of the list off it.
+  // KEEP is the safe answer and comes first. REMOVE confirms exactly the count
+  // shown; if the list changed and the removal grew, the planner asks again.
+  //
+  // 'create-pending': the read found no list, so publishing would make a new
+  // one — and if the user HAS a list that simply did not load, a new one
+  // replaces it. That is the incident: sign-in published 2 favorites over 81.
+  // RETRY is first for the same reason KEEP is.
+  if (reason === 'mass-removal' && count?.removed !== undefined) {
+    const removed = count.removed;
+    const plural = count.total === 1 ? 'favorite' : 'favorites';
+    return (
+      <QuestionNotice
+        message={`⚠ This would remove ${removed} of your ${count.total} ${plural} from your list on Nostr.`}
+        busy={retrying}
+        actions={[
+          { label: 'keep them', run: () => keepFavoritesOnRelays(identity) },
+          { label: 'remove them', run: () => syncFavoritesNow(identity, undefined, false, removed) },
+        ]}
+        setBusy={setRetrying}
+      />
+    );
+  }
+  if (reason === 'create-pending' && count) {
+    return (
+      <QuestionNotice
+        message={`No favorites list was found on Nostr for this account. If you have one, retry — saving now would replace it. Otherwise, save the ${count.total} on this device as a new list.`}
+        busy={retrying}
+        actions={[
+          { label: 'retry', run: () => hydrateFavorites(identity, 'unattended') },
+          { label: 'save as new list', run: () => syncFavoritesNow(identity) },
+        ]}
+        setBusy={setRetrying}
+      />
+    );
+  }
 
   const message = privateWithheld
     ? "Your private favorites weren't opened on load — showing what's saved on this device."
@@ -154,6 +197,45 @@ export function FavoritesSyncNotice() {
           {retrying ? 'retrying…' : privateUnreadable ? 'unlock' : 'retry'}
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * The notice in its asking form: one sentence and two buttons, the safe one
+ * first. Each button runs one cycle; a success flips `favoritesSync` and
+ * unmounts this, and a refusal leaves it up with whatever the cycle reported.
+ */
+function QuestionNotice({ message, actions, busy, setBusy }: {
+  message: string;
+  actions: { label: string; run: () => Promise<unknown> }[];
+  busy: boolean;
+  setBusy: (b: boolean) => void;
+}) {
+  async function press(run: () => Promise<unknown>) {
+    setBusy(true);
+    try { await run(); } catch { /* the cycle already set the status */ } finally { setBusy(false); }
+  }
+  return (
+    <div
+      role="status"
+      data-favorites-question
+      className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5 mb-2 flex items-center justify-between gap-2"
+    >
+      <span>{message}</span>
+      <span className="flex gap-3 flex-shrink-0">
+        {actions.map((a) => (
+          <button
+            key={a.label}
+            type="button"
+            onClick={() => press(a.run)}
+            disabled={busy}
+            className="underline underline-offset-2 hover:text-nostr disabled:opacity-40 py-1"
+          >
+            {a.label}
+          </button>
+        ))}
+      </span>
     </div>
   );
 }

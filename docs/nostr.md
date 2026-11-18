@@ -835,6 +835,45 @@ stay publishable. **A new baseline reader uses that helper** — reading
 `storage.favBaseline` directly is how one caller comes to believe a baseline no
 other caller does.
 
+#### A create cannot know what it replaces — so it needs two answers, and a person (issue #600)
+
+**On 2026-11-18 a sign-in replaced an 81-entry list with 2.** The read found no
+kind:10333 event and was `trustworthy`: `readIsTrustworthy` counts only relays
+that CONNECTED, so one relay answering "none" while the relays holding the list
+were slow or down was proof enough. The planner then had no list to compare
+against, merged the two favorites the browser held (the signed-out `:guest`
+bucket) over nothing, and the hydrator published that on its own. Every wipe
+guard above compares against a list that was READ; a create compares against
+nothing, so none of them could fire. The published event (`535e897d…`) is byte
+for byte what `tagsFromList` makes from two shows over an empty read — no
+`visibility`, `medium` ahead of the `i` tags — which `check:favsync`'s #600
+section asserts.
+
+Three rules, each pinned there or in `npm run e2e:signin-favorites`:
+
+- **A create needs `MIN_ABSENCE_ANSWERS` (2) relays to have said "no list"**
+  (`absenceConfirmed`), or every relay asked when fewer were — a `bmb:relays`
+  override of one relay can only get one answer. `FavoritesRead.answered`
+  carries the count and `planFavoritesPublish` takes it as `absence`, REQUIRED
+  in the type so a caller cannot forget it. Fewer is `'degraded'` — "couldn't
+  confirm your list", retried by the read retry — never a publish. Two, not
+  "all": one dead relay in a user's set would otherwise block their first
+  favorite forever.
+- **A page load or a sign-in never creates the list.** `runHydrate` paints the
+  rows and sets `'create-pending'`; `<FavoritesSyncNotice>` offers RETRY (first)
+  and SAVE AS NEW LIST. A ♡ still creates it, because a tap is the user asking.
+- **A publish that takes more than half of the list read (and at least
+  `MASS_REMOVAL_MIN`) is held as `'mass-removal'`** until the user answers
+  "This would remove 79 of your 81 favorites". A signer's approval sheet never
+  says that, so the question has to be ours. The hydrator holds it BEFORE the
+  paint, or the shrunk store would write through and answer the question itself.
+  KEEP is `keepFavoritesOnRelays` — drop the baseline, re-hydrate as a union;
+  REMOVE confirms exactly the count shown (`removalConfirmed`), so a removal that
+  grew under the prompt is asked again. A delete-all and a withdrawal are the
+  user's own request and are not asked twice. `countRemoval` keys each entry on
+  its LAST identifier over both halves, so a legacy item rewritten to three
+  elements, or a mode switch, removes nothing.
+
 ### Carry what you can't read
 
 An identifier kind outside the table, a tag type we have no meaning for, a `k`

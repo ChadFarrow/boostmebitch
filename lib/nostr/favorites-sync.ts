@@ -241,7 +241,7 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // clear a notice the other's failure had raised. There is one event now, so
     // a partial failure is not expressible and a single flag cannot lie.
     onSynced: (baseline) => recordFavoritesBaseline(identity, baseline),
-    onDegraded: (reason) => useApp.getState().setFavoritesSync('degraded', reason),
+    onDegraded: (reason, removal) => useApp.getState().setFavoritesSync('degraded', reason, removal),
   };
 }
 
@@ -281,10 +281,14 @@ function cycleOptionsFor(
   identity: NostrIdentity,
   purpose?: DecryptPurpose,
   userChose = false,
+  confirmRemoval?: number,
 ): SyncOptions {
   const mode = favoritesMode(identity.npub);
   return {
     ...syncOptionsFor(identity),
+    // Only `syncFavoritesNow` passes this, from the "Remove them" button of the
+    // "This removes N of your M favorites" notice. A heart toggle never does.
+    confirmRemoval,
     // A null mode never reaches a publish — `requestFavoritesSync` returns
     // before that — so treating it as 'public' here only affects the paths that
     // have already established one.
@@ -411,9 +415,10 @@ export function syncFavoritesNow(
   identity: NostrIdentity,
   purpose?: DecryptPurpose,
   userChose = false,
+  confirmRemoval?: number,
 ) {
   return serializeFavoritesCycle(() =>
-    syncFavorites(cycleOptionsFor(identity, purpose, userChose)),
+    syncFavorites(cycleOptionsFor(identity, purpose, userChose, confirmRemoval)),
   );
 }
 
