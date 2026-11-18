@@ -956,6 +956,29 @@ export function baselineIsTrustworthy(
  * describes when it derives the active half from the merge — this only lets a
  * device with no history reach it.
  */
+/**
+ * Has this device seen a favorites list with entries in it for this account?
+ *
+ * The baseline is recorded only when this device and the relays AGREED on a
+ * list — after a read found it unchanged, or after a publish a relay accepted —
+ * so a baseline that names any entry is proof a list existed. When a later read
+ * finds NO list, that proof turns "this account has none" into "the read did
+ * not reach it", and the one thing a create must never do is run on the second
+ * (issue #600). All four halves count: a list that is wholly private is still a
+ * list. Pass the RAW stored baseline, never `trustedBaseline`, which drops a
+ * claim over an empty cache — and an empty cache beside a list that did not
+ * load is exactly when this matters.
+ *
+ * An EMPTY baseline is not proof of anything: an account that cleared its list
+ * still has an event on the relays, and a device that never saw one cannot say.
+ */
+export function baselineSawList(baseline: FavoritesBaseline): boolean {
+  return baseline.feeds.length > 0
+    || baseline.items.length > 0
+    || (baseline.privateFeeds?.length ?? 0) > 0
+    || (baseline.privateItems?.length ?? 0) > 0;
+}
+
 export function mayAdoptRefusedRead(input: {
   cacheHasEntries: boolean;
   baselineClaimsEntries: boolean;
@@ -1884,6 +1907,12 @@ export type PublishReason =
   // holds favorites, so publishing would CREATE one. A page load or a sign-in
   // never does that on its own: it asks. Issue #600, and see `runHydrate`.
   | 'create-pending'
+  // The same "no list on the relays", on a device whose baseline says it SAW
+  // one (`sawList`, from `baselineSawList`). Then the read missed the list
+  // rather than found its absence, so no create runs — not from a page load,
+  // not from a ♡ — and the notice offers retry alone; the read retry re-reads
+  // on its own. Issue #600.
+  | 'create-held'
   | 'publish';
 
 /**
@@ -2014,7 +2043,7 @@ export function massRemoval(count: RemovalCount, confirmed?: number): boolean {
  * case, deliberately rather than by omission.
  */
 export function favoritesReadRetryable(reason: PublishReason | 'private-withheld' | null | undefined): boolean {
-  return reason === null || reason === undefined || reason === 'degraded';
+  return reason === null || reason === undefined || reason === 'degraded' || reason === 'create-held';
 }
 
 export interface FavoritesPlanInput {
@@ -2133,6 +2162,15 @@ export interface FavoritesPlanInput {
    * about. A caller that read from relays passes the count.
    */
   absence: AbsenceCount | null;
+  /**
+   * This device's RAW baseline names an entry — {@link baselineSawList}. Only
+   * consulted when no event exists. A device that once agreed with the relays
+   * on a list does not believe "there is none"; a create there would also drop
+   * every entry it saw, because the merge reads "in the baseline, absent from
+   * the read" as "removed by another app". REQUIRED for the same reason
+   * `absence` is; the conformance adapter omits it and the rule is skipped.
+   */
+  sawList: boolean;
   /**
    * The removal the user approved in the "This removes N of your M favorites"
    * prompt. See {@link massRemoval}.
@@ -2537,6 +2575,15 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // read retry re-runs on its own.
   if (!input.exists && input.absence && !absenceConfirmed(input.absence)) {
     return plan(false, 'degraded');
+  }
+
+  // A DEVICE THAT SAW THE LIST DOES NOT CREATE ONE. Enough relays said "none",
+  // but this device's baseline is proof a list existed, so the read missed it.
+  // A create here is the #600 wipe one step removed: the merge drops every
+  // baselined entry as "removed elsewhere" and publishes only what is new. Held
+  // as 'create-held' — retry only, re-read by the read retry.
+  if (!input.exists && input.sawList) {
+    return plan(false, 'create-held');
   }
 
   // A MERGE THAT COMES OUT EMPTY OVER A LIST THAT IS NOT IS NEVER A USER ACTION.

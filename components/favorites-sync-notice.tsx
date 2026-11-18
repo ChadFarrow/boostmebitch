@@ -111,6 +111,19 @@ export function FavoritesSyncNotice() {
       />
     );
   }
+  // 'create-held': the same "no list", on a device that SAW one. The read
+  // missed it, so there is nothing to ask — offering "save as new list" here
+  // would put the incident behind a button. RETRY alone.
+  if (reason === 'create-held') {
+    return (
+      <QuestionNotice
+        message="⚠ No relay returned your favorites list, but this device saw it before, so nothing will replace it. Retry when the relays answer."
+        busy={retrying}
+        actions={[{ label: 'retry', run: () => hydrateFavorites(identity, 'unattended') }]}
+        setBusy={setRetrying}
+      />
+    );
+  }
   if (reason === 'create-pending' && count) {
     return (
       <QuestionNotice

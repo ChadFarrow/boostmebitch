@@ -861,7 +861,23 @@ Three rules, each pinned there or in `npm run e2e:signin-favorites`:
   favorite forever.
 - **A page load or a sign-in never creates the list.** `runHydrate` paints the
   rows and sets `'create-pending'`; `<FavoritesSyncNotice>` offers RETRY (first)
-  and SAVE AS NEW LIST. A ♡ still creates it, because a tap is the user asking.
+  and SAVE AS NEW LIST. A ♡ still creates it, because a tap is the user asking —
+  on a device that never saw a list.
+- **A device that SAW a list never creates one** (`'create-held'`, Chad's call
+  on #601). The baseline is recorded only when this device and the relays
+  agreed on a list, so `baselineSawList` — any entry in any of its four halves,
+  read from the RAW stored baseline, never `trustedBaseline` — is proof one
+  existed, and "no list" then means the read missed it. The planner takes it as
+  `sawList`, required like `absence`, so the page load AND a ♡ (through
+  `syncOptionsFor`) are held: the notice offers RETRY alone, and
+  `favoritesReadRetryable` lets the read retry re-read on its own. The ♡ half is
+  not optional: the merge reads "in the baseline, absent from the read" as
+  "removed by another app", so a create there publishes ONLY the new entries —
+  one show over the list the device saw (`check:favsync`'s naive vector). The
+  cost, accepted: a list deleted from every relay leaves that device retrying
+  until a backup file is restored. A device whose cache holds only baselined
+  entries was already refused by the older empty-merge guard; this covers the
+  one that also holds something new.
 - **A publish that takes more than half of the list read (and at least
   `MASS_REMOVAL_MIN`) is held as `'mass-removal'`** until the user answers
   "This would remove 79 of your 81 favorites". A signer's approval sheet never

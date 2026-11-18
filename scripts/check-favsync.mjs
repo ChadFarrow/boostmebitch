@@ -93,6 +93,7 @@ import {
   massRemoval,
   absenceConfirmed,
   MIN_ABSENCE_ANSWERS,
+  baselineSawList,
 } from '../lib/nostr/favorites-list.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -3134,6 +3135,34 @@ section('Issue #600 — a sign-in replaced an 81-entry list with 2');
   check('but one answer out of two asked is not', absenceConfirmed({ answered: 1, asked: 2 }), false);
   check('and nobody asked is never a confirmation', absenceConfirmed({ answered: 0, asked: 0 }), false);
 
+  // ---- 1b. The same empty read on a device that SAW the list --------------
+  //
+  // Two relays said "none", so the absence rule lets it through — but this
+  // device's baseline names the whole list. The merge reads every baselined
+  // entry as "removed by another app" and drops it, so the create would hold
+  // ONLY what is new: one show over eight. Chad, on #601: a device that saw a
+  // list offers retry only — and a ♡ goes through this same planner.
+  const sawBaseline = baselineOfList(read);
+  const overMissedRead = mergeFavoritesList({ read: EMPTY_PARSED, local: twoShows, baseline: sawBaseline });
+  const createSeen = (sawList) => planFavoritesPublish({
+    merged: overMissedRead, readTags: [], exists: false, trustworthy: true, local: twoShows,
+    absence: { answered: 2, asked: 11 }, sawList,
+  });
+  // (naive) without the flag — the planner as the first #601 commit left it.
+  check('(naive) a device that saw the list CREATES one holding only the new show',
+    [createSeen(undefined).reason, createSeen(undefined).tags.filter((t) => t[0] === 'i').length], ['publish', 1]);
+  check('#600: a device that saw the list holds the create',
+    [createSeen(true).publish, createSeen(true).reason], [false, 'create-held']);
+  // MUST STILL WORK: the flag is about CREATING. A read that found the list is
+  // the ordinary path, flag or no flag.
+  check('#600: the flag is not consulted when the list exists',
+    planFavoritesPublish({
+      merged: mergeFavoritesList({ read, local: twoShows, baseline: EMPTY_BASELINE }),
+      readTags: wire, exists: true, trustworthy: true, local: twoShows,
+      absence: { answered: 2, asked: 11 }, sawList: true,
+    }).reason, 'publish');
+  check('#600: ...and a device that never saw one still creates on two answers', createSeen(false).reason, 'publish');
+
   // ---- 2. The other way to the same event: a full read, a stale store ----
   //
   // The baseline names the whole list and the store holds two shows: every
@@ -3185,6 +3214,33 @@ section('Issue #600 — a sign-in replaced an 81-entry list with 2');
   check('2 of 2 is an ordinary unfavorite, not a question', massRemoval({ removed: 2, total: 2 }), false);
   check('3 of 5 is most of the list', massRemoval({ removed: 3, total: 5 }), true);
   check('3 of 6 is not MOST of it', massRemoval({ removed: 3, total: 6 }), false);
+
+  // ---- a device that SAW the list is never offered "save as new list" ------
+  //
+  // Chad, on #601: "if this device saw a list before, the notice offers only
+  // retry". The baseline is that record — written only when this device and the
+  // relays agreed on a list — so ANY entry in ANY of its four halves proves one
+  // existed, and a later "no list" then means the read missed it.
+  const seen = (b) => baselineSawList({ feeds: [], items: [], ...b });
+  const R_KEPT = '55b53584-4219-4fb0-b916-075ce23f714e';
+  check('#600: a baseline naming a show proves this device saw a list', seen({ feeds: [R_KEPT] }), true);
+  check('#600: ...and one naming only an episode', seen({ items: ['podcast:item:guid:x'] }), true);
+  check('#600: ...and a WHOLLY PRIVATE list is still a list', seen({ privateFeeds: [R_KEPT] }), true);
+  check('#600: ...on its episode half too', seen({ privateItems: ['podcast:item:guid:x'] }), true);
+  // must still work: a device with no history keeps the question, or nobody
+  // could ever start a list.
+  check('#600: an empty baseline proves nothing — the question stays', seen({}), false);
+  check('#600: ...nor do empty private halves', seen({ privateFeeds: [], privateItems: [] }), false);
+  // (naive) the public half only — the obvious reading of "the baseline", and
+  // wrong for every account whose list is private.
+  const naiveSeen = (b) => (b.feeds?.length ?? 0) + (b.items?.length ?? 0) > 0;
+  check('(naive) "feeds or items" calls a private list unseen',
+    naiveSeen({ privateFeeds: [R_KEPT] }) === seen({ privateFeeds: [R_KEPT] }), false);
+  // A held create waits on the RELAYS, so the read retry re-reads it; the
+  // question it replaced waits on the USER, so it does not.
+  check('#600: a held create is retried when the relays come back', favoritesReadRetryable('create-held'), true);
+  check('#600: the create QUESTION is not retried — it waits for an answer', favoritesReadRetryable('create-pending'), false);
+  check('#600: nor is the removal question', favoritesReadRetryable('mass-removal'), false);
 }
 
 // ---------------------------------------------------------------------------

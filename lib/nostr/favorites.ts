@@ -300,6 +300,12 @@ export interface SyncOptions {
   local: () => LocalList;
   /** What this device last agreed with the relay on. */
   baseline: () => FavoritesBaseline;
+  /**
+   * The RAW stored baseline names an entry (`baselineSawList`). Separate from
+   * `baseline`, which is `trustedBaseline` and drops a claim over an empty
+   * cache. Omitted, a create is never held for it. Issue #600.
+   */
+  sawList?: () => boolean;
   /** Called with the new baseline once the event lands. */
   onSynced: (baseline: FavoritesBaseline) => void;
   /**
@@ -602,6 +608,7 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     // How many relays said "no list". Consulted only when the read found none,
     // i.e. when this publish would CREATE the list. Issue #600.
     absence: { answered: read.answered, asked: opts.relays.length },
+    sawList: opts.sawList?.() ?? false,
     removalConfirmed: opts.confirmRemoval,
   });
 
@@ -647,6 +654,15 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
   // like the refusals above: no baseline, no signer prompt. The count travels
   // with it, because the question the notice asks is "remove 79 of 81?", and
   // that is the one thing no signer's approval sheet shows. Issue #600.
+  // No list on the relays, but this device saw one: the read missed it. A ♡
+  // here used to CREATE a list holding only what was new. Issue #600.
+  if (plan.reason === 'create-held') {
+    opts.onDegraded?.(plan.reason);
+    console.warn('[favorites] HOLDING this publish — no list on the relays, but this device saw one, '
+      + 'so the read missed it. Not creating a new list.');
+    return null;
+  }
+
   if (plan.reason === 'mass-removal') {
     opts.onDegraded?.(plan.reason, plan.removal);
     console.warn(

@@ -36,6 +36,11 @@
 //      and both `k` tags intact.
 //   D. The same question answered "remove them": the shrink goes through, and
 //      keeps `visibility`.
+//   F. A device that SAW the list (its baseline names an entry) reads "no list"
+//      from two relays while the one holding it is down. Nothing is published
+//      on load or on a ♡, and the notice offers RETRY alone — never "save as
+//      new list". The relay then comes back on the port the app was failing to
+//      reach, and retry publishes an EDIT of the found list.
 
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
@@ -66,9 +71,9 @@ const section = (s) => console.log(`\n--- ${s} ---`);
 
 // ---- relays -------------------------------------------------------------
 const published = []; // every kind:10333 any local relay accepted, with its relay
-async function relay(name) {
+async function relay(name, wantPort = 0) {
   const r = createRelay({
-    port: 0,
+    port: wantPort,
     log: null,
     onEvent: (e) => { if (e.kind === 10333) published.push({ relay: name, event: e }); },
   });
@@ -80,10 +85,11 @@ const empty1 = await relay('empty1');
 const empty2 = await relay('empty2');
 // A port with nothing on it: bound, read back, closed. The relay that holds the
 // list and does not answer — "never connected", which the read excludes.
-const deadUrl = await new Promise((resolve) => {
+const freePort = () => new Promise((resolve) => {
   const s = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-  s.once('listening', () => { const p = s.address().port; s.close(() => resolve(`ws://127.0.0.1:${p}`)); });
+  s.once('listening', () => { const p = s.address().port; s.close(() => resolve(p)); });
 });
+const deadUrl = `ws://127.0.0.1:${await freePort()}`;
 
 function publishTo(url, event) {
   return new Promise((resolve, reject) => {
@@ -297,6 +303,89 @@ check('"remove them" publishes the 2 the device holds', removedD?.tags.filter((x
 check('...and still states `visibility`', removedD?.tags.find((x) => x[0] === 'visibility'), ['visibility', 'public']);
 
 // ===========================================================================
+section('F. a device that SAW the list: "no list" offers retry only — on load AND on a ♡');
+// ===========================================================================
+// This device once agreed with the relays on a one-show list, so its baseline
+// names KEPT. Now the relay holding the (since grown) list is down, and two
+// relays say "no list" — enough for the two-answer rule, so only the baseline
+// stands between this device and a new list.
+const SEEN_BASELINE = baselineOfList(parseFavoritesList([
+  ['alt', 'PC 2.0 Favorites'], ['visibility', 'public'], ['i', `podcast:guid:${KEPT}`], ['k', 'podcast:guid'],
+]));
+const NEW2 = '917393e3-1b1e-5cef-ace4-edaa54e1f810';
+const shows = (...guids) => JSON.stringify(Object.fromEntries(guids.map((g, n) =>
+  [g, { id: 0, podcastGuid: g, title: `Show ${n}`, medium: 'podcast', addedAt: n + 1 }])));
+// Two relays that are still EMPTY for this account: B saved a list to empty1
+// and empty2, so they would answer with it. Nothing below publishes to these.
+const empty3 = await relay('empty3');
+const empty4 = await relay('empty4');
+const seenDevice = (latePort, cache) => fresh([`ws://127.0.0.1:${latePort}`, empty3.url, empty4.url], `
+  localStorage.setItem('bmb:npub', ${JSON.stringify(npub)});
+  localStorage.setItem('bmb:signer', 'nip07');
+  localStorage.setItem('bmb:fav_privacy:' + ${JSON.stringify(npub)}, 'public');
+  localStorage.setItem('bmb:favorites:' + ${JSON.stringify(npub)}, ${JSON.stringify(cache)});
+  localStorage.setItem('bmb:favbaseline:' + ${JSON.stringify(npub)}, ${JSON.stringify(JSON.stringify(SEEN_BASELINE))});`);
+const buttonsNow = () => js(`[...document.querySelectorAll('[role="status"] button')].map((b) => b.textContent.trim())`);
+
+// F1 — it holds only what it saw. The merge drops KEPT as "removed elsewhere"
+// and comes out EMPTY, which the older empty-merge guard already refuses.
+console.log('  F1: the device holds only the show it saw');
+await seenDevice(await freePort(), shows(KEPT));
+let beforeF = published.length;
+let signedBeforeF = signed;
+await send('Page.navigate', { url: APP });
+await waitFor(async () => (await buttonsNow()).length > 0, 40000);
+await wait(6000);
+check('F1: nothing was published', published.length - beforeF, 0);
+check('F1: and nothing was signed', signed - signedBeforeF, 0);
+check('F1: the ONLY button is retry', await buttonsNow(), ['retry']);
+
+// F2 — it also holds shows that are new. The merge then holds ONLY those, so
+// a create would publish them over the list it saw: #600 one step removed.
+console.log('  F2: the device holds the show it saw, plus two new ones');
+const latePort = await freePort();
+await seenDevice(latePort, shows(KEPT, NEW, NEW2));
+beforeF = published.length;
+signedBeforeF = signed;
+const logF = pageLog.length;
+await send('Page.navigate', { url: APP });
+const noticeF = await waitFor(async () => { const n = await notice(); return n && /saw it before/.test(n) ? n : null; }, 40000);
+await wait(6000);
+check('F2: the notice says this device saw the list', /No relay returned your favorites list, but this device saw it before/.test(noticeF ?? ''), true);
+if (!noticeF) console.log(`         notice: ${await notice()}\n         log: ${pageLog.slice(logF).join('\n              ')}`);
+check('F2: nothing was published', published.length - beforeF, 0);
+check('F2: and nothing was signed', signed - signedBeforeF, 0);
+check('F2: the ONLY button is retry — no "save as new list"', await buttonsNow(), ['retry']);
+
+// F3 — a ♡ goes through `syncFavorites`, its own read and the same planner.
+// Unfavoriting ANY one of the three still leaves a new show beside nothing
+// the read found, so the obvious code creates a list here.
+console.log('  F3: a ♡ in the same state');
+await send('Page.navigate', { url: APP + '/favorites' });
+const hearts = await waitFor(async () => (await js(`document.querySelectorAll('button[aria-pressed="true"][aria-label^="Unfavorite"]').length`)) || null, 40000);
+check('F3: the saved shows render with their hearts', (hearts ?? 0) >= 1, true);
+const tapped = await js(`(() => { const b = document.querySelector('button[aria-pressed="true"][aria-label^="Unfavorite"]'); if (b) b.click(); return b ? b.getAttribute('aria-label') : null; })()`);
+await wait(12000); // the 1.5 s debounce, the read's 4 s ceiling, and margin
+check(`F3: the ♡ ("${tapped}") published nothing`, published.length - beforeF, 0);
+check('F3: and asked for no signature', signed - signedBeforeF, 0);
+check('F3: the notice still offers retry only', await buttonsNow(), ['retry']);
+
+// The relay comes back, on the port the app has been failing to reach, holding
+// the 8-entry list. Retry finds it, and the change goes up as an EDIT of that
+// list — 9 entries, `visibility` kept — never as a small new one.
+const late = await relay('late', latePort);
+await publishTo(late.url, finalizeEvent({ kind: 10333, created_at: Math.floor(Date.now() / 1000) - 5, tags: WIRE, content: '' }, sk));
+const beforeRetry = published.length; // the seed above is not the app's
+await press('retry'); // the read retry may have found it first; either way the notice must go
+const clearedF = await waitFor(async () => (await notice()) === null, 30000);
+check('F: retry finds the list, and the notice goes', clearedF, true);
+await waitFor(() => published.length > beforeRetry, 20000);
+const editF = published.slice(beforeRetry).map((p) => p.event).at(-1);
+check('F: what goes up is the found list plus the new show (9 entries)', editF?.tags.filter((x) => x[0] === 'i').length, LIST_SIZE + 1);
+check('F: ...with `visibility` kept after `alt`', editF?.tags.slice(0, 2), [['alt', 'PC 2.0 Favorites'], ['visibility', 'public']]);
+for (const r of [late, empty3, empty4]) r.close?.();
+
+// ===========================================================================
 section('E. at phone width, the question fits and its buttons are targets');
 // ===========================================================================
 // CDP device emulation, never `--window-size`: Chrome lays a page out at its
@@ -331,7 +420,7 @@ await send('Emulation.clearDeviceMetricsOverride');
 // ===========================================================================
 section('Nothing left this machine');
 // ===========================================================================
-check('every kind:10333 landed on a local relay', published.every((p) => ['holder', 'empty1', 'empty2'].includes(p.relay)), true);
+check('every kind:10333 landed on a local relay', published.every((p) => ['holder', 'empty1', 'empty2', 'empty3', 'empty4', 'late'].includes(p.relay)), true);
 
 if (t.fails) console.log('\n  page log:\n   ' + pageLog.slice(-25).join('\n   '));
 console.log(`\n${t.count - t.fails}/${t.count} passed`);

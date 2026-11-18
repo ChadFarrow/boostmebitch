@@ -26,6 +26,7 @@ import {
 // module that owns the network calls would only widen what this file depends on.
 import {
   baselineIsTrustworthy,
+  baselineSawList,
   correctedModeFromWire,
   seedModeFromWire,
   EMPTY_BASELINE,
@@ -229,6 +230,9 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // heart-taps publishes once with the final set.
     local: localFavoriteList,
     baseline: () => trustedBaseline(identity.npub),
+    // The RAW baseline, never `trustedBaseline`: an empty cache beside a list
+    // that did not load is exactly when a create must not run. Issue #600.
+    sawList: () => baselineSawList(storage.favBaseline.get(identity.npub)),
     // Both callbacks also move `favoritesSync`, so the whole feature reports its
     // relay health from one place: hydration routes its own success through this
     // same `onSynced` (see favorites-hydrator.ts), and a publish that lands is

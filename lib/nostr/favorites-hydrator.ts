@@ -42,6 +42,7 @@ import {
   baselineHalf,
   claimedByBaseline,
   favoritesReadRetryable,
+  baselineSawList,
   type ListHalf,
   fetchFavoritesList,
   groupLocalFavorites,
@@ -366,6 +367,7 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     previousBaseline: baseline,
     // How many relays said "no list" — the create rule's count. Issue #600.
     absence: { answered: read.answered, asked: relays.length },
+    sawList: baselineSawList(storage.favBaseline.get(identity.npub)),
   });
 
   // THE READ FOUND NO LIST, AND TOO FEW RELAYS SAID SO TO BELIEVE IT.
@@ -376,6 +378,15 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // is on screen, paint nothing, record nothing. On 2026-11-18 this shape — one
   // empty answer while the relays holding the list were not reached — replaced
   // an 81-entry list with the 2 favorites this browser held (issue #600).
+  // THE READ FOUND NO LIST, BUT THIS DEVICE SAW ONE — so the read missed it.
+  // Same treatment as above, with its own notice: retry only, never "save as
+  // new list", and the read retry re-reads on its own (`favoritesReadRetryable`).
+  if (plan.reason === 'create-held') {
+    setFavoritesSync('degraded', 'create-held');
+    console.warn('[favorites] no list on the relays, but this device saw one — not creating it (issue #600)');
+    return;
+  }
+
   if (plan.reason === 'degraded') {
     setFavoritesSync('degraded');
     console.warn(
@@ -465,10 +476,7 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   const carriedNodes = merged.nodes.length + (privateMerged?.nodes.length ?? 0);
   const adoptable = mayAdoptRefusedRead({
     cacheHasEntries,
-    baselineClaimsEntries: rawBaseline.feeds.length > 0
-      || rawBaseline.items.length > 0
-      || (rawBaseline.privateFeeds?.length ?? 0) > 0
-      || (rawBaseline.privateItems?.length ?? 0) > 0,
+    baselineClaimsEntries: baselineSawList(rawBaseline),
     carriedNodes,
   });
   if (!deliberatelyEmpty && (plan.reason === 'wholesale-delete' || (mergedTotal === 0 && cacheHasEntries))) {
