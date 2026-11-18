@@ -565,14 +565,21 @@ export async function nwcKeysend(args: {
  * `lookupVerdict` and `lookupErrorVerdict` (`nwc-errors.ts`) for what each
  * answer proves.
  *
- * A method list that is KNOWN and lacks `lookup_invoice` skips the round trip;
- * a null list means "never asked", so ask. A read, so a suspect socket is
- * retried once on a fresh one — the case a page woken from the background is
- * in, since its socket was closed while it slept.
+ * The wallet's method list is read FIRST (`get_info`, when this session has not
+ * read it yet — a boost to node payees never does): a wallet that lacks
+ * `lookup_invoice` may not answer one at all, which would read as "no answer"
+ * after 15 s instead of "this wallet cannot look payments up". If the list
+ * cannot be read, ask anyway. A read, so a suspect socket is retried once on a
+ * fresh one — the case a page woken from the background is in, since its socket
+ * was closed while it slept.
  */
 export async function nwcLookupPayment(paymentHash: string): Promise<LegVerdict> {
   if (!hasNwc()) return { state: 'unknown', why: 'no-wallet' };
-  const methods = nwcGetMethods();
+  let methods = nwcGetMethods();
+  if (!methods) {
+    await nwcFetchCapabilities().catch(() => null);
+    methods = nwcGetMethods();
+  }
   if (methods && !methods.includes('lookup_invoice')) return { state: 'unknown', why: 'cannot-ask' };
   try {
     const tx = await withNwcClient((c) => lookupByHash(c, paymentHash), { retry: true });

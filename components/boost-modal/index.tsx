@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost, ValueBlock, ValueRecipient, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, pickRail, paidAny, payStampInvoice, type BoostResult, type Rail } from '@/lib/v4v/boost';
+import { sendBoost, pickRail, paidAny, payStampInvoice, SLOW_LEG_MS, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
@@ -24,6 +24,8 @@ import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './sender-name';
 import { useReplyAddress } from './use-reply-address';
 import { SplitsPreview, LightningStatus } from './splits-preview';
+import { UnconfirmedLegs } from './unconfirmed-legs';
+import { useUnconfirmedLegs, type LegKey } from './use-unconfirmed-legs';
 import { DroppedPayees } from './dropped-payees';
 import { NowPayingRow, splitTargetLabel, useLiveTarget } from '../live-now-playing';
 import { useActiveSplit } from './use-active-split';
@@ -222,7 +224,15 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // them would make <SplitsPreview> print each recipient's percentage against
   // the wrong total.
   const [hostResults, setHostResults] = useState<(BoostResult | undefined)[]>([]);
-  const [running, setRunning] = useState(false);
+  const [running, setRunningState] = useState(false);
+  // The same flag for code that runs outside a render — the wallet checks below,
+  // started by a timer or by the app coming back to the front, must not write a
+  // leg while a send or a retry is writing the same legs.
+  const runningRef = useRef(false);
+  const setRunning = (b: boolean) => {
+    runningRef.current = b;
+    setRunningState(b);
+  };
   // Inline error surface. This replaced two alert()s — the only ones in the
   // codebase, both on the payment path. A blocking native dialog over a modal
   // that is mid-teardown can't be styled, isn't read in context by a screen
@@ -247,6 +257,45 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     return () => { mountedRef.current = false; };
   }, []);
   const closeIfOpen = () => { if (mountedRef.current) onClose(); };
+
+  // The `?` legs: ask the wallet about each by its payment hash, and RETRY only
+  // what it says failed, under that same hash. → ./use-unconfirmed-legs
+  const legChecks = useUnconfirmedLegs({
+    legs: () => {
+      const sent = sentRef.current;
+      if (!sent) return [];
+      return [
+        ...Array.from(sent.collected, (result, i) => ({ key: `p:${i}` as LegKey, result })),
+        ...Array.from(sent.hostCollected, (result, i) => ({ key: `h:${i}` as LegKey, result })),
+      ].filter((l): l is { key: LegKey; result: BoostResult } => !!l.result);
+    },
+    busy: () => runningRef.current,
+    write: writeCheckedLeg,
+  });
+
+  // A leg the wallet answered for after the boost finished: a `paid` check, or
+  // a resend. Written into the boost as sent, like a "Retry N failed" leg; a leg
+  // that is now paid logs the boost (or updates the log) and posts the note if
+  // nothing had posted it yet. The panel stays open: the user is looking at it.
+  function writeCheckedLeg(key: LegKey, next: BoostResult, how: 'check' | 'resend') {
+    const sent = sentRef.current;
+    if (!sent) return;
+    const host = key.startsWith('h:');
+    const i = Number(key.slice(2));
+    const wasPaid = paidAny(sent.collected) || paidAny(sent.hostCollected);
+    if (host) {
+      sent.hostCollected = sent.hostCollected.map((old, k) => (k === i ? next : old));
+      setHostResults(sent.hostCollected);
+    } else {
+      sent.collected = sent.collected.map((old, k) => (k === i ? next : old));
+      setResults(sent.collected);
+    }
+    if (!next.ok) return;
+    // The note may still be to come, and the check `go()` started may be minutes
+    // old — as in `retryFailed`.
+    if (!sent.logged && sent.maySignAsSelf) sent.signerCheck = checkSignerLink();
+    void finishBoost(sent, { celebrate: how === 'resend' || !wasPaid, rail: 'nwc', stayOpen: true });
+  }
 
   // Share picker + the `anonymous` flag derived from it. Shared with
   // <BoostAllModal> via the hook rather than restated here — see
@@ -576,6 +625,48 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     }
   }
 
+  // ── The show's share of a redirected boost ──────────────────────────────
+  // Started by `go()` once every track leg has started (`onAllStarted`).
+  async function sendHostShare(sent: SentBoost, rail: Rail): Promise<void> {
+    // A separate send because it's a different value block: a valueTimeSplit
+    // redirects `remotePercentage` of the show's value to the track and leaves
+    // the rest with the show, so the two can't be merged into one block without
+    // rescaling both sets of weights and breaking splitSats' one-sat floor.
+    // Its legs start one at a time, after the last track leg has started.
+    //
+    // Non-fatal, and it must stay that way: the artist's legs have already gone
+    // out by the time this runs, so throwing here would report a boost that
+    // partly succeeded as a total failure and talk the user into paying twice.
+    if (sent.hostValue && sent.hostBoostagram) {
+      try {
+        sent.hostCollected = await sendBoost({
+          value: sent.hostValue,
+          totalSats: hostLeg!.sats,
+          boostagram: sent.hostBoostagram,
+          feedGuid: sent.hostRefs.podcastGuid,
+          rail,
+          onProgress: (res, index) =>
+            setHostResults((prev) => {
+              const next = prev.slice();
+              next[index] = res;
+              return next;
+            }),
+          moveOnAfterMs: SLOW_LEG_MS,
+        });
+        setHostResults(sent.hostCollected);
+      } catch (e) {
+        // Non-fatal, per the note above — but NOT silent. CLAUDE.md: "A guard
+        // that silently withholds must say so." With the artist's leg already
+        // paid and this one thrown, hostResults stays all holes, <LightningStatus>
+        // simply counts fewer settled legs, and nothing on screen said the
+        // show's share never went out. The modal already gets this right for the
+        // adjacent case (<DroppedPayees>); this is the same sentence for the
+        // thrown one.
+        setHostErr(getErrorMessage(e, "the show's share could not be sent"));
+      }
+    }
+  }
+
   async function go() {
     if (!rail) return;
     // Unlock the success sound NOW, inside the tap — the actual play() fires
@@ -746,6 +837,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // a StoredBoost leg against each of them for a payment nobody attempted,
     // while the show's leg below takes the whole 100. The feed authors that
     // percentage; the user never sees it.
+    // The show's share starts once every track leg has STARTED — not once they
+    // have all settled — so a slow track leg does not hold it either.
+    let hostRun: Promise<void> | null = null;
+    const startHost = () => {
+      if (!hostRun) hostRun = sendHostShare(sent, rail);
+    };
     if (primaryLeg.payable) {
       try {
         sent.collected = await sendBoost({
@@ -768,56 +865,31 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               next[index] = res;
               return next;
             }),
+          // A leg with no answer after SLOW_LEG_MS waits in the background while
+          // the next one starts (NWC only — `sendBoost` ignores it elsewhere).
+          // Chad, 2026-11-18: one leg the wallet answered late held the rest.
+          moveOnAfterMs: SLOW_LEG_MS,
+          onAllStarted: startHost,
         });
         setResults(sent.collected);
       } catch (e) {
         setSendErr(getErrorMessage(e, 'boost failed'));
-        setRunning(false);
-        return;
+        // `sendBoost` throws before its first leg, so the show's share has not
+        // started either — unless a leg threw after every leg had started.
+        if (!hostRun) {
+          setRunning(false);
+          return;
+        }
       }
     }
-
-    // ── The show's share of a redirected boost ──────────────────────────────
-    // A separate send because it's a different value block: a valueTimeSplit
-    // redirects `remotePercentage` of the show's value to the track and leaves
-    // the rest with the show, so the two can't be merged into one block without
-    // rescaling both sets of weights and breaking splitSats' one-sat floor.
-    // Sequential, like every other leg — NWC is a single relay connection.
-    //
-    // Non-fatal, and it must stay that way: the artist's leg has already been
-    // paid by the time this runs, so throwing here would report a boost that
-    // partly succeeded as a total failure and talk the user into paying twice.
-    if (sent.hostValue && sent.hostBoostagram) {
-      try {
-        sent.hostCollected = await sendBoost({
-          value: sent.hostValue,
-          totalSats: hostLeg!.sats,
-          boostagram: sent.hostBoostagram,
-          feedGuid: sent.hostRefs.podcastGuid,
-          rail,
-          onProgress: (res, index) =>
-            setHostResults((prev) => {
-              const next = prev.slice();
-              next[index] = res;
-              return next;
-            }),
-        });
-        setHostResults(sent.hostCollected);
-      } catch (e) {
-        // Non-fatal, per the note above — but NOT silent. CLAUDE.md: "A guard
-        // that silently withholds must say so." With the artist's leg already
-        // paid and this one thrown, hostResults stays all holes, <LightningStatus>
-        // simply counts fewer settled legs, and nothing on screen said the
-        // show's share never went out. The modal already gets this right for the
-        // adjacent case (<DroppedPayees>); this is the same sentence for the
-        // thrown one.
-        setHostErr(getErrorMessage(e, "the show's share could not be sent"));
-      }
-    }
+    startHost();
+    await hostRun;
 
     setPaymentDone(true);
     setRunning(false);
-    await finishBoost(sent, { celebrate: paidAny(sent.collected) || paidAny(sent.hostCollected), rail });
+    const finished = finishBoost(sent, { celebrate: paidAny(sent.collected) || paidAny(sent.hostCollected), rail });
+    legChecks.checkAll();
+    await finished;
   }
 
   // Pay again ONLY the legs `retryableLegs` proves sent nothing — never the
@@ -886,7 +958,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       setSendErr(getErrorMessage(e, 'retry failed'));
     }
     setRunning(false);
-    await finishBoost(sent, { celebrate: paidAny(retried), rail });
+    const finished = finishBoost(sent, { celebrate: paidAny(retried), rail });
+    // A retried leg the wallet did not answer is a `?` like any other.
+    legChecks.checkAll();
+    await finished;
   }
 
   // What happens once legs have settled — after the first send, and again
@@ -896,10 +971,15 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // would announce one boost twice. Its amount is the boost's intent
   // (invariant 7), so it stays true; only its summary receipt, minted from
   // the legs that had settled at the time, undercounts.
-  async function finishBoost(sent: SentBoost, opts: { celebrate: boolean; rail: Rail }) {
+  async function finishBoost(sent: SentBoost, opts: { celebrate: boolean; rail: Rail; stayOpen?: boolean }) {
     const { collected, hostCollected } = sent;
     const anyPaid = paidAny(collected) || paidAny(hostCollected);
     const retryLeft = retryableLegs(collected).length + retryableLegs(hostCollected).length > 0;
+    // A `?` leg keeps the panel open: it is where the wallet's answer about that
+    // payment appears, with RETRY when the wallet says it failed. Chad, after
+    // leaving the app mid-boost: "when the user comes back, they see the modal
+    // there". `stayOpen` is a check or a resend — the user is looking at it.
+    const holdOpen = opts.stayOpen || [...collected, ...hostCollected].some((r) => r && !r.ok && r.indeterminate);
 
     // Celebrate ONCE, after every leg of every block has settled — not inside
     // the first sendBoost. A redirected boost sends the track's block and then
@@ -924,7 +1004,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // into nothing for 40 s) failed with the modal gone: no message, and no
     // RETRY NOTE to press. The chat line still publishes in the background.
     const noteToPost = anyPaid && !sent.logged && sent.shareNostr;
-    if (anyPaid && !retryLeft && !noteToPost) setTimeout(closeIfOpen, 1500);
+    if (anyPaid && !retryLeft && !noteToPost && !holdOpen) setTimeout(closeIfOpen, 1500);
 
     if (!anyPaid) return;
     if (sent.logged) {
@@ -1013,7 +1093,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     const posted = await maybePublishNote(sent, allLegs, track, itemArtist, null, opts.rail);
     // The close held back above. A note that failed keeps the modal open, with
     // its reason and RETRY NOTE on screen.
-    if (noteToPost && posted && !retryLeft) setTimeout(closeIfOpen, 1500);
+    if (noteToPost && posted && !retryLeft && !holdOpen) setTimeout(closeIfOpen, 1500);
   }
 
   return (
@@ -1218,7 +1298,34 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <LightningStatus
             results={[...results, ...hostResults]}
             totalRecipients={value.recipients.length + (hostLeg?.recipients.length ?? 0)}
+            unconfirmed={
+              <UnconfirmedLegs
+                // `Array.from`, never `.map`: while legs settle these arrays have
+                // HOLES, which `.map` keeps and the spread turns into `undefined`.
+                legs={[
+                  ...Array.from(results, (result, i) => ({ key: `p:${i}` as LegKey, result })),
+                  ...Array.from(hostResults, (result, i) => ({ key: `h:${i}` as LegKey, result })),
+                ].filter((l): l is { key: LegKey; result: BoostResult } => !!l.result && !l.result.ok && !!l.result.indeterminate)}
+                views={legChecks.views}
+                busy={running}
+                onCheck={legChecks.check}
+                onRetry={(key) => {
+                  // Inside the tap, like BOOST: the chime after a resend that
+                  // pays plays past the gesture's activation window on iOS.
+                  primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
+                  legChecks.resend(key);
+                }}
+              />
+            }
           />
+          {/* The page stops in the background, and a wallet's answer that comes
+              while it is stopped is lost (a kind:23195 is not kept by relays).
+              The legs are asked about again on return, but say it first. */}
+          {running && (
+            <p className="text-[11px] text-muted" role="status" data-keep-open>
+              Keep the app open until the boost is done.
+            </p>
+          )}
           <PublishStatus state={pubState} />
         </div>
 
