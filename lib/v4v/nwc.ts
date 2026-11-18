@@ -10,10 +10,15 @@
 // file from a component puts the SDK back into every route's first load.
 
 import { nwc } from '@getalby/sdk';
+// `@noble/hashes`, not `crypto.subtle`: a phone testing over http://<LAN-IP> is
+// an insecure context, where `crypto.subtle` does not exist.
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 // The budget arithmetic lives in `lib/util.ts` so `npm run check:nwcbudget`
 // can load the shipping functions under plain Node — this module imports the
 // SDK (and, through nwc-state, `../storage`) and cannot be loaded that way.
 import { parseNwcBudget, spendableSats, unreachableWalletRelay, type NwcBudget } from '../util';
+import type { LegVerdict } from './nwc-errors';
 import { createLeasePool, type Lease } from './lease';
 import {
   hasNwc,
@@ -38,6 +43,8 @@ export { subscribeNwc, hasNwc, loadNwcUri, saveNwcUri, clearNwcUri, nwcGetMethod
 import {
   failureBlamesDestination,
   isSocketSuspect,
+  lookupErrorVerdict,
+  lookupVerdict,
   mapNwcError,
   NwcIndeterminateError,
   NwcMethodUnsupportedError,
@@ -47,6 +54,7 @@ import {
 } from './nwc-errors';
 
 export type { NwcBudget };
+export type { LegVerdict } from './nwc-errors';
 
 export {
   failureBlamesDestination,
@@ -498,16 +506,30 @@ export async function subscribeNwcNotifications(
   };
 }
 
+/**
+ * A fresh keysend preimage and its payment hash, both hex.
+ *
+ * Made HERE, before the request, because the hash is how a leg the wallet never
+ * answered is asked about afterwards (`nwcLookupPayment`), and a resend with the
+ * same preimage pays the same hash — which a node that already took it refuses.
+ */
+export function keysendPreimage(): { preimage: string; paymentHash: string } {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return { preimage: bytesToHex(bytes), paymentHash: bytesToHex(sha256(bytes)) };
+}
+
 export async function nwcKeysend(args: {
   pubkey: string;
   amount_msat: number;
   tlv_records?: { type: number; value: string }[];
+  /** From `keysendPreimage()`. A resend passes the FIRST attempt's. */
+  preimage?: string;
 }): Promise<string> {
-  // Generate a random preimage and pass it explicitly. Some NWC wallets
-  // (Zeus embedded node) require the client to supply the preimage rather
-  // than auto-generating it; wallets that auto-generate their own will
-  // ignore this and return their preimage in res.preimage.
-  const preimage = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
+  // Pass the preimage explicitly. Some NWC wallets (Zeus embedded node) require
+  // the client to supply it rather than auto-generating it; wallets that make
+  // their own ignore this and return theirs in res.preimage — and then a lookup
+  // by OUR hash answers NOT_FOUND, which retries nothing.
+  const preimage = args.preimage ?? keysendPreimage().preimage;
   try {
     // NO `retry`, for the same reason as `nwcPayInvoice`: this may already have
     // paid. A suspect socket is still discarded, so the next leg dials fresh.
@@ -534,6 +556,56 @@ export async function nwcKeysend(args: {
     // included, however final it reads.
     throw mapNwcError(e);
   }
+}
+
+/**
+ * Ask the wallet what happened to one payment we sent, by its payment hash
+ * (NIP-47 `lookup_invoice`). Never sends anything, and never throws: every way
+ * the question can fail is an `unknown` verdict, which retries nothing. See
+ * `lookupVerdict` and `lookupErrorVerdict` (`nwc-errors.ts`) for what each
+ * answer proves.
+ *
+ * A method list that is KNOWN and lacks `lookup_invoice` skips the round trip;
+ * a null list means "never asked", so ask. A read, so a suspect socket is
+ * retried once on a fresh one — the case a page woken from the background is
+ * in, since its socket was closed while it slept.
+ */
+export async function nwcLookupPayment(paymentHash: string): Promise<LegVerdict> {
+  if (!hasNwc()) return { state: 'unknown', why: 'no-wallet' };
+  const methods = nwcGetMethods();
+  if (methods && !methods.includes('lookup_invoice')) return { state: 'unknown', why: 'cannot-ask' };
+  try {
+    const tx = await withNwcClient((c) => lookupByHash(c, paymentHash), { retry: true });
+    return lookupVerdict(tx, paymentHash);
+  } catch (e) {
+    return lookupErrorVerdict(e);
+  }
+}
+
+type RawNip47Request = (
+  method: string,
+  params: Record<string, unknown>,
+  validate: (result: unknown) => boolean,
+  opts?: { replyTimeout?: number },
+) => Promise<unknown>;
+
+/**
+ * `lookup_invoice` WITHOUT the SDK's answer check. `NWCClient.lookupInvoice`
+ * (5.1.2) rejects any answer whose `invoice` is empty — and a KEYSEND has no
+ * invoice, so every keysend we ask about would come back as a validation error,
+ * "your wallet cannot tell", for exactly the legs this exists for (Spencer's, on
+ * 2026-11-18). So the request goes through the client's own request function,
+ * which the SDK keeps private, with a check that only wants an object; what the
+ * object proves is `lookupVerdict`'s job. If a later SDK renames the function,
+ * this falls back to `lookupInvoice`, which still works for invoice legs.
+ * `e2e:unconfirmed` answers a keysend lookup with `invoice: ''` to pin it.
+ */
+async function lookupByHash(c: nwc.NWCClient, paymentHash: string): Promise<unknown> {
+  const raw = (c as unknown as { executeNip47Request?: RawNip47Request }).executeNip47Request;
+  if (typeof raw !== 'function') return c.lookupInvoice({ payment_hash: paymentHash });
+  return raw.call(c, 'lookup_invoice', { payment_hash: paymentHash }, (r) => !!r && typeof r === 'object', {
+    replyTimeout: 15_000,
+  });
 }
 
 /** A BOLT11 this connection's wallet will receive, plus its payment hash. */
