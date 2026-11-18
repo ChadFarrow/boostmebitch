@@ -66,3 +66,21 @@ there with retry the splits."* He chose the single BOOST panel only (not BOOST A
   the RECIPIENTS scroll box (which may scroll the button away, and is `aria-live`).
 - A resend that does not succeed leaves the leg `?` and checks again: only the
   wallet's answer about that hash decides the next step.
+
+## Addendum: the note too (Chad, 2026-11-18)
+
+"Re-sign back in the roster" was "Nostr": *"if any of them fail, they just get
+skipped. And then when the user comes back, they can try them again."* So the
+rule covers the boost note as well as the splits.
+
+- Already true (#581): a signer link that cannot answer is found BEFORE signing;
+  the note is skipped with its reason, the panel stays open, and RETRY NOTE runs
+  a fresh signer check — the account menu's RECONNECT — then posts the same note.
+- Added: a signer that stays SILENT (a NIP-07 extension iOS Safari stopped while
+  the app was away) no longer holds the note on "Publishing…" for ever. After
+  10 s of silence on either signature, STOP WAITING skips the note; a signature
+  that arrives later is dropped; RETRY NOTE posts it later. An offer the user
+  presses, never an automatic stop, because Amber and a bunker answer only
+  after the user approves on the phone.
+- From the review: the panel cannot be closed by accident while a RETRY pays;
+  a refused RETRY says why; the NOT_FOUND line no longer reads as "not paid".

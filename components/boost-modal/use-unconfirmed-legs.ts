@@ -11,8 +11,16 @@ import { checkLeg, resendLeg, type BoostResult, type LegVerdict } from '@/lib/v4
  * A leg is asked about (`checkAll`) when the send or a retry has finished, each
  * time the app comes back to the front (`visibilitychange`, and `resume` after a
  * frozen page), and every `PENDING_RECHECK_MS` while the wallet says "pending",
- * `PENDING_RECHECKS` times at most. Asking pays nothing. Nothing here runs while
- * a send or a "Retry N failed" is going: those write the same legs.
+ * `PENDING_RECHECKS` times at most. Asking pays nothing. A check or a resend does
+ * not START while a send or a "Retry N failed" is going; one that started before
+ * finishes and writes its own leg into the CURRENT array, which every writer
+ * re-reads at write time, and "Retry N failed" never takes a leg with `nwcCheck`.
+ *
+ * `resending` is true while a RETRY payment is moving: the panel must not close
+ * by accident then (Escape, a backdrop press), or the result is dropped and a
+ * leg that paid stays `?` in the log. A refused RETRY keeps its reason in
+ * `retryErrors` until the leg is paid, so the line says why — the wallet's
+ * lookup will say "failed" again, and RETRY alone would repeat the refusal.
  */
 
 /** `p:<index>` for the track's (or the whole boost's) block, `h:<index>` for the show's share. */
@@ -51,6 +59,8 @@ export function useUnconfirmedLegs(args: {
 }) {
   const [views, setViews] = useState<Partial<Record<LegKey, LegView>>>({});
   const viewsRef = useRef(views);
+  const [retryErrors, setRetryErrors] = useState<Partial<Record<LegKey, string>>>({});
+  const retryErrorsRef = useRef(retryErrors);
   const argsRef = useRef(args);
   argsRef.current = args;
   const timers = useRef(new Map<LegKey, ReturnType<typeof setTimeout>>());
@@ -65,6 +75,13 @@ export function useUnconfirmedLegs(args: {
       else delete next[key];
       viewsRef.current = next;
       if (mounted.current) setViews(next);
+    },
+    setRetryError(key: LegKey, error: string | null) {
+      const next = { ...retryErrorsRef.current };
+      if (error !== null) next[key] = error;
+      else delete next[key];
+      retryErrorsRef.current = next;
+      if (mounted.current) setRetryErrors(next);
     },
     clearTimer(key: LegKey) {
       const t = timers.current.get(key);
@@ -91,6 +108,7 @@ export function useUnconfirmedLegs(args: {
       if (!mounted.current) return;
       if (v.state === 'paid') {
         a.setView(key, null);
+        a.setRetryError(key, null);
         argsRef.current.write(key, paidLeg(leg), 'check');
       } else if (v.state === 'pending') {
         const n = tries + 1;
@@ -131,6 +149,7 @@ export function useUnconfirmedLegs(args: {
       const next = await resendLeg(leg);
       if (!mounted.current) return;
       a.setView(key, null);
+      a.setRetryError(key, next.ok ? null : (next.error ?? ''));
       argsRef.current.write(key, next, 'resend');
       if (!next.ok) void a.check(key);
     },
@@ -158,6 +177,8 @@ export function useUnconfirmedLegs(args: {
 
   return {
     views,
+    retryErrors,
+    resending: Object.values(views).some((v) => v?.state === 'resending'),
     checkAll: () => api.current.checkAll(),
     check: (key: LegKey) => void api.current.check(key),
     resend: (key: LegKey) => void api.current.resend(key),

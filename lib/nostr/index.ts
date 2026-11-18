@@ -106,6 +106,7 @@ export { STAMP_FAILURE_TEXT, type SiteNoteState, type StampFailure } from '../si
 
 export {
   type PublishedNote,
+  SignStoppedError,
 } from './publish';
 
 export {

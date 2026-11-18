@@ -25,7 +25,7 @@
 //      15 s after the one before, not 60 s. Then each `?` is asked about:
 //      `settled` → ✓ with no second payment; `failed` → RETRY, which pays the
 //      SAME preimage and TLV again; `pending` → asked again 15 s later → ✓;
-//      NOT_FOUND → "no record", CHECK AGAIN, and never RETRY. One note. The
+//      NOT_FOUND → "may have paid under its own ID", CHECK AGAIN, never RETRY. One note. The
 //      panel never closes while a leg is `?`. No preimage reaches storage. At
 //      390 px the lines fit and every control is at least 24×24.
 //   2. A wallet whose `get_info` lacks `lookup_invoice`: no lookup is sent, the
@@ -34,6 +34,12 @@
 //      wallet sends meanwhile is lost. On wake the remaining leg is paid, the
 //      waiting leg goes `?`, is asked about, and turns ✓; the note posts.
 //   4. An LNURL leg: asked about by the payment hash in its BOLT11.
+//   5. A RETRY while its payment moves: Escape does not close the panel. The
+//      wallet then refuses it: the line says why, the leg stays `?` under the
+//      same hash, and RETRY comes back only after the wallet says failed again.
+//   6. A signer that does not answer (an iOS extension after the app was in the
+//      background): STOP WAITING skips the note, a late signature publishes
+//      nothing, and RETRY NOTE posts it later — one note, one receipt asked for.
 //
 // The SERVER still reads Podcast Index and the feeds for Two For Tunestr's
 // "Open Range". Back to back runs can draw a Podcast Index 429; wait a few minutes.
@@ -156,10 +162,13 @@ page.on(async (m) => {
 
 // An extension signer (NIP-07) backed by the throwaway user key.
 const convo = nip44.v2.utils.getConversationKey(userSk, userPk);
+// `heldSigns`, when an array, keeps every signEvent unanswered (section 6).
+let heldSigns = null;
 await send('Runtime.addBinding', { name: 'bmbSigner' });
 page.on(async (m) => {
   if (m.method !== 'Runtime.bindingCalled' || m.params.name !== 'bmbSigner') return;
   const { rid, fn, args } = JSON.parse(m.params.payload);
+  if (fn === 'signEvent' && heldSigns) { heldSigns.push({ rid, args }); return; }
   let out, err = null;
   try {
     if (fn === 'getPublicKey') out = userPk;
@@ -205,6 +214,16 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     Object.assign(WS, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
     WS.prototype = Real.prototype;
     window.WebSocket = WS;
+
+    // Every summary-receipt request the page sends. The server here signs with
+    // a THROWAWAY site key, which is not the brand's pinned npub the request
+    // names, so the route answers 400 and no receipt is minted: count the asks.
+    window.__receiptAsks = 0;
+    const realFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      if (String(input?.url ?? input).includes('/api/nostr/zap-receipt-sign')) window.__receiptAsks += 1;
+      return realFetch(input, init);
+    };
 
     const pending = new Map(); let k = 0;
     window.__bmbResolve = (rid, r) => { const p = pending.get(rid); pending.delete(rid); r.err ? p.reject(new Error(r.err)) : p.resolve(r.out); };
@@ -319,6 +338,7 @@ const notes = async () => {
   const all = (await js(`window.__published.map((p) => p.event)`)) ?? [];
   return [...new Map(all.filter((e) => e.kind === 1 && String(e.content).startsWith('⚡ Boost ⚡')).map((e) => [e.id, e])).values()];
 };
+const answerSign = (h) => js(`window.__bmbResolve(${JSON.stringify(h.rid)}, ${JSON.stringify({ out: finalizeEvent(h.args[0], userSk), err: null })})`);
 const sentCount = async () => /Lightning: (\d+)\/(\d+) sent/.exec(await dialogText())?.slice(1, 3).map(Number) ?? null;
 const storedLegs = async () => JSON.parse(String(await js(`localStorage.getItem(${JSON.stringify(`bmb:boosts:${userNpub}`)}) ?? '[]'`)))[0]?.legs ?? [];
 
@@ -392,8 +412,11 @@ if (runs(1)) {
   t.ok('Bravo: the wallet says failed → RETRY', !!(await untilLine('Bravo', 'failed', 20000)), await lineText('Bravo'));
   t.ok('...and the line says only what the wallet said', (await lineText('Bravo')).includes('Your wallet says this payment failed.'), await lineText('Bravo'));
   t.ok('Charlie: pending → asked again', !!(await untilLine('Charlie', 'pending', 20000)), await lineText('Charlie'));
-  t.ok('Delta: NOT_FOUND → "no record", never RETRY', !!(await untilLine('Delta', 'unknown', 20000)), await lineText('Delta'));
-  t.ok('...with the advice to look in the wallet', (await lineText('Delta')).includes('no record of this payment. Look in your wallet'), await lineText('Delta'));
+  t.ok('Delta: NOT_FOUND → unknown, never RETRY', !!(await untilLine('Delta', 'unknown', 20000)), await lineText('Delta'));
+  // NOT_FOUND is what a wallet that ignored our preimage says about a payment
+  // that went out: the line must not read as "not paid".
+  t.ok('...says the wallet may have paid under its own ID, and to look in the wallet',
+    (await lineText('Delta')).includes('It may have paid under its own ID. Look in your wallet'), await lineText('Delta'));
   t.ok('...and CHECK AGAIN, not RETRY', (await js(`!!${LINE('Delta')}?.querySelector('[data-leg-check]') && !${LINE('Delta')}?.querySelector('[data-leg-retry]')`)) === true);
   t.equal('every lookup named its leg\'s payment hash (sha256 of the preimage the app made)',
     [P.a, P.b, P.c, P.d].map((pk) => wallet.lookups(hashOf(firstPay(pk)?.preimage ?? '00')).length > 0), [true, true, true, true]);
@@ -542,6 +565,87 @@ if (runs(4)) {
     `${await lineState('India')} · ${await dialogText()}`);
   t.equal('the lookup named the hash in the BOLT11 (not the decoy `s` before it)', wallet.requests.filter((r) => r.method === 'lookup_invoice').map((r) => r.params.payment_hash), [lnurl.hash]);
   t.equal('one invoice asked for, one paid', [lnurl.asked, wallet.requests.filter((r) => r.method === 'pay_invoice').length], [1, 1]);
+  wallet.close();
+}
+
+// =============================================================================
+if (runs(5)) {
+  section('5. RETRY: no accidental close while it pays, and a refusal says why');
+  const P = node();
+  itemValue = valueOf([{ name: 'Juliet', type: 'node', address: P, split: 100 }]);
+  let held = null;
+  const wallet = await stubWallet({
+    methods: ALL_METHODS,
+    answer: (req) => {
+      if (req.method === 'pay_keysend') {
+        if (wallet?.pays(P).length > 1) held = req; // the RETRY: the test answers it
+        return null; // the first send: never answered → ?
+      }
+      if (req.method === 'lookup_invoice') return tx(req.params.payment_hash, { state: 'failed' });
+      return { error: { code: 'NOT_IMPLEMENTED', message: 'e2e' } };
+    },
+  });
+  t.ok('the boost modal opens', await openBoost(wallet.uri));
+  t.ok('SEND is pressed', await pressSend());
+  t.ok('Juliet: the wallet says failed → RETRY', !!(await untilLine('Juliet', 'failed', 90_000)), await lineText('Juliet'));
+  await js(`${LINE('Juliet')}?.querySelector('[data-leg-retry]')?.click()`);
+  for (let i = 0; i < 40 && !held; i += 1) await wait(250);
+  t.ok('the RETRY payment reaches the wallet', !!held);
+  t.ok('"Keep the app open" shows while it pays', (await dialogText()).includes('Keep the app open'), await dialogText());
+  // The two accidental exits <ModalShell> allows: Escape with focus in the card,
+  // and a press on the backdrop (x = 5 is inside the overlay's padding).
+  await js(`${DIALOG}?.focus()`);
+  for (const type of ['keyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await wait(400);
+  t.ok('Escape does not close the panel while the RETRY payment moves', await dialogOpen());
+  const midY = Number(await js('Math.round(innerHeight / 2)'));
+  for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: 5, y: midY, button: 'left', clickCount: 1 });
+  await wait(400);
+  t.ok('...nor does a press on the backdrop', await dialogOpen());
+  held?.reply({ error: { code: 'INSUFFICIENT_BALANCE', message: 'insufficient balance (e2e)' } });
+  t.ok('the wallet\'s refusal is shown on the line',
+    !!(await until(`(${LINE('Juliet')}?.innerText ?? '').includes('does not have enough sats')`, 20_000)), await lineText('Juliet'));
+  t.ok('...the leg is asked about again, and RETRY comes back only after "failed"', !!(await untilLine('Juliet', 'failed', 20_000)), await lineText('Juliet'));
+  t.ok('...with the reason still there', (await lineText('Juliet')).includes('does not have enough sats'), await lineText('Juliet'));
+  const [first, again] = wallet.pays(P);
+  t.equal('both payments carry the SAME preimage', again?.params?.preimage, first?.params?.preimage);
+  t.equal('two payments only: the send and the one RETRY', wallet.pays(P).length, 2);
+  t.equal('two lookups, both by that hash', wallet.lookups(hashOf(first?.params?.preimage ?? '00')).length, 2);
+  t.ok('the panel stays open (the leg is ?)', await dialogOpen());
+  wallet.close();
+}
+
+// =============================================================================
+if (runs(6)) {
+  section('6. a signer that does not answer: the note is skipped, and posted later');
+  const P = node();
+  itemValue = valueOf([{ name: 'Kilo', type: 'node', address: P, split: 100 }]);
+  const wallet = await stubWallet({
+    methods: ALL_METHODS,
+    answer: (req) => (req.method === 'pay_keysend' ? { result: { preimage: req.params.preimage } } : { error: { code: 'NOT_FOUND', message: 'e2e' } }),
+  });
+  t.ok('the boost modal opens', await openBoost(wallet.uri));
+  heldSigns = [];
+  t.ok('SEND is pressed', await pressSend());
+  t.ok('Kilo is paid', !!(await until(`/Lightning: 1\\/1 sent/.test(${DIALOG}?.innerText ?? '')`, 30_000)), await dialogText());
+  t.ok('the note asks the signer, which does not answer',
+    await (async () => { for (let i = 0; i < 80; i += 1) { if (heldSigns.length) return true; await wait(250); } return false; })());
+  t.ok('after a short wait, STOP WAITING appears', !!(await until(`!!${DIALOG}?.querySelector('[data-note-stop]')`, 20_000)), await dialogText());
+  await js(`${DIALOG}?.querySelector('[data-note-stop]')?.click()`);
+  const RETRY_NOTE = `[...(${DIALOG}?.querySelectorAll('button') ?? [])].find((b) => /retry note/i.test(b.textContent))`;
+  t.ok('STOP WAITING: "Note not posted", with RETRY NOTE',
+    !!(await until(`/Note not posted/.test(${DIALOG}?.innerText ?? '') && !!(${RETRY_NOTE})`, 5_000)), await dialogText());
+  const late = heldSigns ?? [];
+  heldSigns = null;
+  for (const h of late) await answerSign(h); // the signer answers after all
+  await wait(1500);
+  t.equal('the late signature is dropped: no note, no receipt asked for', [(await notes()).length, await js('window.__receiptAsks')], [0, 0]);
+  t.ok('the panel stays open', await dialogOpen());
+  await js(`(${RETRY_NOTE})?.click()`);
+  const posted = await (async () => { for (let i = 0; i < 80; i += 1) { const x = await notes(); if (x.length) return x; await wait(250); } return []; })();
+  t.equal('RETRY NOTE posts the note once', posted.length, 1);
+  t.equal('...after asking for one summary receipt', await js('window.__receiptAsks'), 1);
+  t.equal('one payment, never a second', wallet.pays(P).length, 1);
   wallet.close();
 }
 

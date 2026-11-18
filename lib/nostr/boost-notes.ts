@@ -619,11 +619,15 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
 
 export async function publishBoostNote(
   args: PublishArgs,
+  // `signal` stops the wait for the signer (a hung NIP-07 extension); a
+  // signature that arrives afterwards is dropped, never published.
+  // `onSigned` fires once the signer has answered. See `signAndPublish`.
+  opts: { signal?: AbortSignal; onSigned?: () => void } = {},
 ): Promise<PublishedNote> {
   const relays = args.relays ?? DEFAULT_RELAYS;
   // Signed by the user's own key, so a mention they typed is attributable to
   // them and may carry a `p` tag.
-  return signAndPublish(buildBoostNoteTemplate(args, true), relays);
+  return signAndPublish(buildBoostNoteTemplate(args, true), relays, { signal: opts.signal, onSigned: opts.onSigned });
 }
 
 /**

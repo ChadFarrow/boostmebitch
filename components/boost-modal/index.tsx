@@ -5,7 +5,7 @@ import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost, ValueBlock, ValueRecipient, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, payStampInvoice, SLOW_LEG_MS, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, SignStoppedError, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
 import { getErrorMessage, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playsAsTracks, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
@@ -103,6 +103,11 @@ async function noteTrackArtist(split: ValueTimeSplit, t: LiveTarget | null): Pro
  * it publishes, and a missing artist costs only the "by <artist>" words.
  */
 const NOTE_ARTIST_WAIT_MS = 2000;
+// How long the user's signer may stay silent on a boost note's signature before
+// the panel offers STOP WAITING (<PublishStatus>). An offer, never a timer that
+// stops by itself: Amber and a bunker answer only after the user approves on
+// their phone, and an automatic stop would drop that approval.
+const NOTE_SIGNER_WAIT_MS = 10_000;
 
 /** A stable empty list, so a show with no block does not re-run the leg memo every render. */
 const NO_RECIPIENTS: ValueRecipient[] = [];
@@ -577,12 +582,30 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // Written as the note's own signer rule, in the words `check:zapreceipt`
     // scans for.
     const { shareAs } = sent;
+    // The user's two signatures (the receipt's kind:9734, then the note) can
+    // each be walked away from: STOP WAITING appears after NOTE_SIGNER_WAIT_MS
+    // of silence and stops the wait. Nothing is posted, a late signature is
+    // dropped (`signAndPublish`'s `signal`), and RETRY NOTE posts it later.
+    const stopper = new AbortController();
+    let slow: ReturnType<typeof setTimeout> | undefined;
+    const awaitingSigner = () => {
+      clearTimeout(slow);
+      slow = setTimeout(() => setPubState({ kind: 'publishing', stop: () => stopper.abort() }), NOTE_SIGNER_WAIT_MS);
+    };
+    const signerAnswered = () => {
+      clearTimeout(slow);
+      setPubState({ kind: 'publishing' });
+    };
+    if (self && !summaryReceipt) awaitingSigner();
     summaryReceipt ??= await mintSummaryReceipt({
       paidSats: results.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0),
       refs: sent.hostRefs,
       relays,
       as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
+      signal: stopper.signal,
+      onSigned: signerAnswered,
     });
+    clearTimeout(slow);
     // The site signs only with a paid stamp (lib/site-stamp.ts), paid on
     // the rail the boost used. `sent.siteNote` carries the template, the paid
     // stamp and the signed event, so RETRY NOTE never pays a second stamp. Any
@@ -605,13 +628,24 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       };
     };
     try {
+      // Stopped while the receipt waited: ask for nothing more. The note's own
+      // signature would otherwise go out with a signal already fired — a prompt
+      // on the signer for a note that is then dropped.
+      if (stopper.signal.aborted) throw new SignStoppedError();
       const receipt = summaryReceipt ?? undefined;
+      if (self) awaitingSigner();
       // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
       // what each may do with them — the body always, the `p` tags only when
       // the user's own key signs — and that decision belongs there, not in a
       // caller that would have to remember it at every site.
       const { note, notice } = self
-        ? { note: await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track, itemArtist }), notice: undefined }
+        ? {
+            note: await publishBoostNote(
+              { podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track, itemArtist },
+              { signal: stopper.signal, onSigned: signerAnswered },
+            ),
+            notice: undefined,
+          }
         : await publishViaSite();
       setPubState({ kind: 'done', note, notice });
       storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
@@ -622,6 +656,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     } catch (e) {
       setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed'), retry });
       return false;
+    } finally {
+      clearTimeout(slow);
     }
   }
 
@@ -1097,11 +1133,13 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   }
 
   return (
-    // NOT dismissable while `running`: Escape or a stray backdrop click in the
-    // middle of a multi-leg send would take the per-leg results off screen
-    // while sats are still moving, and the legs settle sequentially so there is
-    // no single moment it's safe to lose sight of. The Cancel and × controls
-    // stay in charge either way.
+    // NOT dismissable while `running`, nor while a RETRY pays
+    // (`legChecks.resending`): Escape or a stray backdrop click in the middle of
+    // a multi-leg send would take the per-leg results off screen while sats are
+    // still moving, and a close during a RETRY drops its result, so a leg that
+    // paid stays `?` in the log. The legs settle sequentially, so there is no
+    // single moment it's safe to lose sight of. The Cancel and × controls stay
+    // in charge either way.
     //
     // scrollbar-gutter reserves the scrollbar's width even while it's not
     // shown, so content growing (a wrapped desc line, status rows appearing)
@@ -1110,7 +1148,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       onClose={onClose}
       label={episode?.title ?? podcast.title}
       className="w-full max-w-xl [scrollbar-gutter:stable]"
-      dismissable={!running}
+      dismissable={!running && !legChecks.resending}
       closeButton
     >
 
@@ -1307,6 +1345,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
                   ...Array.from(hostResults, (result, i) => ({ key: `h:${i}` as LegKey, result })),
                 ].filter((l): l is { key: LegKey; result: BoostResult } => !!l.result && !l.result.ok && !!l.result.indeterminate)}
                 views={legChecks.views}
+                retryErrors={legChecks.retryErrors}
                 busy={running}
                 onCheck={legChecks.check}
                 onRetry={(key) => {
@@ -1321,7 +1360,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           {/* The page stops in the background, and a wallet's answer that comes
               while it is stopped is lost (a kind:23195 is not kept by relays).
               The legs are asked about again on return, but say it first. */}
-          {running && (
+          {(running || legChecks.resending) && (
             <p className="text-[11px] text-muted" role="status" data-keep-open>
               Keep the app open until the boost is done.
             </p>

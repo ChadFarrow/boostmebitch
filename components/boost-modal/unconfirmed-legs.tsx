@@ -1,5 +1,6 @@
 'use client';
 import type { BoostResult } from '@/lib/v4v/boost';
+import { explainPaymentError } from '@/lib/util';
 import { PENDING_RECHECK_MS, PENDING_RECHECKS, type LegKey, type LegView } from './use-unconfirmed-legs';
 
 /**
@@ -12,16 +13,22 @@ import { PENDING_RECHECK_MS, PENDING_RECHECKS, type LegKey, type LegView } from 
  * RETRY appears ONLY for `failed`. Every other answer pays nothing and says so;
  * CHECK AGAIN only asks. A leg with no `nwcCheck` (WebLN, Spark, or an invoice
  * we could not read) cannot be asked about, so it keeps the plain line.
+ *
+ * A refused RETRY's reason (`retryErrors`) stays on the line until the leg is
+ * paid: the next lookup says "failed" again, and without the reason RETRY would
+ * repeat the same refusal with nothing on screen to say why.
  */
 export function UnconfirmedLegs({
   legs,
   views,
+  retryErrors,
   busy,
   onCheck,
   onRetry,
 }: {
   legs: { key: LegKey; result: BoostResult }[];
   views: Partial<Record<LegKey, LegView>>;
+  retryErrors: Partial<Record<LegKey, string>>;
   busy: boolean;
   onCheck: (key: LegKey) => void;
   onRetry: (key: LegKey) => void;
@@ -31,12 +38,18 @@ export function UnconfirmedLegs({
       {legs.map(({ key, result: r }) => {
         const name = r.recipient.name || 'recipient';
         const view = r.nwcCheck ? views[key] : undefined;
+        const retryError = retryErrors[key];
         return (
           <li key={key} data-leg={key} data-leg-state={view?.state ?? (r.nwcCheck ? 'waiting' : 'plain')} className="leading-snug">
             · {name} ({r.sats} sat)
             {view && (
               <div className="pl-3 flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span>{viewText(view)}</span>
+                <span>
+                  {viewText(view)}
+                  {retryError !== undefined && view.state !== 'resending' && (
+                    <span data-leg-retry-error> {retryErrorText(retryError)}</span>
+                  )}
+                </span>
                 {view.state === 'failed' && (
                   <button
                     type="button"
@@ -87,7 +100,9 @@ function viewText(v: LegView): string {
     case 'unknown': {
       const why = {
         'cannot-ask': 'Your wallet does not let the app look up payments.',
-        'not-found': 'Your wallet has no record of this payment.',
+        // NOT_FOUND is also what a wallet that ignored our preimage says about a
+        // payment that WENT OUT — so never words that read as "not paid".
+        'not-found': 'Your wallet found no payment under the ID the app gave it. It may have paid under its own ID.',
         'no-answer': 'Your wallet did not answer.',
         unclear: 'Your wallet cannot tell if this payment went through.',
         'no-wallet': 'No NWC wallet is connected, so the app cannot ask.',
@@ -95,4 +110,10 @@ function viewText(v: LegView): string {
       return `${why} Look in your wallet's history before you boost again.`;
     }
   }
+}
+
+/** Why the last RETRY did not go through, in the words `explainPaymentError` uses everywhere. */
+function retryErrorText(raw: string): string {
+  const { cause, action } = explainPaymentError(raw);
+  return `Last retry: ${cause}${action ? ` ${action}` : ''}`;
 }
