@@ -40,6 +40,7 @@ import {
   lnurlCallbackRefused,
   lnurlCommentRetry,
   lnurlErrorReason,
+  payInOrder,
   retryableLegs,
   unreachableWalletRelay,
 } from '../lib/util.ts';
@@ -776,6 +777,85 @@ console.log('\nretryableLegs');
   const naive = (rs) => rs.map((r, i) => (r && !r.ok ? i : -1)).filter((i) => i >= 0);
   check('(naive) re-pays an indeterminate leg', naive(results).includes(3) && !retryableLegs(results).includes(3), true);
   check('(naive) re-pays PAYMENT_FAILED', naive(results).includes(4) && !retryableLegs(results).includes(4), true);
+
+  // A leg that once went UNANSWERED carries `nwcCheck`: its payment hash. Its
+  // first payment may have gone through, so it is paid again only under that
+  // same hash (`resendLeg`, after the wallet says `failed`), where a second
+  // payment cannot be taken twice. This button pays under a FRESH hash, so such
+  // a leg never qualifies — not even when the resend's own error proves that
+  // the resend sent nothing, which says nothing about the first attempt.
+  const checked = { paymentHash: 'ab'.repeat(32), resend: { kind: 'invoice', invoice: 'lnbc1…' } };
+  const withChecked = [...results, leg(90, { error: RELAY, nwcCheck: checked })]; // 11: resent, relay down
+  check('a leg once unanswered is never retried under a new hash', retryableLegs(withChecked), [1, 8, 7, 0]);
+  const before = (rs) => rs.map((r, i) => (r && !r.ok && !r.indeterminate && r.sats > 0 && explainPaymentError(r.error).nothingSent ? i : -1)).filter((i) => i >= 0);
+  check('(naive: the rule before nwcCheck) re-pays it', before(withChecked).includes(11) && !retryableLegs(withChecked).includes(11), true);
+}
+
+// ── payInOrder: a slow leg does not hold the others ──────────────────────
+// The single BOOST panel, on the NWC rail: a leg with no answer after
+// `moveOnAfterMs` keeps waiting in the background while the next leg starts.
+// Starts stay in order and one at a time — only the WAITING overlaps — and the
+// run ends only when every leg has settled, because the log, the note and the
+// confetti read every leg's result.
+console.log('\npayInOrder');
+{
+  const tick = () => new Promise((r) => setImmediate(r));
+  const deferred = () => { let resolve, reject; const p = new Promise((a, b) => { resolve = a; reject = b; }); return { p, resolve, reject }; };
+  const harness = (opts) => {
+    const legs = [deferred(), deferred(), deferred()];
+    const timers = [];
+    const log = [];
+    let started = false;
+    let done = false;
+    let failed = null;
+    const timer = (ms) => { const d = deferred(); const t = { ms, d, cancelled: false }; timers.push(t); return { done: d.p, cancel: () => { t.cancelled = true; } }; };
+    payInOrder([2, 0, 1], (i) => { log.push(`start ${i}`); return legs[i].p.then(() => { log.push(`settle ${i}`); }); },
+      { ...opts, timer, onAllStarted: () => { started = true; } })
+      .then(() => { done = true; }, (e) => { failed = e; });
+    return { legs, timers, log, isStarted: () => started, isDone: () => done, failure: () => failed };
+  };
+
+  {
+    const h = harness({ moveOnAfterMs: 15000 });
+    await tick();
+    check('the first leg starts alone', h.log, ['start 2']);
+    check('...with a 15 s timer', h.timers.map((t) => t.ms), [15000]);
+    h.timers[0].d.resolve(); await tick();
+    check('no answer in 15 s: the next leg starts', h.log, ['start 2', 'start 0']);
+    h.legs[0].resolve(); await tick();
+    check('an answer in time starts the next at once, and cancels its timer', [h.log, h.timers[1].cancelled], [['start 2', 'start 0', 'settle 0', 'start 1'], true]);
+    h.legs[1].resolve(); await tick();
+    check('onAllStarted fires while the slow leg still waits', h.isStarted(), true);
+    check('...but the run has not ended', h.isDone(), false);
+    h.legs[2].resolve(); await tick();
+    check('the run ends when the slow leg settles', [h.isDone(), h.log.at(-1)], [true, 'settle 2']);
+  }
+  {
+    const h = harness({});
+    await tick();
+    check('without moveOnAfterMs there is no timer', h.timers.length, 0);
+    h.legs[0].resolve(); await tick();
+    check('...and a leg settling out of turn starts nothing', h.log, ['start 2']);
+    h.legs[2].resolve(); await tick();
+    check('...the next starts only when the current one settles', h.log, ['start 2', 'settle 2', 'start 0', 'settle 0', 'start 1']);
+  }
+  {
+    const h = harness({ moveOnAfterMs: 15000 });
+    await tick();
+    h.legs[2].reject(new Error('engine gone')); await tick();
+    check('a leg that THROWS stops the rest, as the plain loop did', h.log, ['start 2']);
+    check('...and the run rejects with it', String(h.failure()?.message), 'engine gone');
+  }
+  // `naive()`: race the timer and forget the slow leg — the run "ends" while a
+  // payment is still in flight, so the panel would log and celebrate a boost
+  // whose biggest leg it never heard from.
+  {
+    const legs = [deferred(), deferred()];
+    let done = false;
+    (async () => { for (const i of [0, 1]) await Promise.race([legs[i].p, Promise.resolve()]); })().then(() => { done = true; });
+    legs[1].resolve(); await tick();
+    check('(naive) ends before the slow leg settled', done, true);
+  }
 }
 
 if (failures) {
