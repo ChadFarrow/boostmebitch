@@ -60,7 +60,7 @@ import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04 } from 'nostr-tools';
 
-const APP = 'http://localhost:3000';
+const APP = process.env.BMB_APP ?? 'http://localhost:3000';
 const KEEP = process.argv.includes('--keep');
 
 await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
@@ -250,6 +250,14 @@ await send('Page.navigate', { url: `${APP}/favorites` }); await wait(15000);
 check('no dialog stands in front of the first favorite',
   await js(`(() => !!document.querySelector('[role="dialog"]'))()`), false);
 check('and the control already shows Public', await modeControlSays(), 'Favorites are: Public');
+// A PAGE LOAD DOES NOT CREATE THE LIST ON ITS OWN ANY MORE (issue #600). The
+// read found no list, so this publish would make one, and a create cannot know
+// what it replaces — a sign-in made one over an 81-entry list that the read had
+// missed. The notice asks instead; the user's "save as new list" is the publish.
+check('nothing is published before the user answers', published.length, 0);
+const asks = await js(`(() => { const n = [...document.querySelectorAll('[role="status"]')].find((x) => /No favorites list was found/.test(x.textContent)); return !!n; })()`);
+check('the notice asks before creating the list', asks, true);
+await js(`(() => { const b = [...document.querySelectorAll('[role="status"] button')].find((x) => x.textContent.trim() === 'save as new list'); if (b) b.click(); return !!b; })()`);
 await wait(16000);
 
 let last = published[published.length - 1];

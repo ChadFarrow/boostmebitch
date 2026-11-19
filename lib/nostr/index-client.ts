@@ -224,18 +224,26 @@ import { shapeLiveStreams, type NostrLiveStream } from './live-streams';
 import { DEFAULT_RELAYS } from './relays';
 import { parseProfileContent } from './auth';
 import { parseZapReceipt, type ZapReceipt } from './zap-receipt';
+import { isTestBoostNote } from './test-boost-notes';
 import { storage } from '../storage';
 
 function assemble(bundle: IndexBundle | null): DiscoveredNote[] | null {
   if (!bundle) return null;
+  // The test notes this repo's own scripts leaked to public relays
+  // (lib/nostr/test-boost-notes.ts) leave here, on the WIRE events and before
+  // assembly, so every read of the index drops them — not only the surfaces
+  // that render through `visibleNotes`. A reply under one then has no parent in
+  // the bundle, and `assembleFromBundle` drops it rather than promoting it.
+  const notes = bundle.notes.filter((e) => !isTestBoostNote(e));
   // An empty bundle is a real answer from a working index — the show simply has
   // no notes yet — but returning [] would let it count as a result and suppress
   // nothing, so hand back null and let the relay pass speak. The index is
-  // deliberately never the source of a "there are none" claim.
-  if (!bundle.notes.length) return null;
+  // deliberately never the source of a "there are none" claim. A bundle of
+  // nothing but test notes is the same answer.
+  if (!notes.length) return null;
   // DEFAULT_RELAYS only feeds the `nevent` relay hints inside each note, the
   // same value the relay path passes. It is not queried here.
-  return assembleFromBundle(bundle, DEFAULT_RELAYS);
+  return assembleFromBundle({ ...bundle, notes }, DEFAULT_RELAYS);
 }
 
 export async function indexedGlobalNotes(): Promise<DiscoveredNote[] | null> {

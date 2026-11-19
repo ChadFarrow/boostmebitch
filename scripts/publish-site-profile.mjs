@@ -50,7 +50,8 @@ const PROFILE = {
 //
 // kind:10002 is a CLAIM about where this identity writes, and the thing it has
 // to be true about is `DEFAULT_RELAYS` — `publishBoostNoteViaSite` hands exactly
-// that array to `publishSignedEvent`. A copy here said "must match" and then did
+// that array to `publishSignedEvent` for both boost modals (its `relays` option,
+// which only e2e:mentions passes, is for a local test relay). A copy here said "must match" and then did
 // not: `wss://relay.nostr.band` was measured out of `DEFAULT_RELAYS` on
 // 2026-08-25 for connecting and never sending EOSE, and this file kept it, so
 // the published NIP-65 list sent every outbox client to a fifth relay that holds

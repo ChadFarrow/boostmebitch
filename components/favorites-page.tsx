@@ -18,12 +18,14 @@ import {
   syncFavoritesNow,
 } from '@/lib/nostr';
 import {
-  EMPTY_PARSED, baselineOfList, parseFavoritesList, type ParsedList,
+  EMPTY_PARSED, baselineOfList, checkRestore, massRemoval, parseFavoritesList, repairsProblem,
+  restoreFeedGuids, restoreTags, type ParsedList, type RestoreCheck, type RestoreFeedFact, type RestoreFinding,
+  type RestoreRepair,
 } from '@/lib/nostr/favorites-list';
 import { getErrorMessage } from '@/lib/util';
 import { closedService, itemOnClosedHost } from '@/lib/moved-feeds';
 import {
-  loadEpisodeFromFeed, resolveEpisodeByGuid, resolvePodcastByGuid,
+  loadEpisodeFromFeed, lookupFeedGuids, resolveEpisodeByGuid, resolvePodcastByGuid,
   warmEpisodeCache, warmPodcastCache,
 } from '@/lib/podcast-meta';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
@@ -1224,6 +1226,11 @@ function PrivateFavoritesTool() {
  * "adopt what the relay holds", which is precisely what we want and is the
  * path a new browser already takes. `favCleared` is cleared too, or the
  * wholesale-delete guard reads the empty store as a deliberate clear-all.
+ *
+ * **A signature proves who wrote the file, not that it is right**, so the panel
+ * checks the public half first (`checkRestore`) and offers each repair as a box
+ * (`restoreTags`). Nothing ticked publishes the file byte for byte; nothing
+ * publishes at all before RESTORE. See docs/ui.md, "The restore check".
  */
 function RestoreBackup() {
   const identity = useApp((s) => s.identity);
@@ -1232,15 +1239,54 @@ function RestoreBackup() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [plan, setPlan] = useState<RestorePlan | null>(null);
+  const [check, setCheck] = useState<RestoreCheckState | null>(null);
+  const [repair, setRepair] = useState<RestoreRepair>(DEFAULT_REPAIR);
   const [msg, setMsg] = useState<{ tone: 'ok' | 'no'; text: string } | null>(null);
+  // Which file the check in flight belongs to. A second file chosen while the
+  // first is still being checked must not receive the first one's findings.
+  const checkFor = useRef(0);
+
+  // What RESTORE publishes, recomputed as the boxes change, so the numbers on
+  // screen are always the numbers of the list that would land.
+  const outTags = useMemo(
+    () => (plan && check?.result ? restoreTags(plan.event.tags, check.result, repair) : plan?.event.tags ?? []),
+    [plan, check, repair],
+  );
+  const outIds = useMemo(() => favoriteIds(parseFavoritesList(outTags)), [outTags]);
+  const removed = useMemo(() => {
+    if (!plan) return 0;
+    const out = new Set(outIds);
+    return plan.currentIds.filter((id) => !out.has(id)).length;
+  }, [plan, outIds]);
 
   if (!identity) return null;
+
+  async function runCheck(tags: string[][]) {
+    const token = ++checkFor.current;
+    setCheck({ result: null, stopped: false, titles: {} });
+    // `lookupFeedGuids` answers a failure as "stopped" rather than throwing, but
+    // RESTORE is held while this runs, so anything else that throws must still
+    // end it: as the findings the tags alone give, every feed "not checked".
+    const { answers, stopped } = await lookupFeedGuids(restoreFeedGuids(tags))
+      .catch(() => ({ answers: {} as Record<string, Podcast | null>, stopped: true }));
+    if (token !== checkFor.current) return;
+    const feeds: Record<string, RestoreFeedFact | null> = {};
+    const titles: Record<string, string> = {};
+    for (const [guid, podcast] of Object.entries(answers)) {
+      feeds[guid] = podcast ? { medium: podcast.medium } : null;
+      if (podcast?.title) titles[guid] = podcast.title;
+    }
+    setCheck({ result: checkRestore(tags, feeds), stopped, titles });
+  }
 
   async function chosen(file: File | undefined) {
     if (!identity || !file) return;
     setBusy(true);
     setPlan(null);
+    setCheck(null);
+    setRepair(DEFAULT_REPAIR);
     setMsg(null);
+    checkFor.current += 1;
     try {
       const parsed = parseFavoritesBackup(await file.text(), identity.pubkey);
       if (!parsed.ok) {
@@ -1260,14 +1306,16 @@ function RestoreBackup() {
         });
         return;
       }
+      const currentIds = read.exists ? favoriteIds(read.list) : [];
       setPlan({
         event: parsed.event,
         backupCount: favoriteIds(parseFavoritesList(parsed.event.tags)).length,
         backupHasPrivate: parsed.event.content.length > 0,
-        currentCount: read.exists ? favoriteIds(read.list).length : 0,
+        currentIds,
         currentExists: read.exists,
         currentAt: read.updatedAt,
       });
+      void runCheck(parsed.event.tags);
     } catch (e) {
       setMsg({ tone: 'no', text: getErrorMessage(e, 'That file could not be read.') });
     } finally {
@@ -1277,15 +1325,15 @@ function RestoreBackup() {
     }
   }
 
-  async function apply(p: RestorePlan) {
+  async function apply(p: RestorePlan, tags: string[][], count: number, fixed: boolean) {
     if (!identity) return;
     setBusy(true);
     setMsg(null);
     try {
       // `publishFavoritesTags` asserts the publish reached a relay, so a
       // resolved promise here is not the empty claim `publishSignedEvent`
-      // would have made.
-      await publishFavoritesTags(p.event.tags, p.event.content, resolvePublishRelays(identity));
+      // would have made. The encrypted half rides through untouched either way.
+      await publishFavoritesTags(tags, p.event.content, resolvePublishRelays(identity));
       // Fresh-device state, in this order. See the note above.
       storage.favBaseline.set(identity.npub, { feeds: [], items: [] });
       storage.favCleared.set(identity.npub, false);
@@ -1293,9 +1341,10 @@ function RestoreBackup() {
       setFavoriteEpisodes({});
       await hydrateFavorites(identity, 'user-initiated');
       setPlan(null);
+      setCheck(null);
       setMsg({
         tone: 'ok',
-        text: `Restored ${p.backupCount} favorites from the backup. `
+        text: `Restored ${count} favorites from the backup${fixed ? ', with the repairs you chose' : ''}. `
           + 'The list on screen is what the relays now hold.',
       });
     } catch (e) {
@@ -1309,6 +1358,13 @@ function RestoreBackup() {
     }
   }
 
+  const checking = !!check && !check.result;
+  const fixed = !!check?.result && check.result.findings.some((f) => repairsProblem(repair, f.problem));
+  const currentCount = plan?.currentIds.length ?? 0;
+  // #600's rule, on the list that would land: more than half of what the
+  // relays hold, and at least three. Then the button itself says the number.
+  const mass = !!plan?.currentExists && massRemoval({ removed, total: currentCount });
+
   return (
     <span className="flex flex-col items-start gap-1">
       <input
@@ -1316,6 +1372,7 @@ function RestoreBackup() {
         type="file"
         accept="application/json,.json"
         className="hidden"
+        data-restore-input
         onChange={(e) => chosen(e.target.files?.[0])}
       />
       <button
@@ -1328,7 +1385,7 @@ function RestoreBackup() {
         {busy && !plan ? 'reading file…' : '⇧ restore from backup'}
       </button>
       {plan && (
-        <span className="card p-3 flex flex-col gap-2 items-start max-w-prose">
+        <span className="card p-3 flex flex-col gap-2 items-start max-w-prose" data-restore-panel>
           <span className="text-[11px] text-bone">
             Replace the list on the relays with this backup?
           </span>
@@ -1337,27 +1394,49 @@ function RestoreBackup() {
             {new Date(plan.event.created_at * 1000).toLocaleString()}
             {plan.backupHasPrivate ? ', with an encrypted half' : ''}.{' '}
             {plan.currentExists
-              ? `The relays currently hold ${plan.currentCount}, last written ${new Date(plan.currentAt * 1000).toLocaleString()}.`
+              ? `The relays currently hold ${currentCount}, last written ${new Date(plan.currentAt * 1000).toLocaleString()}.`
               : 'The relays currently hold no list for this account.'}
           </span>
           {/* The number that decides it, stated as a loss rather than a diff:
               "replaces 287 with 284" is arithmetic a person has to do under
-              pressure, and getting it wrong costs entries. */}
-          {plan.currentExists && plan.currentCount > plan.backupCount && (
-            <span className="text-[11px] text-bone">
-              That is {plan.currentCount - plan.backupCount} fewer than you have now. Anything
-              added since this backup was taken will be gone.
+              pressure, and getting it wrong costs entries. It is the SET
+              difference, so a backup of the same size that holds other
+              favorites still says what goes. */}
+          {plan.currentExists && removed > 0 && (
+            <span className="text-[11px] text-bone" data-restore-removed={removed}>
+              {removed} of the {currentCount} favorites on the relays are not in this backup.
+              The restore removes them, and anything added since the backup was taken.
             </span>
           )}
+          <RestoreFindings
+            plan={plan}
+            check={check}
+            repair={repair}
+            setRepair={setRepair}
+            onRetry={() => runCheck(plan.event.tags)}
+            disabled={busy}
+          />
           <span className="text-[11px] text-muted">
             This replaces the whole event, including for every other app that reads your
             favorites. It cannot be undone except by restoring another backup.
           </span>
-          <span className="flex gap-2">
-            <button type="button" className="btn text-xs" disabled={busy} onClick={() => apply(plan)}>
-              {busy ? 'restoring…' : 'restore'}
+          <span className="flex gap-2 flex-wrap">
+            <button
+              type="button"
+              className="btn text-xs"
+              disabled={busy || checking}
+              data-restore-apply
+              onClick={() => apply(plan, outTags, outIds.length, fixed)}
+            >
+              {busy ? 'restoring…' : checking ? 'checking…'
+                : `${fixed ? 'restore with repairs' : 'restore'}${mass ? ` — removes ${removed}` : ''}`}
             </button>
-            <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => setPlan(null)}>
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              disabled={busy}
+              onClick={() => { checkFor.current += 1; setPlan(null); setCheck(null); }}
+            >
               cancel
             </button>
           </span>
@@ -1376,9 +1455,155 @@ interface RestorePlan {
   event: NostrEvent;
   backupCount: number;
   backupHasPrivate: boolean;
-  currentCount: number;
+  /** Favorites on the relays now, by id — the removal is a set difference. */
+  currentIds: string[];
   currentExists: boolean;
   currentAt: number;
+}
+
+/** `result` is null while Podcast Index is being asked. */
+interface RestoreCheckState {
+  result: RestoreCheck | null;
+  /** Asking stopped early, so `notChecked` is "could not ask", not "no feed". */
+  stopped: boolean;
+  /** Feed titles by guid, from the same answers, to name the rows. */
+  titles: Record<string, string>;
+}
+
+/**
+ * The repairs a restore starts with. The two that lose nothing are on; the one
+ * that drops rows is off, because a row this app cannot read may be another
+ * app's, and dropping it is the user's call to make with the box.
+ */
+const DEFAULT_REPAIR: RestoreRepair = { medium: true, duplicates: true, unreadable: false };
+
+const sumEntries = (fs: RestoreFinding[]) => fs.reduce((n, f) => n + f.entries, 0);
+
+/**
+ * Up to three feeds a set of findings comes from, named the way the library
+ * names them: the title Podcast Index gave, else the start of the guid.
+ */
+function exampleFeeds(fs: RestoreFinding[], titles: Record<string, string>): string {
+  const counts = new Map<string, number>();
+  for (const f of fs) if (f.feedGuid) counts.set(f.feedGuid, (counts.get(f.feedGuid) ?? 0) + f.entries);
+  const names = [...counts.entries()].slice(0, 3).map(([guid, n]) =>
+    `${titles[guid] ?? `feed ${guid.slice(0, 8)}…`}${n > 1 ? ` ×${n}` : ''}`);
+  return names.join(' · ') + (counts.size > 3 ? ` · and ${counts.size - 3} more` : '');
+}
+
+/**
+ * The restore check, on screen: what is wrong with the backup, and a box for
+ * each repair. It publishes nothing — RESTORE does, with the boxes as they are.
+ */
+function RestoreFindings({
+  plan, check, repair, setRepair, onRetry, disabled,
+}: {
+  plan: RestorePlan;
+  check: RestoreCheckState | null;
+  repair: RestoreRepair;
+  setRepair: (r: RestoreRepair) => void;
+  onRetry: () => void;
+  disabled: boolean;
+}) {
+  if (!check) return null;
+  if (!check.result) {
+    return <span className="text-[11px] text-muted" data-restore-checking>Checking the backup with Podcast Index…</span>;
+  }
+  const { findings, notChecked } = check.result;
+  const of = (...ps: RestoreFinding['problem'][]) => findings.filter((f) => ps.includes(f.problem));
+  const medium = of('no-medium', 'wrong-medium');
+  const noMedium = of('no-medium');
+  const wrong = of('wrong-medium');
+  const dupes = of('duplicate');
+  const broken = of('unreadable', 'no-parent');
+  const unknown = of('unknown-feed');
+  const unreadable = of('unreadable');
+  const orphans = of('no-parent');
+  const n = sumEntries;
+  // The most common "filed as X, feed says Y" pair, so the line names the
+  // actual mistake rather than "a different medium".
+  const pairs = new Map<string, number>();
+  for (const f of wrong) {
+    const k = `${f.medium} → ${f.feedMedium}`;
+    pairs.set(k, (pairs.get(k) ?? 0) + f.entries);
+  }
+  const topPair = [...pairs.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  const clean = !medium.length && !dupes.length && !broken.length && !unknown.length && !notChecked;
+
+  const box = (key: keyof RestoreRepair, label: string, detail: string | null, attr: string) => (
+    <label className="flex items-start gap-2 min-h-[24px] cursor-pointer" {...{ [attr]: '' }}>
+      <input
+        type="checkbox"
+        className="mt-1 h-4 w-4 shrink-0 accent-bolt"
+        checked={repair[key]}
+        disabled={disabled}
+        onChange={(e) => setRepair({ ...repair, [key]: e.target.checked })}
+      />
+      <span className="flex flex-col">
+        <span className="text-[11px] text-bone">{label}</span>
+        {detail && <span className="text-[11px] text-muted">{detail}</span>}
+      </span>
+    </label>
+  );
+
+  return (
+    <span className="flex flex-col gap-1.5 items-start border-l-2 border-line pl-2" data-restore-findings>
+      <span className="text-[11px] text-bone">
+        {clean ? 'Checked: no problems found in the backup.' : 'The check found:'}
+      </span>
+      {medium.length > 0 && box(
+        'medium',
+        `Set the medium on ${n(medium)} ${n(medium) === 1 ? 'favorite' : 'favorites'} from what the feed declares`,
+        [
+          noMedium.length
+            ? `${n(noMedium)} ${n(noMedium) === 1 ? 'has none, so it shows' : 'have none, so they show'} under “medium unknown”.`
+            : null,
+          wrong.length ? `${n(wrong)} ${n(wrong) === 1 ? 'carries' : 'carry'} another one (${topPair}).` : null,
+          exampleFeeds(medium, check.titles),
+        ].filter(Boolean).join(' '),
+        'data-restore-fix-medium',
+      )}
+      {dupes.length > 0 && box(
+        'duplicates',
+        `Remove ${n(dupes)} duplicate ${n(dupes) === 1 ? 'row' : 'rows'}`,
+        'The first copy of each stays.',
+        'data-restore-fix-duplicates',
+      )}
+      {broken.length > 0 && box(
+        'unreadable',
+        `Remove ${n(broken)} ${n(broken) === 1 ? 'row' : 'rows'} no app can open`,
+        [
+          unreadable.length
+            ? `${n(unreadable)} ${n(unreadable) === 1 ? 'names a feed id' : 'name feed ids'} this format cannot read.`
+            : null,
+          orphans.length
+            ? `${n(orphans)} ${n(orphans) === 1 ? 'names no feed, so nothing can look it up' : 'name no feed, so nothing can look them up'}.`
+            : null,
+        ].filter(Boolean).join(' '),
+        'data-restore-fix-unreadable',
+      )}
+      {unknown.length > 0 && (
+        <span className="text-[11px] text-muted" data-restore-unknown>
+          {n(unknown) === 1
+            ? '1 favorite is from a feed Podcast Index does not know. It is kept as it is.'
+            : `${n(unknown)} favorites are from feeds Podcast Index does not know. They are kept as they are.`}{' '}
+          {exampleFeeds(unknown, check.titles)}
+        </span>
+      )}
+      {notChecked > 0 && (
+        <span className="text-[11px] text-muted" data-restore-notchecked>
+          {notChecked} {notChecked === 1 ? 'favorite was' : 'favorites were'} not checked: Podcast Index did
+          not answer.{' '}
+          <button type="button" className="btn-inline" disabled={disabled} onClick={onRetry}>check again</button>
+        </span>
+      )}
+      {plan.backupHasPrivate && (
+        <span className="text-[11px] text-muted">
+          The encrypted half is not checked. It is restored exactly as saved.
+        </span>
+      )}
+    </span>
+  );
 }
 
 interface NamedEntry extends PrivateOnlyEntry {

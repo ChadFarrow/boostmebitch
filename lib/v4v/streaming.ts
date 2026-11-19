@@ -1152,6 +1152,9 @@ async function runSettle(
       value,
       totalSats: sats,
       boostagram: buildBoostagram(c, bucket, sats, atPositionSec),
+      // The feed that holds `episode_guid`, for an LNURL leg's BoostBox
+      // record — never a track bucket's feed, which rides in remote_*.
+      feedGuid: c.episode.podcastGuid ?? c.podcast.podcastGuid,
       rail,
     });
     if (!paidAny(results)) {

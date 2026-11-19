@@ -11,12 +11,48 @@ import { carriesV4V, isPlaylistMedium } from '@/lib/util';
 import { PodcastCover } from '../podcast-cover';
 import { FavHeart } from '../fav-heart';
 
+/**
+ * A cover that is its own control — see `<PodcastRow>`'s `coverPlay`. Built by
+ * `useAlbumCoverPlay` (`components/lists/use-album-cover-play.ts`).
+ *
+ * `state` is what the overlay on the cover draws and what a press does next:
+ * - `idle` ▶ — the album is not playing; a press starts it at its first track.
+ *   The overlay shows only under a mouse's hover or a keyboard's focus.
+ * - `loading` … — the press is waiting for the album's feed.
+ * - `playing` ❚❚ — a track of this album plays; a press pauses it.
+ * - `paused` ▶ — a track of this album is paused; a press resumes it.
+ * - `failed` ! — the last press could not load the album; a press tries again.
+ */
+export interface CoverPlay {
+  state: 'idle' | 'loading' | 'playing' | 'paused' | 'failed';
+  onPress: () => void;
+}
+
+const COVER_PLAY_GLYPH: Record<CoverPlay['state'], string> = {
+  idle: '▶', loading: '…', playing: '❚❚', paused: '▶', failed: '!',
+};
+// `title` is the short word a pointer user reads; the accessible name carries
+// the album too, because a list of covers is a list of identical buttons to a
+// screen reader otherwise.
+const COVER_PLAY_TITLE: Record<CoverPlay['state'], string> = {
+  idle: 'Play album', loading: 'Loading the album…', playing: 'Pause', paused: 'Resume',
+  failed: 'Could not load the album. Press to try again.',
+};
+const coverPlayLabel = (state: CoverPlay['state'], title: string) => ({
+  idle: `Play ${title}`, loading: `Loading ${title}`, playing: `Pause ${title}`, paused: `Resume ${title}`,
+  failed: `Could not load ${title}. Press to try again.`,
+})[state];
+
 export function PodcastRow({
   podcast,
   selected,
   onSelect,
   showV4VStamp,
   meta,
+  detail,
+  stamp,
+  coverBadge,
+  coverPlay,
   piUnasked,
   footer,
 }: {
@@ -24,6 +60,41 @@ export function PodcastRow({
   selected: boolean;
   onSelect: (p: Podcast) => void;
   showV4VStamp: boolean;
+  /**
+   * A short third line that must NEVER be cut — `/demu` puts the date and age
+   * of the newest track here (`Nov 14 · 1 day`). Not `meta`: that rides at the
+   * end of the author line, which truncates, and at 390px it hid the age on
+   * every row (measured, final review 2026-11-15). Optional; absent changes
+   * nothing.
+   */
+  detail?: React.ReactNode;
+  /**
+   * One more stamp in the title row, after the built-in ones — `/demu` marks an
+   * album shown without a value block (`NO VALUE BLOCK`). In the row that wraps,
+   * so it is never cut at 390px. Optional; absent changes nothing.
+   */
+  stamp?: React.ReactNode;
+  /**
+   * A small badge over the cover's top-left corner, positioned by the caller
+   * (`absolute`) inside a `relative` box the size of the cover — `/demu` shows
+   * which app made the feed. It is inside the row's button, so give it an
+   * accessible name. Optional; absent changes nothing.
+   */
+  coverBadge?: React.ReactNode;
+  /**
+   * Make the COVER its own control: a press plays the album, and the rest of
+   * the row still opens it — `/demu` (Chad, 2026-11-16: "if I click the
+   * artwork could it just play it?"). The cover then leaves the row's button
+   * and becomes a SIBLING button, because a button may not contain another
+   * button. Its glyph is a dark overlay ON the art — the episode row's shape —
+   * never a badge: a round ▶ badge on every cover was "too distracting" (Chad,
+   * iPhone, beta, 2026-11-17: "can it just maybe be like a transparent overlay
+   * kind of on the art … where you just kind of tap the art"). The album that
+   * holds the player keeps the overlay and a bolt border; an idle cover shows
+   * it only to a mouse's hover or a keyboard's focus. Optional; absent changes
+   * nothing.
+   */
+  coverPlay?: CoverPlay;
   /**
    * Extra text for the secondary line, beside the author.
    *
@@ -58,6 +129,48 @@ export function PodcastRow({
    */
   footer?: React.ReactNode;
 }) {
+  // The album holds the player, playing or paused. That follows WHICH album
+  // is current; the glyph follows the transport — the episode row's rule, so a
+  // paused album still shows where its ▶ is.
+  const holds = coverPlay?.state === 'playing' || coverPlay?.state === 'paused';
+  const cover = (
+    <div className="relative flex-shrink-0">
+      <PodcastCover
+        image={podcast.image}
+        artwork={podcast.artwork}
+        title={podcast.title}
+        seed={podcast.podcastGuid ?? String(podcast.id)}
+        className={`w-14 h-14 border flex-shrink-0 text-xl ${
+          holds ? 'border-bolt' : coverPlay ? 'border-bone/20 [@media(hover:hover)]:group-hover/cover:border-bolt' : 'border-bone/20'
+        }`}
+      />
+      {coverPlay ? (
+        // The overlay sits INSIDE the cover's border (`inset-px`), so the bolt
+        // border of the current album is not dimmed by it. An idle cover's
+        // overlay reveals on hover only where hover is real — `(hover: hover)`:
+        // iOS keeps `:hover` on the last element tapped, and a held reveal on
+        // an idle album would read as "this one is current". A tap still
+        // answers through `active:`, and a keyboard through `focus-visible:`.
+        // Before the app badge in the DOM, so that badge stays on top.
+        <span
+          aria-hidden
+          data-cover-play-glyph
+          className={`absolute inset-px grid place-items-center bg-ink/55 text-base leading-none transition-opacity pointer-events-none ${
+            coverPlay.state === 'idle'
+              ? 'opacity-0 text-bone [@media(hover:hover)]:group-hover/cover:opacity-100 [@media(hover:hover)]:group-hover/cover:text-bolt group-focus-visible/cover:opacity-100 group-active/cover:opacity-100'
+              : coverPlay.state === 'failed'
+                ? 'opacity-100 text-nostr'
+                : 'opacity-100 text-bolt'
+          }`}
+        >
+          <span className={coverPlay.state === 'loading' ? 'animate-pulse' : undefined}>
+            {COVER_PLAY_GLYPH[coverPlay.state]}
+          </span>
+        </span>
+      ) : null}
+      {coverBadge}
+    </div>
+  );
   return (
     // The row's opening control is a real <button>, with <FavHeart> as its
     // SIBLING — the same shape <EpisodeContents> uses for its seek row, and for
@@ -75,19 +188,28 @@ export function PodcastRow({
         selected ? 'bg-bolt/10' : 'hover:bg-bone/5'
       }`}
     >
+      {coverPlay ? (
+        // Full row height with the row button's `py-3`, so the cover sits where
+        // it sat inside that button and the whole left column is the target.
+        <button
+          type="button"
+          data-cover-play={coverPlay.state}
+          onClick={coverPlay.onPress}
+          aria-label={coverPlayLabel(coverPlay.state, podcast.title)}
+          aria-busy={coverPlay.state === 'loading' || undefined}
+          title={COVER_PLAY_TITLE[coverPlay.state]}
+          className="group/cover flex-shrink-0 py-3 cursor-pointer"
+        >
+          {cover}
+        </button>
+      ) : null}
       <button
         type="button"
         onClick={() => onSelect(podcast)}
         aria-current={selected || undefined}
         className="flex-1 min-w-0 flex gap-3 py-3 text-left cursor-pointer"
       >
-        <PodcastCover
-          image={podcast.image}
-          artwork={podcast.artwork}
-          title={podcast.title}
-          seed={podcast.podcastGuid ?? String(podcast.id)}
-          className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-        />
+        {coverPlay ? null : cover}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-display text-base leading-tight line-clamp-2 break-words min-w-0">{podcast.title}</span>
@@ -107,6 +229,7 @@ export function PodcastRow({
             {showV4VStamp && carriesV4V(podcast) && (
               <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
             )}
+            {stamp}
           </div>
           <div className="text-xs text-muted truncate">
             {podcast.author}
@@ -117,6 +240,7 @@ export function PodcastRow({
               </>
             ) : null}
           </div>
+          {detail ? <div className="text-xs text-muted whitespace-nowrap mt-0.5">{detail}</div> : null}
         </div>
       </button>
       {/* `self-center`, and it is not cosmetic: a bare flex child inherits
@@ -140,6 +264,10 @@ export function PodcastResults({
   onSelect,
   empty,
   meta,
+  detail,
+  stamp,
+  coverBadge,
+  coverPlay,
   piUnasked,
 }: {
   feeds: Podcast[];
@@ -147,6 +275,14 @@ export function PodcastResults({
   onSelect: (p: Podcast) => void;
   /** Per-row extra text for the secondary line — see `<PodcastRow>`'s `meta`. */
   meta?: (p: Podcast) => React.ReactNode;
+  /** Per-row line that is never cut — see `<PodcastRow>`'s `detail`. */
+  detail?: (p: Podcast) => React.ReactNode;
+  /** Per-row extra stamp in the title row — see `<PodcastRow>`'s `stamp`. */
+  stamp?: (p: Podcast) => React.ReactNode;
+  /** Per-row badge over the cover — see `<PodcastRow>`'s `coverBadge`. */
+  coverBadge?: (p: Podcast) => React.ReactNode;
+  /** Per-row cover control, or null for a row whose cover stays inside the row — see `<PodcastRow>`'s `coverPlay`. */
+  coverPlay?: (p: Podcast) => CoverPlay | null;
   /** Podcast Index was never asked — see `<PodcastRow>`'s `piUnasked`. */
   piUnasked?: boolean;
   /**
@@ -189,6 +325,10 @@ export function PodcastResults({
           onSelect={onSelect}
           showV4VStamp
           meta={meta?.(p)}
+          detail={detail?.(p)}
+          stamp={stamp?.(p)}
+          coverBadge={coverBadge?.(p)}
+          coverPlay={coverPlay?.(p) ?? undefined}
           piUnasked={piUnasked}
         />
       ))}

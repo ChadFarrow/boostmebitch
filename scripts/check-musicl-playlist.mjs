@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -577,6 +577,63 @@ console.log('\nWhich playlists a typed query surfaces');
 }
 
 // ---------------------------------------------------------------------------
+console.log('\nWhich playlists a query reaches only through a typo');
+// ---------------------------------------------------------------------------
+{
+  // `/api/search` PROMOTES an exact playlist match above Podcast Index's own
+  // ranking and appends a near one after it. So the two directions cost
+  // different things: a near match leaking into the exact tier lifts a
+  // `mutton` playlist over somebody who typed `button` on purpose, and an exact
+  // match leaking into the near tier lists one playlist twice.
+  const F = [
+    { title: 'ChadF Homegrown Hits Music Playlist', author: 'ChadFarrow', medium: 'musicL' },
+    { title: 'Mutton, Mead & Music Playlist', author: 'ChadF', medium: 'musicL' },
+    { title: 'LocalBitcoiners Community Playlist', author: 'Øystein', medium: 'podcastL' },
+    { title: 'Homegrown Hits', author: 'Various', medium: 'podcast' },   // the SHOW, not a list
+  ];
+  const near = (s, n = 10) => nearPlaylistsByQuery(F, s, n).map((f) => f.title);
+  const both = (s, n = 10) => matchPlaylistsByQuery(F, s, n).map((f) => f.title);
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const cases = [
+    ['muton', [F[1].title], 'one letter missing finds the playlist'],
+    ['mtuton', [F[1].title], 'two letters swapped is ONE edit'],
+    ['homegrwn hits', [F[0].title], 'every term must still land, one of them by typo'],
+    ['localbitconers', [F[2].title], 'a long word forgives a typo'],
+    ['oystein', [F[2].title], 'accents fold away in the near test'],
+    ['mutto', [], 'a word on its way to a match is already an EXACT substring, so it is not near'],
+    ['mutton', [], 'an exact match is never repeated in the near tier'],
+    ['mutten mead', [F[1].title], 'exact and near terms mix'],
+    ['muttn zzzz', [], 'one term that lands nowhere sinks the row'],
+    ['pod', [], 'a term under four letters forgives nothing'],
+    ['homegrwn', [F[0].title], 'the same-named SHOW never surfaces: the medium is re-checked'],
+    ['xxxxxx', [], 'two edits is past a six-letter budget'],
+    ['', [], 'a blank query matches nothing'],
+  ];
+  for (const [term, want, why] of cases) {
+    if (eq(near(term), want)) ok(`near ${JSON.stringify(term)}: ${why}`);
+    else fail(`near ${JSON.stringify(term)}: ${why}\n          got  ${JSON.stringify(near(term))}\n          want ${JSON.stringify(want)}`);
+  }
+  // `naive()` is the exact matcher: it must miss every typo vector above, or the
+  // vector proves nothing about the near tier.
+  for (const term of ['muton', 'mtuton', 'homegrwn hits', 'localbitconers', 'mutten mead']) {
+    if (filterPlaylistsByQuery(F, term, 10).length === 0) ok(`naive: the exact matcher misses ${JSON.stringify(term)}`);
+    else fail(`vector ${JSON.stringify(term)} is not a typo — the exact matcher already finds it`);
+  }
+  if (eq(both('playlist muton'), [F[1].title])) ok('matchPlaylistsByQuery: a near match alone is returned');
+  else fail(`matchPlaylistsByQuery near-only: ${JSON.stringify(both('playlist muton'))}`);
+  const tiered = [{ title: 'Muton Mix Playlist', author: '', medium: 'musicL' }, F[1]];
+  const order = matchPlaylistsByQuery(tiered, 'mutton', 10).map((f) => f.title);
+  if (eq(order, [F[1].title, 'Muton Mix Playlist'])) ok('an exact match outranks a near one even when PI listed it later');
+  else fail(`exact-before-near order wrong: ${JSON.stringify(order)}`);
+  if (matchPlaylistsByQuery(tiered, 'mutton', 1).length === 1) ok('the limit counts both tiers');
+  else fail('the limit must cover exact and near together');
+  if (nearPlaylistsByQuery(F, 'muton', 0).length === 0) ok('a 0 limit yields nothing, never everything');
+  else fail('limit 0 must yield nothing');
+  if (editDistanceWithin('kitten', 'sitting', 3) && !editDistanceWithin('kitten', 'sitting', 2)) ok('editDistanceWithin: kitten → sitting is 3');
+  else fail('editDistanceWithin must answer 3 for kitten → sitting');
+}
+
+// ---------------------------------------------------------------------------
 console.log('\nA matching playlist is lifted out of where PI buried it');
 // ---------------------------------------------------------------------------
 {
@@ -817,6 +874,8 @@ console.log('\nWhich search choice lists a publisher: what its feed publishes');
       switch (type) {
         case 'all': return true;
         case 'music': return music;
+        // #580's DEMU case before a publisher was read: the music half only.
+        case 'demu': return music;
         case 'playlist': return isPlaylistMedium(p);
         case 'podcast': return !music && !isPlaylistMedium(p);
         default: return false;
@@ -870,6 +929,13 @@ console.log('\nWhich search choice lists a publisher: what its feed publishes');
   vec('matches', 'read and naming none: still under PODCASTS', [pub([]), 'podcast'], true, { alsoNaive: true });
   vec('matches', 'a publisher of publishers says nothing: under PODCASTS', [pub(['publisher']), 'podcast'], true, { alsoNaive: true });
   vec('matches', 'a publisher of publishers is not MUSIC', [pub(['publisher']), 'music'], false, { alsoNaive: true });
+  // DEMU — Chad, 2026-11-16: "demu publisher should be in music and demu".
+  // This is the MUSIC half; the route's `isDemuFeed` then reads the publisher
+  // row's own generator and URL (check:demu), so a Fountain publisher of music
+  // passes here and is dropped there.
+  vec('matches', 'a music publisher is under DEMU (the music half)', [pub(['music']), 'demu'], true);
+  vec('matches', 'a playlist publisher is not under DEMU', [pub(['musicl']), 'demu'], false, { alsoNaive: true });
+  vec('matches', 'unknown: not claimed as DEMU', [pub(), 'demu'], false, { alsoNaive: true });
   vec('matches', 'every publisher is under ALL', [pub(['music']), 'all'], true, { alsoNaive: true });
   vec('matches', 'no publisher is a person', [pub(['music']), 'npub'], false, { alsoNaive: true });
 

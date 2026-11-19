@@ -20,15 +20,21 @@ import {
   splitAnchors,
   escapeDanglingLt,
   parsePublisherRef,
+  remoteItemFeedGuids,
+  feedHasValueTag,
+  newestItemImage,
 } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue, FEED_FANOUT } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
+import { confirmValueMissing, demuCopiesToHide, demuCopyCandidates, demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids, withCoverFallback } from './demu';
+import { DEMU_HIDE_AUTHORS, DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from './demu-hide-list';
+import type { DemuAlbum, PiMusicRow } from './demu';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -188,6 +194,12 @@ function buildPodcast(f: any): Podcast {
     artwork: f.artwork && f.artwork !== f.image ? f.artwork : undefined,
     url: f.url,
     medium: typeof f.medium === 'string' && f.medium.length > 0 ? f.medium : undefined,
+    // Read by the DEMU search lane (`isDemuFeed`): "not Wavlake" is a test on
+    // this field, never on the host. PI sends "" for a feed without one, and
+    // the "" is KEPT: `isDemuFeed` passes a blank generator and fails an
+    // absent one, so turning "" into `undefined` here would hide every DeMu
+    // feed that has no generator (190 of 1,163 on 2026-11-15).
+    generator: typeof f.generator === 'string' ? f.generator : undefined,
     v4vHint: piListsValue(f) || undefined,
     funding: fundingFromPi(f),
   };
@@ -398,10 +410,284 @@ export async function searchPlaylistFeeds(query: string, limit: number): Promise
         rosterInFlight,
         new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ROSTER_COLD_WAIT_MS); }),
       ]).finally(() => { if (timer) clearTimeout(timer); });
-      return filterPlaylistsByQuery(feeds ?? [], query, limit);
+      return matchPlaylistsByQuery(feeds ?? [], query, limit);
     }
   }
-  return filterPlaylistsByQuery(hit?.value ?? [], query, limit);
+  return matchPlaylistsByQuery(hit?.value ?? [], query, limit);
+}
+
+// ─── The DeMu roster (/demu) ─────────────────────────────────────────────────
+//
+// Every self-hosted music album, for the /demu page. The playlist roster above
+// is the pattern, and each rule below exists for the same reason it does there.
+// Design: docs/superpowers/specs/2026-11-15-demu-page-design.md.
+//
+// ONE call: `/podcasts/bymedium?medium=music` answers all of PI's music feeds
+// at once (8,671 on 2026-11-15, ~1 s) and ignores `max`. `demuRosterRows`
+// (lib/demu.ts, pinned by `check:demu`) keeps the DeMu ones: no Wavlake
+// generator, no closed host, not dead, one row per guid.
+
+/** A music feed changes slowly; one refresh serves six hours. */
+const DEMU_ROSTER_FRESH_MS = 6 * 60 * 60_000;
+/** A failed refresh keeps serving the last good roster for up to a day. */
+const DEMU_ROSTER_STALE_MS = 24 * 60 * 60_000;
+/**
+ * How long a page load waits on a COLD roster before it answers "not loaded
+ * yet"; past this the refresh keeps running and the next load is served from
+ * cache. 8 s, not the curated roster's 2.5 s: a refresh is now the music list
+ * and the value file in parallel, then the batch calls — ~2–3.5 s measured on
+ * 2026-11-16 — and this route serves only the /demu page, which says "loading
+ * DeMu…" while it waits. Under the bound, a cold instance's first visitor
+ * would mostly get "Could not load". Still inside PI_TIMEOUT_MS-sized calls.
+ */
+const DEMU_ROSTER_COLD_WAIT_MS = 8000;
+/**
+ * The whole music list is one body: 9.9 MB on 2026-11-15, over the shared
+ * `MAX_BODY_BYTES`, which would THROW rather than truncate. Room to grow.
+ */
+const DEMU_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Chad's V4V rule needs to know which feeds carry `<podcast:value>`, and the
+ * music list does not say. PI's static file of every feed with a value block:
+ * one fetch, no key (it refuses a request without a User-Agent), 18.4 MB and
+ * ~0.7 s on 2026-11-16. It is DAYS old (Last-Modified 2026-11-11 that day), so
+ * it misses the newest feeds — the batch call below covers those.
+ */
+const DEMU_VALUE_FILE_URL = 'https://tracking.podcastindex.org/feedValueBlocks.json';
+const DEMU_VALUE_FILE_MAX_BYTES = 64 * 1024 * 1024;
+/** `/podcasts/batch/byguid` answers at most 25 feeds per request (measured: 30, 50 and 100 all stop at 26). */
+const DEMU_BATCH_SIZE = 25;
+
+/** Ids of every feed PI's static file lists with a value block. Throws when the file cannot be read. */
+async function fetchValueFeedIds(): Promise<Set<number>> {
+  const res = await fetch(DEMU_VALUE_FILE_URL, {
+    headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(PI_TIMEOUT_MS * 2),
+  });
+  if (!res.ok) throw new Error(`feedValueBlocks.json ${res.status}`);
+  const rows: unknown = JSON.parse(await readCappedText(res, DEMU_VALUE_FILE_MAX_BYTES));
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error('feedValueBlocks.json read no rows');
+  const ids = new Set<number>();
+  for (const r of rows) {
+    const id = (r as { id?: unknown })?.id;
+    if (typeof id === 'number') ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * Whether each guid's feed has a value block, from the LIVE batch call — for
+ * the feeds the static file does not list yet. `valueBlock` there is a JSON
+ * string or null (`hasValueBlock` reads both shapes). Lower-cased guid keys.
+ * Throws on a PI failure, so the whole refresh fails and is not cached.
+ */
+async function batchHasValue(guids: readonly string[]): Promise<Map<string, boolean>> {
+  const chunks: string[][] = [];
+  for (let i = 0; i < guids.length; i += DEMU_BATCH_SIZE) chunks.push(guids.slice(i, i + DEMU_BATCH_SIZE));
+  const answers = await mapLimit(chunks, PI_FANOUT, async (chunk) => {
+    const res = await fetch(BASE + '/podcasts/batch/byguid', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(chunk),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(PI_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new PiHttpError(res.status, await readCappedText(res, 4 * 1024).catch(() => ''));
+    const data = JSON.parse(await readCappedText(res)) as { feeds?: unknown };
+    return Array.isArray(data.feeds) ? data.feeds : [];
+  });
+  const out = new Map<string, boolean>();
+  for (const feeds of answers) {
+    for (const f of feeds as { podcastGuid?: unknown; valueBlock?: unknown }[]) {
+      if (typeof f?.podcastGuid === 'string') out.set(f.podcastGuid.toLowerCase(), hasValueBlock(f.valueBlock));
+    }
+  }
+  return out;
+}
+
+/**
+ * At most this many TRACKS (summed `episodeCount`) in one `/episodes/byfeedid`
+ * call for the copy rule. PI's `max` is GLOBAL across the ids and caps at
+ * `PI_EPISODE_MAX` (1000); 400 leaves room for a count that lags the feed.
+ * An album over it is never read, so it is never a copy.
+ */
+const DEMU_TRACKS_PER_CALL = 400;
+
+/**
+ * Each album's audio URLs from Podcast Index, for the copy rule
+ * (`demuCopiesToHide`, lib/demu.ts). One `/episodes/byfeedid` call takes many
+ * ids and no `since` (measured 2026-11-17: 8084427,8084476,8084510 answer one
+ * catbox MP3 each). Two or three calls for the candidates of 2026-11-17.
+ *
+ * A call that fails, or comes back FULL (`max` reached, so some feed lost
+ * tracks), leaves its albums out of the map — and an album that is not in the
+ * map is never a copy. So a PI failure here shows a copy, never hides an album,
+ * and does not fail the refresh.
+ */
+async function demuTrackLists(albums: readonly DemuAlbum[]): Promise<Map<number, string[]>> {
+  const chunks: DemuAlbum[][] = [];
+  let chunk: DemuAlbum[] = [];
+  let tracks = 0;
+  for (const a of albums) {
+    const n = a.episodeCount ?? 0;
+    if (n <= 0 || n > DEMU_TRACKS_PER_CALL) continue;
+    if (chunk.length && (tracks + n > DEMU_TRACKS_PER_CALL || chunk.length >= PI_FEED_IDS_MAX)) {
+      chunks.push(chunk);
+      chunk = [];
+      tracks = 0;
+    }
+    chunk.push(a);
+    tracks += n;
+  }
+  if (chunk.length) chunks.push(chunk);
+  const out = new Map<number, string[]>();
+  await mapLimit(chunks, PI_FANOUT, async (ids) => {
+    try {
+      const data = await pi<{ items?: unknown }>(`/episodes/byfeedid?id=${ids.map((a) => a.id).join(',')}&max=${PI_EPISODE_MAX}`);
+      const rows = Array.isArray(data?.items) ? (data.items as { feedId?: unknown; enclosureUrl?: unknown }[]) : [];
+      if (rows.length >= PI_EPISODE_MAX) return;
+      const lists = new Map<number, string[]>(ids.map((a) => [a.id, []]));
+      for (const r of rows) {
+        const list = lists.get(Number(r?.feedId));
+        if (list && typeof r?.enclosureUrl === 'string' && r.enclosureUrl.trim()) list.push(r.enclosureUrl.trim());
+      }
+      for (const [id, list] of lists) out.set(id, list);
+    } catch (e) {
+      console.warn('[pi] DeMu copy rule could not read tracks; those albums stay:', e instanceof Error ? e.message : e);
+    }
+  });
+  return out;
+}
+
+/**
+ * The feeds Homegrown Hits plays — shown on /demu with or without a value
+ * block, and beyond the hide list's reach (`keepForDemu`). The show's own feed
+ * (1.3 MB on 2026-11-16) is read through `remoteItemFeedGuids`. A failure is
+ * NOT a failed refresh: the list then follows the other rules alone, which
+ * drops only the few played feeds without a value block (1 of 477 that day),
+ * and the next refresh restores them.
+ */
+async function fetchHomegrownHitsPlayed(): Promise<Set<string>> {
+  try {
+    const res = await fetch(HOMEGROWN_HITS_FEED_URL, {
+      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(PI_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    return new Set(remoteItemFeedGuids(await readCappedText(res, 16 * 1024 * 1024)));
+  } catch (e) {
+    console.warn('[pi] Homegrown Hits feed unreadable; /demu follows the other rules alone:', e instanceof Error ? e.message : e);
+    return new Set();
+  }
+}
+
+const DEMU_HIDDEN = new Set(DEMU_HIDE_LIST.map((h) => h.guid.toLowerCase()));
+const DEMU_HIDDEN_AUTHORS = new Set(DEMU_HIDE_AUTHORS);
+
+const demuRoster = createBoundedCache<DemuAlbum[]>({
+  maxAgeMs: DEMU_ROSTER_STALE_MS,
+  maxEntries: 1,
+});
+const DEMU_KEY = 'music';
+let demuInFlight: Promise<DemuAlbum[] | null> | null = null;
+
+/**
+ * One refresh. Resolves `null` when Podcast Index could not be asked, and that
+ * null is NEVER cached: "nobody answered" written as an empty roster would be
+ * served for six hours as "there is no DeMu music" — the page saying so over a
+ * PI outage, with nothing in a log to show why.
+ */
+async function refreshDemuRoster(): Promise<DemuAlbum[] | null> {
+  try {
+    const [data, valueIds, played] = await Promise.all([
+      pi<unknown>('/podcasts/bymedium?medium=music', DEMU_MAX_BYTES),
+      fetchValueFeedIds(),
+      fetchHomegrownHitsPlayed(),
+    ]);
+    // `null` when the answer read nothing — never cached, for the reason above.
+    const candidates = demuRosterFromPi(data, closedService);
+    if (!candidates) {
+      console.warn('[pi] DeMu roster refresh read no DeMu albums; not cached');
+      return null;
+    }
+    // Chad's rules, in his order (`keepForDemu`): played by Homegrown Hits →
+    // shown; on the hide list → not; made by MSP → shown; otherwise a value
+    // block is required — the static file's, plus the live batch answer for
+    // feeds the file does not list.
+    const rows = (data as { feeds?: unknown } | null)?.feeds;
+    const msp = mspFeedGuids(Array.isArray(rows) ? (rows as PiMusicRow[]) : []);
+    // Only a HIDDEN feed skips the batch question. A played or MSP feed is shown
+    // either way, but its NO VALUE BLOCK stamp must rest on an answer, not on the
+    // static file being days old (`valueMissing` in lib/demu.ts).
+    const batch = await batchHasValue(demuValueGaps(candidates, valueIds, DEMU_HIDDEN));
+    const shown = keepForDemu(candidates, { valueIds, batch, played, hidden: DEMU_HIDDEN, msp, hiddenAuthors: DEMU_HIDDEN_AUTHORS });
+    // Then one row per set of tracks: an older COPY of an album on the list goes
+    // (`demuCopiesToHide`, Chad, 2026-11-17). After `keepForDemu`, so a copy is
+    // compared only with albums that are shown. A failed read hides nothing.
+    const copies = demuCopiesToHide(shown, await demuTrackLists(demuCopyCandidates(shown)), played);
+    const kept = copies.size ? shown.filter((a) => !copies.has(a.id)) : shown;
+    // A NO VALUE BLOCK stamp must be true of the FEED, not of PI's channel-level
+    // data: MOOKY pays from an item-level block PI does not see. So each marked
+    // album's own RSS decides (a handful of feeds, through safeFetch and the RSS
+    // cache); an unreadable one loses the mark rather than gaining a false claim.
+    const rss = new Map<string, boolean | null>();
+    await mapLimit(kept.filter((a) => a.valueMissing && a.podcastGuid), FEED_FANOUT, async (a) => {
+      const xml = a.url ? await fetchFeedXml(a.url) : null;
+      rss.set(a.podcastGuid!.toLowerCase(), xml == null ? null : feedHasValueTag(xml));
+    });
+    const confirmed = confirmValueMissing(kept, rss);
+    // An album with no cover at all borrows its newest track's, from its own RSS
+    // (`newestItemImage`) — 4 feeds on 2026-11-16, all Crem Road. Same reader and
+    // fan-out as above; a feed that cannot be read keeps its letter placeholder.
+    const covers = new Map<string, string>();
+    await mapLimit(confirmed.filter((a) => !a.image && !a.artwork && a.url && a.podcastGuid), FEED_FANOUT, async (a) => {
+      const xml = await fetchFeedXml(a.url!);
+      const img = xml == null ? undefined : newestItemImage(xml);
+      if (img) covers.set(a.podcastGuid!.toLowerCase(), img);
+    });
+    const albums = withCoverFallback(confirmed, covers);
+    if (!albums.length) {
+      console.warn('[pi] DeMu roster refresh kept no album with a value block; not cached');
+      return null;
+    }
+    demuRoster.set(DEMU_KEY, albums, Date.now());
+    return albums;
+  } catch (e) {
+    console.warn('[pi] DeMu roster refresh failed:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/**
+ * The DeMu roster for `/api/demu`.
+ *
+ * `answered: false` means NOT LOADED (cold and not ready inside the bound, or
+ * every refresh so far failed), never "empty": the page must say "could not
+ * load", and the route must not let a CDN keep that answer. A stale roster is
+ * served as-is while a refresh runs behind it; refreshes are deduped.
+ */
+export async function getDemuRoster(): Promise<{ albums: DemuAlbum[]; answered: boolean; fetchedAt: number | null }> {
+  const now = Date.now();
+  const hit = demuRoster.get(DEMU_KEY, now);
+  if (!hit || hit.ageMs >= DEMU_ROSTER_FRESH_MS) {
+    if (!demuInFlight) {
+      demuInFlight = refreshDemuRoster().finally(() => { demuInFlight = null; });
+    }
+    if (!hit) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const albums = await Promise.race([
+        demuInFlight,
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), DEMU_ROSTER_COLD_WAIT_MS); }),
+      ]).finally(() => { if (timer) clearTimeout(timer); });
+      return albums
+        ? { albums, answered: true, fetchedAt: Date.now() }
+        : { albums: [], answered: false, fetchedAt: null };
+    }
+  }
+  return { albums: hit.value, answered: true, fetchedAt: now - hit.ageMs };
 }
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {

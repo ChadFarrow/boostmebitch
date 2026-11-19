@@ -4,11 +4,13 @@ import { searchCuratedPlaylists } from '@/lib/curated-roster';
 import type { CuratedHits } from '@/lib/curated-roster';
 import {
   curatedNotListed, filterPlaylistsByQuery, matchesSearchType, mergeRssOverPi, mergeSearchLanes,
-  parseSearchType, piRecordIsBlank, rankPlaylistsFirst, rankPublishersFirst,
+  nearPlaylistsByQuery, parseSearchType, piRecordIsBlank, rankPlaylistsFirst, rankPublishersFirst,
 } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 import { getPublisherMediums } from '@/lib/musicl-resolver';
+import { isDemuFeed } from '@/lib/demu';
+import { closedService } from '@/lib/moved-feeds';
 import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -259,6 +261,42 @@ export async function GET(req: Request) {
     }, 'search failed');
   }
 
+  if (type === 'demu') {
+    return withErrorHandling(async () => {
+      // The MUSIC lanes, keeping only self-hosted rows (`isDemuFeed`: no Wavlake
+      // generator, not on a closed host). `mergeSearchLanes(…, 'demu', …)` then
+      // applies the music half to byterm's rows, exactly as MUSIC does.
+      //
+      // A FILTER over two ranked lanes, which the comment above calls the bug —
+      // accepted here, and measured: listeners search a name they already know
+      // (an artist, an album) to check it before requesting it on Homegrown Hits,
+      // and on 2026-11-15 this found 60/60 random DeMu artists by name and 60/60
+      // random DeMu albums by title. A broad word comes back short (`bitcoin`: 54
+      // of PI's 60 music rows are Wavlake). The upgrade, if that bites, is a
+      // `/podcasts/bymedium?medium=music` roster as a third lane — see
+      // docs/feeds.md and docs/superpowers/specs/2026-11-15-demu-search-design.md.
+      //
+      // A DeMu PUBLISHER is under MUSIC and DEMU (Chad, 2026-11-16): its feed
+      // is read as under MUSIC (`withPublisherMediums`), `matchesSearchType`
+      // takes its `music` children, `isDemuFeed` reads the publisher row's own
+      // generator and URL, and it is lifted to the top, capped after the lift.
+      // A Fountain publisher (DJ Yo!, PI 8096868, generator "Fountain") is
+      // MUSIC only: `selfHosted` drops it before the merge.
+      const [music, { feeds, answered }] = await Promise.all([
+        searchMusicPodcasts(query, MAX_TYPED_HITS).catch(() => [] as Awaited<ReturnType<typeof searchMusicPodcasts>>),
+        searchPodcasts(query, 50).then(withPublisherMediums),
+      ]);
+      const selfHosted = (f: Podcast) => isDemuFeed(f, closedService);
+      const merged = mergeSearchLanes(music.filter(selfHosted), feeds.filter(selfHosted), 'demu', Infinity);
+      return answer(
+        rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
+        feeds.length,
+        type,
+        answered,
+      );
+    }, 'search failed');
+  }
+
   if (type === 'playlist') {
     return withErrorHandling(async () => {
       // The same two lanes `rankPlaylistsFirst` merges, minus the promotion: with
@@ -284,8 +322,22 @@ export async function GET(req: Request) {
       ]);
       const fromByterm = filterPlaylistsByQuery(feeds, query, MAX_TYPED_HITS);
       const curated = curatedNotListed(curatedHits.feeds, [...fromByterm, ...rosterHits]);
+      // Exact roster matches before the ones a typo away, whichever lane found
+      // them: a curated exact title outranks a PI roster near miss. The near
+      // ones come after every other row, byterm's publishers included: they are
+      // appended, never promoted.
+      const lanes = [...rosterHits, ...curated];
       const publishers = feeds.filter((f) => f.medium === 'publisher');
-      const merged = mergeSearchLanes(fromByterm, [...rosterHits, ...curated, ...publishers], 'playlist', Infinity);
+      const merged = mergeSearchLanes(
+        fromByterm,
+        [
+          ...filterPlaylistsByQuery(lanes, query, MAX_TYPED_HITS),
+          ...publishers,
+          ...nearPlaylistsByQuery(lanes, query, MAX_TYPED_HITS),
+        ],
+        'playlist',
+        Infinity,
+      );
       return answer(
         rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
         feeds.length,
@@ -342,15 +394,22 @@ export async function GET(req: Request) {
     // it — lives in `rankPlaylistsFirst`, which `check:musicl` pins against the
     // real `mutton` and `flowgnar` responses.
     //
+    // Only an EXACT roster match is promoted. A playlist a typo away goes after
+    // PI's own results: lifting it would put the `mutton` playlist over the
+    // results of somebody who typed `button` on purpose.
+    //
     // Then a matching PUBLISHER feed goes above all of it, PI's leader
     // included: it is the artist's whole catalogue, and PI ranks it under every
     // album it lists (`longy`: row 37 of 40). `rankPublishersFirst` holds the
-    // rule and the measurements, pinned by `check:musicl`.
+    // rule and the measurements, pinned by `check:musicl`. The near matches are
+    // added after that, so no typo is ever lifted.
+    const lanes = [...rosterHits, ...curated];
     const ranked = rankPublishersFirst(
-      rankPlaylistsFirst(feeds, [...rosterHits, ...curated], query, MAX_PLAYLIST_HITS),
+      rankPlaylistsFirst(feeds, filterPlaylistsByQuery(lanes, query, MAX_PLAYLIST_HITS), query, MAX_PLAYLIST_HITS),
       query,
       MAX_PUBLISHER_HITS,
     );
-    return answer(ranked, ranked.length, 'all', curatedHits.answered);
+    const listed = [...ranked, ...curatedNotListed(nearPlaylistsByQuery(lanes, query, MAX_PLAYLIST_HITS), ranked)];
+    return answer(listed, listed.length, 'all', curatedHits.answered);
   }, 'search failed');
 }

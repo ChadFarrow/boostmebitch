@@ -1,0 +1,69 @@
+# Copies every community playlist feed to the `playlists` branch of this repo
+# (Chad, 2026-11-19: "when someone hits publish, it saves to the Boost Me Bitch
+# repo in a folder with just all the playlists"). Test playlists too: the folder
+# is also where anyone takes a test playlist from. Reasoning: docs/feeds.md,
+# "The GitHub copy".
+#
+# WHEN. On a `workflow_dispatch`, which the site sends after each publish, edit
+# and delete (`lib/community/archive-notify.ts`, set up with GITHUB_ARCHIVE_TOKEN),
+# and every 15 minutes, so a missed ping or a site without that token is late,
+# never lost. Every run copies EVERYTHING, so runs never need to know why they
+# started, and `concurrency` folds a burst of publishes into one more run.
+#
+# WHERE. The `playlists` branch, never `main` or `beta`: a commit on `main`
+# deploys production on both sites, and `beta` is rebuilt by force push, which
+# would drop the files. The branch carries its own vercel.json that turns Vercel
+# off for it. The script starts the branch on its first run.
+#
+# WHO WRITES. This job's own GITHUB_TOKEN, which lives for one run. The site
+# never holds a token that can push: GITHUB_ARCHIVE_TOKEN may only start
+# workflows. The copy step gets no token at all, because it reads third-party
+# text. Nothing a playlist contains reaches a `run:` line: the feeds are written
+# as files and the commit message is read from a file.
+#
+# A `workflow_dispatch` or `schedule` workflow runs from the DEFAULT branch's copy
+# of this file, so it does nothing until it is on `main`.
+
+name: Playlist archive
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: playlist-archive
+  # Never cancel: a run already pushing must finish. A newer pending run
+  # replaces an older pending one, which is the folding wanted here.
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check out the playlists branch, or start it
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash src/scripts/playlist-archive-git.sh checkout archive
+
+      - name: Copy every playlist feed
+        run: node src/scripts/playlist-archive.mjs --root archive --message-file "$RUNNER_TEMP/playlist-archive-message.txt"
+
+      - name: Commit and push what changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash src/scripts/playlist-archive-git.sh push archive "$RUNNER_TEMP/playlist-archive-message.txt"

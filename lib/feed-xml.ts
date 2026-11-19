@@ -617,6 +617,67 @@ const PODROLL_BLOCK_TAG = 'podcast:podroll';
 export const MAX_PLAYLIST_REFS = 5000;
 
 /**
+ * The cover of a feed's NEWEST track (by `<pubDate>`, never by document order),
+ * for a feed that names no cover of its own. Crem Road's feeds carry no channel
+ * `<itunes:image>` or `<image><url>` at all, only one per track, so Podcast Index
+ * holds no image and `/demu` drew a letter (Chad, 2026-11-16). A track without a
+ * cover is skipped; only an http(s) URL counts — `javascript:` and `data:` are not
+ * covers. With no dates at all, the first track with a cover. `undefined` when no
+ * track has one. Through `findBlocks`/`readAttr`, like every parser here.
+ */
+export function newestItemImage(xml: string): string | undefined {
+  let best: { at: number; url: string } | undefined;
+  for (const item of findBlocks(xml, 'item')) {
+    const tag = firstTag(item.inner, 'itunes:image');
+    const href = tag ? readAttr(tag.attrs, 'href')?.trim() : undefined;
+    if (!href || !/^https?:\/\//i.test(href)) continue;
+    const date = firstBlock(item.inner, 'pubDate');
+    const parsed = date ? Date.parse(decodeXmlText(date.inner).trim()) : NaN;
+    const at = Number.isFinite(parsed) ? parsed : -Infinity;
+    if (!best || at > best.at) best = { at, url: href };
+  }
+  return best?.url;
+}
+
+/**
+ * True when a feed carries any `<podcast:value>` block — on the channel OR on an
+ * item. Podcast Index's value data is channel-level only, so it calls an
+ * item-level-only feed valueless: MOOKY (Podhome) pays two recipients from its
+ * track while PI says none (2026-11-16). `/demu` asks this before it stamps a row
+ * NO VALUE BLOCK.
+ */
+export function feedHasValueTag(xml: string): boolean {
+  // `firstTag` matches the NAME exactly, so `<podcast:valueRecipient>` and
+  // `<podcast:valueTimeSplit>` are not a value block (check:demu pins both).
+  return firstTag(xml, 'podcast:value') !== undefined;
+}
+
+/**
+ * Every feed a document's `<podcast:remoteItem>` tags name — ANYWHERE in it:
+ * channel-level, inside an `<item>`, inside a `<podcast:valueTimeSplit>`.
+ * Lower-cased, deduped, in document order, capped at `MAX_PLAYLIST_REFS`.
+ *
+ * For `/demu`'s always-show list: Homegrown Hits plays only DeMu and names each
+ * song's feed in a valueTimeSplit's remoteItem (1,932 tags, 631 feeds on
+ * 2026-11-16). Through `readAttr`, like every parser here, so an
+ * `x-feedGuid` decoy is not a feedGuid. Unlike `parsePlaylistRemoteItems` this
+ * reads feeds only — no item guids, no podroll rule — because the caller asks
+ * "does this show play anything from that feed", not "which track is this".
+ */
+export function remoteItemFeedGuids(xml: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of findTags(xml, 'podcast:remoteItem')) {
+    const g = readAttr(tag.attrs, 'feedGuid')?.trim().toLowerCase();
+    if (!g || seen.has(g)) continue;
+    seen.add(g);
+    out.push(g);
+    if (out.length >= MAX_PLAYLIST_REFS) break;
+  }
+  return out;
+}
+
+/**
  * Per-guid length caps, mirroring app/api/episode-by-guid/batch/route.ts.
  * A feed guid is a UUID; an item guid is any globally-unique string and real
  * feeds use permalink URLs, so the two limits differ by a lot.
