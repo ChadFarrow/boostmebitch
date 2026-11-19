@@ -79,9 +79,9 @@ interface PublishArgs {
  * What one note is about, decided once per note: `show` names the feed the song
  * belongs to (for a playlist song, its OWN album, never the playlist), `container`
  * is the playlist it was heard on (or null), and `heardOrigin` is where that
- * playlist's link points — the community feed origin for a playlist BMB hosts
- * (a test store's playlist lives on the test origin, never on boostmebuddy.com),
- * the note brand's origin for any other.
+ * playlist's page is, for the hint on its `i` tag — the community feed origin
+ * for a playlist BMB hosts (a test store's playlist lives on the test origin,
+ * never on boostmebuddy.com), the note brand's origin for any other.
  *
  * The SENTENCE still names the playlist as the `from <where>` (`boostSentence`,
  * the shared format's rule 3): `show` decides the links and the hints, which
@@ -515,14 +515,13 @@ const SHEDS: readonly Shed[] = [
 ];
 
 /**
- * `🎧 Heard on <playlist>[ by nostr:<maker>]` and, when the playlist has a guid,
- * its link on `heardOrigin` — for a song played from a playlist, and nothing
- * otherwise. The maker is the first npub the playlist declares, the same one
- * `noteNpubs` already `p`-tags through the container.
+ * `🎧 Heard on <playlist>[ by nostr:<maker>]` — for a song played from a
+ * playlist, and nothing otherwise. The maker is the first npub the playlist
+ * declares, the same one `noteNpubs` already `p`-tags through the container.
  */
 function noteHeardOn(nc: NoteContext): string[] {
   if (!nc.container) return [];
-  return heardOnLines(nc.container, nc.container.nostrNpubs?.[0]?.npub ?? null, nc.heardOrigin);
+  return heardOnLines(nc.container, nc.container.nostrNpubs?.[0]?.npub ?? null);
 }
 
 function formatContent(args: PublishArgs, nc: NoteContext, shed: Shed, heard: string[]): string {
@@ -562,10 +561,10 @@ function formatContent(args: PublishArgs, nc: NoteContext, shed: Shed, heard: st
     // another brand's words (`noteAppName`).
     via: noteAppName(boostagram, nc.brand),
   }));
-  // Where it was heard, right under the sentence. Its link is never the
-  // note's unfurl: `episodeLinkInNote` takes only a podcast app's URL
-  // (`check:notelink`).
-  lines.push(...heard);
+  // Where it was heard, as a block of its own under the sentence: the shared
+  // format puts one blank line between blocks, and a client otherwise runs the
+  // two into one paragraph (Chad, on a beta note, 2026-11-19).
+  if (heard.length) lines.push('', ...heard);
   const link = podcastLandingUrl(show, episode);
   if (link) lines.push('', link);
   const bmbLink = bmbLandingUrl(show, episode, nc.brand.origin);
@@ -638,8 +637,9 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // The playlist the row was found on comes LAST, after the song's pair: the
   // shared format's rule 15 (PC20-Nostr pc20-boost-notes.md) keeps each item
   // guid right after its own feed's guid, so a reader pairs them by order. No
-  // second `k`: the kind is declared above. Its hint is where the Heard-on
-  // line points: the community feed origin for a playlist BMB hosts.
+  // second `k`: the kind is declared above. Its hint is the playlist's page:
+  // the community feed origin for a playlist BMB hosts. The body no longer
+  // prints that link (`heardOnLines`), so this tag is where it is kept.
   if (ownFeed && podcast.podcastGuid) {
     const playlistHint = noteLink(siteLandingUrl(podcast.podcastGuid, undefined, nc.heardOrigin));
     tags.push(playlistHint

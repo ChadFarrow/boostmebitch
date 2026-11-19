@@ -561,9 +561,11 @@ if (TEST_ORIGIN) {
   t.ok(`the sentence names the song, then the playlist it was heard on, via ${BITCH.wireName}`,
     sentenceT1.startsWith(`${BITCH.senderName} boosted 100 sats to ${song.title}`) && sentenceT1.endsWith(` from ${PLAYLIST_TITLE} via ${BITCH.wireName}`), sentenceT1);
   t.ok(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:<maker npub>`, t1?.content.includes(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`), t1?.content);
-  const linesT1 = t1?.content.split('\n') ?? [];
-  t.equal(`the playlist's link is on the test origin (${HOSTED_ORIGIN}), where it exists`,
-    linesT1[linesT1.indexOf(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`) + 1], `${HOSTED_ORIGIN}/?podcast=${encodeURIComponent(PL_GUID)}`);
+  // The body prints no playlist link (Chad, 2026-11-19); the playlist's i tag
+  // keeps it as its hint, on the origin where the playlist exists.
+  t.ok("the body prints no playlist link", !t1?.content.includes(`/?podcast=${encodeURIComponent(PL_GUID)}`), t1?.content);
+  t.equal(`the playlist's i tag hint is on the test origin (${HOSTED_ORIGIN}), where it exists`,
+    tagsOf(t1, 'i').find((x) => x[1] === `podcast:guid:${PL_GUID}`)?.[2], `${HOSTED_ORIGIN}/?podcast=${encodeURIComponent(PL_GUID)}`);
   const askedT1 = rec.sign.slice(signBefore);
   t.equal("the summary receipt was asked of THIS deploy's route only (refused here), never Buddy's", askedT1.map((x) => x.url), [`${APP}/api/nostr/zap-receipt-sign`]);
 
@@ -605,8 +607,12 @@ if (TEST_ORIGIN) {
   t.ok(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:<maker npub>`, n1?.content.includes(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`), n1?.content);
   const lines1 = n1?.content.split('\n') ?? [];
   const heard1 = lines1.indexOf(`🎧 Heard on ${PLAYLIST_TITLE} by nostr:${makerNpub}`);
-  t.equal(`the next line is the playlist's link, on the hosted origin (${HOSTED_ORIGIN})`, lines1[heard1 + 1], `${HOSTED_ORIGIN}/?podcast=${encodeURIComponent(PL_GUID)}`);
-  t.ok("the Heard-on lines are right under the sentence, and the listen links after them name the song's OWN album", heard1 > 0 && heard1 === lines1.indexOf(sentence1) + 1
+  t.ok("the body prints no playlist link: the line after Heard-on is blank", lines1[heard1 + 1] === ''
+    && !n1?.content.includes(`/?podcast=${encodeURIComponent(PL_GUID)}`), n1?.content);
+  t.equal(`the playlist's i tag hint is on the hosted origin (${HOSTED_ORIGIN})`,
+    tagsOf(n1, 'i').find((x) => x[1] === `podcast:guid:${PL_GUID}`)?.[2], `${HOSTED_ORIGIN}/?podcast=${encodeURIComponent(PL_GUID)}`);
+  t.ok("the Heard-on line is a block of its own under the sentence (one blank line between), and the listen links after it name the song's OWN album",
+    heard1 > 0 && heard1 === lines1.indexOf(sentence1) + 2 && lines1[heard1 - 1] === ''
     && lines1.findIndex((l) => l.startsWith(`${BUDDY.origin}/?podcast=${encodeURIComponent(song.podcastGuid)}`)) > heard1 + 1, n1?.content);
   t.ok("the maker's npub is printed once, not again in the trailing run", (n1?.content.split(`nostr:${makerNpub}`).length ?? 0) - 1 === 1, n1?.content);
   t.ok('a p tag names the maker', tagsOf(n1, 'p').some((x) => x[1] === makerPk), JSON.stringify(tagsOf(n1, 'p')));
@@ -698,7 +704,9 @@ if (TEST_ORIGIN) {
     t.equal('client = BoostMeBitch', tag1(n4, 'client'), ['client', BITCH.wireName]);
     t.ok(`🎧 Heard on ${cf.podcast.title}`, n4?.content.includes(`🎧 Heard on ${cf.podcast.title}`), n4?.content);
     if (cf.podcast.podcastGuid) {
-      t.ok(`its playlist link is a line of its own, on ${BITCH.origin}`, (n4?.content.split('\n') ?? []).includes(`${BITCH.origin}/?podcast=${encodeURIComponent(cf.podcast.podcastGuid)}`), n4?.content);
+      t.ok('the body prints no playlist link', !n4?.content.includes(`/?podcast=${encodeURIComponent(cf.podcast.podcastGuid)}`), n4?.content);
+      t.equal(`the playlist's i tag hint is on ${BITCH.origin}`,
+        tagsOf(n4, 'i').find((x) => x[1] === `podcast:guid:${cf.podcast.podcastGuid}`)?.[2], `${BITCH.origin}/?podcast=${encodeURIComponent(cf.podcast.podcastGuid)}`);
       t.ok("the playlist's podcast:guid i tag is kept, after the song's", tagsOf(n4, 'i').findIndex((x) => x[1] === `podcast:guid:${cf.podcast.podcastGuid}`) > 1, JSON.stringify(tagsOf(n4, 'i')));
     }
     const sentence4 = sentenceOf(n4);

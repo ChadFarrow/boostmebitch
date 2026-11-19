@@ -456,7 +456,8 @@ section('must still work — inputs a correct implementation leaves alone');
 
 // A boost note for a song played from a PLAYLIST: the banner (its `art` query
 // carries the feed host, as the real banner does), the track's landing link, then
-// `🎧 Heard on …` and the playlist's own link. The playlist link must never
+// `🎧 Heard on …` and the playlist's own link. Notes written before 2026-11-19
+// carry that link (later ones keep it only in a tag), and it must never
 // answer; the tag hint is spelled with a capital host so only the normalised
 // match finds the track, and naive()'s first-"fountain.fm"-substring fallback
 // lands on the banner instead.

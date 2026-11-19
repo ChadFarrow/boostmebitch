@@ -89,20 +89,14 @@ export function playlistBoostContext(
 }
 
 /**
- * The "heard on" lines of a boost note: the credit line, then the playlist's
- * landing link (only when it has a guid). The link is the same shape as
- * `siteLandingUrl` in `lib/nostr/boost-notes.ts`, encoding included.
+ * The "heard on" block of a boost note: ONE credit line, and no link. The
+ * playlist's link was dropped on 2026-11-19 (Chad, after a beta note): a client
+ * unfurls it to the site's general card, because a playlist page has no title of
+ * its own, so the note carried one more card that said nothing. The playlist's
+ * `podcast:guid:` `i` tag still records it, with that link as its hint.
  */
-export function heardOnLines(
-  container: Podcast,
-  makerNpub: string | null,
-  linkOrigin: string,
-): string[] {
-  const lines = [`🎧 Heard on ${container.title}${makerNpub ? ` by nostr:${makerNpub}` : ''}`];
-  if (container.podcastGuid) {
-    lines.push(`${linkOrigin}/?podcast=${encodeURIComponent(container.podcastGuid)}`);
-  }
-  return lines;
+export function heardOnLines(container: Podcast, makerNpub: string | null): string[] {
+  return [`🎧 Heard on ${container.title}${makerNpub ? ` by nostr:${makerNpub}` : ''}`];
 }
 
 /**

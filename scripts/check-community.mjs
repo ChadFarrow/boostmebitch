@@ -554,13 +554,15 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   check('context: hosted false with no url', noUrl.hosted === false);
 
   const j = (v) => JSON.stringify(v);
-  check('heardOn: with maker', j(heardOnLines(list, 'npub1maker', 'https://www.boostmebuddy.com')) ===
-    j(['🎧 Heard on Road Trip by nostr:npub1maker', 'https://www.boostmebuddy.com/?podcast=list-g']));
-  check('heardOn: without maker', j(heardOnLines(list, null, 'https://o.example')) ===
-    j(['🎧 Heard on Road Trip', 'https://o.example/?podcast=list-g']));
-  check('heardOn: no guid -> no link line', j(heardOnLines({ ...list, podcastGuid: undefined }, 'npub1m', 'https://o.example')) ===
+  // ONE line, and no link (Chad, 2026-11-19): a client unfurled the playlist's
+  // link to the site's general card. The playlist's `i` tag keeps the link.
+  check('heardOn: with maker', j(heardOnLines(list, 'npub1maker')) ===
+    j(['🎧 Heard on Road Trip by nostr:npub1maker']));
+  check('heardOn: without maker', j(heardOnLines(list, null)) ===
+    j(['🎧 Heard on Road Trip']));
+  check('heardOn: no guid -> the same one line', j(heardOnLines({ ...list, podcastGuid: undefined }, 'npub1m')) ===
     j(['🎧 Heard on Road Trip by nostr:npub1m']));
-  check('heardOn: guid is URI-encoded', heardOnLines({ ...list, podcastGuid: 'a b&c' }, null, 'https://o.example')[1] === 'https://o.example/?podcast=a%20b%26c');
+  check('heardOn: never a link line, whatever the guid', heardOnLines({ ...list, podcastGuid: 'a b&c' }, null).length === 1);
 }
 
 {
