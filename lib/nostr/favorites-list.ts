@@ -956,6 +956,29 @@ export function baselineIsTrustworthy(
  * describes when it derives the active half from the merge — this only lets a
  * device with no history reach it.
  */
+/**
+ * Has this device seen a favorites list with entries in it for this account?
+ *
+ * The baseline is recorded only when this device and the relays AGREED on a
+ * list — after a read found it unchanged, or after a publish a relay accepted —
+ * so a baseline that names any entry is proof a list existed. When a later read
+ * finds NO list, that proof turns "this account has none" into "the read did
+ * not reach it", and the one thing a create must never do is run on the second
+ * (issue #600). All four halves count: a list that is wholly private is still a
+ * list. Pass the RAW stored baseline, never `trustedBaseline`, which drops a
+ * claim over an empty cache — and an empty cache beside a list that did not
+ * load is exactly when this matters.
+ *
+ * An EMPTY baseline is not proof of anything: an account that cleared its list
+ * still has an event on the relays, and a device that never saw one cannot say.
+ */
+export function baselineSawList(baseline: FavoritesBaseline): boolean {
+  return baseline.feeds.length > 0
+    || baseline.items.length > 0
+    || (baseline.privateFeeds?.length ?? 0) > 0
+    || (baseline.privateItems?.length ?? 0) > 0;
+}
+
 export function mayAdoptRefusedRead(input: {
   cacheHasEntries: boolean;
   baselineClaimsEntries: boolean;
@@ -1875,7 +1898,110 @@ export type PublishReason =
   // unknowable). It withholds the private half rather than guess, and this is
   // what stops that being silent.
   | 'mode-ambiguous'
+  // The publish would take more than half of the entries off the list. Held
+  // until the user answers, because a signer prompt is not that question: Amber,
+  // Clave and an extension all show "sign kind 10333", never "remove 79 of 81".
+  // Issue #600. See `massRemoval`.
+  | 'mass-removal'
+  // Not a plan outcome — the hydrator's. The read found NO list and this device
+  // holds favorites, so publishing would CREATE one. A page load or a sign-in
+  // never does that on its own: it asks. Issue #600, and see `runHydrate`.
+  | 'create-pending'
+  // The same "no list on the relays", on a device whose baseline says it SAW
+  // one (`sawList`, from `baselineSawList`). Then the read missed the list
+  // rather than found its absence, so no create runs — not from a page load,
+  // not from a ♡ — and the notice offers retry alone; the read retry re-reads
+  // on its own. Issue #600.
+  | 'create-held'
   | 'publish';
+
+/**
+ * How many relays must answer "I hold no list" before this app CREATES one.
+ *
+ * A create is the one publish that cannot know what it replaces. Every other
+ * guard in the planner compares against a list it read; a create compares
+ * against nothing, so a read that missed the list turns straight into a
+ * replacement of it. `readIsTrustworthy` counts only relays that CONNECTED, so
+ * an empty answer from one relay that does not hold this user's list, while the
+ * relays that do are slow or down, used to be enough. On 2026-11-18 that
+ * replaced an 81-entry list with 2 entries at sign-in (issue #600).
+ *
+ * Two, not "all": requiring every listed relay to answer would leave one dead
+ * relay in a user's set blocking their first favorite forever. And never more
+ * than were ASKED: a `bmb:relays` override naming one relay can only ever get
+ * one answer, and that user chose it.
+ */
+export const MIN_ABSENCE_ANSWERS = 2;
+
+/** How many relays answered "no list", out of how many the read asked. */
+export interface AbsenceCount {
+  answered: number;
+  asked: number;
+}
+
+/** Is "this account has no list" believable enough to CREATE one? */
+export function absenceConfirmed({ answered, asked }: AbsenceCount): boolean {
+  return answered >= Math.min(MIN_ABSENCE_ANSWERS, Math.max(asked, 1));
+}
+
+/**
+ * The smallest removal that needs the user's OK, and the share of the list it
+ * must exceed. Both, so an ordinary unfavorite on a 2-entry list is never a
+ * question, and a burst that takes most of a big list always is.
+ */
+export const MASS_REMOVAL_MIN = 3;
+
+export interface RemovalCount {
+  /** Entries on the list we read that this publish would leave off it. */
+  removed: number;
+  /** Entries on the list we read, both halves we could open. */
+  total: number;
+}
+
+/**
+ * How much of the list we READ a publish would remove.
+ *
+ * Counted by each entry's LAST identifier — its kind lives there (`entryKind`)
+ * — so a legacy two-element item tag that the same publish rewrites into the
+ * three-element form is the same entry, not a removal and an addition. Both
+ * halves together, so a mode switch, which moves entries between halves, removes
+ * nothing.
+ */
+export function countRemoval(
+  readTags: string[][],
+  readPrivateTags: string[][],
+  outTags: string[][],
+  outPrivateTags: string[][],
+): RemovalCount {
+  const key = (t: string[]) => (t[0] === 'i' && t[1] ? t[t.length - 1] : null);
+  const read = new Set<string>();
+  for (const t of [...readTags, ...readPrivateTags]) {
+    const k = key(t);
+    if (k) read.add(k);
+  }
+  const out = new Set<string>();
+  for (const t of [...outTags, ...outPrivateTags]) {
+    const k = key(t);
+    if (k) out.add(k);
+  }
+  let removed = 0;
+  for (const k of read) if (!out.has(k)) removed += 1;
+  return { removed, total: read.size };
+}
+
+/**
+ * Does this removal need the user's OK before a signer is asked?
+ *
+ * More than half of the list, and at least {@link MASS_REMOVAL_MIN} entries.
+ * `confirmed` is the removal count the user has approved: a confirmation is for
+ * THAT removal, so a list that changed under the prompt and now loses more is
+ * asked about again.
+ */
+export function massRemoval(count: RemovalCount, confirmed?: number): boolean {
+  if (count.removed < MASS_REMOVAL_MIN) return false;
+  if (count.removed * 2 <= count.total) return false;
+  return !(confirmed !== undefined && count.removed <= confirmed);
+}
 
 /**
  * May this device re-run a degraded read on its own, without being asked?
@@ -1917,7 +2043,7 @@ export type PublishReason =
  * case, deliberately rather than by omission.
  */
 export function favoritesReadRetryable(reason: PublishReason | 'private-withheld' | null | undefined): boolean {
-  return reason === null || reason === undefined || reason === 'degraded';
+  return reason === null || reason === undefined || reason === 'degraded' || reason === 'create-held';
 }
 
 export interface FavoritesPlanInput {
@@ -2025,6 +2151,31 @@ export interface FavoritesPlanInput {
    * `content`: a mode stated inside a half is a claim no reader may act on.
    */
   stating?: ListVisibility | null;
+  /**
+   * How many relays ANSWERED the read with no event, out of how many it asked.
+   * Only consulted when no event exists, i.e. when this publish would CREATE
+   * the list — see {@link absenceConfirmed}.
+   *
+   * REQUIRED in the type, so neither shipping caller can forget it. `null`
+   * means "not counted" and skips the rule; it exists for the spec's
+   * conformance adapter, which plans in-memory lists that no relay was asked
+   * about. A caller that read from relays passes the count.
+   */
+  absence: AbsenceCount | null;
+  /**
+   * This device's RAW baseline names an entry — {@link baselineSawList}. Only
+   * consulted when no event exists. A device that once agreed with the relays
+   * on a list does not believe "there is none"; a create there would also drop
+   * every entry it saw, because the merge reads "in the baseline, absent from
+   * the read" as "removed by another app". REQUIRED for the same reason
+   * `absence` is; the conformance adapter omits it and the rule is skipped.
+   */
+  sawList: boolean;
+  /**
+   * The removal the user approved in the "This removes N of your M favorites"
+   * prompt. See {@link massRemoval}.
+   */
+  removalConfirmed?: number;
 }
 
 export interface FavoritesPlan {
@@ -2054,6 +2205,8 @@ export interface FavoritesPlan {
    * first thing a private half breaks.
    */
   encryptPrivate: boolean;
+  /** How much of the list we read this plan leaves off. */
+  removal: RemovalCount;
 }
 
 /**
@@ -2321,6 +2474,10 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // empty private half is an empty `content`.
   const content = privateSame ? readContent : '';
 
+  // Over the halves as they will be WRITTEN. An unreadable private half is
+  // carried verbatim and its read tags are [], so it counts on neither side.
+  const removal = countRemoval(input.readTags, readPrivateTags, tags, privateTags ?? []);
+
   const plan = (publish: boolean, reason: PublishReason): FavoritesPlan => ({
     publish,
     reason,
@@ -2329,6 +2486,7 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
     privateTags,
     content,
     encryptPrivate: publish && encryptPrivate,
+    removal,
   });
 
   // Never write on top of a read that may have failed silently. Wholesale
@@ -2410,6 +2568,24 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
     return plan(false, 'nothing-to-create');
   }
 
+  // A CREATE NEEDS TWO RELAYS TO SAY THERE IS NOTHING TO REPLACE. Issue #600:
+  // one empty answer, while the relays holding an 81-entry list were not
+  // reached, published a 2-entry list over it. 'degraded', because that is
+  // what it is — we could not confirm the list — and it is the one reason the
+  // read retry re-runs on its own.
+  if (!input.exists && input.absence && !absenceConfirmed(input.absence)) {
+    return plan(false, 'degraded');
+  }
+
+  // A DEVICE THAT SAW THE LIST DOES NOT CREATE ONE. Enough relays said "none",
+  // but this device's baseline is proof a list existed, so the read missed it.
+  // A create here is the #600 wipe one step removed: the merge drops every
+  // baselined entry as "removed elsewhere" and publishes only what is new. Held
+  // as 'create-held' — retry only, re-read by the read retry.
+  if (!input.exists && input.sawList) {
+    return plan(false, 'create-held');
+  }
+
   // A MERGE THAT COMES OUT EMPTY OVER A LIST THAT IS NOT IS NEVER A USER ACTION.
   //
   // This is the hole the guard above only half covered: it declines to CREATE
@@ -2464,6 +2640,22 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
     : 0;
   if (publicLocalFed === 0 && privateLocalFed === 0 && readHadEntries && !input.emptyIsIntentional) {
     return plan(false, 'wholesale-delete');
+  }
+
+  // THE SAME QUESTION ONE STEP SHORT OF EMPTY, AND IT IS ASKED, NOT REFUSED.
+  //
+  // The guard above only fires when nothing at all survives. A device whose
+  // baseline names 81 entries and whose store holds 2 merges to those 2 — every
+  // other entry is "ours, and we no longer hold it" — and published them with
+  // nothing on screen. That can be a real clean-up, so it is not refused; it is
+  // held until the user answers "This removes 79 of your 81 favorites", because
+  // a signer's approval sheet never says that (issue #600, Expected Behavior 2).
+  //
+  // A deliberate delete-all and a withdrawal are the user's own request and go
+  // through, the same exemption the guard above makes.
+  if (!input.emptyIsIntentional && !input.withdraw
+    && massRemoval(removal, input.removalConfirmed)) {
+    return plan(false, 'mass-removal');
   }
 
   // A private list too big for the oldest NIP-44 in the wild reads back as
@@ -2627,4 +2819,252 @@ export function entriesFromList(list: ParsedList): FavoriteEntry[] {
     }
   }
   return entries;
+}
+
+// ---------------------------------------------------------------------------
+// Restoring a backup file
+// ---------------------------------------------------------------------------
+
+/**
+ * What Podcast Index answered about one feed, by bare feed guid.
+ *
+ * The three-state contract of `/api/by-guid/batch` reaches here intact: a key
+ * with a value is a feed PI holds, a key with `null` is PI saying it holds no
+ * such feed, and an ABSENT key is a feed nobody could ask about. `medium` is
+ * the feed's own `<podcast:medium>` as PI read it — the same value `<FavHeart>`
+ * publishes — never a default.
+ */
+export interface RestoreFeedFact {
+  medium?: string;
+}
+
+/**
+ * What can be wrong with one row of a backup file.
+ *
+ *   unreadable    a `podcast:guid:` whose guid this format cannot read, so no
+ *                 app can open the feed (`parseShowGuid` refuses it)
+ *   no-parent     a two-element item with no feed above it: nothing can look it
+ *                 up, because Podcast Index needs the feed to find an item
+ *   duplicate     the same entry again, later in the list
+ *   no-medium     no `medium`, while the feed declares one — the row lands in
+ *                 "medium unknown", so a song is not a single and has no SHUFFLE
+ *   wrong-medium  a `medium` the feed does not declare — a song filed as a show
+ *   unknown-feed  Podcast Index answered that it holds no such feed. Reported,
+ *                 never repaired: a feed PI has not indexed is still a feed
+ */
+export type RestoreProblem =
+  | 'unreadable' | 'no-parent' | 'duplicate' | 'no-medium' | 'wrong-medium' | 'unknown-feed';
+
+export interface RestoreFinding {
+  problem: RestoreProblem;
+  /** Index into `parseFavoritesList(tags).nodes`. */
+  node: number;
+  /** For a legacy item inside a group, the item. Absent = the whole node. */
+  itemGuid?: string;
+  /** Favorites the finding covers: a placement group's items, otherwise 1. */
+  entries: number;
+  feedGuid?: string;
+  /** The medium the row carries, and the one its feed declares. */
+  medium?: string;
+  feedMedium?: string;
+}
+
+export interface RestoreCheck {
+  findings: RestoreFinding[];
+  /** Favorites whose feed nobody could ask Podcast Index about. */
+  notChecked: number;
+}
+
+/** Which kinds of finding a restore repairs. Each is the user's own choice. */
+export interface RestoreRepair {
+  /** `no-medium` and `wrong-medium`: take the medium the feed declares. */
+  medium: boolean;
+  /** `duplicate`: drop a later copy that adds nothing to the first. */
+  duplicates: boolean;
+  /** `unreadable` and `no-parent`: drop them. LOSES rows another app may read. */
+  unreadable: boolean;
+}
+
+/** Does this choice of repairs repair this kind of finding? */
+export const repairsProblem = (r: RestoreRepair, p: RestoreProblem): boolean =>
+  (r.medium && (p === 'no-medium' || p === 'wrong-medium'))
+  || (r.duplicates && p === 'duplicate')
+  || (r.unreadable && (p === 'unreadable' || p === 'no-parent'));
+
+/**
+ * The feeds a restore check asks Podcast Index about: every feed favorite and
+ * every item's parent, deduped, in list order. Only readable guids — the others
+ * are already a finding, and a lookup by a malformed guid answers nothing.
+ */
+export function restoreFeedGuids(tags: string[][]): string[] {
+  const out: string[] = [];
+  for (const node of parseFavoritesList(tags).nodes) {
+    const feed = node.t === 'group' ? node.group.feedGuid : node.t === 'item' ? node.item.feedGuid : null;
+    if (feed && !out.includes(feed)) out.push(feed);
+  }
+  return out;
+}
+
+/**
+ * What is wrong with a backup file's PUBLIC half, before anything publishes.
+ *
+ * A pure read of the tags: it changes nothing and decides nothing. The file
+ * has already passed `parseFavoritesBackup`, so it IS a signed event of this
+ * account — which proves who wrote it, not that what it says is right. A list
+ * built by hand, or by a tool that guessed, signs exactly as well as a good
+ * one; on 2026-11-18 a restored file filed every song with no medium, so the
+ * library showed no singles and no SHUFFLE, and nothing on screen said why.
+ *
+ * Only what a reader of THIS format can know is flagged. An identifier kind
+ * outside the table, or a position 2 a newer writer uses, is another app's
+ * entry and is not a problem — "carry what you can't read" holds here too.
+ * The encrypted half is not read: that needs a signer prompt, and it rides
+ * through a restore byte for byte.
+ */
+export function checkRestore(
+  tags: string[][],
+  feeds: Record<string, RestoreFeedFact | null>,
+): RestoreCheck {
+  const findings: RestoreFinding[] = [];
+  const seen = new Map<string, { tag: string[]; medium?: string }>();
+  let notChecked = 0;
+
+  // A LATER COPY IS A DUPLICATE ONLY IF DROPPING IT LOSES NOTHING. The pair is
+  // the claim (`itemClaim`), so one item guid under two feeds is two entries.
+  // And the copy that comes second is not always the poorer one: a newer writer
+  // may carry a position past the item guid, or the second copy may be the one
+  // with a `medium`. So it counts only when its tag — the legacy form read as
+  // the three-element one it means — is a PREFIX of the first copy's, and its
+  // medium is absent or the same. Anything else is two copies the user keeps,
+  // as the ordinary merge keeps them.
+  const isDuplicate = (key: string, tag: string[], medium: string | undefined) => {
+    const first = seen.get(key);
+    if (!first) {
+      seen.set(key, { tag, medium });
+      return false;
+    }
+    return tag.length <= first.tag.length
+      && tag.every((v, k) => v === first.tag[k])
+      && (medium === undefined || medium === first.medium);
+  };
+
+  const mediumOf = (node: number, feedGuid: string, medium: string | undefined, entries: number) => {
+    if (!(feedGuid in feeds)) {
+      notChecked += entries;
+      return;
+    }
+    const fact = feeds[feedGuid];
+    if (fact === null) {
+      findings.push({ problem: 'unknown-feed', node, entries, feedGuid, medium });
+      return;
+    }
+    const declared = fact.medium || undefined;
+    if (!declared || declared === medium) return;
+    findings.push({
+      problem: medium ? 'wrong-medium' : 'no-medium', node, entries, feedGuid, medium, feedMedium: declared,
+    });
+  };
+
+  parseFavoritesList(tags).nodes.forEach((node, i) => {
+    if (node.t === 'loose') {
+      const { tag, medium } = node.loose;
+      if (tag[1].startsWith(SHOW_PREFIX) && parseShowGuid(tag[1]) === null) {
+        findings.push({ problem: 'unreadable', node: i, entries: 1, medium });
+      } else if (tag.length === 2 && tag[1].startsWith(ITEM_PREFIX)) {
+        findings.push({ problem: 'no-parent', node: i, entries: 1, medium });
+      }
+      return;
+    }
+    if (node.t === 'item') {
+      const { feedGuid, itemGuid, medium, tag } = node.item;
+      if (isDuplicate(`${feedGuid} ${itemGuid}`, tag, medium)) {
+        findings.push({ problem: 'duplicate', node: i, entries: 1, feedGuid, medium });
+        return;
+      }
+      mediumOf(i, feedGuid, medium, 1);
+      return;
+    }
+    const { feedGuid, itemGuids, medium, feedTag } = node.group;
+    if (itemGuids.length === 0) {
+      if (isDuplicate(feedGuid, feedTag ?? ['i', showId(feedGuid)], medium)) {
+        findings.push({ problem: 'duplicate', node: i, entries: 1, feedGuid, medium });
+        return;
+      }
+      mediumOf(i, feedGuid, medium, 1);
+      return;
+    }
+    let kept = 0;
+    for (const itemGuid of itemGuids) {
+      // A legacy item's tag is two elements; compare it as the three it means.
+      const read = node.group.itemTags?.[itemGuid];
+      const tag = read && read.length > 2 ? read : ['i', showId(feedGuid), itemId(itemGuid)];
+      if (!isDuplicate(`${feedGuid} ${itemGuid}`, tag, medium)) kept += 1;
+      else findings.push({ problem: 'duplicate', node: i, itemGuid, entries: 1, feedGuid, medium });
+    }
+    if (kept > 0) mediumOf(i, feedGuid, medium, kept);
+  });
+
+  return { findings, notChecked };
+}
+
+/**
+ * The tags a restore publishes, with the repairs the user chose.
+ *
+ * **Nothing chosen is the file, byte for byte** — the restore the user always
+ * had, and the only path that never goes through this app's writer. Anything
+ * chosen rebuilds the list with `tagsFromList`, the writer every ordinary
+ * publish uses, so the result is a list this app would write itself: carried
+ * tags whole, foreign tags kept, the `visibility` the file stated restated.
+ *
+ * **A placement group that loses its last item is DROPPED, not emptied.** An
+ * itemless group is a feed favorite on this format, so emptying one by removing
+ * a duplicate item would follow a show the user never chose.
+ *
+ * **A rebuild migrates legacy items, as every ordinary publish does.** A group's
+ * two-element items come out in the three-element form and its feed tag stays,
+ * which a fresh reader takes for a feed favorite — the stage-3 gap. Measured:
+ * on a fresh device the ordinary merge publishes the same bytes as this rebuild,
+ * so ticking a box publishes now what the next sync would publish anyway.
+ *
+ * The check must have been made over these same tags: a finding names a node
+ * by its index in their parse.
+ */
+export function restoreTags(tags: string[][], check: RestoreCheck, repair: RestoreRepair): string[][] {
+  const chosen = check.findings.filter((f) => repairsProblem(repair, f.problem));
+  if (chosen.length === 0) return tags.map((t) => t.slice());
+
+  const list = parseFavoritesList(tags);
+  const drop = new Set<number>();
+  const dropItems = new Map<number, Set<string>>();
+  const setMedium = new Map<number, string>();
+  for (const f of chosen) {
+    if (f.problem === 'no-medium' || f.problem === 'wrong-medium') {
+      if (f.feedMedium) setMedium.set(f.node, f.feedMedium);
+    } else if (f.itemGuid !== undefined) {
+      if (!dropItems.has(f.node)) dropItems.set(f.node, new Set());
+      (dropItems.get(f.node) as Set<string>).add(f.itemGuid);
+    } else {
+      drop.add(f.node);
+    }
+  }
+
+  const nodes: ListNode[] = [];
+  list.nodes.forEach((node, i) => {
+    if (drop.has(i)) return;
+    const medium = setMedium.get(i);
+    if (node.t === 'loose') {
+      nodes.push(node);
+      return;
+    }
+    if (node.t === 'item') {
+      nodes.push(medium ? { t: 'item', item: { ...node.item, medium } } : node);
+      return;
+    }
+    const gone = dropItems.get(i);
+    const itemGuids = gone ? node.group.itemGuids.filter((g) => !gone.has(g)) : node.group.itemGuids;
+    if (gone && itemGuids.length === 0) return;
+    nodes.push({ t: 'group', group: { ...node.group, itemGuids, ...(medium ? { medium } : {}) } });
+  });
+
+  return withVisibility(tagsFromList({ ...list, nodes }), list.visibility);
 }

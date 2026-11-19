@@ -352,6 +352,42 @@ export function listHolding(
   return listenQueue.some((i) => epKey(i.episode) === key) ? 'queue' : null;
 }
 
+/**
+ * Is the item playing now a track of `album`, playing AS that album? Then the
+ * album's ▶ pauses and resumes it; otherwise the ▶ STARTS the album.
+ *
+ * Two surfaces press it: the album page's header cover (`<EpisodeList>`) and a
+ * cover in a list of albums (`useAlbumCoverPlay`, `/demu`). One rule, because a
+ * second copy is how the two came to disagree about the same album.
+ *
+ * The show matches by `podcastGuid`, else by `id`. A track the favorites shuffle
+ * or Up Next holds is NOT the album's (`listHolding`): resuming it would play
+ * that one song and leave the other list owning what comes after (Chad,
+ * 2026-11-14).
+ */
+export function albumHoldsCurrent(
+  album: Pick<Podcast, 'id' | 'podcastGuid'>,
+  current: { episode: Pick<Episode, 'guid' | 'feedId' | 'id'>; podcast: Pick<Podcast, 'id' | 'podcastGuid'> } | null,
+  shuffle: readonly QueueItem[] | null,
+  listenQueue: readonly QueueItem[],
+): boolean {
+  if (!current) return false;
+  const sameShow = (!!album.podcastGuid && current.podcast.podcastGuid === album.podcastGuid)
+    || current.podcast.id === album.id;
+  return sameShow && listHolding(shuffle, listenQueue, current.episode) === null;
+}
+
+/**
+ * The track an album's ▶ starts: the first row in `rows`' order that is not a
+ * scheduled live item and not an unresolved playlist placeholder, else the first
+ * that is not a placeholder. A placeholder has no enclosure, so it can never be
+ * the thing a ▶ starts. Undefined for a list with nothing to start.
+ */
+export function firstPlayableTrack<T extends Pick<Episode, 'liveStatus' | 'unresolved'>>(rows: readonly T[]): T | undefined {
+  return rows.find((e) => e.liveStatus !== 'pending' && !e.unresolved)
+    ?? rows.find((e) => !e.unresolved);
+}
+
 type RowIds = Pick<Episode, 'id' | 'guid' | 'feedId' | 'podcastGuid'>;
 
 /**
@@ -1850,6 +1886,31 @@ function termNearlyIn(term: string, words: readonly string[]): boolean {
     || (w.length > term.length && editDistanceWithin(term, w.slice(0, term.length), max)));
 }
 
+/** A query's terms for the near-match test: folded, punctuation dropped, blanks gone. */
+export function nearMatchTerms(q: string): string[] {
+  return foldForNearMatch(q).split(/\s+/).map((t) => t.replace(/[^\p{L}\p{N}]/gu, '')).filter(Boolean);
+}
+
+/**
+ * How a row's title and author answer the terms: `'exact'` when every term is a
+ * substring of them, `'near'` when every term is a substring or within
+ * `nearTermBudget` edits of one of their words, `null` otherwise.
+ *
+ * The ONE typo test: `nearPlaylistsByQuery` asks it of a playlist roster and
+ * `matchSavedShows` (`lib/saved-show-search.ts`) of the shows a device has
+ * saved, so the two cannot drift apart on what a typo is.
+ */
+export function nearMatchKind(
+  terms: readonly string[],
+  title: string | undefined,
+  author: string | undefined,
+): 'exact' | 'near' | null {
+  const hay = foldForNearMatch(`${title ?? ''} ${author ?? ''}`);
+  if (terms.every((t) => hay.includes(t))) return 'exact';
+  const words = hay.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return terms.every((t) => hay.includes(t) || termNearlyIn(t, words)) ? 'near' : null;
+}
+
 /**
  * The playlists a query reaches only THROUGH A TYPO — every row
  * `filterPlaylistsByQuery` already returns is left out.
@@ -1870,15 +1931,13 @@ export function nearPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author' 
   q: string,
   limit: number,
 ): T[] {
-  const terms = foldForNearMatch(q).split(/\s+/).map((t) => t.replace(/[^\p{L}\p{N}]/gu, '')).filter(Boolean);
+  const terms = nearMatchTerms(q);
   if (!terms.length || limit <= 0) return [];
   const exact = new Set(filterPlaylistsByQuery(feeds, q, feeds.length));
   const out: T[] = [];
   for (const f of feeds) {
     if (exact.has(f) || !isPlaylistMedium(f)) continue;
-    const hay = foldForNearMatch(`${f.title ?? ''} ${f.author ?? ''}`);
-    const words = hay.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-    if (!terms.every((t) => hay.includes(t) || termNearlyIn(t, words))) continue;
+    if (!nearMatchKind(terms, f.title, f.author)) continue;
     out.push(f);
     if (out.length >= limit) break;
   }
@@ -1913,8 +1972,12 @@ export function matchPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author'
  * as ordinary text and searches for it, which is why `'all'`'s placeholder no
  * longer offers to take one: a box that invites a paste it will not act on is a
  * worse control than one that never mentioned it.
+ *
+ * `'demu'` is music that is self-hosted — every music feed whose generator is
+ * not Wavlake's (`lib/demu.ts`). Listeners use it to check that a song may be
+ * requested on Homegrown Hits, which plays only DeMu.
  */
-export type SearchType = 'all' | 'music' | 'podcast' | 'playlist' | 'npub';
+export type SearchType = 'all' | 'music' | 'demu' | 'podcast' | 'playlist' | 'npub';
 
 /**
  * The selector's vocabulary, in the order it renders.
@@ -1934,6 +1997,7 @@ export const SEARCH_TYPES: readonly {
 }[] = [
   { type: 'all', label: 'ALL', noun: 'feeds', placeholder: 'search podcasts, music and playlists…' },
   { type: 'music', label: '♫ MUSIC', noun: 'albums', placeholder: 'search music albums…' },
+  { type: 'demu', label: 'DEMU', noun: 'DeMu albums', placeholder: 'search self-hosted music…' },
   { type: 'podcast', label: 'PODCASTS', noun: 'shows', placeholder: 'search podcasts…' },
   { type: 'playlist', label: 'PLAYLISTS', noun: 'playlists', placeholder: 'search playlists…' },
   { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste a Nostr public key (npub, nprofile or hex)…' },
@@ -1981,6 +2045,13 @@ export function parseSearchType(v: string | null | undefined): SearchType {
  *
  * `'npub'` matches nothing: no feed is a person, and this function is only ever
  * asked about feeds.
+ *
+ * `'demu'` is the MUSIC half only. The self-hosted half (`isDemuFeed`, in
+ * `lib/demu.ts`) reads the generator and the URL, and the route applies it,
+ * because this file keeps only type-only imports. So a publisher of `music`
+ * matches `'demu'` here, and the route keeps it only when the publisher row
+ * itself is self-hosted — Chad, 2026-11-16: "demu publisher should be in music
+ * and demu". A Fountain publisher passes here and is dropped there.
  */
 export function matchesSearchType(p: Pick<Podcast, 'medium' | 'publisherMediums'>, type: SearchType): boolean {
   if (p.medium === 'publisher' && type !== 'all') {
@@ -1991,6 +2062,7 @@ export function matchesSearchType(p: Pick<Podcast, 'medium' | 'publisherMediums'
   switch (type) {
     case 'all': return true;
     case 'music': return isMusicMedium(p);
+    case 'demu': return isMusicMedium(p);
     case 'playlist': return isPlaylistMedium(p);
     case 'podcast': return !isMusicMedium(p) && !isPlaylistMedium(p);
     case 'npub': return false;
@@ -2563,8 +2635,13 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
     };
   }
   if (has(/does not support keysend/i)) {
+    // Two throw sites say this, about two different wallets: `payKeysend`
+    // ("Spark rail does not support keysend") and `weblnKeysend` ("This WebLN
+    // wallet does not support keysend"). Name the one that refused — a WebLN
+    // user told their SPARK wallet failed goes looking in the wrong place.
+    const wallet = /\bspark\b/i.test(msg) ? 'Spark wallet' : /\bwebln\b/i.test(msg) ? 'WebLN wallet' : 'wallet';
     return {
-      cause: 'This recipient is a Lightning node, and your Spark wallet cannot pay a node directly (keysend).',
+      cause: `This recipient is a Lightning node, and your ${wallet} cannot pay a node directly (keysend).`,
       action: 'Pick a different wallet for this boost.',
       whose: 'yours',
       nothingSent: true,
@@ -2664,11 +2741,16 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
  *   - `PAYMENT_FAILED`, a publish timeout, anything unrecognised — no proof.
  *   - a hole — the leg never settled, so there is nothing to judge.
  *   - `sats <= 0` — `payOne` reports that as ok without contacting anyone.
+ *   - `nwcCheck` — the leg once went UNANSWERED, so its first payment may have
+ *     gone through. It is paid again only under that same payment hash
+ *     (`resendLeg`, once the wallet says it failed). This button pays under a
+ *     FRESH hash, and a resend's own "nothing was sent" says nothing about the
+ *     first attempt.
  */
 export function retryableLegs(results: readonly (BoostResult | undefined)[]): number[] {
   const out: number[] = [];
   results.forEach((r, i) => {
-    if (!r || r.ok || r.indeterminate || !(r.sats > 0)) return;
+    if (!r || r.ok || r.indeterminate || r.nwcCheck || !(r.sats > 0)) return;
     if (explainPaymentError(r.error).nothingSent) out.push(i);
   });
   // Stable, biggest share first — `recipientOrder`'s rule, applied to the legs'
@@ -5161,4 +5243,57 @@ export function communityPlaylistToPodcast(s: CommunityPlaylistSummary): Podcast
     isPreview: true,
     nostrNpubs: [{ npub: s.ownerNpub, pubkey: s.ownerPubkey }],
   };
+}
+
+/**
+ * Pay the legs of one boost in `order`, one START at a time — and, with
+ * `moveOnAfterMs`, without letting a slow leg hold the rest.
+ *
+ * Plain (no `moveOnAfterMs`), each leg settles before the next starts: the rule
+ * for WebLN (a prompt per payment), Spark, BOOST ALL and streaming. With it, a
+ * leg that has had `moveOnAfterMs` with no answer keeps waiting in the
+ * background while the next leg starts. Chad, 2026-11-18: one NWC leg that the
+ * wallet answered only after the 60 s cap held every later leg for that minute.
+ * Starts stay in order and one at a time, so only the waiting overlaps.
+ *
+ * `onAllStarted` fires once every leg has started (a redirect's show block waits
+ * on it). The promise settles only when EVERY leg has: the log, the note and the
+ * confetti read every result. A leg that throws stops the legs not yet started
+ * and rejects the run, as the plain loop did (`payOne` itself never throws).
+ * Pinned by `check:lnurl`.
+ */
+export async function payInOrder(
+  order: readonly number[],
+  pay: (index: number) => Promise<void>,
+  opts: {
+    moveOnAfterMs?: number;
+    onAllStarted?: () => void;
+    timer?: (ms: number) => { done: Promise<void>; cancel: () => void };
+  } = {},
+): Promise<void> {
+  const timer = opts.timer ?? ((ms: number) => {
+    let id: ReturnType<typeof setTimeout> | undefined;
+    const done = new Promise<void>((resolve) => { id = setTimeout(resolve, ms); });
+    return { done, cancel: () => clearTimeout(id) };
+  });
+  let failure: { error: unknown } | null = null;
+  const running: Promise<void>[] = [];
+  for (const i of order) {
+    if (failure) break;
+    const settled = pay(i).then(
+      () => undefined,
+      (error: unknown) => { failure ??= { error }; },
+    );
+    running.push(settled);
+    if (opts.moveOnAfterMs === undefined) {
+      await settled;
+      continue;
+    }
+    const t = timer(opts.moveOnAfterMs);
+    await Promise.race([settled, t.done]);
+    t.cancel();
+  }
+  if (!failure) opts.onAllStarted?.();
+  await Promise.all(running);
+  if (failure) throw (failure as { error: unknown }).error;
 }

@@ -5,8 +5,13 @@ import { BunkerRestoreNotice } from '../bunker-restore-notice';
 
 export type PublishState =
   | { kind: 'idle' }
-  /** `step: 'stamp'` while a site-signed note's stamp (1% of the boost, `sats`) is being paid. */
-  | { kind: 'publishing'; step?: 'stamp'; sats?: number }
+  /**
+   * `step: 'stamp'` while a site-signed note's stamp (1% of the boost, `sats`) is being paid.
+   * `stop`: the user's signer has not answered for `NOTE_SIGNER_WAIT_MS`; pressing
+   * it stops the wait (nothing is posted, a late signature is dropped) and
+   * leaves RETRY NOTE.
+   */
+  | { kind: 'publishing'; step?: 'stamp'; sats?: number; stop?: () => void }
   /**
    * `notice`: why the note went out from a one-time key instead of the site's
    * (lib/site-stamp.ts). The note IS posted; this says by whom.
@@ -44,6 +49,21 @@ export function PublishStatus({ state }: { state: PublishState }) {
     // note signs, and on a dead link it probes for 10 s and then reconnects.
     // It renders nothing for the first five seconds, so a healthy check — one
     // ping — never shows it.
+    // A signer that does not answer is SAID, and can be walked away from — the
+    // episode like's rule. A NIP-07 extension that goes away (iOS Safari kills
+    // its background while the app is away) does not reject, it hangs, and the
+    // note is the one part of the boost still waiting: the sats have moved.
+    if (state.stop) {
+      return (
+        <div role="status" className="text-xs text-nostr space-y-1">
+          <div>◆ Waiting for your signer to answer. You can stop waiting and post the note later.</div>
+          <BunkerApprovalNotice />
+          <button onClick={state.stop} className="btn-ghost text-nostr" data-note-stop>
+            Stop waiting
+          </button>
+        </div>
+      );
+    }
     return (
       <div role="status" className="text-xs text-nostr space-y-1">
         <div>

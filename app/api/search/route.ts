@@ -9,6 +9,8 @@ import {
 import type { SearchType } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 import { getPublisherMediums } from '@/lib/musicl-resolver';
+import { isDemuFeed } from '@/lib/demu';
+import { closedService } from '@/lib/moved-feeds';
 import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -250,6 +252,42 @@ export async function GET(req: Request) {
         searchPodcasts(query, 50).then(withPublisherMediums),
       ]);
       const merged = mergeSearchLanes(music, feeds, 'music', Infinity);
+      return answer(
+        rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
+        feeds.length,
+        type,
+        answered,
+      );
+    }, 'search failed');
+  }
+
+  if (type === 'demu') {
+    return withErrorHandling(async () => {
+      // The MUSIC lanes, keeping only self-hosted rows (`isDemuFeed`: no Wavlake
+      // generator, not on a closed host). `mergeSearchLanes(…, 'demu', …)` then
+      // applies the music half to byterm's rows, exactly as MUSIC does.
+      //
+      // A FILTER over two ranked lanes, which the comment above calls the bug —
+      // accepted here, and measured: listeners search a name they already know
+      // (an artist, an album) to check it before requesting it on Homegrown Hits,
+      // and on 2026-11-15 this found 60/60 random DeMu artists by name and 60/60
+      // random DeMu albums by title. A broad word comes back short (`bitcoin`: 54
+      // of PI's 60 music rows are Wavlake). The upgrade, if that bites, is a
+      // `/podcasts/bymedium?medium=music` roster as a third lane — see
+      // docs/feeds.md and docs/superpowers/specs/2026-11-15-demu-search-design.md.
+      //
+      // A DeMu PUBLISHER is under MUSIC and DEMU (Chad, 2026-11-16): its feed
+      // is read as under MUSIC (`withPublisherMediums`), `matchesSearchType`
+      // takes its `music` children, `isDemuFeed` reads the publisher row's own
+      // generator and URL, and it is lifted to the top, capped after the lift.
+      // A Fountain publisher (DJ Yo!, PI 8096868, generator "Fountain") is
+      // MUSIC only: `selfHosted` drops it before the merge.
+      const [music, { feeds, answered }] = await Promise.all([
+        searchMusicPodcasts(query, MAX_TYPED_HITS).catch(() => [] as Awaited<ReturnType<typeof searchMusicPodcasts>>),
+        searchPodcasts(query, 50).then(withPublisherMediums),
+      ]);
+      const selfHosted = (f: Podcast) => isDemuFeed(f, closedService);
+      const merged = mergeSearchLanes(music.filter(selfHosted), feeds.filter(selfHosted), 'demu', Infinity);
       return answer(
         rankPublishersFirst(merged, query, MAX_PUBLISHER_HITS).slice(0, MAX_TYPED_HITS),
         feeds.length,
