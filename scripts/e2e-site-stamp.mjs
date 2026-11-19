@@ -499,6 +499,20 @@ async function noteAfter(ms = 30000) {
   return null;
 }
 const paidLog = async () => (await js('window.__paid')) ?? [];
+/** The relays the page published an event to, sorted. Both modals call
+ *  `publishBoostNoteViaSite` with no `relays`, so this must stay the four
+ *  DEFAULT_RELAYS; the option exists for e2e:mentions' local relay only. */
+async function relaysOf(id) {
+  let got = [];
+  for (let i = 0; i < 20; i += 1) {
+    const urls = (await js(`window.__published.filter((p) => p.event.id === ${JSON.stringify(id ?? '')}).map((p) => p.url)`)) ?? [];
+    got = [...new Set(urls.map((u) => String(u).replace(/\/+$/, '')))].sort();
+    if (got.length >= DEFAULT_RELAYS.length) break;
+    await wait(250);
+  }
+  return got;
+}
+const ALL_FOUR = [...DEFAULT_RELAYS].sort();
 /** A kind:9735 the page published, by id. */
 const receiptById = async (id) => ((await js(`window.__published.map((p) => p.event)`)) ?? []).find((e) => e.kind === 9735 && e.id === id) ?? null;
 const mark = () => ({ asks: stampAsks.length, pays: stampPays.length, minted: stampAddr.minted.length });
@@ -520,6 +534,7 @@ async function oneTimeCase(label, setup, why, extra = async () => {}) {
   const note = await noteAfter(40000);
   t.ok('...the note still reaches the relays', !!note, note ? '' : await dialogText());
   t.ok('...signed by a one-time key (neither the site nor the user)', signerIsOneTime(note), note?.pubkey);
+  t.equal('...on the four DEFAULT_RELAYS', await relaysOf(note?.id), ALL_FOUR);
   t.ok(`...within 30 s (took ${Date.now() - started} ms)`, Date.now() - started < 30000);
   t.ok(`...and the modal says "${failText(why)}"`, (await until(`(${DIALOG}?.innerText ?? '').includes(${JSON.stringify(failText(why))})`, 5000)) === true, await dialogText());
   await wait(2500);
@@ -544,6 +559,7 @@ if (runs(2)) {
   const note = await noteAfter(30000);
   t.ok('the note reaches the relays', !!note, note ? '' : await dialogText());
   t.equal('...signed by the site key', note?.pubkey, sitePk);
+  t.equal('...on the four DEFAULT_RELAYS', await relaysOf(note?.id), ALL_FOUR);
   t.equal('one stamp asked, minted and paid', since(m), { asks: 1, pays: 1, minted: 1 });
   t.equal('...for 1% of the 1000-sat boost: 10 sats', stampAddr.minted.at(-1)?.amount, 10_000);
   t.ok('...and the note says "boosted 1000 sats"', /boosted 1000 sats/.test(note?.content ?? ''), note?.content);
@@ -664,6 +680,7 @@ if (runs(8)) {
   const note = await noteAfter(90000);
   t.ok('the summary note reaches the relays', !!note, note ? '' : await dialogText());
   t.equal('...signed by the site key', note?.pubkey, sitePk);
+  t.equal('...on the four DEFAULT_RELAYS', await relaysOf(note?.id), ALL_FOUR);
   t.equal('one stamp asked, minted and paid', since(m), { asks: 1, pays: 1, minted: 1 });
 }
 

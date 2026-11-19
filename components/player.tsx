@@ -20,6 +20,7 @@ import { useMusicHold } from './player/use-music-hold';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { serverAnswers, useNextProbe } from './player/use-next-probe';
 import { useAndroidSessionKeeper } from './player/use-android-session-keeper';
+import { closePlayer, usePlayerHistory } from './player/use-player-history';
 import { fmt } from '@/lib/format';
 import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
@@ -1367,6 +1368,11 @@ export function Player() {
   // ./player/use-android-session-keeper.
   useAndroidSessionKeeper(isPlaying);
 
+  // The open fullscreen player is a history entry, so the browser's and
+  // Android's back closes it, as its ← back does (#556). See
+  // ./player/use-player-history.
+  usePlayerHistory();
+
   // **A queue that survived a reload has to be reachable.** `current` is
   // in-memory and the queue is not, so every page load lands with items on disk
   // and nothing playing — and the two lines below then render nothing at all,
@@ -2012,7 +2018,7 @@ export function Player() {
         transcriptLoading={transcriptLoading}
         transcriptActiveIdx={transcriptActiveIdx}
         hasTranscriptUrl={!!transcriptSrc.url}
-        onClose={() => setPlayerExpanded(false)}
+        onClose={closePlayer}
         onBoost={() => setBoostOpen(true)}
       />
 

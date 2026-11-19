@@ -359,11 +359,12 @@ export interface Boostagram {
   url?: string;
   ts?: number;            // playback timestamp in seconds
   value_msat?: number;    // per-leg amount in msats (set per recipient in v4v/boost.ts)
-  // Total for THIS LEG GROUP in msats — same on every leg of one sendBoost call,
-  // NOT the whole boost. A valueTimeSplit redirect makes two calls, and their
-  // totals sum to the amount the user typed; reading this as "the whole boost"
-  // is what let the track and show legs advertise 110 sats for a 100-sat boost.
-  // The note and the StoredBoost carry the full amount. → docs/money-boosts.md
+  // The amount the listener TYPED, in msats, identical on every leg — bLIP-10:
+  // "TOTAL … all splits together, before fees. The actual number someone
+  // entered in their player". A valueTimeSplit redirect's track and show legs
+  // both carry it; it is never a leg group's share, and never summed across
+  // legs. Boost All types an amount PER TRACK, so that is its total.
+  // → docs/money-boosts.md
   value_msat_total?: number;
   message?: string;
   sender_name?: string;
@@ -384,7 +385,10 @@ export interface Boostagram {
   action: 'boost' | 'stream' | 'auto';
   name?: string;             // recipient name, set per leg in lib/v4v/boost.ts
   uuid?: string;             // unique boost ID — shared across all legs
-  remote_feed_guid?: string; // RSS <podcast:guid> (NIP-73)
+  /** RSS <podcast:guid> (NIP-73). Inside a song window or a live redirect it is
+   *  the TRACK's feed. The PLAYED feed's guid is deliberately not on this type —
+   *  every key here is keysend-onion bytes — see `sendBoost`'s `feedGuid`. */
+  remote_feed_guid?: string;
   episode_guid?: string;     // RSS item <guid>
   remote_item_guid?: string; // duplicate of episode_guid for aggregator compat
   /** The Split Kit's own correlation ids, echoed back when a live show's
@@ -397,6 +401,19 @@ export interface Boostagram {
   eventAPI?: string;
 }
 
+/**
+ * An NWC leg's payment hash, and what to send to pay that same hash again: the
+ * keysend with the preimage the app made for it, or the same BOLT11. Paying the
+ * same hash is what makes a retry safe — a node that already took a payment for
+ * it refuses a second one. See docs/money-boosts.md, "The unanswered wallet".
+ */
+export interface NwcLegCheck {
+  paymentHash: string;
+  resend:
+    | { kind: 'keysend'; pubkey: string; amountMsat: number; tlv: { type: number; value: string }[]; preimage: string }
+    | { kind: 'invoice'; invoice: string };
+}
+
 export interface BoostResult {
   recipient: ValueRecipient;
   sats: number;
@@ -405,9 +422,17 @@ export interface BoostResult {
    * The leg neither succeeded nor provably failed — the wallet was asked and
    * never answered (see NwcIndeterminateError). `ok` is false because we have
    * no preimage, but the sats may well have gone out, so nothing may present
-   * this as a failure and nothing may retry it.
+   * this as a failure and nothing may retry it — except `resendLeg`, under the
+   * leg's own `nwcCheck`, once the wallet has said that payment failed.
    */
   indeterminate?: boolean;
+  /**
+   * How to ask the NWC wallet about this leg, and how to pay the SAME payment
+   * again: set on a leg the wallet never answered (and kept through a resend).
+   * IN MEMORY ONLY — a keysend's preimage is in it, and `storedBoostLegs` maps
+   * its fields one by one so this never reaches storage.
+   */
+  nwcCheck?: NwcLegCheck;
   preimage?: string;
   error?: string;
   // Set on LNURL legs when BoostBox accepted the metadata. The URL is the

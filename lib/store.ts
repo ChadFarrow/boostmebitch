@@ -5,6 +5,8 @@ import type { NostrIdentity, PublishReason } from './nostr';
 
 /** Why `favoritesSync` is 'degraded' — see the field for the extra value. */
 export type FavoritesSyncReason = PublishReason | 'private-withheld';
+/** See `favoritesSyncCount`. `removed` is absent for 'create-pending'. */
+export interface FavoritesSyncCount { removed?: number; total: number }
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
@@ -456,7 +458,14 @@ interface AppState {
    * notice words them differently because one is a fault and one is a choice.
    */
   favoritesSyncReason: FavoritesSyncReason | null;
-  setFavoritesSync: (s: FavoritesSyncStatus, reason?: FavoritesSyncReason) => void;
+  /**
+   * The numbers a withheld publish needs on screen, when its reason has any.
+   * `'mass-removal'`: how many entries the publish would take off the list
+   * read, out of how many. `'create-pending'`: how many favorites this device
+   * would put on a NEW list. Null with every other reason. Issue #600.
+   */
+  favoritesSyncCount: FavoritesSyncCount | null;
+  setFavoritesSync: (s: FavoritesSyncStatus, reason?: FavoritesSyncReason, count?: FavoritesSyncCount) => void;
   /** Back to 'idle', for the identity teardowns in nostr-auth. Kept as its own
    *  call so the three places that clear it can't drift. Clears
    *  `favoritesPrivateHalf` too: it is an observation about ONE account. */
@@ -1290,15 +1299,20 @@ export const useApp = create<AppState>((set, get) => ({
 
   favoritesSync: 'idle',
   favoritesSyncReason: null,
+  favoritesSyncCount: null,
   favoritesPrivateHalf: 'unknown',
   setFavoritesPrivateHalf: (h) => set({ favoritesPrivateHalf: h }),
   // The reason is cleared on every non-degraded status rather than left behind:
   // a stale "your signer couldn't decrypt this" sitting under a healthy 'ok' is
   // a notice about a problem that is over, which is the same lie as a silent
   // withholding pointed the other way.
-  setFavoritesSync: (s, reason) =>
-    set({ favoritesSync: s, favoritesSyncReason: s === 'degraded' ? (reason ?? null) : null }),
-  resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null, favoritesPrivateHalf: 'unknown' }),
+  setFavoritesSync: (s, reason, count) =>
+    set({
+      favoritesSync: s,
+      favoritesSyncReason: s === 'degraded' ? (reason ?? null) : null,
+      favoritesSyncCount: s === 'degraded' ? (count ?? null) : null,
+    }),
+  resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null, favoritesSyncCount: null, favoritesPrivateHalf: 'unknown' }),
 
   favPrivacyPrompt: false,
   setFavPrivacyPrompt: (open) => set({ favPrivacyPrompt: open }),
