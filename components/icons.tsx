@@ -1,4 +1,6 @@
+import { useId } from 'react';
 import type { SearchType } from '@/lib/util';
+import type { DemuHoliday } from '@/lib/demu-holiday';
 
 // Tiny inline icons that inherit currentColor — used in places where the ⚡
 // emoji's color glyph clashes with a yellow background (e.g., .btn-bolt).
@@ -339,14 +341,147 @@ export function MusicNoteIcon({ className = TYPE_ICON }: { className?: string })
 export function EmuIcon({ className = TYPE_ICON }: { className?: string }) {
   return (
     <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
-      {/* Head and neck, with a gap around the ear cup and the eye cut out. */}
-      <path
-        fillRule="evenodd"
-        d="M9.7 14.22A4.4 4.4 0 0 0 8.77 7.12L9.3 5.3 10.7 5.9 10.4 3.9 12 5.1 12.3 3.1 13.6 4.7 14.6 3.4 15 5.3 16.4 5 15.9 6.6C18.4 7.4 20.8 8.8 22.7 10.4c.5.4.3 1.1-.3 1.2C20.6 12 18.2 12.4 16 12.7C14.3 13.4 13.5 14.9 13.5 17C13.5 19.6 14.4 21.8 15.4 24H9.1C9.6 21.6 9.7 19.2 9.7 16.4ZM13.1 8.9a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0Z"
-      />
-      <circle cx="6.7" cy="11" r="3.3" />
-      <path d="M4.6 9.4C4.4 4.6 7.8 1.6 11.9 1.6c1.8 0 3.3.5 4.6 1.4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <EmuShapes />
     </svg>
+  );
+}
+
+/** Head and neck, with a gap around the ear cup and the eye cut out. */
+const EMU_HEAD = 'M9.7 14.22A4.4 4.4 0 0 0 8.77 7.12L9.3 5.3 10.7 5.9 10.4 3.9 12 5.1 12.3 3.1 13.6 4.7 14.6 3.4 15 5.3 16.4 5 15.9 6.6C18.4 7.4 20.8 8.8 22.7 10.4c.5.4.3 1.1-.3 1.2C20.6 12 18.2 12.4 16 12.7C14.3 13.4 13.5 14.9 13.5 17C13.5 19.6 14.4 21.8 15.4 24H9.1C9.6 21.6 9.7 19.2 9.7 16.4ZM13.1 8.9a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0Z';
+/** The headphones' band, over the crown to the far ear. */
+const EMU_BAND = 'M4.6 9.4C4.4 4.6 7.8 1.6 11.9 1.6c1.8 0 3.3.5 4.6 1.4';
+
+/**
+ * The emu's three shapes, in ONE place: `EmuIcon` and `HolidayEmuIcon` both draw
+ * them, so a costume can never wear a different emu (`e2e:demuholiday` compares
+ * the markup, and `e2e:typeicons` holds `EmuIcon` to the menu's DEMU glyph).
+ */
+function EmuShapes() {
+  return (
+    <>
+      <path fillRule="evenodd" d={EMU_HEAD} />
+      <circle cx="6.7" cy="11" r="3.3" />
+      <path d={EMU_BAND} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </>
+  );
+}
+
+/*
+ * The emu in a holiday costume — only on the /demu title, and only while
+ * `demuHolidayFor` (lib/demu-holiday.ts) says so. Chad picked each one on
+ * 2026-11-19 from drafts: THANKSGIVING is tail feathers and a pilgrim hat, with
+ * no wattle ("Remove the turkey beard from b and just leave the feathers and
+ * hat"); CHRISTMAS is a Santa hat ("That also works for Xmas for a Santa hat").
+ * Design: docs/superpowers/specs/2026-11-19-demu-holiday-hats-design.md.
+ *
+ * - The box is the emu's own 24×24, and the costume draws PAST it
+ *   (`overflow-visible`): the hat into the space above the title, the feathers
+ *   into the gutter and the gap before the word. So the costume, which arrives
+ *   after hydration, moves nothing on the page.
+ * - The gap that keeps the emu clear of the feathers, and each hat clear of the
+ *   emu, is a MASK, never a shape painted in the page colour. The page behind
+ *   the title is the hero image under `bg-ink/75`, not `--ink`: a painted
+ *   outline showed as a cream sticker edge on the light theme, and filled the
+ *   eye that the plain emu leaves open.
+ * - The costume colours are artwork, like the `/demu-apps/*.png` badges, so
+ *   they are fixed hex values and not palette tokens. A faint `stroke-bone/35`
+ *   edge keeps the dark hat visible on the dark theme and the white fur on the
+ *   light one.
+ * - The small emus (the search menu, BROWSE DEMU, the cover badge) stay plain:
+ *   a costume does not read at 11–14 px.
+ */
+export function HolidayEmuIcon({ holiday, className = TYPE_ICON }: { holiday: DemuHoliday; className?: string }) {
+  // Two of these on one page would share mask ids without it; the characters
+  // React puts in an id are not all safe inside `url(#…)`.
+  const id = `emu${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
+  const turkey = holiday === 'thanksgiving';
+  const hatGap = turkey ? <PilgrimGap /> : <SantaGap />;
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" data-holiday={holiday} className={`fill-current flex-shrink-0 overflow-visible ${className}`}>
+      <defs>
+        {/* What shows of the emu: all of it but a gap round the hat. */}
+        <mask id={`${id}-emu`} maskUnits="userSpaceOnUse" x="-10" y="-10" width="44" height="44">
+          <rect x="-10" y="-10" width="44" height="44" fill="white" />
+          {hatGap}
+        </mask>
+        {/* What shows of the feathers: none of them inside or near the emu, or near the hat. */}
+        {turkey && (
+          <mask id={`${id}-behind`} maskUnits="userSpaceOnUse" x="-10" y="-10" width="44" height="44">
+            <rect x="-10" y="-10" width="44" height="44" fill="white" />
+            <g fill="black" stroke="black" strokeWidth="2.2" strokeLinejoin="round">
+              <path d={EMU_HEAD} />
+              <circle cx="6.7" cy="11" r="3.3" />
+              <path d={EMU_BAND} fill="none" strokeWidth="4.2" strokeLinecap="round" />
+              {/* The eye. The head's own eye subpath winds the other way, so the
+                  nonzero fill above leaves it open, and a feather showed in it. */}
+              <circle cx="14.6" cy="8.9" r="1.5" />
+            </g>
+            {hatGap}
+          </mask>
+        )}
+      </defs>
+      {turkey && (
+        <g data-part="feathers" mask={`url(#${id}-behind)`}>
+          {FEATHER_ANGLES.map((a, i) => (
+            <ellipse key={a} cx="12.5" cy="10" rx="2.8" ry="8" fill={FEATHER_COLOURS[i % 3]} transform={`rotate(${a} 12.5 18)`} />
+          ))}
+        </g>
+      )}
+      <g data-part="emu" mask={`url(#${id}-emu)`}>
+        <EmuShapes />
+      </g>
+      {turkey ? <PilgrimHat /> : <SantaHat />}
+    </svg>
+  );
+}
+
+/** Nine feathers fanned 170° about a point behind the neck, rust, orange and brown in turn. */
+const FEATHER_COLOURS = ['#c8432b', '#ea8a2f', '#94602f'];
+const FEATHER_ANGLES = [-85, -63.75, -42.5, -21.25, 0, 21.25, 42.5, 63.75, 85];
+
+/** Both hats sit on the crest, tilted with the head. */
+const HAT_TILT = 'rotate(8 13 5)';
+
+/** A tall black hat with a brown band and a gold buckle. */
+function PilgrimHat() {
+  return (
+    <g data-part="pilgrim" transform={HAT_TILT}>
+      <path d="M9.9 5.2 10.6-2.6h6.2l.7 7.8Z" fill="#2c2724" className="stroke-bone/35" strokeWidth="0.35" />
+      <rect x="10.1" y="2.4" width="7.2" height="2" fill="#6b5640" />
+      <rect x="12.6" y="2" width="2.2" height="2.8" rx="0.3" fill="none" stroke="#f0c419" strokeWidth="0.7" />
+      <rect x="7.6" y="4.8" width="12.2" height="1.7" rx="0.85" fill="#2c2724" className="stroke-bone/35" strokeWidth="0.35" />
+    </g>
+  );
+}
+/** The gap round the pilgrim hat's crown, in a mask. */
+function PilgrimGap() {
+  return <path transform={HAT_TILT} d="M9.4 5.6 10.1-3.1h7.2l.7 8.7Z" fill="black" stroke="black" strokeWidth="1.6" />;
+}
+
+const SANTA_CAP = 'M9.3 5.6C9.6 1.6 11.6-1.6 14.6-1.9 16.4-2.1 17.4-.9 17.4.6 17.6 2.4 18.2 4 19 5.6Z';
+const SANTA_TIP = 'M14.6-1.9C12.6-2.6 9.6-2.2 7.6-.2 6.7.7 6.3 1.6 6.4 2.4 7.4 1.6 8.6 1.2 10.2 1.4Z';
+
+/** A red cap leaning back over the headphones, its tip hanging behind, a white brim and pompom. */
+function SantaHat() {
+  return (
+    <g data-part="santa" transform={HAT_TILT}>
+      <path d={SANTA_CAP} fill="#d62828" />
+      <path d={SANTA_TIP} fill="#b51f1f" />
+      <rect x="7.8" y="4.5" width="12.4" height="2.4" rx="1.2" fill="#fbf8f1" className="stroke-bone/35" strokeWidth="0.35" />
+      <circle cx="6.3" cy="2.6" r="1.6" fill="#fbf8f1" className="stroke-bone/35" strokeWidth="0.35" />
+    </g>
+  );
+}
+/** The gap round the Santa hat, in a mask. Its last shape hides the band where it would show between the pompom and the brim. */
+function SantaGap() {
+  return (
+    <g transform={HAT_TILT} fill="black" stroke="black" strokeWidth="1.6" strokeLinejoin="round">
+      <path d={SANTA_CAP} />
+      <path d={SANTA_TIP} />
+      <circle cx="6.3" cy="2.6" r="1.7" />
+      <rect x="7.8" y="4.5" width="12.4" height="2.4" rx="1.2" />
+      <path d="M6.4 2.4 10.2 1.4 9.3 5.6 7.8 5Z" />
+    </g>
   );
 }
 
