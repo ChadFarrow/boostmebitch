@@ -369,6 +369,8 @@ Podcasting 2.0 fields, plus Nostr-aware additions — drops into Helipad / Fount
 | `remote_feed_guid`, `remote_item_guid` | `<podcast:guid>` / item guid | NIP-73 refs; carry the **track** on boost-all and streaming legs, the **stream** on live-stream legs |
 | `eventGuid`, `blockGuid`, `eventAPI` | Split Kit | only when the target came off a `<podcast:liveValue>` channel; additive, so a normal boostagram is byte-identical to before |
 
+An LNURL leg carries no TLV: its BoostBox record (`lib/v4v/boostbox.ts`) repeats these fields under BoostBox's names and adds `feed_guid` — the feed that holds `item_guid`, the one the listener played, handed to `sendBoost` as `feedGuid`. It is deliberately not a boostagram field, because the boostagram IS the keysend TLV and its bytes ride in the onion (`docs/money-boosts.md`, redirect invariant 9).
+
 We emit the boostagram in TLV `7629169` only — never a separate `696969` sender record (it collides with shared-node sub-account routing). LNURL legs put the boostagram message in the LUD-21 `comment`; BoostBox legs prepend their `rss::payment::<action>` desc.
 
 ---
