@@ -1,6 +1,6 @@
-import { loadPlaylistPage, tripPiBreaker } from '@/lib/podcast-meta';
+import { loadPlaylistPage, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import type { Podcast } from '@/lib/types';
-import { communityPlaylistToPodcast, mapLimit, PI_FANOUT } from '@/lib/util';
+import { communityPlaylistToPodcast, mapLimit, PI_FANOUT, piConfirmedMisses } from '@/lib/util';
 import { COMMUNITY_COLLECTION_URL, COMMUNITY_PLAYLIST_URLS, COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
 import { fetchCommunityPlaylists } from '@/lib/community/client';
 
@@ -274,6 +274,46 @@ export async function playlistTrackCount(feedUrl: string): Promise<number | null
   try {
     const { total } = await loadPlaylistPage({ feedUrl, offset: PAST_LAST_REF, limit: 1 });
     return typeof total === 'number' ? total : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The most guids one `/api/by-guid/batch` request takes (`MAX_BATCH` in `lib/pi-batch.ts`). */
+const PI_ASK_MAX = 100;
+
+/**
+ * The playlist guids Podcast Index ANSWERED "not found" for, or null when nothing
+ * could be asked. `/playlists` stamps a BMB-made row `NOT IN PI` only when its guid
+ * is in the set (Chad, 2026-11-18: "my playlist need a not on PI badge").
+ *
+ * **A stored row is built from our own database, so its `isPreview` says nothing
+ * about Podcast Index**, and the page used to suppress the stamp on every one of
+ * them. Playlists made on BMB are not submitted to PI today (spec decision 19),
+ * but anybody can submit a feed URL to PI, so "not in PI" is still a fact to ask
+ * for and never one to assume.
+ *
+ * ONE request for the whole list, through the batch door. A key the answer leaves
+ * out is "could not ask" and stamps nothing (`piConfirmedMisses`).
+ *
+ * **Deliberately NOT `warmPodcastCache`.** That fills the tab's metadata cache, and
+ * a PI miss lands there as a cached `null` for the guid. `/api/by-guid` answers
+ * these same guids from the store on a PI miss (that is how a favorite or a
+ * `?podcast=` link opens a BMB-made playlist), and a cached `null` would stop
+ * `resolvePodcastByGuid` from ever asking it for the rest of the tab.
+ *
+ * Does not trip the breaker, for the reason `warmPodcastCache` gives: a stamp is
+ * an annotation, and it must not switch off metadata for the whole tab.
+ */
+export async function playlistsNotInPi(guids: readonly string[]): Promise<Set<string> | null> {
+  const asked = [...new Set(guids.filter(Boolean))].slice(0, PI_ASK_MAX);
+  if (!asked.length) return new Set();
+  if (!piMaybeUp()) return null;
+  try {
+    const r = await fetch(`/api/by-guid/batch?guids=${asked.map(encodeURIComponent).join(',')}`);
+    if (!r.ok) return null;
+    const body = (await r.json()) as { podcasts?: unknown } | null;
+    return new Set(piConfirmedMisses(asked, body?.podcasts));
   } catch {
     return null;
   }

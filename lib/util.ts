@@ -2203,6 +2203,26 @@ export function curatedNotListed<T extends Pick<Podcast, 'id' | 'url'>>(
   return out;
 }
 
+/**
+ * The keys of `asked` that Podcast Index ANSWERED "not found" for, read from a
+ * `/api/by-guid/batch` body (`{ podcasts }`). Only these may carry a `NOT IN PI`
+ * stamp.
+ *
+ * That route's answer has three states (`lib/pi-batch.ts`): a record (PI holds
+ * it), `null` (PI was asked and holds nothing) and an ABSENT key (nobody could
+ * ask: the index and PI both failed, or the key was cut by `MAX_BATCH`). The
+ * stamp is a claim about Podcast Index, so it may only come from the second.
+ * `!podcasts[key]` reads an absent key as a miss and prints `NOT IN PI` on every
+ * row whenever PI is rate limiting, which is the "why does it say not in PI
+ * when some are?" report of 2026-08-29 again. A body that is not an object is
+ * no answer at all, so it stamps nothing.
+ */
+export function piConfirmedMisses(asked: readonly string[], podcasts: unknown): string[] {
+  if (!podcasts || typeof podcasts !== 'object' || Array.isArray(podcasts)) return [];
+  const answered = podcasts as Record<string, unknown>;
+  return asked.filter((k) => Object.prototype.hasOwnProperty.call(answered, k) && answered[k] === null);
+}
+
 // True when a value block actually has payees — the gate for showing BOOST.
 export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;

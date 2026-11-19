@@ -385,6 +385,8 @@ StableKraft runs a nightly GitHub Actions job that re-fetches every playlist and
 
 A preview feed is not URL-mirrored, because a publisher checking their own unsubmitted feed has nothing to share. A playlist is the exception — people share these — and it restores exactly, because `/api/playlist` keys off the feed URL rather than a PI id. Same shape as `?publisher=<feedUrl>`.
 
+**The playlist view writes out the feed's own RSS address, with a COPY button** (`<FeedAddress>`, `components/lists/feed-address.tsx`, in the header of `episode-list.tsx`; Chad, 2026-11-18: "i need to show the rss link for the v4vmusic music playlist"). For every playlist medium, on any host, in Podcast Index or not: it is what a listener takes to another app, and a v4vmusic or kolomona playlist has no SHARE link and no heart here (no Podcast Index guid), so before this the address of the feed was nowhere on the page. Written out rather than behind a button, because a phone has no hover. The href goes through `httpUrl`, because a `?playlist=` link supplies the string.
+
 ## Podroll (`<podcast:podroll>`, host-recommended shows)
 
 A channel-level `<podcast:podroll>` holds `<podcast:remoteItem feedGuid=… feedUrl=…>` entries pointing at other shows the host recommends. PI doesn't index it, so it rides the same RSS pass as `feedMedium`: `parsePodroll(channelXml)` → `feedPodroll` → `podcast.podroll: PodrollItem[]`. Entries without a `feedGuid` are skipped (the spec requires it; `feedUrl` is an optional hint).
