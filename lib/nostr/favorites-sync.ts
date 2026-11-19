@@ -26,6 +26,7 @@ import {
 // module that owns the network calls would only widen what this file depends on.
 import {
   baselineIsTrustworthy,
+  baselineSawList,
   correctedModeFromWire,
   seedModeFromWire,
   EMPTY_BASELINE,
@@ -229,6 +230,9 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // heart-taps publishes once with the final set.
     local: localFavoriteList,
     baseline: () => trustedBaseline(identity.npub),
+    // The RAW baseline, never `trustedBaseline`: an empty cache beside a list
+    // that did not load is exactly when a create must not run. Issue #600.
+    sawList: () => baselineSawList(storage.favBaseline.get(identity.npub)),
     // Both callbacks also move `favoritesSync`, so the whole feature reports its
     // relay health from one place: hydration routes its own success through this
     // same `onSynced` (see favorites-hydrator.ts), and a publish that lands is
@@ -241,7 +245,7 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // clear a notice the other's failure had raised. There is one event now, so
     // a partial failure is not expressible and a single flag cannot lie.
     onSynced: (baseline) => recordFavoritesBaseline(identity, baseline),
-    onDegraded: (reason) => useApp.getState().setFavoritesSync('degraded', reason),
+    onDegraded: (reason, removal) => useApp.getState().setFavoritesSync('degraded', reason, removal),
   };
 }
 
@@ -281,10 +285,14 @@ function cycleOptionsFor(
   identity: NostrIdentity,
   purpose?: DecryptPurpose,
   userChose = false,
+  confirmRemoval?: number,
 ): SyncOptions {
   const mode = favoritesMode(identity.npub);
   return {
     ...syncOptionsFor(identity),
+    // Only `syncFavoritesNow` passes this, from the "Remove them" button of the
+    // "This removes N of your M favorites" notice. A heart toggle never does.
+    confirmRemoval,
     // A null mode never reaches a publish — `requestFavoritesSync` returns
     // before that — so treating it as 'public' here only affects the paths that
     // have already established one.
@@ -411,9 +419,10 @@ export function syncFavoritesNow(
   identity: NostrIdentity,
   purpose?: DecryptPurpose,
   userChose = false,
+  confirmRemoval?: number,
 ) {
   return serializeFavoritesCycle(() =>
-    syncFavorites(cycleOptionsFor(identity, purpose, userChose)),
+    syncFavorites(cycleOptionsFor(identity, purpose, userChose, confirmRemoval)),
   );
 }
 

@@ -372,3 +372,76 @@ export function shouldDemoteAddress(e: unknown, refused: boolean): boolean {
   if (routingFailureProvesUnpaid(e)) return false;
   return failureBlamesDestination(e);
 }
+
+/**
+ * What the wallet says about ONE payment we sent, asked by its payment hash
+ * (`lookup_invoice`). It decides what the boost panel offers for a leg that
+ * went unanswered and so may have paid:
+ *
+ *   - `paid`    — the leg turns ✓. Nothing is sent.
+ *   - `pending` — still on its way. Ask again later. Nothing is sent.
+ *   - `failed`  — the ONLY answer that offers RETRY, and the retry pays the SAME
+ *                 payment hash (the same keysend preimage, the same invoice), so
+ *                 a node that already took it refuses it a second time.
+ *   - `unknown` — the wallet cannot tell. Nothing is ever sent on it. `why` picks
+ *                 the sentence: `cannot-ask` (no `lookup_invoice`, or it is not
+ *                 granted), `not-found`, `no-answer` (the request or its reply was
+ *                 lost — asking again may help), `unclear` (an answer that proves
+ *                 nothing), `no-wallet` (no NWC wallet is connected now).
+ */
+export type LegVerdict =
+  | { state: 'paid' }
+  | { state: 'pending' }
+  | { state: 'failed' }
+  | { state: 'unknown'; why: 'cannot-ask' | 'not-found' | 'no-answer' | 'unclear' | 'no-wallet' };
+
+const UNCLEAR: LegVerdict = { state: 'unknown', why: 'unclear' };
+
+/**
+ * Read a `lookup_invoice` answer about an OUTGOING payment whose hash we know.
+ *
+ * Two readings are wrong in the direction that pays twice, and both look right:
+ *
+ *   - **A preimage is not proof.** The app makes a keysend's preimage itself and
+ *     hands it to the wallet, so a wallet may return it on a payment that is still
+ *     pending, or that failed. Only `state` or `settled_at` say it settled.
+ *   - **Silence is not failure.** With no `state` and no `settled_at`, a pending
+ *     payment and a failed one look the same. NIP-47 does not require `state`
+ *     (the SDK types it "non-NIP-47 spec compliant"), so its absence is common.
+ *
+ * Anything that contradicts itself, names another hash, or is an incoming
+ * payment is `unclear`, which sends nothing. Pinned by `check:nwcerror`.
+ */
+export function lookupVerdict(tx: unknown, paymentHash: string): LegVerdict {
+  if (!tx || typeof tx !== 'object') return UNCLEAR;
+  const t = tx as Record<string, unknown>;
+  if (typeof t.payment_hash === 'string' && t.payment_hash.toLowerCase() !== paymentHash.toLowerCase()) return UNCLEAR;
+  if (t.type !== undefined && t.type !== 'outgoing') return UNCLEAR;
+  const settledAt = typeof t.settled_at === 'number' && t.settled_at > 0;
+  if (t.state === 'settled') return { state: 'paid' };
+  if (t.state === 'pending') return { state: 'pending' };
+  if (t.state === 'failed') return settledAt ? UNCLEAR : { state: 'failed' };
+  if (t.state !== undefined) return UNCLEAR;
+  return settledAt ? { state: 'paid' } : UNCLEAR;
+}
+
+/**
+ * A `lookup_invoice` that did not return an answer. **It never says `failed`.**
+ * NOT_FOUND reads like "no such payment, so nothing went out", and it is not: a
+ * wallet that ignored the preimage we passed stores the keysend under its OWN
+ * hash, and many wallets look up incoming invoices only. Pinned by
+ * `check:nwcerror`.
+ */
+export function lookupErrorVerdict(e: unknown): LegVerdict {
+  if (e instanceof nwc.Nip47WalletError) {
+    if (e.code === 'NOT_FOUND') return { state: 'unknown', why: 'not-found' };
+    if (e.code === 'NOT_IMPLEMENTED' || e.code === 'RESTRICTED' || e.code === 'UNAUTHORIZED') {
+      return { state: 'unknown', why: 'cannot-ask' };
+    }
+    return UNCLEAR;
+  }
+  if (e instanceof nwc.Nip47TimeoutError || e instanceof nwc.Nip47NetworkError) {
+    return { state: 'unknown', why: 'no-answer' };
+  }
+  return UNCLEAR;
+}
