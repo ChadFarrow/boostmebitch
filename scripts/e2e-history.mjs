@@ -39,11 +39,13 @@ await requireApp(`${APP}/privacy`,
  * track instead of opening an episode view. "podcasting 2.0" was the first
  * query tried, and its top hit was the "Top 100 (Music)" playlist. Podnews
  * Weekly Review publishes every week; any other non-music hit is the fallback.
+ * A playlist row is told by its stamp's `data-stamp`, not by a `♫` in its text:
+ * the stamp's glyph is an SVG now, so no row's text carries one.
  */
 const QUERY = 'podnews weekly review';
 const PICK_SHOW = `(() => {
   const rows = [...document.querySelectorAll('aside li > button')];
-  return rows.find((b) => /podnews weekly review/i.test(b.textContent)) ?? rows.find((b) => !b.textContent.includes('♫'));
+  return rows.find((b) => /podnews weekly review/i.test(b.textContent)) ?? rows.find((b) => !b.querySelector('[data-stamp="playlist"]'));
 })()`;
 
 const browser = await launchChrome({ name: 'history', args: ['--window-size=1200,900'] });
