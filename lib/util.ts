@@ -1936,8 +1936,12 @@ export function matchPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author'
  * as ordinary text and searches for it, which is why `'all'`'s placeholder no
  * longer offers to take one: a box that invites a paste it will not act on is a
  * worse control than one that never mentioned it.
+ *
+ * `'demu'` is music that is self-hosted — every music feed whose generator is
+ * not Wavlake's (`lib/demu.ts`). Listeners use it to check that a song may be
+ * requested on Homegrown Hits, which plays only DeMu.
  */
-export type SearchType = 'all' | 'music' | 'podcast' | 'playlist' | 'npub';
+export type SearchType = 'all' | 'music' | 'demu' | 'podcast' | 'playlist' | 'npub';
 
 /**
  * The selector's vocabulary, in the order it renders.
@@ -1957,6 +1961,7 @@ export const SEARCH_TYPES: readonly {
 }[] = [
   { type: 'all', label: 'ALL', noun: 'feeds', placeholder: 'search podcasts, music and playlists…' },
   { type: 'music', label: '♫ MUSIC', noun: 'albums', placeholder: 'search music albums…' },
+  { type: 'demu', label: 'DEMU', noun: 'DeMu albums', placeholder: 'search self-hosted music…' },
   { type: 'podcast', label: 'PODCASTS', noun: 'shows', placeholder: 'search podcasts…' },
   { type: 'playlist', label: 'PLAYLISTS', noun: 'playlists', placeholder: 'search playlists…' },
   { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste a Nostr public key (npub, nprofile or hex)…' },
@@ -2004,6 +2009,13 @@ export function parseSearchType(v: string | null | undefined): SearchType {
  *
  * `'npub'` matches nothing: no feed is a person, and this function is only ever
  * asked about feeds.
+ *
+ * `'demu'` is the MUSIC half only. The self-hosted half (`isDemuFeed`, in
+ * `lib/demu.ts`) reads the generator and the URL, and the route applies it,
+ * because this file keeps only type-only imports. So a publisher of `music`
+ * matches `'demu'` here, and the route keeps it only when the publisher row
+ * itself is self-hosted — Chad, 2026-11-16: "demu publisher should be in music
+ * and demu". A Fountain publisher passes here and is dropped there.
  */
 export function matchesSearchType(p: Pick<Podcast, 'medium' | 'publisherMediums'>, type: SearchType): boolean {
   if (p.medium === 'publisher' && type !== 'all') {
@@ -2014,6 +2026,7 @@ export function matchesSearchType(p: Pick<Podcast, 'medium' | 'publisherMediums'
   switch (type) {
     case 'all': return true;
     case 'music': return isMusicMedium(p);
+    case 'demu': return isMusicMedium(p);
     case 'playlist': return isPlaylistMedium(p);
     case 'podcast': return !isMusicMedium(p) && !isPlaylistMedium(p);
     case 'npub': return false;

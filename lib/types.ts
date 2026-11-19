@@ -152,6 +152,7 @@ export interface Podcast {
   artwork?: string;
   url?: string;           // RSS feed URL
   medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
+  generator?: string;     // PI's copy of <generator>; the DEMU search lane reads it (lib/demu.ts)
   value?: ValueBlock | null;
   /** True when Podcast Index lists a value block for this show. A DISPLAY hint for
    *  the ⚡ V4V stamp and nothing else: it names nobody and opens no BOOST, so a
