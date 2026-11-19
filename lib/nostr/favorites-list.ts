@@ -2820,3 +2820,251 @@ export function entriesFromList(list: ParsedList): FavoriteEntry[] {
   }
   return entries;
 }
+
+// ---------------------------------------------------------------------------
+// Restoring a backup file
+// ---------------------------------------------------------------------------
+
+/**
+ * What Podcast Index answered about one feed, by bare feed guid.
+ *
+ * The three-state contract of `/api/by-guid/batch` reaches here intact: a key
+ * with a value is a feed PI holds, a key with `null` is PI saying it holds no
+ * such feed, and an ABSENT key is a feed nobody could ask about. `medium` is
+ * the feed's own `<podcast:medium>` as PI read it — the same value `<FavHeart>`
+ * publishes — never a default.
+ */
+export interface RestoreFeedFact {
+  medium?: string;
+}
+
+/**
+ * What can be wrong with one row of a backup file.
+ *
+ *   unreadable    a `podcast:guid:` whose guid this format cannot read, so no
+ *                 app can open the feed (`parseShowGuid` refuses it)
+ *   no-parent     a two-element item with no feed above it: nothing can look it
+ *                 up, because Podcast Index needs the feed to find an item
+ *   duplicate     the same entry again, later in the list
+ *   no-medium     no `medium`, while the feed declares one — the row lands in
+ *                 "medium unknown", so a song is not a single and has no SHUFFLE
+ *   wrong-medium  a `medium` the feed does not declare — a song filed as a show
+ *   unknown-feed  Podcast Index answered that it holds no such feed. Reported,
+ *                 never repaired: a feed PI has not indexed is still a feed
+ */
+export type RestoreProblem =
+  | 'unreadable' | 'no-parent' | 'duplicate' | 'no-medium' | 'wrong-medium' | 'unknown-feed';
+
+export interface RestoreFinding {
+  problem: RestoreProblem;
+  /** Index into `parseFavoritesList(tags).nodes`. */
+  node: number;
+  /** For a legacy item inside a group, the item. Absent = the whole node. */
+  itemGuid?: string;
+  /** Favorites the finding covers: a placement group's items, otherwise 1. */
+  entries: number;
+  feedGuid?: string;
+  /** The medium the row carries, and the one its feed declares. */
+  medium?: string;
+  feedMedium?: string;
+}
+
+export interface RestoreCheck {
+  findings: RestoreFinding[];
+  /** Favorites whose feed nobody could ask Podcast Index about. */
+  notChecked: number;
+}
+
+/** Which kinds of finding a restore repairs. Each is the user's own choice. */
+export interface RestoreRepair {
+  /** `no-medium` and `wrong-medium`: take the medium the feed declares. */
+  medium: boolean;
+  /** `duplicate`: drop a later copy that adds nothing to the first. */
+  duplicates: boolean;
+  /** `unreadable` and `no-parent`: drop them. LOSES rows another app may read. */
+  unreadable: boolean;
+}
+
+/** Does this choice of repairs repair this kind of finding? */
+export const repairsProblem = (r: RestoreRepair, p: RestoreProblem): boolean =>
+  (r.medium && (p === 'no-medium' || p === 'wrong-medium'))
+  || (r.duplicates && p === 'duplicate')
+  || (r.unreadable && (p === 'unreadable' || p === 'no-parent'));
+
+/**
+ * The feeds a restore check asks Podcast Index about: every feed favorite and
+ * every item's parent, deduped, in list order. Only readable guids — the others
+ * are already a finding, and a lookup by a malformed guid answers nothing.
+ */
+export function restoreFeedGuids(tags: string[][]): string[] {
+  const out: string[] = [];
+  for (const node of parseFavoritesList(tags).nodes) {
+    const feed = node.t === 'group' ? node.group.feedGuid : node.t === 'item' ? node.item.feedGuid : null;
+    if (feed && !out.includes(feed)) out.push(feed);
+  }
+  return out;
+}
+
+/**
+ * What is wrong with a backup file's PUBLIC half, before anything publishes.
+ *
+ * A pure read of the tags: it changes nothing and decides nothing. The file
+ * has already passed `parseFavoritesBackup`, so it IS a signed event of this
+ * account — which proves who wrote it, not that what it says is right. A list
+ * built by hand, or by a tool that guessed, signs exactly as well as a good
+ * one; on 2026-11-18 a restored file filed every song with no medium, so the
+ * library showed no singles and no SHUFFLE, and nothing on screen said why.
+ *
+ * Only what a reader of THIS format can know is flagged. An identifier kind
+ * outside the table, or a position 2 a newer writer uses, is another app's
+ * entry and is not a problem — "carry what you can't read" holds here too.
+ * The encrypted half is not read: that needs a signer prompt, and it rides
+ * through a restore byte for byte.
+ */
+export function checkRestore(
+  tags: string[][],
+  feeds: Record<string, RestoreFeedFact | null>,
+): RestoreCheck {
+  const findings: RestoreFinding[] = [];
+  const seen = new Map<string, { tag: string[]; medium?: string }>();
+  let notChecked = 0;
+
+  // A LATER COPY IS A DUPLICATE ONLY IF DROPPING IT LOSES NOTHING. The pair is
+  // the claim (`itemClaim`), so one item guid under two feeds is two entries.
+  // And the copy that comes second is not always the poorer one: a newer writer
+  // may carry a position past the item guid, or the second copy may be the one
+  // with a `medium`. So it counts only when its tag — the legacy form read as
+  // the three-element one it means — is a PREFIX of the first copy's, and its
+  // medium is absent or the same. Anything else is two copies the user keeps,
+  // as the ordinary merge keeps them.
+  const isDuplicate = (key: string, tag: string[], medium: string | undefined) => {
+    const first = seen.get(key);
+    if (!first) {
+      seen.set(key, { tag, medium });
+      return false;
+    }
+    return tag.length <= first.tag.length
+      && tag.every((v, k) => v === first.tag[k])
+      && (medium === undefined || medium === first.medium);
+  };
+
+  const mediumOf = (node: number, feedGuid: string, medium: string | undefined, entries: number) => {
+    if (!(feedGuid in feeds)) {
+      notChecked += entries;
+      return;
+    }
+    const fact = feeds[feedGuid];
+    if (fact === null) {
+      findings.push({ problem: 'unknown-feed', node, entries, feedGuid, medium });
+      return;
+    }
+    const declared = fact.medium || undefined;
+    if (!declared || declared === medium) return;
+    findings.push({
+      problem: medium ? 'wrong-medium' : 'no-medium', node, entries, feedGuid, medium, feedMedium: declared,
+    });
+  };
+
+  parseFavoritesList(tags).nodes.forEach((node, i) => {
+    if (node.t === 'loose') {
+      const { tag, medium } = node.loose;
+      if (tag[1].startsWith(SHOW_PREFIX) && parseShowGuid(tag[1]) === null) {
+        findings.push({ problem: 'unreadable', node: i, entries: 1, medium });
+      } else if (tag.length === 2 && tag[1].startsWith(ITEM_PREFIX)) {
+        findings.push({ problem: 'no-parent', node: i, entries: 1, medium });
+      }
+      return;
+    }
+    if (node.t === 'item') {
+      const { feedGuid, itemGuid, medium, tag } = node.item;
+      if (isDuplicate(`${feedGuid} ${itemGuid}`, tag, medium)) {
+        findings.push({ problem: 'duplicate', node: i, entries: 1, feedGuid, medium });
+        return;
+      }
+      mediumOf(i, feedGuid, medium, 1);
+      return;
+    }
+    const { feedGuid, itemGuids, medium, feedTag } = node.group;
+    if (itemGuids.length === 0) {
+      if (isDuplicate(feedGuid, feedTag ?? ['i', showId(feedGuid)], medium)) {
+        findings.push({ problem: 'duplicate', node: i, entries: 1, feedGuid, medium });
+        return;
+      }
+      mediumOf(i, feedGuid, medium, 1);
+      return;
+    }
+    let kept = 0;
+    for (const itemGuid of itemGuids) {
+      // A legacy item's tag is two elements; compare it as the three it means.
+      const read = node.group.itemTags?.[itemGuid];
+      const tag = read && read.length > 2 ? read : ['i', showId(feedGuid), itemId(itemGuid)];
+      if (!isDuplicate(`${feedGuid} ${itemGuid}`, tag, medium)) kept += 1;
+      else findings.push({ problem: 'duplicate', node: i, itemGuid, entries: 1, feedGuid, medium });
+    }
+    if (kept > 0) mediumOf(i, feedGuid, medium, kept);
+  });
+
+  return { findings, notChecked };
+}
+
+/**
+ * The tags a restore publishes, with the repairs the user chose.
+ *
+ * **Nothing chosen is the file, byte for byte** — the restore the user always
+ * had, and the only path that never goes through this app's writer. Anything
+ * chosen rebuilds the list with `tagsFromList`, the writer every ordinary
+ * publish uses, so the result is a list this app would write itself: carried
+ * tags whole, foreign tags kept, the `visibility` the file stated restated.
+ *
+ * **A placement group that loses its last item is DROPPED, not emptied.** An
+ * itemless group is a feed favorite on this format, so emptying one by removing
+ * a duplicate item would follow a show the user never chose.
+ *
+ * **A rebuild migrates legacy items, as every ordinary publish does.** A group's
+ * two-element items come out in the three-element form and its feed tag stays,
+ * which a fresh reader takes for a feed favorite — the stage-3 gap. Measured:
+ * on a fresh device the ordinary merge publishes the same bytes as this rebuild,
+ * so ticking a box publishes now what the next sync would publish anyway.
+ *
+ * The check must have been made over these same tags: a finding names a node
+ * by its index in their parse.
+ */
+export function restoreTags(tags: string[][], check: RestoreCheck, repair: RestoreRepair): string[][] {
+  const chosen = check.findings.filter((f) => repairsProblem(repair, f.problem));
+  if (chosen.length === 0) return tags.map((t) => t.slice());
+
+  const list = parseFavoritesList(tags);
+  const drop = new Set<number>();
+  const dropItems = new Map<number, Set<string>>();
+  const setMedium = new Map<number, string>();
+  for (const f of chosen) {
+    if (f.problem === 'no-medium' || f.problem === 'wrong-medium') {
+      if (f.feedMedium) setMedium.set(f.node, f.feedMedium);
+    } else if (f.itemGuid !== undefined) {
+      if (!dropItems.has(f.node)) dropItems.set(f.node, new Set());
+      (dropItems.get(f.node) as Set<string>).add(f.itemGuid);
+    } else {
+      drop.add(f.node);
+    }
+  }
+
+  const nodes: ListNode[] = [];
+  list.nodes.forEach((node, i) => {
+    if (drop.has(i)) return;
+    const medium = setMedium.get(i);
+    if (node.t === 'loose') {
+      nodes.push(node);
+      return;
+    }
+    if (node.t === 'item') {
+      nodes.push(medium ? { t: 'item', item: { ...node.item, medium } } : node);
+      return;
+    }
+    const gone = dropItems.get(i);
+    const itemGuids = gone ? node.group.itemGuids.filter((g) => !gone.has(g)) : node.group.itemGuids;
+    if (gone && itemGuids.length === 0) return;
+    nodes.push({ t: 'group', group: { ...node.group, itemGuids, ...(medium ? { medium } : {}) } });
+  });
+
+  return withVisibility(tagsFromList({ ...list, nodes }), list.visibility);
+}

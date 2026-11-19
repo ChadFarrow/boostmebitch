@@ -3,6 +3,13 @@
 // the sentence shown after it is written, and the parse that decides whether a
 // chosen file may be republished under the user's key.
 //
+// AND the restore CHECK beside `tagsFromList` in `lib/nostr/favorites-list.ts`:
+// `checkRestore`, which says what is wrong with a signed file before it
+// publishes, and `restoreTags`, which applies only the repairs the user ticked.
+// A signature proves who wrote a file, not that it is right — a restored file
+// filed every song with no medium on 2026-11-18 and the library lost its
+// singles and its SHUFFLE, with nothing on screen to say why.
+//
 // WHY THIS EARNS A SCRIPT. A restore replaces the WHOLE kind:10333 event for
 // every app that reads the account's favorites, and there is no undo and no
 // history on a replaceable event. Both directions cost:
@@ -108,6 +115,18 @@ const {
   backupRefusal, backupSummary, favoritesBackupFilename, parseFavoritesBackup,
   serializeFavoritesBackup, FAVORITES_BACKUP_KIND,
 } = await import('../lib/favorites-export.ts');
+
+{
+  const problems = importFreeProblems('lib/nostr/favorites-list.ts');
+  if (problems.length) {
+    explainImportFree('lib/nostr/favorites-list.ts', problems);
+    console.error('\n  favorites-list.ts must load under plain Node or this script cannot pin it.\n');
+    process.exit(1);
+  }
+}
+const {
+  checkRestore, restoreTags, parseFavoritesList, tagsFromList, repairsProblem,
+} = await import('../lib/nostr/favorites-list.ts');
 
 // ---------------------------------------------------------------------------
 // Fixtures — frozen wire, never a struct
@@ -302,7 +321,69 @@ const naive = {
     const n = event.tags.length;
     return `saved ${n} public ${n === 1 ? 'entry' : 'entries'}`;
   },
+
+  // "Walk the `i` tags with the running medium." What you write without the
+  // list model. Four mistakes, and each vector below catches one: no groups, so
+  // a two-element item names no feed and a placement group reads as a show; a
+  // copy keyed on its ITEM alone and always dropped when second, so one track
+  // guid under two albums is a "duplicate", and so is a later copy that carries
+  // MORE — a newer writer's position 3, or the only `medium`; every tag outside the three shapes "broken", so a newer
+  // writer's entry is offered for deletion; and a feed with no answer is
+  // "unknown" — the three-state collapse, which calls a feed nobody could ask
+  // about one Podcast Index does not hold. It also flags "no medium" when the
+  // feed declares none either, which no repair can fix.
+  restoreCheck: (tags, feeds) => {
+    const findings = [];
+    const seen = new Set();
+    let medium;
+    tags.forEach((t, i) => {
+      if (t[0] === 'medium') { medium = t[1] || undefined; return; }
+      if (t[0] !== 'i' || !t[1]) return;
+      const feedGuid = /^podcast:guid:(.+)$/.exec(t[1])?.[1];
+      const known = (t.length === 2 && /^podcast:(item:)?guid:/.test(t[1]))
+        || (t.length >= 3 && !!feedGuid && t[2].startsWith('podcast:item:guid:'));
+      if (!known || (feedGuid && !UUID.test(feedGuid))) {
+        findings.push({ problem: 'unreadable', node: i, entries: 1, medium });
+        return;
+      }
+      const key = t.length > 2 ? t[2] : t[1];
+      if (seen.has(key)) { findings.push({ problem: 'duplicate', node: i, entries: 1, feedGuid, medium }); return; }
+      seen.add(key);
+      const fact = feedGuid ? feeds[feedGuid] : undefined;
+      if (!fact) { findings.push({ problem: 'unknown-feed', node: i, entries: 1, feedGuid, medium }); return; }
+      if (!medium) findings.push({ problem: 'no-medium', node: i, entries: 1, feedGuid, medium, feedMedium: fact.medium });
+      else if (fact.medium && fact.medium !== medium) {
+        findings.push({ problem: 'wrong-medium', node: i, entries: 1, feedGuid, medium, feedMedium: fact.medium });
+      }
+    });
+    return { findings, notChecked: 0 };
+  },
+
+  // "Apply the fixes to the nodes and write the list." The REAL check, the
+  // real parser and the real writer — so every difference is the repair's own.
+  // Three mistakes: it always rebuilds, so a restore with nothing ticked is no
+  // longer the file; it never restates the `visibility` the file stated, which
+  // RETRACTS another app's mode; and it empties a placement group rather than
+  // dropping it, which on this format follows a show nobody chose.
+  restoreTags: (tags, feeds, repair) => {
+    const check = checkRestore(tags, feeds);
+    const list = parseFavoritesList(tags);
+    const nodes = [];
+    list.nodes.forEach((node, i) => {
+      const fs = check.findings.filter((f) => f.node === i && repairsProblem(repair, f.problem));
+      if (fs.some((f) => f.itemGuid === undefined && !f.feedMedium)) return;
+      const m = fs.find((f) => f.feedMedium)?.feedMedium;
+      if (node.t === 'group') {
+        const gone = new Set(fs.filter((f) => f.itemGuid !== undefined).map((f) => f.itemGuid));
+        nodes.push({ t: 'group', group: { ...node.group, itemGuids: node.group.itemGuids.filter((g) => !gone.has(g)), ...(m ? { medium: m } : {}) } });
+      } else if (node.t === 'item') nodes.push(m ? { t: 'item', item: { ...node.item, medium: m } } : node);
+      else nodes.push(node);
+    });
+    return tagsFromList({ ...list, nodes });
+  },
 };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ---------------------------------------------------------------------------
 // Vectors — recorded as CALLS, replayed totally
@@ -455,6 +536,97 @@ vec('summary', 'both halves at once are both reported',
   [JSON.parse(BACKUP_A_BOTH), 5],
   'saved 5 public entries, plus a private half that stays encrypted in the file');
 
+// ── the restore check ──────────────────────────────────────────────────────
+// Tags are WIRE literals. `feeds` is the three-state answer of
+// `/api/by-guid/batch`: a value, `null` (Podcast Index holds no such feed), or
+// an absent key (nobody could ask). Compared as sorted one-line findings, so a
+// vector asserts WHAT was found, not the node index it was found at.
+const FA = 'a0000000-0000-5000-8000-000000000001';
+const FB = 'b0000000-0000-5000-8000-000000000002';
+const FS = 'c0000000-0000-5000-8000-000000000003';
+const sg = (g) => `podcast:guid:${g}`;
+const ig = (g) => `podcast:item:guid:${g}`;
+const ALT = ['alt', 'PC 2.0 Favorites'];
+const KS = [['k', 'podcast:guid'], ['k', 'podcast:item:guid']];
+const MUSIC = { medium: 'music' };
+const POD = { medium: 'podcast' };
+const ALL = { medium: true, duplicates: true, unreadable: true };
+const SAFE = { medium: true, duplicates: true, unreadable: false };
+const NONE = { medium: false, duplicates: false, unreadable: false };
+
+// THE FILE THIS WAS WRITTEN FOR, in shape: two songs before any `medium` tag,
+// and an album filed under `podcast`. On screen: no singles, no SHUFFLE, the
+// album among the shows.
+const MISFILED = [ALT, ['i', sg(FA), ig('song-1')], ['i', sg(FB), ig('song-2')],
+  ['medium', 'podcast'], ['i', sg(FB)], ['i', sg(FS)], ...KS];
+const MISFILED_FEEDS = { [FA]: MUSIC, [FB]: MUSIC, [FS]: POD };
+
+vec('restoreCheck', 'songs with no medium and an album filed as a show are both found',
+  [MISFILED, MISFILED_FEEDS],
+  { findings: ['no-medium a0000000 ×1 ∅→music', 'no-medium b0000000 ×1 ∅→music',
+    'wrong-medium b0000000 ×1 podcast→music'], notChecked: 0 }, { alsoNaive: true });
+vec('restoreCheck', 'a feed nobody could ask about is NOT CHECKED, never unknown',
+  [[['i', sg(FA), ig('x')]], {}],
+  { findings: [], notChecked: 1 });
+vec('restoreCheck', 'a feed Podcast Index does not hold is unknown, and kept',
+  [[['medium', 'music'], ['i', sg(FA), ig('x')]], { [FA]: null }],
+  { findings: ['unknown-feed a0000000 ×1'], notChecked: 0 }, { alsoNaive: true });
+vec('restoreCheck', 'no medium is not a finding when the feed declares none either',
+  [[['i', sg(FA), ig('x')]], { [FA]: {} }],
+  { findings: [], notChecked: 0 });
+vec('restoreCheck', 'a legacy item takes the feed of the group above it, and the group is no favorite',
+  [[['i', sg(FA)], ['i', ig('x')]], { [FA]: MUSIC }],
+  { findings: ['no-medium a0000000 ×1 ∅→music'], notChecked: 0 });
+vec('restoreCheck', 'one track guid under two albums is two favorites, not a duplicate',
+  [[['medium', 'music'], ['i', sg(FA), ig('x')], ['i', sg(FB), ig('x')]], { [FA]: MUSIC, [FB]: MUSIC }],
+  { findings: [], notChecked: 0 });
+vec('restoreCheck', 'the same pair twice is one duplicate',
+  [[['medium', 'music'], ['i', sg(FA), ig('x')], ['i', sg(FA), ig('x')]], { [FA]: MUSIC }],
+  { findings: ['duplicate a0000000 ×1'], notChecked: 0 }, { alsoNaive: true });
+vec('restoreCheck', 'a later copy that carries MORE is two copies, not a duplicate',
+  [[['medium', 'music'], ['i', sg(FA), ig('x')], ['i', sg(FA), ig('x'), 'https://example.com/feed.xml']], { [FA]: MUSIC }],
+  { findings: [], notChecked: 0 });
+vec('restoreCheck', 'a legacy first copy and a richer three-element second: no duplicate',
+  [[['i', sg(FA)], ['i', ig('x')], ['i', sg(FA), ig('x'), 'https://example.com/feed.xml']], {}],
+  { findings: [], notChecked: 2 });
+vec('restoreCheck', 'a later copy holding the only medium is not a duplicate',
+  [[['i', sg(FA)], ['medium', 'music'], ['i', sg(FA)]], {}],
+  { findings: [], notChecked: 2 });
+vec('restoreCheck', "a newer writer's position 2 is another app's entry, not a problem",
+  [[['medium', 'music'], ['i', sg(FA), 'podcast:chapter:guid:z']], { [FA]: MUSIC }],
+  { findings: [], notChecked: 0 });
+vec('restoreCheck', 'a feed id this format cannot read is unreadable',
+  [[['medium', 'music'], ['i', 'podcast:guid:not-a-uuid']], {}],
+  { findings: ['unreadable -'], notChecked: 0 }, { alsoNaive: true });
+vec('restoreCheck', 'an item with no feed above it names no parent',
+  [[['medium', 'music'], ['i', ig('x')]], {}],
+  { findings: ['no-parent -'], notChecked: 0 });
+
+// ── the repair ─────────────────────────────────────────────────────────────
+vec('restoreTags', "the file this was written for, repaired: every song and the album under music",
+  [MISFILED, MISFILED_FEEDS, SAFE],
+  [ALT, ['medium', 'music'], ['i', sg(FB)], ['i', sg(FA), ig('song-1')], ['i', sg(FB), ig('song-2')],
+    ['medium', 'podcast'], ['i', sg(FS)], ...KS], { alsoNaive: true });
+vec('restoreTags', 'nothing ticked is the file, byte for byte — legacy items and all',
+  [[['i', sg(FA)], ['i', ig('x')], ['k', 'podcast:guid']], { [FA]: MUSIC }, NONE],
+  [['i', sg(FA)], ['i', ig('x')], ['k', 'podcast:guid']]);
+vec('restoreTags', 'only a feed Podcast Index does not hold: nothing to repair, so the file',
+  [[['i', sg(FA)], ['medium', 'music']], { [FA]: null }, ALL],
+  [['i', sg(FA)], ['medium', 'music']]);
+vec('restoreTags', 'the visibility the file stated is restated, never retracted',
+  [[ALT, ['visibility', 'public'], ['i', sg(FA), ig('x')], ...KS], { [FA]: MUSIC }, SAFE],
+  [ALT, ['visibility', 'public'], ['medium', 'music'], ['i', sg(FA), ig('x')], ['k', 'podcast:item:guid']]);
+vec('restoreTags', 'a placement group emptied by a duplicate is DROPPED, never a new show',
+  [[ALT, ['medium', 'music'], ['i', sg(FA), ig('x')], ['i', sg(FA)], ['i', ig('x')], ...KS], { [FA]: MUSIC }, SAFE],
+  [ALT, ['medium', 'music'], ['i', sg(FA), ig('x')], ['k', 'podcast:item:guid']]);
+vec('restoreTags', "a repair keeps a newer writer's position 3 on a copy it does not drop",
+  [[['i', sg(FA)], ['i', ig('x')], ['i', sg(FA), ig('x'), 'https://example.com/feed.xml']], { [FA]: MUSIC }, SAFE],
+  [ALT, ['medium', 'music'], ['i', sg(FA)], ['i', sg(FA), ig('x')], ['i', sg(FA), ig('x'), 'https://example.com/feed.xml'], ...KS],
+  { alsoNaive: true });
+vec('restoreTags', 'an unreadable row goes only when its box is ticked',
+  [[ALT, ['i', 'podcast:guid:not-a-uuid'], ['medium', 'music'], ['i', sg(FA)], ['k', 'podcast:guid']], { [FA]: MUSIC }, ALL],
+  [ALT, ['medium', 'music'], ['i', sg(FA)], ['k', 'podcast:guid']], { alsoNaive: true });
+
 // ---------------------------------------------------------------------------
 // The replay — total, and it refuses a kind with no naive()
 // ---------------------------------------------------------------------------
@@ -465,12 +637,20 @@ const real = {
   serialize: serializeFavoritesBackup,
   filename: favoritesBackupFilename,
   summary: backupSummary,
+  restoreCheck: checkRestore,
+  restoreTags: (tags, feeds, repair) => restoreTags(tags, checkRestore(tags, feeds), repair),
 };
 
 // `parse` is compared on its VERDICT, not on the event object: a vector that
 // asserted the parsed struct would be asserting JSON.parse, and the whole
 // question here is which files are accepted and why the others are not.
 function normalize(kind, out) {
+  if (kind === 'restoreCheck') {
+    const line = (f) => [f.problem, f.feedGuid ? f.feedGuid.slice(0, 8) : '-',
+      f.itemGuid !== undefined || f.feedGuid ? `×${f.entries}` : null,
+      f.feedMedium ? `${f.medium ?? '∅'}→${f.feedMedium}` : null].filter(Boolean).join(' ');
+    return { findings: out.findings.map(line).sort(), notChecked: out.notChecked };
+  }
   if (kind !== 'parse') return out;
   return out.ok ? 'ok' : out.error;
 }
@@ -482,7 +662,7 @@ function callOne(impls, v) {
   catch (e) { return `THREW: ${e instanceof Error ? e.message : String(e)}`; }
 }
 
-console.log('\n  favorites backup file — refusal, bytes, name, summary, parse\n');
+console.log('\n  favorites backup file — refusal, bytes, name, summary, parse, restore check\n');
 let section = '';
 for (const v of vectors) {
   if (v.kind !== section) { section = v.kind; console.log(`  — ${section} —`); }

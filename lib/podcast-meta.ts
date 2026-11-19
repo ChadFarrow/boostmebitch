@@ -420,6 +420,66 @@ export async function lookupFeedUrls(
   return { answers, stopped: false };
 }
 
+/**
+ * Look feeds up by `podcast:guid`, keeping the three states apart — for the
+ * backup restore's check (`checkRestore`), which must not call a feed nobody
+ * asked about "unknown to Podcast Index".
+ *
+ * `warmPodcastCache` does the same requests and returns nothing, because a
+ * prefetch has no use for the answer; this returns it. The rules are the
+ * warm's: the memory and 7-day disk caches answer first, `in` and never
+ * `?? null` reads the batch reply, and the first failed chunk STOPS the run
+ * without tripping the breaker. Answers are cached exactly as the warm caches
+ * them, so the hydration after a restore asks for none of these again.
+ */
+export async function lookupFeedGuids(guids: string[]): Promise<FeedUrlLookup> {
+  const answers: Record<string, Podcast | null> = {};
+  const wanted: string[] = [];
+  for (const g of new Set(guids)) {
+    if (!g) continue;
+    if (podcastMem.has(g)) {
+      answers[g] = podcastMem.get(g) ?? null;
+      continue;
+    }
+    const cached = storage.podcastMeta.get(g);
+    // Not a closed-host record: see `resolveVia`.
+    if (cached && !closedService(cached.url)) {
+      podcastMem.set(g, cached);
+      capMem(podcastMem);
+      answers[g] = cached;
+      continue;
+    }
+    wanted.push(g);
+  }
+  if (!wanted.length) return { answers, stopped: false };
+  if (!piMaybeUp()) return { answers, stopped: true };
+
+  for (const chunk of chunked(wanted, BATCH_SIZE)) {
+    try {
+      // A ceiling, because a person is waiting on this with the RESTORE button
+      // held: a request that never settles must become "not checked", not a
+      // panel that stays on "checking…" for good.
+      const r = await fetch(`/api/by-guid/batch?guids=${chunk.map(encodeURIComponent).join(',')}`, {
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!r.ok) return { answers, stopped: true };
+      const { podcasts } = (await r.json()) as { podcasts: Record<string, Podcast | null> };
+      if (!podcasts || typeof podcasts !== 'object') return { answers, stopped: true };
+      for (const key of chunk) {
+        if (!(key in podcasts)) continue;
+        const podcast = podcasts[key] ?? null;
+        answers[key] = podcast;
+        podcastMem.set(key, podcast);
+        capMem(podcastMem);
+        if (podcast) storage.podcastMeta.set(key, podcast);
+      }
+    } catch {
+      return { answers, stopped: true };
+    }
+  }
+  return { answers, stopped: false };
+}
+
 // --- episodes --------------------------------------------------------------
 //
 // Same four guards for `/api/episode-by-guid`, sharing the breaker with the
