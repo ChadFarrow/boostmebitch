@@ -96,6 +96,7 @@
     "e2e:deadtrack": "node scripts/e2e-dead-track.mjs",
     "e2e:playbacklog": "node scripts/e2e-playback-log.mjs",
     "e2e:speed": "node scripts/e2e-speed.mjs",
+    "e2e:restorecheck": "node scripts/e2e-restore-check.mjs",
     "e2e:opml": "node scripts/e2e-opml.mjs",
     "e2e:favbuttons": "node scripts/e2e-fav-buttons.mjs",
     "e2e:shuffle": "node scripts/e2e-shuffle.mjs",
