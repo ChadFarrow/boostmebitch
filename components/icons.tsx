@@ -330,46 +330,54 @@ export function MusicNoteIcon({ className = TYPE_ICON }: { className?: string })
   );
 }
 
-/** A house — self-hosted. DEMU, and the /demu page's "Self-hosted" badge. */
-export function HouseIcon({ className = TYPE_ICON }: { className?: string }) {
+/**
+ * An emu in headphones — DEMU. A play on the name and on the emu with
+ * headphones that is the de-mu GitHub account's picture (the home of the DeMu
+ * feed template); a new drawing on that idea, not that artwork (Chad,
+ * 2026-11-19). Also the /demu page's "Self-hosted" badge.
+ */
+export function EmuIcon({ className = TYPE_ICON }: { className?: string }) {
   return (
     <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
-      <path d="M12 3 2 12h3v8h5v-5h4v5h5v-8h3z" />
+      {/* Head and neck, with a gap around the ear cup and the eye cut out. */}
+      <path
+        fillRule="evenodd"
+        d="M9.7 14.22A4.4 4.4 0 0 0 8.77 7.12L9.3 5.3 10.7 5.9 10.4 3.9 12 5.1 12.3 3.1 13.6 4.7 14.6 3.4 15 5.3 16.4 5 15.9 6.6C18.4 7.4 20.8 8.8 22.7 10.4c.5.4.3 1.1-.3 1.2C20.6 12 18.2 12.4 16 12.7C14.3 13.4 13.5 14.9 13.5 17C13.5 19.6 14.4 21.8 15.4 24H9.1C9.6 21.6 9.7 19.2 9.7 16.4ZM13.1 8.9a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0Z"
+      />
+      <circle cx="6.7" cy="11" r="3.3" />
+      <path d="M4.6 9.4C4.4 4.6 7.8 1.6 11.9 1.6c1.8 0 3.3.5 4.6 1.4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }
 
-/** A microphone on a stand. PODCASTS. */
-export function MicIcon({ className = TYPE_ICON }: { className?: string }) {
+/** The RSS mark — a podcast is a feed. PODCASTS. */
+export function RssIcon({ className = TYPE_ICON }: { className?: string }) {
   return (
     <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
-      <rect x="8.5" y="2" width="7" height="12" rx="3.5" />
-      <path d="M5 11a7 7 0 0 0 14 0M12 18v3.5M8.5 21.5h7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="5.5" cy="18.5" r="2.3" />
+      <path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
     </svg>
   );
 }
 
-/** A list with a note beside it. PLAYLISTS — not `♫`, which is MUSIC's. */
+/** A list with a play triangle. PLAYLISTS — not `♫`, which is MUSIC's. */
 export function PlaylistIcon({ className = TYPE_ICON }: { className?: string }) {
   return (
     <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
-      <rect x="2" y="4.5" width="12" height="2.2" rx="1.1" />
-      <rect x="2" y="10" width="12" height="2.2" rx="1.1" />
-      <rect x="2" y="15.5" width="7" height="2.2" rx="1.1" />
-      <path d="M18.4 7v9.6H20V9.6l2.6-.9V6.6Z" />
-      <ellipse cx="16.2" cy="17.4" rx="3" ry="2.3" transform="rotate(-20 16.2 17.4)" />
+      <rect x="2" y="4.5" width="13" height="2.2" rx="1.1" />
+      <rect x="2" y="10" width="13" height="2.2" rx="1.1" />
+      <rect x="2" y="15.5" width="8" height="2.2" rx="1.1" />
+      <path d="M14 13.2v8.6l7-4.3Z" />
     </svg>
   );
 }
 
-/** Four squares — every kind at once. ALL. */
-export function GridIcon({ className = TYPE_ICON }: { className?: string }) {
+/** Three stacked layers — every kind at once. ALL. */
+export function LayersIcon({ className = TYPE_ICON }: { className?: string }) {
   return (
     <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
-      <rect x="3" y="3" width="7.5" height="7.5" rx="1.5" />
-      <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5" />
-      <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5" />
-      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5" />
+      <path d="M12 2 21.5 7 12 12 2.5 7Z" />
+      <path d="M2.5 11.5 12 16.5l9.5-5M2.5 16 12 21l9.5-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -380,10 +388,10 @@ export function GridIcon({ className = TYPE_ICON }: { className?: string }) {
  */
 export function SearchTypeIcon({ type }: { type: SearchType }) {
   switch (type) {
-    case 'all': return <GridIcon />;
+    case 'all': return <LayersIcon />;
     case 'music': return <MusicNoteIcon />;
-    case 'demu': return <HouseIcon />;
-    case 'podcast': return <MicIcon />;
+    case 'demu': return <EmuIcon />;
+    case 'podcast': return <RssIcon />;
     case 'playlist': return <PlaylistIcon />;
     case 'npub': return <span className="leading-none">⚡</span>;
   }

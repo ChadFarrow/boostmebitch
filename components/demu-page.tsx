@@ -20,7 +20,7 @@ import { DEMU_APPS, demuAge, demuDateLabel, demuGroups, matchesDemuQuery, sortDe
 import type { DemuAlbum } from '@/lib/demu';
 import { demuView } from '@/lib/demu-view';
 import type { Podcast } from '@/lib/types';
-import { HouseIcon } from './icons';
+import { EmuIcon } from './icons';
 
 const DEMU_ORIGIN = { path: '/demu', label: 'DeMu' };
 
@@ -169,7 +169,7 @@ export function DemuPage() {
         {app === 'self' ? (
           // The search menu's DEMU glyph, so the badge and the type it was
           // found under are one shape.
-          <HouseIcon className="w-3.5 h-3.5 text-bolt" />
+          <EmuIcon className="w-3.5 h-3.5 text-bolt" />
         ) : (
           // A 96 px file from /public, drawn at 20 px: `next/image` would only add a
           // resize round trip for an icon this small.

@@ -22,7 +22,7 @@ import { loadCollection } from '@/lib/playlist-collection';
 import type { Podcast } from '@/lib/types';
 import { NO_SELECTION, applyStoreView, backOr, currentEntryView, syncEntry, viewForEntry } from '@/lib/view-history';
 import type { HomeView } from '@/lib/view-history';
-import { HouseIcon, PlaylistIcon } from '@/components/icons';
+import { EmuIcon, PlaylistIcon } from '@/components/icons';
 
 /**
  * The three heavy surfaces this page can show but usually does not, split out
@@ -763,7 +763,7 @@ export function HomePage() {
                 className="btn-ghost btn-compact"
                 title="Browse self-hosted music, newest first"
               >
-                <HouseIcon /> BROWSE DEMU
+                <EmuIcon /> BROWSE DEMU
               </Link>
             </div>
           )}
