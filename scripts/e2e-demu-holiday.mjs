@@ -1,23 +1,27 @@
 #!/usr/bin/env node
 /**
- * e2e: the /demu title's emu wears its holiday hat, and nothing else moves.
+ * e2e: the /demu title's emu wears its look, and nothing else moves.
  *
  * Chad, 2026-11-19: "For the new DeMu logo we have on /DeMu can we dress it up
- * for holidays?" — feathers and a pilgrim hat from 1 Nov through Thanksgiving
- * Day, a Santa hat from Black Friday through 26 Dec. Design: docs/superpowers/specs/2026-11-19-demu-holiday-hats-design.md.
- * Which day wears which hat is pinned by `check:demu`; this drives the page.
+ * for holidays?", then a look for every part of the year, each from the day
+ * after the one before through its own day. Design:
+ * docs/superpowers/specs/2026-11-19-demu-holiday-year-design.md (and the
+ * drawing rules in 2026-11-19-demu-holiday-hats-design.md).
+ * Which day wears which look is pinned by `check:demu`; this drives the page.
  *
  * What it drives, under phone emulation (390×844 and 320×640, `mobile: true`),
  * in New York time:
  * - `?holiday=none`: the plain emu, the same SVG as the search menu's DEMU glyph;
- * - `?holiday=thanksgiving` and `?holiday=christmas`: the costume replaces it
- *   after hydration — the right parts (feathers + pilgrim hat and no wattle;
- *   a Santa hat and no feathers), the same emu inside it, bolt yellow, one em
- *   square, its gaps masks and never the page colour painted, the emu's eye
- *   still open — and the title's box and the word's x do NOT move;
+ * - `?holiday=<look>` for each of the eleven looks: the costume replaces it
+ *   after hydration — a part behind the emu and a part over it exactly where
+ *   the look has them, the same emu inside it, bolt yellow, one em square, its
+ *   gaps masks and never the page colour painted, the emu's eye still open
+ *   (under the sunglasses, the lens there instead) — and the title's box and
+ *   the word's x do NOT move;
  * - the calendar itself, under a faked browser date: 24 Nov 2026 wears the
  *   turkey with no parameter and with a junk one, Black Friday 27 Nov 2026
- *   wears the Santa hat, 4 Jul 2026 is plain;
+ *   wears the Santa hat, 27 Dec 2026 the New Year's hat (the year wraps), and
+ *   4 Jul 2026 the fireworks;
  * - no React hydration warning, and no horizontal overflow at either width;
  * - screenshots of each title in the dark and the light theme (SHOT_DIR).
  *
@@ -113,7 +117,7 @@ const readTitle = () => jsOrThrow(`(() => {
     holiday: g.getAttribute('data-holiday'),
     svg: g.innerHTML,
     emu: g.querySelector('[data-part="emu"]')?.innerHTML ?? null,
-    parts: { feathers: part('feathers'), pilgrim: part('pilgrim'), santa: part('santa'), wattle: part('wattle') },
+    parts: { back: part('back'), front: part('front') },
     painted: !!g.querySelector('[class*="fill-ink"], [class*="stroke-ink"]'),
     masks: g.querySelectorAll('mask').length,
     box: [hr.top, hr.height, hr.left, hr.width].map((v) => Math.round(v * 2) / 2),
@@ -138,10 +142,23 @@ async function shot(name) {
   await js(`document.documentElement.dataset.theme = 'dark'`);
 }
 
-const EXPECT = {
-  thanksgiving: { feathers: true, pilgrim: true, santa: false, wattle: false },
-  christmas: { feathers: false, pilgrim: false, santa: true, wattle: false },
+// Each look, in year order, with the parts Chad picked: `back` draws behind the
+// emu (masked off it), `front` over it. The names are lib/demu-holiday.ts's
+// DEMU_HOLIDAYS; plain Node cannot import a .ts file, so they are listed here.
+const LOOKS = {
+  newyear: { back: true, front: true }, // confetti; a party hat
+  valentines: { back: true, front: true }, // floating hearts; a heart over the ear cup
+  stpatricks: { back: false, front: true }, // a leprechaun hat
+  easter: { back: false, front: true }, // bunny ears
+  pizzaday: { back: false, front: true }, // a pizza-slice hat
+  july4: { back: true, front: false }, // fireworks
+  summer: { back: false, front: true, eye: 'lens' }, // sunglasses, over the eye on purpose
+  podcastday: { back: false, front: true }, // a studio microphone
+  halloween: { back: false, front: true }, // a witch hat
+  thanksgiving: { back: true, front: true }, // feathers; a pilgrim hat
+  christmas: { back: false, front: true }, // a Santa hat
 };
+const LENS = [0x1f, 0x1d, 0x1c];
 
 for (const [w, h] of [[390, 844], [320, 640]]) {
   await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 3, mobile: true });
@@ -155,19 +172,29 @@ for (const [w, h] of [[390, 844], [320, 640]]) {
   t.equal(`${at} ?holiday=none: the title reads DeMu`, plain.text, 'DeMu');
   if (w === 390) await shot('plain');
 
-  for (const holiday of ['thanksgiving', 'christmas']) {
+  for (const [holiday, want] of Object.entries(LOOKS)) {
     await go(`/demu?holiday=${holiday}`);
     const seen = await until(`!!document.querySelector('${TITLE} svg[data-holiday="${holiday}"]')`, 5000);
     t.ok(`${at} ?holiday=${holiday}: the title wears it`, seen);
     if (!seen) continue;
     const c = await readTitle();
-    t.equal(`${at} ${holiday}: its parts`, c.parts, EXPECT[holiday]);
+    t.equal(`${at} ${holiday}: its parts`, c.parts, { back: want.back, front: want.front });
     // The page behind the title is the hero image under bg-ink/75, not --ink: an outline
     // painted in --ink showed as a cream sticker edge on the light theme.
-    t.ok(`${at} ${holiday}: its gaps are masks, not the page colour painted`, !c.painted && c.masks === (holiday === 'thanksgiving' ? 2 : 1),
+    t.ok(`${at} ${holiday}: its gaps are masks, not the page colour painted`, !c.painted && c.masks === (want.back ? 2 : 1),
       JSON.stringify({ painted: c.painted, masks: c.masks }));
-    const eye = await eyePixel();
-    t.ok(`${at} ${holiday}: the eye stays open, the page showing in it`, near(eye, plainEye), JSON.stringify({ eye, plainEye }));
+    if (want.eye === 'lens') {
+      // On the dark theme the lens is 17 levels from the page behind the eye, too
+      // close to tell apart; on the light theme the page there is bright.
+      await js(`document.documentElement.dataset.theme = 'light'`);
+      await wait(150);
+      const eye = await eyePixel();
+      await js(`document.documentElement.dataset.theme = 'dark'`);
+      t.ok(`${at} ${holiday}: the lens covers the eye`, near(eye, LENS), JSON.stringify({ eye, LENS }));
+    } else {
+      const eye = await eyePixel();
+      t.ok(`${at} ${holiday}: the eye stays open, the page showing in it`, near(eye, plainEye), JSON.stringify({ eye, plainEye }));
+    }
     t.ok(`${at} ${holiday}: the same emu inside it`, c.emu && plain.svg && c.emu === plain.svg, c.emu?.slice(0, 80));
     t.ok(`${at} ${holiday}: bolt yellow, one em square`, c.colour === c.bolt && Math.abs(c.gh - c.fs) < 1.5 && Math.abs(c.gw - c.fs) < 1.5,
       JSON.stringify({ colour: c.colour, bolt: c.bolt, gw: c.gw, gh: c.gh, fs: c.fs }));
@@ -184,12 +211,13 @@ console.log('\n  the calendar, under a faked browser date (390px)');
 await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
 const NOV_24 = Date.UTC(2026, 10, 24, 17, 0); // 12:00 in New York
 const BLACK_FRIDAY = Date.UTC(2026, 10, 27, 17, 0); // 12:00 in New York
+const DEC_27 = Date.UTC(2026, 11, 27, 17, 0); // 12:00 in New York
 const JUL_4 = Date.UTC(2026, 6, 4, 16, 0);
 await fakeNow(NOV_24);
 t.equal('faked clock: the page reads 24 Nov 2026', (await (async () => { await go('/demu'); return js('new Date().toDateString()'); })()), 'Tue Nov 24 2026');
 t.ok('24 Nov 2026, no parameter: the turkey', await until(`!!document.querySelector('${TITLE} svg[data-holiday="thanksgiving"]')`, 5000));
-await go('/demu?holiday=easter');
-t.ok('24 Nov 2026, ?holiday=easter: the calendar still decides', await until(`!!document.querySelector('${TITLE} svg[data-holiday="thanksgiving"]')`, 5000));
+await go('/demu?holiday=birthday');
+t.ok('24 Nov 2026, ?holiday=birthday: the calendar still decides', await until(`!!document.querySelector('${TITLE} svg[data-holiday="thanksgiving"]')`, 5000));
 await go('/demu?holiday=none');
 t.equal('24 Nov 2026, ?holiday=none: the plain emu', (await readTitle()).holiday, null);
 // The day after Thanksgiving hands over to Santa (Chad: "once that holiday hits, it
@@ -198,11 +226,15 @@ await fakeNow(BLACK_FRIDAY);
 await go('/demu');
 t.equal('faked clock: the page reads 27 Nov 2026', await js('new Date().toDateString()'), 'Fri Nov 27 2026');
 t.ok('Black Friday 2026, no parameter: the Santa hat', await until(`!!document.querySelector('${TITLE} svg[data-holiday="christmas"]')`, 5000));
+// After Christmas the year wraps to New Year's, not to a bare emu.
+await fakeNow(DEC_27);
+await go('/demu');
+t.equal('faked clock: the page reads 27 Dec 2026', await js('new Date().toDateString()'), 'Sun Dec 27 2026');
+t.ok('27 Dec 2026, no parameter: the New Year\'s hat', await until(`!!document.querySelector('${TITLE} svg[data-holiday="newyear"]')`, 5000));
 await fakeNow(JUL_4);
 await go('/demu');
-// Today may be outside both windows, so a plain emu alone proves nothing about the clock.
 t.equal('faked clock: the page reads 4 Jul 2026', await js('new Date().toDateString()'), 'Sat Jul 04 2026');
-t.equal('4 Jul 2026, no parameter: the plain emu', (await readTitle()).holiday, null);
+t.ok('4 Jul 2026, no parameter: the fireworks', await until(`!!document.querySelector('${TITLE} svg[data-holiday="july4"]')`, 5000));
 await fakeNow(null);
 
 t.equal('no hydration warning on any load', hydration, []);

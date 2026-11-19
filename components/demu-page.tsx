@@ -21,17 +21,19 @@ import type { DemuAlbum } from '@/lib/demu';
 import { demuHolidayFor } from '@/lib/demu-holiday';
 import { demuView } from '@/lib/demu-view';
 import type { Podcast } from '@/lib/types';
-import { EmuIcon, HolidayEmuIcon } from './icons';
+import { EmuIcon } from './icons';
+import { HolidayEmuIcon } from './demu-costumes';
 
 const DEMU_ORIGIN = { path: '/demu', label: 'DeMu' };
 
 /**
- * The title emu's holiday costume, from the VISITOR'S clock (lib/demu-holiday.ts).
- * The page is prerendered, so the server snapshot is `null` — the plain emu —
- * and React swaps the costume in right after hydration, with no mismatch. The
- * costume keeps the emu's box (`HolidayEmuIcon`), so the swap moves nothing.
- * Nothing to subscribe to: no event says a window opened. `getSnapshot` runs on
- * every render, so a window that opens while the page is open shows at the next
+ * The title emu's look for the day, from the VISITOR'S clock (lib/demu-holiday.ts);
+ * there is one for every day of the year. The page is prerendered, so the server
+ * snapshot is `null` — the plain emu — and React swaps the costume in right
+ * after hydration, with no mismatch. The costume keeps the emu's box
+ * (`HolidayEmuIcon`, components/demu-costumes.tsx), so the swap moves nothing.
+ * Nothing to subscribe to: no event says a look changed. `getSnapshot` runs on
+ * every render, so a look that starts while the page is open shows at the next
  * render (a keystroke in the search box) or the next load.
  */
 const noSubscribe = () => () => {};
@@ -201,8 +203,8 @@ export function DemuPage() {
     <>
       {/* The emu: the search menu's DEMU glyph, so the page wears the shape of the
           type it lists (Chad, 2026-11-19: "use that logo for the DeMu page as well").
-          The badge on a self-hosted cover below is the same component. On a
-          holiday the title's emu, and only that one, wears a costume. */}
+          The badge on a self-hosted cover below is the same component. The
+          title's emu, and only that one, wears the day's costume. */}
       <h1 data-demu-title className="headline text-3xl sm:text-4xl flex items-center gap-2">
         {holiday ? (
           <HolidayEmuIcon holiday={holiday} className="w-[1em] h-[1em] text-bolt" />
