@@ -27,6 +27,7 @@ import {
   demuAppOf, DEMU_APPS, withCoverFallback, saysTest, demuCopyCandidates, demuCopiesToHide,
 } from '../lib/demu.ts';
 import { DEMU_HIDE_LIST, DEMU_HIDE_AUTHORS, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
+import { thanksgivingDay, demuHolidayOn, demuHolidayFor } from '../lib/demu-holiday.ts';
 import { remoteItemFeedGuids, feedHasValueTag, newestItemImage } from '../lib/feed-xml.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
@@ -789,9 +790,80 @@ for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {
   if (!fam.some((v) => !v.alsoNaive)) fail(`the ${kind} vectors prove nothing against naive()`);
 }
 
+// ── The emu's holiday hat (Chad, 2026-11-19) ─────────────────────────────────
+// docs/superpowers/specs/2026-11-19-demu-holiday-hats-design.md. Feathers and a
+// pilgrim hat Monday to Sunday of Thanksgiving week, a Santa hat 1–26 Dec, by the
+// VISITOR'S calendar. Getting it wrong costs nothing but a costume on the wrong
+// day, which is why it rides in this file rather than a check of its own.
+//
+// `naive()` carries the three obvious wrong builds, each proved by its own
+// vectors: the LAST Thursday of November (2029 has five, and the fourth is the
+// holiday), December checked first (so a Thanksgiving week that ends on 1 Dec
+// loses its Sunday), and UTC dates (a server's view, not the visitor's). The
+// windows of 2026 are the same under all three, so they are must-still-work.
+{
+  const naiveTday = (y) => { let d = 30; while (new Date(Date.UTC(y, 10, d)).getUTCDay() !== 4) d--; return d; };
+  const naiveOn = (at) => {
+    const y = at.getUTCFullYear(), m = at.getUTCMonth(), d = at.getUTCDate();
+    if (m === 11 && d <= 26) return 'christmas';
+    const last = naiveTday(y), day = Date.UTC(y, m, d);
+    return day >= Date.UTC(y, 10, last - 3) && day < Date.UTC(y, 10, last + 4) ? 'thanksgiving' : null;
+  };
+  const at = (sec) => new Date(sec * 1000);
+  const holidayVectors = [
+    { kind: 'tday', label: '2026: Thursday 26 Nov', args: [2026], expect: 26, alsoNaive: true },
+    { kind: 'tday', label: '2025: Thursday 27 Nov', args: [2025], expect: 27, alsoNaive: true },
+    { kind: 'tday', label: '2029 has five Thursdays: the FOURTH, 22 Nov, not the 29th', args: [2029], expect: 22 },
+    { kind: 'tday', label: '2030: Thursday 28 Nov', args: [2030], expect: 28, alsoNaive: true },
+
+    { kind: 'on', label: 'Sunday 22 Nov 2026, 23:59 in New York (Monday in UTC): not yet', args: [t(2026, 11, 22, 23, 59)], expect: null },
+    { kind: 'on', label: 'Monday 23 Nov 2026, 00:00: the turkey', args: [t(2026, 11, 23, 0, 0)], expect: 'thanksgiving', alsoNaive: true },
+    { kind: 'on', label: 'Thanksgiving Day 2026', args: [t(2026, 11, 26)], expect: 'thanksgiving', alsoNaive: true },
+    { kind: 'on', label: 'Sunday 29 Nov, 23:30 in New York is Monday in UTC: still the turkey', args: [Date.UTC(2026, 10, 30, 4, 30) / 1000], expect: 'thanksgiving' },
+    { kind: 'on', label: 'Monday 30 Nov 2026, 00:00: off', args: [t(2026, 11, 30, 0, 0)], expect: null, alsoNaive: true },
+    { kind: 'on', label: '1 Dec 2026: the Santa hat', args: [t(2026, 12, 1, 0, 0)], expect: 'christmas', alsoNaive: true },
+    { kind: 'on', label: '26 Dec 2026, 23:59 in New York (27 Dec in UTC): still Santa', args: [t(2026, 12, 26, 23, 59)], expect: 'christmas' },
+    { kind: 'on', label: '27 Dec 2026, 00:00: off', args: [t(2026, 12, 27, 0, 0)], expect: null, alsoNaive: true },
+    { kind: 'on', label: '4 Jul 2026: nothing', args: [t(2026, 7, 4)], expect: null, alsoNaive: true },
+    { kind: 'on', label: 'Sunday 1 Dec 2024 ends Thanksgiving week: the turkey keeps it', args: [t(2024, 12, 1)], expect: 'thanksgiving' },
+    { kind: 'on', label: 'Monday 2 Dec 2024: Santa', args: [t(2024, 12, 2)], expect: 'christmas', alsoNaive: true },
+    { kind: 'on', label: 'Tuesday 20 Nov 2029 is in the 22nd\'s week', args: [t(2029, 11, 20)], expect: 'thanksgiving' },
+    { kind: 'on', label: 'Tuesday 27 Nov 2029 is after it', args: [t(2029, 11, 27)], expect: null },
+
+    { kind: 'for', label: '?holiday=thanksgiving in July', args: [t(2026, 7, 4), 'thanksgiving'], expect: 'thanksgiving' },
+    { kind: 'for', label: '?holiday=christmas in July', args: [t(2026, 7, 4), 'christmas'], expect: 'christmas' },
+    { kind: 'for', label: '?holiday=none in Thanksgiving week: the plain emu', args: [t(2026, 11, 24), 'none'], expect: null },
+    { kind: 'for', label: '?holiday=easter is ignored: the calendar decides', args: [t(2026, 11, 24), 'easter'], expect: 'thanksgiving', alsoNaive: true },
+    { kind: 'for', label: 'no ?holiday: the calendar decides', args: [t(2026, 11, 24), null], expect: 'thanksgiving', alsoNaive: true },
+    { kind: 'for', label: '?holiday=Christmas (a capital) is not a holiday name', args: [t(2026, 7, 4), 'Christmas'], expect: null, alsoNaive: true },
+  ];
+  const runHoliday = (impl, v) => {
+    const real = impl === 'real';
+    switch (v.kind) {
+      case 'tday': return real ? thanksgivingDay(v.args[0]) : naiveTday(v.args[0]);
+      case 'on': return real ? demuHolidayOn(at(v.args[0])) : naiveOn(at(v.args[0]));
+      case 'for': return real ? demuHolidayFor(at(v.args[0]), v.args[1]) : naiveOn(at(v.args[0]));
+    }
+  };
+  const callHoliday = (impl, v) => {
+    try { return JSON.stringify(runHoliday(impl, v)); } catch (e) { return `threw ${(e && e.message) || e}`; }
+  };
+  console.log('\nThe holiday hat — the shipping answer:');
+  for (const v of holidayVectors) {
+    const got = callHoliday('real', v);
+    if (got !== JSON.stringify(v.expect)) fail(`"${v.label}" — expected ${JSON.stringify(v.expect)}, got ${got}`);
+    else ok(v.label);
+  }
+  console.log('\nThe holiday hat — the replay against naive():');
+  replayVectors({ vectors: holidayVectors, invoke: callHoliday, fail });
+  for (const kind of ['tday', 'on', 'for']) {
+    if (!holidayVectors.some((v) => v.kind === kind && !v.alsoNaive)) fail(`the ${kind} holiday vectors prove nothing against naive()`);
+  }
+}
+
 // ── The module must stay loadable under plain Node ───────────────────────────
 {
-  for (const path of ['lib/demu.ts', 'lib/demu-hide-list.ts']) {
+  for (const path of ['lib/demu.ts', 'lib/demu-hide-list.ts', 'lib/demu-holiday.ts']) {
     const problems = importFreeProblems(path);
     if (problems.length) {
       explainImportFree(path, problems);
