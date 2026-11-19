@@ -106,8 +106,8 @@ console.log('\nThe DEMU selector type:');
   const at = SEARCH_TYPES.findIndex((s) => s.type === 'demu');
   if (JSON.stringify(SEARCH_TYPES[at]) !== JSON.stringify(MENU)) fail(`menu entry is ${JSON.stringify(SEARCH_TYPES[at])}`);
   else ok('the menu entry reads DEMU / DeMu albums / search self-hosted music…');
-  if (at !== SEARCH_TYPES.findIndex((s) => s.type === 'music') + 1) fail(`DEMU sits at ${at}, not directly after ♫ MUSIC`);
-  else ok('DEMU sits directly after ♫ MUSIC');
+  if (at !== SEARCH_TYPES.findIndex((s) => s.type === 'music') + 1) fail(`DEMU sits at ${at}, not directly after MUSIC`);
+  else ok('DEMU sits directly after MUSIC');
 
   if (parseSearchType('demu') !== 'demu') fail(`parseSearchType('demu') is ${parseSearchType('demu')}`);
   else ok("parseSearchType('demu') is 'demu'");

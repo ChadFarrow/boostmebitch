@@ -1401,7 +1401,7 @@ console.log('\nWhich kind of thing the search box was asked for');
   // `/search/music/byterm` answered the medium question by BEING that endpoint,
   // so re-checking its rows throws away the answer it gave. This is the whole
   // asymmetry with `filterPlaylistsByQuery`, which re-checks because its output
-  // gets stamped ♫ PLAYLIST on screen and a stamp is a claim.
+  // gets stamped PLAYLIST on screen and a stamp is a claim.
   vec('merge', 'a trusted row whose PI medium disagrees is KEPT',
     [[{ id: 7683902, medium: 'podcast' }], [], 'music', 50], [{ id: 7683902, medium: 'podcast' }]);
   // The half naive() also gets right, and must not be lost while fixing the half

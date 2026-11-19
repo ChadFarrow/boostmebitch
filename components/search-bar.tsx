@@ -5,6 +5,7 @@ import { fetchProfile, shortNpub } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { looksLikeSecretKey, parseNpubInput } from '@/lib/nostr/npub-input';
 import { SelectMenu } from '@/components/select-menu';
+import { NpubKeyIcon, SearchTypeIcon } from '@/components/icons';
 import { storage } from '@/lib/storage';
 import type { Podcast } from '@/lib/types';
 import { SEARCH_TYPES, parseSearchType } from '@/lib/util';
@@ -75,7 +76,7 @@ interface Props {
 function SearchTypeMenu({ type, onChange }: { type: SearchType; onChange: (t: SearchType) => void }) {
   return (
     <SelectMenu
-      options={SEARCH_TYPES.map((s) => ({ id: s.type, label: s.label }))}
+      options={SEARCH_TYPES.map((s) => ({ id: s.type, label: s.label, icon: <SearchTypeIcon type={s.type} /> }))}
       active={type}
       onChange={onChange}
       label="Search type"
@@ -299,11 +300,13 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
           320px. Above costs one line and touches neither. */}
       <SearchTypeMenu type={type} onChange={onTypeChange} />
       <div className="relative">
-        {/* The warning outranks the mode. A ⚡ over an nsec would say "this is a
-            person" about a secret key. The ⚡ now follows the MODE rather than a
-            parse, because a key pasted under PODCASTS is not being looked up. */}
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">
-          {secretHit ? '⚠' : type === 'npub' ? '⚡' : '⌕'}
+        {/* The warning outranks the mode. NPUB's key over an nsec would say
+            "this is a person" about a secret key. The key follows the MODE rather
+            than a parse, because a key pasted under PODCASTS is not being looked
+            up. It is the menu's NPUB glyph (<NpubKeyIcon>); `flex` centres the SVG
+            the way the line box centred the old character. */}
+        <span data-search-mode-icon className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs flex items-center">
+          {secretHit ? '⚠' : type === 'npub' ? <NpubKeyIcon /> : '⌕'}
         </span>
         <input
           ref={inputRef}
@@ -352,8 +355,8 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
           onClick={openBoosts}
           className="flex items-center gap-2 border border-t-0 border-bone/30 bg-ink/60 px-3 py-2 text-left text-xs hover:border-bolt hover:bg-bolt/5"
         >
-          {/* The avatar replaces the ⚡ rather than joining it — the input's own
-              left icon already carries that, and two bolts in a column read as
+          {/* The avatar replaces the key rather than joining it — the input's own
+              left icon already carries that, and two keys in a column read as
               decoration. <Avatar> falls back to a deterministic colored initial,
               so the row is never a blank square while the relays answer. */}
           <Avatar
@@ -403,7 +406,12 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
             That looks like an <code className="font-mono text-bone">npub</code>. This
             mode searches podcasts.
           </span>
-          <Chip active={false} onClick={() => onTypeChange('npub')}>⚡ look it up</Chip>
+          <Chip active={false} onClick={() => onTypeChange('npub')}>
+            {/* NPUB's glyph, so the chip names the mode it switches to. `flex`, not
+                `inline-flex`: an inline box sits on the text's baseline and put
+                the key off the chip's centre line. */}
+            <span className="flex items-center gap-1.5"><NpubKeyIcon /> look it up</span>
+          </Chip>
         </div>
       )}
       {type === 'npub' && !!q.trim() && !npubHit && !secretHit && (
