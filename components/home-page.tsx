@@ -20,7 +20,7 @@ import type { SearchType } from '@/lib/util';
 
 import { loadCollection } from '@/lib/playlist-collection';
 import type { Podcast } from '@/lib/types';
-import { NO_SELECTION, applyStoreView, backOr, currentEntryView, syncEntry, viewForEntry } from '@/lib/view-history';
+import { NO_SELECTION, applyStoreView, backOr, currentEntryView, stepBackToOrigin, syncEntry, viewForEntry } from '@/lib/view-history';
 import type { HomeView } from '@/lib/view-history';
 import { EmuIcon, PlaylistIcon } from '@/components/icons';
 
@@ -793,9 +793,23 @@ export function HomePage() {
           // navigation, and it deliberately does NOT clear the selection: the
           // store is what makes stepping back into the show cheap, and
           // <AppHeader>'s wordmark already clears it on that route.
+          //
+          // A plain click STEPS BACK when the entry behind is the origin page
+          // (`stepBackToOrigin`), like every other back control on this page
+          // (`backOr`): pushed, the origin landed on top of the show, and the
+          // browser's back button reopened the show just left. A modified click
+          // (new tab, new window) stays the browser's.
           <div>
             {showOrigin ? (
-              <Link href={showOrigin.path} className="btn-ghost text-xs mb-3 w-fit" aria-label="Back">
+              <Link
+                href={showOrigin.path}
+                className="btn-ghost text-xs mb-3 w-fit"
+                aria-label="Back"
+                onClick={(e) => {
+                  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  if (stepBackToOrigin(showOrigin.path)) e.preventDefault();
+                }}
+              >
                 ← back to {showOrigin.label}
               </Link>
             ) : (
