@@ -13,8 +13,8 @@
  * - `?holiday=thanksgiving` and `?holiday=christmas`: the costume replaces it
  *   after hydration — the right parts (feathers + pilgrim hat and no wattle;
  *   a Santa hat and no feathers), the same emu inside it, bolt yellow, one em
- *   square, its gaps masks and never the page colour painted — and the
- *   title's box and the word's x do NOT move;
+ *   square, its gaps masks and never the page colour painted, the emu's eye
+ *   still open — and the title's box and the word's x do NOT move;
  * - the calendar itself, under a faked browser date: 24 Nov 2026 wears the
  *   turkey with no parameter and with a junk one, 4 Jul 2026 is plain;
  * - no React hydration warning, and no horizontal overflow at either width;
@@ -72,13 +72,32 @@ async function fakeNow(ms) {
 
 const TITLE = '[data-demu-title]';
 async function go(path) {
+  // A mark on the page we leave, so nothing below can read IT as the new one.
+  await js('window.__leaving = true');
   await send('Page.navigate', { url: `${APP}${path}` });
-  await wait(300);
-  await until('document.readyState === "complete"', 20000);
+  await until('!window.__leaving && document.readyState === "complete"', 20000);
   // Hydrated: React has attached itself to the title.
   await until(`(() => { const h = document.querySelector('${TITLE}'); return !!h && Object.keys(h).some((k) => k.startsWith('__react')); })()`, 20000);
+  // The hero image is the page behind the eye (see eyePixel).
+  await until(`(() => { const i = document.querySelector('img[src*="hero"]'); return !i || i.complete; })()`, 10000);
   await wait(400);
 }
+
+/**
+ * The colour on screen at the centre of the emu's eye, which the emu leaves
+ * OPEN: a costume must show the page there too, exactly as the plain emu does.
+ * The feathers lie behind the eye, and a mask filled by the nonzero rule
+ * leaves the eye's own subpath unfilled, so a speck of feather showed in it.
+ */
+async function eyePixel() {
+  const p = await jsOrThrow(`(() => { const r = document.querySelector('${TITLE} svg').getBoundingClientRect();
+    return { x: r.left + r.width * 14.6 / 24, y: r.top + r.height * 8.9 / 24 }; })()`);
+  const r = await send('Page.captureScreenshot', { format: 'png', clip: { x: p.x - 0.5, y: p.y - 0.5, width: 1, height: 1, scale: 1 } });
+  return jsOrThrow(`(async () => { const i = new Image(); i.src = 'data:image/png;base64,${r.result?.data ?? ''}'; await i.decode();
+    const c = document.createElement('canvas'); c.width = i.width; c.height = i.height; const x = c.getContext('2d'); x.drawImage(i, 0, 0);
+    const d = x.getImageData(i.width >> 1, i.height >> 1, 1, 1).data; return [d[0], d[1], d[2]]; })()`);
+}
+const near = (a, b) => a.every((v, k) => Math.abs(v - b[k]) <= 16);
 
 /** The title, as measured: its box, the word's left edge, and the glyph. */
 const readTitle = () => jsOrThrow(`(() => {
@@ -130,6 +149,7 @@ for (const [w, h] of [[390, 844], [320, 640]]) {
 
   await go('/demu?holiday=none');
   const plain = await readTitle();
+  const plainEye = await eyePixel();
   t.equal(`${at} ?holiday=none: the plain emu`, plain.holiday, null);
   t.equal(`${at} ?holiday=none: the title reads DeMu`, plain.text, 'DeMu');
   if (w === 390) await shot('plain');
@@ -145,6 +165,8 @@ for (const [w, h] of [[390, 844], [320, 640]]) {
     // painted in --ink showed as a cream sticker edge on the light theme.
     t.ok(`${at} ${holiday}: its gaps are masks, not the page colour painted`, !c.painted && c.masks === (holiday === 'thanksgiving' ? 2 : 1),
       JSON.stringify({ painted: c.painted, masks: c.masks }));
+    const eye = await eyePixel();
+    t.ok(`${at} ${holiday}: the eye stays open, the page showing in it`, near(eye, plainEye), JSON.stringify({ eye, plainEye }));
     t.ok(`${at} ${holiday}: the same emu inside it`, c.emu && plain.svg && c.emu === plain.svg, c.emu?.slice(0, 80));
     t.ok(`${at} ${holiday}: bolt yellow, one em square`, c.colour === c.bolt && Math.abs(c.gh - c.fs) < 1.5 && Math.abs(c.gw - c.fs) < 1.5,
       JSON.stringify({ colour: c.colour, bolt: c.bolt, gw: c.gw, gh: c.gh, fs: c.fs }));
@@ -170,6 +192,8 @@ await go('/demu?holiday=none');
 t.equal('24 Nov 2026, ?holiday=none: the plain emu', (await readTitle()).holiday, null);
 await fakeNow(JUL_4);
 await go('/demu');
+// Today may be outside both windows, so a plain emu alone proves nothing about the clock.
+t.equal('faked clock: the page reads 4 Jul 2026', await js('new Date().toDateString()'), 'Sat Jul 04 2026');
 t.equal('4 Jul 2026, no parameter: the plain emu', (await readTitle()).holiday, null);
 await fakeNow(null);
 

@@ -412,6 +412,9 @@ export function HolidayEmuIcon({ holiday, className = TYPE_ICON }: { holiday: De
               <path d={EMU_HEAD} />
               <circle cx="6.7" cy="11" r="3.3" />
               <path d={EMU_BAND} fill="none" strokeWidth="4.2" strokeLinecap="round" />
+              {/* The eye. The head's own eye subpath winds the other way, so the
+                  nonzero fill above leaves it open, and a feather showed in it. */}
+              <circle cx="14.6" cy="8.9" r="1.5" />
             </g>
             {hatGap}
           </mask>

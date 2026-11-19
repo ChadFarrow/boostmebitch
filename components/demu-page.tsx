@@ -30,8 +30,9 @@ const DEMU_ORIGIN = { path: '/demu', label: 'DeMu' };
  * The page is prerendered, so the server snapshot is `null` — the plain emu —
  * and React swaps the costume in right after hydration, with no mismatch. The
  * costume keeps the emu's box (`HolidayEmuIcon`), so the swap moves nothing.
- * Nothing to subscribe to: a window that opens while the page is open waits for
- * the next load.
+ * Nothing to subscribe to: no event says a window opened. `getSnapshot` runs on
+ * every render, so a window that opens while the page is open shows at the next
+ * render (a keystroke in the search box) or the next load.
  */
 const noSubscribe = () => () => {};
 const holidayNow = () => demuHolidayFor(new Date(), new URLSearchParams(window.location.search).get('holiday'));

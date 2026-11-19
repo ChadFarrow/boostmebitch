@@ -67,10 +67,13 @@ From drafts on a claude.ai page (2026-11-19):
   names it): `thanksgivingDay(year)`, `demuHolidayOn(date)`,
   `demuHolidayFor(date, param)` (the `?holiday=` override first).
 - `components/icons.tsx`: `HolidayEmuIcon({ holiday })` — the same emu paths
-  as `EmuIcon` (shared constants, not a copy), with the costume layers and a
-  page-coloured outline (`fill-ink`/`stroke-ink`) that keeps the emu clear of
-  the feathers and the hats. The costume colours are artwork, inline hex, like
-  the `/demu-apps/*.png` badges; not palette tokens.
+  as `EmuIcon` (shared constants, not a copy), with the costume layers. SVG
+  masks keep the emu clear of the feathers and the hats, and keep its eye open.
+  (The first build painted a `fill-ink`/`stroke-ink` outline instead. The page
+  behind the title is the hero image under `bg-ink/75`, not `--ink`, so that
+  outline showed as a cream sticker edge on the light theme.) The costume
+  colours are artwork, inline hex, like the `/demu-apps/*.png` badges; not
+  palette tokens.
 - `components/demu-page.tsx`: the title reads the costume with
   `useSyncExternalStore` (server snapshot `null`), so the server and the first
   client render agree.
