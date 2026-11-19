@@ -7,6 +7,7 @@ import type {
   FavoritePodcast,
   ValueTimeSplit,
 } from '@/lib/types';
+import { BRAND } from '@/lib/brand';
 import { useApp } from '@/lib/store';
 import { requestFavoritesSync } from '@/lib/nostr';
 import { targetWord } from '@/lib/util';
@@ -271,7 +272,7 @@ export function ArtistFollowChip({
         title={
           following
             ? 'Stop following. New albums from this artist show under NEW MUSIC on Favorites.'
-            : 'Follow for NEW MUSIC on Favorites. Kept in Boost Me Bitch on this device; not added to your shared favorites.'
+            : `Follow for NEW MUSIC on Favorites. Kept in ${BRAND.displayName} on this device; not added to your shared favorites.`
         }
         className={heartClasses(following, 'sm')}
       >
