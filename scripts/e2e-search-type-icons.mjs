@@ -10,13 +10,16 @@
  *
  * What it drives, on desktop (1280×900) and under phone emulation (390×844,
  * `mobile: true`, 3× pixels):
- * - the open menu: six rows, a glyph in each (an SVG for five, `⚡` for NPUB),
- *   five DIFFERENT SVGs at one size, every word at one x, every glyph centred on
+ * - the open menu: six rows, an SVG glyph in each (NPUB's is a key since Chad
+ *   dropped its `⚡`), six DIFFERENT SVGs at one size, every word at one x, every glyph centred on
  *   its word, every row at least 24px tall, the menu inside the viewport;
  * - the closed button, once per type: it carries the same glyph as the row, its
  *   accessible name is the word alone, and its height does not move;
- * - the hero's BROWSE PLAYLISTS / BROWSE DEMU, a search result's PLAYLIST stamp
- *   and /demu's "Self-hosted" badge: the same SVG as the menu's row for that type;
+ * - the hero's BROWSE PLAYLISTS / BROWSE DEMU, a search result's PLAYLIST stamp,
+ *   /demu's title and its "Self-hosted" badge: the same SVG as the menu's row for that type;
+ * - NPUB's key in the box's left slot (centred on the input), and on the "look it
+ *   up" chip an npub typed under ALL offers. That search is answered INSIDE the
+ *   browser (CDP Fetch), so the npub never reaches the dev server or Podcast Index;
  * - no horizontal overflow on the phone.
  *
  * The browser resolves no host but this machine, so nothing it runs reaches a
@@ -28,6 +31,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 
 const APP = process.env.BMB_APP ?? 'http://localhost:3000';
 const SHOT_DIR = process.env.SHOT_DIR;
@@ -132,12 +136,12 @@ async function round(label) {
   const vh = await js('innerHeight');
   t.equal(`${label}: six options, in order`, rows.map((r) => r.word), WORDS);
   rows.forEach((r, i) => { if (r.svg) svgOf[WORDS[i]] = r.svg; });
-  t.ok(`${label}: an SVG glyph on ALL, MUSIC, DEMU, PODCASTS and PLAYLISTS`, rows.slice(0, 5).every((r) => r.svg),
+  t.ok(`${label}: an SVG glyph on all six, NPUB included`, rows.every((r) => r.svg),
     JSON.stringify(rows.map((r) => !!r.svg)));
-  t.equal(`${label}: NPUB keeps its ⚡`, rows[5].glyphText, '⚡');
-  t.equal(`${label}: the five SVGs are five different shapes`, new Set(rows.slice(0, 5).map((r) => r.svg)).size, 5);
-  t.ok(`${label}: the five SVGs are one size (12–15px)`,
-    spread(rows.slice(0, 5).map((r) => r.gh)) < 0.5 && rows[0].gh >= 12 && rows[0].gh <= 15,
+  t.equal(`${label}: no ⚡ left on NPUB`, rows[5].glyphText, '');
+  t.equal(`${label}: the six SVGs are six different shapes`, new Set(rows.map((r) => r.svg)).size, 6);
+  t.ok(`${label}: the six SVGs are one size (12–15px)`,
+    spread(rows.map((r) => r.gh)) < 0.5 && rows[0].gh >= 12 && rows[0].gh <= 15,
     rows.map((r) => `${r.word} ${r.gw.toFixed(1)}×${r.gh.toFixed(1)}`).join(', '));
   t.ok(`${label}: every word starts at one x`, spread(rows.map((r) => r.wordLeft)) < 0.5,
     rows.map((r) => `${r.word} ${r.wordLeft.toFixed(2)}`).join(', '));
@@ -161,7 +165,7 @@ async function round(label) {
     trig.push(b);
     t.equal(`${label}: ${word} — the button's accessible name is the word alone`, b.name, `Search type: ${word}`);
     t.ok(`${label}: ${word} — the button shows the same glyph as the row`,
-      i < 5 ? b.svg === rows[i].svg : b.glyphText === '⚡', JSON.stringify({ svg: !!b.svg, glyph: b.glyphText }));
+      b.svg && b.svg === rows[i].svg, JSON.stringify({ svg: !!b.svg, glyph: b.glyphText }));
     t.ok(`${label}: ${word} — the glyph sits on the word's centre line (±1.5px)`, Math.abs(b.gcy - b.wcy) <= 1.5,
       (b.gcy - b.wcy).toFixed(2));
     if (word === 'DEMU') {
@@ -177,7 +181,18 @@ async function round(label) {
   t.ok(`${label}: the button keeps one height across all six (≥24px)`, spread(trig.map((b) => b.h)) < 0.5 && trig[0].h >= 24,
     trig.map((b) => b.h.toFixed(1)).join(', '));
   t.ok(`${label}: the button stays where it was`, spread(trig.map((b) => b.top)) < 0.5 && spread(trig.map((b) => b.left)) < 0.5);
+
+  // NPUB is still picked: the box's left slot draws the key, on the input's centre line.
+  const slot = () => jsOrThrow(`(() => { const s = document.querySelector('[data-search-mode-icon]'); const i = document.querySelector('input.input');
+    const g = s.querySelector('svg'); const gr = (g ?? s).getBoundingClientRect(), ir = i.getBoundingClientRect();
+    return { svg: g ? g.innerHTML : null, text: g ? '' : s.textContent.trim(), dy: (gr.top + gr.bottom) / 2 - (ir.top + ir.bottom) / 2, h: gr.height, left: gr.left - ir.left }; })()`);
+  const npubSlot = await slot();
+  t.ok(`${label}: NPUB — the box's left icon is the NPUB key`, npubSlot.svg && npubSlot.svg === rows[5].svg, JSON.stringify(npubSlot.text));
+  t.ok(`${label}: NPUB — the key sits on the input's centre line (±1px), 13–15px tall`,
+    Math.abs(npubSlot.dy) <= 1 && npubSlot.h >= 13 && npubSlot.h <= 15, JSON.stringify(npubSlot));
   await pick('ALL');
+  const allSlot = await slot();
+  t.equal(`${label}: ALL — the left icon is the plain ⌕ again`, allSlot.text, '⌕');
 
   t.ok(`${label}: BROWSE PLAYLISTS carries the PLAYLISTS glyph`, hero[0]?.svg && hero[0].svg === rows[4].svg, JSON.stringify(hero[0]?.text));
   t.ok(`${label}: BROWSE DEMU carries the DEMU glyph`, hero[1]?.svg && hero[1].svg === rows[2].svg, JSON.stringify(hero[1]?.text));
@@ -241,6 +256,49 @@ if (badgeSeen) {
 }
 t.ok('/demu: no horizontal overflow on the phone',
   await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'));
+
+// An npub typed under ALL: the box offers "look it up", with NPUB's key on the chip.
+// The search the box still runs is answered HERE, empty, so the npub never leaves
+// the browser — not to the dev server, not to Podcast Index.
+console.log('\n  the "look it up" chip under ALL (phone)');
+const strayKey = nip19.npubEncode(getPublicKey(generateSecretKey()));
+let searchesHeld = 0;
+const offSearch = page.on((m) => {
+  if (m.method !== 'Fetch.requestPaused') return;
+  searchesHeld++;
+  send('Fetch.fulfillRequest', { requestId: m.params.requestId, responseCode: 200,
+    responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+    body: Buffer.from(JSON.stringify({ feeds: [], total: 0, type: 'all' })).toString('base64') });
+});
+await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/search*', requestStage: 'Request' }] });
+await go('/');
+await until(`!!document.querySelector('${TRIGGER}')`, 20000);
+await wait(1500);
+await pick('ALL');
+await jsOrThrow(`(() => { const i = document.querySelector('input.input');
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, ${JSON.stringify(strayKey)});
+  i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+const chipSeen = await until(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'look it up')`, 15000);
+// The chip shows at once; the search runs after the box's debounce. Wait for it, so
+// the step proves the search was answered here rather than that none ran.
+for (let i = 0; i < 50 && searchesHeld === 0; i++) await wait(100);
+if (chipSeen) {
+  const chip = await jsOrThrow(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'look it up');
+    const g = b.querySelector('svg'); const br = b.getBoundingClientRect(); const gr = g ? g.getBoundingClientRect() : null;
+    return { svg: g ? g.innerHTML : null, h: br.height, w: br.width, x: br.left, y: br.top, dy: gr ? (gr.top + gr.bottom) / 2 - (br.top + br.bottom) / 2 : null }; })()`);
+  t.ok('the "look it up" chip draws the NPUB key', chip.svg && chip.svg === svgOf.NPUB);
+  t.ok('the chip\'s key sits on the chip\'s centre line (±1px)', chip.dy !== null && Math.abs(chip.dy) <= 1, String(chip.dy));
+  t.ok('the chip is at least 24px tall', chip.h >= 24, chip.h.toFixed(1));
+  await shot('phone-lookup-chip', { x: Math.max(0, chip.x - 140), y: chip.y - 50, width: 390 - Math.max(0, chip.x - 140), height: chip.h + 60 });
+  await jsOrThrow(`[...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'look it up').click()`);
+  t.ok('the chip switches the box to NPUB, and the left icon to the key', await until(`(() => { const g = document.querySelector('[data-search-mode-icon] svg');
+    return !!g && g.innerHTML === ${JSON.stringify(svgOf.NPUB ?? '')}; })()`, 5000));
+} else {
+  t.fail('an npub under ALL offers "look it up"', 'no chip within 15 s');
+}
+t.ok('the search under ALL ran, and was answered inside the browser', searchesHeld >= 1, String(searchesHeld));
+await send('Fetch.disable');
+offSearch();
 
 console.log(`\n  ${t.count - t.fails}/${t.count} passed`);
 await exit(t.fails ? 1 : 0);

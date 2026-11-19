@@ -372,6 +372,21 @@ export function PlaylistIcon({ className = TYPE_ICON }: { className?: string }) 
   );
 }
 
+/**
+ * A key — an npub is a public key. NPUB, in the menu, in the search box's
+ * left slot and on the "look it up" chip (Chad, 2026-11-19: the ⚡ read as
+ * Lightning, not as a person's key). Stroked: the bow is a ring. Not
+ * `KeyIcon`, the filled bunker mark the sign-in modal draws.
+ */
+export function NpubKeyIcon({ className = TYPE_ICON }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
+      <circle cx="7.5" cy="12" r="3.6" fill="none" stroke="currentColor" strokeWidth="2.4" />
+      <path d="M11.1 12H21.5M18.5 12v3.6M15.5 12v2.6" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 /** Three stacked layers — every kind at once. ALL. */
 export function LayersIcon({ className = TYPE_ICON }: { className?: string }) {
   return (
@@ -382,10 +397,7 @@ export function LayersIcon({ className = TYPE_ICON }: { className?: string }) {
   );
 }
 
-/**
- * The glyph for one search type. NPUB keeps its `⚡` character: it had an icon
- * already, and the same `⚡` marks NPUB inside the search box itself.
- */
+/** The glyph for one search type — six SVGs, one per type. */
 export function SearchTypeIcon({ type }: { type: SearchType }) {
   switch (type) {
     case 'all': return <LayersIcon />;
@@ -393,6 +405,6 @@ export function SearchTypeIcon({ type }: { type: SearchType }) {
     case 'demu': return <EmuIcon />;
     case 'podcast': return <RssIcon />;
     case 'playlist': return <PlaylistIcon />;
-    case 'npub': return <span className="leading-none">⚡</span>;
+    case 'npub': return <NpubKeyIcon />;
   }
 }
