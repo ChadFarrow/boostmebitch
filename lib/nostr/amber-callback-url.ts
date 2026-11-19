@@ -407,3 +407,66 @@ export function looksLikeAmberResult(text: string, type: AmberRequestType): bool
   // nip04/nip44 — no reliable shape check. Trust the caller.
   return true;
 }
+
+/**
+ * A short fingerprint of an Amber answer, for remembering WHICH answer was last
+ * accepted without keeping its text: a decrypt's answer can be a Spark seed.
+ * Length plus two FNV-1a passes. A collision only refuses one clipboard read,
+ * and the manual paste still works, so a cheap hash is enough.
+ */
+export function answerFingerprint(text: string): string {
+  const t = text.trim();
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x85ebca6b) >>> 0;
+  }
+  return `${t.length}:${a.toString(16)}:${b.toString(16)}`;
+}
+
+/**
+ * Is what the clipboard holds an answer to an EARLIER request, or the request's
+ * own input, rather than this request's answer?
+ *
+ * `looksLikeAmberResult` cannot tell for nip04/nip44, whose answers have no
+ * shape, and Amber answers THROUGH the system clipboard: the previous answer is
+ * still sitting there when the next request's page-focus or first tap fires a
+ * read. Two cases it must refuse, both measured as reachable:
+ *
+ *   - **The last answer this app accepted.** A decrypt copies the plaintext
+ *     (a Spark seed). The next `nip44_encrypt` then resolved with that same
+ *     text, so `publishEncryptedMnemonic` put the seed on public relays in the
+ *     clear. A repeated `sign_event` likewise resolved with the PREVIOUS signed
+ *     note and the new one never went out.
+ *   - **The request's own payload.** No signer returns its input as the answer.
+ *
+ * The cost: two requests in a row whose answers are byte-identical (the same
+ * ciphertext decrypted twice) cannot resolve on the clipboard read. The manual
+ * paste path does not call this, and that is the way out.
+ */
+export function clipboardAnswerIsStale(
+  text: string,
+  ctx: { payload?: string; lastAccepted: string | null },
+): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (ctx.payload && t === ctx.payload.trim()) return true;
+  return ctx.lastAccepted !== null && answerFingerprint(t) === ctx.lastAccepted;
+}
+
+/**
+ * Does a signed event carry what we asked Amber to sign? `verifyEvent` proves
+ * the signature is valid for THE EVENT, not that it is OUR event: any signed
+ * event of the same account left on the clipboard passes it. kind, content and
+ * tags are compared; `created_at` is not, because a signer may stamp its own.
+ */
+export function signedEventMatchesTemplate(
+  event: { kind?: unknown; content?: unknown; tags?: unknown },
+  template: { kind: number; content: string; tags: string[][] },
+): boolean {
+  return event.kind === template.kind
+    && event.content === template.content
+    && JSON.stringify(event.tags) === JSON.stringify(template.tags);
+}

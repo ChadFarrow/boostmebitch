@@ -63,6 +63,9 @@ import {
   buildAmberCallbackUrl,
   buildSignerIntentUrl,
   looksLikeAmberResult,
+  answerFingerprint,
+  clipboardAnswerIsStale,
+  signedEventMatchesTemplate,
   newAmberRequestId,
   amberRecordIsFresh,
   payloadSurvivesAmber,
@@ -162,6 +165,13 @@ export function subscribeAmberStage(fn: (s: AmberStage) => void): () => void {
 //   here only because nothing yet re-issues them after a reload; see
 //   docs/signers.md.
 const RESUMABLE_TYPES: ReadonlySet<AmberRequestType> = new Set(['get_public_key']);
+
+/**
+ * Fingerprint (never the text) of the last answer this page accepted. Amber's
+ * answer also sits on the system clipboard afterwards, and the next request's
+ * first tap reads it back; `clipboardAnswerIsStale` refuses that read.
+ */
+let lastAcceptedAnswer: string | null = null;
 
 // Both sides of the round trip share one freshness window — see
 // AMBER_PENDING_TTL_MS in ./amber-callback-url for why it is defined there.
@@ -301,6 +311,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       storage.amberPending.clear();
       storage.amberTab.clear();
       if (!raw) return reject(new Error('Amber returned no result'));
+      lastAcceptedAnswer = answerFingerprint(raw);
       console.info('[amber] ✓', opts.type, 'len=', raw.length);
       resolve(raw);
     };
@@ -380,6 +391,12 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
         return;
       }
       if (!text) return;
+      // An answer to an earlier request, or this request's own input, is still
+      // on the clipboard. See `clipboardAnswerIsStale`.
+      if (clipboardAnswerIsStale(text, { payload: opts.payload, lastAccepted: lastAcceptedAnswer })) {
+        console.info('[amber] clipboard via', origin, 'is not a new answer (stale or the request itself)');
+        return;
+      }
       if (looksLikeAmberResult(text, opts.type)) {
         console.info('[amber] auto-resolved via', origin);
         finish(text.trim());
@@ -541,6 +558,12 @@ export class AmberSigner implements AmberSignerInterface {
     }
     if (this.cachedPubkey && event.pubkey !== this.cachedPubkey) {
       throw new Error('Amber returned an event signed by a different key than the signed-in account');
+    }
+    // A valid signature proves the event is signed, not that it is THE event we
+    // asked for: an earlier signed note still on the clipboard passes both
+    // checks above, and publishing it would drop this one without an error.
+    if (!signedEventMatchesTemplate(event, template)) {
+      throw new Error('Amber returned a different event than the one we asked it to sign');
     }
     return event;
   }

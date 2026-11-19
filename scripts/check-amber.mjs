@@ -79,6 +79,9 @@ import {
   buildSignerIntentUrl,
   buildSignerUrl,
   looksLikeAmberResult,
+  answerFingerprint,
+  clipboardAnswerIsStale,
+  signedEventMatchesTemplate,
   newAmberRequestId,
   parseAmberCallback,
 } from '../lib/nostr/amber-callback-url.ts';
@@ -417,6 +420,23 @@ const VECTORS = [
   // here by construction. Pins that an empty clipboard never resolves a request.
   { label: 'an empty string is never plausible', fn: 'looks', args: ['', 'nip04_decrypt'], expect: false, degenerate: true },
   { label: 'any non-empty ciphertext is accepted', fn: 'looks', args: ['?iv=', 'nip04_decrypt'], expect: true, mustStillWork: true },
+
+  // -- clipboardAnswerIsStale -----------------------------------------------
+  // Amber answers THROUGH the clipboard, so the last answer is still there when
+  // the next request's first tap reads it. `naive` accepts any non-empty text.
+  { label: 'the seed a decrypt just copied is not the answer to the next encrypt', fn: 'stale', args: ['abandon ability able about above absent absorb abstract absurd abuse access accident', { payload: 'x', lastAccepted: answerFingerprint('abandon ability able about above absent absorb abstract absurd abuse access accident') }], expect: true },
+  { label: 'a request\'s own plaintext is never its answer', fn: 'stale', args: ['abandon ability able', { payload: 'abandon ability able', lastAccepted: null }], expect: true },
+  { label: 'trailing whitespace does not hide a stale answer', fn: 'stale', args: ['  same answer\n', { payload: 'p', lastAccepted: answerFingerprint('same answer') }], expect: true },
+  { label: 'a new answer is accepted', fn: 'stale', args: ['Ajk3newciphertext==', { payload: 'plain', lastAccepted: answerFingerprint('old answer') }], expect: false, mustStillWork: true },
+  { label: 'the first request has nothing to be stale against', fn: 'stale', args: ['Ajk3newciphertext==', { payload: 'plain', lastAccepted: null }], expect: false, mustStillWork: true },
+  { label: 'an empty clipboard is never an answer', fn: 'stale', args: ['  ', { payload: 'p', lastAccepted: null }], expect: true, degenerate: true },
+
+  // -- signedEventMatchesTemplate -------------------------------------------
+  // `verifyEvent` proves a signature, not that it signs OUR event.
+  { label: 'the event we asked for, signed', fn: 'matches', args: [{ kind: 1, content: 'b', tags: [['t', 'x']], sig: 's', created_at: 99 }, { kind: 1, content: 'b', tags: [['t', 'x']], created_at: 5 }], expect: true, mustStillWork: true },
+  { label: 'an earlier signed note with other content is not it', fn: 'matches', args: [{ kind: 1, content: 'A', tags: [] }, { kind: 1, content: 'B', tags: [] }], expect: false },
+  { label: 'same content, other tags is not it', fn: 'matches', args: [{ kind: 1, content: 'A', tags: [['p', 'a']] }, { kind: 1, content: 'A', tags: [['p', 'b']] }], expect: false },
+  { label: 'same content, other kind is not it', fn: 'matches', args: [{ kind: 7, content: '+', tags: [] }, { kind: 1, content: '+', tags: [] }], expect: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -465,6 +485,8 @@ function naiveBuildSignerUrl(opts, callbackUrl) {
   return url;
 }
 const naiveLooks = (text) => text.length > 0;
+const naiveStale = () => false;
+const naiveMatches = () => true;
 // The intent form's wrong implementation is the previous RIGHT one: the bare
 // `nostrsigner:` URL that every browser request used until Chromium stopped
 // marking its intents. It parses as no intent at all — parseIntentUri returns
@@ -543,6 +565,10 @@ function call(impl, v, parser) {
       return parseIntentUri((real ? buildSignerIntentUrl : naiveBuildIntent)(...v.args))?.pkg ?? null;
     case 'looks':
       return (real ? looksLikeAmberResult : naiveLooks)(...v.args);
+    case 'stale':
+      return (real ? clipboardAnswerIsStale : naiveStale)(...v.args);
+    case 'matches':
+      return (real ? signedEventMatchesTemplate : naiveMatches)(...v.args);
     default:
       throw new Error(`unknown fn ${v.fn}`);
   }
