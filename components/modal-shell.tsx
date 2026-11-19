@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { lockScroll } from '@/lib/scroll-lock';
+import { useModalHistory } from './use-modal-history';
 
 /**
  * The one overlay every modal in this app renders through.
@@ -45,6 +46,13 @@ import { lockScroll } from '@/lib/scroll-lock';
  *   could still release over each other. Both go through the shared module
  *   now, which is also where the reason `overflow: hidden` is not a lock on
  *   iOS is written down.
+ *
+ * - **A history entry while it is open** (`useModalHistory`,
+ *   components/use-modal-history.ts). The browser's back button — and
+ *   Android's — closes the modal through `onClose`, as Escape does, instead of
+ *   stepping the page behind it; any other close steps back off the entry.
+ *   With `dismissable={false}` a back press changes nothing. Every caller gets
+ *   it, so a caller must not push its own entry for a modal.
  */
 
 // One shared depth. `<Player>` is z-30 and `<FullscreenPlayer>` is z-50, and a
@@ -131,6 +139,8 @@ export function ModalShell({
     if (!mounted) return;
     return lockScroll();
   }, [mounted]);
+
+  useModalHistory(mounted, onClose, dismissable);
 
   // Move focus into the dialog once it exists. Prefer the first focusable
   // control; fall back to the card itself (which carries tabIndex={-1}) so
