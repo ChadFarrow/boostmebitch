@@ -67,7 +67,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9, `eslint.config.mjs`), and `next build`. Path alias `@/*` → repo root.
 
-**Fifty-two `check:*` scripts are this repo's tests.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table only indexes.
+**Fifty-four `check:*` scripts are this repo's tests.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table only indexes.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
