@@ -296,3 +296,27 @@ export interface CommunityPlaylistSummary {
   createdAt: string;
   updatedAt: string;
 }
+
+/** The feed origin of the production deploys (the default of `COMMUNITY_FEED_ORIGIN`). */
+export const PRODUCTION_FEED_ORIGIN = 'https://www.boostmebuddy.com';
+
+/**
+ * Where `lib/community/archive-notify.ts` may send `GITHUB_ARCHIVE_TOKEN`, or null
+ * for nowhere. GitHub's API, on a server whose feeds are the real ones; or the
+ * LOOPBACK stub a test names in `PLAYLIST_ARCHIVE_API`. An override that is set
+ * and is anything else is null, never GitHub: a typo in a test's env must not
+ * send a real dispatch, and the variable must not be a way to mail the token to
+ * another host (`http://127.0.0.1.nip.io`, `http://localhost@evil.example`).
+ */
+export function archiveDispatchBase(override: string | undefined, feedOrigin: string): string | null {
+  if (override) {
+    try {
+      const u = new URL(override);
+      const loopback = u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]';
+      return u.protocol === 'http:' && loopback && !u.username && !u.password ? u.origin : null;
+    } catch {
+      return null;
+    }
+  }
+  return feedOrigin === PRODUCTION_FEED_ORIGIN ? 'https://api.github.com' : null;
+}

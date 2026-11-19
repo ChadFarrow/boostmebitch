@@ -4,6 +4,7 @@ import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } f
 import { rateLimit } from '@/lib/rate-limit';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
+import { requestPlaylistArchiveAfter } from '@/lib/community/archive-notify';
 import { adminPubkeys } from '@/lib/community/auth';
 import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, UUID_RE } from '@/lib/community/http';
 import {
@@ -67,6 +68,7 @@ export async function POST(req: Request) {
       }
       await banPubkey(pubkey, auth.pubkey);
       const deleted = b.deleteAll === true ? await deletePlaylistsByOwner(pubkey, auth.pubkey) : 0;
+      if (deleted > 0) requestPlaylistArchiveAfter();
       return NextResponse.json({ ok: true, deleted }, { headers: NO_STORE });
     }
     if (b.action === 'delete') {
@@ -74,7 +76,10 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'invalid id' }, { status: 400 });
       }
       const done = await deletePlaylist(b.id, auth.pubkey);
-      if (done) notifyPodcastIndexAfter(communityFeedUrl(b.id), 'update');
+      if (done) {
+        notifyPodcastIndexAfter(communityFeedUrl(b.id), 'update');
+        requestPlaylistArchiveAfter();
+      }
       return NextResponse.json({ ok: true, deleted: done ? 1 : 0 }, { headers: NO_STORE });
     }
     return NextResponse.json({ error: 'invalid action' }, { status: 400 });

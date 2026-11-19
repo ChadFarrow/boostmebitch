@@ -10,7 +10,7 @@ import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
   blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
-  foldName, MAX_OWNER_NAME_LEN,
+  foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -640,6 +640,34 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   check('grid with a missing tile -> 1400 x 1400', gm.width === 1400 && gm.height === 1400);
   const rep = [...(await sharp(g).extract({ left: 1000, top: 300, width: 1, height: 1 }).raw().toBuffer())];
   check('a missing tile repeats the previous one', rep[0] > 200 && rep[1] < 60);
+}
+
+// archiveDispatchBase — where GITHUB_ARCHIVE_TOKEN may go (lib/community/archive-notify.ts).
+// The token can start this repo's workflows, so the only hosts are GitHub's API
+// on a real-feed server and a loopback test stub.
+{
+  const GH = 'https://api.github.com';
+  const vectors = [
+    { kind: 'production feed origin, no override: GitHub', args: [undefined, PRODUCTION_FEED_ORIGIN], want: GH, alsoNaive: true },
+    { kind: 'a local feed origin: nowhere', args: [undefined, 'http://localhost:3123'], want: null },
+    { kind: 'a beta feed origin: nowhere', args: [undefined, 'https://beta.boostmebitch.com'], want: null },
+    { kind: 'a loopback stub', args: ['http://127.0.0.1:48555', 'http://localhost:3123'], want: 'http://127.0.0.1:48555', alsoNaive: true },
+    { kind: 'a localhost stub, path dropped', args: ['http://localhost:48555/x', 'http://localhost:3123'], want: 'http://localhost:48555' },
+    { kind: 'a public host in the override: nowhere', args: ['https://evil.example', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'a DNS name that resolves to loopback: nowhere', args: ['http://127.0.0.1.nip.io', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'userinfo hiding another host: nowhere', args: ['http://localhost@evil.example', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'a loopback with userinfo: nowhere', args: ['http://user:pw@127.0.0.1:1', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'https to loopback: nowhere (the stub is http)', args: ['https://127.0.0.1:1', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'an override typo: nowhere, never GitHub', args: ['127.0.0.1:48555', PRODUCTION_FEED_ORIGIN], want: null },
+  ];
+  // The obvious wrong version: the override if set, else GitHub.
+  const naive = (override) => (override ? override.replace(/\/+$/, '') : GH);
+  for (const v of vectors) {
+    check('archive dispatch: ' + v.kind, archiveDispatchBase(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('archive dispatch: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('archive dispatch: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }

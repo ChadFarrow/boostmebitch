@@ -51,6 +51,7 @@ a real account.
 | `npm run e2e:bunkerrevive` | The red reconnect dot that waited for a press, on a stub NIP-46 signer and a local relay, loading `/listen` (no Podcast Index). Pins that a request stranded on a transport a revive replaced does not raise the dot over the rebuilt link, that a dot raised while the session is busy still clears with no tap or press, and that a healthy wake pings and goes no further. See docs/signers.md, "The red dot that waited for a press". |
 | `npm run e2e:communityapi` | The community-playlist routes (`/api/playlists`, the `.xml` feeds) over HTTP against the real local Postgres: create, list, edit, delete, refusals, the 6-writes-a-minute limit. |
 | `npm run e2e:communityui` | The maker, the Published view, `/playlists`, edit and delete, in headless Chrome at 390 x 844 (`scrollWidth <= clientWidth`, every control at least 24 x 24). Uses a LOCAL relay and a fake NIP-07 signer. |
+| `npm run e2e:archiveping` | The GitHub-copy request (`lib/community/archive-notify.ts`): one `workflow_dispatch` after each publish, edit and delete that landed, none after a refusal, in GitHub's exact form with no playlist data, against a STUB GitHub API (`--stub <port>`; nothing reaches GitHub). `--browser` presses PUBLISH, SAVE and DELETE in the maker at 1280 x 900 and 390 x 844. `--quiet-server` proves a non-loopback `PLAYLIST_ARCHIVE_API` sends nothing. Setup in the script's header. |
 
 ### The community-playlist e2e pair
 

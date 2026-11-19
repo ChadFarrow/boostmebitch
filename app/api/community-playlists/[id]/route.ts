@@ -3,6 +3,7 @@ import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } f
 import { rateLimit } from '@/lib/rate-limit';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
+import { requestPlaylistArchiveAfter } from '@/lib/community/archive-notify';
 import {
   validatePlaylistDraft, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, type DraftProblem, type ArtRefusal, type PlaylistSong,
 } from '@/lib/community/rules';
@@ -110,6 +111,7 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (out === 'banned') return BANNED();
     if (out === 'stale') return NextResponse.json({ error: 'changed elsewhere' }, { status: 409 });
     notifyPodcastIndexAfter(communityFeedUrl(id), 'update');
+    requestPlaylistArchiveAfter();
     return NextResponse.json({ playlist: out }, { headers: NO_STORE });
   }, 'could not save the playlist');
 }
@@ -131,6 +133,7 @@ export async function DELETE(req: Request, ctx: Ctx) {
     if (!isOwner && !adminPubkeys().has(auth.pubkey)) return forbidden();
     await deletePlaylist(id, isOwner ? 'owner' : auth.pubkey);
     notifyPodcastIndexAfter(communityFeedUrl(id), 'update');
+    requestPlaylistArchiveAfter();
     return NextResponse.json({ deleted: true }, { headers: NO_STORE });
   }, 'could not delete the playlist');
 }

@@ -669,6 +669,7 @@ upgrade rather than forcing it.
 | `COMMUNITY_FEEDS` | Server only. `on` keeps a published playlist working with the feature off: its feed and cover (`/feeds/playlists/*`), playing it from its feed URL, and finding it by guid. The maker, the list, search, admin and every write stay 404 |
 | `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` | Origin of the public feed URLs. Default `https://www.boostmebuddy.com`; local tests set `http://localhost:3123` |
 | `COMMUNITY_PI_NOTIFY` | `on` lets new and changed community feeds be sent to Podcast Index. It also needs `VERCEL_ENV=production` and the feed origin `https://www.boostmebuddy.com`. Leave it unset: Podcast Index is off for now |
+| `GITHUB_ARCHIVE_TOKEN` | Optional, sensitive. After each publish, edit and delete, the server asks GitHub to run `playlist-archive.yml`, which copies every playlist feed to the `playlists` branch (`lib/community/archive-notify.ts`). A fine-grained token on this repo only, with Actions: Read and write and nothing else; sent only where the feed origin is `https://www.boostmebuddy.com`. Set it on the `boostmebitch` Preview environment (branch `beta`) and on Production of both projects. Unset: no request, and the workflow's 15-minute schedule still copies. `PLAYLIST_ARCHIVE_API` (tests only) points it at a loopback stub |
 
 ### Where each setting goes: beta and production now, launch later
 
