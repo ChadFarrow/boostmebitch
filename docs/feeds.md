@@ -344,7 +344,7 @@ Chad, 2026-11-16: "pubfeeds should show up for whatever they are for". A publish
 
 ### The search type selector — and why it picks LANES, not a filter
 
-`ALL · ♫ MUSIC · DEMU · PODCASTS · PLAYLISTS · ⚡ NPUB`, a dropdown above the box (`<SearchTypeMenu>`; the form is in [`ui.md`](ui.md)). `type` rides on `/api/search` and `type=all` is the behaviour above, byte for byte — the selector can only ever narrow from a full answer, never replace one.
+`ALL · MUSIC · DEMU · PODCASTS · PLAYLISTS · NPUB`, each with its glyph, a dropdown above the box (`<SearchTypeMenu>`; the form is in [`ui.md`](ui.md)). `type` rides on `/api/search` and `type=all` is the behaviour above, byte for byte — the selector can only ever narrow from a full answer, never replace one.
 
 **Client-side filtering was the obvious build and it is the bug.** `/search/byterm` has no medium parameter and answers 50 ranked rows, so narrowing those rows here cannot reach an album Podcast Index ranked at position 60 — and the row is then simply absent, which reads as *"the index does not have this record"*. That is the same failure the playlist lane one section up exists to fix, arriving through a control the user pressed themselves. So each option runs its own server lane:
 

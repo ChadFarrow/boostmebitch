@@ -1,3 +1,5 @@
+import type { SearchType } from '@/lib/util';
+
 // Tiny inline icons that inherit currentColor — used in places where the ⚡
 // emoji's color glyph clashes with a yellow background (e.g., .btn-bolt).
 // Keep these path-only and dependency-free; lucide etc. is overkill here.
@@ -299,4 +301,90 @@ export function PuzzleIcon({ className = 'w-4 h-4' }: { className?: string }) {
       <path d="M10 2a2.5 2.5 0 0 1 2.5 2.5V5H15a1 1 0 0 1 1 1v2.5h.5a2.5 2.5 0 1 1 0 5H16V16a1 1 0 0 1-1 1h-2.5v-.5a2.5 2.5 0 1 0-5 0V17H5a1 1 0 0 1-1-1v-2.5h.5a2.5 2.5 0 1 0 0-5H4V6a1 1 0 0 1 1-1h2.5v-.5A2.5 2.5 0 0 1 10 2Z" />
     </svg>
   );
+}
+
+/*
+ * The search-type glyphs: one per option of the search box's type menu, and the
+ * same shape wherever that type is named — the hero's BROWSE buttons, the
+ * `PLAYLIST` stamp on a result row, the /demu page's "Self-hosted" badge.
+ *
+ * FILLED, like the `♫` they replace, because the menu's MUSIC note was the
+ * reference ("an icon like music has"). Inline SVG rather than more characters
+ * because there is no text glyph for a microphone, and because a character
+ * falls back to whatever font the platform has: the `♫` drew at one width on
+ * iOS and another on desktop, so labels after it never lined up.
+ *
+ * Sized in `em`, so one icon follows the text it sits in — 11px on a
+ * `.btn-mini`, 12px in a menu row, 14px on a `.btn-ghost`.
+ */
+const TYPE_ICON = 'w-[1.15em] h-[1.15em]';
+
+/** Two beamed eighth notes — `♫`, drawn. MUSIC. */
+export function MusicNoteIcon({ className = TYPE_ICON }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
+      <path d="M8 17.5V5.6L20 2.6v12.9h-1.6V6.5L9.6 8.7v8.8Z" />
+      <ellipse cx="5.6" cy="17.6" rx="3.4" ry="2.6" transform="rotate(-20 5.6 17.6)" />
+      <ellipse cx="16" cy="15.6" rx="3.4" ry="2.6" transform="rotate(-20 16 15.6)" />
+    </svg>
+  );
+}
+
+/** A house — self-hosted. DEMU, and the /demu page's "Self-hosted" badge. */
+export function HouseIcon({ className = TYPE_ICON }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
+      <path d="M12 3 2 12h3v8h5v-5h4v5h5v-8h3z" />
+    </svg>
+  );
+}
+
+/** A microphone on a stand. PODCASTS. */
+export function MicIcon({ className = TYPE_ICON }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
+      <rect x="8.5" y="2" width="7" height="12" rx="3.5" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3.5M8.5 21.5h7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** A list with a note beside it. PLAYLISTS — not `♫`, which is MUSIC's. */
+export function PlaylistIcon({ className = TYPE_ICON }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
+      <rect x="2" y="4.5" width="12" height="2.2" rx="1.1" />
+      <rect x="2" y="10" width="12" height="2.2" rx="1.1" />
+      <rect x="2" y="15.5" width="7" height="2.2" rx="1.1" />
+      <path d="M18.4 7v9.6H20V9.6l2.6-.9V6.6Z" />
+      <ellipse cx="16.2" cy="17.4" rx="3" ry="2.3" transform="rotate(-20 16.2 17.4)" />
+    </svg>
+  );
+}
+
+/** Four squares — every kind at once. ALL. */
+export function GridIcon({ className = TYPE_ICON }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
+      <rect x="3" y="3" width="7.5" height="7.5" rx="1.5" />
+      <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5" />
+      <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5" />
+      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5" />
+    </svg>
+  );
+}
+
+/**
+ * The glyph for one search type. NPUB keeps its `⚡` character: it had an icon
+ * already, and the same `⚡` marks NPUB inside the search box itself.
+ */
+export function SearchTypeIcon({ type }: { type: SearchType }) {
+  switch (type) {
+    case 'all': return <GridIcon />;
+    case 'music': return <MusicNoteIcon />;
+    case 'demu': return <HouseIcon />;
+    case 'podcast': return <MicIcon />;
+    case 'playlist': return <PlaylistIcon />;
+    case 'npub': return <span className="leading-none">⚡</span>;
+  }
 }

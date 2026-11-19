@@ -22,6 +22,7 @@ import { loadCollection } from '@/lib/playlist-collection';
 import type { Podcast } from '@/lib/types';
 import { NO_SELECTION, applyStoreView, backOr, currentEntryView, syncEntry, viewForEntry } from '@/lib/view-history';
 import type { HomeView } from '@/lib/view-history';
+import { HouseIcon, PlaylistIcon } from '@/components/icons';
 
 /**
  * The three heavy surfaces this page can show but usually does not, split out
@@ -752,7 +753,7 @@ export function HomePage() {
                 className="btn-ghost btn-compact"
                 title="Browse Podcasting 2.0 playlists"
               >
-                ♫ BROWSE PLAYLISTS
+                <PlaylistIcon /> BROWSE PLAYLISTS
               </Link>
               {/* /demu — every self-hosted (non-Wavlake) album, newest first.
                   The same kind of entry point as playlists, with the same
@@ -762,7 +763,7 @@ export function HomePage() {
                 className="btn-ghost btn-compact"
                 title="Browse self-hosted music, newest first"
               >
-                BROWSE DEMU
+                <HouseIcon /> BROWSE DEMU
               </Link>
             </div>
           )}

@@ -5,6 +5,7 @@ import { fetchProfile, shortNpub } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { looksLikeSecretKey, parseNpubInput } from '@/lib/nostr/npub-input';
 import { SelectMenu } from '@/components/select-menu';
+import { SearchTypeIcon } from '@/components/icons';
 import { storage } from '@/lib/storage';
 import type { Podcast } from '@/lib/types';
 import { SEARCH_TYPES, parseSearchType } from '@/lib/util';
@@ -75,7 +76,7 @@ interface Props {
 function SearchTypeMenu({ type, onChange }: { type: SearchType; onChange: (t: SearchType) => void }) {
   return (
     <SelectMenu
-      options={SEARCH_TYPES.map((s) => ({ id: s.type, label: s.label }))}
+      options={SEARCH_TYPES.map((s) => ({ id: s.type, label: s.label, icon: <SearchTypeIcon type={s.type} /> }))}
       active={type}
       onChange={onChange}
       label="Search type"
