@@ -2325,6 +2325,40 @@ plus the display name. Three details are load-bearing:
 The npub is deliberately not kept beside a resolved name. It is one line, and the
 full npub is in the input directly above for anyone who wants to compare it.
 
+### The playlists this npub made (with community playlists only)
+
+`<NpubPlaylists>` (`components/npub-playlists.tsx`) puts a **Playlists** section
+first on the page: the community playlists the npub made in this app, read from
+`/api/community-playlists?owner=<hex>`. Chad asked for it on 2026-11-19 and asked
+that it ship with community playlists, so **it sits behind
+`COMMUNITY_PLAYLISTS_ON`, the switch the maker and the list read** — off, it
+renders nothing and sends no request, and the main site keeps today's page.
+
+- **Only playlists made here.** The maker's key is a column in our own store, so
+  the owner query is exact. A feed from another app that names the npub in
+  `<podcast:txt purpose="npub">` cannot be found from the npub: Podcast Index does
+  not search by key, and reading every curated feed on each visit is a fan-out
+  for a guess. The description says "made in this app" for that reason.
+- **`null` is no answer; `[]` is a fact.** An empty list renders NOTHING — most
+  npubs never made one, and a heading over "none" on every boost page is noise.
+  A failed read renders the heading with RETRY and no count, so the page never
+  claims the person made none. Nothing renders while the store is asked.
+- **Muting the npub hides the rows and says so**, in the words the "Boosts sent"
+  section uses, and keeps the count.
+- **A row opens like `/playlists` opens one**: `selectPodcast`, then
+  `setShowOrigin({ path: '/npub/<npub>', label: 'boosts' })`, then `/`. "boosts"
+  is the label `<NoteCard>` gives this page, so both ways off it return with the
+  same words. The rows pass `piUnasked`: Podcast Index was never asked about a
+  playlist from our store, so a NOT IN PI stamp would be a guess.
+- **The fold** is `bmb:sect_collapsed` with the value `npub:playlists`, beside
+  `<FeedSection>`'s `npub:sent` and `npub:recv`.
+
+`npm run e2e:npubplaylists` drives it against the local Postgres, with a `--off`
+half against a server started without the switch (the script's header gives
+both commands). Its late-answer check passes even with the component's own
+counter removed, because Next mounts a new page for each npub; it pins what the
+reader sees, not the counter.
+
 ## The read index (`services/nostr-index`)
 
 A server-side cache of public Nostr events, deployed separately on Railway. It

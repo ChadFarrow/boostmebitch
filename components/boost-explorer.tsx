@@ -25,6 +25,7 @@ import { Avatar } from './avatar';
 import { CopyLinkButton } from './copy-link-button';
 import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
+import { NpubPlaylists } from './npub-playlists';
 import { ZapReceiptCard } from './zap-receipt-card';
 
 /**
@@ -267,6 +268,10 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         </div>
         <CopyLinkButton url={shareUrl} title="Copy link to this boost history" />
       </header>
+
+      {/* First, because it is short and it is what this person MADE; it renders
+          nothing unless community playlists are on and the npub has one. */}
+      <NpubPlaylists pubkey={pubkey} npub={npub} muted={subjectMuted} />
 
       <FeedSection<DiscoveredNote>
         heading={
