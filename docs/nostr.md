@@ -2001,6 +2001,13 @@ and a busy room introduces people in bursts. `<MutedAccounts>` fired one per
 muted pubkey the moment the list was expanded. All four now hand their whole
 list to `fetchProfilesFor`.
 
+The relay cap that makes the per-pubkey form wrong: nos.lol and relay.primal.net
+keep 20 subscriptions live per connection. The 21st still gets its stored events
+and an EOSE and then never a live one, so an over-cap LIVE subscription looks
+answered. And the read index must never index a kind that drives a destructive
+write, which is why `FORBIDDEN_KINDS` is checked in `ingest.ts` and not only in
+the subscription filters.
+
 The mute list carried a second bug the batch removes: it called
 `storage.profile.setMiss(pk)` itself whenever `fetchProfile` returned null — an
 absence it had not reliably observed, since that function returns the same null
