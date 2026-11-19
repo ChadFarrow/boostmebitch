@@ -534,7 +534,13 @@ t.ok('the blurb is the new one', await js(`${community}.innerText.includes('Made
 t.equal('exactly one EDIT in the section, on that row', await js(`[${comRows}.filter((l) => l.querySelector('a[data-edit-playlist]')).length, ${comRows}[0].querySelector('a[data-edit-playlist]')?.getAttribute('href')]`), [1, `/playlists/make?id=${id}`]);
 t.equal('EDIT is named for its playlist', await js(`${comRows}[0].querySelector('a[data-edit-playlist]')?.getAttribute('aria-label')`), 'Edit e2e community playlist');
 t.ok('EDIT is a sibling of the row button, never inside it', await js(`!document.querySelector('li button a[data-edit-playlist], li button [data-edit-playlist]')`));
-t.ok('the stored row prints no NOT IN PI', await js(`!${comRows}[0].innerText.includes('NOT IN PI')`));
+// #602: a stored row stamps NOT IN PI only on Podcast Index's own "not found"
+// (`playlistsNotInPi`). A local test playlist is never in PI, so ask the same
+// batch route the page asks, and expect the stamp only when PI answered null.
+const piSays = await fetch(`${APP}/api/by-guid/batch?guids=${encodeURIComponent(plGuid)}`).then((r) => r.json()).catch(() => null);
+const piMiss = !!piSays?.podcasts && Object.prototype.hasOwnProperty.call(piSays.podcasts, plGuid) && piSays.podcasts[plGuid] === null;
+if (piMiss) t.ok('the stored row PI answered "not found" for stamps NOT IN PI', await waitFor(`${comRows}[0].innerText.includes('NOT IN PI')`, 30000));
+else t.ok('the stored row PI did not answer "not found" for prints no NOT IN PI', await js(`!${comRows}[0].innerText.includes('NOT IN PI')`));
 t.ok('a curated row PI has not indexed still stamps NOT IN PI (the stamp is not suppressed everywhere)', await waitFor(`${comRows}.some((l) => !l.querySelector('a[data-edit-playlist]') && !l.innerText.includes('e2e community playlist') && l.innerText.includes('NOT IN PI'))`, 30000));
 t.ok('the stored row shows its track count', await waitFor(`${comRows}[0].innerText.includes('12 tracks')`, 30000));
 t.ok('counted rows == min(12, countable rows), not fewer', await waitFor(`(() => { const r = [...document.querySelectorAll('section li')].filter((l) => l.innerText.includes('PLAYLIST')); return r.length >= 1 && r.filter((l) => l.innerText.includes(' tracks')).length === Math.min(12, r.length); })()`, 90000), await js(`[...document.querySelectorAll('section li')].filter((l) => l.innerText.includes(' tracks')).length + ' of ' + [...document.querySelectorAll('section li')].length`));

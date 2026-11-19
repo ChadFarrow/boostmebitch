@@ -74,6 +74,9 @@ These are settled. Do not revisit them in the plan.
     Podcast Index — not from beta, and not from production either — until Chad
     turns that on separately. Both are switches, not code changes (see Launch
     switches).
+    **Changed 2026-11-19 (Chad):** playlists, test playlists included, go to
+    Podcast Index at publish, from beta too. Still behind `COMMUNITY_PI_NOTIFY`,
+    which Chad turns on; see `docs/feeds.md`, "Podcast Index".
 20. **A listener can favorite a whole community playlist, and single songs in
     it** (Chad, 2026-11-12), from the playlist row, the open playlist's header,
     and each song's menu — the same hearts every other playlist has
@@ -275,7 +278,9 @@ need it". BMB has **no admin page and no notion of an admin today**. Decided
 
 ## Podcast Index
 
-**Off for now (decision 19).** When Chad turns it on: on first publish the feed
+**Off for now (decision 19).** *(2026-11-19: built for beta and production, test
+playlists included, behind `COMMUNITY_PI_NOTIFY`; an edit also re-sends the add.
+`docs/feeds.md`, "Podcast Index", is current.)* When Chad turns it on: on first publish the feed
 is submitted to Podcast Index, and on each edit or delete PI is notified
 (`/hub/pubnotify` — MSP-2.0's `api/pubnotify.ts` already does this). The builder
 must confirm BMB's PI key may add feeds. A failure here never fails the publish.
