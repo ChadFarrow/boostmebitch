@@ -28,7 +28,7 @@
 // question — is the always-loaded file still small enough to be worth loading —
 // and leaves the judgement to the person reading the failure.
 
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -345,12 +345,35 @@ const sized = sections
 const table = (rows) =>
   rows.map((s) => `  ${String(s.words).padStart(5)}  ${s.name}`).join('\n')
 
+// Completeness, which the size budget cannot see. The `check:*` table and the
+// "Read before you edit" table are INDEXES, so a script or a docs/ file that exists
+// and is not named makes the file wrong rather than merely incomplete. They had
+// drifted by two scripts and two docs before this existed, with a hand-written
+// count ("Fifty-five") that nothing kept true. A script is named when its
+// `check:<name>` appears in the file; a doc when `docs/<file>.md` does.
+const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
+const unlisted = Object.keys(pkg.scripts)
+  .filter((k) => k.startsWith('check:'))
+  .filter((k) => !new RegExp(`${k}(?![a-z0-9])`).test(text))
+const docFiles = (await readdir(join(root, 'docs'), { withFileTypes: true }))
+  .filter((d) => d.isFile() && d.name.endsWith('.md'))
+  .map((d) => d.name)
+const unrouted = docFiles.filter((f) => !text.includes(`docs/${f}`))
+const incomplete = unlisted.length > 0 || unrouted.length > 0
+
+if (incomplete) {
+  console.error('CLAUDE.md does not name everything its tables index:')
+  for (const k of unlisted) console.error(`  - no table row for \`${k}\` (add a row to the check:* table)`)
+  for (const f of unrouted) console.error(`  - docs/${f} is not in "Read before you edit"`)
+  console.error('')
+}
+
 if (total <= BUDGET) {
   const left = BUDGET - total
   console.log(`CLAUDE.md: ${total} words, budget ${BUDGET} (${left} to spare).`)
   if (process.env.CHECK_CLAUDEMD_VERBOSE) console.log(`\n${table(sized)}`)
   else console.log(`Largest section: ${sized[0].name} (${sized[0].words}).`)
-  process.exit(0)
+  process.exit(incomplete ? 1 : 0)
 }
 
 console.error(`CLAUDE.md is ${total} words; the budget is ${BUDGET}.

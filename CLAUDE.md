@@ -1,26 +1,13 @@
 # CLAUDE.md
 
-**How to read this file.** Each entry is a rule plus one clause naming the consequence of breaking it. The consequence lets you judge a trade-off; "this shipped broken once" is evidence the obvious version is wrong, not an invitation to re-litigate. **The reasoning lives in `docs/`, indexed below, and the `→` at the end of an entry points at it** — follow it before you edit in that area. The README at the repo root is the architecture spec.
+**How to read this file.** Each entry is a rule plus one clause naming the consequence of breaking it; "this shipped broken once" is evidence the obvious version is wrong, not an invitation to re-litigate. **The reasoning lives in `docs/`, indexed below, and the `→` at the end of an entry points at it** — follow it before you edit in that area. The README at the repo root is the architecture spec.
 
-**What lives here vs `docs/`.** Only what must be in mind *before* you know which file you're opening: money-path and security invariants, boundaries, repo-wide conventions, stop-ship checks. **A new rule goes in the relevant `docs/` file unless it (a) can lose funds or leak a credential, (b) governs where code may go, or (c) applies to edits in files you haven't opened yet** — and even then as a rule plus a pointer, never a narrative. Without that test this file grows back: it reached 26,000 words once, which is why `npm run check:claudemd` measures it.
+**What lives here vs `docs/`.** Only what must be in mind *before* you know which file you're opening: money-path and security invariants, boundaries, repo-wide conventions, stop-ship checks. **A new rule goes in the relevant `docs/` file unless it (a) can lose funds or leak a credential, (b) governs where code may go, or (c) applies to edits in files you haven't opened yet** — and even then as a rule plus a pointer, never a narrative. Without that test this file grows back (it reached 26,000 words once), which is why `npm run check:claudemd` measures it.
 
 ## Report in ASD-STE100 Simplified Technical English
 
-Write every chat reply to the user in **ASD-STE100 Simplified Technical English (STE)**. It is a rule about your OUTPUT, and it covers chat prose only. Do not apply it to code, comments, commit messages, PR titles or bodies, or `docs/` — those keep the conventions below. Keep identifiers, file paths, commands, log lines and quoted tool output verbatim. Technical names and technical verbs stay as they are: `keysend`, `boostagram`, `valueTimeSplit`, `sanitizer`.
+Write every chat reply to the user in **ASD-STE100 Simplified Technical English (STE)** — short active sentences, one instruction per sentence of at most 20 words, simple tenses, one word per meaning; the full rules are in the user's global `~/.claude/CLAUDE.md`. It is a rule about your OUTPUT and covers **chat prose only**: not code, comments, commit messages, PR titles or bodies, or `docs/`. Keep identifiers, file paths, commands, log lines and quoted tool output verbatim, and technical names (`keysend`, `boostagram`, `valueTimeSplit`, `sanitizer`) as they are.
 
-- Use the active voice. Use the passive voice only if the active voice is not possible.
-- Write short sentences. Use a maximum of 20 words in an instruction, and 25 in a description.
-- Give one instruction in one sentence.
-- Use the simple tenses: present, past, and future. Do not use the perfect tenses.
-- Do not use the `-ing` form as a noun or as an adjective.
-- Use one word for one meaning, and the same word for the same thing each time. Do not use a synonym for variety.
-- Use articles. Do not omit words to make the text shorter.
-- Write a maximum of six sentences in a paragraph, about one topic.
-- Do not use slang, jargon, idioms, metaphors, or humor.
-- Do not put more than three nouns together.
-- Give the specific fact. Do not use a vague word.
-- Use a list or a table for complex data.
-- Give a warning or a caution before the step that it applies to.
 ## Read before you edit
 
 These docs hold the "this shipped broken once" reasoning that is not in the code. **Read the relevant one before editing in its area** — the rules in it are not reconstructible from reading the source.
@@ -42,6 +29,8 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/testing.md`](docs/testing.md) | Running `build` and `dev` against one `.next`, any session that tests favorites, mutes, follows or the profile, and any `scripts/e2e-*` or `scripts/cdp.mjs` |
 | [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, **both** `android/twa-manifest*.json` and `zapstore*.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest*.json` |
 | [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, **`app/api/audio/`**, and `<Player>`'s local-source branch — the worker is network-first, which is NOT precaching |
+| [`docs/spark-sdk-swap.md`](docs/spark-sdk-swap.md) | `lib/v4v/spark.ts`, `spark-derive.ts` — why the wallet derives at account 0, the path BlitzWallet and Primal use |
+| [`docs/pc20-favorites.md`](docs/pc20-favorites.md) | `lib/nostr/favorites-*.ts` — only a pointer to the kind:10333 spec in PC20-Nostr; a wire-format change is a PR there first |
 
 ## Names
 
@@ -67,7 +56,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9, `eslint.config.mjs`), and `next build`. Path alias `@/*` → repo root.
 
-**Fifty-five `check:*` scripts are this repo's tests.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table only indexes.
+**The `check:*` scripts are this repo's tests.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table only indexes, and `check:claudemd` fails when a script or a `docs/` file is missing from this file.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -75,72 +64,73 @@ npm run dev / build / start / lint
 | `check:sanitizer` | `safeUrlAttr` — the show-notes URL allowlist | a feed runs JS in the wallet-bearing origin |
 | `check:ssrf` | `assertSafeFetchUrl` | feed data aims the server at cloud metadata |
 | `check:liveblock` | `parseLiveBlock` — Split Kit live-value → value block | a live show pays the wrong node, or drops an artist |
-| `check:keysend` | `lib/v4v/keysend-lookup.ts` — which of two payment rails each lnaddress leg leaves on | the boostagram lost while the sats land, or a lookalike domain diverting the payee |
-| `check:lnurl` | `buildLnurlComment` — descriptor + message inside `commentAllowed`, a GIF URL whole or absent — plus `lnurlErrorReason`/`lnurlCommentRetry`, `retryableLegs`, `payInOrder` | the leg's only metadata becomes a dead link, a refused comment loses the leg, or a retry pays twice |
-| `check:npub` | `parseFeedNpubs` — feed npubs → `p`-tags | a note `p`-tags a stranger under the site's identity, permanently |
-| `check:mentions` | `noteMentionTags` + `mentionParts` (`lib/nostr/mention-tags.ts`) — which of the TWO `p`-tag sources may notify | one unauthenticated POST notifies strangers from a verified identity |
-| `check:stream` | `lib/v4v/stream-ledger.ts` — accrual, settlement and the money constants | streaming drains a wallet, pays nothing, or pays twice |
-| `check:favsync` | `lib/nostr/favorites-list.ts` — the kind:10333 wire format (four `i` shapes), the merge, both baseline halves and the private half | another app's favorites deleted, private half included, no undo |
+| `check:keysend` | `keysend-lookup.ts` — the rail each lnaddress leg leaves on | boostagram lost while sats land, or a lookalike domain diverts the payee |
+| `check:lnurl` | `buildLnurlComment`, `retryableLegs` — the comment budget, leg retries | a leg's metadata lost, or a retry pays twice |
+| `check:npub` | `parseFeedNpubs` — feed npubs → `p`-tags | a note `p`-tags a stranger under the site's key, permanently |
+| `check:mentions` | `noteMentionTags` — which of the TWO `p`-tag sources may notify | one unauthenticated POST notifies strangers |
+| `check:stream` | `stream-ledger.ts` — accrual, settlement, money constants | streaming drains a wallet, pays nothing, or pays twice |
+| `check:favsync` | `favorites-list.ts` — the kind:10333 wire format, merge and baselines | another app's favorites deleted, no undo |
 | `check:lease` | `createLeasePool` — the refcount sharing ONE NIP-47 socket | the socket closes **under a payment in flight** |
-| `check:nwcerror` | `lib/v4v/nwc-errors.ts` — the answer a NIP-47 failure gets, what `lookup_invoice` proves, whether a leg may be retried; `bolt11PaymentHash` | a ✗ on an unanswered wallet makes **every leg pay again** |
-| `check:feedxml` | `readAttr` — the attribute reader EVERY feed parser goes through | a decoy attribute steers the payee, and no other client agrees |
-| `check:vts` | `splitAtPosition`, `splitTrackAndHost`, `payableLeg`, `splitSats`, `streamAction` | a boost and a stream credit different artists for one second |
-| `check:readtrust` | `lib/nostr/read-trust.ts` — is an EMPTY read "nobody has it" or "nothing answered" | an unverified read doesn't degrade, it DELETES |
-| `check:assetlinks` | `lib/assetlinks.ts` — the Digital Asset Links statement | delegates the origin holding the NWC credential and the nsec |
-| `check:amber` | `lib/nostr/amber-callback-url.ts` — the `nostrsigner:` bytes and the returned fragment | signing breaks on Android — failed twice in production |
-| `check:ambersafe` | `lib/nostr/amber-safe-text.ts` — getting an NWC string past Amber | every NWC backup from Android fails, silently |
-| `check:nip46error` | `isApprovalPending` — refusal vs approval pending — **and `nip46RequestFits`, the 65535-byte NIP-44 ceiling one NIP-46 request may carry**, **and `holdErrorsForResult`** | Clave signs nothing; another signer's "no" hangs; **a follow list over 849 is reported as a dead signer**; **another key-holder's error wins** |
-| `check:vpsummary` | `lib/nostr/value-playback-summary.ts` — the kind:33369 arithmetic and its publish predicate | two writers at ONE address rewrite each other forever |
+| `check:nwcerror` | `nwc-errors.ts` — what a NIP-47 failure proves, whether a leg may be retried | an unanswered wallet shown as ✗ makes **every leg pay again** |
+| `check:feedxml` | `readAttr` — the attribute reader EVERY feed parser uses | a decoy attribute steers the payee |
+| `check:vts` | `splitAtPosition`, `splitTrackAndHost`, `splitSats`, `streamAction` | a boost and a stream credit different artists |
+| `check:readtrust` | `read-trust.ts` — is an EMPTY read "nobody has it" or "nothing answered" | an unverified read doesn't degrade, it DELETES |
+| `check:assetlinks` | `assetlinks.ts` — the Digital Asset Links statement | delegates the origin holding the NWC credential |
+| `check:amber` | `amber-callback-url.ts` — the `nostrsigner:` bytes and the returned fragment | Android signing breaks (failed twice) |
+| `check:ambersafe` | `amber-safe-text.ts` — getting an NWC string past Amber | every NWC backup from Android fails, silently |
+| `check:nip46error` | `isApprovalPending`, `nip46RequestFits` (the 65535-byte ceiling), `holdErrorsForResult` | Clave signs nothing; a follow list over 849 reads as a dead signer |
+| `check:vpsummary` | `value-playback-summary.ts` — the kind:33369 arithmetic and publish predicate | two writers rewrite one address forever |
 | `check:nwcbudget` | `parseNwcBudget`, `spendableSats` — a NIP-47 `get_budget` answer, and which number is spendable | advertises sats the budget will refuse, or blanks a wallet that can pay |
 | `check:musicl` | `parsePlaylistRemoteItems`, `isPlaylistMedium`, `playsAsTracks`, **`curatedNotListed`**, **`payableValue`**, **`feedItemValue`**, **`valueNotRead`**, **`boostGate`**, **`withoutStoredValue`**, and a source scan | a playlist publishes no `<item>`, so a mis-parse pays the CURATOR; a payee no feed names gets paid |
 | `check:mutes` | `classifyMuteContent`, `parseMuteTags`, `privateHalfAlreadyOpened` — which cipher a kind:10000 private half is written in | another client's mute list re-encoded, unreadable, from a successful publish |
-| `check:chapters` | `lib/chapters-json.ts` — the one corruption a feed chapters document may carry | a chapter TITLE loses characters, or chapters vanish entirely |
-| `check:art` | `artWidth`, `artCandidates`, `artTypeVerdict`, `playableAhead`, `artGateOpen` | a failing proxy blanks every cover on twelve surfaces |
-| `check:gif` | `lib/gif-first-frame.ts` — the block walk cutting an animated cover to frame one | attacker-chosen bytes on a truncated prefix |
-| `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to; `noteOwnItemGuid` | an attacker's link sits under a real show's artwork |
-| `check:zapreceipt` | `zapRequestTags` — the kind:9734 the server mirrors; `validateSummaryRequest` — the summary receipt the site signs and the note quotes | the site attests a stranger's payment, under its key and the user's |
-| `check:sitestamp` | `lib/site-stamp.ts` — the stamp token, the sign gate, the 1% price, the quoted receipt, the Lightning address wire, the client ladder | the site signs an unpaid note; RETRY NOTE pays twice |
-| `check:cache` | `createBoundedCache` — the age, entry AND byte bounds both RSS caches share | an entry cap is not a memory bound |
-| `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load, forever |
+| `check:chapters` | `chapters-json.ts` — the one corruption a chapters document may carry | chapter titles lose characters |
+| `check:art` | `artWidth`, `artCandidates`, `artGateOpen` | a failing proxy blanks every cover |
+| `check:gif` | `gif-first-frame.ts` — the block walk cutting an animated cover to frame one | attacker-chosen bytes |
+| `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to | an attacker's link under a real show's artwork |
+| `check:zapreceipt` | `zapRequestTags`, `validateSummaryRequest` — the receipt the site signs | the site attests a stranger's payment |
+| `check:sitestamp` | `site-stamp.ts` — the stamp token, sign gate, 1% price | an unpaid note signed; RETRY NOTE pays twice |
+| `check:cache` | `createBoundedCache` — the age, entry AND byte bounds | an entry cap is not a memory bound |
+| `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load |
 | `check:playlistdb` | `dbRowToEpisode` — another app's DB row as a track we render, with no payee | a mapped column type-checks and pays the wrong payee |
 | `check:community` | `validatePlaylistDraft`, `artVerdict`, `cleanText`, `buildPlaylistFeedXml`, `buildPublisherFeedXml`, `verifyNip98`… | a feed no app parses, or a write by a non-owner |
 | `check:favbackup` | `lib/favorites-export.ts` — what a backup file must prove before we republish it — and `checkRestore`/`restoreTags`, what a restore flags and repairs | a tampered file republishes a list nobody signed |
-| `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening: feeds hang, publishes reach nobody |
-| `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show, or an ended one never leaves |
-| `check:liveover` | `liveBroadcastIsOver` — stale `live` flags, and overruns | a badge over silence, or none |
-| `check:liveroster`, `check:livealwayson`, `check:liveupcoming` | `liveRosterFeedOrder` — which feeds the live cap keeps; 24/7 stations skip it; `mergeUpcomingSeen` | a show on air trimmed, or Upcoming duplicated |
-| `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser walks a document with | 1 MB of `<!--` pins a lambda for a minute |
-| `check:cappedbody` | `lib/capped-body.ts` — the capped readers, server AND browser | an uncapped `arrayBuffer` fills the heap from one feed |
-| `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, `clientTag`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |
-| `check:downloads` | `downloadKey`, `isDownloadable`, `roomVerdict`, `downloadFailureMessage`, `proxiedAudioUrl`, `albumPlan`/`groupDownloads` | a download nothing finds; a working host blamed for another's refusal |
-| `check:queue` | `epKey`, `trimForQueue` (a denylist), `queueShowFor`, `nextPlayableIndexBy`; the play history's `listenStep`, `addToHistory`, `boostedOnDevice`; `shuffle*`/`insertShuffled`/`albumShuffleTracks`; `isPlayingRow` | the queue removes the wrong episode or credits a track's curator; history claims unsettled sats |
-| `check:favnew` | `sinceForBatch`, `selectNewEpisodes`, `selectLatestEpisodes`, `seedMarks`, `advanceMarks`, `pruneMarks`, `mergeNewEpisodeRows`, `pruneNewRows`, `capDismissed` | a new episode nobody sees, or a year of back catalogue |
-| `check:likes` | `tallyLikes`, `likeTags`, `unlikeTags` (`lib/nostr/like-tally.ts`) | a like Fountain cannot count, or anyone can un-like anyone |
-| `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards, or a second boost hidden |
+| `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening; publishes reach nobody |
+| `check:playlistarchive` | `scripts/playlist-archive.mjs` — the GitHub copy of every community playlist | a copy deleted on a short list, or overwritten by an error page |
+| `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show |
+| `check:liveover` | `liveBroadcastIsOver` — stale `live` flags | a badge over silence, or none |
+| `check:liveroster`, `check:livealwayson`, `check:liveupcoming` | `liveRosterFeedOrder`, `mergeUpcomingSeen` — which feeds the live cap keeps | a show on air trimmed |
+| `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser uses | 1 MB of `<!--` pins a lambda for a minute |
+| `check:cappedbody` | `capped-body.ts` — the capped readers, server AND browser | one feed fills the heap |
+| `check:brand` | `BRANDS`, `clientTag` — **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy |
+| `check:downloads` | `downloadKey`, `roomVerdict`, `albumPlan` | a download nothing finds |
+| `check:queue` | `epKey`, `trimForQueue`, `listenStep`, `shuffle*` | the queue removes the wrong episode; history claims unsettled sats |
+| `check:favnew` | `selectNewEpisodes`, `advanceMarks` | a new episode nobody sees, or a year of back catalogue |
+| `check:likes` | `tallyLikes`, `likeTags`, `unlikeTags` | a like Fountain cannot count |
+| `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards |
 | `check:deletions` | `deletedNoteIds` — feed NIP-09 | strangers hide boosts |
 | `check:testnotes` | `isTestBoostNote` — leaked test notes | a real boost hidden |
-| `check:newmusic` | `lib/new-music.ts`, `parsePublisherRef` | old albums called new, or new ones missed |
-| `check:opml` | `parseOpml`, `planOpmlImport` (what leaves the device), `opmlLinkVerdict`, `sortOpmlAnswers`, `buildOpml` | a paid feed's key sent to Podcast Index; a rate limit read as "not found" |
-| `check:moved` | `lib/moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked, what REPLACE removes | a copycat feed collects boosts; a favorite with no match vanishes |
+| `check:newmusic` | `new-music.ts`, `parsePublisherRef` | old albums called new, or new ones missed |
+| `check:opml` | `parseOpml`, `planOpmlImport` (what leaves the device) | a paid feed's key sent to Podcast Index |
+| `check:moved` | `moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked | a copycat feed collects boosts |
 | `check:demu` | `isDemuFeed` | Wavlake passes as DeMu |
 
-**They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
+**They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** No `check:*` sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused: all three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
 **`services/nostr-index` has its own checks and this repo's `check:*` do not run them** — `cd services/nostr-index && npm run typecheck && DATABASE_URL=... npm run verify`. → [`docs/nostr-index.md`](docs/nostr-index.md)
 
-**The import-free arrangement is enforced, not just documented.** `favorites-list.ts`, `read-trust.ts`, `lease.ts`, `assetlinks.ts`, `amber-callback-url.ts`, `amber-safe-text.ts`, `gif-first-frame.ts`, `chapters-json.ts`, `value-playback-summary.ts`, `mute-state.ts`, `mention-tags.ts`, `brand.ts`, `cross-brand-cors.ts`, `bounded-cache.ts`, `capped-body.ts`, `zap-request.ts`, `nip46-errors.ts`, `clave.ts`, `primal.ts`, `like-tally.ts`, `note-deletions.ts`, `test-boost-notes.ts`, `opml.ts`, `downloads/download-rules.ts`, `curated-playlists.ts`, `moved-feeds.ts`, `new-music.ts`, `demu*.ts`, `site-stamp.ts` and `community/rules.ts` must have no imports, and `nwc-errors.ts`, `favorites-export.ts`, `relay-socket.ts`, `boost-echo.ts` and `community/clean-text.ts` only bare npm ones, so a check script can load the module under plain Node. `scripts/import-free.mjs` scans for it and every check pinning one calls it. **`mute-state.ts` shows the rule shapes the code**: `MuteCipher` and `classifyMuteContent` live beside `MuteListState`, because a second leaf would need an `import type` the scan rejects. **The scan rejects type-only relative imports too**: type-stripping erases them, so only the scan sees a module one `type` deletion from breaking.
+**The import-free arrangement is enforced, not just documented.** Each module a check loads under plain Node (`favorites-list.ts`, `read-trust.ts`, `lease.ts`, `brand.ts`, `site-stamp.ts`, `community/rules.ts` and the other leaves) must have no imports; `nwc-errors.ts`, `favorites-export.ts`, `relay-socket.ts`, `boost-echo.ts` and `community/clean-text.ts` may import bare npm packages only. `scripts/import-free.mjs` scans for it, every check pinning one calls it, and **it rejects type-only relative imports too** (type-stripping erases them, so only the scan sees a module one `type` deletion from breaking). **`mute-state.ts` shows the rule shapes the code**: `MuteCipher` and `classifyMuteContent` live beside `MuteListState`, because a second leaf would need an `import type`.
 
-Each **imports the real module** via `node --experimental-strip-types`: a copy passes green while shipping code drifts. Each carries a *must-still-work* half: over-blocking is a regression too. **Vectors were generated by the shipping code; if one fails, fix the code — never edit the vector to match.**
+Each check **imports the real module** via `node --experimental-strip-types`: a copy passes green while shipping code drifts. Each carries a *must-still-work* half: over-blocking is a regression too. **Vectors were generated by the shipping code; if one fails, fix the code — never edit the vector to match.**
 
-**Build a fixture from the WIRE, not the struct you parse it into, and check a new vector fails against something before you keep it** — a round-trip assertion built from your own fields cannot fail, which is how `check:favsync`'s vector named "lossless" sat green while every publish dropped what another app wrote past position 3. Run it against the old implementation first, failing that the *obvious wrong* one, which is what `naive()` is for.
+**Build a fixture from the WIRE, not the struct you parse it into, and check a new vector fails against something before you keep it** — a round-trip built from your own fields cannot fail, which is how `check:favsync`'s vector named "lossless" sat green while every publish dropped what another app wrote past position 3. Run it against the old implementation first, else the *obvious wrong* one: `naive()`.
 
-**And make the replay TOTAL, not a hand-written second list** — `check-assetlinks.mjs` named six of twenty-nine, so a section sat green against nothing. Vectors are recorded as **calls** (`{ kind, args }`) and the replay walks the list, so a vector cannot be added without being proved; the must-still-work half is exempted one vector at a time with `{ alsoNaive: true }`, never by default. **An exemption is a CLAIM that `naive()` still agrees, and `scripts/replay-vectors.mjs` asserts it** — the loops it replaced skipped it, and three exemptions were hiding faults.
+**Make the replay TOTAL, not a hand-written second list** — `check-assetlinks.mjs` named six of twenty-nine, so a section sat green against nothing. Vectors are recorded as **calls** (`{ kind, args }`) and the replay walks the list; the must-still-work half is exempted one vector at a time with `{ alsoNaive: true }`, **a CLAIM that `naive()` still agrees, which `scripts/replay-vectors.mjs` asserts** (three exemptions were hiding faults).
 
-**`npm run check:claudemd`** guards this file's size (budget in the script), and **`check:conformance`** runs the spec's 31 vectors against the favorites merge (needs `../PC20-Nostr` or `PC20_NOSTR_DIR`). Neither pins a pure function. **`npm run check` runs every `check:*`** (conformance reported, never gating); **run it with typecheck/lint/build before shipping.**
+**`npm run check:claudemd`** guards this file's size and completeness (budget in the script), and **`check:conformance`** runs the spec's 31 vectors against the favorites merge (needs `../PC20-Nostr` or `PC20_NOSTR_DIR`). Neither pins a pure function. **`npm run check` runs every `check:*`** (conformance reported, never gating); **run it with typecheck/lint/build before shipping.**
 
 **Stop the dev server before `npm run build`, and `rm -rf .next` before starting `dev` again** — the collision runs BOTH ways, and the dev-side symptom is a React Refresh error that reads as an application bug.
 
-**"Testing locally" and "testing against local data" are DIFFERENT THINGS.** A dev server on localhost still publishes to the public relays under whatever npub is signed in — including the shared kind:10333 event another app reads, which keeps no history, so a bug found that way is found in production on someone else's device. A session touching favorites, mutes, follows or the profile uses `npm run relay` (in-memory NIP-01, WITH replaceable-event semantics), `npm run seed:relay -- <npub>` (a real list with history in it), `npm run e2e:favorites` or `npm run e2e:mutes` (a throwaway key over CDP, real NIP-44) — never a real account. **And a branch "N commits ahead of `main`" is NOT unfinished work**: a squash merge changes the patch id, so ask `gh pr list --state merged`. → [`docs/testing.md`](docs/testing.md)
+**"Testing locally" and "testing against local data" are DIFFERENT THINGS.** A dev server on localhost still publishes to the public relays under whatever npub is signed in — including the shared kind:10333 event, which keeps no history. A session touching favorites, mutes, follows or the profile uses `npm run relay`, `npm run seed:relay -- <npub>`, `npm run e2e:favorites` or `npm run e2e:mutes` — never a real account. **A branch "N commits ahead of `main`" is NOT unfinished work**: a squash merge changes the patch id, so ask `gh pr list --state merged`. → [`docs/testing.md`](docs/testing.md)
 
 **A change to what a community playlist FEED contains goes to `main`, even while the maker is beta only.** Production serves every published feed (`COMMUNITY_FEEDS=on`) and beta answers a feed URL with a `301` to it, so a feed change on a beta-only branch reaches no app. → [`docs/feeds.md`](docs/feeds.md)
 
@@ -156,9 +146,9 @@ Podcast Index credentials must never reach the browser. Enforced by file convent
 
 **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration).
 
-**A THIRD place exists and it is not part of this app: `services/nostr-index/`.** A separate deployable on Railway with its own `package.json` and dependencies — it holds relay WebSockets open continuously, which a serverless function cannot. It is excluded from this repo's `tsconfig.json` and `eslint.config.mjs`, so **`npm run typecheck` and `npm run lint` do not cover it**. It must never import from `lib/` and `lib/` never from it — the relay lists and NIP-73 prefixes are deliberately duplicated. The app reaches it only through `lib/nostr-index-server.ts`, server-side.
+**A THIRD place is not part of this app: `services/nostr-index/`** — a separate Railway deployable with its own `package.json`, because it holds relay WebSockets open and a serverless function cannot. It is excluded from `tsconfig.json` and `eslint.config.mjs`, so **`npm run typecheck` and `npm run lint` do not cover it**. It never imports from `lib/` and `lib/` never from it (the relay lists and NIP-73 prefixes are deliberately duplicated); the app reaches it only through `lib/nostr-index-server.ts`, server-side.
 
-**It does NOT deploy when you merge.** The Railway service is CLI-uploaded, so merging to `main` deploys the Vercel app and leaves the index running whatever was uploaded last — invisible from the diff, and it cost a session. `railway up` from `services/nostr-index`, **then read the DEPLOY log for the package name** (the build log never prints it): it must say `boostmebitch-nostr-index`, never `boostmebitch`. **`railway up` uploads the nearest git ROOT** — from a worktree the main checkout, from a folder inside a home directory that is itself a repo the whole home directory — so ship a merged commit as a `git archive` export outside every repo (`docs/ops.md`). → [`docs/nostr-index.md`](docs/nostr-index.md)
+**It does NOT deploy when you merge.** The Railway service is CLI-uploaded: merging to `main` deploys the Vercel app and leaves the index on whatever was uploaded last. `railway up` from `services/nostr-index`, **then read the DEPLOY log for the package name** (the build log never prints it): `boostmebitch-nostr-index`, never `boostmebitch`. **`railway up` uploads the nearest git ROOT** (from a worktree, the main checkout), so ship a merged commit as a `git archive` export outside every repo. → [`docs/ops.md`](docs/ops.md), [`docs/nostr-index.md`](docs/nostr-index.md)
 
 Components fetch via local API routes (`fetch('/api/feed?id=…')`) — never call PI directly.
 
