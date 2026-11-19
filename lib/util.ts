@@ -1988,6 +1988,10 @@ export type SearchType = 'all' | 'music' | 'demu' | 'podcast' | 'playlist' | 'np
  * that produced it — the same rule `splitLabels` follows on the favorites page,
  * where a chip reading ALBUMS over a heading reading "albums & shows" was the
  * confusion being fixed.
+ *
+ * `label` is the WORD alone. Each type's glyph is `<SearchTypeIcon>`
+ * (`components/icons.tsx`) — this file is import-free, and a glyph inside the
+ * string is a character the menu cannot line up.
  */
 export const SEARCH_TYPES: readonly {
   type: SearchType;
@@ -1996,11 +2000,11 @@ export const SEARCH_TYPES: readonly {
   placeholder: string;
 }[] = [
   { type: 'all', label: 'ALL', noun: 'feeds', placeholder: 'search podcasts, music and playlists…' },
-  { type: 'music', label: '♫ MUSIC', noun: 'albums', placeholder: 'search music albums…' },
+  { type: 'music', label: 'MUSIC', noun: 'albums', placeholder: 'search music albums…' },
   { type: 'demu', label: 'DEMU', noun: 'DeMu albums', placeholder: 'search self-hosted music…' },
   { type: 'podcast', label: 'PODCASTS', noun: 'shows', placeholder: 'search podcasts…' },
   { type: 'playlist', label: 'PLAYLISTS', noun: 'playlists', placeholder: 'search playlists…' },
-  { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste a Nostr public key (npub, nprofile or hex)…' },
+  { type: 'npub', label: 'NPUB', noun: 'people', placeholder: 'paste a Nostr public key (npub, nprofile or hex)…' },
 ];
 
 /**
@@ -2079,7 +2083,7 @@ export function matchesSearchType(p: Pick<Podcast, 'medium' | 'publisherMediums'
  * record for a feed can carry a medium the feed contradicts, so re-filtering
  * this lane would throw away exactly the rows it was asked to find. The reason
  * `filterPlaylistsByQuery` re-checks anyway is that its output gets stamped
- * `♫ PLAYLIST` on screen, and a stamp is a claim; nothing here stamps anything.
+ * `PLAYLIST` on screen, and a stamp is a claim; nothing here stamps anything.
  *
  * `byterm` is Podcast Index's ranked keyword answer, which says nothing about
  * the medium, so every one of its rows must pass `matchesSearchType`.
