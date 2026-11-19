@@ -89,6 +89,11 @@ import {
   withVisibility,
   VISIBILITY_TAG,
   favoritesReadRetryable,
+  countRemoval,
+  massRemoval,
+  absenceConfirmed,
+  MIN_ABSENCE_ANSWERS,
+  baselineSawList,
 } from '../lib/nostr/favorites-list.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -339,8 +344,22 @@ section('Spec vector 2b — an unhydrated store must not read as "remove everyth
     trustworthy: true,
     local: oneLeft,
   });
-  check('removing all but one still publishes', partial.publish, true);
-  check('...as an ordinary publish', partial.reason, 'publish');
+  // Removing 3 of 4 is MOST of the list, so since issue #600 it waits for the
+  // user's answer rather than going straight to a signer — but it is HELD, not
+  // refused: the answer below is what lets it through, so unfavoriting still
+  // propagates.
+  check('removing all but one is held for the user, not refused',
+    [partial.publish, partial.reason, partial.removal], [false, 'mass-removal', { removed: 3, total: 4 }]);
+  const partialOk = planFavoritesPublish({
+    merged: mergeFavoritesList({ read, local: oneLeft, baseline }),
+    readTags: wire,
+    exists: true,
+    trustworthy: true,
+    local: oneLeft,
+    removalConfirmed: 3,
+  });
+  check('...and once the user says yes it still publishes', partialOk.publish, true);
+  check('...as an ordinary publish', partialOk.reason, 'publish');
 
   // The guard keys on the RELAY holding real entries, so a list that never had
   // any is untouched by it — that case still belongs to `nothing-to-create`.
@@ -3034,6 +3053,194 @@ section('Which degraded read this device may retry on its own');
     ['private-withheld', 'private-unreadable', 'private-too-large', 'mode-ambiguous', 'wholesale-delete']
       .filter((r) => naiveRetryable(r) !== favoritesReadRetryable(r)).length,
     5);
+}
+
+// ---------------------------------------------------------------------------
+section('Issue #600 — a sign-in replaced an 81-entry list with 2');
+// ---------------------------------------------------------------------------
+{
+  // The WIRE shape of the list that was replaced (event 88e77504…, public on
+  // relay.ditto.pub), cut to a few entries of each kind: `visibility` after
+  // `alt`, three-element item entries ahead of the `medium` tag, feed entries
+  // after it, one `k` per kind at the end. The guids are real.
+  const R_F1 = 'a1077af6-602b-5daf-957b-68a65a03cad1';
+  const R_F2 = 'b9c92d07-c0ab-5712-b8e1-05f5e4992e3e';
+  const R_KEPT = '55b53584-4219-4fb0-b916-075ce23f714e'; // on both events
+  const R_NEW = '636b509a-431d-53dd-a03a-9be92f255972'; // only on the 2-entry one
+  const R_I1 = '8ec41aed-2072-4562-ad11-2ffa9169d3ab';
+  const R_I2 = '8106e789-25e4-4b33-9c47-1ab5de6f7b77';
+  const R_I3 = '5d580bab-8a4a-4cfd-8644-304238c94830';
+  const R_FEEDS = [
+    'c0be02f5-0e88-59a3-84cb-b76041a83264', '23cc891c-c425-50e8-ac99-c17e6f2582c8',
+    'afbaa6da-4219-55dd-934a-96e0bc79c442', R_KEPT, 'e67106b4-08a8-5edb-a6fc-cb7e96af3ca7',
+  ];
+  const wire = [
+    ['alt', 'PC 2.0 Favorites'],
+    ['visibility', 'public'],
+    ['i', `podcast:guid:${R_F1}`, `podcast:item:guid:${R_I1}`],
+    ['i', `podcast:guid:${R_F1}`, `podcast:item:guid:${R_I2}`],
+    ['i', `podcast:guid:${R_F2}`, `podcast:item:guid:${R_I3}`],
+    ['medium', 'podcast'],
+    ...R_FEEDS.map((g) => ['i', `podcast:guid:${g}`]),
+    ['k', 'podcast:item:guid'],
+    ['k', 'podcast:guid'],
+  ];
+  const read = parseFavoritesList(wire);
+  const total = wire.filter((t) => t[0] === 'i').length; // 8
+  // What the browser held: two shows, one of them already on the list.
+  const twoShows = groupLocalFavorites([
+    { id: showId(R_KEPT), medium: 'podcast' },
+    { id: showId(R_NEW), medium: 'podcast' },
+  ]);
+
+  // ---- 1. The incident itself: the read found NO list --------------------
+  //
+  // The published event (535e897d…) is EXACTLY what this planner makes from
+  // those two shows over an empty read — no `visibility`, `medium` ahead of the
+  // `i` tags. That is the evidence the read came back empty, not stale.
+  const fromNothing = mergeFavoritesList({ read: EMPTY_PARSED, local: twoShows, baseline: EMPTY_BASELINE });
+  check('the 2-entry event is our writer over an EMPTY read, byte for byte',
+    tagsFromList(fromNothing),
+    [
+      ['alt', 'PC 2.0 Favorites'],
+      ['medium', 'podcast'],
+      ['i', `podcast:guid:${R_KEPT}`],
+      ['i', `podcast:guid:${R_NEW}`],
+      ['k', 'podcast:guid'],
+    ]);
+  // Asked of eleven relays, as the incident's read was (the user's eight write
+  // relays and the defaults).
+  const create = (answered) => planFavoritesPublish({
+    merged: fromNothing, readTags: [], exists: false, trustworthy: true, local: twoShows,
+    absence: answered === null ? null : { answered, asked: 11 },
+  });
+  // (naive) the planner before #600 had no count to consult, which is what
+  // `null` reproduces — and it created the list.
+  check('(naive) with no count, one empty answer CREATES over the list', create(null).reason, 'publish');
+  check(`one relay saying "no list" is not enough to create one (needs ${MIN_ABSENCE_ANSWERS})`,
+    [create(1).publish, create(1).reason], [false, 'degraded']);
+  check('nobody answering is not enough either', create(0).reason, 'degraded');
+  // MUST STILL WORK: a brand-new account's first favorite still creates its list.
+  check('two relays saying "no list" lets a new account create its list',
+    [create(2).publish, create(2).reason], [true, 'publish']);
+  // The rule is about CREATING. A read that found the list is untouched by it.
+  check('the count is not consulted when the list exists',
+    planFavoritesPublish({
+      merged: mergeFavoritesList({ read, local: twoShows, baseline: EMPTY_BASELINE }),
+      readTags: wire, exists: true, trustworthy: true, local: twoShows, absence: { answered: 0, asked: 11 },
+    }).reason, 'publish');
+  // A `bmb:relays` override naming ONE relay can only ever get one answer.
+  check('one relay asked, one answer: that is all there is to ask',
+    absenceConfirmed({ answered: 1, asked: 1 }), true);
+  check('but one answer out of two asked is not', absenceConfirmed({ answered: 1, asked: 2 }), false);
+  check('and nobody asked is never a confirmation', absenceConfirmed({ answered: 0, asked: 0 }), false);
+
+  // ---- 1b. The same empty read on a device that SAW the list --------------
+  //
+  // Two relays said "none", so the absence rule lets it through — but this
+  // device's baseline names the whole list. The merge reads every baselined
+  // entry as "removed by another app" and drops it, so the create would hold
+  // ONLY what is new: one show over eight. Chad, on #601: a device that saw a
+  // list offers retry only — and a ♡ goes through this same planner.
+  const sawBaseline = baselineOfList(read);
+  const overMissedRead = mergeFavoritesList({ read: EMPTY_PARSED, local: twoShows, baseline: sawBaseline });
+  const createSeen = (sawList) => planFavoritesPublish({
+    merged: overMissedRead, readTags: [], exists: false, trustworthy: true, local: twoShows,
+    absence: { answered: 2, asked: 11 }, sawList,
+  });
+  // (naive) without the flag — the planner as the first #601 commit left it.
+  check('(naive) a device that saw the list CREATES one holding only the new show',
+    [createSeen(undefined).reason, createSeen(undefined).tags.filter((t) => t[0] === 'i').length], ['publish', 1]);
+  check('#600: a device that saw the list holds the create',
+    [createSeen(true).publish, createSeen(true).reason], [false, 'create-held']);
+  // MUST STILL WORK: the flag is about CREATING. A read that found the list is
+  // the ordinary path, flag or no flag.
+  check('#600: the flag is not consulted when the list exists',
+    planFavoritesPublish({
+      merged: mergeFavoritesList({ read, local: twoShows, baseline: EMPTY_BASELINE }),
+      readTags: wire, exists: true, trustworthy: true, local: twoShows,
+      absence: { answered: 2, asked: 11 }, sawList: true,
+    }).reason, 'publish');
+  check('#600: ...and a device that never saw one still creates on two answers', createSeen(false).reason, 'publish');
+
+  // ---- 2. The other way to the same event: a full read, a stale store ----
+  //
+  // The baseline names the whole list and the store holds two shows: every
+  // other entry is "ours, and we no longer hold it". Not empty, so the
+  // wholesale-delete guard never fired.
+  const fullBaseline = baselineOfList(read);
+  const shrink = (removalConfirmed) => planFavoritesPublish({
+    merged: mergeFavoritesList({ read, local: twoShows, baseline: fullBaseline }),
+    readTags: wire, exists: true, trustworthy: true, local: twoShows,
+    absence: { answered: 5, asked: 11 }, removalConfirmed,
+  });
+  check('a publish that removes 7 of 8 waits for the user',
+    [shrink().publish, shrink().reason, shrink().removal], [false, 'mass-removal', { removed: total - 1, total }]);
+  check('(naive) the guard before #600 let it through — it is not empty',
+    shrink().tags.filter((t) => t[0] === 'i').length > 0, true);
+  check('the user\'s yes lets exactly that removal through', shrink(total - 1).reason, 'publish');
+  check('a yes for a SMALLER removal does not', shrink(total - 2).reason, 'mass-removal');
+  check('a delete-all the user asked for is not asked again',
+    planFavoritesPublish({
+      merged: mergeFavoritesList({ read, local: twoShows, baseline: fullBaseline }),
+      readTags: wire, exists: true, trustworthy: true, local: twoShows, absence: { answered: 5, asked: 11 },
+      emptyIsIntentional: true,
+    }).reason, 'publish');
+
+  // ---- 3. What a correct publish over this list keeps ---------------------
+  const union = planFavoritesPublish({
+    merged: mergeFavoritesList({ read, local: twoShows, baseline: EMPTY_BASELINE }),
+    readTags: wire, exists: true, trustworthy: true, local: twoShows, absence: { answered: 5, asked: 11 },
+  });
+  check('adopting the browser\'s two shows over the list removes nothing',
+    [union.reason, union.removal], ['publish', { removed: 0, total }]);
+  check('...keeps `visibility` right after `alt`', union.tags.slice(0, 2), [['alt', 'PC 2.0 Favorites'], ['visibility', 'public']]);
+  check('...keeps a `k` for each kind on the list',
+    union.tags.filter((t) => t[0] === 'k'), [['k', 'podcast:item:guid'], ['k', 'podcast:guid']]);
+  check('...and adds the one new show', union.tags.filter((t) => t[0] === 'i').length, total + 1);
+}
+
+{
+  // countRemoval / massRemoval on their own.
+  const F = (g) => ['i', `podcast:guid:${g}`];
+  const legacy = ['i', `podcast:item:guid:${I_A}`];
+  const migrated = ['i', `podcast:guid:${F_POD}`, `podcast:item:guid:${I_A}`];
+  check('a legacy item tag rewritten to three elements is not a removal',
+    countRemoval([legacy], [], [migrated], []), { removed: 0, total: 1 });
+  check('an entry that moved to the private half is not a removal',
+    countRemoval([F(F_MUSIC), F(F_POD)], [], [F(F_POD)], [F(F_MUSIC)]), { removed: 0, total: 2 });
+  check('an entry gone from both halves is', countRemoval([F(F_MUSIC), F(F_POD)], [], [F(F_POD)], []),
+    { removed: 1, total: 2 });
+  check('2 of 2 is an ordinary unfavorite, not a question', massRemoval({ removed: 2, total: 2 }), false);
+  check('3 of 5 is most of the list', massRemoval({ removed: 3, total: 5 }), true);
+  check('3 of 6 is not MOST of it', massRemoval({ removed: 3, total: 6 }), false);
+
+  // ---- a device that SAW the list is never offered "save as new list" ------
+  //
+  // Chad, on #601: "if this device saw a list before, the notice offers only
+  // retry". The baseline is that record — written only when this device and the
+  // relays agreed on a list — so ANY entry in ANY of its four halves proves one
+  // existed, and a later "no list" then means the read missed it.
+  const seen = (b) => baselineSawList({ feeds: [], items: [], ...b });
+  const R_KEPT = '55b53584-4219-4fb0-b916-075ce23f714e';
+  check('#600: a baseline naming a show proves this device saw a list', seen({ feeds: [R_KEPT] }), true);
+  check('#600: ...and one naming only an episode', seen({ items: ['podcast:item:guid:x'] }), true);
+  check('#600: ...and a WHOLLY PRIVATE list is still a list', seen({ privateFeeds: [R_KEPT] }), true);
+  check('#600: ...on its episode half too', seen({ privateItems: ['podcast:item:guid:x'] }), true);
+  // must still work: a device with no history keeps the question, or nobody
+  // could ever start a list.
+  check('#600: an empty baseline proves nothing — the question stays', seen({}), false);
+  check('#600: ...nor do empty private halves', seen({ privateFeeds: [], privateItems: [] }), false);
+  // (naive) the public half only — the obvious reading of "the baseline", and
+  // wrong for every account whose list is private.
+  const naiveSeen = (b) => (b.feeds?.length ?? 0) + (b.items?.length ?? 0) > 0;
+  check('(naive) "feeds or items" calls a private list unseen',
+    naiveSeen({ privateFeeds: [R_KEPT] }) === seen({ privateFeeds: [R_KEPT] }), false);
+  // A held create waits on the RELAYS, so the read retry re-reads it; the
+  // question it replaced waits on the USER, so it does not.
+  check('#600: a held create is retried when the relays come back', favoritesReadRetryable('create-held'), true);
+  check('#600: the create QUESTION is not retried — it waits for an answer', favoritesReadRetryable('create-pending'), false);
+  check('#600: nor is the removal question', favoritesReadRetryable('mass-removal'), false);
 }
 
 // ---------------------------------------------------------------------------

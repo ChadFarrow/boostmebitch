@@ -4,7 +4,7 @@
 // Drop-in replacement target: when v4v-toolkit ships its boost helper,
 // import from there and delete the bodies of the helpers below.
 
-import type { Boostagram, ValueBlock, ValueRecipient, BoostResult } from '@/lib/types';
+import type { Boostagram, ValueBlock, ValueRecipient, BoostResult, NwcLegCheck } from '@/lib/types';
 import { hasNwc, nwcGetMethods } from './nwc-state';
 import { hasWebln, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
@@ -17,8 +17,8 @@ import {
 } from './keysend-lookup';
 import { storeBoostMetadata, boostboxIdFromUrl } from './boostbox';
 import { storage } from '@/lib/storage';
-import { recipientOrder, isLnAddressRecipient, splitSats } from '@/lib/util';
-import { bolt11AmountMsat } from './bolt11';
+import { payInOrder, recipientOrder, isLnAddressRecipient, splitSats } from '@/lib/util';
+import { bolt11AmountMsat, bolt11PaymentHash } from './bolt11';
 import { STAMP_MAX_FEE_SATS } from '@/lib/site-stamp';
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -31,6 +31,26 @@ export type Rail = 'nwc' | 'webln' | 'spark';
 
 // Re-export so callers can import from one place
 export type { BoostResult };
+export type { LegVerdict } from './nwc-errors';
+
+/**
+ * How long a leg may go unanswered before the single BOOST panel starts the
+ * next one (`sendBoost`'s `moveOnAfterMs`, NWC only). The SDK waits 60 s for a
+ * payment's reply; AlbyHub answers only when the payment settles, so one slow
+ * route held every later leg for that minute (Chad, 2026-11-18).
+ */
+export const SLOW_LEG_MS = 15_000;
+
+/**
+ * The payment hash, and the resend, of each NWC leg that went UNANSWERED —
+ * keyed by the error object, so it rides the throw from the pay function up to
+ * `payOne`'s catch without widening any error class. Set only on an
+ * `NwcIndeterminateError`: every other failure is judged as before.
+ */
+const unansweredLegs = new WeakMap<object, NwcLegCheck>();
+function noteUnanswered(e: unknown, check: NwcLegCheck): void {
+  if (e instanceof nwcEngine().NwcIndeterminateError) unansweredLegs.set(e, check);
+}
 
 // The user's rail pref (last-used boost rail / wallet-modal switch choice)
 // wins when that rail is still available; otherwise fall back to priority:
@@ -161,12 +181,14 @@ async function payLnurl(
   sats: number,
   rail: Rail,
   boostagram: Boostagram,
+  feedGuid: string | undefined,
 ): Promise<BoostResult> {
   const stored = await storeBoostMetadata({
     boostagram,
     recipient,
     splitWeight: recipient.split,
     legMsat: sats * 1000,
+    feedGuid,
   });
   // Handed over separately, NOT pre-joined: the two truncate differently and
   // fetchLnInvoice is the only place that knows the recipient's commentAllowed.
@@ -182,8 +204,18 @@ async function payLnurl(
     message: boostagram.message,
   });
   let preimage: string;
-  if (rail === 'nwc') preimage = await nwcEngine().nwcPayInvoice(invoice);
-  else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
+  if (rail === 'nwc') {
+    try {
+      preimage = await nwcEngine().nwcPayInvoice(invoice);
+    } catch (e) {
+      // Unanswered: remember the invoice's hash, to ask the wallet about it and
+      // to pay that SAME invoice again if the wallet says it failed. No hash
+      // (an invoice we cannot read) leaves the leg a plain `?`, as before.
+      const paymentHash = bolt11PaymentHash(invoice);
+      if (paymentHash) noteUnanswered(e, { paymentHash, resend: { kind: 'invoice', invoice } });
+      throw e;
+    }
+  } else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
   else preimage = await weblnPayInvoice(invoice);
   return {
     recipient,
@@ -213,12 +245,25 @@ async function payKeysend(
     name: recipient.name,
   };
   if (rail === 'nwc') {
-    const preimage = await nwcEngine().nwcKeysend({
-      pubkey: recipient.address,
-      amount_msat: sats * 1000,
-      tlv_records: tlvHexFor(recPerRecipient, recipient),
-    });
-    return { recipient, sats, ok: true, preimage };
+    // The preimage is made HERE, so the leg's payment hash is known before the
+    // wallet is asked to pay — see `noteUnanswered`.
+    const { preimage: ours, paymentHash } = nwcEngine().keysendPreimage();
+    const tlv = tlvHexFor(recPerRecipient, recipient);
+    try {
+      const preimage = await nwcEngine().nwcKeysend({
+        pubkey: recipient.address,
+        amount_msat: sats * 1000,
+        tlv_records: tlv,
+        preimage: ours,
+      });
+      return { recipient, sats, ok: true, preimage };
+    } catch (e) {
+      noteUnanswered(e, {
+        paymentHash,
+        resend: { kind: 'keysend', pubkey: recipient.address, amountMsat: sats * 1000, tlv, preimage: ours },
+      });
+      throw e;
+    }
   }
   const preimage = await weblnKeysend({
     pubkey: recipient.address,
@@ -311,6 +356,7 @@ async function payOne(
   rail: Rail,
   boostagram: Boostagram,
   canKeysend: KeysendCapability,
+  feedGuid: string | undefined,
 ): Promise<BoostResult> {
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
@@ -362,7 +408,7 @@ async function payOne(
                 : 'no .well-known/keysend endpoint'
         })`,
       );
-      return await payLnurl(recipient, sats, rail, boostagram);
+      return await payLnurl(recipient, sats, rail, boostagram, feedGuid);
     }
     console.info(
       `[keysend] ${recipient.address} → keysend ${upgraded.address.slice(0, 12)}…` +
@@ -452,7 +498,7 @@ async function payOne(
         })`,
       );
       try {
-        return await payLnurl(recipient, sats, rail, boostagram);
+        return await payLnurl(recipient, sats, rail, boostagram, feedGuid);
       } catch (retryErr) {
         // Name BOTH attempts. The user watched this leg try a keysend, so
         // surfacing only the LNURL error reports a cause they never saw and
@@ -466,9 +512,16 @@ async function payOne(
         const first = e instanceof Error ? e.message : String(e);
         const second = retryErr instanceof Error ? retryErr.message : String(retryErr);
         const combined = `keysend: ${first}; LNURL retry: ${second}`;
-        throw retryErr instanceof NwcIndeterminateError
-          ? new NwcIndeterminateError(combined)
-          : new Error(combined);
+        if (retryErr instanceof NwcIndeterminateError) {
+          const wrapped = new NwcIndeterminateError(combined);
+          // The LNURL retry is the payment that may have gone out; its hash
+          // travels with the wrapper. (The keysend was retried only because it
+          // provably sent nothing.)
+          const check = unansweredLegs.get(retryErr);
+          if (check) unansweredLegs.set(wrapped, check);
+          throw wrapped;
+        }
+        throw new Error(combined);
       }
     }
   } catch (e: any) {
@@ -482,7 +535,8 @@ async function payOne(
     // exclusion is the load-bearing half of `routingFailureProvesUnpaid` —
     // "the wallet never answered" outranks whatever its text happened to say.
     const indeterminate = e instanceof nwcEngine().NwcIndeterminateError;
-    return { ...base, ok: false, indeterminate, error: e?.message ?? String(e) };
+    const nwcCheck = indeterminate ? unansweredLegs.get(e) : undefined;
+    return { ...base, ok: false, indeterminate, error: e?.message ?? String(e), ...(nwcCheck ? { nwcCheck } : {}) };
   }
 }
 
@@ -502,12 +556,32 @@ export async function sendBoost(args: {
   value: ValueBlock;
   totalSats: number;
   boostagram: Boostagram;
+  /**
+   * The `<podcast:guid>` of the feed that holds the item the listener PLAYED:
+   * `episode.podcastGuid ?? podcast.podcastGuid`. An LNURL leg's BoostBox
+   * record carries it as `feed_guid`. NOT read off the boostagram — inside a
+   * valueTimeSplit or a live redirect its `remote_feed_guid` names the TRACK,
+   * and a field added to the boostagram is bytes in every keysend onion.
+   * Required, with `undefined` allowed, so a new caller has to answer it: a
+   * default would put the song's feed back under the show's name.
+   */
+  feedGuid: string | undefined;
   rail?: Rail;
   // `index` is the recipient's position in `value.recipients` — NOT the order
   // the legs settle in (see the traversal below). Callers tracking progress
   // must write `results[index]`, never push, or every ✓/✗ lands on the wrong
   // recipient mid-send.
   onProgress?: (r: BoostResult, index: number, total: number) => void;
+  /**
+   * NWC only, and opt-in: start the next leg once the current one has had this
+   * long with no answer, and let it finish in the background (`payInOrder`).
+   * Only the single BOOST panel passes it (`SLOW_LEG_MS`). WebLN shows a prompt
+   * per payment and Spark never leaves a leg unanswered, so both stay strictly
+   * one at a time, as do BOOST ALL and streaming.
+   */
+  moveOnAfterMs?: number;
+  /** Called once every leg has STARTED — before a slow one settles. */
+  onAllStarted?: () => void;
 }): Promise<BoostResult[]> {
   // Before ANY leg: the retry arms below read the NWC error classes whichever
   // rail pays, and a payment engine that cannot load must fail the boost while
@@ -561,12 +635,62 @@ export async function sendBoost(args: {
   // splitSats' largest-remainder tie-breaking by a sat per payee and repoint
   // every positional read downstream.
   //
-  // Still strictly sequential: NWC is one relay connection, WebLN prompts per
-  // payment, and streaming.ts settles serially by design. Never parallelize.
-  for (const i of recipientOrder(recipients)) {
-    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend);
-    results[i] = r;
-    args.onProgress?.(r, i, recipients.length);
-  }
+  // One START at a time, always: WebLN prompts per payment, and streaming.ts
+  // settles serially by design. Never parallelize the starts. The one overlap
+  // allowed is WAITING: on NWC, with `moveOnAfterMs`, a leg the wallet has not
+  // answered keeps waiting while the next one starts — two requests in flight on
+  // one relay connection, which NIP-47 tells apart by event id.
+  await payInOrder(
+    recipientOrder(recipients),
+    async (i) => {
+      const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend, args.feedGuid);
+      results[i] = r;
+      args.onProgress?.(r, i, recipients.length);
+    },
+    { moveOnAfterMs: rail === 'nwc' ? args.moveOnAfterMs : undefined, onAllStarted: args.onAllStarted },
+  );
   return results;
+}
+
+/**
+ * Ask the NWC wallet what happened to a leg it never answered, by the leg's
+ * payment hash. Sends nothing. A leg with no `nwcCheck` (no hash known) and a
+ * device with no NWC wallet now both answer `unknown`. See `LegVerdict`.
+ */
+export async function checkLeg(r: BoostResult): Promise<import('./nwc-errors').LegVerdict> {
+  if (!r.nwcCheck) return { state: 'unknown', why: 'unclear' };
+  const engine = await loadNwcEngine();
+  return engine.nwcLookupPayment(r.nwcCheck.paymentHash);
+}
+
+/**
+ * Pay an unanswered leg AGAIN — under its FIRST payment hash: the same keysend
+ * preimage and TLV, or the same invoice. Call it only after `checkLeg` said
+ * `failed`. A node that already took a payment for that hash refuses a second
+ * one, so a wallet that was wrong about `failed` still cannot pay this leg twice.
+ *
+ * NWC only, whatever rail is selected now: the hash was made for the NWC
+ * wallet, and asking any other wallet about it would prove nothing. The leg
+ * keeps its `nwcCheck`, so a resend that is not answered either — or that fails
+ * without proof — stays `?` and is asked about again. It never enters
+ * `retryableLegs`, which pays under a fresh hash.
+ */
+export async function resendLeg(r: BoostResult): Promise<BoostResult> {
+  const check = r.nwcCheck;
+  if (!check) return r;
+  const engine = await loadNwcEngine();
+  try {
+    const preimage =
+      check.resend.kind === 'keysend'
+        ? await engine.nwcKeysend({
+            pubkey: check.resend.pubkey,
+            amount_msat: check.resend.amountMsat,
+            tlv_records: check.resend.tlv,
+            preimage: check.resend.preimage,
+          })
+        : await engine.nwcPayInvoice(check.resend.invoice);
+    return { recipient: r.recipient, sats: r.sats, ok: true, preimage, boostboxUrl: r.boostboxUrl, boostboxId: r.boostboxId };
+  } catch (e) {
+    return { ...r, ok: false, indeterminate: true, error: e instanceof Error ? e.message : String(e), nwcCheck: check };
+  }
 }

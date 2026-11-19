@@ -313,6 +313,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             value: { ...split.value!, recipients: track.recipients },
             totalSats: track.sats,
             boostagram: trackBoostagram,
+            // The episode's own feed, for an LNURL leg's BoostBox record — the
+            // one that holds `episode_guid`, never the track in remote_*.
+            feedGuid: episode.podcastGuid ?? podcast.podcastGuid,
             rail,
           });
           trackOk = paidAny(results);
@@ -385,6 +388,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             value: { ...hostValue!, recipients: host.recipients },
             totalSats: host.sats,
             boostagram: hostBoostagram,
+            feedGuid: episode.podcastGuid ?? podcast.podcastGuid,
             rail,
           });
           paidSats += hostResults.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);

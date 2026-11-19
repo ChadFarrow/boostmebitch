@@ -25,6 +25,7 @@ import {
   type LocalList,
   type ParsedList,
   type PublishReason,
+  type RemovalCount,
 } from './favorites-list';
 import { decryptWithTimeout, getNip44, requireNip44, type DecryptPurpose } from './signer';
 import { payloadSurvivesAmber } from './amber-callback-url';
@@ -83,6 +84,13 @@ export interface FavoritesRead {
    * read, republished, is the entire list gone.
    */
   trustworthy: boolean;
+  /**
+   * How many relays ANSWERED (sent an EOSE) on this read. When no event came
+   * back, this is how many relays said "I hold no list" — the number the
+   * planner's create rule counts (`MIN_ABSENCE_ANSWERS`, issue #600).
+   * `trustworthy` alone cannot carry it: it is true for ONE such answer.
+   */
+  answered: number;
 
   // -- the private half -----------------------------------------------------
 
@@ -142,6 +150,7 @@ const EMPTY_READ: FavoritesRead = {
   updatedAt: 0,
   exists: false,
   trustworthy: true,
+  answered: 0,
   content: '',
   privateList: null,
   privateTags: [],
@@ -217,7 +226,7 @@ export async function fetchFavoritesList(
   queryRelays: string[],
   opts: FavoritesReadOptions = {},
 ): Promise<FavoritesRead> {
-  const { event, trustworthy } = await fetchLatestEventDetailed(
+  const { event, trustworthy, answered } = await fetchLatestEventDetailed(
     queryRelays,
     { kinds: [FAVORITES_KIND], authors: [pubkey], limit: 1 },
     QUERY_MAX_WAIT_MS,
@@ -231,7 +240,7 @@ export async function fetchFavoritesList(
     // accepted, and its `d` tag would then be dropped on republish.
     { pubkey, kinds: [FAVORITES_KIND], dTag: '' },
   );
-  if (!event) return { ...EMPTY_READ, trustworthy };
+  if (!event) return { ...EMPTY_READ, trustworthy, answered };
 
   const priv = await readPrivateHalf(pubkey, event.content, opts);
 
@@ -244,6 +253,7 @@ export async function fetchFavoritesList(
     updatedAt: event.created_at,
     exists: true,
     trustworthy: true, // an event in hand is its own proof the query worked
+    answered,
   };
 }
 
@@ -290,6 +300,12 @@ export interface SyncOptions {
   local: () => LocalList;
   /** What this device last agreed with the relay on. */
   baseline: () => FavoritesBaseline;
+  /**
+   * The RAW stored baseline names an entry (`baselineSawList`). Separate from
+   * `baseline`, which is `trustedBaseline` and drops a claim over an empty
+   * cache. Omitted, a create is never held for it. Issue #600.
+   */
+  sawList?: () => boolean;
   /** Called with the new baseline once the event lands. */
   onSynced: (baseline: FavoritesBaseline) => void;
   /**
@@ -299,7 +315,7 @@ export interface SyncOptions {
    * `onSynced` rather than reaching for the store here, which keeps this module
    * free of React and browser globals.
    */
-  onDegraded?: (reason: PublishReason) => void;
+  onDegraded?: (reason: PublishReason, removal?: RemovalCount) => void;
   // -- the private half -----------------------------------------------------
 
   /**
@@ -359,6 +375,12 @@ export interface SyncOptions {
    * free of storage.
    */
   localCleared?: boolean;
+  /**
+   * The removal the user approved in the "This removes N of your M favorites"
+   * prompt. Without it a publish that takes more than half of the list is held
+   * (`'mass-removal'`) and nothing is signed. Issue #600.
+   */
+  confirmRemoval?: number;
 }
 
 /**
@@ -583,6 +605,11 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     withdraw: opts.withdraw,
     previousBaseline: baseline,
     stating,
+    // How many relays said "no list". Consulted only when the read found none,
+    // i.e. when this publish would CREATE the list. Issue #600.
+    absence: { answered: read.answered, asked: opts.relays.length },
+    sawList: opts.sawList?.() ?? false,
+    removalConfirmed: opts.confirmRemoval,
   });
 
   if (plan.reason === 'degraded') {
@@ -619,6 +646,28 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     console.warn(
       '[favorites] REFUSING to publish — this list has an encrypted half we could not read, '
       + 'and this change would replace it. Carried verbatim instead.',
+    );
+    return null;
+  }
+
+  // Most of the list would leave it. Held for the user's answer, and reported
+  // like the refusals above: no baseline, no signer prompt. The count travels
+  // with it, because the question the notice asks is "remove 79 of 81?", and
+  // that is the one thing no signer's approval sheet shows. Issue #600.
+  // No list on the relays, but this device saw one: the read missed it. A ♡
+  // here used to CREATE a list holding only what was new. Issue #600.
+  if (plan.reason === 'create-held') {
+    opts.onDegraded?.(plan.reason);
+    console.warn('[favorites] HOLDING this publish — no list on the relays, but this device saw one, '
+      + 'so the read missed it. Not creating a new list.');
+    return null;
+  }
+
+  if (plan.reason === 'mass-removal') {
+    opts.onDegraded?.(plan.reason, plan.removal);
+    console.warn(
+      `[favorites] HOLDING this publish — it removes ${plan.removal.removed} of the `
+      + `${plan.removal.total} entries on the list. Waiting for the user to confirm.`,
     );
     return null;
   }
