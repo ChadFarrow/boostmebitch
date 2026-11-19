@@ -289,9 +289,10 @@ const PI_ASK_MAX = 100;
  *
  * **A stored row is built from our own database, so its `isPreview` says nothing
  * about Podcast Index**, and the page used to suppress the stamp on every one of
- * them. Playlists made on BMB are not submitted to PI today (spec decision 19),
- * but anybody can submit a feed URL to PI, so "not in PI" is still a fact to ask
- * for and never one to assume.
+ * them. A BMB playlist goes to PI only once `COMMUNITY_PI_NOTIFY` is on and it is
+ * published or saved (docs/feeds.md, "Podcast Index"), PI may refuse or be slow to
+ * crawl it, and anybody can submit a feed URL to PI, so "not in PI" is still a fact
+ * to ask for and never one to assume.
  *
  * ONE request for the whole list, through the batch door. A key the answer leaves
  * out is "could not ask" and stamps nothing (`piConfirmedMisses`).

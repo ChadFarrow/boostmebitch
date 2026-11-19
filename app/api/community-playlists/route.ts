@@ -91,7 +91,7 @@ export async function POST(req: Request) {
     });
     // A ban that landed after the isBanned read above is caught inside the INSERT.
     if (row === 'banned') return BANNED();
-    notifyPodcastIndexAfter(communityFeedUrl(row.id), 'new');
+    notifyPodcastIndexAfter(communityFeedUrl(row.id), 'publish');
     requestPlaylistArchiveAfter();
     return NextResponse.json({ id: row.id, feedUrl: communityFeedUrl(row.id) }, { status: 201, headers: NO_STORE });
   }, 'could not publish the playlist');

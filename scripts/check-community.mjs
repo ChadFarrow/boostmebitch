@@ -10,7 +10,7 @@ import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
   blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
-  foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN,
+  foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -667,6 +667,45 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
     const n = naive(...v.args);
     if (v.alsoNaive) check('archive dispatch: ' + v.kind + ' (naive agrees)', n === v.want);
     else check('archive dispatch: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+}
+
+// piNotifyBase — where a playlist feed may be submitted (lib/community/pi-notify.ts).
+// A Podcast Index submission is public and permanent, so: the switch, the real
+// feed origin, and Vercel production or the `beta` branch; or a loopback stub.
+{
+  const PI = PI_API_BASE;
+  const env = (o) => ({ notify: 'on', override: undefined, vercelEnv: undefined, gitRef: undefined, feedOrigin: PRODUCTION_FEED_ORIGIN, ...o });
+  const vectors = [
+    { kind: 'switch unset: nowhere', args: [env({ notify: undefined, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'switch "true", not "on": nowhere', args: [env({ notify: 'true', vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'production: Podcast Index', args: [env({ vercelEnv: 'production', gitRef: 'main' })], want: PI, alsoNaive: true },
+    { kind: 'the beta branch preview: Podcast Index', args: [env({ vercelEnv: 'preview', gitRef: 'beta' })], want: PI, alsoNaive: true },
+    { kind: 'a PR preview: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'playlist-pi-submit' })], want: null },
+    { kind: 'a preview with no branch: nowhere', args: [env({ vercelEnv: 'preview' })], want: null },
+    { kind: 'a branch named like beta: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'beta-old' })], want: null },
+    { kind: 'vercel dev: nowhere', args: [env({ vercelEnv: 'development', gitRef: 'beta' })], want: null, alsoNaive: true },
+    { kind: 'off Vercel (next dev / next start): nowhere', args: [env({})], want: null, alsoNaive: true },
+    { kind: 'production with a local feed origin: nowhere', args: [env({ vercelEnv: 'production', feedOrigin: 'http://localhost:3123' })], want: null, alsoNaive: true },
+    { kind: 'a loopback stub', args: [env({ override: 'http://127.0.0.1:48555', feedOrigin: 'http://localhost:3123' })], want: 'http://127.0.0.1:48555/api/1.0', alsoNaive: true },
+    { kind: 'a localhost stub, path dropped', args: [env({ override: 'http://localhost:48555/x/' })], want: 'http://localhost:48555/api/1.0' },
+    { kind: 'switch off beats a stub: nowhere', args: [env({ notify: undefined, override: 'http://127.0.0.1:48555' })], want: null, alsoNaive: true },
+    { kind: 'a DNS name that resolves to loopback: nowhere', args: [env({ override: 'http://127.0.0.1.nip.io:48555', vercelEnv: 'production' })], want: null },
+    { kind: 'a public host in the override: nowhere', args: [env({ override: 'https://pi-proxy.example', vercelEnv: 'production' })], want: null },
+    { kind: 'an override typo on production: nowhere, never the real API', args: [env({ override: '127.0.0.1:48555', vercelEnv: 'production' })], want: null },
+  ];
+  // The obvious wrong versions: any preview counts as deployed, and the
+  // override is taken as written.
+  const naive = (e) => {
+    if (e.notify !== 'on') return null;
+    if (e.override) return e.override.replace(/\/+$/, '') + '/api/1.0';
+    return e.feedOrigin === PRODUCTION_FEED_ORIGIN && (e.vercelEnv === 'production' || e.vercelEnv === 'preview') ? PI : null;
+  };
+  for (const v of vectors) {
+    check('pi notify: ' + v.kind, piNotifyBase(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('pi notify: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('pi notify: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
   }
 }
 

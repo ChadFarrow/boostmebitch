@@ -67,9 +67,12 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: true }, { headers: NO_STORE });
       }
       await banPubkey(pubkey, auth.pubkey);
-      const deleted = b.deleteAll === true ? await deletePlaylistsByOwner(pubkey, auth.pubkey) : 0;
-      if (deleted > 0) requestPlaylistArchiveAfter();
-      return NextResponse.json({ ok: true, deleted }, { headers: NO_STORE });
+      const deletedIds = b.deleteAll === true ? await deletePlaylistsByOwner(pubkey, auth.pubkey) : [];
+      if (deletedIds.length > 0) {
+        notifyPodcastIndexAfter(deletedIds.map((id) => communityFeedUrl(id)), 'gone');
+        requestPlaylistArchiveAfter();
+      }
+      return NextResponse.json({ ok: true, deleted: deletedIds.length }, { headers: NO_STORE });
     }
     if (b.action === 'delete') {
       if (typeof b.id !== 'string' || !UUID_RE.test(b.id)) {
@@ -77,7 +80,7 @@ export async function POST(req: Request) {
       }
       const done = await deletePlaylist(b.id, auth.pubkey);
       if (done) {
-        notifyPodcastIndexAfter(communityFeedUrl(b.id), 'update');
+        notifyPodcastIndexAfter(communityFeedUrl(b.id), 'gone');
         requestPlaylistArchiveAfter();
       }
       return NextResponse.json({ ok: true, deleted: done ? 1 : 0 }, { headers: NO_STORE });

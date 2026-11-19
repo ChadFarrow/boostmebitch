@@ -110,7 +110,9 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (out === 'gone') return gone();
     if (out === 'banned') return BANNED();
     if (out === 'stale') return NextResponse.json({ error: 'changed elsewhere' }, { status: 409 });
-    notifyPodcastIndexAfter(communityFeedUrl(id), 'update');
+    // `publish`, not a bare ping: the add is idempotent, so a SAVE also submits a
+    // playlist whose first add was refused or came before the switch.
+    notifyPodcastIndexAfter(communityFeedUrl(id), 'publish');
     requestPlaylistArchiveAfter();
     return NextResponse.json({ playlist: out }, { headers: NO_STORE });
   }, 'could not save the playlist');
@@ -132,7 +134,7 @@ export async function DELETE(req: Request, ctx: Ctx) {
     const isOwner = cur.ownerPubkey === auth.pubkey;
     if (!isOwner && !adminPubkeys().has(auth.pubkey)) return forbidden();
     await deletePlaylist(id, isOwner ? 'owner' : auth.pubkey);
-    notifyPodcastIndexAfter(communityFeedUrl(id), 'update');
+    notifyPodcastIndexAfter(communityFeedUrl(id), 'gone');
     requestPlaylistArchiveAfter();
     return NextResponse.json({ deleted: true }, { headers: NO_STORE });
   }, 'could not delete the playlist');
