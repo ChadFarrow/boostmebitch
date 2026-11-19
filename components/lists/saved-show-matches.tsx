@@ -2,6 +2,8 @@
 
 import { useMemo } from 'react';
 import { useApp } from '@/lib/store';
+import { isDemuFeed } from '@/lib/demu';
+import { closedService } from '@/lib/moved-feeds';
 import { SAVED_MATCH_THIN, matchSavedShows, savedShows } from '@/lib/saved-show-search';
 import type { Podcast } from '@/lib/types';
 import { matchesSearchType } from '@/lib/util';
@@ -21,7 +23,12 @@ import { PodcastRow } from './podcast-results';
  * your saved shows".
  *
  * `type` is the type the SERVER applied (`SearchInfo.type`), so the section
- * narrows by the same lane as the rows above it.
+ * narrows by the same lane as the rows above it. `matchesSearchType` is only
+ * the MUSIC half of `'demu'`; the self-hosted half is `isDemuFeed`, which the
+ * search route applies to its own rows and this applies to the saved ones. A
+ * saved copy carries no `generator`, so under DEMU it fails closed and the
+ * section stays empty: a Wavlake album listed under DEMU tells a listener it may
+ * be requested on Homegrown Hits, which plays only DeMu.
  */
 export function SavedShowMatches({
   query,
@@ -40,7 +47,8 @@ export function SavedShowMatches({
   const matches = useMemo(
     () => (!query.trim() || listed.length >= SAVED_MATCH_THIN
       ? []
-      : matchSavedShows(shows.filter((p) => matchesSearchType(p, type)), query, listed)),
+      : matchSavedShows(shows.filter((p) => matchesSearchType(p, type)
+        && (type !== 'demu' || isDemuFeed(p, closedService))), query, listed)),
     [shows, query, listed, type],
   );
   if (!matches.length) return null;
