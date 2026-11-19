@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>BMB test playlist</title>
+    <description>test playlist for BMB</description>
+    <link>https://www.boostmebuddy.com/feeds/playlists/ed79e282-3d6e-4764-adb5-8702eaf77086.xml</link>
+    <language>en</language>
+    <pubDate>Mon, 16 Nov 2026 01:32:37 GMT</pubDate>
+    <lastBuildDate>Mon, 16 Nov 2026 18:30:00 GMT</lastBuildDate>
+    <generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>
+    <podcast:guid>2bb7307c-c7ed-558d-9a9b-b018e86c8d67</podcast:guid>
+    <podcast:publisher>
+      <podcast:remoteItem medium="publisher" rel="curator" feedGuid="385ee3de-9325-5781-a073-e57885a97b5f" feedUrl="https://www.boostmebuddy.com/feeds/publishers/npub177fz5zkm87jdmf0we2nz7mm7uc2e7l64uzqrv6rvdrsg8qkrg7yqx0aaq7.xml"/>
+    </podcast:publisher>
+    <podcast:medium>musicL</podcast:medium>
+    <podcast:txt purpose="npub">npub177fz5zkm87jdmf0we2nz7mm7uc2e7l64uzqrv6rvdrsg8qkrg7yqx0aaq7</podcast:txt>
+    <itunes:author>ChadF</itunes:author>
+    <itunes:image href="https://podtards.com/c01def2718dc1994142b6d8eaac1a7ebb90350707887650cf80267ab3b5a1b35"/>
+    <image>
+      <url>https://podtards.com/c01def2718dc1994142b6d8eaac1a7ebb90350707887650cf80267ab3b5a1b35</url>
+      <title>BMB test playlist</title>
+      <link>https://www.boostmebuddy.com/feeds/playlists/ed79e282-3d6e-4764-adb5-8702eaf77086.xml</link>
+    </image>
+    <podcast:remoteItem feedGuid="7b6bc244-743a-5639-81c4-7ebafea342d8" itemGuid="f10868ca-5733-4a1d-b526-8b0cc637b21d" feedUrl="https://feeds.fountain.fm/Pw6d3L9h2Itp3KxLpF3a" medium="music"/>
+    <podcast:remoteItem feedGuid="69c634ad-afea-5826-ad9a-8e1f06d6470b" itemGuid="b94b1090-8c7f-4c59-87ad-b8034ec058b3" feedUrl="https://www.sirtjthewrathful.com/wp-content/uploads/2023/08/Kurtisdrums-V1.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="9fdb6b12-4998-5180-ba8b-3675df9a7140" itemGuid="f6c116a7-aa2c-4177-8658-eaba177d3ffd" feedUrl="https://feeds.fountain.fm/a43Ic3kG9KZNwtwOqTWP" medium="music"/>
+    <podcast:remoteItem feedGuid="5d5be024-321d-5342-838e-988d1653296b" itemGuid="fb279ed1-10ec-4060-967d-9af45c19505f" feedUrl="https://wavlake.com/feed/music/2663f4e8-aa52-4398-89e7-d26381b65545" medium="music"/>
+    <podcast:remoteItem feedGuid="5774ac21-df76-55f1-b8f6-23c683de8012" itemGuid="0b73ae40-b5aa-440e-89a2-b8f8eecc7518" feedUrl="https://music.behindthesch3m3s.com/wp-content/uploads/Mike_Epting/Penis%20In%20The%20Ocean/penis%20in%20the%20ocean.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="749c442d-5d43-50b0-9f7a-0f5cbf0a218a" itemGuid="a67ef200-b887-4a79-acfe-d11ec1367851" feedUrl="https://mmmusic.show/msp/pickle_popsicle/pickle_popsicle_feed.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="bd3985d4-89ea-506f-82a2-82e98835025b" itemGuid="b9a28cfe-5f2c-4977-8c2e-873bd6ed02d8" feedUrl="https://music.behindthesch3m3s.com/wp-content/uploads/Empath%20Eyes/Echo%20Chamber/echo_chamber.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="2a3a5f81-8325-521b-b168-07ff09b15435" itemGuid="ea8bf7ec-5963-4c2a-bb37-dd92e12a68ea" feedUrl="https://music.behindthesch3m3s.com/wp-content/uploads/Sat_Skirmish/polarembrace/rss/videofeed/feed.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="8b41f7f4-2cc3-5a03-90f5-6c54e92bc96b" itemGuid="e8983582-6c4d-4e87-9034-6942b8784ec5" feedUrl="https://music.behindthesch3m3s.com/wp-content/uploads/OVVRDOS/ovvr_not_under.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a2d2e313-9cbd-5169-b89c-ab07b33ecc33" itemGuid="7cececef-67c0-4e13-9192-943826d3eddd" feedUrl="https://files.heycitizen.xyz/Songs/Albums/The-Heycitizen-Experience/the_heycitizen_experience.xml" medium="music"/>
+  </channel>
+</rss>

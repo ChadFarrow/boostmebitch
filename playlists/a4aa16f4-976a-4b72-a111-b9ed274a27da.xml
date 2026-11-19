@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Test playlist from my phone.</title>
+    <description>Phone test</description>
+    <link>https://www.boostmebuddy.com/feeds/playlists/a4aa16f4-976a-4b72-a111-b9ed274a27da.xml</link>
+    <language>en</language>
+    <pubDate>Mon, 16 Nov 2026 01:32:18 GMT</pubDate>
+    <lastBuildDate>Mon, 16 Nov 2026 18:30:00 GMT</lastBuildDate>
+    <generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>
+    <podcast:guid>4633a3fd-cb83-5032-b10a-38b4e629d483</podcast:guid>
+    <podcast:publisher>
+      <podcast:remoteItem medium="publisher" rel="curator" feedGuid="385ee3de-9325-5781-a073-e57885a97b5f" feedUrl="https://www.boostmebuddy.com/feeds/publishers/npub177fz5zkm87jdmf0we2nz7mm7uc2e7l64uzqrv6rvdrsg8qkrg7yqx0aaq7.xml"/>
+    </podcast:publisher>
+    <podcast:medium>musicL</podcast:medium>
+    <podcast:txt purpose="npub">npub177fz5zkm87jdmf0we2nz7mm7uc2e7l64uzqrv6rvdrsg8qkrg7yqx0aaq7</podcast:txt>
+    <itunes:author>ChadF</itunes:author>
+    <itunes:image href="https://podtards.com/5cb24c6e75fcb90e4d8726d508f2881b00861560fadf00dab7c0e925a6dec6fb.jpg"/>
+    <image>
+      <url>https://podtards.com/5cb24c6e75fcb90e4d8726d508f2881b00861560fadf00dab7c0e925a6dec6fb.jpg</url>
+      <title>Test playlist from my phone.</title>
+      <link>https://www.boostmebuddy.com/feeds/playlists/a4aa16f4-976a-4b72-a111-b9ed274a27da.xml</link>
+    </image>
+    <podcast:remoteItem feedGuid="a70ea2cd-72e7-5a1d-930a-1b0c94dd69a7" itemGuid="c34ee9d6-582e-4b3c-9e98-535ff2a5229b" feedUrl="https://music.behindthesch3m3s.com/wp-content/uploads/2023/07/Dusty%20Old%20Man.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a1e7b24a-e2b5-5232-be37-69f71dd0739e" itemGuid="05d50c32-8b33-534d-ae78-1092a28bbddf" feedUrl="https://epochradio.com/feed/caroline-hale-kick-it" medium="music"/>
+    <podcast:remoteItem feedGuid="d62482fa-a0b9-590d-8102-9a286bac3b7b" itemGuid="38c3cb3d-abbd-54f8-b347-2af7a60cd680" feedUrl="https://epochradio.com/feed/jack-phemister-ice-statues" medium="music"/>
+    <podcast:remoteItem feedGuid="3058af0c-1807-5732-9a08-9114675ef7d6" itemGuid="c51ecaa4-f237-4707-9c62-2de611820e4b" feedUrl="https://wavlake.com/feed/music/883ea557-39c0-4bec-9618-c75978bc63b5" medium="music"/>
+    <podcast:remoteItem feedGuid="de032037-63e0-5c6b-820d-13d4319a2b19" itemGuid="e046f9dd-aca3-4c7a-b396-2148a90ac0f2" feedUrl="https://wavlake.com/feed/music/169e65e4-c3fa-471f-a473-b75f3890848b" medium="music"/>
+    <podcast:remoteItem feedGuid="1ac5a6c7-bb0a-5ee6-b760-d47dfc605b95" itemGuid="94be7143-1339-463a-be51-b5817e015505" feedUrl="https://feeds.fountain.fm/vTnG56FnjCVEQN8Q56DB" medium="music"/>
+    <podcast:remoteItem feedGuid="cedf1a6c-8447-5fdf-88ea-32d2e6b91378" itemGuid="3939732e-2dba-4279-b179-ace381d79fa1" feedUrl="https://feeds.fountain.fm/SrTKIlmuRjdg36Lallms" medium="music"/>
+    <podcast:remoteItem feedGuid="acddbb03-064b-5098-87ca-9b146beb12e8" itemGuid="c7003607-233e-40e8-b2fa-6465127d0076" feedUrl="https://ableandthewolf.com/static/media/feed.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a2d2e313-9cbd-5169-b89c-ab07b33ecc33" itemGuid="ae81976d-a05e-4ff9-9adf-cdb11a33fff9" feedUrl="https://files.heycitizen.xyz/Songs/Albums/The-Heycitizen-Experience/the_heycitizen_experience.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="75f0b434-19dc-5959-9920-0fb5304be61b" itemGuid="58f0d461-7ff0-4abc-bb04-3919cabf61a8" feedUrl="https://static.staticsave.com/mspfiles/deathdreams.xml" medium="music"/>
+  </channel>
+</rss>

@@ -1,0 +1,24 @@
+{
+  "origin": "https://www.boostmebuddy.com",
+  "count": 2,
+  "playlists": [
+    {
+      "id": "ed79e282-3d6e-4764-adb5-8702eaf77086",
+      "title": "BMB test playlist",
+      "podcastGuid": "2bb7307c-c7ed-558d-9a9b-b018e86c8d67",
+      "feedUrl": "https://www.boostmebuddy.com/feeds/playlists/ed79e282-3d6e-4764-adb5-8702eaf77086.xml",
+      "file": "ed79e282-3d6e-4764-adb5-8702eaf77086.xml",
+      "songs": 10,
+      "updated": "2026-11-16T01:32:37.000Z"
+    },
+    {
+      "id": "a4aa16f4-976a-4b72-a111-b9ed274a27da",
+      "title": "Test playlist from my phone.",
+      "podcastGuid": "4633a3fd-cb83-5032-b10a-38b4e629d483",
+      "feedUrl": "https://www.boostmebuddy.com/feeds/playlists/a4aa16f4-976a-4b72-a111-b9ed274a27da.xml",
+      "file": "a4aa16f4-976a-4b72-a111-b9ed274a27da.xml",
+      "songs": 10,
+      "updated": "2026-11-16T01:32:18.000Z"
+    }
+  ]
+}
