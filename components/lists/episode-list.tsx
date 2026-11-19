@@ -33,7 +33,7 @@ import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
-import { FavHeart } from '../fav-heart';
+import { ArtistFollowChip, FavHeart } from '../fav-heart';
 import { AlbumDownload } from '../album-download';
 import { AlbumShuffleButton } from '../album-shuffle-button';
 import { PlaylistRepeatButton, PlaylistShuffleButton } from '../playlist-shuffle-button';
@@ -678,6 +678,19 @@ export function EpisodeList({
           </h2>
           {authorLine(data.podcast.title, data.podcast.author) && (
             <p className="text-sm text-muted mt-1">{authorLine(data.podcast.title, data.podcast.author)}</p>
+          )}
+          {/* ♡ ARTIST — follow the album's artist for NEW MUSIC on /favorites,
+              on this device only (see <ArtistFollowChip>). Under the artist's
+              name, not in the tile row below: that row is measured tight at
+              390px. Albums only — a playlist's channel is the curator's. */}
+          {isMusic && !isPlaylist && data.podcast.publisherFeed && (
+            <div className="mt-1.5">
+              <ArtistFollowChip
+                feedGuid={data.podcast.publisherFeed.feedGuid}
+                feedUrl={data.podcast.publisherFeed.feedUrl}
+                artistName={data.podcast.author}
+              />
+            </div>
           )}
           {/* Both stamps share one wrapper. They are `inline-flex` and each used
               to carry its own `mt-2`, so a preview feed that ALSO has a value

@@ -23,6 +23,7 @@ import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-pl
 import type { Podcast } from '@/lib/types';
 import { NO_SELECTION, applyStoreView, backOr, currentEntryView, syncEntry, viewForEntry } from '@/lib/view-history';
 import type { HomeView } from '@/lib/view-history';
+import { EmuIcon, PlaylistIcon } from '@/components/icons';
 
 /**
  * The three heavy surfaces this page can show but usually does not, split out
@@ -761,15 +762,17 @@ export function HomePage() {
           <p className="max-w-xl text-sm leading-relaxed text-bone/80">
             Curated Podcasting 2.0 playlists. A boost pays the artist.
           </p>
-          {/* gap-1.5, not gap-2: at 390px the two buttons are 358.03px with 8px between them
-              and the row is 358px, so gap-2 wrapped the second one by 0.03px. */}
+          {/* gap-1.5, not gap-2: at 390px the first two buttons were 358.03px with 8px between
+              them and the row is 358px, so gap-2 wrapped the second one by 0.03px. With the
+              playlist icon (2026-11-19) they measure 189.7 + 158.5px, so gap-1.5 has 3.8px to
+              spare; BROWSE DEMU wraps to its own line. Measure again if a label changes. */}
           <div className="mt-4 flex flex-wrap gap-1.5">
             <Link
               href="/playlists"
               className="btn-ghost btn-compact"
               title="Browse Podcasting 2.0 playlists"
             >
-              ♫ BROWSE PLAYLISTS
+              <PlaylistIcon /> BROWSE PLAYLISTS
             </Link>
             {/* Signed out it still links: the maker page asks for sign-in itself. */}
             {COMMUNITY_PLAYLISTS_ON && (
@@ -791,7 +794,7 @@ export function HomePage() {
               className="btn-ghost btn-compact"
               title="Browse self-hosted music, newest first"
             >
-              BROWSE DEMU
+              <EmuIcon /> BROWSE DEMU
             </Link>
           </div>
         </section>
