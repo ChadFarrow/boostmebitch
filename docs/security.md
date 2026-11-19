@@ -268,3 +268,9 @@ back as a 422 with nothing of it. A list that names private feeds passes through
 our server when somebody pastes a link to it, but nothing there stores it, and
 the browser still keeps those feeds back from the lookup. A link's list is at an
 address its owner chose to publish, which a file is not.
+
+## Rules CLAUDE.md states in one clause: the rest of the reasoning
+
+- **An `nsec` in a box whose text leaves the device.** The refusal is rendered, never silent, because the retype is as dangerous as the first paste. The boxes that send text to a third party are the search box (`parseNpubInput` returns `null` for a secret key and for junk, so `fetch('/api/search?q=<nsec>')` reached our server logs and then Podcast Index) and the GIF search (GIPHY, nostr.build).
+- **A feed-supplied `href`.** Funding arrived unguarded from RSS and from PI, which mirrors the author's string verbatim; a chapters JSON `url` and BoostBox's `url` arrived unguarded too, and BoostBox's is persisted into `StoredBoost.legs`, so an entry stored before the guard outlives it (`coerceStoredBoost` is the second parse site).
+- **A route's unhandled 500.** The deliberate 400/502 messages a route writes itself never reach the catch that returns `fallback`, so they may still name what failed. Only `e.message` from an unknown throw is withheld.
