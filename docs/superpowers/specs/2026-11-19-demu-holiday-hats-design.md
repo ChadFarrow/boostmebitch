@@ -27,13 +27,14 @@ From drafts on a claude.ai page (2026-11-19):
 
 - The costume shows on the /demu title only, in both brands.
 - Each costume turns on and off by the calendar, with no PR and no deploy:
-  - **Thanksgiving:** Monday to Sunday of the week of US Thanksgiving (the
-    FOURTH Thursday of November — not the last; 2029 has five). 23–29 Nov in
-    2026. When that Sunday is 1 Dec (2024, 2030), Thanksgiving keeps the day.
-  - **Christmas:** 1–26 Dec.
+  - **Thanksgiving:** from 1 Nov through Thanksgiving Day (the FOURTH
+    Thursday of November — not the last; 2029 has five). 1–26 Nov in 2026.
+  - **Christmas:** from Black Friday (the day after) through 26 Dec.
+  - The first build ran Thanksgiving Monday to Sunday of its week and Christmas
+    1–26 Dec (#609). Chad changed it the same day — see *Change, 2026-11-19*.
 - The visitor's own date decides (local time, like the /demu week groups).
 - `/demu?holiday=thanksgiving|christmas` shows a costume on any day, for a test
-  and for Chad to see one before its week. `?holiday=none` shows the plain emu.
+  and for Chad to see one on another day. `?holiday=none` shows the plain emu.
 
 ## Non-goals
 
@@ -81,8 +82,27 @@ From drafts on a claude.ai page (2026-11-19):
   and a new `e2e:demuholiday`: each costume by the param, the real-date path
   under a faked browser date, the plain emu outside a window, no title movement
   and no horizontal overflow at 390 px. `e2e:typeicons` loads `/demu?holiday=none`
-  so it stays green during a holiday week.
+  so it stays green while a costume is in season.
 
 ## Left to the builder
 
 The exact drawing coordinates (from the approved drafts), and the e2e details.
+
+## Change, 2026-11-19
+
+After #609 merged, Chad asked for the turkey now, not on 23 Nov: *"So the idea
+is that we change it leading up to the next holiday, and then once that holiday
+hits, it switches over to the next holiday. So like we put the turkey on there
+now, and then the day after, which I guess would be Black Friday, it switches
+over to Santa, and then it stays Santa until the 26th of December, and then it
+is a New Year's one, I guess, but that'll all have to be planned out."*
+
+- Each look leads up to its holiday and hands over the day after.
+- Turkey: 1 Nov through Thanksgiving Day. **1 Nov is Claude's call**, for "leading
+  up to" with no earlier look before it (the day after Halloween); Chad can move it.
+- Santa: Black Friday through 26 Dec, as Chad said.
+- 27 Dec to 31 Oct: the plain emu. The New Year's look is not drawn; Chad plans it,
+  with a place on the site to design the holiday logos and plan their dates each
+  year (his second message: *"there should be a part of the site set aside for
+  designing and planning when these logos change, because I do want to have this
+  be yearly."*).

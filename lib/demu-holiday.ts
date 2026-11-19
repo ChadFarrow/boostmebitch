@@ -1,5 +1,9 @@
 // Which holiday hat the /demu title's emu wears today — Chad, 2026-11-19:
 // "For the new DeMu logo we have on /DeMu can we dress it up for holidays?"
+// Each look LEADS UP TO its holiday and hands over the day after it (Chad, the
+// same day: "once that holiday hits, it switches over to the next holiday"):
+// the turkey from 1 Nov through Thanksgiving Day, then Santa from Black Friday
+// through 26 Dec. 27 Dec to 31 Oct is the plain emu until another look exists.
 // Design: docs/superpowers/specs/2026-11-19-demu-holiday-hats-design.md.
 // Pinned by `check:demu`; drawn by `HolidayEmuIcon` (components/icons.tsx).
 //
@@ -10,8 +14,8 @@
 //   five Thursdays, and the holiday is the 22nd.
 // - The VISITOR'S calendar decides, in local time, like the /demu week groups.
 //   A server's UTC date turns the hat on and off five hours early in New York.
-// - Thanksgiving week runs Monday to Sunday, and its Sunday can be 1 Dec (2024,
-//   2030). Thanksgiving keeps that day; Santa starts the day after.
+// - Santa starts on Black Friday, not on 1 Dec: the first schedule waited for
+//   December and left the emu bare for Black Friday weekend.
 //
 // Nothing to merge or deploy each year: the windows come from the calendar.
 
@@ -26,23 +30,20 @@ export function thanksgivingDay(year: number): number {
 
 /**
  * The hat for this moment, in the local time of the machine that runs it:
- * Thanksgiving from the Monday before to the Sunday after (Monday 00:00 to the
- * next Monday 00:00), then Christmas from 1 Dec to 26 Dec; otherwise none.
+ * Thanksgiving from 1 Nov 00:00 to Black Friday 00:00, then Christmas from
+ * Black Friday 00:00 to 27 Dec 00:00; otherwise none.
  */
 export function demuHolidayOn(at: Date): DemuHoliday | null {
   const year = at.getFullYear();
-  const thursday = thanksgivingDay(year);
-  // `new Date(y, 10, 32)` is 2 Dec: the constructor rolls a day past the month.
-  const weekStart = new Date(year, 10, thursday - 3);
-  const weekEnd = new Date(year, 10, thursday + 4);
-  if (at >= weekStart && at < weekEnd) return 'thanksgiving';
-  if (at >= new Date(year, 11, 1) && at < new Date(year, 11, 27)) return 'christmas';
+  const blackFriday = new Date(year, 10, thanksgivingDay(year) + 1);
+  if (at >= new Date(year, 10, 1) && at < blackFriday) return 'thanksgiving';
+  if (at >= blackFriday && at < new Date(year, 11, 27)) return 'christmas';
   return null;
 }
 
 /**
  * The hat the title shows: `?holiday=thanksgiving|christmas` forces one on any
- * day (a test, or a look before its week), `?holiday=none` forces the plain emu,
+ * day (a test, or a look on another day), `?holiday=none` forces the plain emu,
  * and anything else leaves it to the calendar.
  */
 export function demuHolidayFor(at: Date, param: string | null | undefined): DemuHoliday | null {
