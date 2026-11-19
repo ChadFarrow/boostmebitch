@@ -523,25 +523,6 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
 }
 
 {
-  // The no-art cover: reached with an empty tile list, no font needed.
-  check('noteSvg has no <text>', !/<text/i.test(noteSvg()));
-  const jpg = await composeCover([null, null, null, null]);
-  const m = await sharp(jpg).metadata();
-  check('empty tile list -> 1400 x 1400 JPEG', m.format === 'jpeg' && m.width === 1400 && m.height === 1400);
-  const px = async (x, y) => [...(await sharp(jpg).extract({ left: x, top: y, width: 1, height: 1 }).raw().toBuffer())];
-  const corner = await px(5, 5);
-  check('note canvas corner is #0A0A08', Math.abs(corner[0] - 10) < 6 && Math.abs(corner[1] - 10) < 6 && Math.abs(corner[2] - 8) < 6);
-  const stem = await px(625, 700); // inside the first stem
-  check('note stem is #FAE500', stem[0] > 230 && stem[1] > 210 && stem[2] < 40);
-  const red = await sharp({ create: { width: 700, height: 700, channels: 3, background: '#ff0000' } }).png().toBuffer();
-  const g = await composeCover([red, null, red]);
-  const gm = await sharp(g).metadata();
-  check('grid with a missing tile -> 1400 x 1400', gm.width === 1400 && gm.height === 1400);
-  const rep = [...(await sharp(g).extract({ left: 1000, top: 300, width: 1, height: 1 }).raw().toBuffer())];
-  check('a missing tile repeats the previous one', rep[0] > 200 && rep[1] < 60);
-}
-
-{
   // Note context for a song played from a playlist (Task 15).
   const HOSTED = 'https://www.boostmebuddy.com/feeds/playlists/';
   const list = { id: 1, podcastGuid: 'list-g', title: 'Road Trip', medium: 'musicL',
@@ -580,6 +561,25 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   check('heardOn: no guid -> no link line', j(heardOnLines({ ...list, podcastGuid: undefined }, 'npub1m', 'https://o.example')) ===
     j(['🎧 Heard on Road Trip by nostr:npub1m']));
   check('heardOn: guid is URI-encoded', heardOnLines({ ...list, podcastGuid: 'a b&c' }, null, 'https://o.example')[1] === 'https://o.example/?podcast=a%20b%26c');
+}
+
+{
+  // The no-art cover: reached with an empty tile list, no font needed.
+  check('noteSvg has no <text>', !/<text/i.test(noteSvg()));
+  const jpg = await composeCover([null, null, null, null]);
+  const m = await sharp(jpg).metadata();
+  check('empty tile list -> 1400 x 1400 JPEG', m.format === 'jpeg' && m.width === 1400 && m.height === 1400);
+  const px = async (x, y) => [...(await sharp(jpg).extract({ left: x, top: y, width: 1, height: 1 }).raw().toBuffer())];
+  const corner = await px(5, 5);
+  check('note canvas corner is #0A0A08', Math.abs(corner[0] - 10) < 6 && Math.abs(corner[1] - 10) < 6 && Math.abs(corner[2] - 8) < 6);
+  const stem = await px(625, 700); // inside the first stem
+  check('note stem is #FAE500', stem[0] > 230 && stem[1] > 210 && stem[2] < 40);
+  const red = await sharp({ create: { width: 700, height: 700, channels: 3, background: '#ff0000' } }).png().toBuffer();
+  const g = await composeCover([red, null, red]);
+  const gm = await sharp(g).metadata();
+  check('grid with a missing tile -> 1400 x 1400', gm.width === 1400 && gm.height === 1400);
+  const rep = [...(await sharp(g).extract({ left: 1000, top: 300, width: 1, height: 1 }).raw().toBuffer())];
+  check('a missing tile repeats the previous one', rep[0] > 200 && rep[1] < 60);
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }
