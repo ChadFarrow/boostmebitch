@@ -80,7 +80,9 @@ import {
   buildSignerUrl,
   looksLikeAmberResult,
   answerFingerprint,
+  answerMayRepeat,
   clipboardAnswerIsStale,
+  requestFingerprint,
   signedEventMatchesTemplate,
   newAmberRequestId,
   parseAmberCallback,
@@ -430,6 +432,35 @@ const VECTORS = [
   { label: 'a new answer is accepted', fn: 'stale', args: ['Ajk3newciphertext==', { payload: 'plain', lastAccepted: answerFingerprint('old answer') }], expect: false, mustStillWork: true },
   { label: 'the first request has nothing to be stale against', fn: 'stale', args: ['Ajk3newciphertext==', { payload: 'plain', lastAccepted: null }], expect: false, mustStillWork: true },
   { label: 'an empty clipboard is never an answer', fn: 'stale', args: ['  ', { payload: 'p', lastAccepted: null }], expect: true, degenerate: true },
+  // The SAME request again (the same backup decrypted twice: CREATE NEW reads it
+  // to warn, RESTORE reads it again). Its answer is byte-identical by
+  // construction, and outside sign-in there is no manual paste, so refusing it
+  // can never resolve. The version that refused it fails this vector.
+  { label: 'a repeat of the same decrypt may return the same answer', fn: 'stale', args: ['abandon ability able', { payload: 'AjHcLVC+', lastAccepted: answerFingerprint('abandon ability able'), repeatOfLast: true }], expect: false, mustStillWork: true },
+  { label: 'a repeat never accepts the request\'s own payload', fn: 'stale', args: ['abandon ability able', { payload: 'abandon ability able', lastAccepted: answerFingerprint('abandon ability able'), repeatOfLast: true }], expect: true },
+
+  // -- requestFingerprint / answerMayRepeat ---------------------------------
+  // `naive` fingerprints the type alone, so it calls every decrypt a repeat.
+  { label: 'another ciphertext is another request', fn: 'reqDiffers', args: [{ type: 'nip44_decrypt', payload: 'C1', pubkey: 'ab' }, { type: 'nip44_decrypt', payload: 'C2', pubkey: 'ab' }], expect: true },
+  { label: 'another peer is another request', fn: 'reqDiffers', args: [{ type: 'nip44_decrypt', payload: 'C1', pubkey: 'ab' }, { type: 'nip44_decrypt', payload: 'C1', pubkey: 'cd' }], expect: true },
+  { label: 'the same decrypt is the same request', fn: 'reqDiffers', args: [{ type: 'nip44_decrypt', payload: 'C1', pubkey: 'ab' }, { type: 'nip44_decrypt', payload: 'C1', pubkey: 'ab' }], expect: false, mustStillWork: true },
+  { label: 'an account switch in Amber changes a get_public_key answer, so it never repeats', fn: 'mayRepeat', args: ['get_public_key'], expect: false },
+  { label: 'a decrypt of the same ciphertext repeats its answer', fn: 'mayRepeat', args: ['nip44_decrypt'], expect: true, mustStillWork: true },
+
+  // -- looksLikeAmberResult for an ENCRYPT ----------------------------------
+  // A decrypt copies its plaintext to the clipboard; an encrypt that takes it
+  // publishes it as the event's content. `clipboardAnswerIsStale` forgets on a
+  // reload, so the shape check is what stops a seed going out in the clear.
+  // The ciphertexts below were made by nostr-tools 2.19.4 (the shortest NIP-44
+  // v2 payload is 132 characters).
+  { label: 'a seed is not what nip44_encrypt returns', fn: 'looks', args: ['abandon ability able about above absent absorb abstract absurd abuse access accident', 'nip44_encrypt'], expect: false },
+  { label: 'a signed event is not what nip44_encrypt returns', fn: 'looks', args: ['{"kind":1,"sig":"aa"}', 'nip44_encrypt'], expect: false },
+  { label: 'an NWC string is not what nip44_encrypt returns', fn: 'looks', args: ['nostr+walletconnect://ab?relay=wss://r.example&secret=00', 'nip44_encrypt'], expect: false },
+  { label: 'a pubkey is not what nip44_encrypt returns', fn: 'looks', args: [AMBER_WIRE_PUBKEY.slice(-64), 'nip44_encrypt'], expect: false },
+  { label: 'a real NIP-44 payload is', fn: 'looks', args: ['AjHcLVC+YYGDgMjWEiPqRfNbHexFLeHqGA+AQYIlfy5GtIT9Gfb/jpgMXrgUmQLJHPN3OHfph6XuaxtXDT6MN+BROZUfR5uSkVyEEad+BhhNTLSFT6Fi9LOzvmUr35wqAggc', 'nip44_encrypt'], expect: true, mustStillWork: true },
+  { label: 'a seed is not what nip04_encrypt returns', fn: 'looks', args: ['abandon ability able about above absent absorb abstract absurd abuse access accident', 'nip04_encrypt'], expect: false },
+  { label: 'a JSON list is not what nip04_encrypt returns', fn: 'looks', args: ['[["p","ab"]]', 'nip04_encrypt'], expect: false },
+  { label: 'a real NIP-04 answer is', fn: 'looks', args: ['DVdyHV2wvnxkvNxm7HgMhA==?iv=z0VsmEgNxnGfldwoLxmMjw==', 'nip04_encrypt'], expect: true, mustStillWork: true },
 
   // -- signedEventMatchesTemplate -------------------------------------------
   // `verifyEvent` proves a signature, not that it signs OUR event.
@@ -486,6 +517,8 @@ function naiveBuildSignerUrl(opts, callbackUrl) {
 }
 const naiveLooks = (text) => text.length > 0;
 const naiveStale = () => false;
+const naiveRequestFingerprint = (opts) => opts.type;
+const naiveMayRepeat = () => true;
 const naiveMatches = () => true;
 // The intent form's wrong implementation is the previous RIGHT one: the bare
 // `nostrsigner:` URL that every browser request used until Chromium stopped
@@ -569,6 +602,12 @@ function call(impl, v, parser) {
       return (real ? clipboardAnswerIsStale : naiveStale)(...v.args);
     case 'matches':
       return (real ? signedEventMatchesTemplate : naiveMatches)(...v.args);
+    case 'reqDiffers': {
+      const fp = real ? requestFingerprint : naiveRequestFingerprint;
+      return fp(v.args[0]) !== fp(v.args[1]);
+    }
+    case 'mayRepeat':
+      return (real ? answerMayRepeat : naiveMayRepeat)(...v.args);
     default:
       throw new Error(`unknown fn ${v.fn}`);
   }

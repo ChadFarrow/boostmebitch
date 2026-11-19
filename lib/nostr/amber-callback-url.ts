@@ -383,7 +383,8 @@ export function parseAmberCallback(hash: string): AmberCallback | null {
  * resolve a request. Different types have different shapes:
  *   - get_public_key: 64-hex-char or starts with `npub1`
  *   - sign_event: JSON object with a `sig` field
- *   - nip04/nip44: opaque ciphertext/plaintext — can't validate, accept anything
+ *   - nip44_encrypt / nip04_encrypt: a ciphertext — `couldBeCiphertext`
+ *   - nip04/nip44 decrypt: an opaque plaintext — can't validate, accept anything
  *
  * It was written for the clipboard path, where the risk is whatever the user
  * happened to copy. It now also gates a callback result, where the risk is a
@@ -404,8 +405,31 @@ export function looksLikeAmberResult(text: string, type: AmberRequestType): bool
       return false;
     }
   }
-  // nip04/nip44 — no reliable shape check. Trust the caller.
+  if (type === 'nip44_encrypt' || type === 'nip04_encrypt') return couldBeCiphertext(t, type);
+  // nip04/nip44 decrypt — a plaintext has no shape. Trust the caller.
   return true;
+}
+
+/**
+ * Could this be what an ENCRYPT returns? Only a decrypt's answer has no shape.
+ *
+ * **A seed on the clipboard must never be accepted as a ciphertext.** A decrypt
+ * copies its plaintext (a Spark seed, an NWC string, a JSON list) to the
+ * clipboard, and an encrypt resolved by a stale read publishes what it got as
+ * the event's `content`: the seed in the clear, on public relays.
+ * `clipboardAnswerIsStale` catches that only inside one page life (it keeps the
+ * last answer in memory), and a reload loses it; this check does not.
+ *
+ * It refuses only what NO ciphertext can be, so it never refuses a real
+ * answer: base64 (standard or URL-safe, wrapped or not) holds no space, brace,
+ * bracket, quote or colon. A NIP-44 v2 payload is at least 132 characters (99
+ * bytes: version, nonce, the shortest padded ciphertext, MAC), which also
+ * refuses a stale pubkey or npub. A NIP-04 answer is `<base64>?iv=<base64>`.
+ */
+function couldBeCiphertext(t: string, type: 'nip44_encrypt' | 'nip04_encrypt'): boolean {
+  if (/[ {}[\]":]/.test(t)) return false;
+  if (type === 'nip04_encrypt') return /\?iv=|%3Fiv%3D/i.test(t);
+  return /^[A-Za-z0-9+/=_\-\s]+$/.test(t) && t.replace(/\s/g, '').length >= 132;
 }
 
 /**
@@ -442,18 +466,40 @@ export function answerFingerprint(text: string): string {
  *     note and the new one never went out.
  *   - **The request's own payload.** No signer returns its input as the answer.
  *
- * The cost: two requests in a row whose answers are byte-identical (the same
- * ciphertext decrypted twice) cannot resolve on the clipboard read. The manual
- * paste path does not call this, and that is the way out.
+ * **Except when this request is the SAME one that produced that answer**
+ * (`repeatOfLast`: same type, same peer, same payload). Then the answer is
+ * byte-identical by construction (the same ciphertext decrypted twice), and
+ * refusing it can never resolve: the manual paste is in the sign-in modal only,
+ * so every later request waits out the 60 s timeout and fails. CREATE NEW
+ * decrypts the backup to ask before overwriting it, and a RESTORE right after it
+ * decrypts the same backup again — that is the flow this exception keeps alive.
+ * The stale copy is a correct answer to this request. `get_public_key` never
+ * repeats this way (an account switch in Amber changes its answer); the caller
+ * decides with `answerMayRepeat`.
  */
 export function clipboardAnswerIsStale(
   text: string,
-  ctx: { payload?: string; lastAccepted: string | null },
+  ctx: { payload?: string; lastAccepted: string | null; repeatOfLast?: boolean },
 ): boolean {
   const t = text.trim();
   if (!t) return true;
   if (ctx.payload && t === ctx.payload.trim()) return true;
-  return ctx.lastAccepted !== null && answerFingerprint(t) === ctx.lastAccepted;
+  if (ctx.lastAccepted === null || answerFingerprint(t) !== ctx.lastAccepted) return false;
+  return !ctx.repeatOfLast;
+}
+
+/**
+ * A fingerprint of one request (type, peer and payload), so the next request can
+ * tell whether it repeats the one whose answer is on the clipboard. Never the
+ * payload itself: an encrypt's payload can be a seed.
+ */
+export function requestFingerprint(opts: { type: AmberRequestType; payload?: string; pubkey?: string }): string {
+  return answerFingerprint(`${opts.type}\n${opts.pubkey ?? ''}\n${opts.payload ?? ''}`);
+}
+
+/** May a repeat of the same request legitimately return the same answer? */
+export function answerMayRepeat(type: AmberRequestType): boolean {
+  return type !== 'get_public_key';
 }
 
 /**
