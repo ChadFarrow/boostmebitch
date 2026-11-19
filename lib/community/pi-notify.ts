@@ -4,6 +4,7 @@ import { COMMUNITY_FEED_ORIGIN } from '../curated-playlists';
 import { readCappedJson } from '../capped-body';
 import { mapLimit } from '../util';
 import { piNotifyBase } from './rules';
+import { podpingTarget, sendPodpings } from './podping-notify';
 
 // SERVER-ONLY. Sends a community playlist feed to Podcast Index, so people can
 // find it there (Chad, 2026-11-19: "they get submitted to the podcast index so
@@ -20,6 +21,9 @@ import { piNotifyBase } from './rules';
 //   switch went on is submitted by its next SAVE. Nothing older is sent unasked.
 // - `gone` (a delete): `hub/pubnotify` only, so PI reads the 410 sooner. It
 //   cannot remove the feed.
+//
+// Each of these ALSO sends a podping (`./podping-notify`, medium musicL) through the
+// msp-podping-service pusher, so apps that read podpings fetch the feed too.
 //
 // It never throws, and a response never waits for it (`after()`). The result is
 // logged with the `[community-pi]` prefix: that log line is how the first real
@@ -87,10 +91,16 @@ async function notifyOne(base: string, feedUrl: string, kind: PiNotifyKind): Pro
  */
 export function notifyPodcastIndexAfter(feedUrls: string | string[], kind: PiNotifyKind): void {
   const base = piBase();
-  if (!base) return;
+  // The podping goes out at the same moments, for the same feeds, on its own gate
+  // (`podpingTarget`): see ./podping-notify.
+  const ping = podpingTarget();
+  if (!base && !ping) return;
   const urls = Array.isArray(feedUrls) ? feedUrls : [feedUrls];
   if (urls.length === 0) return;
-  const run = () => mapLimit(urls, PI_NOTIFY_FANOUT, (u) => notifyOne(base, u, kind)).then(() => {}, () => {});
+  const run = () => Promise.all([
+    base ? mapLimit(urls, PI_NOTIFY_FANOUT, (u) => notifyOne(base, u, kind)) : null,
+    ping ? sendPodpings(ping, urls) : null,
+  ]).then(() => {}, () => {});
   try {
     after(run);
   } catch {

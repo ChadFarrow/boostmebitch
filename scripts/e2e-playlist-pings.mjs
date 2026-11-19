@@ -1,19 +1,22 @@
-// e2e for the two pings a playlist write sends after it LANDS (docs/feeds.md):
+// e2e for the pings a playlist write sends after it LANDS (docs/feeds.md):
 //   - lib/community/archive-notify.ts: one GitHub workflow_dispatch of
 //     playlist-archive.yml ("The GitHub copy");
 //   - lib/community/pi-notify.ts: Podcast Index add/byfeedurl + hub/pubnotify on a
-//     publish or edit, hub/pubnotify alone on a delete ("Podcast Index").
-// A refused write sends neither.
+//     publish or edit, hub/pubnotify alone on a delete ("Podcast Index");
+//   - lib/community/podping-notify.ts: one podping (medium musicL) through the
+//     msp-podping-service pusher, at every moment the Podcast Index ping goes out.
+// A refused write sends none of them.
 //
-// NOTHING REACHES GITHUB OR PODCAST INDEX. One stub on 127.0.0.1 plays both; the
-// two override variables accept only a loopback address (`archiveDispatchBase`,
-// `piNotifyBase`), and a non-loopback override turns the ping OFF, never real:
-//
+// NOTHING REACHES GITHUB, PODCAST INDEX OR HIVE. One stub on 127.0.0.1 plays all
+// three; the override variables accept only a loopback address (`archiveDispatchBase`,
+// `piNotifyBase`, `podpingEndpoint`), and a non-loopback one turns the ping OFF,
+// never real. The podping token here is a test value, `test-podping-token`://
 //   node scripts/e2e-playlist-pings.mjs --stub 48555                  (in one shell)
 //   COMMUNITY_DB_URL=postgres://… ADMIN_NPUBS=<the npub printed below> \
 //   NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 \
 //   GITHUB_ARCHIVE_TOKEN=test-archive-token PLAYLIST_ARCHIVE_API=http://127.0.0.1:48555 \
 //   COMMUNITY_PI_NOTIFY=on PI_NOTIFY_API=http://127.0.0.1:48555 \
+//   PODPING_ENDPOINT_URL=http://127.0.0.1:48555/podping PODPING_BEARER_TOKEN=test-podping-token \
 //   npm run dev -- -p 3123
 //   STUB_URL=http://127.0.0.1:48555 node scripts/e2e-playlist-pings.mjs
 //
@@ -24,12 +27,17 @@
 // `--browser`: PUBLISH, SAVE and DELETE pressed in the maker, in headless Chrome,
 // at 1280 x 900 and at 390 x 844. Same server as above.
 //
-// `--quiet-server`: restart the server with both overrides set to
-// `http://127.0.0.1.nip.io:48555`. That name resolves to the stub, so if a guard
-// let it through, the stub would count it. Publish, edit and delete send nothing.
+// `--quiet-server`: restart the server with the three overrides set to
+// `http://127.0.0.1.nip.io:48555` (the podping one to `.../podping`). That name
+// resolves to the stub, so if a guard let it through, the stub would count it.
+// Publish, edit and delete send nothing.
 //
 // `--pi-switch-off`: restart the server as in the main run but WITHOUT
-// COMMUNITY_PI_NOTIFY. A publish then sends the GitHub ping and no PI call.
+// COMMUNITY_PI_NOTIFY. A publish then sends the GitHub ping and no PI call and no
+// podping (one switch covers both).
+//
+// `--no-podping`: restart the server as in the main run but WITHOUT the two
+// PODPING_* variables. The Podcast Index calls go as usual and no podping is sent.
 //
 // Same NIP-98 signing and per-5-requests x-real-ip as e2e-community-api.mjs, and
 // the same test-only admin key (07…07). It deletes what it makes.
@@ -43,14 +51,18 @@ import { npubEncode } from 'nostr-tools/nip19';
 const DISPATCH = '/repos/ChadFarrow/boostmebitch/actions/workflows/playlist-archive.yml/dispatches';
 const PI_ADD = '/api/1.0/add/byfeedurl';
 const PI_PING = '/api/1.0/hub/pubnotify';
+const PODPING = '/podping';
+const PODPING_TOKEN = 'test-podping-token';
 
 // ── the stub ────────────────────────────────────────────────────────────────
 const stubAt = process.argv.indexOf('--stub');
 if (stubAt >= 0) {
   const port = Number(process.argv[stubAt + 1]);
   const ADD_OK = { status: 200, delayMs: 0, body: { status: 'true', feedId: 7777777, existed: 'false', description: 'Feed added.' } };
+  const PP_OK = { status: 200, delayMs: 0, location: null, body: { message: 'enqueued' } };
   let log = [];
   let addMode = ADD_OK;
+  let ppMode = PP_OK;
   const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
   http.createServer((req, res) => {
     let body = '';
@@ -65,9 +77,24 @@ if (stubAt >= 0) {
         addMode = body ? { ...ADD_OK, ...JSON.parse(body) } : ADD_OK;
         return json(res, 200, addMode);
       }
+      if (u.pathname === '/__ppmode') {
+        ppMode = body ? { ...PP_OK, ...JSON.parse(body) } : PP_OK;
+        return json(res, 200, ppMode);
+      }
       const h = req.headers;
       const entry = { method: req.method, path: u.pathname, ua: h['user-agent'] ?? null };
-      if (u.pathname.startsWith('/api/1.0/')) {
+      if (u.pathname === PODPING) {
+        // The token is a test value, so it may be compared; only the verdict is logged.
+        Object.assign(entry, {
+          url: u.searchParams.get('url'),
+          reason: u.searchParams.get('reason'),
+          medium: u.searchParams.get('medium'),
+          detailed: u.searchParams.get('detailed_response'),
+          params: [...u.searchParams.keys()].length,
+          bearerOk: h.authorization === `Bearer ${PODPING_TOKEN}`,
+          tokenInUrl: req.url.includes(PODPING_TOKEN),
+        });
+      } else if (u.pathname.startsWith('/api/1.0/')) {
         Object.assign(entry, {
           url: u.searchParams.get('url'),
           piAuth: !!h['x-auth-key'] && /^\d+$/.test(h['x-auth-date'] ?? '') && /^[0-9a-f]{40}$/.test(h.authorization ?? ''),
@@ -80,11 +107,17 @@ if (stubAt >= 0) {
         const m = addMode;
         return setTimeout(() => json(res, m.status, m.body), m.delayMs);
       }
+      if (u.pathname === PODPING) {
+        const m = ppMode;
+        return setTimeout(() => {
+          if (m.location) { res.writeHead(m.status, { location: m.location }); res.end(); } else json(res, m.status, m.body);
+        }, m.delayMs);
+      }
       if (u.pathname === PI_PING) return json(res, 200, { status: 'true', description: 'Feed marked for immediate update.' });
       res.writeHead(204);
       res.end();
     });
-  }).listen(port, '127.0.0.1', () => console.log(`stub GitHub + Podcast Index API on http://127.0.0.1:${port}`));
+  }).listen(port, '127.0.0.1', () => console.log(`stub GitHub + Podcast Index API + podping pusher on http://127.0.0.1:${port}`));
 } else {
   await run();
 }
@@ -94,6 +127,7 @@ async function run() {
   const STUB = (process.env.STUB_URL || 'http://127.0.0.1:48555').replace(/\/$/, '');
   const QUIET = process.argv.includes('--quiet-server');
   const PI_OFF = process.argv.includes('--pi-switch-off');
+  const PP_OFF = process.argv.includes('--no-podping');
   const PLAYLISTS = '/api/community-playlists';
   const SONG_SOURCE = 'https://v4vmusic.com/playlist/334bb12d-1f72-4c0e-88e1-266bd1e2dff9.xml';
   const ADMIN_SK = Uint8Array.from(Buffer.from('07'.repeat(32), 'hex'));
@@ -119,6 +153,7 @@ async function run() {
   const stubLog = async () => (await fetch(`${STUB}/__log`)).json();
   const clear = () => fetch(`${STUB}/__log`, { method: 'DELETE' });
   const mode = (m) => fetch(`${STUB}/__mode`, { method: 'POST', body: m ? JSON.stringify(m) : '' });
+  const ppMode = (m) => fetch(`${STUB}/__ppmode`, { method: 'POST', body: m ? JSON.stringify(m) : '' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const feedOf = (id) => `${APP}/feeds/playlists/${id}.xml`;
 
@@ -127,8 +162,8 @@ async function run() {
    * calls arrived (or `waitMs` passed), give a straggler 700 ms, then count each kind.
    * `feeds`: every PI call must name one of these, and the pings must cover them all.
    */
-  const expectCalls = async (label, { gh, add, ping, feeds, waitMs = 3000 }) => {
-    const total = gh + add + ping;
+  const expectCalls = async (label, { gh, add, ping, pp = PP_OFF ? 0 : ping, feeds, waitMs = 3000 }) => {
+    const total = gh + add + ping + pp;
     let log = [];
     for (const end = Date.now() + waitMs; Date.now() < end;) {
       log = await stubLog();
@@ -139,13 +174,23 @@ async function run() {
     log = await stubLog();
     await clear();
     const by = (p) => log.filter((e) => e.path === p);
-    const got = { gh: by(DISPATCH).length, add: by(PI_ADD).length, ping: by(PI_PING).length, other: log.length - by(DISPATCH).length - by(PI_ADD).length - by(PI_PING).length };
-    check(`${label}: GitHub ${gh}, PI add ${add}, PI ping ${ping}`,
-      got.gh === gh && got.add === add && got.ping === ping && got.other === 0, `got ${JSON.stringify(got)}: ${JSON.stringify(log)}`);
+    const got = {
+      gh: by(DISPATCH).length, add: by(PI_ADD).length, ping: by(PI_PING).length, pp: by(PODPING).length,
+      other: log.length - by(DISPATCH).length - by(PI_ADD).length - by(PI_PING).length - by(PODPING).length,
+    };
+    check(`${label}: GitHub ${gh}, PI add ${add}, PI ping ${ping}, podping ${pp}`,
+      got.gh === gh && got.add === add && got.ping === ping && got.pp === pp && got.other === 0, `got ${JSON.stringify(got)}: ${JSON.stringify(log)}`);
     if (feeds) {
       const pi = log.filter((e) => e.path.startsWith('/api/1.0/'));
       check(`${label}: every PI call names the playlist's feed URL`, pi.every((e) => feeds.includes(e.url)), JSON.stringify(pi.map((e) => e.url)));
       if (ping) check(`${label}: a ping for each feed`, feeds.every((f) => by(PI_PING).some((e) => e.url === f)), JSON.stringify(by(PI_PING).map((e) => e.url)));
+    }
+    if (pp) {
+      const pps = by(PODPING);
+      if (feeds) check(`${label}: a podping for each feed, and for no other`, pps.length === feeds.length && feeds.every((f) => pps.some((e) => e.url === f)), JSON.stringify(pps.map((e) => e.url)));
+      check(`${label}: every podping is musicL, update, four parameters, a GET with the Bearer token`,
+        pps.every((e) => e.method === 'GET' && e.medium === 'musicL' && e.reason === 'update' && e.detailed === 'true' && e.params === 4 && e.bearerOk && !!e.ua), JSON.stringify(pps));
+      check(`${label}: the token is in no URL`, pps.every((e) => e.tokenInUrl === false));
     }
     return log;
   };
@@ -171,6 +216,7 @@ async function run() {
   const owner = Uint8Array.from(randomBytes(32));
   const other = Uint8Array.from(randomBytes(32));
   await mode(null);
+  await ppMode(null);
   await clear();
   const finish = () => { console.log(`${count - fails}/${count} passed`); process.exit(fails ? 1 : 0); };
 
@@ -203,6 +249,7 @@ async function run() {
   const id = c.body.id;
   const feed = feedOf(id);
   check('the 201 names the feed URL the pings must carry', c.body.feedUrl === feed, c.body.feedUrl);
+  check('no response body carries the podping token', !JSON.stringify(c).includes('test-podping-token'));
   const log = await expectCalls('a publish', { gh: 1, add: 1, ping: 1, feeds: [feed] });
   const d = log.find((e) => e.path === DISPATCH);
   check('the dispatch is a POST to the playlist-archive workflow', d?.method === 'POST', JSON.stringify(d));
@@ -251,6 +298,29 @@ async function run() {
   check(`...and the response does not wait for PI (${slow.ms} ms)`, slow.ms < 5000);
   await expectCalls('an edit while PI hangs (ping after the timeout)', { gh: 1, add: 1, ping: 1, feeds: [feed], waitMs: 14_000 });
   await mode(null);
+
+  // The pusher (podping) misbehaves: the save still succeeds, and one podping is tried.
+  if (!PP_OFF) {
+    await ppMode({ status: 401, body: { message: 'unauthorized' } });
+    const noAuth = await edit('e2e playlist pings 6');
+    check('edit while the pusher answers 401 -> 200', noAuth.status === 200, JSON.stringify(noAuth).slice(0, 300));
+    await expectCalls('an edit the pusher refuses (401)', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+    await ppMode({ body: { message: 'duplicate' } });
+    const dup = await edit('e2e playlist pings 7');
+    check('edit while the pusher answers "duplicate" -> 200', dup.status === 200);
+    await expectCalls('an edit the pusher calls a duplicate', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+    // A redirect is never followed: the token must not go where the pusher points.
+    await ppMode({ status: 302, location: '/leak' });
+    const redir = await edit('e2e playlist pings 8');
+    check('edit while the pusher redirects -> 200', redir.status === 200);
+    await expectCalls('an edit the pusher redirects (the redirect is not followed: no other call)', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+    await ppMode({ delayMs: 10_000 });
+    const hang = await edit('e2e playlist pings 9');
+    check('edit while the pusher hangs -> 200', hang.status === 200);
+    check(`...and the response does not wait for the pusher (${hang.ms} ms)`, hang.ms < 5000);
+    await expectCalls('an edit while the pusher hangs', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+    await ppMode(null);
+  }
 
   // Owner delete: a ping only (PI cannot delete; it reads the 410).
   const del = await call('DELETE', `${PLAYLISTS}/${id}`, { sk: owner });
