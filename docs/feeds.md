@@ -360,6 +360,14 @@ Chad, 2026-11-16: "pubfeeds should show up for whatever they are for". A publish
 
 `type` is part of the URL, so it is already part of the CDN cache key; `SEARCH_CACHE` and the 60/min rate limit are unchanged, and every lane is still at most two PI calls over a fixed list rather than an attacker-chosen fan-out. `matchesSearchType`, `mergeSearchLanes` and `parseSearchType` are pinned by `npm run check:musicl` against a `naive()` per function — the one for `matchesSearchType` being `p.medium === type`, which passes every music and playlist vector while emptying PODCASTS.
 
+### Typo tolerance — near matches over our own playlist rosters
+
+`/search/byterm` forgives no typo: `muton` finds nothing about mutton. One lane adds near matches, and **they are appended, never promoted**.
+
+- **Near matches over our own playlist rosters** (`nearPlaylistsByQuery`, `matchPlaylistsByQuery`, `lib/util.ts`). A term lands when it is a substring, as in `filterPlaylistsByQuery`, or within an edit budget of a title or author word (or of its opening letters): none under 4 letters, 1 up to 7, 2 from 8 — a short term with a typo matches half the dictionary. Swaps count as one edit, and accents fold. The roster and curated lanes return exact matches, then near ones.
+- **Only an EXACT roster match is promoted by `rankPlaylistsFirst`.** The route re-splits the lanes with `filterPlaylistsByQuery`/`nearPlaylistsByQuery`; a near playlist goes after PI's results. Promoting it would put the `mutton` playlist over somebody who typed `button` on purpose. Pinned by `check:musicl`, with the exact matcher as `naive()` — it must miss every typo vector.
+- **There is no near match for a show, album or artist name, on purpose.** #592 first also asked Podcast Index's `similar` title search (`/search/bytitle?…&similar`) when an answer had fewer than 5 rows. Measured on 2026-11-17, it found none of `nate johnivon`, `ainsley costelo`, `the doerfles` or `tindrebox` — 0 rows each, straight from PI — and its one hit, `the joe rogan experiance`, byterm already finds on its other words. It cost one more PI call on every thin search, so Chad kept the playlist half only. Measure `similar` again before you add it back. A show the reader has SAVED is the one exception, and it never reaches the server: a thin search also matches the favorites and play history in the browser (#597, `docs/ui.md`, "Typo matches from your saved shows"). `similar` answered 0 rows for `muton` and `homegrown hitz` as well.
+
 ### Podcast Index's copy of a feed can be blank or wrong — the feed itself outranks it
 
 Measured on ChadF's Greatest Hits playlist, **PI feed 7683902**: the feed declares `<podcast:medium>musicL` and a title, and PI holds it with `title: ""` and `medium: "podcast"`. Two consequences, both of which read as "the playlist isn't there":

@@ -6,6 +6,7 @@ import { SearchBar } from '@/components/search-bar';
 import type { SearchInfo } from '@/components/search-bar';
 import { Chip } from '@/components/chip';
 import { PodcastResults, EpisodeList } from '@/components/lists';
+import { SavedShowMatches } from '@/components/lists/saved-show-matches';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { AppHeader } from '@/components/app-header';
@@ -876,12 +877,21 @@ export function HomePage() {
                 reaching this branch means the user is searching or browsing a
                 publisher — there is no third thing for the aside to hold. */}
             {!publisherSource && (query || feeds.length > 0 || loading) ? (
-              <PodcastResults
-                feeds={feeds}
-                selected={null}
-                onSelect={handleSelect}
-                empty={emptyState}
-              />
+              <>
+                <PodcastResults
+                  feeds={feeds}
+                  selected={null}
+                  onSelect={handleSelect}
+                  empty={emptyState}
+                />
+                {/* After the search's own rows and its empty sentence, and only
+                    once they have settled: a typo match is a second, local
+                    answer and must not read as Podcast Index's. docs/ui.md,
+                    "Typo matches from your saved shows". */}
+                {!loading && (
+                  <SavedShowMatches query={query} listed={feeds} type={searchInfo.type} onSelect={handleSelect} />
+                )}
+              </>
             ) : null}
           </aside>
         ) : null}

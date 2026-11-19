@@ -1,5 +1,6 @@
 'use client';
 import type { ValueRecipient, BoostResult } from '@/lib/types';
+import type { ReactNode } from 'react';
 import { explainPaymentError, feeNote, recipientAddress, recipientOrder, type PaymentErrorExplanation } from '@/lib/util';
 import { LegStatusGlyph } from '../leg-status-glyph';
 
@@ -108,9 +109,13 @@ export function SplitsPreview({
 export function LightningStatus({
   results,
   totalRecipients,
+  unconfirmed,
 }: {
   results: (BoostResult | undefined)[];
   totalRecipients: number;
+  /** The `?` legs, rendered by the caller with what the wallet said about each
+   *  (`<UnconfirmedLegs>`). Without it, a plain list of names. */
+  unconfirmed?: ReactNode;
 }) {
   // `results` is pre-sized the moment a send starts, so its LENGTH is the
   // recipient count, not the settled count — reading it would render
@@ -133,11 +138,13 @@ export function LightningStatus({
             {unknown.length} unconfirmed — your wallet didn&rsquo;t answer in time.
           </span>{' '}
           These may already have been paid; check your wallet before boosting again.
-          <ul className="mt-1 space-y-0.5">
-            {unknown.map((r, i) => (
-              <li key={i}>· {r.recipient.name || 'recipient'} ({r.sats} sat)</li>
-            ))}
-          </ul>
+          {unconfirmed ?? (
+            <ul className="mt-1 space-y-0.5">
+              {unknown.map((r, i) => (
+                <li key={i}>· {r.recipient.name || 'recipient'} ({r.sats} sat)</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       {errors.length > 0 && <FailedLegs errors={errors} />}

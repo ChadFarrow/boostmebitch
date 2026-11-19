@@ -273,7 +273,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         remote_feed_guid: split.remoteItem?.feedGuid,
         remote_item_guid: split.remoteItem?.itemGuid,
         ts: 0,
-        value_msat_total: track.sats * 1000,
+        // The per-track amount the listener typed (bLIP-10), not the
+        // artist's share — the show leg below carries the same number.
+        value_msat_total: sats * 1000,
         message: boostMsg || undefined,
         sender_name: senderName,
         sender_id: anonymous ? undefined : identity?.pubkey,
@@ -299,6 +301,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             value: { ...split.value!, recipients: track.recipients },
             totalSats: track.sats,
             boostagram: trackBoostagram,
+            // The episode's own feed, for an LNURL leg's BoostBox record — the
+            // one that holds `episode_guid`, never the track in remote_*.
+            feedGuid: episode.podcastGuid ?? podcast.podcastGuid,
             rail,
           });
           trackOk = paidAny(results);
@@ -352,7 +357,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           remote_feed_guid: split.remoteItem?.feedGuid,
           remote_item_guid: split.remoteItem?.itemGuid,
           ts: 0,
-          value_msat_total: host.sats * 1000,
+          value_msat_total: sats * 1000,
           message: boostMsg || undefined,
           sender_name: senderName,
           sender_id: anonymous ? undefined : identity?.pubkey,
@@ -371,6 +376,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             value: { ...hostValue!, recipients: host.recipients },
             totalSats: host.sats,
             boostagram: hostBoostagram,
+            feedGuid: episode.podcastGuid ?? podcast.podcastGuid,
             rail,
           });
           paidSats += hostResults.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);
@@ -448,16 +454,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // boostagrams carry — so an anonymous summary note reads as
     // DEFAULT_SENDER_NAME rather than attributing itself back to the user.
     // The reconcilable half, and the reason this line changed. This note is the
-    // ONLY artifact carrying the album total; every wire record carries one
-    // track's share, and nothing in a boostagram says it is 1 of N. So a reader
-    // holding both saw `totalSats` here and one leg's amount there and read the
-    // difference as sats that never left — reported as a boost that "only sent
-    // 10%" of a ten-track album.
+    // ONLY artifact carrying the album total; every wire record carries ONE
+    // track's amount (`value_msat_total` is the per-track `sats` on both of its
+    // groups, bLIP-10), and nothing in a boostagram says it is 1 of N. So a
+    // reader holding both saw `totalSats` here and one track's amount there and
+    // read the difference as sats that never left — reported as a boost that
+    // "only sent 10%" of a ten-track album.
     //
     // It names the ARTIST's share, never `sats`. A feed taking a host share
-    // pays each artist floor(sats × remotePercentage / 100), and THAT is the
-    // number their boostagram carries: `(1000 each)` against a 900-sat wire
-    // record leaves the reader in front of the same 10% gap this line exists to
+    // pays each artist floor(sats × remotePercentage / 100), and THAT is what
+    // their legs' `value_msat` adds up to: `(1000 each)` against 900 sats
+    // received leaves the reader in front of the same 10% gap this line exists to
     // close. The show's half is named too, so the two account for the whole.
     //
     // Omitted when the paid tracks divide differently from one another — a

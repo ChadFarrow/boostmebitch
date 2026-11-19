@@ -55,7 +55,7 @@ export class SignStoppedError extends Error {
  * reject, it HANGS — iOS Safari kills its background mid-request — so without
  * this a caller has no way out but a reload. The late value is discarded.
  */
-function unlessStopped<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+export function unlessStopped<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return p;
   if (signal.aborted) {
     p.catch(() => {});
