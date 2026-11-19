@@ -694,13 +694,19 @@ t.ok('DONE closes the sheet', await js(`!document.querySelector('[role=dialog]')
 t.equal('the maker shows twelve rows', await rows(), 12);
 await click(byText('PUBLISH'));
 t.ok('PUBLISH succeeds with those 12', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('♫ PLAYLIST · 12 TRACKS')`, 30000), await body());
-// empty favorites copy
-await js(`localStorage.removeItem(${JSON.stringify(favKey)}); localStorage.removeItem(${JSON.stringify(KEY)}); 1`);
+// empty favorites copy — from a user with NO list anywhere. Deleting only this
+// device's cache is not that any more: since #601 a load whose device state would
+// remove 9 of the 10 entries on the relay's list HOLDS ('mass-removal') and asks,
+// and a device whose baseline saw a list never creates one ('create-held'). So the
+// relay forgets the list and the device forgets the cache, the baseline and the
+// cleared flag; the read then answers "no list", which is what "no saved songs" is.
+for (const [id, e] of relay.events) if (e.kind === 10333 && e.pubkey === pk) relay.events.delete(id);
+await js(`${JSON.stringify(['bmb:favorites', 'bmb:favepisodes', 'bmb:favbaseline', 'bmb:fav_cleared'].map((k) => `${k}:${npub}`))}.forEach((k) => localStorage.removeItem(k)); localStorage.removeItem(${JSON.stringify(KEY)}); 1`);
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')`); await wait(500);
 await click(byText('+ ADD SONGS')); await waitFor(dlg());
 await click(dlgBtn('FAVORITES')); await wait(300);
-t.ok('empty favorites say so, once the read answered', await waitFor(`document.querySelector('[role=dialog]').innerText.includes('No saved songs yet. Tap ♡ on a song to save it.')`, 30000));
+t.ok('empty favorites say so, once the read answered', await waitFor(`document.querySelector('[role=dialog]').innerText.includes('No saved songs yet. Tap ♡ on a song to save it.')`, 30000), await js(`document.querySelector('[role=dialog]')?.innerText ?? ''`));
 
 // A song already in the playlist reads ADDED; remove it in the maker and the sheet offers + ADD again.
 await js(`localStorage.setItem(${JSON.stringify(favKey)}, ${JSON.stringify(JSON.stringify({ [real[0].guid]: favs[real[0].guid] ?? { itemGuid: real[0].guid, feedGuid: real[0].podcastGuid, title: real[0].title, medium: 'music', addedAt: 1 } }))}); 1`);

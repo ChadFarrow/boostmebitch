@@ -23,7 +23,7 @@
 import { nip19, type Event } from 'nostr-tools';
 import { BRAND } from '@/lib/brand';
 import { activeNostr } from './signer';
-import { publishSignedEvent } from './publish';
+import { publishSignedEvent, unlessStopped } from './publish';
 import { zapRequestTags, type Nip73Refs, type SummarySpec } from './zap-request';
 
 /** The summary receipt, ready to be quoted by the boost note. */
@@ -64,6 +64,14 @@ export async function mintSummaryReceipt(args: {
   relays: string[];
   /** Who authors the request — the same answer as who signs the note. */
   as: 'self' | 'site';
+  /**
+   * Stops the wait for the user's signature (`as: 'self'` only). Fired first,
+   * nothing is minted, and a signature that arrives afterwards is dropped — so
+   * the caller must test `signal.aborted` itself: this answers null either way.
+   */
+  signal?: AbortSignal;
+  /** The user's signer answered (`as: 'self'` only). */
+  onSigned?: () => void;
 }): Promise<QuotedZapReceipt | null> {
   try {
     if (!Number.isFinite(args.paidSats) || args.paidSats <= 0) return null;
@@ -77,12 +85,14 @@ export async function mintSummaryReceipt(args: {
     if (args.as === 'self') {
       const nostr = activeNostr();
       if (!nostr) return null;
-      const request = await nostr.signEvent({
+      if (args.signal?.aborted) return null;
+      const request = await unlessStopped(nostr.signEvent({
         kind: 9734,
         created_at: Math.floor(Date.now() / 1000),
         content: '',
         tags: zapRequestTags({ relays, amountMsat, recipientPubkey: site, refs: args.refs }),
-      });
+      }), args.signal);
+      args.onSigned?.();
       payload = { request };
     } else {
       payload = { spec: { amountMsat, relays, refs: args.refs } };
