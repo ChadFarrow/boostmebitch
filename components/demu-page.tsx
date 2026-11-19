@@ -184,7 +184,13 @@ export function DemuPage() {
 
   return (
     <>
-      <h1 className="headline text-3xl sm:text-4xl">DeMu</h1>
+      {/* The emu: the search menu's DEMU glyph, so the page wears the shape of the
+          type it lists (Chad, 2026-11-19: "use that logo for the DeMu page as well").
+          The badge on a self-hosted cover below is the same component. */}
+      <h1 data-demu-title className="headline text-3xl sm:text-4xl flex items-center gap-2">
+        <EmuIcon className="w-[1em] h-[1em] text-bolt" />
+        DeMu
+      </h1>
       <p className="mt-2 max-w-xl text-sm leading-relaxed text-bone/80">
         Self-hosted music.
       </p>

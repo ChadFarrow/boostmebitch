@@ -222,6 +222,16 @@ if (stampSeen) {
 }
 
 await go('/demu');
+const title = await until(`!!document.querySelector('[data-demu-title] svg')`, 20000)
+  ? await jsOrThrow(`(() => { const h = document.querySelector('[data-demu-title]'); const g = h.querySelector('svg'); const gr = g.getBoundingClientRect(), hr = h.getBoundingClientRect();
+      const probe = document.createElement('span'); probe.className = 'text-bolt'; document.body.appendChild(probe); const bolt = getComputedStyle(probe).color; probe.remove();
+      return { svg: g.innerHTML, colour: getComputedStyle(g).color, bolt, gh: gr.height, fs: parseFloat(getComputedStyle(h).fontSize), text: h.textContent.trim(), inside: gr.top >= hr.top - 1 && gr.bottom <= hr.bottom + 1 }; })()`)
+  : null;
+t.ok('/demu: the title wears the DEMU glyph', title && title.svg === svgOf.DEMU, JSON.stringify(title?.text));
+t.ok('/demu: the title glyph is bolt yellow, one em tall, inside the title', title && title.colour === title.bolt
+  && Math.abs(title.gh - title.fs) < 1.5 && title.inside, JSON.stringify(title && { colour: title.colour, bolt: title.bolt, gh: title.gh, fs: title.fs, inside: title.inside }));
+t.equal('/demu: the title reads DeMu', title?.text, 'DeMu');
+if (title) await shot('phone-demu-title', await jsOrThrow(`(() => { const r = document.querySelector('[data-demu-title]').parentElement.getBoundingClientRect(); return { x: 0, y: Math.max(0, r.top - 8), width: 390, height: 160 }; })()`));
 const badgeSeen = await until(`!!document.querySelector('[data-demu-app="self"] svg')`, 40000);
 if (badgeSeen) {
   const badge = await jsOrThrow(`document.querySelector('[data-demu-app="self"] svg').innerHTML`);
