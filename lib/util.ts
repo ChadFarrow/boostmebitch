@@ -2932,6 +2932,43 @@ export function elideAddress(address: string, isLnAddress = address.includes('@'
 }
 
 /**
+ * Which rail does an open boost modal use after a wallet event?
+ *
+ * The modal's rail is the USER's choice (the rail picker). A wallet event is
+ * not a reason to undo it: `weblnPayInvoice`/`weblnKeysend` notify their
+ * subscribers after EVERY settled payment, so re-picking on each event reset a
+ * user who chose WebLN back to the default after the first leg. `go()` kept
+ * paying later legs on its closure's rail while the picker, the balance chip,
+ * RETRY and the stamp read the new one, so a retry paid from a wallet that was
+ * not chosen for this boost. Keep the current rail while it is still offered;
+ * fall back to `picked` (the default) only when it is gone, or none was chosen.
+ */
+export function railAfterWalletChange<R extends string>(
+  current: R | null,
+  available: readonly R[],
+  picked: R | null,
+): R | null {
+  return current !== null && available.includes(current) ? current : picked;
+}
+
+/**
+ * Does a NIP-47 answer belong to the wallet that is connected NOW?
+ *
+ * A `get_info` is asked on one connection string and answered later. The user
+ * can paste a second string meanwhile, or validate a candidate they then
+ * cancel; the answer must not land on the other wallet. A wallet's method list
+ * decides whether `railCanKeysend` sends a leg by keysend, so wallet A's list
+ * under wallet B sends keysends to a wallet that cannot make one. Both sides
+ * must be present and equal: an absent URI is no wallet.
+ */
+export function answerIsForConnectedWallet(
+  answeredFor: string | null | undefined,
+  connected: string | null | undefined,
+): boolean {
+  return !!answeredFor && answeredFor === connected;
+}
+
+/**
  * Display order for a value split: biggest share first.
  *
  * Feed order is authoring order, which buries the lede — a block can list three
