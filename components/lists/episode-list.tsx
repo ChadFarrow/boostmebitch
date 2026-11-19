@@ -18,6 +18,7 @@ import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
+import { FeedAddress } from './feed-address';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
 // download match that condition. `.then((m) => m.BoostModal)` because it is a
@@ -712,6 +713,7 @@ export function EpisodeList({
               )}
             </div>
           )}
+          {isPlaylist && <FeedAddress podcast={data.podcast} />}
         </div>
         {/* A `basis-full` SIBLING of the text column, not a child of it. DOM
             nesting can't be responsive, and nested under the author line this
