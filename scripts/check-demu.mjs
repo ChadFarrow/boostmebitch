@@ -27,7 +27,7 @@ import {
   demuAppOf, DEMU_APPS, withCoverFallback, saysTest, demuCopyCandidates, demuCopiesToHide,
 } from '../lib/demu.ts';
 import { DEMU_HIDE_LIST, DEMU_HIDE_AUTHORS, HOMEGROWN_HITS_FEED_URL } from '../lib/demu-hide-list.ts';
-import { thanksgivingDay, demuHolidayOn, demuHolidayFor } from '../lib/demu-holiday.ts';
+import { DEMU_HOLIDAYS, thanksgivingDay, easterSunday, laborDay, demuHolidayOn, demuHolidayFor } from '../lib/demu-holiday.ts';
 import { remoteItemFeedGuids, feedHasValueTag, newestItemImage } from '../lib/feed-xml.ts';
 import { closedService } from '../lib/moved-feeds.ts';
 import { SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
@@ -790,59 +790,107 @@ for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {
   if (!fam.some((v) => !v.alsoNaive)) fail(`the ${kind} vectors prove nothing against naive()`);
 }
 
-// ── The emu's holiday hat (Chad, 2026-11-19) ─────────────────────────────────
-// docs/superpowers/specs/2026-11-19-demu-holiday-hats-design.md. Each look LEADS
-// UP TO its holiday and hands over the day after (Chad: "once that holiday hits,
-// it switches over to the next holiday"): feathers and a pilgrim hat from 1 Nov
-// through Thanksgiving Day, a Santa hat from Black Friday through 26 Dec, by the
-// VISITOR'S calendar. Getting it wrong costs nothing but a costume on the wrong
-// day, which is why it rides in this file rather than a check of its own.
+// ── The emu's look, all year (Chad, 2026-11-19) ──────────────────────────────
+// docs/superpowers/specs/2026-11-19-demu-holiday-year-design.md. Eleven looks in
+// year order; each LEADS UP TO its holiday and hands over the day after (Chad:
+// "once that holiday hits, it switches over to the next holiday"), so the emu
+// always wears one, by the VISITOR'S calendar. Getting it wrong costs nothing
+// but a costume on the wrong day, which is why it rides in this file rather
+// than a check of its own.
 //
-// `naive()` carries the three obvious wrong builds, each proved by its own
-// vectors: the LAST Thursday of November (2029 has five, and the fourth is the
-// holiday), a Santa hat that waits for December (the first schedule, which left
-// Black Friday weekend bare), and UTC dates (a server's view, not the visitor's).
-// The middle of each window is the same under all three: must-still-work.
+// `naive()` is the same table built the five obvious wrong ways, each proved by
+// its own vectors: NO YEAR WRAP (27–31 Dec bare, because New Year's "belongs" to
+// January), THIS YEAR'S EASTER hard-coded (5 Apr 2026), LABOR DAY by a JS `%`
+// that goes negative (`1 + ((1 - weekday) % 7)` is 0 for 2026), the LAST
+// Thursday of November (2029 has five, and the fourth is the holiday), and UTC
+// dates (a server's view, not the visitor's). The middle of each window is the
+// same under all five: must-still-work.
 {
   const naiveTday = (y) => { let d = 30; while (new Date(Date.UTC(y, 10, d)).getUTCDay() !== 4) d--; return d; };
+  const naiveEaster = (y) => new Date(y, 3, 5);
+  const naiveLabor = (y) => 1 + ((1 - new Date(y, 8, 1).getDay()) % 7);
   const naiveOn = (at) => {
     const y = at.getUTCFullYear(), m = at.getUTCMonth(), d = at.getUTCDate();
-    if (m === 10 && d <= naiveTday(y)) return 'thanksgiving';
-    if (m === 11 && d <= 26) return 'christmas';
+    const table = [
+      ['newyear', 0, 1], ['valentines', 1, 14], ['stpatricks', 2, 17], ['easter', 3, 5], ['pizzaday', 4, 22],
+      ['july4', 6, 4], ['summer', 8, naiveLabor(y)], ['podcastday', 8, 30], ['halloween', 9, 31],
+      ['thanksgiving', 10, naiveTday(y)], ['christmas', 11, 26],
+    ];
+    for (const [look, lm, ld] of table) if (m < lm || (m === lm && d <= ld)) return look;
     return null;
   };
   const at = (sec) => new Date(sec * 1000);
+  // The last minute of a look's own day is 04:59 the NEXT day in UTC, so it is
+  // the vector that tells the visitor's calendar from the server's.
   const holidayVectors = [
     { kind: 'tday', label: '2026: Thursday 26 Nov', args: [2026], expect: 26, alsoNaive: true },
     { kind: 'tday', label: '2025: Thursday 27 Nov', args: [2025], expect: 27, alsoNaive: true },
     { kind: 'tday', label: '2029 has five Thursdays: the FOURTH, 22 Nov, not the 29th', args: [2029], expect: 22 },
     { kind: 'tday', label: '2030: Thursday 28 Nov', args: [2030], expect: 28, alsoNaive: true },
 
-    { kind: 'on', label: '31 Oct 2026, 23:59 in New York (1 Nov in UTC): not yet', args: [t(2026, 10, 31, 23, 59)], expect: null },
+    { kind: 'easter', label: 'Easter 2026: 5 Apr', args: [2026], expect: 'Sun Apr 05 2026', alsoNaive: true },
+    { kind: 'easter', label: 'Easter 2027: 28 Mar, not this year\'s date', args: [2027], expect: 'Sun Mar 28 2027' },
+    { kind: 'easter', label: 'Easter 2024: 31 Mar', args: [2024], expect: 'Sun Mar 31 2024' },
+    { kind: 'easter', label: 'Easter 2038, the latest possible: 25 Apr', args: [2038], expect: 'Sun Apr 25 2038' },
+    { kind: 'easter', label: 'Easter 2285, the earliest possible: 22 Mar', args: [2285], expect: 'Sun Mar 22 2285' },
+
+    { kind: 'labor', label: 'Labor Day 2025: 1 Sep (a Monday)', args: [2025], expect: 1, alsoNaive: true },
+    { kind: 'labor', label: 'Labor Day 2026: 7 Sep (1 Sep is a Tuesday)', args: [2026], expect: 7 },
+    { kind: 'labor', label: 'Labor Day 2027: 6 Sep (1 Sep is a Wednesday)', args: [2027], expect: 6 },
+
+    // The year, look by look: each one's last minute, then the next one's first.
+    { kind: 'on', label: '26 Dec 2026, 23:59 in New York (27 Dec in UTC): still Santa', args: [t(2026, 12, 26, 23, 59)], expect: 'christmas' },
+    { kind: 'on', label: '27 Dec 2026, 00:00: New Year\'s, not a bare emu', args: [t(2026, 12, 27, 0, 0)], expect: 'newyear' },
+    { kind: 'on', label: '31 Dec 2026, 23:59 in New York: New Year\'s', args: [t(2026, 12, 31, 23, 59)], expect: 'newyear', alsoNaive: true },
+    { kind: 'on', label: '30 Dec 2026, noon: New Year\'s', args: [t(2026, 12, 30)], expect: 'newyear' },
+    { kind: 'on', label: '1 Jan 2027, noon: New Year\'s', args: [t(2027, 1, 1)], expect: 'newyear', alsoNaive: true },
+    { kind: 'on', label: '1 Jan 2027, 23:59 in New York: still New Year\'s', args: [t(2027, 1, 1, 23, 59)], expect: 'newyear' },
+    { kind: 'on', label: '2 Jan 2027, 00:00: Valentine\'s', args: [t(2027, 1, 2, 0, 0)], expect: 'valentines', alsoNaive: true },
+    { kind: 'on', label: '14 Feb 2027, 23:59 in New York: still Valentine\'s', args: [t(2027, 2, 14, 23, 59)], expect: 'valentines' },
+    { kind: 'on', label: '15 Feb 2027, 00:00: St. Patrick\'s', args: [t(2027, 2, 15, 0, 0)], expect: 'stpatricks', alsoNaive: true },
+    { kind: 'on', label: '17 Mar 2027, 23:59 in New York: still St. Patrick\'s', args: [t(2027, 3, 17, 23, 59)], expect: 'stpatricks' },
+    { kind: 'on', label: '18 Mar 2027, 00:00: Easter', args: [t(2027, 3, 18, 0, 0)], expect: 'easter', alsoNaive: true },
+    { kind: 'on', label: 'Easter Sunday 5 Apr 2026, 23:59 in New York: still Easter', args: [t(2026, 4, 5, 23, 59)], expect: 'easter' },
+    { kind: 'on', label: 'Easter Sunday 28 Mar 2027, noon: Easter', args: [t(2027, 3, 28)], expect: 'easter', alsoNaive: true },
+    { kind: 'on', label: '29 Mar 2027, the day after Easter: Pizza Day, not this year\'s Easter window', args: [t(2027, 3, 29, 0, 0)], expect: 'pizzaday' },
+    { kind: 'on', label: '6 Apr 2026, the day after Easter: Pizza Day', args: [t(2026, 4, 6)], expect: 'pizzaday', alsoNaive: true },
+    { kind: 'on', label: '22 May 2027, 23:59 in New York: still Pizza Day', args: [t(2027, 5, 22, 23, 59)], expect: 'pizzaday' },
+    { kind: 'on', label: '23 May 2027, 00:00: the Fourth', args: [t(2027, 5, 23, 0, 0)], expect: 'july4', alsoNaive: true },
+    { kind: 'on', label: '4 Jul 2026, noon: the Fourth', args: [t(2026, 7, 4)], expect: 'july4', alsoNaive: true },
+    { kind: 'on', label: '4 Jul 2027, 23:59 in New York: still the Fourth', args: [t(2027, 7, 4, 23, 59)], expect: 'july4' },
+    { kind: 'on', label: '5 Jul 2027, 00:00: summer', args: [t(2027, 7, 5, 0, 0)], expect: 'summer', alsoNaive: true },
+    { kind: 'on', label: '1 Sep 2026, before Labor Day (7 Sep): still summer', args: [t(2026, 9, 1)], expect: 'summer' },
+    { kind: 'on', label: 'Labor Day 6 Sep 2027, 23:59 in New York: still summer', args: [t(2027, 9, 6, 23, 59)], expect: 'summer' },
+    { kind: 'on', label: '7 Sep 2027, 00:00: Podcast Day', args: [t(2027, 9, 7, 0, 0)], expect: 'podcastday', alsoNaive: true },
+    { kind: 'on', label: '30 Sep 2027, 23:59 in New York: still Podcast Day', args: [t(2027, 9, 30, 23, 59)], expect: 'podcastday' },
+    { kind: 'on', label: '1 Oct 2027, 00:00: Halloween', args: [t(2027, 10, 1, 0, 0)], expect: 'halloween', alsoNaive: true },
+    { kind: 'on', label: '31 Oct 2026, 23:59 in New York (1 Nov in UTC): still Halloween', args: [t(2026, 10, 31, 23, 59)], expect: 'halloween' },
     { kind: 'on', label: '1 Nov 2026, 00:00: the turkey', args: [t(2026, 11, 1, 0, 0)], expect: 'thanksgiving', alsoNaive: true },
     { kind: 'on', label: 'Thursday 19 Nov 2026, the day Chad asked: the turkey', args: [t(2026, 11, 19)], expect: 'thanksgiving', alsoNaive: true },
     { kind: 'on', label: 'Thanksgiving Day 2026, 23:30 in New York (Friday in UTC): still the turkey', args: [t(2026, 11, 26, 23, 30)], expect: 'thanksgiving' },
-    { kind: 'on', label: 'Black Friday 27 Nov 2026, 00:00: the Santa hat', args: [t(2026, 11, 27, 0, 0)], expect: 'christmas' },
-    { kind: 'on', label: 'Monday 30 Nov 2026: Santa, not a bare emu', args: [t(2026, 11, 30)], expect: 'christmas' },
-    { kind: 'on', label: '1 Dec 2026: Santa', args: [t(2026, 12, 1, 0, 0)], expect: 'christmas', alsoNaive: true },
-    { kind: 'on', label: '26 Dec 2026, 23:59 in New York (27 Dec in UTC): still Santa', args: [t(2026, 12, 26, 23, 59)], expect: 'christmas' },
-    { kind: 'on', label: '27 Dec 2026, 00:00: off', args: [t(2026, 12, 27, 0, 0)], expect: null, alsoNaive: true },
-    { kind: 'on', label: '4 Jul 2026: nothing', args: [t(2026, 7, 4)], expect: null, alsoNaive: true },
+    { kind: 'on', label: 'Black Friday 27 Nov 2026, 00:00: the Santa hat', args: [t(2026, 11, 27, 0, 0)], expect: 'christmas', alsoNaive: true },
+    { kind: 'on', label: 'Monday 30 Nov 2026: Santa, not a bare emu', args: [t(2026, 11, 30)], expect: 'christmas', alsoNaive: true },
     { kind: 'on', label: 'Thanksgiving 22 Nov 2029: the turkey', args: [t(2029, 11, 22)], expect: 'thanksgiving', alsoNaive: true },
     { kind: 'on', label: 'Friday 23 Nov 2029 is after the FOURTH Thursday: Santa', args: [t(2029, 11, 23)], expect: 'christmas' },
-    { kind: 'on', label: 'Friday 29 Nov 2024, after Thursday the 28th: Santa', args: [t(2024, 11, 29)], expect: 'christmas' },
+    { kind: 'on', label: 'Friday 29 Nov 2024, after Thursday the 28th: Santa', args: [t(2024, 11, 29)], expect: 'christmas', alsoNaive: true },
+    { kind: 'on', label: '2038, Easter at its latest (25 Apr): 24 Apr is still Easter', args: [t(2038, 4, 24)], expect: 'easter' },
+    { kind: 'on', label: '2285, Easter at its earliest (22 Mar): 18 Mar is already Easter', args: [t(2285, 3, 18)], expect: 'easter', alsoNaive: true },
 
-    { kind: 'for', label: '?holiday=thanksgiving in July', args: [t(2026, 7, 4), 'thanksgiving'], expect: 'thanksgiving' },
-    { kind: 'for', label: '?holiday=christmas in July', args: [t(2026, 7, 4), 'christmas'], expect: 'christmas' },
+    ...['newyear', 'valentines', 'stpatricks', 'easter', 'pizzaday', 'july4', 'summer', 'podcastday', 'halloween', 'thanksgiving', 'christmas']
+      .filter((look) => look !== 'july4')
+      .map((look) => ({ kind: 'for', label: `?holiday=${look} on 4 Jul`, args: [t(2026, 7, 4), look], expect: look })),
+    { kind: 'for', label: '?holiday=july4 in November', args: [t(2026, 11, 24), 'july4'], expect: 'july4' },
     { kind: 'for', label: '?holiday=none in the turkey\'s weeks: the plain emu', args: [t(2026, 11, 24), 'none'], expect: null },
-    { kind: 'for', label: '?holiday=easter is ignored: the calendar decides', args: [t(2026, 11, 24), 'easter'], expect: 'thanksgiving', alsoNaive: true },
+    { kind: 'for', label: '?holiday=birthday is no look: the calendar decides', args: [t(2026, 11, 24), 'birthday'], expect: 'thanksgiving', alsoNaive: true },
     { kind: 'for', label: 'no ?holiday: the calendar decides', args: [t(2026, 11, 24), null], expect: 'thanksgiving', alsoNaive: true },
-    { kind: 'for', label: '?holiday=Christmas (a capital) is not a holiday name', args: [t(2026, 7, 4), 'Christmas'], expect: null, alsoNaive: true },
+    { kind: 'for', label: '?holiday=Easter (a capital) is not a look name', args: [t(2026, 7, 4), 'Easter'], expect: 'july4', alsoNaive: true },
   ];
   const runHoliday = (impl, v) => {
     const real = impl === 'real';
     switch (v.kind) {
       case 'tday': return real ? thanksgivingDay(v.args[0]) : naiveTday(v.args[0]);
+      case 'easter': return (real ? easterSunday(v.args[0]) : naiveEaster(v.args[0])).toDateString();
+      case 'labor': return real ? laborDay(v.args[0]) : naiveLabor(v.args[0]);
       case 'on': return real ? demuHolidayOn(at(v.args[0])) : naiveOn(at(v.args[0]));
       case 'for': return real ? demuHolidayFor(at(v.args[0]), v.args[1]) : naiveOn(at(v.args[0]));
     }
@@ -850,16 +898,31 @@ for (const kind of ['group', 'age', 'date', 'sort', 'query', 'roster']) {
   const callHoliday = (impl, v) => {
     try { return JSON.stringify(runHoliday(impl, v)); } catch (e) { return `threw ${(e && e.message) || e}`; }
   };
-  console.log('\nThe holiday hat — the shipping answer:');
+  console.log('\nThe emu\'s look — the shipping answer:');
   for (const v of holidayVectors) {
     const got = callHoliday('real', v);
     if (got !== JSON.stringify(v.expect)) fail(`"${v.label}" — expected ${JSON.stringify(v.expect)}, got ${got}`);
     else ok(v.label);
   }
-  console.log('\nThe holiday hat — the replay against naive():');
+  console.log('\nThe emu\'s look — the replay against naive():');
   replayVectors({ vectors: holidayVectors, invoke: callHoliday, fail });
-  for (const kind of ['tday', 'on', 'for']) {
+  for (const kind of ['tday', 'easter', 'labor', 'on', 'for']) {
     if (!holidayVectors.some((v) => v.kind === kind && !v.alsoNaive)) fail(`the ${kind} holiday vectors prove nothing against naive()`);
+  }
+  // The table and the names must agree, and the year must run in order.
+  if (JSON.stringify(DEMU_HOLIDAYS) !== JSON.stringify(['newyear', 'valentines', 'stpatricks', 'easter', 'pizzaday', 'july4', 'summer', 'podcastday', 'halloween', 'thanksgiving', 'christmas'])) {
+    fail(`DEMU_HOLIDAYS is ${JSON.stringify(DEMU_HOLIDAYS)}`);
+  } else ok('DEMU_HOLIDAYS names the eleven looks in year order');
+  // Every day of four years wears a look, and the looks come in DEMU_HOLIDAYS order.
+  for (const year of [2026, 2027, 2028, 2038]) {
+    const seen = [];
+    for (let d = new Date(year, 0, 1, 12); d.getFullYear() === year; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 12)) {
+      const look = demuHolidayOn(d);
+      if (seen[seen.length - 1] !== look) seen.push(look);
+    }
+    const want = [...DEMU_HOLIDAYS, 'newyear'];
+    if (JSON.stringify(seen) !== JSON.stringify(want)) fail(`${year}: the looks run ${seen.join(' → ')}`);
+    else ok(`${year}: every day wears a look, in order, ending on New Year's`);
   }
 }
 
