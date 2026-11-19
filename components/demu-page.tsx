@@ -10,7 +10,7 @@
 // AND complete — a broad word like "bitcoin" finds every DeMu album, which the
 // DEMU search type (a filter over PI's ranked rows) cannot.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
 import { PodcastResults } from '@/components/lists';
 import { ShowMore, useAutoReveal, useRevealed } from '@/components/lists/grouping';
@@ -18,11 +18,24 @@ import { useAlbumCoverPlay } from '@/components/lists/use-album-cover-play';
 import { useApp } from '@/lib/store';
 import { DEMU_APPS, demuAge, demuDateLabel, demuGroups, matchesDemuQuery, sortDemuAlbums } from '@/lib/demu';
 import type { DemuAlbum } from '@/lib/demu';
+import { demuHolidayFor } from '@/lib/demu-holiday';
 import { demuView } from '@/lib/demu-view';
 import type { Podcast } from '@/lib/types';
-import { EmuIcon } from './icons';
+import { EmuIcon, HolidayEmuIcon } from './icons';
 
 const DEMU_ORIGIN = { path: '/demu', label: 'DeMu' };
+
+/**
+ * The title emu's holiday costume, from the VISITOR'S clock (lib/demu-holiday.ts).
+ * The page is prerendered, so the server snapshot is `null` — the plain emu —
+ * and React swaps the costume in right after hydration, with no mismatch. The
+ * costume keeps the emu's box (`HolidayEmuIcon`), so the swap moves nothing.
+ * Nothing to subscribe to: a window that opens while the page is open waits for
+ * the next load.
+ */
+const noSubscribe = () => () => {};
+const holidayNow = () => demuHolidayFor(new Date(), new URLSearchParams(window.location.search).get('holiday'));
+const noHolidayOnServer = () => null;
 
 /**
  * `failed` covers BOTH a failed request and `answered: false` (a cold or
@@ -51,6 +64,7 @@ export function DemuPage() {
   const router = useRouter();
   // A press on a cover plays the album; the rest of the row opens it.
   const coverPlay = useAlbumCoverPlay();
+  const holiday = useSyncExternalStore(noSubscribe, holidayNow, noHolidayOnServer);
 
   const fetchList = useCallback(async () => {
     setLoad({ status: 'loading' });
@@ -186,9 +200,14 @@ export function DemuPage() {
     <>
       {/* The emu: the search menu's DEMU glyph, so the page wears the shape of the
           type it lists (Chad, 2026-11-19: "use that logo for the DeMu page as well").
-          The badge on a self-hosted cover below is the same component. */}
+          The badge on a self-hosted cover below is the same component. On a
+          holiday the title's emu, and only that one, wears a costume. */}
       <h1 data-demu-title className="headline text-3xl sm:text-4xl flex items-center gap-2">
-        <EmuIcon className="w-[1em] h-[1em] text-bolt" />
+        {holiday ? (
+          <HolidayEmuIcon holiday={holiday} className="w-[1em] h-[1em] text-bolt" />
+        ) : (
+          <EmuIcon className="w-[1em] h-[1em] text-bolt" />
+        )}
         DeMu
       </h1>
       <p className="mt-2 max-w-xl text-sm leading-relaxed text-bone/80">
