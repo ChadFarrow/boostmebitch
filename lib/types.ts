@@ -165,6 +165,13 @@ export interface Podcast {
    *  such a publisher stays under PODCASTS, the residual bucket. */
   publisherMediums?: string[];
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
+  /** The ARTIST (publisher) feed this album's channel names — either the
+   *  spec's `<podcast:publisher>` wrapper or Wavlake's bare
+   *  `<podcast:remoteItem medium="publisher">` (`parsePublisherRef`). From RSS
+   *  only. Naming it is not resolving it: Podcast Index often does not hold
+   *  it, so `<ArtistFollowChip>` follows it on this device only and never
+   *  writes it to the shared favorites list. */
+  publisherFeed?: { feedGuid: string; feedUrl: string };
   funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
   nostrNpubs?: FeedNpub[]; // <podcast:txt purpose="nostr"> — the show's own npub(s), from RSS
   /** Synthetic feed parsed directly from raw RSS because it isn't in Podcast

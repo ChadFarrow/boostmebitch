@@ -20,6 +20,7 @@ import { DEMU_APPS, demuAge, demuDateLabel, demuGroups, matchesDemuQuery, sortDe
 import type { DemuAlbum } from '@/lib/demu';
 import { demuView } from '@/lib/demu-view';
 import type { Podcast } from '@/lib/types';
+import { EmuIcon } from './icons';
 
 const DEMU_ORIGIN = { path: '/demu', label: 'DeMu' };
 
@@ -166,9 +167,9 @@ export function DemuPage() {
         className={`absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full overflow-hidden border border-ink flex items-center justify-center ${app === 'podhome' ? 'bg-bone' : 'bg-ink'}`}
       >
         {app === 'self' ? (
-          <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 text-bolt" fill="currentColor" aria-hidden>
-            <path d="M12 3 2 12h3v8h5v-5h4v5h5v-8h3z" />
-          </svg>
+          // The search menu's DEMU glyph, so the badge and the type it was
+          // found under are one shape.
+          <EmuIcon className="w-3.5 h-3.5 text-bolt" />
         ) : (
           // A 96 px file from /public, drawn at 20 px: `next/image` would only add a
           // resize round trip for an icon this small.
@@ -183,7 +184,13 @@ export function DemuPage() {
 
   return (
     <>
-      <h1 className="headline text-3xl sm:text-4xl">DeMu</h1>
+      {/* The emu: the search menu's DEMU glyph, so the page wears the shape of the
+          type it lists (Chad, 2026-11-19: "use that logo for the DeMu page as well").
+          The badge on a self-hosted cover below is the same component. */}
+      <h1 data-demu-title className="headline text-3xl sm:text-4xl flex items-center gap-2">
+        <EmuIcon className="w-[1em] h-[1em] text-bolt" />
+        DeMu
+      </h1>
       <p className="mt-2 max-w-xl text-sm leading-relaxed text-bone/80">
         Self-hosted music.
       </p>

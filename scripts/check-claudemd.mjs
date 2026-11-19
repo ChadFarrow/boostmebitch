@@ -307,6 +307,14 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // slack above had been spent to the word before this change (14,999), and a
 // row plus one index path is ~34 words. The structural lever above is still
 // the one to pull when this is needed next; a sixth raise is not.
+//
+// 2026-11-19, held at 15,100: merging main into #579 (NEW MUSIC) put the file at
+// 15,118 — `check:newmusic`'s row and its two index paths on top of a main that
+// had grown to 15,097. The lever above paid for it, a little: four of the
+// longest third-column cells (`check:queue`, `check:lnurl`, `check:keysend`,
+// `check:downloads`) were cut to the shortest form carrying the same failure.
+// None held a code span or a number, and each script's header still argues it.
+// `check:newmusic`'s own cell was cut too. 15,097 after: slack, not a licence.
 const BUDGET = 15100
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')

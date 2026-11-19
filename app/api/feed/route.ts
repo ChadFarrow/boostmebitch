@@ -138,10 +138,10 @@ export async function GET(req: Request) {
     // than breaking the whole feed.
     const EMPTY_ENRICHMENT = {
       episodes: new Map(), feedMedium: undefined, feedPodroll: undefined,
-      feedFunding: undefined, feedNostrNpubs: undefined, feedTitle: undefined,
+      feedFunding: undefined, feedNostrNpubs: undefined, feedTitle: undefined, feedPublisher: undefined,
       rssRead: false, feedValue: undefined,
     };
-    const { episodes: enrichMap, rssRead, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle } =
+    const { episodes: enrichMap, rssRead, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle, feedPublisher } =
       podcast?.url
         ? await getRssEpisodeEnrichment(podcast.url).catch(() => EMPTY_ENRICHMENT)
         : EMPTY_ENRICHMENT;
@@ -292,6 +292,10 @@ export async function GET(req: Request) {
     // <podcast:txt purpose="nostr"> — the show's own npub, p-tagged on boost
     // notes. RSS-only like podroll, so it's an unconditional attach.
     if (feedNostrNpubs) podcast.nostrNpubs = feedNostrNpubs;
+    // The album's ARTIST feed, either tag form (`parsePublisherRef`). RSS-only:
+    // Podcast Index indexes neither. The album page asks PI whether it can
+    // resolve it before it offers ♡ ARTIST.
+    if (feedPublisher) podcast.publisherFeed = feedPublisher;
     const fitted = fitEpisodesToBudget(merged);
     // Two ways this list can be short of the feed, and neither is visible from
     // the rows: PI has no more to give past its own ceiling, or the response
