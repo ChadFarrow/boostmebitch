@@ -28,7 +28,7 @@ import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { downloadManager } from '@/lib/downloads/download-manager';
-import type { Episode } from '@/lib/types';
+import type { Episode, Podcast } from '@/lib/types';
 import { logPlayback, playbackItemId, startPlaybackLog, watchMediaElement } from '@/lib/playback-log';
 import { loadItemValue } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
@@ -203,7 +203,14 @@ export function Player() {
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
-  const [boostOpen, setBoostOpen] = useState(false);
+  // What the BOOST modal was opened for, taken at the press — null while it is
+  // closed. NOT `current` alone, which moves on by itself: a list that plays as
+  // tracks steps to the next one when a track ends, and a playlist row's payee
+  // is not read until it plays (`valueNotRead`). Rendered from `current`, the
+  // modal unmounted the moment the next track started — mid-send included —
+  // and came back, blank, for the NEW track once its block arrived (#551). See
+  // `boostFollows` below for when the modal still reads `current`.
+  const [boostFor, setBoostFor] = useState<{ episode: Episode; podcast: Podcast; positionSec: number } | null>(null);
   const [audioErr, setAudioErr] = useState<string | null>(null);
   // Whether the active <video> can enter Picture-in-Picture (HLS streams only —
   // the native <audio> can't). Recomputed per item; gates the PiP button.
@@ -1400,6 +1407,30 @@ export function Player() {
   const hasValue = boost.hasValue;
   const isLive = episode.liveStatus === 'live';
 
+  // BOOST, from the mini-bar and from <FullscreenPlayer>. The position is the
+  // press's: it is the `ts` a held copy's boostagram names, a second of the
+  // track the modal was opened for.
+  const openBoost = () => setBoostFor({ episode, podcast, positionSec: isLive ? 0 : positionSec });
+  // The open modal reads `current` while `current` is still the item it was
+  // opened for, with its payee read, and the press's copy otherwise (#551).
+  // Following the SAME item is what it always did: the boostagram's `ts` is the
+  // position at Send, and a live item's on-air block reaches the modal by
+  // `live-value.ts` swapping it into `current.episode`. `hasValue` is part of
+  // the test because the same item played again from a playlist row arrives
+  // with its payee unread, which is the case that unmounted the modal.
+  //
+  // A LIVE item is never held. Its payee is the watcher's on-air block, and the
+  // watcher stops with the item, so a held copy would carry the last swapped-in
+  // TRACK block where the show's own block belongs. A live boost therefore pays
+  // what it paid before this existed, and unmounts when its block goes, as
+  // before; `<BoostModal>` itself holds what a press of Send paid.
+  const boostFollows = !!boostFor && (boostFor.episode.liveStatus === 'live'
+    || (hasValue && epKey(boostFor.episode) === epKey(episode)));
+  const boostTarget = boostFollows ? { episode, podcast, positionSec: isLive ? 0 : positionSec } : boostFor;
+  // `<BoostModal>` asserts the block is there, so a followed item needs
+  // `hasValue`. A held copy passed the same gate when BOOST was pressed.
+  const boostShown = !!boostTarget && (!boostFollows || hasValue);
+
   function seekMedia(v: number) {
     // The listener moved the playhead on purpose: licenses a large rewind that
     // ordinary playback may not make. See `markDeliberateSeek`.
@@ -1983,7 +2014,7 @@ export function Player() {
                 aria-label is REQUIRED, not decorative: `title` is not an
                 accessible name, so without it the mobile button is unlabelled. */}
             <button
-              onClick={() => setBoostOpen(true)}
+              onClick={openBoost}
               disabled={!hasValue}
               className="btn-bolt btn-compact flex-shrink-0 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
               title={boostButtonTitle(boost, 'Episode')}
@@ -2019,15 +2050,15 @@ export function Player() {
         transcriptActiveIdx={transcriptActiveIdx}
         hasTranscriptUrl={!!transcriptSrc.url}
         onClose={closePlayer}
-        onBoost={() => setBoostOpen(true)}
+        onBoost={openBoost}
       />
 
-      {boostOpen && hasValue && (
+      {boostShown && (
         <BoostModal
-          episode={episode}
-          podcast={podcast}
-          positionSec={isLive ? 0 : positionSec}
-          onClose={() => setBoostOpen(false)}
+          episode={boostTarget!.episode}
+          podcast={boostTarget!.podcast}
+          positionSec={boostTarget!.positionSec}
+          onClose={() => setBoostFor(null)}
         />
       )}
     </>
