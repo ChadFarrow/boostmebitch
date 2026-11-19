@@ -3,8 +3,8 @@
  * e2e: the /demu title's emu wears its holiday hat, and nothing else moves.
  *
  * Chad, 2026-11-19: "For the new DeMu logo we have on /DeMu can we dress it up
- * for holidays?" — feathers and a pilgrim hat in Thanksgiving week, a Santa hat
- * 1–26 Dec. Design: docs/superpowers/specs/2026-11-19-demu-holiday-hats-design.md.
+ * for holidays?" — feathers and a pilgrim hat from 1 Nov through Thanksgiving
+ * Day, a Santa hat from Black Friday through 26 Dec. Design: docs/superpowers/specs/2026-11-19-demu-holiday-hats-design.md.
  * Which day wears which hat is pinned by `check:demu`; this drives the page.
  *
  * What it drives, under phone emulation (390×844 and 320×640, `mobile: true`),
@@ -16,7 +16,8 @@
  *   square, its gaps masks and never the page colour painted, the emu's eye
  *   still open — and the title's box and the word's x do NOT move;
  * - the calendar itself, under a faked browser date: 24 Nov 2026 wears the
- *   turkey with no parameter and with a junk one, 4 Jul 2026 is plain;
+ *   turkey with no parameter and with a junk one, Black Friday 27 Nov 2026
+ *   wears the Santa hat, 4 Jul 2026 is plain;
  * - no React hydration warning, and no horizontal overflow at either width;
  * - screenshots of each title in the dark and the light theme (SHOT_DIR).
  *
@@ -182,6 +183,7 @@ for (const [w, h] of [[390, 844], [320, 640]]) {
 console.log('\n  the calendar, under a faked browser date (390px)');
 await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
 const NOV_24 = Date.UTC(2026, 10, 24, 17, 0); // 12:00 in New York
+const BLACK_FRIDAY = Date.UTC(2026, 10, 27, 17, 0); // 12:00 in New York
 const JUL_4 = Date.UTC(2026, 6, 4, 16, 0);
 await fakeNow(NOV_24);
 t.equal('faked clock: the page reads 24 Nov 2026', (await (async () => { await go('/demu'); return js('new Date().toDateString()'); })()), 'Tue Nov 24 2026');
@@ -190,6 +192,12 @@ await go('/demu?holiday=easter');
 t.ok('24 Nov 2026, ?holiday=easter: the calendar still decides', await until(`!!document.querySelector('${TITLE} svg[data-holiday="thanksgiving"]')`, 5000));
 await go('/demu?holiday=none');
 t.equal('24 Nov 2026, ?holiday=none: the plain emu', (await readTitle()).holiday, null);
+// The day after Thanksgiving hands over to Santa (Chad: "once that holiday hits, it
+// switches over to the next holiday").
+await fakeNow(BLACK_FRIDAY);
+await go('/demu');
+t.equal('faked clock: the page reads 27 Nov 2026', await js('new Date().toDateString()'), 'Fri Nov 27 2026');
+t.ok('Black Friday 2026, no parameter: the Santa hat', await until(`!!document.querySelector('${TITLE} svg[data-holiday="christmas"]')`, 5000));
 await fakeNow(JUL_4);
 await go('/demu');
 // Today may be outside both windows, so a plain emu alone proves nothing about the clock.

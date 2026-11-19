@@ -236,7 +236,7 @@ if (stampSeen) {
   t.fail('a PLAYLIST stamp rendered for the search "music" under PLAYLISTS', 'no result came back from Podcast Index within 30 s');
 }
 
-// `?holiday=none`: in a holiday week the title's emu wears a costume, which is a
+// `?holiday=none`: while a costume is in season the title's emu wears a costume, which is a
 // different SVG by design (e2e:demuholiday covers it). This compares the plain one.
 await go('/demu?holiday=none');
 const title = await until(`!!document.querySelector('[data-demu-title] svg')`, 20000)
