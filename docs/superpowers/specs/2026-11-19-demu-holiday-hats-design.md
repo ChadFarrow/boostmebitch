@@ -41,6 +41,8 @@ From drafts on a claude.ai page (2026-11-19):
 - The small emus — the search menu, `BROWSE DEMU`, the Self-hosted cover
   badge — stay plain: a costume does not read at 11–14 px.
 - No other holiday now. A later one is one more window and one more layer.
+  (Later the same day the year got eleven looks: see
+  `2026-11-19-demu-holiday-year-design.md`.)
 
 ## Anti-goals
 
