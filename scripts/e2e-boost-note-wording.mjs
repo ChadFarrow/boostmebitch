@@ -43,6 +43,10 @@
 //   6. The playlist opened by a URL the index does not hold, so it has no guid:
 //      the row's album is still the first show tag and the artist is still
 //      named. The narrow rule tagged no feed and asked for no artist here.
+// Every note but BOOST ALL's carries ONE listen link (Chad, 2026-11-19: "too
+// many links"): with this site's `?podcast=` link in it, no Podcast Index page
+// beside it, in the body or as an `r` tag; without that link (6), the note
+// still has one.
 //
 // Every boost is 100 sats, the modal's minimum. The episode is Two For
 // Tunestr's, as in e2e:boostnote, because every payee it names is a NODE: the
@@ -245,6 +249,21 @@ async function pressSend(button = SEND) {
 const why = async () => `paid ${await js('window.__paid.length')}; dialog: ${String(await js(`${DIALOG}?.innerText ?? 'closed'`)).replace(/\s+/g, ' ').slice(-400)}`;
 const iTags = (e) => (e?.tags ?? []).filter((x) => x[0] === 'i').map((x) => x[1]);
 const sentenceOf = (e) => (e?.content ?? '').split('\n').find((l) => / boosted \d+ sats/.test(l)) ?? '';
+/**
+ * ONE listen link (Chad, on a beta note, 2026-11-19: "too many links"). With this
+ * site's `?podcast=` link in the body, the show-level Podcast Index page is not
+ * there too, in the body or as an `r` tag — both named one album. Without this
+ * site's link (a playlist with no guid) the note still carries a listen link.
+ */
+function listenLinks(e) {
+  const urls = (e?.content ?? '').split('\n').filter((l) => /^https?:\/\//.test(l) && !l.includes('/api/og/boost.png'));
+  const site = urls.some((u) => /^https:\/\/www\.boostmeb(itch|uddy)\.com\/\?podcast=/.test(u));
+  const pi = (u) => u.startsWith('https://podcastindex.org/podcast/');
+  const rTags = (e?.tags ?? []).filter((x) => x[0] === 'r').map((x) => x[1]);
+  if (site) t.ok("...one listen link: this site's link, and no Podcast Index page in the body or an r tag",
+    !urls.some(pi) && !rTags.some(pi), urls.join(' | '));
+  else t.ok("...without this site's link, a listen link is still in the body", urls.length > 0, urls.join(' | ') || '(none)');
+}
 /** ` via <the app the note's client tag names>` — what every sentence ends with. */
 const via = (e) => ` via ${(e?.tags ?? []).find((x) => x[0] === 'client')?.[1] ?? '(no client tag)'}`;
 
@@ -260,6 +279,7 @@ if (section(1, 'A playlist row names the track, its artist, then the playlist'))
   await pressSend();
   const note = await noteAfter(mark);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
+  listenLinks(note);
   t.ok('...says "to Sing For You by The Doerfels from ITDV music playlist"',
     sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from ITDV music playlist' + via(note)), sentenceOf(note));
   t.equal('the row\'s own feed is the first show tag', iTags(note)[0], `podcast:guid:${ALBUM}`);
@@ -282,6 +302,7 @@ if (section(2, 'An artist lookup that never answers costs the "by", not the note
   holdRemoteItem = false;
   t.ok('the lookup was asked', remoteItemAsked.length > asked, `${remoteItemAsked.length - asked} request(s)`);
   t.ok('the note still reaches the relay, within 10 s', !!note, note ? '' : await why());
+  listenLinks(note);
   t.ok('...without the artist',
     sentenceOf(note).endsWith('boosted 100 sats to Sing For You from ITDV music playlist' + via(note)), sentenceOf(note));
 }
@@ -296,6 +317,7 @@ if (section(3, 'An album track names the album\'s artist, then the album')) {
   await pressSend();
   const note = await noteAfter(mark, 30000);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
+  listenLinks(note);
   t.ok('...says "to Sing For You by The Doerfels from Disco Swag - The Album"',
     sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from Disco Swag - The Album' + via(note)), sentenceOf(note));
   t.equal('the album is the only show tag', iTags(note).filter((x) => x.startsWith('podcast:guid:')), [`podcast:guid:${ALBUM}`]);
@@ -313,6 +335,7 @@ if (section(4, 'A podcast episode: the episode, then the show, never "by"')) {
   await pressSend();
   const note = await noteAfter(mark);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
+  listenLinks(note);
   t.ok('...says "to Open Range from Two For Tunestr", with no "by"',
     sentenceOf(note).endsWith('boosted 100 sats to Open Range from Two For Tunestr' + via(note)), sentenceOf(note));
 }
@@ -331,6 +354,7 @@ if (section(5, 'BOOST ALL says what, then where')) {
   const m = sentenceOf(note).endsWith(via(note))
     && sentenceOf(note).slice(0, -via(note).length).match(/ boosted (\d+) sats to (\d+) tracks? from Two For Tunestr( \(.+ each\))?$/);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
+  // No listenLinks: BOOST ALL's hand-built summary (`contentOverride`) never carried a link.
   t.ok('...says "boosted N sats to M tracks from Two For Tunestr[ (N each)] via <app>"', !!m, sentenceOf(note));
   t.ok('...and N is 100 × M', !!m && Number(m[1]) === 100 * Number(m[2]), sentenceOf(note));
 }
@@ -346,6 +370,7 @@ if (section(6, 'A playlist with no guid of its own still names the row\'s album 
   await pressSend();
   const note = await noteAfter(mark);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
+  listenLinks(note);
   t.ok('the artist was looked up', remoteItemAsked.length > asked, `${remoteItemAsked.length - asked} request(s)`);
   t.ok('...says "to Sing For You by The Doerfels from ITDV music playlist"',
     sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from ITDV music playlist' + via(note)), sentenceOf(note));
@@ -365,6 +390,7 @@ if (section(7, 'An album boost names the album, then its artist')) {
   await pressSend();
   const note = await noteAfter(mark, 30000);
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
+  listenLinks(note);
   t.ok('...says "to Disco Swag - The Album by The Doerfels via <app>"',
     sentenceOf(note).endsWith('boosted 100 sats to Disco Swag - The Album by The Doerfels' + via(note)), sentenceOf(note));
   t.equal('the album is the only i tag', iTags(note), [`podcast:guid:${ALBUM}`]);
