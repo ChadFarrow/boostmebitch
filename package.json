@@ -135,10 +135,12 @@
     "check:testnotes": "node --experimental-strip-types scripts/check-test-boost-notes.mjs",
     "check:opml": "node --experimental-strip-types scripts/check-opml.mjs",
     "check:moved": "node --experimental-strip-types scripts/check-moved.mjs",
+    "check:newmusic": "node --experimental-strip-types scripts/check-newmusic.mjs",
     "check:demu": "node --experimental-strip-types scripts/check-demu.mjs",
     "check:playlistarchive": "node scripts/check-playlist-archive.mjs",
     "e2e:moved": "node scripts/e2e-moved.mjs",
-    "e2e:mentionlinks": "node scripts/e2e-mention-links.mjs"
+    "e2e:mentionlinks": "node scripts/e2e-mention-links.mjs",
+    "e2e:newmusic": "node scripts/e2e-new-music.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
