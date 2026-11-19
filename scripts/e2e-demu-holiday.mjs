@@ -51,7 +51,8 @@ page.on((m) => {
   const text = m.method === 'Runtime.consoleAPICalled'
     ? (m.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ')
     : m.method === 'Runtime.exceptionThrown' ? (m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '') : '';
-  if (/hydrat|did not match|server rendered/i.test(text)) hydration.push(text.slice(0, 300));
+  // A production build prints only the minified number: #418/#423/#425 are React's hydration errors.
+  if (/hydrat|did not match|server rendered|Minified React error #(418|423|425)\b/i.test(text)) hydration.push(text.slice(0, 300));
 });
 
 /** Start the page's clock at `ms`, before any of its scripts run; `null` removes it. */
