@@ -72,11 +72,16 @@ import {
   NwcNotAttemptedError,
   failureBlamesDestination,
   isSocketSuspect,
+  lookupErrorVerdict,
+  lookupVerdict,
   mapNwcError,
   routingFailureProvesUnpaid,
   shouldDemoteAddress,
 } from '../lib/v4v/nwc-errors.ts';
+import { bolt11PaymentHash } from '../lib/v4v/bolt11.ts';
+import { fakeBolt11 } from './fake-bolt11.mjs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
+import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
 
@@ -580,6 +585,142 @@ section('Control — a parent-class matcher must fail the publish-timeout vector
     naive(replyTimeout()) instanceof NwcIndeterminateError
       && mapNwcError(replyTimeout()) instanceof NwcIndeterminateError,
     true);
+}
+
+// ---------------------------------------------------------------------------
+section('bolt11PaymentHash — the hash an unanswered LNURL leg is looked up by');
+// ---------------------------------------------------------------------------
+{
+  // An unanswered `pay_invoice` is checked with `lookup_invoice { payment_hash }`,
+  // and RETRY pays the same invoice again. A wrong hash is never a double-pay
+  // (the wallet answers NOT_FOUND, which retries nothing), but it hides a payment
+  // that went through behind "your wallet cannot tell". The decoy fields are the
+  // plausible bug: `s` (payment secret) and `h` (description hash) are 52 words
+  // long too, and a writer may put either one first.
+  //
+  // light-bolt11-decoder's own test invoice, and the hash that decoder reads.
+  const REAL = 'lnbc20u1p3y0x3hpp5743k2g0fsqqxj7n8qzuhns5gmkk4djeejk3wkp64ppevgekvc0jsdqcve5kzar2v9nr5gpqd4hkuetesp5ez2g297jduwc20t6lmqlsg3man0vf2jfd8ar9fh8fhn2g8yttfkqxqy9gcqcqzys9qrsgqrzjqtx3k77yrrav9hye7zar2rtqlfkytl094dsp0ms5majzth6gt7ca6uhdkxl983uywgqqqqlgqqqvx5qqjqrzjqd98kxkpyw0l9tyy8r8q57k7zpy9zjmh6sez752wj6gcumqnj3yxzhdsmg6qq56utgqqqqqqqqqqqeqqjq7jd56882gtxhrjm03c93aacyfy306m4fq0tskf83c0nmet8zc2lxyyg3saz8x6vwcp26xnrlagf9semau3qm2glysp7sv95693fphvsp54l567';
+  const REAL_HASH = 'f5636521e98000697a6700b979c288ddad56cb3995a2eb07550872c466ccc3e5';
+  const P = '11'.repeat(32);
+  const vectors = [
+    { label: 'a real invoice', args: [REAL], expect: REAL_HASH, alsoNaive: true },
+    { label: 'the payment secret `s` is written before `p`', args: [fakeBolt11({ fields: [{ tag: 's', hex: '22'.repeat(32) }, { tag: 'p', hex: P }] })], expect: P },
+    { label: 'a description hash `h` is written before `p`', args: [fakeBolt11({ fields: [{ tag: 'h', hex: '33'.repeat(32) }, { tag: 'p', hex: P }] })], expect: P },
+    { label: 'upper case (BOLT 11 allows it)', args: [REAL.toUpperCase()], expect: REAL_HASH, alsoNaive: true },
+    { label: 'a lightning: prefix', args: [`lightning:${REAL}`], expect: REAL_HASH, alsoNaive: true },
+    { label: 'a `p` of the wrong length is skipped', args: [fakeBolt11({ fields: [{ tag: 'p', words: new Array(53).fill(0) }, { tag: 'p', hex: P }] })], expect: P, alsoNaive: true },
+    { label: 'no `p` at all', args: [fakeBolt11({ fields: [{ tag: 'd', text: 'no hash here' }] })], expect: null, alsoNaive: true },
+    { label: 'an LNURL, not an invoice', args: ['lnurl1dp68gurn8ghj7um9wfmxjcm99e3k7mf0v9cxj0m385ekvcenxc6r2c35xvukxefcv5mkvv34x5ekzd3ev56nyd3hxqurzepexejxxepnxscrvwfnv9nxzcn9xq6xyefhvgcxxcmyxymnserxfq5fns'], expect: null, alsoNaive: true },
+    { label: 'a character outside bech32', args: [`${REAL.slice(0, 40)}b${REAL.slice(41)}`], expect: null, alsoNaive: true },
+    { label: 'empty', args: [''], expect: null, alsoNaive: true },
+  ];
+  for (const v of vectors) check(`${v.label} → ${v.expect}`, bolt11PaymentHash(...v.args), v.expect);
+  // `naive()`: the first tagged field 52 words long, whatever its tag.
+  const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+  const naive = (invoice) => {
+    const s = invoice.trim().toLowerCase().replace(/^lightning:/, '');
+    const sep = s.lastIndexOf('1');
+    if (!s.startsWith('ln') || sep < 4) return null;
+    const w = [...s.slice(sep + 1)].map((c) => CHARSET.indexOf(c));
+    if (w.some((x) => x < 0)) return null;
+    const end = w.length - 110;
+    for (let i = 7; i + 3 <= end;) {
+      const len = w[i + 1] * 32 + w[i + 2];
+      if (len === 52) {
+        let acc = 0, bits = 0; const out = [];
+        for (const x of w.slice(i + 3, i + 55)) { acc = ((acc << 5) | x) & 0xfff; bits += 5; if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 255); } }
+        return Buffer.from(out.slice(0, 32)).toString('hex');
+      }
+      i += 3 + len;
+    }
+    return null;
+  };
+  replayVectors({
+    vectors,
+    invoke: (which, v) => { try { return String((which === 'real' ? bolt11PaymentHash : naive)(...v.args)); } catch (e) { return `throw ${e}`; } },
+    fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); },
+  });
+}
+
+// ---------------------------------------------------------------------------
+section('lookupVerdict — what a lookup_invoice answer proves about a payment we sent');
+// ---------------------------------------------------------------------------
+{
+  // The verdict decides whether a leg that MAY HAVE PAID is paid again, so the
+  // one answer that must never be reached by accident is `failed`. Two traps:
+  //
+  //   - A PREIMAGE IS NOT PROOF. The app makes a keysend's preimage itself and
+  //     hands it to the wallet, so a wallet may echo it on a payment that is
+  //     still pending, or that failed.
+  //   - SILENCE IS NOT FAILURE. With no `state` and no `settled_at`, a pending
+  //     payment and a failed one look the same — and NIP-47 does not require
+  //     `state` (the SDK marks it "non-NIP-47 spec compliant").
+  const H = 'ab'.repeat(32);
+  const PRE = 'cd'.repeat(32);
+  const tx = (extra) => ({ type: 'outgoing', payment_hash: H, invoice: '', amount: 146000, fees_paid: 0, created_at: 1763400000, ...extra });
+  const V = (state, why) => (why ? `${state}:${why}` : state);
+  const vectors = [
+    { label: 'settled, with the preimage', args: [tx({ state: 'settled', preimage: PRE, settled_at: 1763400060 }), H], expect: V('paid'), alsoNaive: true },
+    { label: 'no state, settled_at set', args: [tx({ settled_at: 1763400060 }), H], expect: V('paid'), alsoNaive: true },
+    { label: 'state settled, settled_at 0', args: [tx({ state: 'settled', settled_at: 0 }), H], expect: V('paid') },
+    { label: 'PENDING keysend that echoes our preimage', args: [tx({ state: 'pending', preimage: PRE }), H], expect: V('pending') },
+    { label: 'FAILED keysend that echoes our preimage', args: [tx({ state: 'failed', preimage: PRE }), H], expect: V('failed') },
+    { label: 'failed, no preimage', args: [tx({ state: 'failed' }), H], expect: V('failed'), alsoNaive: true },
+    { label: 'NO state and NO settled_at — pending and failed look alike', args: [tx({}), H], expect: V('unknown', 'unclear') },
+    { label: 'state expired', args: [tx({ state: 'expired' }), H], expect: V('unknown', 'unclear') },
+    { label: 'failed — but for ANOTHER payment hash', args: [tx({ state: 'failed', payment_hash: 'ef'.repeat(32) }), H], expect: V('unknown', 'unclear') },
+    { label: 'settled — but an INCOMING payment', args: [tx({ type: 'incoming', state: 'settled', settled_at: 1763400060 }), H], expect: V('unknown', 'unclear') },
+    { label: 'failed AND settled_at — contradicts itself', args: [tx({ state: 'failed', settled_at: 1763400060 }), H], expect: V('unknown', 'unclear') },
+    { label: 'no answer object at all', args: [null, H], expect: V('unknown', 'unclear') },
+    { label: 'the hash in upper case still matches', args: [tx({ state: 'failed', payment_hash: H.toUpperCase() }), H], expect: V('failed'), alsoNaive: true },
+  ];
+  const show = (v) => (v.why ? `${v.state}:${v.why}` : v.state);
+  for (const v of vectors) check(`${v.label} → ${v.expect}`, show(lookupVerdict(...v.args)), v.expect);
+  // `naive()`: "a preimage means it paid; no settlement means it failed".
+  const naive = (t) => {
+    if (t?.preimage) return 'paid';
+    if (!t || t.state === 'failed' || !t.settled_at) return 'failed';
+    return 'paid';
+  };
+  replayVectors({
+    vectors,
+    invoke: (which, v) => (which === 'real' ? show(lookupVerdict(...v.args)) : naive(v.args[0])),
+    fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); },
+  });
+}
+
+// ---------------------------------------------------------------------------
+section('lookupErrorVerdict — a lookup that failed never says the PAYMENT failed');
+// ---------------------------------------------------------------------------
+{
+  // NOT_FOUND reads like "no such payment, so nothing was sent". It is not: a
+  // wallet that ignores the preimage we passed stores the keysend under its OWN
+  // hash, and many wallets look up incoming invoices only. Either way the
+  // payment may have gone out. Only the ANSWER object can say `failed`.
+  const vectors = [
+    { label: 'NOT_FOUND', args: [walletError('NOT_FOUND')], expect: 'unknown:not-found' },
+    { label: 'NOT_IMPLEMENTED (no lookup_invoice)', args: [walletError('NOT_IMPLEMENTED')], expect: 'unknown:cannot-ask' },
+    { label: 'RESTRICTED (not granted)', args: [walletError('RESTRICTED')], expect: 'unknown:cannot-ask' },
+    { label: 'UNAUTHORIZED', args: [walletError('UNAUTHORIZED')], expect: 'unknown:cannot-ask' },
+    { label: 'the reply timed out', args: [replyTimeout()], expect: 'unknown:no-answer', alsoNaive: true },
+    { label: 'the request never reached the relay', args: [publishTimeout()], expect: 'unknown:no-answer', alsoNaive: true },
+    { label: 'the relay would not connect', args: [failedDial()], expect: 'unknown:no-answer', alsoNaive: true },
+    { label: 'PAYMENT_FAILED — from a LOOKUP, it says nothing', args: [walletError('PAYMENT_FAILED')], expect: 'unknown:unclear' },
+    { label: 'an answer the SDK could not validate', args: [new nwc.Nip47ResponseValidationError('bad', 'INTERNAL')], expect: 'unknown:unclear' },
+    { label: 'anything else', args: [new Error('boom')], expect: 'unknown:unclear' },
+  ];
+  const show = (v) => (v.why ? `${v.state}:${v.why}` : v.state);
+  for (const v of vectors) check(`${v.label} → ${v.expect}`, show(lookupErrorVerdict(...v.args)), v.expect);
+  // `naive()`: "the wallet has no such payment, so it never went out".
+  const naive = (e) => (e instanceof nwc.Nip47WalletError && e.code === 'NOT_FOUND' ? 'failed' : 'unknown:no-answer');
+  replayVectors({
+    vectors,
+    invoke: (which, v) => (which === 'real' ? show(lookupErrorVerdict(...v.args)) : naive(v.args[0])),
+    fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); },
+  });
+  const codes = ['NOT_FOUND', 'PAYMENT_FAILED', 'INTERNAL', 'OTHER', 'INSUFFICIENT_BALANCE', 'QUOTA_EXCEEDED', 'RATE_LIMITED', 'EXPIRED', 'NOT_IMPLEMENTED'];
+  check('no lookup error, of any code, ever says paid or failed',
+    codes.every((c) => lookupErrorVerdict(walletError(c)).state === 'unknown'), true);
 }
 
 // ---------------------------------------------------------------------------

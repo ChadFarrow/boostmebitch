@@ -11,6 +11,7 @@ import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { AppHeader } from '@/components/app-header';
 import Link from 'next/link';
+import { demuView } from '@/lib/demu-view';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed, loadFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
@@ -780,6 +781,18 @@ export function HomePage() {
                 + MAKE PLAYLIST
               </Link>
             )}
+            {/* /demu — every self-hosted album, newest first (#583). It joined
+                this row when main's hero button met this section: the row is
+                the home page's only set of discovery links, and it wraps to
+                its own line at 390px. Same visibility rule as playlists:
+                discovery, not navigation. */}
+            <Link
+              href="/demu"
+              className="btn-ghost btn-compact"
+              title="Browse self-hosted music, newest first"
+            >
+              BROWSE DEMU
+            </Link>
           </div>
         </section>
       )}
@@ -894,8 +907,24 @@ export function HomePage() {
               // The noun follows the lane that produced the rows, not what
               // the menu names — "12 albums" has to be true of the twelve rows
               // under it, and during a round trip those two disagree.
-              <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
-                {loading ? 'searching…' : query ? `${feeds.length} ${resultNoun}` : 'feeds'}
+              <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <span>{loading ? 'searching…' : query ? `${feeds.length} ${resultNoun}` : 'feeds'}</span>
+                {/* The DEMU type is a filter over Podcast Index's ranked rows,
+                    so a broad word comes back short (`bitcoin`: 0 under DEMU,
+                    11 on /demu). This hands the same words to /demu, whose list
+                    holds every DeMu album. Beside the count, never under the
+                    search input — that space is the npub suggestion's and the
+                    nsec warning's (docs/ui.md). Read from `searchInfo`, so it
+                    names the type the server applied. */}
+                {!loading && searchInfo.type === 'demu' && (
+                  <Link
+                    href="/demu"
+                    onClick={() => { demuView.query = query; demuView.shown = 0; demuView.scrollY = 0; }}
+                    className="normal-case tracking-normal text-bolt underline underline-offset-2 inline-flex min-h-6 items-center"
+                  >
+                    browse all DeMu →
+                  </Link>
+                )}
               </div>
             )}
             {/* Search results only, now that favorites have their own route.

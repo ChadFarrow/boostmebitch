@@ -106,6 +106,7 @@ export { STAMP_FAILURE_TEXT, type SiteNoteState, type StampFailure } from '../si
 
 export {
   type PublishedNote,
+  SignStoppedError,
 } from './publish';
 
 export {
@@ -182,7 +183,7 @@ export {
   recordFavoritesPrivacy,
 } from './settings-backup';
 
-export { favoriteFromPodcast, hydrateFavorites, startFavoritesReadRetry } from './favorites-hydrator';
+export { favoriteFromPodcast, hydrateFavorites, keepFavoritesOnRelays, startFavoritesReadRetry } from './favorites-hydrator';
 
 export {
   MUTES_KIND,

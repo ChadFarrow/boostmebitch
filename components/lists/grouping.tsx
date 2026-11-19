@@ -296,9 +296,15 @@ const FAV_PAGE = 12;
  *
  * Clamping alone is not enough and never was: a SHORTER list (an unfavorite)
  * still needs `remaining` floored at 0, which is why that stays.
+ *
+ * `initialShown` is for a list that comes BACK to where its reader left it —
+ * `/demu` restores the rows revealed before an album was opened. It sets the
+ * first render only; a `resetKey` change still drops to one page. Never pass a
+ * number the reader did not reveal themselves: this page size is a bytes cap.
+ * `shown` is returned so such a caller can save it.
  */
-export function useRevealed<T>(rows: T[], resetKey?: string) {
-  const [state, setState] = useState({ shown: FAV_PAGE, key: resetKey });
+export function useRevealed<T>(rows: T[], resetKey?: string, initialShown?: number) {
+  const [state, setState] = useState({ shown: Math.max(FAV_PAGE, initialShown ?? FAV_PAGE), key: resetKey });
   // Referentially stable, because `useAutoReveal` takes it as an effect
   // dependency: an inline arrow would tear down and rebuild the observer on
   // every render of a list that re-renders whenever any favorite resolves.
@@ -316,6 +322,7 @@ export function useRevealed<T>(rows: T[], resetKey?: string) {
     visible,
     remaining,
     more,
+    shown,
   };
 }
 
