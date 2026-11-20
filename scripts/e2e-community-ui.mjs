@@ -185,8 +185,8 @@ t.ok('signed out with no browser key: the start choice opens over the form', awa
 t.ok('...and closing it with no choice leaves the form',
   (await click(`document.querySelector('[data-start-choice]')?.closest('[role=dialog]')?.querySelector('button[aria-label=Close]')`))
   && await waitFor(`!document.querySelector('[data-start-choice]') && !!document.querySelector('#pl-title')`, 3000));
-t.ok('the footer says no account is needed, and still offers the sign-in',
-  await js(`/no account needed/i.test(document.querySelector('[data-testid=signed-out-note]')?.innerText ?? '') && !!document.querySelector('[data-testid=signed-out-note] button')`));
+t.ok('the footer offers the sign-in, to tie the playlist to a Nostr account',
+  await js(`/tie this playlist to your Nostr account/i.test(document.querySelector('[data-testid=signed-out-note]')?.innerText ?? '') && !!document.querySelector('[data-testid=signed-out-note] button')`));
 t.ok('PUBLISH is on, not disabled', await js(`!${byText('PUBLISH')}.disabled`));
 t.equal('the reason line: Add 10 more songs', await js(`document.querySelector('[data-testid=why-blocked]')?.innerText`), 'Add 10 more songs');
 t.ok('signed out: no horizontal overflow', await overflowFree());
@@ -209,9 +209,12 @@ await click(`[...document.querySelectorAll('[role=dialog] [role=tab]')].find((b)
 t.ok('signed out, FAVORITES says to sign in, not "Loading" forever', await waitFor(`document.querySelector('[role=dialog] [data-testid=fav-signed-out]')`, 5000));
 await click(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent.trim() === 'DONE')`);
 await waitFor(`!document.querySelector('[role=dialog]')`, 3000);
-t.ok('signed out, the upload line says no account is needed', await js(`/no account needed/i.test(document.querySelector('[data-art-upload-host]')?.innerText ?? '')`));
-t.ok('...and UPLOAD PICTURE opens no sign-in dialog (it opens the file picker)',
-  (await click(`document.querySelector('[data-art-upload]')`)) && !(await waitFor(`document.querySelector('[role=dialog]')`, 1200)));
+t.ok('signed out, the upload line names the server', /^to \S+$/.test(await js(`document.querySelector('[data-art-upload-host]')?.innerText ?? ''`)));
+// With no choice made, UPLOAD asks "Do you have Nostr?" first: only I DON'T HAVE NOSTR makes the browser key.
+t.ok('...and UPLOAD PICTURE with no choice made opens the start choice, not the file picker',
+  (await click(`document.querySelector('[data-art-upload]')`)) && await waitFor(`document.querySelector('[data-start-choice]')?.dataset.startChoice === 'upload'`, 3000));
+await click(`document.querySelector('[data-start-choice]')?.closest('[role=dialog]')?.querySelector('button[aria-label=Close]')`);
+await waitFor(`!document.querySelector('[role=dialog]')`, 3000);
 
 // The playlist built signed out: twelve songs and a title in the :guest slot, as the form writes it.
 await seedGuest(draft(), labels);

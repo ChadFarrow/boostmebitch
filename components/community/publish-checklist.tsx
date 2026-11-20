@@ -8,7 +8,8 @@ import { MIN_SONGS } from '@/lib/community/rules';
  * What PUBLISH (or SAVE) still needs, opened when it is pressed too early.
  *
  * A playlist needs two things now (Chad, 2026-11-15: "nostr, title and 10 tracks
- * is it"; 2026-11-19: no Nostr account is needed, the browser keeps a key), and
+ * is it"; 2026-11-19: no Nostr account is needed, the browser keeps a key, and
+ * <StartChoice> asks about the account, not this list), and
  * both are listed every time, done or not, so one press shows the whole list
  * rather than one reason at a time. Each missing item carries the button that
  * fixes it. Anything else `validatePlaylistDraft` refuses (a secret
@@ -42,7 +43,7 @@ export function PublishChecklist({
       <div className="p-5" data-publish-check>
         <h2 className="pr-8 font-display text-xl">Before you {verb}</h2>
         <p className="mt-1 text-sm text-bone/80">
-          A playlist needs both of these. {action} works when each one has a ✓. You do not need a Nostr account.
+          A playlist needs both of these. {action} works when each one has a ✓.
         </p>
         <ul className="mt-3 divide-y divide-bone/15 border-y border-bone/15" aria-label="What a playlist needs">
           <Item

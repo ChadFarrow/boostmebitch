@@ -26,7 +26,7 @@ import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { PlaylistPublished } from './playlist-published';
 import { AddSongsSheet } from './add-songs-sheet';
 import { PublishChecklist } from './publish-checklist';
-import { StartChoice } from './start-choice';
+import { StartChoice, type StartChoiceFor } from './start-choice';
 
 // The resolver's page size (`MAX_BATCH` in lib/pi-batch.ts, which is server-only and cannot be imported here).
 const RESOLVE_PAGE = 100;
@@ -129,8 +129,11 @@ export function PlaylistMaker() {
   // read once at mount and stays as it was, on purpose: the load effect runs on it, and a
   // rerun resets the form. This one only answers "does this browser hold a key now?".
   const [guestMade, setGuestMade] = useState<GuestKeyInfo | null>(null);
-  // <StartChoice> was closed or answered on this page: it does not open again until the next visit.
+  // <StartChoice> was closed or answered on this page: it does not open again BY ITSELF
+  // until the next visit. PUBLISH and UPLOAD still open it while no choice is made.
   const [startDone, setStartDone] = useState(false);
+  // <StartChoice> opened by a press of PUBLISH or UPLOAD (null: not by a press).
+  const [startFor, setStartFor] = useState<Exclude<StartChoiceFor, 'start'> | null>(null);
 
   // Who the form on screen belongs to: an npub, or GUEST signed out. A draft is written
   // only while this equals the current owner, so one account's form is never saved under
@@ -210,11 +213,16 @@ export function PlaylistMaker() {
     return () => clearTimeout(timer);
   }, []);
   const restoring = mounted && !identity && !gaveUp && !!storage.npub.get();
-  // <StartChoice>: a NEW playlist, nobody signed in, no sign-in being restored (a stored
-  // npub is a person who has Nostr), and no guest key in this browser, read or made.
-  // `guest === undefined` is the read in flight: wait for it, or a key holder sees a flash.
-  const askStart = !startDone && !identity && !storage.npub.get() && !editingId
-    && guest === null && !guestMade;
+  // No choice made yet: a NEW playlist, nobody signed in, and no guest key in this browser,
+  // read or made. Then the only thing that makes a key is I DON'T HAVE NOSTR in
+  // <StartChoice>: PUBLISH and UPLOAD open it instead (Chad, 2026-11-19: he made a playlist
+  // under a browser key "without even knowing that I could tie it to my Nostr").
+  const needsChoice = !identity && !editingId && !guest && !guestMade;
+  // <StartChoice> opens by itself once per visit, when no sign-in is being restored (a
+  // stored npub is a person who has Nostr) and the key read has answered
+  // (`guest === undefined` is the read in flight: a key holder would see a flash).
+  const askStart = startFor !== null
+    || (!startDone && needsChoice && guest === null && !storage.npub.get());
 
   // ---- load: the saved draft, or the stored playlist in edit mode ----------
   useEffect(() => {
@@ -512,6 +520,9 @@ export function PlaylistMaker() {
   // missing instead, and sends only a complete playlist.
   const press = () => {
     if (blocked) { setCheckOpen(true); return; }
+    // Signed out with no choice made: ask first. Nothing goes out under a browser key
+    // that nobody chose (<StartChoice>).
+    if (needsChoice) { setStartFor('publish'); return; }
     void submit();
   };
 
@@ -664,14 +675,15 @@ export function PlaylistMaker() {
                 if (f) void uploadArt(f);
               }} />
             {/* Signed in, the upload is signed with the user's key; signed out, with the
-                guest key this browser keeps for the playlist (no account needed). */}
+                guest key this browser keeps. With no choice made yet, a press opens
+                <StartChoice> first: only I DON'T HAVE NOSTR makes that key. */}
             <button type="button" className="btn-ghost" disabled={uploading || busy} data-art-upload
-              onClick={() => artFileRef.current?.click()}>
+              onClick={() => (needsChoice ? setStartFor('upload') : artFileRef.current?.click())}>
               {uploading ? 'UPLOADING…' : '↑ UPLOAD PICTURE'}
             </button>
             <span className="text-xs text-muted" data-art-upload-host>
               {!identity
-                ? `to ${new URL(artUploadServers([])[0]).host}, no account needed`
+                ? `to ${new URL(artUploadServers([])[0]).host}`
                 : userServers === null
                   ? 'signed with your key'
                   : `to ${new URL(artUploadServers(userServers)[0]).host}${userServers.length ? ' (your Blossom server)' : ''}, signed with your key`}
@@ -743,13 +755,18 @@ export function PlaylistMaker() {
           <p className="mt-2 text-xs text-muted">Signed in as {name}. Only you can change this playlist.</p>
         ) : (guestMade ?? guest)?.persisted === false ? (
           <p className="mt-2 max-w-xl text-xs text-muted" data-testid="signed-out-note" data-guest-kept="false">
-            No account needed, but this browser cannot keep a key (a private window, or site data turned off). You can publish this playlist, and you cannot edit it later.{' '}
-            <button type="button" className="btn-inline" onClick={() => setSignInOpen(true)}>Sign in with Nostr</button> to publish it under your own account instead.
+            You are not signed in, and this browser cannot keep a key (a private window, or site data turned off). You can publish this playlist, and you cannot edit it later.{' '}
+            <button type="button" className="btn-inline" onClick={() => setSignInOpen(true)}>Sign in with Nostr</button> to tie it to your Nostr account instead.
+          </p>
+        ) : guestMade ?? guest ? (
+          <p className="mt-2 max-w-xl text-xs text-muted" data-testid="signed-out-note" data-guest-kept="true">
+            You are not signed in, so this playlist goes out under a key this browser keeps. It is not tied to a Nostr account, and you can edit it later in this browser only.{' '}
+            <button type="button" className="btn-inline" onClick={() => setSignInOpen(true)}>Sign in with Nostr</button> to tie it to your Nostr account instead.
           </p>
         ) : (
           <p className="mt-2 max-w-xl text-xs text-muted" data-testid="signed-out-note">
-            No account needed. This browser keeps what lets you edit this playlist later, and you save nothing. If you clear this browser&apos;s site data you cannot edit it, and you can make it again.{' '}
-            <button type="button" className="btn-inline" onClick={() => setSignInOpen(true)}>Sign in with Nostr</button> to publish it under your own account instead.
+            You are not signed in.{' '}
+            <button type="button" className="btn-inline" onClick={() => setSignInOpen(true)}>Sign in with Nostr</button> to tie this playlist to your Nostr account. With no Nostr account, PUBLISH lets this browser keep a key for it.
           </p>
         )}
         {unsaved && <p className="mt-1 text-xs text-muted" data-testid="unsaved">This draft is not being saved on this device.</p>}
@@ -757,16 +774,23 @@ export function PlaylistMaker() {
 
       {askStart && (
         <StartChoice
-          onClose={() => setStartDone(true)}
-          onSignIn={() => { setStartDone(true); setSignInOpen(true); }}
+          when={startFor ?? 'start'}
+          onClose={() => { setStartDone(true); setStartFor(null); }}
+          onSignIn={() => { setStartDone(true); setStartFor(null); setSignInOpen(true); }}
           onNoNostr={async () => {
+            const then = startFor;
+            // Before the first await: the press is the user gesture a file picker needs.
+            // The upload itself waits for the key (`uploadArt` asks for it too).
+            if (then === 'upload') artFileRef.current?.click();
             try {
               await makeGuestKey();
-              setStartDone(true);
-              return true;
             } catch {
               return false;
             }
+            setStartDone(true); setStartFor(null);
+            // The press of PUBLISH that opened this goes on: the person chose.
+            if (then === 'publish') void submit();
+            return true;
           }}
         />
       )}
