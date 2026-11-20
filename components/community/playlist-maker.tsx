@@ -18,7 +18,7 @@ import {
   NoSignerError, SignFailedError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
   type CommunitySigner,
 } from '@/lib/community/client';
-import { ensureGuestKey, guestSigner, type GuestKeyInfo } from '@/lib/community/guest-key';
+import { ensureGuestKey, guestSigner, loadGuestKey, type GuestKeyInfo } from '@/lib/community/guest-key';
 import { useGuestKey } from '@/lib/community/use-guest-key';
 import { ArtUploadError, fetchBlossomServers, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
@@ -445,7 +445,14 @@ export function PlaylistMaker() {
       // Who signs: the playlist's owner when editing; a NEW playlist goes out under
       // the account, or under the guest key (made here, on first use) when signed out.
       const as: 'account' | 'guest' = editingId ? signAs : identity ? 'account' : 'guest';
-      const kept = as === 'guest' ? await makeGuestKey() : null;
+      // An EDIT signs with the key that owns the playlist and never makes one: a key made
+      // now cannot be the owner, the server would refuse it, and a key made in memory after
+      // a failed read would stand in for the stored one for the rest of this tab.
+      const kept = as !== 'guest' ? null : editingId ? await loadGuestKey() : await makeGuestKey();
+      if (as === 'guest' && !kept) {
+        setNote('This browser no longer holds the key for this playlist, so it cannot be changed here. Your edits are kept on this device.');
+        return;
+      }
       const so = kept ? { signer: guestSigner satisfies CommunitySigner } : undefined;
       const ownerPubkey = kept?.pubkey ?? pubkey;
       if (!ownerPubkey) return;

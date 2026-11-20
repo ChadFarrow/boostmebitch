@@ -418,6 +418,23 @@ let gone = false;
 for (let i = 0; i < 40 && !gone; i++) { gone = (await fetch(`${APP}/feeds/playlists/${madeIds[1]}.xml`)).status === 410; if (!gone) await wait(250); }
 t.ok('a guest deletes its own playlist: the feed answers 410', gone);
 
+// The key goes while an edit is OPEN (site data cleared in another tab): SAVE must not make a
+// new key and sign with it. That key could not be the owner, so the server would refuse it,
+// and the page would say the server refused rather than what happened.
+await newIp();
+await go(`/playlists/make?id=${madeIds[0]}`);
+t.ok('the first playlist opens for editing', await waitFor(`!!${byText('SAVE')}`, 30000));
+await js(`new Promise((r) => { const q = indexedDB.deleteDatabase('bmb-guest'); q.onsuccess = q.onerror = q.onblocked = () => r(1); })`);
+await setValue('#pl-title', 'e2e guest playlist: saved after the key went');
+await wait(300);
+const putsBefore = seen.requests.filter((r) => r.method === 'PUT' && (r.url ?? '').includes(madeIds[0])).length;
+t.ok('SAVE pressed after the key went', await click(byText('SAVE')));
+t.ok('...the page says this browser no longer holds the key', await waitFor(`/no longer holds the key/i.test(document.querySelector('[data-testid=refusals]')?.innerText ?? '')`, 10000),
+  await js(`document.querySelector('[data-testid=refusals]')?.innerText ?? document.querySelector('main')?.innerText.slice(0, 200)`));
+t.equal('...no SAVE request was sent', seen.requests.filter((r) => r.method === 'PUT' && (r.url ?? '').includes(madeIds[0])).length, putsBefore);
+t.equal('...and no new key was made', (await idbState()).records?.length ?? 0, 0);
+t.ok('...and the edits stay on the form', await js(`document.querySelector('#pl-title')?.value === 'e2e guest playlist: saved after the key went'`));
+
 // Lost key: the site data is cleared. The first playlist stays alive and is not editable.
 await js(`new Promise((r) => { const q = indexedDB.deleteDatabase('bmb-guest'); q.onsuccess = q.onerror = q.onblocked = () => r(1); })`);
 await go(`/playlists/make?id=${madeIds[0]}`);

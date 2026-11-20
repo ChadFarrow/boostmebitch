@@ -136,6 +136,15 @@ console.log('\nno IndexedDB: a memory-only key');
   const e = await g.signAsGuest({ kind: 27235, created_at: 1, tags: [['u', 'https://x/']], content: '' });
   check('the memory key signs a valid event for its pubkey', verifyEvent(e) && e.pubkey === k.pubkey);
   g.forgetMemoryGuestKey();
+  // Two calls at once in ONE tab (a cover UPLOAD and I DON'T HAVE NOSTR, say), both with no
+  // storage: each made its own key and the second replaced the first in memory, so the first
+  // caller held a pubkey nothing could sign for. The maker then asked the server about one
+  // owner while the playlist went out under the other.
+  const [c1, c2] = await Promise.all([g.ensureGuestKey(), g.ensureGuestKey()]);
+  check('two ensures at once with no storage return ONE key', c1.pubkey === c2.pubkey);
+  const e2 = await g.signAsGuest({ kind: 27235, created_at: 2, tags: [], content: '' });
+  check('...and that key is the one that signs', e2.pubkey === c1.pubkey && verifyEvent(e2));
+  g.forgetMemoryGuestKey();
 }
 
 // ── 2. normal: create, keep, reload, sign ───────────────────────────────────

@@ -61,8 +61,9 @@ interface KeyRecord {
   wrap: CryptoKey;
 }
 
+interface MemoryKey { sk: Uint8Array; info: GuestKeyInfo }
 /** The memory-only key, when storage could not keep one. */
-let memory: { sk: Uint8Array; info: GuestKeyInfo } | null = null;
+let memory: MemoryKey | null = null;
 
 const enc = new TextEncoder();
 const aad = (pubkey: string) => enc.encode(`bmb-guest-playlist-key:v1:${pubkey}`);
@@ -185,6 +186,14 @@ export async function ensureGuestKey(): Promise<GuestKeyInfo> {
     } catch {
       /* falls through to the memory-only key */
     }
+  }
+  // Another call in this tab got here first while this one awaited: use its key. Two
+  // memory keys would leave the first caller with a pubkey nothing signs for. (The cast:
+  // TypeScript keeps the narrowing from the top of the function across the awaits.)
+  const raced = memory as MemoryKey | null;
+  if (raced) {
+    sk.fill(0);
+    return raced.info;
   }
   warn('storage unavailable: this tab holds the key in memory only');
   memory = { sk, info: infoOf(pubkey, false) };
