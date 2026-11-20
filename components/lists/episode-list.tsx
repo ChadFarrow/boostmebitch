@@ -12,12 +12,15 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { valueNotRead, authorLine, albumHoldsCurrent, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { valueNotRead, authorLine, albumHoldsCurrent, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
+import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { IS_BETA } from '@/lib/beta';
 import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
+import { FeedAddress } from './feed-address';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
 // download match that condition. `.then((m) => m.BoostModal)` because it is a
@@ -35,6 +38,7 @@ import { DeferredOnScroll } from '../deferred-on-scroll';
 import { ArtistFollowChip, FavHeart } from '../fav-heart';
 import { AlbumDownload } from '../album-download';
 import { AlbumShuffleButton } from '../album-shuffle-button';
+import { PlaylistRepeatButton, PlaylistShuffleButton } from '../playlist-shuffle-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
@@ -111,6 +115,24 @@ function ShareButton({ podcast }: { podcast: Podcast }) {
     <CopyLinkButton
       url={showShareUrl(podcast)}
       title="Copy link to this show"
+      className="tile"
+    />
+  );
+}
+
+// Copies a COMMUNITY playlist's own RSS URL, so the feed can be pasted into
+// another podcast app to see how it handles a musicL playlist. A testing aid,
+// so it is BETA ONLY (`IS_BETA`), and it stays that way when the playlist
+// feature itself launches on the main site — `COMMUNITY_PLAYLISTS_ON` alone
+// would put it there at launch. It renders only for a feed URL that is exactly
+// one of ours — never a third-party feed.
+function CopyRssButton({ podcast }: { podcast: Podcast }) {
+  if (!IS_BETA || !COMMUNITY_PLAYLISTS_ON || !communityIdFromFeedUrl(podcast.url)) return null;
+  return (
+    <CopyLinkButton
+      url={podcast.url ?? null}
+      title="Copy this playlist's RSS feed URL"
+      word="RSS"
       className="tile"
     />
   );
@@ -433,9 +455,12 @@ export function EpisodeList({
    * The generation guard the loaders carry is still what protects this: it
    * gates `setData`, and this only ever reflects whatever `data` settled on.
    */
+  // `complete` is false while a playlist has pages left: REPEAT must not wrap
+  // a prefix (docs/ui.md, "The playlist shuffle and repeat").
+  const queueComplete = !playlist || playlist.nextOffset == null;
   useEffect(() => {
-    setEpisodeQueue(orderedEpisodes);
-  }, [orderedEpisodes, setEpisodeQueue]);
+    setEpisodeQueue(orderedEpisodes, queueComplete);
+  }, [orderedEpisodes, queueComplete, setEpisodeQueue]);
 
   /**
    * Fetch the next page of a playlist while the listener is still on this one.
@@ -639,6 +664,7 @@ export function EpisodeList({
               artwork={data.podcast.artwork}
               title={data.podcast.title}
               seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
+              fallbackSrc={playlistCoverFallback(data.podcast)}
               className="w-full h-full border border-bone/20 group-hover:border-bolt text-3xl"
             />
             <div
@@ -655,6 +681,7 @@ export function EpisodeList({
             artwork={data.podcast.artwork}
             title={data.podcast.title}
             seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
+            fallbackSrc={playlistCoverFallback(data.podcast)}
             className="w-20 h-20 lg:w-28 lg:h-28 border border-bone/20 flex-shrink-0 text-3xl"
           />
         )}
@@ -713,6 +740,7 @@ export function EpisodeList({
               )}
             </div>
           )}
+          {isPlaylist && <FeedAddress podcast={data.podcast} />}
         </div>
         {/* A `basis-full` SIBLING of the text column, not a child of it. DOM
             nesting can't be responsive, and nested under the author line this
@@ -754,6 +782,7 @@ export function EpisodeList({
           <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
             <FavHeart podcast={data.podcast} size="tile" />
             <ShareButton podcast={data.podcast} />
+            <CopyRssButton podcast={data.podcast} />
             <SupportButton podcast={data.podcast} />
             {/* `cloneElement` to restyle rather than a prop on
                 `useStreamPanel`: the hook lives in streaming-settings.tsx, a
@@ -801,8 +830,8 @@ export function EpisodeList({
               it sits over the list. `canReverse` is true for any album of two
               tracks or more, which is exactly when this control renders.
               ⤮ SHUFFLE sits here for the same reason, and ahead of it: it
-              plays, and DOWNLOAD only stores. Albums only, as DOWNLOAD —
-              `albumShuffleTracks` (lib/util.ts) says why not a playlist. */}
+              plays, and DOWNLOAD only stores. A playlist has its own row
+              below (`<PlaylistShuffleButton>`). */}
           {isMusic && !isPlaylist && data.podcast && (
             <AlbumShuffleButton episodes={orderedEpisodes} podcast={data.podcast} />
           )}
@@ -824,6 +853,21 @@ export function EpisodeList({
               one go, so the earliest episodes aren&apos;t here.
             </p>
           )}
+        </div>
+      )}
+      {/* ⤮ SHUFFLE and ↻ REPEAT on a playlist (docs/ui.md, "The playlist
+          shuffle and repeat"). Their own row: the album row above is gated on
+          `canReverse`, which a playlist never is. */}
+      {asTracks && isPlaylist && playlist && data.podcast && (
+        <div className="flex flex-wrap items-center gap-2 py-3" data-playlist-actions>
+          <PlaylistShuffleButton
+            episodes={orderedEpisodes}
+            playlist={data.podcast}
+            feedUrl={playlist.feedUrl}
+            nextOffset={playlist.nextOffset}
+            total={playlist.total}
+          />
+          <PlaylistRepeatButton playlist={data.podcast} />
         </div>
       )}
       <ul className="divide-y divide-bone/10">

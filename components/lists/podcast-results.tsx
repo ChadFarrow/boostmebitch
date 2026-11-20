@@ -7,7 +7,7 @@
 // `showV4VStamp` is on for search results (where the value-block is known)
 // and off for favorites (the cache only carries metadata, not value).
 import type { Podcast } from '@/lib/types';
-import { carriesV4V, isPlaylistMedium } from '@/lib/util';
+import { carriesV4V, isPlaylistMedium, playlistCoverFallback } from '@/lib/util';
 import { PodcastCover } from '../podcast-cover';
 import { FavHeart } from '../fav-heart';
 import { PlaylistIcon } from '../icons';
@@ -55,6 +55,7 @@ export function PodcastRow({
   coverBadge,
   coverPlay,
   piUnasked,
+  action,
   footer,
 }: {
   podcast: Podcast;
@@ -123,6 +124,12 @@ export function PodcastRow({
    */
   piUnasked?: boolean;
   /**
+   * An extra control for this row (`/playlists`' EDIT link). Rendered as a
+   * SIBLING of the opening button, beside the heart, never inside it: a button
+   * may not contain another interactive element.
+   */
+  action?: React.ReactNode;
+  /**
    * A line under the row, INSIDE its `<li>` — `/favorites` puts the moved-album
    * offer here (`<MovedOffer>`). Inside rather than a sibling `<li>` because the
    * list is a two-column grid from `lg:`, where a sibling would take a cell of
@@ -141,6 +148,7 @@ export function PodcastRow({
         artwork={podcast.artwork}
         title={podcast.title}
         seed={podcast.podcastGuid ?? String(podcast.id)}
+        fallbackSrc={playlistCoverFallback(podcast)}
         className={`w-14 h-14 border flex-shrink-0 text-xl ${
           holds ? 'border-bolt' : coverPlay ? 'border-bone/20 [@media(hover:hover)]:group-hover/cover:border-bolt' : 'border-bone/20'
         }`}
@@ -251,7 +259,8 @@ export function PodcastRow({
           this heart wraps it exactly like this (see <FavoriteItemRows> and
           <Podroll>); this one did not, and it is the row the favorites page is
           almost entirely made of. */}
-      <div className="flex-shrink-0 self-center">
+      <div className={`flex-shrink-0 self-center${action ? ' flex items-center gap-2' : ''}`}>
+        {action}
         <FavHeart podcast={podcast} />
       </div>
       {footer}
@@ -270,6 +279,7 @@ export function PodcastResults({
   coverBadge,
   coverPlay,
   piUnasked,
+  action,
 }: {
   feeds: Podcast[];
   selected: number | null;
@@ -285,7 +295,9 @@ export function PodcastResults({
   /** Per-row cover control, or null for a row whose cover stays inside the row — see `<PodcastRow>`'s `coverPlay`. */
   coverPlay?: (p: Podcast) => CoverPlay | null;
   /** Podcast Index was never asked — see `<PodcastRow>`'s `piUnasked`. */
-  piUnasked?: boolean;
+  piUnasked?: boolean | ((p: Podcast) => boolean);
+  /** Per-row extra control — see `<PodcastRow>`'s `action`. */
+  action?: (p: Podcast) => React.ReactNode;
   /**
    * What to say when there are no rows.
    *
@@ -330,7 +342,8 @@ export function PodcastResults({
           stamp={stamp?.(p)}
           coverBadge={coverBadge?.(p)}
           coverPlay={coverPlay?.(p) ?? undefined}
-          piUnasked={piUnasked}
+          piUnasked={typeof piUnasked === 'function' ? piUnasked(p) : piUnasked}
+          action={action?.(p)}
         />
       ))}
     </ul>

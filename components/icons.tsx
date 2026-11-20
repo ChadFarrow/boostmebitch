@@ -423,3 +423,40 @@ export function SearchTypeIcon({ type }: { type: SearchType }) {
     case 'npub': return <NpubKeyIcon />;
   }
 }
+
+// ⤮ SHUFFLE and ↻ REPEAT on a playlist (docs/ui.md, "The playlist shuffle and
+// repeat"): the standard player glyphs, two crossing arrows and a loop of two
+// arrows, as SVG so they inherit `currentColor` (REPEAT's ON state is bolt).
+export function ShuffleIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" />
+    </svg>
+  );
+}
+
+export function RepeatIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <path d="M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3" />
+    </svg>
+  );
+}

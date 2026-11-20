@@ -50,7 +50,56 @@ a real account.
 | `npm run e2e:boostnote` | A real boost against a stub NIP-46 signer that reads every request and answers none until the page reconnects (`connect`), a WebLN stand-in, and Chrome resolving no host but this one. Pins that the boost pays at once, the link is checked and rebuilt BEFORE anything is signed, a signer that never answers leaves the modal open with RETRY NOTE, and that a healthy link costs one ping and an extension none. Needs a built server: `APP_URL=http://127.0.0.1:<port> npm run e2e:boostnote`. See docs/signers.md, "The boost note signed into a link that had gone deaf". |
 | `npm run e2e:mentionlinks` | A real boost whose message holds a Castopod link (`/@handle/episodes/…`) and a mention picked from the real `@` list under the same name, with a NIP-07 stand-in over a CDP binding, a WebLN stand-in, a cached kind:0 for the person, and Chrome resolving no host but this one. Pins that the link reaches the note whole, the typed `@handle` becomes the URI in place, a name left only in the link goes to the trailing run, and the boostagram keeps the text as typed. Needs a built server: `APP_URL=http://127.0.0.1:<port> npm run e2e:mentionlinks`. See docs/nostr.md, "Only where the name STANDS ALONE". |
 | `npm run e2e:bunkerrevive` | The red reconnect dot that waited for a press, on a stub NIP-46 signer and a local relay, loading `/listen` (no Podcast Index). Pins that a request stranded on a transport a revive replaced does not raise the dot over the rebuilt link, that a dot raised while the session is busy still clears with no tap or press, and that a healthy wake pings and goes no further. See docs/signers.md, "The red dot that waited for a press". |
+| `npm run e2e:communityapi` | The community-playlist routes (`/api/playlists`, the `.xml` feeds) over HTTP against the real local Postgres: create, list, edit, delete, refusals, the 6-writes-a-minute limit. |
+| `npm run e2e:communitynote` | The boost NOTE for a song played from a playlist, through the real modal. **Two runs, two server feed origins** (see below). With `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=https://www.boostmebuddy.com`: a playlist stored on the dev server (Buddy's words, the album as the show, the Heard-on line and link, the maker's `p` tag, the receipt's URL hints on Buddy), the same as Anonymous while Buddy's routes cannot be read (the note fails, never this deploy's key), Anonymous signed by a LOCAL Buddy server with a throwaway key (that key is the author; a receipt from a key other than Buddy's own is not quoted), and one of the seven community feeds (BoostMeBitch words, the Heard-on line). Asserts the boostagram still carries `BoostMeBitch`. It starts the Buddy server itself; see below. With the localhost origin, `-- --test-origin`: a test store's playlist (as on beta) keeps BoostMeBitch words and its Heard-on link on the test origin, and neither "My feed" nor Anonymous asks Buddy's routes (final review C1). |
+| `npm run e2e:communityui` | The maker, the Published view, `/playlists`, edit and delete, in headless Chrome at 390 x 844 (`scrollWidth <= clientWidth`, every control at least 24 x 24). Uses a LOCAL relay and a fake NIP-07 signer. |
+| `npm run e2e:playlistpings` | The pings a playlist write sends after it lands, against ONE STUB playing GitHub, Podcast Index and the podping pusher (`--stub <port>`; nothing reaches any of them, and the podping token is the test value `test-podping-token`): the GitHub copy request (`lib/community/archive-notify.ts`, one `workflow_dispatch` in GitHub's exact form, no playlist data) and the Podcast Index submission (`lib/community/pi-notify.ts`: `add/byfeedurl` then `hub/pubnotify` on a publish or edit, `hub/pubnotify` alone on a delete, one per feed a ban with `deleteAll` removed). The podping (`lib/community/podping-notify.ts`: one `GET` with medium `musicL`, reason `update`, the Bearer token, at every moment the PI ping goes; a pusher 401, a duplicate, a redirect that is not followed and a hang all leave the save at 200). None after a refusal. A PI refusal (401, or 200 with `status: "false"`) and a PI that hangs past the 8 s timeout leave the save at 200, the response unhurried and the ping sent. `--browser` presses PUBLISH, SAVE and DELETE in the maker at 1280 x 900 and 390 x 844. `--quiet-server` proves non-loopback overrides send nothing; `--pi-switch-off` proves a server without `COMMUNITY_PI_NOTIFY` sends no PI call and no podping; `--no-podping` proves a server without the two `PODPING_*` variables sends Podcast Index calls and no podping. Setup in the script's header. |
 | `npm run e2e:playlistarchive` | The GitHub copy of the community playlists, end to end: `scripts/playlist-archive.mjs` and `scripts/playlist-archive-git.sh` run as the workflow runs them, against a dev server's real feeds, with a LOCAL bare git repo in place of GitHub (`ARCHIVE_REMOTE`; no token). Pins that a playlist deleted by the admin action and by its owner keeps its last copy, byte for byte, in `playlists/removed/` (git records a rename), that `index.json` lists it under `removed` with the time, and that the next runs commit nothing, also with no list. Given the server's `COMMUNITY_DB_URL` too, it restores a row by hand and checks the copy moves back. The dev server is the one `scripts/e2e-community-api.mjs` describes. See docs/feeds.md, "The GitHub copy". |
+
+### The community-playlist e2e scripts
+
+All three need the local Postgres on port 54329 (`bmb-community-pg`, schema from `npm run community:schema`)
+and a dev server started with its env on the command line, never in `.env.local`:
+
+    COMMUNITY_DB_URL=postgres://postgres:test@localhost:54329/postgres ADMIN_NPUBS=<any npub> \
+    NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 \
+    npm run dev -- -p 3123
+
+- **Switch-off half.** Restart the server without `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`, then run
+  `node scripts/e2e-community-api.mjs --off` and `node scripts/e2e-community-ui.mjs --off`.
+- **Network.** The UI script seeds its 12 songs from live Podcast Index data, so it needs the internet.
+- **Write limit.** The server allows 6 writes a minute per address. Each run sends its own random
+  `x-real-ip`, so repeated runs never wait.
+- **No public relay for events.** No EVENT reaches a public relay (checked by the assertion 'no event of any kind went to a public relay'). Feed reads and profile reads still reach the public network.
+- **`e2e:communitynote` needs the 3123 server's feed origin to fit the run.** Only a playlist on
+  the PRODUCTION Buddy origin gets Buddy's words (`noteBrandFor`), so the Buddy run needs the
+  server restarted with `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=https://www.boostmebuddy.com`: the store
+  then mints addresses there and the server reads them from its own store, never over HTTP (it
+  may ask that host for a cover, which answers 404). `--test-origin` needs the localhost origin.
+  Each run checks the origin and stops with the command to use.
+- **`e2e:communitynote` runs TWO dev servers, and starts the second one itself.** You start the
+  3123 server above. The script starts the Buddy deploy as
+  `NEXT_PUBLIC_BRAND=buddy SITE_NOSTR_SK=<a key generated per run> next dev -p <free port>`, in a
+  COPY of the working tree under `$TMPDIR` (git's tracked and untracked files; never `.env*`,
+  `.next` or `node_modules`, which is a link). Two `next dev` in one folder share one `.next` and
+  compile two different `NEXT_PUBLIC_BRAND`s into the same files, and a copy with no env file can
+  sign with no key but the throwaway one. The script stops the server and deletes the copy on
+  every exit, a Ctrl-C included: it installs its SIGINT/SIGTERM handlers before the copy, since
+  `cdp.mjs` installs its own only once Chrome starts. The `--test-origin` run starts no Buddy server. **No production signing key is ever used**: the page's requests to Buddy's routes
+  go to this script over a CDP binding, and it POSTs them to the local Buddy server (`localhost`
+  is not an origin PR 4 allows, so the page cannot ask even a local Buddy itself).
+- **`e2e:communitynote` sends no money and no public event, and checks both.** The wallet is a
+  stub NIP-47 service on the local relay, and `/api/item-value` answers one keysend stub node.
+  Every page WebSocket except the dev server's own is REDIRECTED to the local relay, because
+  `publishBoostNoteViaSite` publishes to the hard-coded `DEFAULT_RELAYS`. The second guard is
+  `--host-resolver-rules`: every `wss://` host named in `lib/`, `components/` or `app/`, and the
+  production hosts of both brands, resolve to NOTFOUND, and section 0 proves an unredirected
+  socket to each cannot open. **`Network.setBlockedURLs` does NOT block a WebSocket** (measured
+  against the local relay), so it is set for HTTP only. The 3123 server's own signing routes are
+  refused in the page, because `.env.local` holds the real site key. The script closes Chrome
+  with CDP `Browser.close` before `cdp.mjs`'s SIGTERM. An orphan `chrome_crashpad_handler`
+  (parent PID 1) still outlived one of two runs that did so, and two of three that did not, so
+  look for one with `ps` after any `e2e:*` run.
 
 ### Two things about the harness that look like detail and are not
 

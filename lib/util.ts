@@ -62,6 +62,44 @@ export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * How a boost note describes a song played from a PLAYLIST. Pure; the note
+ * builder wires it. `container` is the playlist (`podcast`) when it is a list
+ * medium AND the episode names a feed with a guid different from the
+ * playlist's — an RSS-preview playlist has NO guid of its own, so a missing
+ * guid on the playlist still differs. Any other pairing is the ordinary case,
+ * `container: null`, `show === podcast`. For every container `show` is the
+ * track's OWN feed via `ownShowOf`, an allowlist rewrite that carries none of
+ * the playlist's facts (`nostrNpubs` stays undefined: the curator is tagged
+ * through `container`, never copied onto the album), so a guid-less playlist is
+ * not named twice. `hosted` is true for a playlist this deploy serves, whose
+ * note uses the brand's own wording.
+ */
+export function playlistBoostContext(
+  podcast: Podcast,
+  episode: Episode | undefined,
+  hostedFeedPrefix: string,
+): { container: Podcast | null; show: Podcast; hosted: boolean } {
+  const container = episode?.podcastGuid
+    && isPlaylistMedium(podcast)
+    && episode.podcastGuid !== podcast.podcastGuid
+    ? podcast
+    : null;
+  const show = container && episode ? ownShowOf(episode, podcast) : podcast;
+  return { container, show, hosted: !!container?.url?.startsWith(hostedFeedPrefix) };
+}
+
+/**
+ * The "heard on" block of a boost note: ONE credit line, and no link. The
+ * playlist's link was dropped on 2026-11-19 (Chad, after a beta note): a client
+ * unfurls it to the site's general card, because a playlist page has no title of
+ * its own, so the note carried one more card that said nothing. The playlist's
+ * `podcast:guid:` `i` tag still records it, with that link as its hint.
+ */
+export function heardOnLines(container: Podcast, makerNpub: string | null): string[] {
+  return [`🎧 Heard on ${container.title}${makerNpub ? ` by nostr:${makerNpub}` : ''}`];
+}
+
+/**
  * The query parameter that names a show's guid in an app link: `playlist` for a
  * playlist, `album` for an album (`medium` `music`), `podcast` for everything
  * else (Chad, 2026-11-20: "the url links need playlist also", as the feed
@@ -135,6 +173,24 @@ export function linkedShowGuid(get: (name: ShowLinkParam) => string | null | und
 export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
   return isMusicMedium(podcast) || podcast.medium?.toLowerCase() === 'musicl';
 }
+
+/**
+ * The picture BMB makes for a PLAYLIST whose own cover fails: the 2 x 2 grid of
+ * its first four songs (`/api/playlist-cover`). For `<PodcastCover>`'s
+ * `fallbackSrc`, the rung after the feed's own cover. Undefined for anything
+ * that is not a playlist, or with no http(s) feed URL to read the songs from.
+ * A playlist BMB hosts never reaches it: its cover route always answers.
+ */
+export function playlistCoverFallback(p: Pick<Podcast, 'medium' | 'url'>): string | undefined {
+  if (!isPlaylistMedium(p) || !p.url || !/^https?:\/\//i.test(p.url) || p.url.length > 2048) return undefined;
+  // `v` names the cover STYLE. The answer is cached a day in the browser, so a
+  // change of style must change the address, or a phone that loaded the old
+  // picture keeps it (2: v4vmusic playlists moved from the grid to the first song).
+  return `/api/playlist-cover?feedUrl=${encodeURIComponent(p.url)}&v=${PLAYLIST_COVER_STYLE}`;
+}
+
+/** Bump when `/api/playlist-cover` draws a different picture for the same feed. */
+export const PLAYLIST_COVER_STYLE = 2;
 
 /**
  * Whether a row can be played at all.
@@ -258,6 +314,17 @@ export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
     || !episode.podcastGuid
     || podcast.podcastGuid === episode.podcastGuid;
   if (containerIsParent) return podcast;
+  return ownShowOf(episode, podcast);
+}
+
+/**
+ * The song's OWN feed as a `Podcast`, built from what the episode says about
+ * it — the allowlist `queueShowFor` documents above, extracted so the boost
+ * note (`playlistBoostContext`) builds the identical object for a container
+ * that has no guid of its own. Callers decide WHETHER the container is the
+ * parent; this only builds the answer for when it is not.
+ */
+export function ownShowOf(episode: Episode, podcast: Podcast): Podcast {
   return {
     id: episode.feedId ?? podcast.id,
     podcastGuid: episode.podcastGuid,
@@ -348,9 +415,8 @@ export function isShuffleableTrack(e: Pick<Episode, 'liveStatus' | 'enclosureUrl
  * **The show is the album, as `play(e, data.podcast)` has it.** The favorites
  * shuffle builds its show from a favorite and leaves the payee unread; these
  * rows came from this album's own RSS, so a shuffled track carries the block a
- * tap on the same row would pay, and pays exactly that. **Albums only**: a
- * `musicL` row is a track of ANOTHER feed, and this pairing would make the
- * curator its show.
+ * tap on the same row would pay, and pays exactly that. A playlist has its own
+ * entry, `playlistShuffleTracks`, for the reason given there.
  *
  * **The track already playing goes LAST, wherever the deal put it.** The press
  * must change the song — a shuffle that opened on the song just heard would read
@@ -368,6 +434,68 @@ export function albumShuffleTracks(
   const at = current ? out.findIndex((e) => isPlayingRow(e, current)) : -1;
   if (at >= 0) out.push(out.splice(at, 1)[0]);
   return out.map((episode) => ({ episode, podcast }));
+}
+
+/**
+ * The playlist shuffle's list (docs/ui.md, "The playlist shuffle and repeat"):
+ * every loaded track of ONE playlist that can play, in a random order, the
+ * track playing now last.
+ *
+ * **Each item is the pair a row TAP plays — the track with the PLAYLIST as its
+ * show** — never the track's own album. That pair is what `<EpisodeList>` hands
+ * `play()` for a playlist row, and every guard on the curator is built for it:
+ * `payableValue` refuses the container's block for a `musicL` show and for any
+ * row whose `podcastGuid` names another feed, so the track's OWN feed is read
+ * (`/api/item-value`) when it starts, exactly as after a tap. A shuffled track
+ * therefore pays what the same row tapped pays — the curator nothing — and the
+ * boost note says it was heard on this playlist, as a tap's does. Building the
+ * show from the track instead would be a second pairing nothing else plays.
+ *
+ * The rows arrive with no value block (`valueNotRead`), and none is added.
+ */
+export function playlistShuffleTracks(
+  episodes: readonly Episode[],
+  playlist: Podcast,
+  current: { episode: RowIds; podcast: Pick<Podcast, 'id' | 'podcastGuid'> } | null,
+  random: () => number = Math.random,
+): QueueItem[] {
+  return albumShuffleTracks(episodes, playlist, current, random);
+}
+
+/**
+ * Which list a REPEAT setting names (`repeatList` in lib/store.ts): the show's
+ * guid, else its feed URL, else its id. A playlist row and a shuffled playlist
+ * track both play with the playlist as their show, so this is the same key for
+ * both, and for the page that set it.
+ */
+export function listKey(p: Pick<Podcast, 'id' | 'podcastGuid' | 'url'>): string {
+  return p.podcastGuid || p.url || `id:${p.id}`;
+}
+
+/**
+ * Where a FORWARD step lands with REPEAT on: `nextPlayableIndexBy`, and past the
+ * last playable row, the first playable one. Nothing else changes: a back step,
+ * repeat off, and a `from` outside the list answer exactly what
+ * `nextPlayableIndexBy` answers. It never answers `from` itself — a one-track
+ * list does not "repeat" by reloading the file it is playing, which `<Player>`
+ * keys on `episode.id` and would not restart. ONE walk for the store's step,
+ * the end of a track and `<TransportControls>`, so ⏭ is never lit over a press
+ * that does nothing, nor dark over one that wraps.
+ */
+export function nextPlayableIndexRepeating<T>(
+  queue: readonly T[],
+  from: number,
+  step: 1 | -1,
+  row: (item: T) => Pick<Episode, 'enclosureUrl' | 'unresolved'>,
+  passOver: ((item: T) => boolean) | undefined,
+  repeat: boolean,
+): number {
+  const to = nextPlayableIndexBy(queue, from, step, row, passOver);
+  if (to >= 0 || !repeat || step !== 1 || from < 0 || from >= queue.length) return to;
+  for (let i = 0; i < from; i++) {
+    if (isPlayableRow(row(queue[i])) && !passOver?.(queue[i])) return i;
+  }
+  return -1;
 }
 
 /**
@@ -2229,6 +2357,26 @@ export function curatedNotListed<T extends Pick<Podcast, 'id' | 'url'>>(
     out.push(f);
   }
   return out;
+}
+
+/**
+ * The keys of `asked` that Podcast Index ANSWERED "not found" for, read from a
+ * `/api/by-guid/batch` body (`{ podcasts }`). Only these may carry a `NOT IN PI`
+ * stamp.
+ *
+ * That route's answer has three states (`lib/pi-batch.ts`): a record (PI holds
+ * it), `null` (PI was asked and holds nothing) and an ABSENT key (nobody could
+ * ask: the index and PI both failed, or the key was cut by `MAX_BATCH`). The
+ * stamp is a claim about Podcast Index, so it may only come from the second.
+ * `!podcasts[key]` reads an absent key as a miss and prints `NOT IN PI` on every
+ * row whenever PI is rate limiting, which is the "why does it say not in PI
+ * when some are?" report of 2026-08-29 again. A body that is not an object is
+ * no answer at all, so it stamps nothing.
+ */
+export function piConfirmedMisses(asked: readonly string[], podcasts: unknown): string[] {
+  if (!podcasts || typeof podcasts !== 'object' || Array.isArray(podcasts)) return [];
+  const answered = podcasts as Record<string, unknown>;
+  return asked.filter((k) => Object.prototype.hasOwnProperty.call(answered, k) && answered[k] === null);
 }
 
 // True when a value block actually has payees — the gate for showing BOOST.
@@ -5396,6 +5544,7 @@ export function communityPlaylistToPodcast(s: CommunityPlaylistSummary): Podcast
     url: s.feedUrl,
     medium: 'musicL',
     isPreview: true,
+    ...(s.ownerName ? { author: s.ownerName } : {}),
     nostrNpubs: [{ npub: s.ownerNpub, pubkey: s.ownerPubkey }],
   };
 }

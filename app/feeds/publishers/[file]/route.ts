@@ -72,10 +72,12 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
         generator: `${BRANDS.buddy.displayName} (${BRANDS.buddy.origin})`,
       },
     );
+    // No shared cache, as the playlist feed: a SAVE that renames a playlist changes
+    // this list too, and an app must not read the old one (playlists/[file]/route.ts).
     return new NextResponse(xml, {
       headers: {
         'content-type': 'application/rss+xml; charset=utf-8',
-        'cache-control': 'public, max-age=60, s-maxage=60, stale-while-revalidate=600',
+        'cache-control': 'no-cache',
       },
     });
   }, 'could not build the publisher feed');

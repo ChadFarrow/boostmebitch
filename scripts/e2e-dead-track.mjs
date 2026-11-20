@@ -194,7 +194,7 @@ await send('Runtime.enable');
 const src = () => js(`document.querySelector('audio')?.currentSrc ?? ''`);
 const kOf = async () => { const m = (await src()).match(/[?&]k=(\d+)/); return m ? Number(m[1]) : null; };
 const playing = () => js(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2; })()`);
-const errShown = () => js(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`);
+const errShown = () => js(`/(Track|Episode) not found\./.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`);
 const waitK = (k, ms = 10000) => until(`/[?&]k=${k}(\\D|$)/.test(document.querySelector('audio')?.currentSrc ?? '')`, ms);
 async function endTrack() {
   await until(`(() => { const a = document.querySelector('audio'); return !!a && a.readyState >= 1 && isFinite(a.duration); })()`, 8000);
@@ -245,7 +245,7 @@ t.equal('…and no error is left on screen', await errShown(), false);
 // ---------------------------------------------------------------------------
 console.log('\n3b. A dead LAST track: nothing can follow, so the stop says why');
 await tapRow(7);
-t.ok('the message shows', await until(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000));
+t.ok('the message shows', await until(`/(Track|Episode) not found\./.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000));
 await wait(1000);
 t.equal('…on the track that was picked, stopped', [await kOf(), await playing()], [7, false]);
 // The tap that loaded the next track PAUSED on `main`: a good track picked while
@@ -279,7 +279,7 @@ await until(`!!${QROW}`, 15000);
 await js(`${QROW}.click()`);
 t.ok('the queue head plays', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2 && /[?&]k=0(\\D|$)/.test(a.currentSrc); })()`, 15000));
 await endTrack();
-t.ok('the dead last item shows the message', await until(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000), `on k=${await kOf()}`);
+t.ok('the dead last item shows the message', await until(`/(Track|Episode) not found\./.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000), `on k=${await kOf()}`);
 t.equal('…and nothing plays', await playing(), false);
 
 // ---------------------------------------------------------------------------
@@ -353,7 +353,7 @@ probeDead = false; probeFail = true;
 await openAlbum({ 'bmb:listen_queue:guest': JSON.stringify([qItem(0), qItem(1), qItem(2)]) });
 t.ok('the queue head plays', await playQueueHead());
 await endTrack();
-t.ok('dead track 1 shows the message', await until(`/format not supported or URL unreachable/.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000), `on k=${await kOf()}`);
+t.ok('dead track 1 shows the message', await until(`/(Track|Episode) not found\./.test(document.querySelector('${MINI_BAR}')?.textContent ?? '')`, 12000), `on k=${await kOf()}`);
 await wait(1500);
 t.ok('…and track 2 did not start', (await kOf()) !== 2, `on k=${await kOf()}`);
 t.equal('Up Next still holds the dead item and the one after it', await queueTitles(), ['Dead test track 1', 'Dead test track 2']);

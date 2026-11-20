@@ -37,9 +37,11 @@ These are settled. Do not revisit them in the plan.
 7. **Songs come from two places:** a music search (album → its songs, one ADD
    per song) and the listener's own favorited songs.
 8. **Playlist art:** an optional field labelled **PLAYLIST ART LINK** — an image
-   URL the listener pastes. It must be square, 1400 × 1400 to 3000 × 3000 px.
-   With no link, or when the link breaks, BMB makes the cover itself from the
-   first four songs' covers (a 2 × 2 grid).
+   URL the listener pastes. Square, 1400 × 1400 to 3000 × 3000 px, is
+   preferred, not required (Chad, 2026-11-12: these feeds do not go to Apple,
+   and BMB must not host listeners' pictures). The feed names the link itself.
+   With no link, BMB makes the cover itself from the first four songs' covers
+   (a 2 × 2 grid); BMB's own pages also fall back to it when the link breaks.
 9. **Where it shows:** in the existing **Community playlists** section of
    `/playlists`, **immediately** on publish — no approval step.
 10. **"ChadF's playlists" stays its own separate section**, unchanged.
@@ -72,6 +74,17 @@ These are settled. Do not revisit them in the plan.
     Podcast Index — not from beta, and not from production either — until Chad
     turns that on separately. Both are switches, not code changes (see Launch
     switches).
+    **Changed 2026-11-19 (Chad):** playlists, test playlists included, go to
+    Podcast Index at publish, from beta too. Still behind `COMMUNITY_PI_NOTIFY`,
+    which Chad turns on; see `docs/feeds.md`, "Podcast Index".
+20. **A listener can favorite a whole community playlist, and single songs in
+    it** (Chad, 2026-11-12), from the playlist row, the open playlist's header,
+    and each song's menu — the same hearts every other playlist has
+    (`<FavHeart>` needs the playlist's `podcastGuid`; `<FavEpisodeHeart>` saves a
+    song under the song's OWN feed, never the playlist). Until Podcast Index is
+    told about these feeds (decision 19), other apps that read the kind:10333
+    favorites list cannot resolve a favorited BMB playlist; BMB can, through its
+    own guid lookup.
 
 ## Goals
 
@@ -120,7 +133,7 @@ A five-screen phone mockup (Chad's, private) shows this flow. In words:
    first.
 2. **New playlist** (its own route) — the cover preview (the 2 × 2 grid until a
    link is given), TITLE (required), DESCRIPTION (optional), PLAYLIST ART LINK
-   (optional, with the hint "Square, 1400–3000 px. Empty: BMB makes the cover from
+   (optional, with the hint "Square is preferred, 1400–3000 px. Empty: BMB makes the cover from
    the first four songs."), then the song list with ↑ ↓ × per row and a
    `+ ADD SONGS` button, and a PUBLISH button pinned above the dock with "Signed in
    as [name]. Only you can change this playlist."
@@ -193,10 +206,10 @@ authority:
   collapse, but never publish a duplicate silently.
 - Art link: optional. If present it must be `https://`, pass `httpUrl`, and be
   fetched once through `safeFetch` with a byte cap (`lib/capped-body.ts`); the
-  image must decode (sharp), be **square**, between **1400 × 1400 and 3000 × 3000**,
-  **PNG or JPEG**, and have **no alpha channel** (Apple's Show Cover page,
-  podcasters.apple.com/support/5514, read 2026-11-12). A refusal names the reason
-  on screen.
+  image must decode (sharp), be **PNG or JPEG**, and be at least **300 px** on its
+  shortest side. Any shape and transparency pass (changed 2026-11-12: Apple's
+  square, no-alpha rule, podcasters.apple.com/support/5514, applies to Apple's
+  directory only). A refusal names the reason on screen.
 
 ## Storage and ownership
 
@@ -265,7 +278,9 @@ need it". BMB has **no admin page and no notion of an admin today**. Decided
 
 ## Podcast Index
 
-**Off for now (decision 19).** When Chad turns it on: on first publish the feed
+**Off for now (decision 19).** *(2026-11-19: built for beta and production, test
+playlists included, behind `COMMUNITY_PI_NOTIFY`; an edit also re-sends the add.
+`docs/feeds.md`, "Podcast Index", is current.)* When Chad turns it on: on first publish the feed
 is submitted to Podcast Index, and on each edit or delete PI is notified
 (`/hub/pubnotify` — MSP-2.0's `api/pubnotify.ts` already does this). The builder
 must confirm BMB's PI key may add feeds. A failure here never fails the publish.

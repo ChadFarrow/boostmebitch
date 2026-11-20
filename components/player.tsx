@@ -1637,13 +1637,22 @@ export function Player() {
   }
 
   function showMediaError(code: number | undefined) {
-    // Fired by the <video> too, so name the right medium.
-    const what = isHlsRef.current ? 'live stream' : isVideoRef.current ? 'video' : 'audio';
+    // WORDS FOR A LISTENER, NOT A DEVELOPER (Chad, 2026-11-15: "they just need
+    // to know that it's an issue with what's trying to be played and not the
+    // app"). It read "audio format not supported or URL unreachable" over a
+    // song whose host had deleted the file — true, and no help. The noun names
+    // WHAT failed, so the fault reads as the item's; the element's error code is
+    // already in the playback log (`err=`) for a bug report. Fired by the <video> too, so the noun
+    // follows the medium.
+    const what = isHlsRef.current ? 'stream'
+      : isVideoRef.current ? 'video'
+      : isMusicItem(useApp.getState().current) ? 'track'
+      : 'episode';
+    const What = what[0].toUpperCase() + what.slice(1);
     setAudioErr(
-      code === 2 ? `network error while loading ${what}`
-      : code === 3 ? `${what} failed to decode`
-      : code === 4 ? `${what} format not supported or URL unreachable`
-      : `${what} playback failed`,
+      code === 4 ? `${What} not found.`
+      : code === 2 ? `Couldn't load this ${what}.`
+      : `This ${what} can't be played.`,
     );
     setPlaying(false);
   }
@@ -1804,6 +1813,12 @@ export function Player() {
           onEnded={() => {
             if (pendingLocalSrc.current) { logPlayback('advance', { via: 'pending' }); return; }
             forgetRestoreBaseline();
+            // A playlist-maker PREVIEW is one song: stop here, never advance.
+            if (current && useApp.getState().previewKey === epKey(current.episode)) {
+              logPlayback('advance', { via: 'preview' });
+              setPlaying(false);
+              return;
+            }
             if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
               const key = downloadManager.deletableAfterPlay(current.episode);
               if (key) void downloadManager.remove(key);
