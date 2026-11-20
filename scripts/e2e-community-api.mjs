@@ -310,11 +310,21 @@ for (const ext of ['xml', 'jpg?v=1']) {
     r.status === 301 && r.headers.get('location') === `${APP}/feeds/playlists/${id}.${ext}` && !r.headers.get('cache-control'),
     `${r.status} ${r.headers.get('location')} ${r.headers.get('cache-control')}`);
 }
+// Would Vercel's CDN keep this answer? It caches a function's answer only when the answer
+// asks for a shared cache: `s-maxage` in Cache-Control, or a CDN-Cache-Control /
+// Vercel-CDN-Cache-Control header. A local server has no CDN, so the headers are the
+// only thing a test here can read: a feed that reads fresh locally could still be cached.
+const sharedCache = (h) => /(^|[,\s])s-maxage=/i.test(h.get('cache-control') ?? '')
+  || h.has('cdn-cache-control') || h.has('vercel-cdn-cache-control');
+// The check can fail: the header the feeds sent before (60 s, plus 600 s of stale) is a kept one.
+check('sharedCache() flags the old feed header as kept by the CDN',
+  sharedCache(new Headers({ 'cache-control': 'public, max-age=60, s-maxage=60, stale-while-revalidate=600' })));
 const feedRes = await fetch(`${APP}/feeds/playlists/${id}.xml`);
 const feedXml = await feedRes.text();
-check('GET feed .xml -> 200 rss+xml with the cache header',
+check('GET feed .xml -> 200 rss+xml, no-cache, and no shared cache (the CDN keeps no copy for a SAVE to outlive)',
   feedRes.status === 200 && /^application\/rss\+xml; charset=utf-8$/i.test(feedRes.headers.get('content-type') ?? '')
-  && /s-maxage=60/.test(feedRes.headers.get('cache-control') ?? ''), `${feedRes.status} ${feedRes.headers.get('content-type')}`);
+  && feedRes.headers.get('cache-control') === 'no-cache' && !sharedCache(feedRes.headers),
+  `${feedRes.status} ${feedRes.headers.get('content-type')} ${feedRes.headers.get('cache-control')}`);
 check('feed has 12 song remoteItems, the owner npub and medium musicL',
   (feedXml.match(/<podcast:remoteItem [^>]*itemGuid=/g) ?? []).length === 12 && feedXml.includes(npubEncode(ownerPub))
   && feedXml.includes('<podcast:medium>musicL'), feedXml.slice(0, 300));
@@ -342,10 +352,11 @@ const pubRes = await fetch(pubUrl);
 const pubXml = await pubRes.text();
 const pubGuid = (pubXml.match(/<podcast:guid>([^<]+)<\/podcast:guid>/) ?? [])[1] ?? '';
 const pubItems = pubXml.match(/<podcast:remoteItem [^>]*\/>/g) ?? [];
-check('publisher feed -> 200 rss+xml, medium publisher, a guid, the cache header',
+check('publisher feed -> 200 rss+xml, medium publisher, a guid, no-cache and no shared cache',
   pubRes.status === 200 && /^application\/rss\+xml; charset=utf-8$/i.test(pubRes.headers.get('content-type') ?? '')
   && pubXml.includes('<podcast:medium>publisher</podcast:medium>') && /^[0-9a-f-]{36}$/.test(pubGuid)
-  && /s-maxage=60/.test(pubRes.headers.get('cache-control') ?? ''), `${pubRes.status} ${pubXml.slice(0, 300)}`);
+  && pubRes.headers.get('cache-control') === 'no-cache' && !sharedCache(pubRes.headers),
+  `${pubRes.status} ${pubRes.headers.get('cache-control')} ${pubXml.slice(0, 300)}`);
 check('publisher feed lists the owner\'s one playlist, medium="musicL", with its guid and feed URL',
   pubItems.length === 1 && pubItems[0].includes('medium="musicL"') && pubItems[0].includes('rel="curator"')
   && pubItems[0].includes(`feedGuid="${got.body?.playlist?.podcastGuid}"`) && pubItems[0].includes(`feedUrl="${post.body.feedUrl}"`),
@@ -443,6 +454,15 @@ check('PUT by the owner with a fresh expectedUpdatedAt -> 200',
   put1.status === 200 && put1.body?.playlist?.title === 'second' && put1.body.playlist.updatedAt !== v1, show(put1));
 check('a PUT keeps a stored song\'s feedUrl, not the client\'s made-up one',
   put1.body?.playlist?.songs?.[1]?.feedUrl === storedFeedUrl1, JSON.stringify(put1.body?.playlist?.songs?.[1]));
+{
+  // The SAVE is what a podping and a Podcast Index ping announce, so the feed read right
+  // after it must be the new one. (Locally this is a read of the row; the no-shared-cache
+  // checks above are what keep it true behind Vercel's CDN.)
+  const r = await fetch(`${APP}/feeds/playlists/${id}.xml`);
+  const t = ((await r.text()).match(/<title>([^<]*)<\/title>/) ?? [])[1];
+  check('the feed read right after the SAVE is the saved one (<title>second</title>), with no shared cache',
+    r.status === 200 && t === 'second' && !sharedCache(r.headers), `${r.status} ${t} ${r.headers.get('cache-control')}`);
+}
 const nsecPut = await call('PUT', `${PLAYLISTS}/${id}`, {
   sk: owner, body: { draft: draft({ title: 'second', description: `paste: ${NSEC}` }), expectedUpdatedAt: put1.body?.playlist?.updatedAt },
 });
