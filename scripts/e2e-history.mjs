@@ -92,7 +92,7 @@ async function tab(page) {
     return {
       path: location.pathname,
       podcast: p.get('podcast'), episode: p.get('episode'), t: p.get('t'),
-      playlist: p.get('playlist'),
+      playlist: p.get('playlist'), album: p.get('album'),
       back,
       results: document.querySelectorAll('aside li > button').length,
     };
@@ -129,8 +129,8 @@ const A = await tab(browser.page);
 const backIs = (label) => `[...document.querySelectorAll('main button, main a')].some((b) => b.textContent.trim() === ${JSON.stringify(label)})`;
 const SHOW_UP = backIs('← back to results');
 const EPISODE_UP = backIs('← back to episodes');
-// A show is named by `?podcast=`, or by `?playlist=` for a playlist (lib/util.ts `showLinkParam`).
-const BROWSE_UP = `!['podcast', 'playlist'].some((k) => new URLSearchParams(location.search).has(k)) && ![...document.querySelectorAll('main button, main a')].some((b) => b.textContent.trim().startsWith('← back'))`;
+// A show is named by `?podcast=`, `?album=` or `?playlist=` (lib/util.ts `showLinkParam`).
+const BROWSE_UP = `!['podcast', 'album', 'playlist'].some((k) => new URLSearchParams(location.search).has(k)) && ![...document.querySelectorAll('main button, main a')].some((b) => b.textContent.trim().startsWith('← back'))`;
 /** Set once per document. Still there after a step = the step stayed in this
  *  document; gone = the browser loaded the page again. */
 const MARK = `window.__historyE2e = true`;
@@ -283,11 +283,11 @@ t.ok('the publisher link restored the aside with its feeds', await C.until(ASIDE
 await C.js(MARK);
 t.equal('the restore pushed nothing', await C.count(), pubBase + 1);
 await C.click(`document.querySelector('aside li > button')`);
-t.ok('a feed from the aside opened', await C.until(`!new URLSearchParams(location.search).has('publisher') && (new URLSearchParams(location.search).has('playlist') || new URLSearchParams(location.search).has('podcast') || new URLSearchParams(location.search).has('feed'))`, 30000));
+t.ok('a feed from the aside opened', await C.until(`!new URLSearchParams(location.search).has('publisher') && ['playlist', 'album', 'podcast', 'feed'].some((k) => new URLSearchParams(location.search).has(k))`, 30000));
 t.equal('…and pushed', await C.count(), pubBase + 2);
 await C.step(-1);
 t.ok('back → the aside, its feeds listed again', await C.until(ASIDE_UP, 30000));
-t.equal('…with no show selected', [(await C.view()).podcast, (await C.view()).playlist], [null, null]);
+{ const cv = await C.view(); t.equal('…with no show selected', [cv.podcast, cv.album, cv.playlist], [null, null, null]); }
 t.equal('…and nothing pushed on the way', await C.count(), pubBase + 2);
 t.ok('no page load', await C.js(SAME_DOC));
 

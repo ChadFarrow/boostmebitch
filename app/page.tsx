@@ -17,7 +17,8 @@ function firstParam(v: string | string[] | undefined): string | undefined {
 }
 
 // Per-show / per-episode Open Graph tags so a shared ?podcast=&episode= link
-// (or ?playlist=<guid>, a playlist's spelling: `linkedShowGuid`)
+// (or ?album=<guid> / ?playlist=<guid>, an album's and a playlist's spelling:
+// `linkedShowGuid`)
 // unfurls on Nostr with the real artwork + title instead of the static site
 // card. Best-effort: any failure returns {} and the page inherits the static
 // metadata from app/layout.tsx. Reading searchParams opts this route into
@@ -91,8 +92,9 @@ export async function generateMetadata(
  *
  * `?playlist=<feed url>` is deliberately absent. Its request carries a `limit`
  * this file would have to keep in step with `PLAYLIST_PAGE_SIZE`, and a hint
- * that drifts is the one failure mode this whole tag has. `?playlist=<guid>` is
- * not: it restores through `/api/by-guid` exactly as `?podcast=` does.
+ * that drifts is the one failure mode this whole tag has. `?playlist=<guid>` and
+ * `?album=<guid>` are not: they restore through `/api/by-guid` exactly as
+ * `?podcast=` does.
  */
 function preloadHref(sp: Record<string, string | string[] | undefined>): string | null {
   const guid = linkedShowGuid((k) => firstParam(sp[k]));
