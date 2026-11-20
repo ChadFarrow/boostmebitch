@@ -28,7 +28,7 @@
 // question — is the always-loaded file still small enough to be worth loading —
 // and leaves the judgement to the person reading the failure.
 
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -315,7 +315,30 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // `check:downloads`) were cut to the shortest form carrying the same failure.
 // None held a code span or a number, and each script's header still argues it.
 // `check:newmusic`'s own cell was cut too. 15,097 after: slack, not a licence.
-const BUDGET = 15100
+//
+// LOWERED, 15,100 -> 12,400 (2026-11-19), and the reason is the symptom the third
+// raise above names: the file sat at 15,099 against a 15,100 budget, so every
+// useful edit failed regardless of size and was paid for by cutting something
+// else in a hurry. The cure is the one this note has pointed at since the first
+// trim, held to the format the file states for itself — a rule, one clause
+// naming the consequence, and a pointer — in four section-by-section PRs
+// (Commands and the table, the boost and streaming invariants, the security /
+// money / signer / publishing rules, and favorites / reads / conventions).
+//
+// **Nothing was cut on judgement.** Every code span and measured number in the
+// old file was recorded, and a PR was not accepted until each one still appeared
+// in CLAUDE.md or in docs/, scripts/ or README.md; every removed sentence was
+// scored against those files and the ones that scored low moved into docs/
+// first (a section at the end of docs/money-boosts.md, one in docs/streaming.md,
+// and a short "Rules CLAUDE.md states in one clause" at the end of security,
+// signers, nostr and feeds). 15,099 -> 12,209. The ~190 words of slack are
+// deliberate and are NOT a budget for the next rule: that one displaces
+// something. The levers that remain, if this is hit again: the "Read before you
+// edit" rows (each lists globs a session must see) and the boost invariants'
+// sub-bullets, which are money rules and were cut least. A second pass is also
+// worth doing once #538, #540, #576 and #612 merge: this one left the lines they
+// edit (and their neighbours) alone so the PRs do not conflict.
+const BUDGET = 12400
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')
@@ -345,12 +368,35 @@ const sized = sections
 const table = (rows) =>
   rows.map((s) => `  ${String(s.words).padStart(5)}  ${s.name}`).join('\n')
 
+// Completeness, which the size budget cannot see. The `check:*` table and the
+// "Read before you edit" table are INDEXES, so a script or a docs/ file that exists
+// and is not named makes the file wrong rather than merely incomplete. They had
+// drifted by two scripts and two docs before this existed, with a hand-written
+// count ("Fifty-five") that nothing kept true. A script is named when its
+// `check:<name>` appears in the file; a doc when `docs/<file>.md` does.
+const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
+const unlisted = Object.keys(pkg.scripts)
+  .filter((k) => k.startsWith('check:'))
+  .filter((k) => !new RegExp(`${k}(?![a-z0-9])`).test(text))
+const docFiles = (await readdir(join(root, 'docs'), { withFileTypes: true }))
+  .filter((d) => d.isFile() && d.name.endsWith('.md'))
+  .map((d) => d.name)
+const unrouted = docFiles.filter((f) => !text.includes(`docs/${f}`))
+const incomplete = unlisted.length > 0 || unrouted.length > 0
+
+if (incomplete) {
+  console.error('CLAUDE.md does not name everything its tables index:')
+  for (const k of unlisted) console.error(`  - no table row for \`${k}\` (add a row to the check:* table)`)
+  for (const f of unrouted) console.error(`  - docs/${f} is not in "Read before you edit"`)
+  console.error('')
+}
+
 if (total <= BUDGET) {
   const left = BUDGET - total
   console.log(`CLAUDE.md: ${total} words, budget ${BUDGET} (${left} to spare).`)
   if (process.env.CHECK_CLAUDEMD_VERBOSE) console.log(`\n${table(sized)}`)
   else console.log(`Largest section: ${sized[0].name} (${sized[0].words}).`)
-  process.exit(0)
+  process.exit(incomplete ? 1 : 0)
 }
 
 console.error(`CLAUDE.md is ${total} words; the budget is ${BUDGET}.

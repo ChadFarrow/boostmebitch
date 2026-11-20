@@ -93,7 +93,16 @@ export function UnderlineTabs<T extends string>({
       // Roving focus: `role="tablist"` promises ←/→ between tabs with one tab
       // stop for the strip (WAI-ARIA tabs). Only the active tab is in the tab
       // order; the arrows select AND focus, Home/End jump to the ends.
+      //
+      // A PLAIN arrow only. With a modifier held the key is the browser's:
+      // Alt+← (Windows, Linux) and ⌘← (macOS) are its BACK, and a click on a
+      // tab leaves focus on it, so this handler took both — the tab moved, its
+      // `preventDefault` cancelled the navigation, and every further press
+      // wrapped round the strip instead of leaving the page. Measured on the
+      // episode page after a click on "Boosts" (2026-11-19). ⌘[ was never
+      // caught, because it is not an arrow.
       onKeyDown={(e) => {
+        if (e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
         const idx = Math.max(0, tabs.findIndex((t) => t.id === active));
         const next =

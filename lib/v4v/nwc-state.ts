@@ -23,6 +23,7 @@
 // write → dispose → notify → prefetch.
 import { storage } from '../storage';
 import { createObservable } from '../pubsub';
+import { answerIsForConnectedWallet } from '../util';
 
 // Components reading hasNwc() during render need to refresh when an outside
 // actor flips the connect state — most commonly the wallet modal showing the
@@ -54,8 +55,14 @@ let cachedNwcMethods: string[] | null = null;
  * could never be re-probed for the life of that URI.
  */
 export function setNwcMethods(methods: string[], uri?: string): string[] {
-  cachedNwcMethods = methods;
   const target = uri ?? loadNwcUri();
+  // The in-memory list belongs to the CONNECTED wallet only. `nwcValidate`
+  // passes a candidate that is not saved yet, and a candidate that is then
+  // cancelled left its methods here for the wallet still connected, so
+  // `railCanKeysend` answered for the wrong wallet until a reload. The
+  // persisted record below is tagged with its URI, which is what lets a
+  // candidate that IS saved find its list.
+  if (answerIsForConnectedWallet(target, loadNwcUri())) cachedNwcMethods = methods;
   if (target && methods.length) storage.nwcMethods.set({ uri: target, methods });
   return methods;
 }
