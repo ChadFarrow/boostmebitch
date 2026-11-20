@@ -411,9 +411,13 @@ Measured on ChadF's Greatest Hits playlist, **PI feed 7683902**: the feed declar
 
 StableKraft runs a nightly GitHub Actions job that re-fetches every playlist and writes new tracks into Postgres. That job exists because its read path resolves tracks **from the database with zero network**, so the database has to be filled ahead of time. Ours resolves on demand through `batchEpisodes`, so a playlist edited on GitHub is live within about five minutes (`fetchFeedXml`'s 60 s window plus the route's `s-maxage=300`) with no job at all. Adding a cron would buy nothing and add a thing that can fail silently.
 
-### `?playlist=<feedUrl>` is the deep link
+### `?playlist=` is a playlist's deep link
 
-A preview feed is not URL-mirrored, because a publisher checking their own unsubmitted feed has nothing to share. A playlist is the exception — people share these — and it restores exactly, because `/api/playlist` keys off the feed URL rather than a PI id. Same shape as `?publisher=<feedUrl>`.
+**A playlist's app link says `playlist`, as its feed address does** (Chad, 2026-11-20: "the url links need playlist also"). `showLinkParam` (`lib/util.ts`) picks the parameter for the address-bar mirror (`viewUrl`) and the SHARE links (`showShareUrl`), so the two cannot disagree: `?playlist=<guid>` for every playlist with a guid (made on BMB, or held by Podcast Index), `?podcast=<guid>` for every other show and album.
+
+**A playlist with no guid keeps `?playlist=<feedUrl>`.** A preview feed is not URL-mirrored, because a publisher checking their own unsubmitted feed has nothing to share. A playlist is the exception — people share these — and it restores exactly, because `/api/playlist` keys off the feed URL rather than a PI id. Same shape as `?publisher=<feedUrl>`. An RSS-only record carries no guid (`previewPodcastFromChannel`), so a playlist Podcast Index does not hold, such as the v4vmusic ones, gets this form. `readPlaylistParam` tells the two values apart by scheme: a feed URL is always http(s), and a guid never is.
+
+**Reading never changed, and must not.** `linkedShowGuid` takes `?podcast=` first and then a `?playlist=` guid, and the restore, the link preview (`generateMetadata`) and the preload hint all ask it. So an old `?podcast=<guid>` link to a playlist still opens it — every boost note carries one, and a signed note cannot be edited — and the landing REPLACE rewrites the address bar to `?playlist=<guid>` without adding a history entry. The boost modals keep `?podcast=` in the NIP-73 hints they sign, because they pass `showShareUrl` a guid with no medium: those hints name the song's own album.
 
 ## Podroll (`<podcast:podroll>`, host-recommended shows)
 

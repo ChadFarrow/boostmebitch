@@ -246,8 +246,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     const hostRefs: Nip73Refs = {
       podcastGuid: podcast.podcastGuid,
       episodeGuid: episode.guid,
-      podcastUrl: showShareUrl(podcast.podcastGuid) ?? undefined,
-      episodeUrl: showShareUrl(podcast.podcastGuid, episode.guid) ?? undefined,
+      // `{ podcastGuid }` alone keeps these `?podcast=`: a hint signed into a
+      // note is never re-spelled (`showShareUrl`).
+      podcastUrl: showShareUrl({ podcastGuid: podcast.podcastGuid }) ?? undefined,
+      episodeUrl: showShareUrl({ podcastGuid: podcast.podcastGuid }, episode.guid) ?? undefined,
     };
 
     for (let i = 0; i < splits.length; i++) {

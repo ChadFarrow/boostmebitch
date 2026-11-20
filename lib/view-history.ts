@@ -41,7 +41,7 @@
  */
 import { useApp } from '@/lib/store';
 import type { Episode, Podcast } from '@/lib/types';
-import { isPlaylistMedium } from '@/lib/util';
+import { showLinkParam } from '@/lib/util';
 
 export interface HomeView {
   selectedPodcast: Podcast | null;
@@ -98,9 +98,10 @@ const VIEW_PARAMS = ['playlist', 'podcast', 'feed', 'episode', 'discussion', 'pu
  *
  * - `?podcast=<guid>` when the show has one, else `?feed=<id>`. A preview feed
  *   (not in PI) has a synthetic negative id and no guid, so it is not
- *   restorable and nothing is written for it — except a musicL PLAYLIST, which
- *   restores exactly from `?playlist=<feed url>` because `/api/playlist` keys
- *   off the feed URL.
+ *   restorable and nothing is written for it — except a PLAYLIST.
+ * - A playlist (`showLinkParam`) writes `?playlist=<guid>` instead of
+ *   `?podcast=` (Chad, 2026-11-20), and `?playlist=<feed url>` when it has no
+ *   guid, which restores exactly because `/api/playlist` keys off the feed URL.
  * - `?episode=<guid>` from the episode view, or from the discussion when it was
  *   restored without one; `?discussion=1` on top. Neither for a preview feed.
  * - `?publisher=<feed url>` for the aside.
@@ -113,12 +114,17 @@ export function viewUrl(href: string, view: HomeView): string {
   const p = url.searchParams;
   const selected = view.selectedPodcast;
   const isPreview = !!selected?.isPreview;
-  const playlistUrl = selected && !selected.podcastGuid && isPlaylistMedium(selected)
-    ? selected.url : undefined;
-  if (playlistUrl) p.set('playlist', playlistUrl);
+  // A playlist is named by `?playlist=`: its guid when it has one, else its feed
+  // URL (`readPlaylistParam` tells the two apart on the way back in). So a
+  // playlist with a guid writes no `?podcast=` — an old `?podcast=` link to it
+  // is rewritten to `?playlist=` on landing, by the REPLACE that rule 1 makes.
+  const isList = !!selected && showLinkParam(selected) === 'playlist';
+  const playlistValue = isList ? (selected.podcastGuid ?? selected.url) : undefined;
+  if (playlistValue) p.set('playlist', playlistValue);
   else p.delete('playlist');
   if (selected?.podcastGuid) {
-    p.set('podcast', selected.podcastGuid);
+    if (isList) p.delete('podcast');
+    else p.set('podcast', selected.podcastGuid);
     p.delete('feed');
   } else if (selected && !isPreview) {
     p.set('feed', String(selected.id));
