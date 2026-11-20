@@ -822,3 +822,20 @@ export function endedVerdict(
   const next = seen + 1;
   return { seen: next, ended: next >= STREAM_ENDED_OBSERVATIONS };
 }
+
+/**
+ * May a settle that paid nobody put its sats back on the ledger?
+ *
+ * **Not when a wallet never answered.** A reply timeout means the request was
+ * published and the wallet may have paid (`NwcIndeterminateError`,
+ * `BoostResult.indeterminate`). Refunding that run returns its sats to the
+ * bucket and the next billing window sends them again: the same recipients
+ * paid twice from an unattended timer, with no screen in front of it. A run
+ * that definitely failed (refused, no route, no wallet) is refundable. A run
+ * with ONE unanswered leg is not, even when the other legs refused, because the
+ * ledger moves a whole bucket and cannot refund a leg. **Losing sats is
+ * recoverable; sending them twice is not** (docs/money-boosts.md, rule 11).
+ */
+export function failedRunIsRefundable(indeterminate: boolean): boolean {
+  return !indeterminate;
+}

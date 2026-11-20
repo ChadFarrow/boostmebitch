@@ -15,7 +15,7 @@ import { nip19 } from 'nostr-tools';
 import type { FeedNpub } from './types';
 
 /**
- * Read one attribute off a raw tag's attribute string. Quote-agnostic.
+ * Read one attribute off a raw tag's attribute string. Single or double quotes.
  *
  * **The name is anchored to a whitespace or start-of-string boundary, NOT to
  * `\b`, and that is a money invariant — see `npm run check:feedxml`.**
@@ -39,14 +39,78 @@ import type { FeedNpub } from './types';
  * `href` lookup, routing a link to an attacker's URL past the reader's eye) and
  * `url` on funding/enclosure tags.
  *
- * `(?:^|\s)` requires the name to actually start an attribute. Namespaced
- * attributes (`xml:lang`) deliberately do NOT satisfy a bare-name lookup —
- * nothing here reads one, and treating `foo:url` as `url` is the same bug.
+ * A name must actually START an attribute: at the start of the string or after
+ * whitespace, and OUTSIDE every quoted value. Namespaced attributes
+ * (`xml:lang`) deliberately do NOT satisfy a bare-name lookup — nothing here
+ * reads one, and treating `foo:url` as `url` is the same bug.
+ *
+ * **It walks the string quote-aware instead of matching a regex, and that is the
+ * second half of the same invariant.** A regex finds `address='03EVIL'` INSIDE
+ * `name="Bob address='03EVIL' split='1'"`, because a single quote needs no
+ * escape in a double-quoted value. `check:feedxml` pins it.
  */
 export function readAttr(attrs: string, name: string): string | undefined {
-  const re = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
-  const m = attrs.match(re);
-  return m ? (m[1] ?? m[2]) : undefined;
+  // A forward walk over the attribute string, quote-aware. A regex over the raw
+  // string cannot be: `name="Bob address='03EVIL' split='1'" address="03REAL"`
+  // holds a complete-looking `address='…'` INSIDE the first value, and a single
+  // quote inside a double-quoted value needs no escaping, so any feed host that
+  // lets a collaborator edit a display name could steer the payee.
+  const want = asciiLower(name);
+  const n = attrs.length;
+  let i = 0;
+  let boundary = true; // a name may start the string, or follow whitespace
+  while (i < n) {
+    const ch = attrs[i]!;
+    if (isAttrSpace(ch)) {
+      boundary = true;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      // A quoted string where a name belongs: junk. Skip it WHOLE, so what it
+      // holds is never read as an attribute.
+      const close = attrs.indexOf(ch, i + 1);
+      if (close === -1) return undefined;
+      i = close + 1;
+      boundary = false;
+      continue;
+    }
+    if (ch === '=') {
+      i++;
+      boundary = false;
+      continue;
+    }
+    const nameStart = i;
+    while (i < n) {
+      const c = attrs[i]!;
+      if (isAttrSpace(c) || c === '=' || c === '"' || c === "'") break;
+      i++;
+    }
+    const token = attrs.slice(nameStart, i);
+    const atBoundary = boundary;
+    boundary = false;
+    let j = i;
+    while (j < n && isAttrSpace(attrs[j]!)) j++;
+    if (attrs[j] !== '=') continue; // a valueless attribute
+    j++;
+    while (j < n && isAttrSpace(attrs[j]!)) j++;
+    const q = attrs[j];
+    if (q !== '"' && q !== "'") {
+      // An unquoted value is not XML. Step past it and keep walking.
+      while (j < n && !isAttrSpace(attrs[j]!)) j++;
+      i = j;
+      continue;
+    }
+    const close = attrs.indexOf(q, j + 1);
+    if (close === -1) return undefined;
+    if (atBoundary && asciiLower(token) === want) return attrs.slice(j + 1, close);
+    i = close + 1;
+  }
+  return undefined;
+}
+
+function isAttrSpace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
 }
 
 // Decode the handful of XML entities that show up in short text nodes
@@ -125,6 +189,79 @@ export function decodeXmlEntities(raw: string): string {
 // regexes' `\b` (a word boundary), under which `<item-x>` and `<item:x>`
 // satisfied `<item\b` — the same class of decoy `readAttr`'s comment documents,
 // one level up.
+
+// ── Comments and CDATA are not markup ──────────────────────────────────────
+//
+// `findTags`/`findBlocks` look for `<name` with `indexOf`, so a tag written
+// inside `<!-- … -->` or `<![CDATA[ … ]]>` was found as a live one. Document
+// order wins (`firstBlock`), so a producer who commented out an OLD
+// `<podcast:value>` above the new one — or an item whose CDATA description
+// holds sample markup — was parsed as paying the stale or example recipient,
+// while every real XML parser pays the live one.
+//
+// `maskInert` blanks those spans with spaces, LENGTH-PRESERVING, so an index
+// found in the masked copy slices the original (`inner` is still the raw text,
+// CDATA included, as `decodeXmlText` expects). It walks the document once and
+// skips each real tag QUOTE-AWARE, so a `<!--` inside an attribute value never
+// opens a comment (that would let one recipient's `name` hide the next). An
+// unterminated comment or CDATA runs to the end of input: fewer tags, never a
+// wrong one, which is the direction this scanner already fails in.
+let maskedFor: string | null = null;
+let maskedOut = '';
+
+export function maskInert(xml: string): string {
+  if (xml.indexOf('<!--') === -1 && xml.indexOf('<![CDATA[') === -1) return xml;
+  if (xml === maskedFor) return maskedOut;
+  const n = xml.length;
+  const parts: string[] = [];
+  let kept = 0;
+  let i = 0;
+  const blank = (from: number, to: number) => {
+    parts.push(xml.slice(kept, from), ' '.repeat(to - from));
+    kept = to;
+  };
+  while (i < n) {
+    const lt = xml.indexOf('<', i);
+    if (lt === -1) break;
+    if (xml.startsWith('<!--', lt)) {
+      const end = xml.indexOf('-->', lt + 4);
+      const stop = end === -1 ? n : end + 3;
+      blank(lt, stop);
+      i = stop;
+      continue;
+    }
+    if (xml.startsWith('<![CDATA[', lt)) {
+      const end = xml.indexOf(']]>', lt + 9);
+      const stop = end === -1 ? n : end + 3;
+      blank(lt, stop);
+      i = stop;
+      continue;
+    }
+    if (xml.startsWith('<?', lt)) {
+      const end = xml.indexOf('?>', lt + 2);
+      i = end === -1 ? n : end + 2;
+      continue;
+    }
+    // An ordinary tag (or `<!DOCTYPE`): skip to its `>`, quote-aware.
+    let j = lt + 1;
+    let quote: string | null = null;
+    for (; j < n; j++) {
+      const ch = xml[j]!;
+      if (quote) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '>') {
+        break;
+      }
+    }
+    i = j + 1;
+  }
+  parts.push(xml.slice(kept));
+  maskedFor = xml;
+  maskedOut = parts.join('');
+  return maskedOut;
+}
 
 /** One open tag: `<name …>` or `<name …/>`. */
 export interface TagHit {
@@ -232,7 +369,8 @@ function nextClose(xml: string, lower: string, lname: string, from: number): { a
  * Every `<name …>` open tag in document order, self-closing ones included.
  * Stops at the first malformed one (see the header). `max` bounds the walk.
  */
-export function findTags(xml: string, name: string, opts?: { max?: number }): TagHit[] {
+export function findTags(source: string, name: string, opts?: { max?: number }): TagHit[] {
+  const xml = maskInert(source);
   const lower = asciiLower(xml);
   const lname = asciiLower(name);
   const max = opts?.max ?? Infinity;
@@ -258,7 +396,8 @@ export function firstTag(xml: string, name: string): TagHit | undefined {
  * same answer `[\s\S]*?` gave. Stops at a malformed open tag or a missing
  * close (see the header).
  */
-export function findBlocks(xml: string, name: string, opts?: { max?: number }): BlockHit[] {
+export function findBlocks(source: string, name: string, opts?: { max?: number }): BlockHit[] {
+  const xml = maskInert(source);
   const lower = asciiLower(xml);
   const lname = asciiLower(name);
   const max = opts?.max ?? Infinity;
@@ -274,7 +413,7 @@ export function findBlocks(xml: string, name: string, opts?: { max?: number }): 
     }
     const close = nextClose(xml, lower, lname, hit.openEnd);
     if (!close) break;
-    out.push({ ...hit, inner: xml.slice(hit.openEnd, close.at), end: close.end });
+    out.push({ ...hit, inner: source.slice(hit.openEnd, close.at), end: close.end });
     from = close.end;
   }
   return out;
