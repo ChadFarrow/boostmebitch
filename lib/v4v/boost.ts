@@ -17,7 +17,8 @@ import {
 } from './keysend-lookup';
 import { storeBoostMetadata, boostboxIdFromUrl } from './boostbox';
 import { storage } from '@/lib/storage';
-import { payInOrder, recipientOrder, isLnAddressRecipient, splitSats } from '@/lib/util';
+import { payInOrder, recipientOrder, isLnAddressRecipient, splitSats, stoppedLeg, legLogFields } from '@/lib/util';
+import { logPlayback } from '@/lib/playback-log';
 import { bolt11AmountMsat, bolt11PaymentHash } from './bolt11';
 import { STAMP_MAX_FEE_SATS } from '@/lib/site-stamp';
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
@@ -582,17 +583,42 @@ export async function sendBoost(args: {
   moveOnAfterMs?: number;
   /** Called once every leg has STARTED — before a slow one settles. */
   onAllStarted?: () => void;
+  /**
+   * The panel's CANCEL. Asked before each leg STARTS; a leg it stops comes back
+   * `stopped` (`stoppedLeg`), never ✗. A leg already handed to the wallet runs
+   * on — nothing can call it back. See `payInOrder`.
+   */
+  shouldStop?: () => boolean;
 }): Promise<BoostResult[]> {
   // Before ANY leg: the retry arms below read the NWC error classes whichever
   // rail pays, and a payment engine that cannot load must fail the boost while
   // nothing has moved, not a leg after something has.
+  // The bug report's payment log (`lib/playback-log.ts`): what each run did and
+  // why a leg did not pay, in fixed words — never an amount, a recipient or an
+  // error's own text, because the log is filed into a public issue. Written
+  // here, not in each caller, so the boost panel, BOOST ALL and streaming all
+  // leave the same trace. Only legs that did NOT pay get a line of their own:
+  // streaming settles every track, and a line per paid leg would push the
+  // playback events out of the 150-line ring within the hour.
+  const t0 = Date.now();
+  const act = args.boostagram.action;
   try {
     await loadNwcEngine();
   } catch (e) {
+    logPlayback('pay.run', { act, err: 'engine' });
     throw new Error(`payment engine failed to load — nothing was sent (${e instanceof Error ? e.message : String(e)})`);
   }
   const rail = args.rail ?? pickRail();
-  if (!rail) throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
+  if (!rail) {
+    logPlayback('pay.run', { act, err: 'no_wallet' });
+    throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
+  }
+  const logRun = (rs: BoostResult[]) => {
+    const n = (res: string) => rs.filter((r) => legLogFields(r).res === res).length;
+    logPlayback('pay.run', {
+      rail, act, legs: rs.length, ok: n('ok'), unk: n('unk'), fail: n('fail'), stop: n('stop'), ms: Date.now() - t0,
+    });
+  };
 
   const recipients = args.value.recipients;
   const splits = splitSats(args.totalSats, recipients);
@@ -602,6 +628,21 @@ export async function sendBoost(args: {
   // order below. Do NOT "simplify" this back to results.push(r); it type-checks,
   // lints and builds while pairing every leg with the wrong recipient.
   const results: BoostResult[] = new Array(recipients.length);
+  // Every leg CANCEL kept from starting, at its own index. Called on both exits
+  // below, so a stopped run never hands back a hole.
+  const markStopped = () => {
+    for (let i = 0; i < recipients.length; i++) {
+      if (!results[i]) results[i] = stoppedLeg(recipients[i], splits[i]);
+    }
+    return results;
+  };
+  // Cancelled before the first leg: skip the capability probe too, which is a
+  // round trip to the very wallet that is not answering.
+  if (args.shouldStop?.()) {
+    markStopped();
+    logRun(results);
+    return results;
+  }
 
   // Resolved once per boost, not per leg, and only when there's actually an
   // UPGRADEABLE lnaddress recipient. All four halves matter: a node-only value
@@ -640,15 +681,33 @@ export async function sendBoost(args: {
   // allowed is WAITING: on NWC, with `moveOnAfterMs`, a leg the wallet has not
   // answered keeps waiting while the next one starts — two requests in flight on
   // one relay connection, which NIP-47 tells apart by event id.
+  let started = 0;
   await payInOrder(
     recipientOrder(recipients),
     async (i) => {
+      const n = ++started;
+      const legStart = Date.now();
       const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend, args.feedGuid);
       results[i] = r;
+      // `n` is the leg's place in the PAY order, so the line names no one.
+      if (!r.ok) {
+        logPlayback('pay.leg', {
+          n,
+          to: isLnAddressRecipient(recipients[i]) ? 'lnaddr' : 'node',
+          ...legLogFields(r),
+          ms: Date.now() - legStart,
+        });
+      }
       args.onProgress?.(r, i, recipients.length);
     },
-    { moveOnAfterMs: rail === 'nwc' ? args.moveOnAfterMs : undefined, onAllStarted: args.onAllStarted },
+    {
+      moveOnAfterMs: rail === 'nwc' ? args.moveOnAfterMs : undefined,
+      onAllStarted: args.onAllStarted,
+      shouldStop: args.shouldStop,
+    },
   );
+  markStopped();
+  logRun(results);
   return results;
 }
 
@@ -660,7 +719,12 @@ export async function sendBoost(args: {
 export async function checkLeg(r: BoostResult): Promise<import('./nwc-errors').LegVerdict> {
   if (!r.nwcCheck) return { state: 'unknown', why: 'unclear' };
   const engine = await loadNwcEngine();
-  return engine.nwcLookupPayment(r.nwcCheck.paymentHash);
+  const v = await engine.nwcLookupPayment(r.nwcCheck.paymentHash);
+  // What the wallet said about a `?` leg, later — the line that tells "the node
+  // paid late" from "the node never paid". No hash: it would tie the report to
+  // a payment on the recipient's side.
+  logPlayback('pay.check', { state: v.state, why: v.state === 'unknown' ? v.why : undefined });
+  return v;
 }
 
 /**
@@ -689,8 +753,12 @@ export async function resendLeg(r: BoostResult): Promise<BoostResult> {
             preimage: check.resend.preimage,
           })
         : await engine.nwcPayInvoice(check.resend.invoice);
+    logPlayback('pay.resend', { res: 'ok' });
     return { recipient: r.recipient, sats: r.sats, ok: true, preimage, boostboxUrl: r.boostboxUrl, boostboxId: r.boostboxId };
   } catch (e) {
-    return { ...r, ok: false, indeterminate: true, error: e instanceof Error ? e.message : String(e), nwcCheck: check };
+    const out: BoostResult = { ...r, ok: false, indeterminate: true, error: e instanceof Error ? e.message : String(e), nwcCheck: check };
+    // The resend's own reason, not "unanswered": it is what RETRY repeats.
+    logPlayback('pay.resend', { res: 'unk', why: legLogFields({ ...out, indeterminate: false }).why });
+    return out;
   }
 }

@@ -18,14 +18,20 @@
 export function LegStatusGlyph({
   ok,
   indeterminate,
+  stopped,
   className = '',
 }: {
   ok: boolean;
   indeterminate?: boolean;
+  /** CANCEL kept this leg from starting: not sent, and not a failure. */
+  stopped?: boolean;
   className?: string;
 }) {
   if (ok) {
     return <span className={`text-bolt ${className}`}>✓<span className="sr-only"> sent</span></span>;
+  }
+  if (stopped) {
+    return <span className={`text-muted ${className}`}>–<span className="sr-only"> cancelled, not sent</span></span>;
   }
   if (indeterminate) {
     return (

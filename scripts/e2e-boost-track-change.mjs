@@ -456,7 +456,7 @@ section('3. The track ENDS on its own while a failed leg waits for Retry');
   wallet.refuseNext = true;
   const before = wallet.pays.length;
   t.ok('Send is pressed', await pressDialogButton('/send 100 sat/i'));
-  t.ok('the leg fails and offers a retry', !!(await until(`() => [...document.querySelectorAll('[role="dialog"] button')].some((b) => /retry 1 failed/i.test(b.innerText) && !b.disabled)`, 15000)));
+  t.ok('the leg fails and offers a retry', !!(await until(`() => [...document.querySelectorAll('[role="dialog"] button')].some((b) => /retry 1 unsent/i.test(b.innerText) && !b.disabled)`, 15000)));
   t.equal('nothing was logged as a boost yet', (await storedBoosts()).filter((b) => b.episodeTitle === titleC).length, 0);
 
   valueHold.on = true;
@@ -475,13 +475,13 @@ section('3. The track ENDS on its own while a failed leg waits for Retry');
   let m = await modal();
   t.ok('the modal is still on screen', !!m);
   t.equal('it still names the track it was opened for', m?.title ?? null, titleC);
-  t.ok('and still offers the retry', !!(await until(`() => [...document.querySelectorAll('[role="dialog"] button')].some((b) => /retry 1 failed/i.test(b.innerText) && !b.disabled)`, 3000)));
+  t.ok('and still offers the retry', !!(await until(`() => [...document.querySelectorAll('[role="dialog"] button')].some((b) => /retry 1 unsent/i.test(b.innerText) && !b.disabled)`, 3000)));
 
   await releaseValues();
   await wait(2000);
   m = await modal();
   t.equal('once the next track\'s payee lands it still names the same track', m?.title ?? null, titleC);
-  t.ok('Retry is pressed', await pressDialogButton('/retry 1 failed/i'));
+  t.ok('Retry is pressed', await pressDialogButton('/retry 1 unsent/i'));
   t.ok('the retry reaches the wallet', await untilNode(() => wallet.pays.length >= before + 2, 15000));
   const legs = wallet.pays.slice(before).map(decodePay);
   t.equal('two keysends: the refused one and the retry', legs.length, 2);

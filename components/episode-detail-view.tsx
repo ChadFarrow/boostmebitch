@@ -81,7 +81,7 @@ function EpisodeShareButton({ episode, podcast }: { episode: Episode; podcast: N
   if (!episode.guid || !podcast.podcastGuid) return null;
   return (
     <CopyLinkButton
-      url={showShareUrl(podcast.podcastGuid, episode.guid)}
+      url={showShareUrl(podcast, episode.guid)}
       title="Copy link to this episode"
       className="tile"
     />
@@ -266,7 +266,7 @@ export function EpisodeDetailView() {
   // fell through would give every row a button copying the same link to the
   // whole show, which is the failure <ShareTargets> already documents.
   const rowShareUrl = episode.guid
-    ? (t: number) => showShareUrl(podcast.podcastGuid, episode.guid, t)
+    ? (t: number) => showShareUrl(podcast, episode.guid, t)
     : undefined;
 
   return (

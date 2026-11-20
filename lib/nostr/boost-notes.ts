@@ -268,9 +268,12 @@ export function receiptRefUrls(
 ): { podcastUrl?: string; episodeUrl?: string } {
   if (!podcastGuid) return {};
   if (brand.id === BRAND.id) {
+    // `{ podcastGuid }` with no medium keeps these `?podcast=`, as
+    // `siteLandingUrl` writes for the other brand: a hint signed into a receipt
+    // is never re-spelled, and `?podcast=` opens every kind of show.
     return {
-      podcastUrl: showShareUrl(podcastGuid) ?? undefined,
-      episodeUrl: showShareUrl(podcastGuid, itemGuid) ?? undefined,
+      podcastUrl: showShareUrl({ podcastGuid }) ?? undefined,
+      episodeUrl: showShareUrl({ podcastGuid }, itemGuid) ?? undefined,
     };
   }
   return {

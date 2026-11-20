@@ -39,11 +39,15 @@ import {
   explainPaymentError,
   lnurlCallbackRefused,
   lnurlCommentRetry,
+  LEG_STOPPED_MSG,
+  legLogFields,
   lnurlErrorReason,
   payInOrder,
   retryableLegs,
+  stoppedLeg,
   unreachableWalletRelay,
 } from '../lib/util.ts';
+import { formatPlaybackLogLine, isPlaybackLogLine } from '../lib/playback-log-line.ts';
 
 let failures = 0;
 
@@ -789,6 +793,58 @@ console.log('\nretryableLegs');
   check('a leg once unanswered is never retried under a new hash', retryableLegs(withChecked), [1, 8, 7, 0]);
   const before = (rs) => rs.map((r, i) => (r && !r.ok && !r.indeterminate && r.sats > 0 && explainPaymentError(r.error).nothingSent ? i : -1)).filter((i) => i >= 0);
   check('(naive: the rule before nwcCheck) re-pays it', before(withChecked).includes(11) && !retryableLegs(withChecked).includes(11), true);
+
+  // A leg CANCEL kept from starting (`stoppedLeg`): no wallet was asked, so it
+  // qualifies — by its FLAG. Its text alone proves nothing: the same words in
+  // an LNURL reason or a library message must not make a leg retryable, and a
+  // flag on a leg that also went unanswered (impossible from `stoppedLeg`, but
+  // the guard order is the point) must not either.
+  const stopped = [
+    stoppedLeg(R, 60),                                                        // 0 retry
+    leg(80, { error: LEG_STOPPED_MSG }),                                      // 1 text only: no
+    leg(45, { stopped: true, indeterminate: true, error: LEG_STOPPED_MSG }), // 2 unanswered wins
+    leg(0, { stopped: true, error: LEG_STOPPED_MSG }),                       // 3 zero-sat
+    leg(30, { ok: true, preimage: 'p' }),                                     // 4 paid
+  ];
+  check('a cancelled leg is retried, by its flag only', retryableLegs(stopped), [0]);
+  check('stoppedLeg is ok:false, stopped, with no hash', [stopped[0].ok, stopped[0].stopped, 'nwcCheck' in stopped[0]], [false, true, false]);
+  // `naive()`: the rule before CANCEL existed reads the text, and its
+  // allowlist does not know these words — the cancelled leg is lost for good.
+  check('(naive: the rule before stopped) never offers the cancelled leg', before(stopped).includes(0), false);
+}
+
+// ── legLogFields: one leg as the bug report's payment log files it ────────
+// The log is a PUBLIC issue. Each leg is recorded as a result and a fixed
+// reason word, and the line must pass the playback-log allowlist — so a
+// recipient's address, name, amount or the raw error text (which can quote a
+// relay host or a recipient's own reason) never reaches it.
+console.log('\nlegLogFields');
+{
+  const R = { name: 'Alice Artist', address: 'alice@example.com', type: 'lnaddress', split: 1 };
+  const leg = (sats, extra) => ({ recipient: R, sats, ok: false, ...extra });
+  const RAW = 'LNURL callback failed (400): ask alice@example.com, wss://relay.example.com';
+  const cases = [
+    [undefined, { res: 'none' }],
+    [leg(777, { ok: true, preimage: 'p' }), { res: 'ok' }],
+    [stoppedLeg(R, 777), { res: 'stop', why: 'cancelled' }],
+    [leg(777, { indeterminate: true, error: 'Wallet did not answer in time' }), { res: 'unk', why: 'unanswered' }],
+    [leg(777, { error: 'Failed to connect to wss://relay.getalby.com' }), { res: 'fail', why: 'relay_unreachable' }],
+    [leg(777, { error: RAW }), { res: 'fail', why: 'lnurl_refused' }],
+    [leg(777, { error: 'PAYMENT_FAILED: insufficient balance' }), { res: 'fail', why: 'balance' }],
+    [leg(777, { error: 'something new' }), { res: 'fail', why: 'other' }],
+  ];
+  for (const [r, want] of cases) check(`${want.res}${want.why ? ' / ' + want.why : ''}`, legLogFields(r), want);
+  const lines = cases.map(([r]) => formatPlaybackLogLine(new Date(0), 'pay.leg', { n: 1, to: 'lnaddr', ...legLogFields(r), ms: 60012 }));
+  check('every line passes the public-issue allowlist', lines.every((l) => l !== null && isPlaybackLogLine(l)), true);
+  check('no line carries the amount, the name, the address or the raw text',
+    lines.some((l) => /777|alice|example|getalby|wss|callback/i.test(l)), false);
+  // `naive()`: file the error text, which is what a console line holds. The
+  // format forces it into 32 safe characters, so the filed word is the start
+  // of a library sentence, not a reason — and on a shorter message, the
+  // address itself (`alice_example.com`).
+  const naive = (r) => formatPlaybackLogLine(new Date(0), 'pay.leg', { why: r.error });
+  check('(naive) files library text, not a reason', /callback/i.test(naive(leg(777, { error: RAW }))), true);
+  check('(naive) files the address', /alice_example/.test(naive(leg(777, { error: 'pay alice@example.com' }))), true);
 }
 
 // ── payInOrder: a slow leg does not hold the others ──────────────────────
@@ -846,6 +902,34 @@ console.log('\npayInOrder');
     check('a leg that THROWS stops the rest, as the plain loop did', h.log, ['start 2']);
     check('...and the run rejects with it', String(h.failure()?.message), 'engine gone');
   }
+  // CANCEL (`shouldStop`) is asked before each START. A leg already started
+  // runs on and the run still waits for it; the legs not started are never
+  // started; and `onAllStarted` does not fire, so a redirect's show share does
+  // not begin behind a cancel.
+  {
+    let stop = false;
+    const h = harness({ moveOnAfterMs: 15000, shouldStop: () => stop });
+    await tick();
+    stop = true;
+    h.timers[0].d.resolve(); await tick();
+    check('CANCEL starts no further leg', h.log, ['start 2']);
+    check('...and onAllStarted does not fire', h.isStarted(), false);
+    check('...but the run waits for the leg already started', h.isDone(), false);
+    h.legs[2].resolve(); await tick();
+    check('...and ends when it settles', [h.isDone(), h.log], [true, ['start 2', 'settle 2']]);
+  }
+  {
+    const h = harness({ shouldStop: () => true });
+    await tick();
+    check('CANCEL before the first leg starts nothing, and the run ends', [h.log, h.isDone(), h.isStarted()], [[], true, false]);
+  }
+  {
+    const h = harness({ moveOnAfterMs: 15000, shouldStop: () => false });
+    await tick(); h.timers[0].d.resolve(); await tick(); h.legs[0].resolve(); await tick(); h.legs[1].resolve(); await tick();
+    check('a shouldStop that never fires changes nothing', [h.log.filter((l) => l.startsWith('start')), h.isStarted()], [['start 2', 'start 0', 'start 1'], true]);
+    h.legs[2].resolve(); await tick();
+  }
+
   // `naive()`: race the timer and forget the slow leg — the run "ends" while a
   // payment is still in flight, so the panel would log and celebrate a boost
   // whose biggest leg it never heard from.

@@ -15,7 +15,7 @@ import { demuView } from '@/lib/demu-view';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed, loadFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
-import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium } from '@/lib/util';
+import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium, linkedShowGuid, readPlaylistParam } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 
 import { loadCollection } from '@/lib/playlist-collection';
@@ -230,9 +230,13 @@ export function HomePage() {
       return;
     }
     const params = new URLSearchParams(initialSearch.current);
-    const guid = params.get('podcast');
+    // `?podcast=<guid>`, or `?playlist=<guid>`, the spelling a playlist's link
+    // has used since 2026-11-20. Both resolve the same way; old `?podcast=`
+    // links to a playlist keep opening, and the mirror then rewrites them.
+    const guid = linkedShowGuid((k) => params.get(k));
     const feedId = params.get('feed');
-    const playlistParam = params.get('playlist');
+    // `?playlist=<feed url>`: a playlist with no guid (`readPlaylistParam`).
+    const playlistParam = readPlaylistParam(params.get('playlist'))?.feedUrl;
     const episodeGuid = params.get('episode');
     const wantDiscussion = params.get('discussion') === '1';
     // ?t=<seconds> — a link to one moment, built by `showShareUrl` from a row of
@@ -266,8 +270,9 @@ export function HomePage() {
     let cancelled = false;
     (async () => {
       let podcast: Podcast | null = null;
-      // A playlist restores by FEED URL, because a musicL feed Podcast Index has
-      // not indexed has no id or guid to restore by — the same reason
+      // A playlist with no guid restores by FEED URL, because a musicL feed
+      // Podcast Index has not indexed may have no id or guid to restore by (one
+      // WITH a guid took the `guid` branch below) — the same reason
       // ?publisher=<feedUrl> exists. `/api/playlist` answers with the channel,
       // so one request both validates the URL and supplies the header.
       if (playlistParam && !guid && !feedId) {

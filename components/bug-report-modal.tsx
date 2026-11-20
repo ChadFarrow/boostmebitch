@@ -191,7 +191,7 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
         </dl>
         {log.length > 0 && (
           <>
-            <p className="mt-3 text-muted">Playback log, {log.length} events (UTC)</p>
+            <p className="mt-3 text-muted">Playback and payment log, {log.length} events (UTC)</p>
             <pre className="mt-1 max-h-40 overflow-auto overscroll-contain whitespace-pre font-mono text-[11px] text-bone/80">
               {log.join('\n')}
             </pre>

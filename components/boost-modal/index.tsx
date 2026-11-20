@@ -271,6 +271,18 @@ export function BoostModal(props: Props) {
     runningRef.current = b;
     setRunningState(b);
   };
+  // CANCEL while a send runs: stop the legs NOT YET STARTED. A ref, because
+  // `sendBoost` asks it between legs, long after the render that set it. A leg
+  // already with the wallet cannot be called back, so it runs on and is judged
+  // like any other. HIDE is the other control: it closes the panel and lets
+  // every leg go out (the boost finishes behind it — confetti, sound, log, note).
+  const stopRef = useRef(false);
+  const [stopping, setStopping] = useState(false);
+  const shouldStop = () => stopRef.current;
+  const cancelSend = () => {
+    stopRef.current = true;
+    setStopping(true);
+  };
   // Inline error surface. This replaced two alert()s — the only ones in the
   // codebase, both on the payment path. A blocking native dialog over a modal
   // that is mid-teardown can't be styled, isn't read in context by a screen
@@ -742,6 +754,9 @@ export function BoostModal(props: Props) {
               return next;
             }),
           moveOnAfterMs: SLOW_LEG_MS,
+          // A CANCEL during the track legs reaches here too: every show leg
+          // comes back `stopped`, before the capability probe.
+          shouldStop,
         });
         setHostResults(sent.hostCollected);
       } catch (e) {
@@ -768,6 +783,8 @@ export function BoostModal(props: Props) {
     // as this send having failed.
     setSendErr(null);
     setHostErr(null);
+    stopRef.current = false;
+    setStopping(false);
     // Saved even for an anonymous boost — it's the user's own device-local
     // "From" default, and withholding it from the wire is what anonymity means
     // here, not forgetting what they typed.
@@ -965,6 +982,7 @@ export function BoostModal(props: Props) {
           // Chad, 2026-11-18: one leg the wallet answered late held the rest.
           moveOnAfterMs: SLOW_LEG_MS,
           onAllStarted: startHost,
+          shouldStop,
         });
         setResults(sent.collected);
       } catch (e) {
@@ -1017,6 +1035,8 @@ export function BoostModal(props: Props) {
     // `go()` started may be minutes old. A fresh one, for the same reason as
     // there: it runs while these legs pay.
     if (!sent.logged && sent.maySignAsSelf) sent.signerCheck = checkSignerLink();
+    stopRef.current = false;
+    setStopping(false);
     setRunning(true);
     const retried: BoostResult[] = [];
     // Stop at the first leg whose wallet relay still cannot be reached. Every
@@ -1037,13 +1057,17 @@ export function BoostModal(props: Props) {
       return r;
     };
     try {
+      // CANCEL is asked before each leg here too; a leg it skips keeps its old
+      // result, so it is still offered next time.
       for (const i of primaryIdx) {
+        if (stopRef.current) break;
         const r = await resend(sent.collected[i], sent.primaryValue, sent.primaryBoostagram);
         sent.collected = sent.collected.map((old, k) => (k === i ? r : old));
         setResults(sent.collected);
         if (relayDown(r)) break;
       }
       for (const i of retried.some(relayDown) ? [] : hostIdx) {
+        if (stopRef.current) break;
         const r = await resend(sent.hostCollected[i], sent.hostValue!, sent.hostBoostagram!);
         sent.hostCollected = sent.hostCollected.map((old, k) => (k === i ? r : old));
         setHostResults(sent.hostCollected);
@@ -1428,11 +1452,34 @@ export function BoostModal(props: Props) {
               Keep the app open until the boost is done.
             </p>
           )}
+          {running && (
+            <p className="text-[11px] text-muted leading-snug" role="status">
+              {stopping
+                ? 'Cancelled. No more payments will start. A payment your wallet already has cannot be stopped — waiting for its answer.'
+                : 'HIDE closes this window and the boost keeps sending — you hear the sound when it is done. CANCEL stops the payments not yet sent.'}
+            </p>
+          )}
           <PublishStatus state={pubState} />
         </div>
 
         <div className="flex justify-between items-center gap-3 p-5 border-t border-bone/15 sticky bottom-0 bg-ink">
-          <button onClick={onClose} className="btn-ghost">{paymentDone ? 'Close' : 'Cancel'}</button>
+          {/* While the legs go out, two controls with two meanings. "Cancel"
+              alone used to close the panel and let every leg go out behind it
+              — the word promised a stop the button never made (Chad,
+              2026-11-20, a node that had stopped answering). HIDE is that old
+              behaviour, named; CANCEL now stops what has not started. Neither
+              can call back a leg the wallet already has, and the line under
+              them says so. */}
+          {running ? (
+            <div className="flex items-center gap-3">
+              <button onClick={onClose} className="btn-ghost">Hide</button>
+              <button onClick={cancelSend} disabled={stopping} className="btn-ghost disabled:opacity-40">
+                {stopping ? 'Cancelling…' : 'Cancel'}
+              </button>
+            </div>
+          ) : (
+            <button onClick={onClose} className="btn-ghost">{paymentDone ? 'Close' : 'Cancel'}</button>
+          )}
           <div className="flex items-center gap-3">
             {!paymentDone && rail && <BoostModalBalance amountSats={sats} wallet={wallet} />}
             {!paymentDone && sats < MIN_BOOST_SATS && (
@@ -1462,7 +1509,7 @@ export function BoostModal(props: Props) {
                 className="btn-bolt disabled:opacity-40"
               >
                 <BoltIcon />
-                {running ? 'retrying…' : `Retry ${retryCount} failed`}
+                {running ? 'retrying…' : `Retry ${retryCount} unsent`}
               </button>
             )}
           </div>

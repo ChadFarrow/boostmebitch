@@ -25,6 +25,14 @@ import type { Episode } from './types';
 // characters most of them need (`lib/playback-log-line.ts`), and the route
 // re-checks every line.
 //
+// PAYMENT LINES share the ring (Chad, 2026-11-20: two reports of failed boosts
+// that carried no payment trace, when the cause was a node that had stopped
+// answering). `pay.run` per `sendBoost` run, `pay.leg` per leg that did NOT
+// pay, `pay.check` and `pay.resend` for a `?` leg asked about later — written
+// in `lib/v4v/boost.ts`. A rail, a result, a place in the pay order, a time in
+// ms and a fixed reason word (`legLogFields`); never an amount, a recipient, a
+// payment hash or an error's own text.
+//
 // Browser-only. Every write goes to disk at once, because the case this is for
 // is a page the OS froze or discarded with the screen off, and the lines
 // before that are the point.
