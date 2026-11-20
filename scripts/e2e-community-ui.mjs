@@ -97,6 +97,8 @@ const overflowFree = () => js(`document.documentElement.scrollWidth <= document.
 const tooSmall = (sel, w = 24, h = 24) => js(`[...document.querySelectorAll(${JSON.stringify(sel)})].filter((e) => { const r = e.getBoundingClientRect(); return r.width < ${w} || r.height < ${h}; }).map((e) => e.textContent.trim() || e.getAttribute('aria-label'))`);
 const click = (finder) => js(`(() => { const b = ${finder}; if (b) b.click(); return !!b; })()`);
 const byText = (label) => `[...document.querySelectorAll('main button, main a')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})`;
+// The open dialogs' accessible names (<ModalShell> wires each to a hidden label).
+const DIALOG_NAMES = `[...document.querySelectorAll('[role=dialog]')].map((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent ?? '')`;
 const setValue = (sel, v) => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)});
   const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(v)});
@@ -176,6 +178,13 @@ t.equal('home: both buttons at least 24 x 24', await tooSmall('section[aria-labe
 console.log('--- 2. signed out: the form, and the PUBLISH checklist ---');
 await go('/playlists/make');
 t.ok('signed out: the form appears', await waitFor(`document.querySelector('#pl-title')`));
+// <StartChoice> (Chad, 2026-11-19): signed out with no browser key, the maker first asks
+// "sign in, or I don't have Nostr". The full test is scripts/e2e-guest-playlist.mjs;
+// here, closing it with no choice leaves the form to build on, which the rest relies on.
+t.ok('signed out with no browser key: the start choice opens over the form', await waitFor(`document.querySelector('[data-start-choice]')`, 10000));
+t.ok('...and closing it with no choice leaves the form',
+  (await click(`document.querySelector('[data-start-choice]')?.closest('[role=dialog]')?.querySelector('button[aria-label=Close]')`))
+  && await waitFor(`!document.querySelector('[data-start-choice]') && !!document.querySelector('#pl-title')`, 3000));
 t.ok('the footer says no account is needed, and still offers the sign-in',
   await js(`/no account needed/i.test(document.querySelector('[data-testid=signed-out-note]')?.innerText ?? '') && !!document.querySelector('[data-testid=signed-out-note] button')`));
 t.ok('PUBLISH is on, not disabled', await js(`!${byText('PUBLISH')}.disabled`));
@@ -208,6 +217,14 @@ t.ok('...and UPLOAD PICTURE opens no sign-in dialog (it opens the file picker)',
 await seedGuest(draft(), labels);
 await go('/playlists/make');
 t.ok('signed out, the :guest draft comes back', await waitFor(`document.querySelectorAll('[data-song-row]').length === 12`));
+// A later visit with no choice made asks again. Its SIGN IN WITH NOSTR is the site's sign-in.
+t.ok('the start choice asks again on a later visit', await waitFor(`document.querySelector('[data-start-choice]')`, 10000));
+t.ok('its SIGN IN WITH NOSTR opens the site\'s sign-in dialog',
+  (await click(`document.querySelector('[data-start-signin]')`))
+  && await waitFor(`!document.querySelector('[data-start-choice]') && ${DIALOG_NAMES}.includes('Sign in')`, 5000));
+await click(`document.querySelector('[role=dialog] button[aria-label=Close]')`);
+t.ok('closing the sign-in leaves the form, and the start choice does not come back on this page',
+  (await waitFor(`!document.querySelector('[role=dialog]')`, 3000)) && (await wait(800), await js(`!document.querySelector('[data-start-choice]') && !!document.querySelector('#pl-title')`)));
 t.ok('a complete playlist: no reason line, nothing is missing (PUBLISH is not pressed here: signed out it would publish)', await js(`!document.querySelector('[data-testid=why-blocked]')`));
 await setValue('#pl-desc', 'written signed out');
 await wait(300);
@@ -260,6 +277,15 @@ await go('/playlists/make');
 t.ok('the form appears', await waitFor(`document.querySelector('#pl-title')`));
 await wait(500);
 t.equal('the saved title is back', await js(`document.querySelector('#pl-title').value`), 'e2e community playlist');
+t.ok('signed in: no start choice', await js(`!document.querySelector('[data-start-choice]')`));
+// Opened as the app opens it (version 1, the store made on upgrade): a read makes the empty
+// database, so "no record" is the test, never "no database".
+t.equal('...and this browser holds no guest key, so the account alone stopped it', await js(`new Promise((r) => {
+  const o = indexedDB.open('bmb-guest', 1);
+  o.onupgradeneeded = () => o.result.createObjectStore('keys', { keyPath: 'id' });
+  o.onerror = () => r(-1);
+  o.onsuccess = () => { const c = o.result.transaction('keys').objectStore('keys').count(); c.onsuccess = () => { o.result.close(); r(c.result); }; };
+})`), 0);
 t.equal('twelve rows', await rows(), 12);
 t.ok('the songs have covers to show', withArt > 0, 'no cover in the source playlist');
 await wait(300);

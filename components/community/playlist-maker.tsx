@@ -18,7 +18,7 @@ import {
   NoSignerError, SignFailedError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
   type CommunitySigner,
 } from '@/lib/community/client';
-import { ensureGuestKey, guestSigner } from '@/lib/community/guest-key';
+import { ensureGuestKey, guestSigner, type GuestKeyInfo } from '@/lib/community/guest-key';
 import { useGuestKey } from '@/lib/community/use-guest-key';
 import { ArtUploadError, fetchBlossomServers, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
@@ -26,6 +26,7 @@ import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { PlaylistPublished } from './playlist-published';
 import { AddSongsSheet } from './add-songs-sheet';
 import { PublishChecklist } from './publish-checklist';
+import { StartChoice } from './start-choice';
 
 // The resolver's page size (`MAX_BATCH` in lib/pi-batch.ts, which is server-only and cannot be imported here).
 const RESOLVE_PAGE = 100;
@@ -124,6 +125,12 @@ export function PlaylistMaker() {
   const [guestSlot, setGuestSlot] = useState<string | null>(null);
   // After a publish without an account: did this browser keep the key? false says so, plainly.
   const [guestKept, setGuestKept] = useState<boolean | null>(null);
+  // The guest key this page made (the start choice, a PUBLISH, an UPLOAD). `guest` above is
+  // read once at mount and stays as it was, on purpose: the load effect runs on it, and a
+  // rerun resets the form. This one only answers "does this browser hold a key now?".
+  const [guestMade, setGuestMade] = useState<GuestKeyInfo | null>(null);
+  // <StartChoice> was closed or answered on this page: it does not open again until the next visit.
+  const [startDone, setStartDone] = useState(false);
 
   // Who the form on screen belongs to: an npub, or GUEST signed out. A draft is written
   // only while this equals the current owner, so one account's form is never saved under
@@ -203,6 +210,11 @@ export function PlaylistMaker() {
     return () => clearTimeout(timer);
   }, []);
   const restoring = mounted && !identity && !gaveUp && !!storage.npub.get();
+  // <StartChoice>: a NEW playlist, nobody signed in, no sign-in being restored (a stored
+  // npub is a person who has Nostr), and no guest key in this browser, read or made.
+  // `guest === undefined` is the read in flight: wait for it, or a key holder sees a flash.
+  const askStart = !startDone && !identity && !storage.npub.get() && !editingId
+    && guest === null && !guestMade;
 
   // ---- load: the saved draft, or the stored playlist in edit mode ----------
   useEffect(() => {
@@ -350,6 +362,13 @@ export function PlaylistMaker() {
   }); };
   const remove = (i: number) => { setDirty(true); setSongs((s) => s.filter((_, k) => k !== i)); };
 
+  // Every guest key this page makes goes through here, so <StartChoice> knows one exists.
+  const makeGuestKey = useCallback(async () => {
+    const k = await ensureGuestKey();
+    setGuestMade(k);
+    return k;
+  }, []);
+
   // Which step failed decides the words: a signer problem must never read as a
   // server problem, or the user retries a request that never left.
   const failure = useCallback((e: unknown) => {
@@ -383,7 +402,7 @@ export function PlaylistMaker() {
     try {
       const servers = userServers ?? (serversRead.current ? await serversRead.current : []);
       // Signed out, the cover is signed with the guest key: no account to ask.
-      if (!identity) await ensureGuestKey();
+      if (!identity) await makeGuestKey();
       const r = await uploadPlaylistArt(file, servers, identity ? undefined : guestSigner);
       if (gen !== formGen.current) return;
       setDirty(true); setArtUrl(r.url);
@@ -426,7 +445,7 @@ export function PlaylistMaker() {
       // Who signs: the playlist's owner when editing; a NEW playlist goes out under
       // the account, or under the guest key (made here, on first use) when signed out.
       const as: 'account' | 'guest' = editingId ? signAs : identity ? 'account' : 'guest';
-      const kept = as === 'guest' ? await ensureGuestKey() : null;
+      const kept = as === 'guest' ? await makeGuestKey() : null;
       const so = kept ? { signer: guestSigner satisfies CommunitySigner } : undefined;
       const ownerPubkey = kept?.pubkey ?? pubkey;
       if (!ownerPubkey) return;
@@ -479,7 +498,7 @@ export function PlaylistMaker() {
     } finally {
       setBusy(false);
     }
-  }, [draft, identity, pubkey, slot, signAs, editingId, expectedUpdatedAt, failure]);
+  }, [draft, identity, pubkey, slot, signAs, editingId, expectedUpdatedAt, failure, makeGuestKey]);
 
   // PUBLISH is never disabled for what is missing: a disabled button answers a
   // press with nothing (Chad, 2026-11-15). A press opens the list of what is
@@ -715,6 +734,11 @@ export function PlaylistMaker() {
           </p>
         ) : identity ? (
           <p className="mt-2 text-xs text-muted">Signed in as {name}. Only you can change this playlist.</p>
+        ) : (guestMade ?? guest)?.persisted === false ? (
+          <p className="mt-2 max-w-xl text-xs text-muted" data-testid="signed-out-note" data-guest-kept="false">
+            No account needed, but this browser cannot keep a key (a private window, or site data turned off). You can publish this playlist, and you cannot edit it later.{' '}
+            <button type="button" className="btn-inline" onClick={() => setSignInOpen(true)}>Sign in with Nostr</button> to publish it under your own account instead.
+          </p>
         ) : (
           <p className="mt-2 max-w-xl text-xs text-muted" data-testid="signed-out-note">
             No account needed. This browser keeps what lets you edit this playlist later, and you save nothing. If you clear this browser&apos;s site data you cannot edit it, and you can make it again.{' '}
@@ -723,6 +747,22 @@ export function PlaylistMaker() {
         )}
         {unsaved && <p className="mt-1 text-xs text-muted" data-testid="unsaved">This draft is not being saved on this device.</p>}
       </div>
+
+      {askStart && (
+        <StartChoice
+          onClose={() => setStartDone(true)}
+          onSignIn={() => { setStartDone(true); setSignInOpen(true); }}
+          onNoNostr={async () => {
+            try {
+              await makeGuestKey();
+              setStartDone(true);
+              return true;
+            } catch {
+              return false;
+            }
+          }}
+        />
+      )}
 
       {checkOpen && (
         <PublishChecklist

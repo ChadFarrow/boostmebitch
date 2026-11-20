@@ -33,6 +33,13 @@
 //  7. A signed-in account is unchanged: it publishes under its own key, makes no guest
 //     key, and can still edit a guest-made playlist of THIS browser.
 //  8. At 1280 x 900 and 390 x 844: no horizontal overflow, controls 24 x 24 or more.
+//  9. THE START CHOICE (<StartChoice>, Chad 2026-11-19): signed out with no browser key,
+//     the maker asks "SIGN IN WITH NOSTR or I DON'T HAVE NOSTR" first. Closing it (x,
+//     Escape) leaves the form and makes no key, and it asks again on the next visit.
+//     SIGN IN WITH NOSTR opens the site's sign-in. I DON'T HAVE NOSTR makes the key at
+//     once, and PUBLISH then uses that key. A browser holding a key, a signed-in account
+//     and an edit address never see it. Clicks on it are real mouse events, so a dialog
+//     that is not in front fails them.
 // No EVENT reaches a public relay: the local relay is the only WebSocket allowed.
 import { readFileSync } from 'node:fs';
 import { createRelay } from './local-relay.mjs';
@@ -132,6 +139,18 @@ const setValue = (sel, v) => js(`(() => { const el = document.querySelector(${JS
   const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(v)});
   el.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
+/** A real mouse click at the element's centre: whatever is IN FRONT there gets it. */
+const mouseClick = async (finder) => {
+  const at = await js(`(() => { const b = ${finder}; if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  if (!at) return false;
+  for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1 });
+  return true;
+};
+const START = `document.querySelector('[data-start-choice]')`;
+const START_CLOSE = `${START}?.closest('[role=dialog]')?.querySelector('button[aria-label=Close]')`;
+const DIALOG_NAMES = `[...document.querySelectorAll('[role=dialog]')].map((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent ?? '')`;
+/** No start choice, still, a while after the page settled (it waits for the key read). */
+const noStart = async () => { await wait(1200); return js(`!${START}`); };
 const metrics = (mobile) => send('Emulation.setDeviceMetricsOverride', mobile
   ? { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }
   : { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -240,6 +259,42 @@ await js(`localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`w
 let guestPubkey = null;
 const madeIds = [];
 
+// ── the start choice ─────────────────────────────────────────────────────────
+console.log('--- the start choice ---');
+for (const mobile of [false, true]) {
+  const name = mobile ? 'phone 390 x 844' : 'desktop 1280 x 900';
+  await metrics(mobile);
+  await seedGuest(`e2e start choice (${name})`);
+  await go('/playlists/make');
+  t.ok(`${name}: signed out with no key, the maker opens the start choice`, await waitFor(START));
+  t.ok(`${name}: it offers SIGN IN WITH NOSTR and I DON'T HAVE NOSTR`,
+    await js(`${START}.querySelector('[data-start-signin]')?.textContent.trim() === 'SIGN IN WITH NOSTR' && /^I DON.T HAVE NOSTR$/.test(${START}.querySelector('[data-start-guest]')?.textContent.trim() ?? '')`));
+  t.ok(`${name}: it says what closing it does before it is closed`, await js(`/close this to decide later/i.test(${START}.innerText) && /makes the key then/i.test(${START}.innerText)`));
+  t.ok(`${name}: the draft is loaded behind it`, await waitFor(`document.querySelector('#pl-title')?.value.startsWith('e2e start choice')`));
+  t.ok(`${name}: no horizontal overflow`, await overflowFree());
+  t.equal(`${name}: the dialog's controls are at least 24 x 24`, await tooSmall('[role=dialog] button'), []);
+  t.ok(`${name}: the dialog fits on the screen`, await js(`(() => { const r = ${START}.closest('[role=dialog]').getBoundingClientRect(); return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; })()`));
+  t.equal(`${name}: opening the maker made no key`, (await idbState()).records?.length ?? 0, 0);
+  if (!mobile) {
+    t.ok('x closes it (a real click)', await mouseClick(START_CLOSE));
+    t.ok('...and the form is there to build on, with PUBLISH', await waitFor(`!${START} && !!document.querySelector('#pl-title') && !!${byText('PUBLISH')}`, 3000));
+    t.ok('...and it does not come back on this page', await noStart());
+    t.equal('...and closing it made no key', (await idbState()).records?.length ?? 0, 0);
+    await go('/playlists/make');
+    t.ok('a later visit with no choice made asks again', await waitFor(START));
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    t.ok('Escape closes it too', await waitFor(`!${START} && !!document.querySelector('#pl-title')`, 3000));
+  } else {
+    t.ok(`${name}: SIGN IN WITH NOSTR pressed (a real tap)`, await mouseClick(`${START}.querySelector('[data-start-signin]')`));
+    t.ok(`${name}: the start choice closes and the site's sign-in opens`, await waitFor(`!${START} && ${DIALOG_NAMES}.includes('Sign in')`, 5000));
+    t.equal(`${name}: the sign-in dialog fits at 390 wide`, await js(`(() => { const r = [...document.querySelectorAll('[role=dialog]')][0].getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`), true);
+    await mouseClick(`document.querySelector('[role=dialog] button[aria-label=Close]')`);
+    t.ok(`${name}: closing the sign-in leaves the form`, await waitFor(`!document.querySelector('[role=dialog]') && !!document.querySelector('#pl-title')`, 3000));
+    t.ok(`${name}: and the start choice does not come back on this page`, await noStart());
+    t.equal(`${name}: and no key was made`, (await idbState()).records?.length ?? 0, 0);
+  }
+}
+
 for (const mobile of [false, true]) {
   const name = mobile ? 'phone 390 x 844' : 'desktop 1280 x 900';
   console.log(`--- ${name} ---`);
@@ -255,6 +310,21 @@ for (const mobile of [false, true]) {
   t.ok(`${name}: no horizontal overflow`, await overflowFree());
   t.equal(`${name}: controls at least 24 x 24`, await tooSmall('main button:not(.btn-inline), main a'), []);
   if (!mobile) t.equal('looking at the maker made no key', (await idbState()).records?.length ?? 0, 0);
+  let chosenPubkey = null;
+  if (!mobile) {
+    // The start choice: I DON'T HAVE NOSTR makes the key NOW, before any PUBLISH.
+    t.ok('the start choice is open', await waitFor(START));
+    t.ok('I DON\'T HAVE NOSTR pressed (a real click)', await mouseClick(`${START}.querySelector('[data-start-guest]')`));
+    t.ok('...the start choice closes', await waitFor(`!${START}`, 5000));
+    const made = await idbState();
+    t.equal('...and the key is made and kept at once: one record', made.records?.length, 1);
+    chosenPubkey = made.records?.[0]?.pubkey ?? null;
+    t.ok('...the footer still says no account is needed, and that this browser keeps the key',
+      await js(`/no account needed/i.test(document.querySelector('[data-testid=signed-out-note]')?.innerText ?? '') && document.querySelector('[data-testid=signed-out-note]')?.dataset.guestKept !== 'false'`));
+    t.ok('...and it does not ask again on this page', await noStart());
+  } else {
+    t.ok(`${name}: a browser that holds the key never sees the start choice`, await noStart());
+  }
   const keyBefore = (await idbState()).records?.length ?? 0;
 
   // 2. PUBLISH makes the key and publishes; nobody signs in.
@@ -276,7 +346,10 @@ for (const mobile of [false, true]) {
   t.ok(`${name}: the record holds a public key, an iv, a 48-byte ciphertext and a CryptoKey that is not extractable`,
     /^[0-9a-f]{64}$/.test(rec?.pubkey ?? '') && rec?.ivBytes === 12 && rec?.ctBytes === 48 && rec?.wrapIsCryptoKey === true && rec?.wrapExtractable === false && rec?.wrapAlgorithm === 'AES-GCM', JSON.stringify(rec));
   t.equal(`${name}: the record has only those five fields`, rec?.keys, ['ct', 'id', 'iv', 'pubkey', 'wrap']);
-  if (!mobile) t.equal('the key was made by PUBLISH: none before, one after', [keyBefore, st.records?.length], [0, 1]);
+  if (!mobile) {
+    t.equal('PUBLISH made no second key: one before, one after', [keyBefore, st.records?.length], [1, 1]);
+    t.ok('PUBLISH used the key I DON\'T HAVE NOSTR made', !!chosenPubkey && rec?.pubkey === chosenPubkey, `${rec?.pubkey} vs ${chosenPubkey}`);
+  }
   const stored = (await (await api(`/api/community-playlists/${id}`)).json()).playlist;
   t.ok(`${name}: the server's owner for the playlist is the guest key's pubkey`, stored?.ownerPubkey === guestPubkey, `${stored?.ownerPubkey} vs ${guestPubkey}`);
   t.ok(`${name}: and it is not the account's`, stored?.ownerPubkey !== pk);
@@ -285,6 +358,7 @@ for (const mobile of [false, true]) {
   await newIp();
   await go(`/playlists/make?id=${id}`);
   t.ok(`${name}: ?id= opens the playlist for editing with nobody signed in`, await waitFor(`document.querySelector('#pl-title')?.value === ${JSON.stringify(`e2e guest playlist (${name})`)}`, 30000));
+  t.ok(`${name}: an edit address never shows the start choice`, await noStart());
   t.ok(`${name}: and says only this browser can change it`, await js(`/only this browser can change this playlist/i.test(document.querySelector('[data-testid=guest-edit-note]')?.innerText ?? '')`));
   t.ok(`${name}: SAVE and DELETE are offered`, await js(`!!${byText('SAVE')} && !!${byText('DELETE')}`));
   await setValue('#pl-title', `e2e guest playlist (${name}) v2`);
@@ -351,11 +425,16 @@ t.ok('lost key: the page says only its maker can change it', await waitFor(`docu
 t.ok('...with no form', await js(`!document.querySelector('#pl-title')`));
 t.equal('...and the feed is still alive', (await fetch(`${APP}/feeds/playlists/${madeIds[0]}.xml`)).status, 200);
 t.equal('...and reading the page made no new key', (await idbState()).records?.length ?? 0, 0);
+t.ok('...and it shows no start choice (it is not a new playlist)', await noStart());
 await newIp();
 await seedGuest('e2e guest playlist after losing the key');
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')?.value.startsWith('e2e guest playlist after')`);
+t.ok('a new playlist after losing the key: the start choice asks again (no key now)', await waitFor(START));
+t.ok('...closed with no choice', (await mouseClick(START_CLOSE)) && await waitFor(`!${START}`, 3000));
+t.equal('...so still no key before PUBLISH', (await idbState()).records?.length ?? 0, 0);
 t.ok('a new playlist after losing the key: PUBLISH works', (await click(byText('PUBLISH'))) && await published());
+t.equal('...and PUBLISH made the key (the close-with-no-choice path)', (await idbState()).records?.length ?? 0, 1);
 const newId = feedIdOf(await js(`document.querySelector('#feed-address')?.value ?? ''`));
 madeIds.push(newId);
 const newPub = (await idbState()).records?.[0]?.pubkey;
@@ -374,6 +453,10 @@ await newIp();
 await seedGuest('e2e guest playlist with no storage');
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')?.value.startsWith('e2e guest playlist with no')`);
+t.ok('no IndexedDB: the start choice opens', await waitFor(START));
+t.ok('...I DON\'T HAVE NOSTR pressed', (await mouseClick(`${START}.querySelector('[data-start-guest]')`)) && await waitFor(`!${START}`, 5000));
+t.ok('...the footer says this browser cannot keep the key, so the playlist cannot be edited later',
+  await waitFor(`document.querySelector('[data-testid=signed-out-note]')?.dataset.guestKept === 'false' && /cannot keep a key/i.test(document.querySelector('[data-testid=signed-out-note]').innerText)`, 3000));
 t.ok('PUBLISH still works', (await click(byText('PUBLISH'))) && await published());
 t.ok('the published view says this browser could not keep the key, so it cannot be edited later',
   await js(`document.querySelector('[data-testid=guest-kept]')?.dataset.guestKept === 'false' && /could not keep the key/i.test(document.querySelector('[data-testid=guest-kept]').innerText)`));
@@ -393,6 +476,7 @@ await seedGuest('e2e account playlist');
 await go('/playlists/make');
 t.ok('signed in: the footer names the account', await waitFor(`/Signed in as/.test(document.querySelector('main')?.innerText ?? '')`, 30000));
 t.ok('...and the account\'s draft is there', await waitFor(`document.querySelector('#pl-title')?.value === 'e2e account playlist'`, 15000));
+t.ok('signed in: no start choice', await noStart());
 const keysBeforeAccount = (await idbState()).records?.length ?? 0;
 t.ok('the account publishes', (await click(byText('PUBLISH'))) && await published());
 const acctId = feedIdOf(await js(`document.querySelector('#feed-address')?.value ?? ''`));
