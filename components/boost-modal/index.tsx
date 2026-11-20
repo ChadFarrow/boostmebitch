@@ -5,11 +5,12 @@ import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost, ValueBlock, ValueRecipient, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, payStampInvoice, SLOW_LEG_MS, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, SignStoppedError, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, receiptRefUrls, checkSignerLink, SignStoppedError, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, railAfterWalletChange, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playsAsTracks, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
-import { BRAND, resolveSenderName } from '@/lib/brand';
+import { getErrorMessage, railAfterWalletChange, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playlistBoostContext, playsAsTracks, redirectLegs, retryableLegs, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
+import { BRAND, noteBrandFor, resolveSenderName, type Brand } from '@/lib/brand';
+import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from '../wallet-balance';
@@ -125,6 +126,9 @@ interface SentBoost {
   sats: number;
   msg: string;
   senderName: string;
+  /** The NOTE's brand and sender name — see `noteBrand` in the component. */
+  noteBrand: Brand;
+  noteSenderName: string;
   shareNostr: boolean;
   shareAs: 'self' | 'site';
   mentions: MentionNpub[];
@@ -376,6 +380,18 @@ export function BoostModal(props: Props) {
   // substitution when a named user just leaves "From" empty. Computed at
   // component scope (not inside go()) because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
+
+  // The NOTE's words, which are not always the boostagram's. A song played from
+  // a playlist BMB hosts on the production Buddy origin is shared in Buddy's
+  // words on either deploy — links, picture, `client` tag, default sender name,
+  // and Buddy's key when the site signs (`noteBrandFor`, lib/brand.ts); a test
+  // store's playlist (beta) keeps this deploy's. The boostagram above and below
+  // never changes: its `app_name` and `sender_name` name the deploy that paid.
+  const ctx = useMemo(
+    () => playlistBoostContext(podcast, episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH),
+    [podcast, episode],
+  );
+  const noteBrand = noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN);
 
   // Where a recipient can boost this user back, resolved from their profile's
   // lightning address. Empty until it resolves, and never gated on — see the
@@ -645,6 +661,8 @@ export function BoostModal(props: Props) {
       refs: sent.hostRefs,
       relays,
       as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
+      // The note's deploy mints the receipt the note quotes.
+      brand: sent.noteBrand,
       signal: stopper.signal,
       onSigned: signerAnswered,
     });
@@ -653,9 +671,14 @@ export function BoostModal(props: Props) {
     // the rail the boost used. `sent.siteNote` carries the template, the paid
     // stamp and the signed event, so RETRY NOTE never pays a second stamp. Any
     // failure posts the same note from a one-time key and says why.
+    //
+    // The note's brand and sender name ride beside the boostagram, never in
+    // it: the boostagram is what the legs carried. A note in Buddy's words asks
+    // the Buddy deploy for its stamp and its signature (publishBoostNoteViaSite).
+    const noteWords = { brand: sent.noteBrand, senderName: sent.noteSenderName };
     const publishViaSite = async () => {
       const r = await publishBoostNoteViaSite(
-        { podcast, episode, boostagram, results, mentions, summaryReceipt: summaryReceipt ?? undefined, track, itemArtist },
+        { podcast, episode, boostagram, results, mentions, summaryReceipt: summaryReceipt ?? undefined, track, itemArtist, ...noteWords },
         {
           // No rail means nothing to pay with: the ladder signs one-time.
           payStamp: (bolt11, sats) => (rail ? payStampInvoice(rail, bolt11, sats) : Promise.reject(new Error('no wallet'))),
@@ -666,7 +689,7 @@ export function BoostModal(props: Props) {
       return {
         note: r.note,
         notice: r.signer === 'one-time' && r.why
-          ? `Posted from a one-time key, not ${BRAND.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`
+          ? `Posted from a one-time key, not ${sent.noteBrand.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`
           : undefined,
       };
     };
@@ -684,7 +707,7 @@ export function BoostModal(props: Props) {
       const { note, notice } = self
         ? {
             note: await publishBoostNote(
-              { podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track, itemArtist },
+              { podcast, episode, boostagram, results, relays, mentions, summaryReceipt: receipt, track, itemArtist, ...noteWords },
               { signal: stopper.signal, onSigned: signerAnswered },
             ),
             notice: undefined,
@@ -865,18 +888,19 @@ export function BoostModal(props: Props) {
       sats,
       msg: boostMsg,
       senderName,
+      noteBrand,
+      noteSenderName: resolveSenderName(name, anonymous, noteBrand),
       shareNostr,
       shareAs,
       mentions,
       maySignAsSelf,
       liveStreamId,
+      // The URL hints in the NOTE's brand: the receipt is signed by that
+      // brand's deploy, so a Buddy receipt must not carry this origin's links.
       hostRefs: {
         podcastGuid: showGuid,
         episodeGuid: itemGuid,
-        // `{ podcastGuid }` alone keeps these `?podcast=`: they name the
-        // song's own feed, and a signed hint is never re-spelled (`showShareUrl`).
-        podcastUrl: showShareUrl({ podcastGuid: showGuid }) ?? undefined,
-        episodeUrl: showShareUrl({ podcastGuid: showGuid }, itemGuid) ?? undefined,
+        ...receiptRefUrls(noteBrand, showGuid, itemGuid),
       },
       noteSplit,
       noteArtist,
@@ -1306,6 +1330,7 @@ export function BoostModal(props: Props) {
             onShareChange={handleShareNostrChange}
             onShareAsChange={handleShareAsChange}
             noteNoun="A public note"
+            brand={noteBrand}
           />
           {/* The redirect, said out loud. A boost that silently pays someone
               other than the act the user is listening to is the failure this

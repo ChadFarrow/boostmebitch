@@ -40,6 +40,7 @@
     "check:cappedbody": "node --experimental-strip-types scripts/check-capped-body.mjs",
     "community:schema": "psql \"$COMMUNITY_DB_URL\" -f scripts/community-schema.sql",
     "e2e:communityapi": "node scripts/e2e-community-api.mjs",
+    "e2e:communitynote": "node --experimental-strip-types scripts/e2e-community-note.mjs",
     "e2e:communityui": "node scripts/e2e-community-ui.mjs",
     "e2e:playlistarchive": "node scripts/e2e-playlist-archive.mjs",
     "check:community": "node --experimental-strip-types scripts/check-community.mjs",

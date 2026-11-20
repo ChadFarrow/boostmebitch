@@ -20,7 +20,7 @@ import { bech32 } from '@scure/base';
 import { generateSecretKey, finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { getToken, validateEventMethodTag } from 'nostr-tools/nip98';
 import { verifyNip98, adminPubkeys, authMessage } from '../lib/community/auth.ts';
-import { communityPlaylistToPodcast, fnvHash } from '../lib/util.ts';
+import { communityPlaylistToPodcast, fnvHash, playlistBoostContext, heardOnLines } from '../lib/util.ts';
 import { composeCover, noteSvg } from '../lib/community/cover-compose.ts';
 import sharp from 'sharp';
 import { BRANDS } from '../lib/brand.ts';
@@ -520,6 +520,49 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const got = communityPlaylistToPodcast(summary);
   check('communityPlaylistToPodcast: exact shape', JSON.stringify(got) === JSON.stringify(want));
   check('communityPlaylistToPodcast: id is negative', got.id < 0);
+}
+
+{
+  // Note context for a song played from a playlist (Task 15).
+  const HOSTED = 'https://www.boostmebuddy.com/feeds/playlists/';
+  const list = { id: 1, podcastGuid: 'list-g', title: 'Road Trip', medium: 'musicL',
+    url: HOSTED + 'abc.xml', nostrNpubs: [{ npub: 'npub1maker', pubkey: 'pk' }] };
+  const song = { id: 9, title: 'Song', podcastGuid: 'album-g', feedTitle: 'The Album', feedId: 77, feedImage: 'https://x/a.jpg' };
+  const ctx = playlistBoostContext(list, song, HOSTED);
+  check('context: container is the playlist', ctx.container === list);
+  check('context: show is the track\'s own feed', ctx.show.podcastGuid === 'album-g' && ctx.show.title === 'The Album');
+  check('context: show carries NO container npubs', ctx.show.nostrNpubs === undefined);
+  check('context: hosted true for the hosted prefix', ctx.hosted === true);
+  const own = playlistBoostContext(list, { ...song, podcastGuid: 'list-g' }, HOSTED);
+  check('context: same guid -> no container, show is podcast', own.container === null && own.show === list && own.hosted === false);
+  const noEp = playlistBoostContext(list, undefined, HOSTED);
+  check('context: no episode -> no container', noEp.container === null && noEp.show === list);
+  const album = { id: 2, podcastGuid: 'al', title: 'Alb', medium: 'music', url: HOSTED + 'x.xml' };
+  const alb = playlistBoostContext(album, song, HOSTED);
+  check('context: a music album with a foreign guid is NOT a container', alb.container === null && alb.show === album && alb.hosted === false);
+  const bare = { id: -5, title: 'Preview List', medium: 'musicL', url: HOSTED + 'p.xml', nostrNpubs: [{ npub: 'npub1maker', pubkey: 'pk' }] };
+  const bc = playlistBoostContext(bare, song, HOSTED);
+  check('context: a guid-less playlist is still the container', bc.container === bare);
+  check('context: guid-less playlist -> show is the song\'s own feed',
+    bc.show.podcastGuid === 'album-g' && bc.show.title === 'The Album' && bc.show.nostrNpubs === undefined && bc.show !== bare);
+  check('context: guid-less playlist hosted per url', bc.hosted === true);
+  check('context: guid-less playlist, foreign url -> not hosted', playlistBoostContext({ ...bare, url: 'https://e.com/x.xml' }, song, HOSTED).hosted === false);
+  check('context: guid-less music album is NOT a container', playlistBoostContext({ ...bare, medium: 'music' }, song, HOSTED).container === null);
+  const ext = playlistBoostContext({ ...list, url: 'https://example.com/pl.xml' }, song, HOSTED);
+  check('context: hosted false for a foreign feed url', ext.container !== null && ext.hosted === false);
+  const noUrl = playlistBoostContext({ ...list, url: undefined }, song, HOSTED);
+  check('context: hosted false with no url', noUrl.hosted === false);
+
+  const j = (v) => JSON.stringify(v);
+  // ONE line, and no link (Chad, 2026-11-19): a client unfurled the playlist's
+  // link to the site's general card. The playlist's `i` tag keeps the link.
+  check('heardOn: with maker', j(heardOnLines(list, 'npub1maker')) ===
+    j(['🎧 Heard on Road Trip by nostr:npub1maker']));
+  check('heardOn: without maker', j(heardOnLines(list, null)) ===
+    j(['🎧 Heard on Road Trip']));
+  check('heardOn: no guid -> the same one line', j(heardOnLines({ ...list, podcastGuid: undefined }, 'npub1m')) ===
+    j(['🎧 Heard on Road Trip by nostr:npub1m']));
+  check('heardOn: never a link line, whatever the guid', heardOnLines({ ...list, podcastGuid: 'a b&c' }, null).length === 1);
 }
 
 {

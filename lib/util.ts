@@ -62,6 +62,44 @@ export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * How a boost note describes a song played from a PLAYLIST. Pure; the note
+ * builder wires it. `container` is the playlist (`podcast`) when it is a list
+ * medium AND the episode names a feed with a guid different from the
+ * playlist's — an RSS-preview playlist has NO guid of its own, so a missing
+ * guid on the playlist still differs. Any other pairing is the ordinary case,
+ * `container: null`, `show === podcast`. For every container `show` is the
+ * track's OWN feed via `ownShowOf`, an allowlist rewrite that carries none of
+ * the playlist's facts (`nostrNpubs` stays undefined: the curator is tagged
+ * through `container`, never copied onto the album), so a guid-less playlist is
+ * not named twice. `hosted` is true for a playlist this deploy serves, whose
+ * note uses the brand's own wording.
+ */
+export function playlistBoostContext(
+  podcast: Podcast,
+  episode: Episode | undefined,
+  hostedFeedPrefix: string,
+): { container: Podcast | null; show: Podcast; hosted: boolean } {
+  const container = episode?.podcastGuid
+    && isPlaylistMedium(podcast)
+    && episode.podcastGuid !== podcast.podcastGuid
+    ? podcast
+    : null;
+  const show = container && episode ? ownShowOf(episode, podcast) : podcast;
+  return { container, show, hosted: !!container?.url?.startsWith(hostedFeedPrefix) };
+}
+
+/**
+ * The "heard on" block of a boost note: ONE credit line, and no link. The
+ * playlist's link was dropped on 2026-11-19 (Chad, after a beta note): a client
+ * unfurls it to the site's general card, because a playlist page has no title of
+ * its own, so the note carried one more card that said nothing. The playlist's
+ * `podcast:guid:` `i` tag still records it, with that link as its hint.
+ */
+export function heardOnLines(container: Podcast, makerNpub: string | null): string[] {
+  return [`🎧 Heard on ${container.title}${makerNpub ? ` by nostr:${makerNpub}` : ''}`];
+}
+
+/**
  * The query parameter that names a show's guid in an app link: `playlist` for a
  * playlist, `album` for an album (`medium` `music`), `podcast` for everything
  * else (Chad, 2026-11-20: "the url links need playlist also", as the feed
@@ -258,6 +296,17 @@ export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
     || !episode.podcastGuid
     || podcast.podcastGuid === episode.podcastGuid;
   if (containerIsParent) return podcast;
+  return ownShowOf(episode, podcast);
+}
+
+/**
+ * The song's OWN feed as a `Podcast`, built from what the episode says about
+ * it — the allowlist `queueShowFor` documents above, extracted so the boost
+ * note (`playlistBoostContext`) builds the identical object for a container
+ * that has no guid of its own. Callers decide WHETHER the container is the
+ * parent; this only builds the answer for when it is not.
+ */
+export function ownShowOf(episode: Episode, podcast: Podcast): Podcast {
   return {
     id: episode.feedId ?? podcast.id,
     podcastGuid: episode.podcastGuid,

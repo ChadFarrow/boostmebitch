@@ -5,14 +5,15 @@ import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, payStampInvoice, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt, receiptRefUrls, checkSignerLink, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import type { Event } from 'nostr-tools';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { boostAllLines, getErrorMessage, railAfterWalletChange, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
-import { BRAND, resolveSenderName } from '@/lib/brand';
+import { boostAllLines, getErrorMessage, railAfterWalletChange, hasValueRecipients, payableValue, playlistBoostContext, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { BRAND, noteBrandFor, resolveSenderName } from '@/lib/brand';
+import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS, readAmountDefault } from './boost-modal/amount-input';
@@ -112,6 +113,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // one aggregator and "Unknown" in the next. Applies to every leg — per-track,
   // host share, summary. Component scope because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
+
+  // The NOTE's words — Buddy's for an episode played from a playlist BMB hosts on
+  // the production Buddy origin, on either deploy (`noteBrandFor`, lib/brand.ts).
+  // The sentence's `from` stays what the listener had open (the shared format's
+  // rule 3), and the note adds a Heard-on line for a playlist. The boostagrams
+  // never change: `app_name` and `sender_name` name the deploy that paid.
+  const ctx = useMemo(
+    () => playlistBoostContext(podcast, episode, COMMUNITY_FEED_ORIGIN + COMMUNITY_FEED_PATH),
+    [podcast, episode],
+  );
+  const noteBrand = noteBrandFor(ctx.hosted, COMMUNITY_FEED_ORIGIN);
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
   // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
@@ -243,13 +255,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     let paidSats = 0;
     // The show and item the summary receipt names. Value-block legs are never
     // zaps (see payOne), so this is the only NIP-73 pair a boost-all signs.
+    // Its URL hints are in the NOTE's brand — the deploy that signs the receipt.
     const hostRefs: Nip73Refs = {
       podcastGuid: podcast.podcastGuid,
       episodeGuid: episode.guid,
-      // `{ podcastGuid }` alone keeps these `?podcast=`: a hint signed into a
-      // note is never re-spelled (`showShareUrl`).
-      podcastUrl: showShareUrl({ podcastGuid: podcast.podcastGuid }) ?? undefined,
-      episodeUrl: showShareUrl({ podcastGuid: podcast.podcastGuid }, episode.guid) ?? undefined,
+      ...receiptRefUrls(noteBrand, podcast.podcastGuid, episode.guid),
     };
 
     for (let i = 0; i < splits.length; i++) {
@@ -450,11 +460,15 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       uuid: randomId(),
     };
 
+    // In the NOTE's words: its brand's default sender name (see `ctx` above).
+    // `senderName` stays on the wire.
+    const noteSenderName = resolveSenderName(name, anonymous, noteBrand);
     const lines: string[] = ['⚡ Boost ⚡', ''];
     if (boostMsg.trim()) lines.push(boostMsg.trim(), '');
-    // Mirrors formatContent's attribution line, off the same `senderName` the
-    // boostagrams carry — so an anonymous summary note reads as
-    // DEFAULT_SENDER_NAME rather than attributing itself back to the user.
+    // Mirrors formatContent's attribution line, off the same anonymity rule the
+    // boostagrams' `senderName` follows (in the note's brand) — so an anonymous
+    // summary note reads as the default name rather than attributing itself
+    // back to the user.
     // The reconcilable half, and the reason this line changed. This note is the
     // ONLY artifact carrying the album total; every wire record carries ONE
     // track's amount (`value_msat_total` is the per-track `sats` on both of its
@@ -484,15 +498,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         : ` (${uniform.track.sats} each)`;
     // The same order as every other note's sentence (`boostSentence`): the
     // sats, WHAT they went to, then where it was found — and every name cleaned
-    // to one line, since the site signs this note for a signed-out user.
+    // to one line, since the site signs this note for a signed-out user. In
+    // the NOTE's words: its brand's default sender name and its app
+    // (`noteAppName` in boost-notes.ts makes the same choice for the tag).
     lines.push(...boostAllLines({
-      sender: senderName,
+      sender: noteSenderName,
       sats: totalSats,
       count: successfulIdx.length,
       showTitle: podcast.title,
       each,
       tracks: trackList,
-      via: summaryBoostagram.app_name,
+      via: noteBrand.id === BRAND.id ? summaryBoostagram.app_name : noteBrand.wireName,
     }));
     const contentOverride = lines.join('\n');
 
@@ -538,6 +554,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       summaryReceipt ??= await mintSummaryReceipt({
         paidSats, refs: hostRefs, relays,
         as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
+        brand: noteBrand,
       });
       try {
         // User's own key only when signed in AND they picked "Post to my Nostr
@@ -549,11 +566,15 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           note = await publishBoostNote({
             podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
             mentions, summaryReceipt: summaryReceipt ?? undefined,
+            brand: noteBrand, senderName: noteSenderName,
           });
         } else {
+          // A note in Buddy's words asks the Buddy deploy for its stamp and
+          // its signature (publishBoostNoteViaSite).
           const r = await publishBoostNoteViaSite({
             podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
             mentions, summaryReceipt: summaryReceipt ?? undefined,
+            brand: noteBrand, senderName: noteSenderName,
           }, {
             // No rail means nothing to pay with: the ladder signs one-time.
             payStamp: (bolt11, sats) => (stampRail ? payStampInvoice(stampRail, bolt11, sats) : Promise.reject(new Error('no wallet'))),
@@ -562,7 +583,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           });
           note = r.note;
           if (r.signer === 'one-time' && r.why) {
-            notice = `Posted from a one-time key, not ${BRAND.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`;
+            notice = `Posted from a one-time key, not ${noteBrand.displayName}: ${STAMP_FAILURE_TEXT[r.why]}.`;
           }
         }
         if (cancelled.current) return;
@@ -764,6 +785,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                 onShareChange={handleShareNostrChange}
                 onShareAsChange={handleShareAsChange}
                 noteNoun="One summary note"
+                brand={noteBrand}
               />
             </>
           )}
