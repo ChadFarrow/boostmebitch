@@ -90,7 +90,7 @@ export function SplitsPreview({
               </span>
               <span className="tabular-nums flex items-center gap-2 flex-shrink-0">
                 {/* Three states, not two — see <LegStatusGlyph>. */}
-                {res && <LegStatusGlyph ok={res.ok} indeterminate={res.indeterminate} />}
+                {res && <LegStatusGlyph ok={res.ok} indeterminate={res.indeterminate} stopped={res.stopped} />}
                 {splits[i]} sat
               </span>
             </li>
@@ -128,7 +128,9 @@ export function LightningStatus({
   // in with the outright failures is what made a paid boost read as a failed
   // one. Counted, not just listed, so it's visible without opening anything.
   const unknown = settled.filter((r) => !r.ok && r.indeterminate);
-  const errors = settled.filter((r) => !r.ok && !r.indeterminate);
+  // CANCEL kept these from starting — not a failure, so not under "failed".
+  const stopped = settled.filter((r) => !r.ok && !r.indeterminate && r.stopped);
+  const errors = settled.filter((r) => !r.ok && !r.indeterminate && !r.stopped);
   return (
     <div className="text-xs text-muted">
       ⚡ Lightning: {okCount}/{totalRecipients} sent
@@ -145,6 +147,12 @@ export function LightningStatus({
               ))}
             </ul>
           )}
+        </div>
+      )}
+      {stopped.length > 0 && (
+        <div className="mt-1">
+          {stopped.length} cancelled — nothing was sent to{' '}
+          {stopped.length === 1 ? 'this recipient' : 'these recipients'}.
         </div>
       )}
       {errors.length > 0 && <FailedLegs errors={errors} />}

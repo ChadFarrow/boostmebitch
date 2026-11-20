@@ -2577,7 +2577,18 @@ export function lnurlErrorReason(body: string): string | undefined {
  * RETRY is the attempt that decided the leg (the keysend was retried only
  * because it provably sent nothing), so it is the half explained.
  */
+export type PaymentErrorCode =
+  | 'engine' | 'no_wallet' | 'relay_unreachable' | 'no_keysend' | 'bad_invoice_amount'
+  | 'lnurl_refused' | 'lnurl_bad' | 'balance' | 'budget' | 'wallet_cancelled'
+  | 'not_allowed' | 'no_route' | 'timeout' | 'other';
+
 export interface PaymentErrorExplanation {
+  /**
+   * A fixed word for the cause, one per arm below. The bug report's payment
+   * log files THIS, never `cause` or the raw text: those can quote a host, an
+   * address or a recipient's own reason, and the log is a public issue.
+   */
+  code: PaymentErrorCode;
   /** One sentence: what went wrong, in the user's terms. */
   cause: string;
   /** What the user can do, when there is something. */
@@ -2615,6 +2626,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
 
   if (has(/payment engine failed to load/i)) {
     return {
+      code: 'engine',
       cause: 'The payment code did not load.',
       action: 'Reload the page, then boost again.',
       whose: 'unknown',
@@ -2623,6 +2635,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
   }
   if (has(/no payment provider available|no nwc uri configured|webln provider not found|spark wallet not initialized/i)) {
     return {
+      code: 'no_wallet',
       cause: 'No wallet was ready to pay.',
       action: 'Connect a wallet, then boost again.',
       whose: 'yours',
@@ -2632,6 +2645,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
   const host = unreachableWalletRelay(msg);
   if (host) {
     return {
+      code: 'relay_unreachable',
       cause: `Could not reach your wallet's relay (${host}).`,
       action: 'Check that your wallet is online and your network allows it, reload the page, then boost again.',
       whose: 'yours',
@@ -2645,6 +2659,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
     // user told their SPARK wallet failed goes looking in the wrong place.
     const wallet = /\bspark\b/i.test(msg) ? 'Spark wallet' : /\bwebln\b/i.test(msg) ? 'WebLN wallet' : 'wallet';
     return {
+      code: 'no_keysend',
       cause: `This recipient is a Lightning node, and your ${wallet} cannot pay a node directly (keysend).`,
       action: 'Pick a different wallet for this boost.',
       whose: 'yours',
@@ -2653,6 +2668,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
   }
   if (has(/amountless invoice|amount mismatch/i)) {
     return {
+      code: 'bad_invoice_amount',
       cause: "The recipient's Lightning service sent an invoice for the wrong amount, so the app refused to pay it.",
       action: 'Only the recipient can fix this.',
       whose: 'recipient',
@@ -2665,6 +2681,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
     // A bare status ("LNURL callback failed: 500") is not a reason worth quoting.
     const quoted = reason && !/^\d+$/.test(reason) ? ` ("${reason.slice(0, 160)}")` : '';
     return {
+      code: 'lnurl_refused',
       cause: `The recipient's Lightning service would not create an invoice${quoted}.`,
       action: 'Only the recipient can fix this.',
       whose: 'recipient',
@@ -2673,6 +2690,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
   }
   if (has(/LNURL lookup|did not return JSON|not a payRequest|invalid lightning address|no invoice returned|returned no invoice|lnurl url must be https/i)) {
     return {
+      code: 'lnurl_bad',
       cause: "The recipient's Lightning address did not answer correctly.",
       action: 'Only the recipient can fix this.',
       whose: 'recipient',
@@ -2682,6 +2700,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
   // From here on, nothing proves the sats stayed put.
   if (has(/insufficient|not enough (?:balance|funds)/i)) {
     return {
+      code: 'balance',
       cause: 'Your wallet does not have enough sats for this payment.',
       action: 'Add sats to your wallet, or boost a smaller amount.',
       whose: 'yours',
@@ -2690,6 +2709,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
   }
   if (has(/quota|budget/i)) {
     return {
+      code: 'budget',
       cause: "Your wallet connection's spending budget is used up.",
       action: 'Raise the budget in your wallet, or wait for it to renew.',
       whose: 'yours',
@@ -2697,10 +2717,11 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
     };
   }
   if (has(/user (?:rejected|denied|cancell?ed)|rejected by (?:the )?user|cancell?ed by (?:the )?user/i)) {
-    return { cause: 'The payment was cancelled in your wallet.', whose: 'yours', nothingSent: false };
+    return { code: 'wallet_cancelled', cause: 'The payment was cancelled in your wallet.', whose: 'yours', nothingSent: false };
   }
   if (has(/unauthori[sz]ed|restricted|not implemented|not supported/i)) {
     return {
+      code: 'not_allowed',
       cause: 'Your wallet connection is not allowed to make this kind of payment.',
       action: "Check the connection's permissions in your wallet.",
       whose: 'yours',
@@ -2709,6 +2730,7 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
   }
   if (has(/no route|route not found|unable to find a (?:path|route)|could not find a route/i)) {
     return {
+      code: 'no_route',
       cause: 'Your wallet could not find a payment route to this recipient.',
       action: 'Try again later, or boost a smaller amount.',
       whose: 'unknown',
@@ -2717,13 +2739,14 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
   }
   if (has(/timed? ?out/i)) {
     return {
+      code: 'timeout',
       cause: 'Your wallet or its relay did not respond in time.',
       action: 'Check your wallet before you boost again.',
       whose: 'yours',
       nothingSent: false,
     };
   }
-  return { cause: 'The payment did not go through.', whose: 'unknown', nothingSent: false };
+  return { code: 'other', cause: 'The payment did not go through.', whose: 'unknown', nothingSent: false };
 }
 
 /**
@@ -2750,12 +2773,40 @@ export function explainPaymentError(raw: string | undefined): PaymentErrorExplan
  *     (`resendLeg`, once the wallet says it failed). This button pays under a
  *     FRESH hash, and a resend's own "nothing was sent" says nothing about the
  *     first attempt.
+ *
+ * A `stopped` leg qualifies by its FLAG, never by its text: CANCEL kept it from
+ * starting, so no wallet was ever asked. The flag is set in one place
+ * (`stoppedLeg`), so a library or LNURL message that happens to read the same
+ * cannot make a leg retryable.
  */
+/**
+ * One leg as the bug report's payment log records it: what happened and a
+ * fixed word for why — NEVER the amount, the recipient's name or address, or
+ * the raw error text (which can quote a host or a recipient's own reason).
+ * The log is filed into a public issue; see `lib/playback-log-line.ts`.
+ */
+export function legLogFields(r: BoostResult | undefined): { res: 'none' | 'ok' | 'stop' | 'unk' | 'fail'; why?: string } {
+  if (!r) return { res: 'none' };
+  if (r.ok) return { res: 'ok' };
+  if (r.stopped) return { res: 'stop', why: 'cancelled' };
+  if (r.indeterminate) return { res: 'unk', why: 'unanswered' };
+  return { res: 'fail', why: explainPaymentError(r.error).code };
+}
+
+/** The error text on a leg CANCEL kept from starting. Display only — the
+ *  `stopped` flag, not this text, is what `retryableLegs` reads. */
+export const LEG_STOPPED_MSG = 'Cancelled before it was sent — nothing was sent.';
+
+/** The result for a leg CANCEL kept from starting. The one place `stopped` is set. */
+export function stoppedLeg(recipient: ValueRecipient, sats: number): BoostResult {
+  return { recipient, sats, ok: false, stopped: true, error: LEG_STOPPED_MSG };
+}
+
 export function retryableLegs(results: readonly (BoostResult | undefined)[]): number[] {
   const out: number[] = [];
   results.forEach((r, i) => {
     if (!r || r.ok || r.indeterminate || r.nwcCheck || !(r.sats > 0)) return;
-    if (explainPaymentError(r.error).nothingSent) out.push(i);
+    if (r.stopped || explainPaymentError(r.error).nothingSent) out.push(i);
   });
   // Stable, biggest share first — `recipientOrder`'s rule, applied to the legs'
   // own sats because a retried leg's amount is fixed; it is not re-split.
@@ -5303,6 +5354,12 @@ export function communityPlaylistToPodcast(s: CommunityPlaylistSummary): Podcast
  * on it). The promise settles only when EVERY leg has: the log, the note and the
  * confetti read every result. A leg that throws stops the legs not yet started
  * and rejects the run, as the plain loop did (`payOne` itself never throws).
+ *
+ * `shouldStop` is the panel's CANCEL. It is asked before each START, never
+ * after: a leg already handed to the wallet cannot be called back, so it keeps
+ * waiting and is judged like any other. A stopped run does NOT fire
+ * `onAllStarted` (a redirect's show share must not start behind a cancel), and
+ * the legs it never started stay holes for the caller to mark (`sendBoost`).
  * Pinned by `check:lnurl`.
  */
 export async function payInOrder(
@@ -5311,6 +5368,7 @@ export async function payInOrder(
   opts: {
     moveOnAfterMs?: number;
     onAllStarted?: () => void;
+    shouldStop?: () => boolean;
     timer?: (ms: number) => { done: Promise<void>; cancel: () => void };
   } = {},
 ): Promise<void> {
@@ -5320,9 +5378,11 @@ export async function payInOrder(
     return { done, cancel: () => clearTimeout(id) };
   });
   let failure: { error: unknown } | null = null;
+  let stopped = false;
   const running: Promise<void>[] = [];
   for (const i of order) {
     if (failure) break;
+    if (opts.shouldStop?.()) { stopped = true; break; }
     const settled = pay(i).then(
       () => undefined,
       (error: unknown) => { failure ??= { error }; },
@@ -5336,7 +5396,7 @@ export async function payInOrder(
     await Promise.race([settled, t.done]);
     t.cancel();
   }
-  if (!failure) opts.onAllStarted?.();
+  if (!failure && !stopped) opts.onAllStarted?.();
   await Promise.all(running);
   if (failure) throw (failure as { error: unknown }).error;
 }

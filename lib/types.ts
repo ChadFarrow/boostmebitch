@@ -434,6 +434,12 @@ export interface BoostResult {
    */
   indeterminate?: boolean;
   /**
+   * The user pressed CANCEL before this leg STARTED, so no wallet was asked
+   * and nothing can have moved. `ok` is false, and it is not a failure either:
+   * render it as "not sent", never ✗. Set only by `stoppedLeg` (lib/util.ts).
+   */
+  stopped?: boolean;
+  /**
    * How to ask the NWC wallet about this leg, and how to pay the SAME payment
    * again: set on a leg the wallet never answered (and kept through a resend).
    * IN MEMORY ONLY — a keysend's preimage is in it, and `storedBoostLegs` maps
