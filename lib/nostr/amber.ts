@@ -63,6 +63,11 @@ import {
   buildAmberCallbackUrl,
   buildSignerIntentUrl,
   looksLikeAmberResult,
+  answerFingerprint,
+  answerMayRepeat,
+  clipboardAnswerIsStale,
+  requestFingerprint,
+  signedEventMatchesTemplate,
   newAmberRequestId,
   amberRecordIsFresh,
   payloadSurvivesAmber,
@@ -163,6 +168,15 @@ export function subscribeAmberStage(fn: (s: AmberStage) => void): () => void {
 //   docs/signers.md.
 const RESUMABLE_TYPES: ReadonlySet<AmberRequestType> = new Set(['get_public_key']);
 
+/**
+ * Fingerprints (never the text) of the last answer this page accepted and of
+ * the request it answered. Amber's answer also sits on the system clipboard
+ * afterwards, and the next request's first tap reads it back;
+ * `clipboardAnswerIsStale` refuses that read unless the new request repeats
+ * the one it answered.
+ */
+let lastAccepted: { answer: string; request: string } | null = null;
+
 // Both sides of the round trip share one freshness window — see
 // AMBER_PENDING_TTL_MS in ./amber-callback-url for why it is defined there.
 const fresh = (ts: number) => amberRecordIsFresh(ts, Date.now());
@@ -219,6 +233,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   // A callbackUrl is what makes Amber navigate back at all, but it costs a page
   // reload — so only the types that can afford one get it. See RESUMABLE_TYPES.
   const rid = newAmberRequestId();
+  const thisRequest = requestFingerprint(opts);
   const useCallback = RESUMABLE_TYPES.has(opts.type) && typeof location !== 'undefined';
   const callbackUrl = useCallback ? buildAmberCallbackUrl(location.origin, rid) : undefined;
   // An `intent:` URL, never a bare `nostrsigner:` one: Chromium no longer
@@ -301,6 +316,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       storage.amberPending.clear();
       storage.amberTab.clear();
       if (!raw) return reject(new Error('Amber returned no result'));
+      lastAccepted = { answer: answerFingerprint(raw), request: thisRequest };
       console.info('[amber] ✓', opts.type, 'len=', raw.length);
       resolve(raw);
     };
@@ -380,6 +396,16 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
         return;
       }
       if (!text) return;
+      // An answer to an earlier request, or this request's own input, is still
+      // on the clipboard. See `clipboardAnswerIsStale`.
+      if (clipboardAnswerIsStale(text, {
+        payload: opts.payload,
+        lastAccepted: lastAccepted?.answer ?? null,
+        repeatOfLast: answerMayRepeat(opts.type) && lastAccepted?.request === thisRequest,
+      })) {
+        console.info('[amber] clipboard via', origin, 'is not a new answer (stale or the request itself)');
+        return;
+      }
       if (looksLikeAmberResult(text, opts.type)) {
         console.info('[amber] auto-resolved via', origin);
         finish(text.trim());
@@ -541,6 +567,12 @@ export class AmberSigner implements AmberSignerInterface {
     }
     if (this.cachedPubkey && event.pubkey !== this.cachedPubkey) {
       throw new Error('Amber returned an event signed by a different key than the signed-in account');
+    }
+    // A valid signature proves the event is signed, not that it is THE event we
+    // asked for: an earlier signed note still on the clipboard passes both
+    // checks above, and publishing it would drop this one without an error.
+    if (!signedEventMatchesTemplate(event, template)) {
+      throw new Error('Amber returned a different event than the one we asked it to sign');
     }
     return event;
   }
