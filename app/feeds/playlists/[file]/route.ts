@@ -65,10 +65,17 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
         // apps. Always Buddy, the brand of the feed address (Chad, 2026-11-13).
         generator: `${BRANDS.buddy.displayName} (${BRANDS.buddy.origin})`,
       });
+      // NO SHARED CACHE: every read is built from the row, so the feed an app reads
+      // after a SAVE or a delete is the new one at once. A SAVE sends a podping, a
+      // Podcast Index ping and the GitHub copy request right after it lands, and with
+      // `s-maxage=60, stale-while-revalidate=600` the CDN answered those readers with
+      // the feed from before the SAVE. No purge can fix that from the maker: the feed
+      // origin is a different Vercel project, and a cache tag is purged only inside
+      // the project that cached it (docs/feeds.md, "The feed route").
       return new NextResponse(xml, {
         headers: {
           'content-type': 'application/rss+xml; charset=utf-8',
-          'cache-control': 'public, max-age=60, s-maxage=60, stale-while-revalidate=600',
+          'cache-control': 'no-cache',
         },
       });
     }
