@@ -11,7 +11,7 @@ import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { boostAllLines, getErrorMessage, hasValueRecipients, payableValue, playlistBoostContext, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { boostAllLines, getErrorMessage, railAfterWalletChange, hasValueRecipients, payableValue, playlistBoostContext, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
 import { BRAND, noteBrandFor, resolveSenderName } from '@/lib/brand';
 import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
@@ -27,7 +27,7 @@ import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, signerCheckMessage, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
-import { RailPicker } from './rail-picker';
+import { RailPicker, availableRails } from './rail-picker';
 import { DroppedPayees } from './boost-modal/dropped-payees';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from './wallet-balance';
 import { LegStatusGlyph } from './leg-status-glyph';
@@ -147,7 +147,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // Sync rail if a wallet connects/disconnects while the modal is open. Covers
   // WebLN too — see the same note in boost-modal/index.tsx; both modals were
   // missing that third subscription while rendering a picker that reads it.
-  useWalletChange(() => setRail(pickRail()));
+  useWalletChange(() => setRail((cur) => railAfterWalletChange(cur, availableRails(), pickRail())));
 
   useEffect(() => {
     // pickRail() honors the stored rail pref when that rail is still

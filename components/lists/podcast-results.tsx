@@ -10,6 +10,7 @@ import type { Podcast } from '@/lib/types';
 import { carriesV4V, isPlaylistMedium } from '@/lib/util';
 import { PodcastCover } from '../podcast-cover';
 import { FavHeart } from '../fav-heart';
+import { PlaylistIcon } from '../icons';
 
 /**
  * A cover that is its own control — see `<PodcastRow>`'s `coverPlay`. Built by
@@ -231,7 +232,7 @@ export function PodcastRow({
                 a literal comparison stamps one of the two paths and silently
                 not the other. */}
             {isPlaylistMedium(podcast) && (
-              <span className="stamp text-muted border-muted/40">♫ PLAYLIST</span>
+              <span data-stamp="playlist" className="stamp text-muted border-muted/40"><PlaylistIcon /> PLAYLIST</span>
             )}
             {showV4VStamp && carriesV4V(podcast) && (
               <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>

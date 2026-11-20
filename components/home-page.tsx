@@ -21,8 +21,9 @@ import type { SearchType } from '@/lib/util';
 import { loadCollection } from '@/lib/playlist-collection';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import type { Podcast } from '@/lib/types';
-import { NO_SELECTION, applyStoreView, backOr, currentEntryView, syncEntry, viewForEntry } from '@/lib/view-history';
+import { NO_SELECTION, applyStoreView, backOr, currentEntryView, stepBackToOrigin, syncEntry, viewForEntry } from '@/lib/view-history';
 import type { HomeView } from '@/lib/view-history';
+import { EmuIcon, PlaylistIcon } from '@/components/icons';
 
 /**
  * The three heavy surfaces this page can show but usually does not, split out
@@ -761,15 +762,17 @@ export function HomePage() {
           <p className="max-w-xl text-sm leading-relaxed text-bone/80">
             Curated Podcasting 2.0 playlists. A boost pays the artist.
           </p>
-          {/* gap-1.5, not gap-2: at 390px the two buttons are 358.03px with 8px between them
-              and the row is 358px, so gap-2 wrapped the second one by 0.03px. */}
+          {/* gap-1.5, not gap-2: at 390px the first two buttons were 358.03px with 8px between
+              them and the row is 358px, so gap-2 wrapped the second one by 0.03px. With the
+              playlist icon (2026-11-19) they measure 189.7 + 158.5px, so gap-1.5 has 3.8px to
+              spare; BROWSE DEMU wraps to its own line. Measure again if a label changes. */}
           <div className="mt-4 flex flex-wrap gap-1.5">
             <Link
               href="/playlists"
               className="btn-ghost btn-compact"
               title="Browse Podcasting 2.0 playlists"
             >
-              ♫ BROWSE PLAYLISTS
+              <PlaylistIcon /> BROWSE PLAYLISTS
             </Link>
             {/* Signed out it still links: the maker page asks for sign-in itself. */}
             {COMMUNITY_PLAYLISTS_ON && (
@@ -791,7 +794,7 @@ export function HomePage() {
               className="btn-ghost btn-compact"
               title="Browse self-hosted music, newest first"
             >
-              BROWSE DEMU
+              <EmuIcon /> BROWSE DEMU
             </Link>
           </div>
         </section>
@@ -820,9 +823,23 @@ export function HomePage() {
           // navigation, and it deliberately does NOT clear the selection: the
           // store is what makes stepping back into the show cheap, and
           // <AppHeader>'s wordmark already clears it on that route.
+          //
+          // A plain click STEPS BACK when the entry behind is the origin page
+          // (`stepBackToOrigin`), like every other back control on this page
+          // (`backOr`): pushed, the origin landed on top of the show, and the
+          // browser's back button reopened the show just left. A modified click
+          // (new tab, new window) stays the browser's.
           <div>
             {showOrigin ? (
-              <Link href={showOrigin.path} className="btn-ghost text-xs mb-3 w-fit" aria-label="Back">
+              <Link
+                href={showOrigin.path}
+                className="btn-ghost text-xs mb-3 w-fit"
+                aria-label="Back"
+                onClick={(e) => {
+                  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  if (stepBackToOrigin(showOrigin.path)) e.preventDefault();
+                }}
+              >
                 ← back to {showOrigin.label}
               </Link>
             ) : (

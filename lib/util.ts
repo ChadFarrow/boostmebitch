@@ -2037,6 +2037,10 @@ export type SearchType = 'all' | 'music' | 'demu' | 'podcast' | 'playlist' | 'np
  * that produced it — the same rule `splitLabels` follows on the favorites page,
  * where a chip reading ALBUMS over a heading reading "albums & shows" was the
  * confusion being fixed.
+ *
+ * `label` is the WORD alone. Each type's glyph is `<SearchTypeIcon>`
+ * (`components/icons.tsx`) — this file is import-free, and a glyph inside the
+ * string is a character the menu cannot line up.
  */
 export const SEARCH_TYPES: readonly {
   type: SearchType;
@@ -2045,11 +2049,11 @@ export const SEARCH_TYPES: readonly {
   placeholder: string;
 }[] = [
   { type: 'all', label: 'ALL', noun: 'feeds', placeholder: 'search podcasts, music and playlists…' },
-  { type: 'music', label: '♫ MUSIC', noun: 'albums', placeholder: 'search music albums…' },
+  { type: 'music', label: 'MUSIC', noun: 'albums', placeholder: 'search music albums…' },
   { type: 'demu', label: 'DEMU', noun: 'DeMu albums', placeholder: 'search self-hosted music…' },
   { type: 'podcast', label: 'PODCASTS', noun: 'shows', placeholder: 'search podcasts…' },
   { type: 'playlist', label: 'PLAYLISTS', noun: 'playlists', placeholder: 'search playlists…' },
-  { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste a Nostr public key (npub, nprofile or hex)…' },
+  { type: 'npub', label: 'NPUB', noun: 'people', placeholder: 'paste a Nostr public key (npub, nprofile or hex)…' },
 ];
 
 /**
@@ -2128,7 +2132,7 @@ export function matchesSearchType(p: Pick<Podcast, 'medium' | 'publisherMediums'
  * record for a feed can carry a medium the feed contradicts, so re-filtering
  * this lane would throw away exactly the rows it was asked to find. The reason
  * `filterPlaylistsByQuery` re-checks anyway is that its output gets stamped
- * `♫ PLAYLIST` on screen, and a stamp is a claim; nothing here stamps anything.
+ * `PLAYLIST` on screen, and a stamp is a claim; nothing here stamps anything.
  *
  * `byterm` is Podcast Index's ranked keyword answer, which says nothing about
  * the medium, so every one of its rows must pass `matchesSearchType`.
@@ -2974,6 +2978,43 @@ export function recipientAddress(r: Pick<ValueRecipient, 'type' | 'address'>): s
 export function elideAddress(address: string, isLnAddress = address.includes('@')): string {
   if (isLnAddress || address.length <= 20) return address;
   return `${address.slice(0, 8)}…${address.slice(-8)}`;
+}
+
+/**
+ * Which rail does an open boost modal use after a wallet event?
+ *
+ * The modal's rail is the USER's choice (the rail picker). A wallet event is
+ * not a reason to undo it: `weblnPayInvoice`/`weblnKeysend` notify their
+ * subscribers after EVERY settled payment, so re-picking on each event reset a
+ * user who chose WebLN back to the default after the first leg. `go()` kept
+ * paying later legs on its closure's rail while the picker, the balance chip,
+ * RETRY and the stamp read the new one, so a retry paid from a wallet that was
+ * not chosen for this boost. Keep the current rail while it is still offered;
+ * fall back to `picked` (the default) only when it is gone, or none was chosen.
+ */
+export function railAfterWalletChange<R extends string>(
+  current: R | null,
+  available: readonly R[],
+  picked: R | null,
+): R | null {
+  return current !== null && available.includes(current) ? current : picked;
+}
+
+/**
+ * Does a NIP-47 answer belong to the wallet that is connected NOW?
+ *
+ * A `get_info` is asked on one connection string and answered later. The user
+ * can paste a second string meanwhile, or validate a candidate they then
+ * cancel; the answer must not land on the other wallet. A wallet's method list
+ * decides whether `railCanKeysend` sends a leg by keysend, so wallet A's list
+ * under wallet B sends keysends to a wallet that cannot make one. Both sides
+ * must be present and equal: an absent URI is no wallet.
+ */
+export function answerIsForConnectedWallet(
+  answeredFor: string | null | undefined,
+  connected: string | null | undefined,
+): boolean {
+  return !!answeredFor && answeredFor === connected;
 }
 
 /**
@@ -4011,6 +4052,8 @@ export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): str
   // word off the container's medium would call them tracks.
   const playlist = !!podcast && isPlaylistMedium(podcast);
   const tracks = !!podcast && playsAsTracks(podcast);
+  // A publisher feed is an ARTIST: it lists albums and plays nothing itself.
+  if (kind === 'feed' && podcast?.medium?.toLowerCase() === 'publisher') return 'ARTIST';
   if (kind === 'feed') return playlist ? 'PLAYLIST' : tracks ? 'ALBUM' : 'SHOW';
   return tracks ? 'TRACK' : 'EPISODE';
 }

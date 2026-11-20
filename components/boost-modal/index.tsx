@@ -8,13 +8,13 @@ import { sendBoost, pickRail, paidAny, payStampInvoice, SLOW_LEG_MS, type BoostR
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, receiptRefUrls, checkSignerLink, SignStoppedError, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playlistBoostContext, playsAsTracks, redirectLegs, retryableLegs, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
+import { getErrorMessage, railAfterWalletChange, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playlistBoostContext, playsAsTracks, redirectLegs, retryableLegs, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
 import { BRAND, noteBrandFor, resolveSenderName, type Brand } from '@/lib/brand';
 import { COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH } from '@/lib/curated-playlists';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from '../wallet-balance';
-import { RailPicker } from '../rail-picker';
+import { RailPicker, availableRails } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS, readAmountDefault } from './amount-input';
 import { MessageInput, BOOSTAGRAM_MAX } from '../message-input';
 import { GifPicker } from './gif-picker';
@@ -178,7 +178,36 @@ interface Props {
   onClose: () => void;
 }
 
-export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props) {
+/**
+ * What the modal renders from once Send is pressed: the props and the live
+ * target `go()` built the legs from. See `sentView` in <BoostModal>.
+ */
+interface SentView {
+  episode?: Episode;
+  podcast: Podcast;
+  positionSec: number;
+  liveTarget: LiveTarget | null;
+}
+
+export function BoostModal(props: Props) {
+  // From the press of Send until the modal closes, it renders the boost AS SENT
+  // — the props and the live target `go()` paid from — never what they become
+  // (#551). The payee rows, the splits and the per-leg results are three views
+  // of one payment, and `results` is paired with the rows BY INDEX: rows re-read
+  // from a moved target put each ✓/✗ beside a payee that leg never paid. On a
+  // live show that is any song change during a send, because `useLiveTarget` is
+  // subscribed; from <Player> it was any change of the playing item.
+  //
+  // It changes no payee. The legs and `retryFailed` already read only
+  // `sentRef`, and before the press everything still follows the props and the
+  // on-air block exactly as before. A send that throws before its first leg
+  // (`sendBoost` throws only then) lets go, so a second press follows again.
+  const [sentView, setSentView] = useState<SentView | null>(null);
+  const episode = sentView ? sentView.episode : props.episode;
+  const podcast = sentView ? sentView.podcast : props.podcast;
+  const positionSec = sentView ? sentView.positionSec : (props.positionSec ?? 0);
+  const { onClose } = props;
+
   // The exact set the published note will `p`-tag, from the one function that
   // decides it. MEMOIZED, and that is load-bearing rather than tidiness: this
   // is a prop on <MessageInput>, whose warm effect keys on it, and this
@@ -328,7 +357,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // This covers WebLN as well as NWC and Spark — it used to watch only the
   // first two, so enabling a WebLN extension mid-modal never re-rendered
   // <RailPicker> and the rail the user had just enabled stayed unofferable.
-  useWalletChange(() => setRail(pickRail()));
+  useWalletChange(() => setRail((cur) => railAfterWalletChange(cur, availableRails(), pickRail())));
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
 
@@ -389,8 +418,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // track ("● LIVE paying Cringe · 7 recipients") while the rows under it, and
   // the legs, were the show's three. Subscribed, not snapshotted, so the rows
   // follow the target the same way the "● LIVE" row above them does; `go()`
-  // pays and labels from this same rendered value.
-  const liveTarget = useLiveTarget(episode?.guid);
+  // pays and labels from this same rendered value. Until Send: from the press
+  // on, the rows show the block the legs went to (`sentView`).
+  const liveNow = useLiveTarget(episode?.guid);
+  const liveTarget = sentView ? sentView.liveTarget : liveNow;
   const liveSplit = liveTarget && hasValueRecipients(liveTarget.split?.value)
     ? liveTarget.split!
     : null;
@@ -885,6 +916,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       siteNote: {},
     };
     sentRef.current = sent;
+    // Before the first await, from the same render the legs were built from.
+    setSentView({ episode, podcast, positionSec, liveTarget });
 
     setRunning(true);
     // Pre-sized so an out-of-order leg can be written at its own index without
@@ -940,6 +973,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         // started either — unless a leg threw after every leg had started.
         if (!hostRun) {
           setRunning(false);
+          // Nothing was sent, so there is nothing to hold: the next press
+          // follows the props and the on-air block again (#551).
+          setSentView(null);
           return;
         }
       }

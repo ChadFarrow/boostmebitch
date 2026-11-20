@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMenuKeys } from './use-menu-keys';
 import { createPortal } from 'react-dom';
 
@@ -43,6 +43,15 @@ export type SelectOption<T extends string> = {
   id: T;
   /** The word in the menu. */
   label: string;
+  /**
+   * A glyph before the word, in the row's own colour — it follows the ✓ row to
+   * bolt and the hovered row to bone. **When ANY option has one, EVERY row
+   * keeps the slot**, so the words still start at one x: the search menu's
+   * `♫ MUSIC` and `⚡ NPUB` were the only two with a glyph, and their words
+   * began a glyph and a space to the right of ALL's. The trigger shows it too,
+   * so the closed button and the open menu name the mode the same way.
+   */
+  icon?: ReactNode;
   /**
    * What the TRIGGER says when this option is active. Defaults to `label`.
    * An indented option needs it: "albums" alone does not say which medium's.
@@ -106,6 +115,7 @@ export function SelectMenu<T extends string>({
   // the trigger on close — a `role="menu"` promised those. See the hook.
   useMenuKeys({ open, menuRef, triggerRef: btnRef, close });
   const current = active === null ? null : options.find((o) => o.id === active);
+  const withIcons = options.some((o) => o.icon);
 
   // Measured from the trigger, and again on scroll and resize: a `fixed`
   // element does not follow the page. Below when there is room, above
@@ -160,7 +170,10 @@ export function SelectMenu<T extends string>({
         title={current?.title}
         className={`btn-mini ${triggerClassName}`}
       >
-        <span className="text-bone">{triggerText}</span>
+        <span className="inline-flex items-center gap-1.5 text-bone">
+          {current?.icon ? <span className="flex" aria-hidden>{current.icon}</span> : null}
+          {triggerText}
+        </span>
         {current?.count === undefined ? null : <span className="opacity-60">{current.count}</span>}
         <span className="text-[10px] opacity-40">{open ? '▴' : '▾'}</span>
       </button>
@@ -197,6 +210,7 @@ export function SelectMenu<T extends string>({
                   whether or not its row is the checked one. A tick that shifts
                   the text makes the list appear to jitter as you move down it. */}
               <span className="w-3 shrink-0" aria-hidden>{o.id === active ? '✓' : ''}</span>
+              {withIcons ? <span className="flex w-4 shrink-0 justify-center" aria-hidden>{o.icon}</span> : null}
               <span className="min-w-0 flex-1 truncate">{o.label}</span>
               {o.count === undefined ? null : <span className="opacity-60 shrink-0">{o.count}</span>}
             </button>
