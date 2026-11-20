@@ -33,15 +33,14 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'invalid owner' }, { status: 400 });
     }
     const rows = await listPlaylists({ limit: 200, ...(owner ? { owner } : {}) });
-    return NextResponse.json(
-      { playlists: rows.map(summaryOf) },
-      {
-        // A listing for one owner is read back right after a write: never cache it.
-        headers: owner
-          ? NO_STORE
-          : { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=300' },
-      },
-    );
+    // Never cached, with or without an owner: both are read back right after a
+    // write. The "playlist deleted" screen links straight to /playlists, and an
+    // edge copy (`s-maxage=30, stale-while-revalidate=300`) showed the deleted
+    // playlist there for up to five and a half minutes, because the first visit
+    // after the 30 s gets the stale copy while the CDN refreshes it (beta,
+    // 2026-11-20). A new playlist and an admin delete waited the same way.
+    // docs/feeds.md, "Community playlists".
+    return NextResponse.json({ playlists: rows.map(summaryOf) }, { headers: NO_STORE });
   }, 'could not list playlists');
 }
 
