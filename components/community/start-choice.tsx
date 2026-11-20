@@ -24,6 +24,10 @@ export type StartChoiceFor = 'start' | 'publish' | 'upload';
  * the first version: "The non Nostr one is too wordy. The Nostr one also doesn't
  * sound like you can edit the playlist from anywhere. It sounds more like it's
  * the Nostr account" ("you can change it from any device" read as the account).
+ * Then: "For Nostr focus on the playlist is tied to it so it's editable on any
+ * device. Non Nostr it's tied to the device." The second half says "browser",
+ * not "device": the key is in ONE browser's storage, and Safari and the Home
+ * Screen app on one iPhone do not share it.
  *
  * - SIGN IN WITH NOSTR opens the site's sign-in OVER this dialog, which stays
  *   until the account lands: closing the sign-in shows the choice again. The
@@ -62,7 +66,7 @@ export function StartChoice({
       <div className="p-5" data-start-choice={when}>
         <h2 className="pr-8 font-display text-xl">Do you have Nostr?</h2>
         <p className="mt-2 text-sm text-bone">
-          Sign in to tie this playlist to your Nostr account. Then you can edit the playlist from any device.
+          The playlist is tied to your Nostr account, so you can edit the playlist on any device.
         </p>
         <button type="button" className="btn-bolt btn-compact mt-3" disabled={making} onClick={onSignIn} data-start-signin>
           SIGN IN WITH NOSTR
@@ -71,7 +75,7 @@ export function StartChoice({
         <div className="mt-5 border-t border-bone/15 pt-4" data-start-no-nostr>
           <p className="font-mono text-xs uppercase tracking-wider text-muted">No Nostr account?</p>
           <p className="mt-1 text-xs text-bone/70">
-            This browser keeps a key for you. You can edit the playlist only in this browser.
+            The playlist is tied to this device, so you can edit the playlist only in this browser.
           </p>
           <button type="button" className="btn-ghost btn-compact mt-2" disabled={making} data-start-guest
             onClick={async () => {
