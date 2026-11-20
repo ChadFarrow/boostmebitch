@@ -175,6 +175,24 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * The picture BMB makes for a PLAYLIST whose own cover fails: the 2 x 2 grid of
+ * its first four songs (`/api/playlist-cover`). For `<PodcastCover>`'s
+ * `fallbackSrc`, the rung after the feed's own cover. Undefined for anything
+ * that is not a playlist, or with no http(s) feed URL to read the songs from.
+ * A playlist BMB hosts never reaches it: its cover route always answers.
+ */
+export function playlistCoverFallback(p: Pick<Podcast, 'medium' | 'url'>): string | undefined {
+  if (!isPlaylistMedium(p) || !p.url || !/^https?:\/\//i.test(p.url) || p.url.length > 2048) return undefined;
+  // `v` names the cover STYLE. The answer is cached a day in the browser, so a
+  // change of style must change the address, or a phone that loaded the old
+  // picture keeps it (2: v4vmusic playlists moved from the grid to the first song).
+  return `/api/playlist-cover?feedUrl=${encodeURIComponent(p.url)}&v=${PLAYLIST_COVER_STYLE}`;
+}
+
+/** Bump when `/api/playlist-cover` draws a different picture for the same feed. */
+export const PLAYLIST_COVER_STYLE = 2;
+
+/**
  * Whether a row can be played at all.
  *
  * **A playlist row is the only one that can answer no, and it is not an edge

@@ -1,21 +1,23 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useApp } from '@/lib/store';
 import { storage, type PlaylistDraftCache } from '@/lib/storage';
 import { ModalShell } from '@/components/modal-shell';
 import { RowThumb } from '@/components/chapter-ui';
-import { artCandidates } from '@/lib/util';
+import { artCandidates, mapLimit } from '@/lib/util';
+import { whyNotPlayable, type SongKnown } from './song-check';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import { cleanText } from '@/lib/community/clean-text';
 import {
-  ART_MIN_PX, MAX_TITLE_LEN, MIN_SONGS, validatePlaylistDraft,
+  ART_MIN_PX, MAX_TITLE_LEN, artUploadServers, MIN_SONGS, validatePlaylistDraft,
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
-  NoSignerError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
+  NoSignerError, SignFailedError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
 } from '@/lib/community/client';
+import { ArtUploadError, fetchBlossomServers, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { PlaylistPublished } from './playlist-published';
@@ -24,6 +26,14 @@ import { AddSongsSheet } from './add-songs-sheet';
 // The resolver's page size (`MAX_BATCH` in lib/pi-batch.ts, which is server-only and cannot be imported here).
 const RESOLVE_PAGE = 100;
 
+/**
+ * How many songs the EDIT view checks for a dead file per load. Each check is
+ * one `/api/audio-probe`, which allows 120 a minute per address; a check the
+ * route refuses counts as "could not ask" and marks nothing, so a long playlist
+ * is never marked wrongly, only partly.
+ */
+const MAX_EDIT_CHECKS = 200;
+
 type Labels = Record<string, { title: string; artist?: string; image?: string }>;
 
 /** A server refusal, per problem. */
@@ -31,12 +41,21 @@ type Refusal =
   | DraftProblem
   | { kind: 'art'; reason: ArtRefusal }
   | { kind: 'song-not-found'; itemGuid: string }
-  | { kind: 'not-music'; itemGuid: string };
+  | { kind: 'not-music'; itemGuid: string }
+  | { kind: 'song-gone'; itemGuid: string; service: string };
 
 const ART_WORDS: Record<ArtRefusal, string> = {
   'too-small': `The picture must be at least ${ART_MIN_PX} px on its shortest side.`,
   format: 'Use a PNG or JPEG picture.',
   'not-image': 'That link is not a picture we can read.',
+};
+
+const UPLOAD_WORDS: Record<ArtUploadFailure, string> = {
+  'not-image': 'That file is not a picture we can read. Use a JPEG or PNG.',
+  'too-small': `The picture must be at least ${ART_MIN_PX} px on its shortest side.`,
+  refused: 'The picture host refused the upload. Try again, or paste a link.',
+  network: 'The upload did not finish. Check your connection and try again.',
+  'bad-answer': 'The picture host gave an answer we cannot use. Try again, or paste a link.',
 };
 
 function problemText(p: Refusal, labels: Labels): string {
@@ -57,6 +76,7 @@ function problemText(p: Refusal, labels: Labels): string {
     case 'art': return ART_WORDS[p.reason] ?? ART_WORDS['not-image'];
     case 'song-not-found': return `${song(p.itemGuid)} was not found. Remove it and try again.`;
     case 'not-music': return `${song(p.itemGuid)} is not a music track. Remove it and try again.`;
+    case 'song-gone': return `${song(p.itemGuid)} cannot play: its host (${p.service}) closed. Remove it and try again.`;
   }
 }
 
@@ -96,6 +116,25 @@ export function PlaylistMaker() {
   const [unsaved, setUnsaved] = useState(false);
   // Opens <AddSongsSheet>.
   const [addOpen, setAddOpen] = useState(false);
+  // The UPLOAD button: in flight, and the one line under the art field.
+  const [uploading, setUploading] = useState(false);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const artFileRef = useRef<HTMLInputElement>(null);
+  // Bumped on every account switch, so an upload that finishes after one never
+  // writes its link into the next account's form.
+  const formGen = useRef(0);
+  // The EDIT view's dead-song warning. `known` holds what the row load learned
+  // about each song (its file, Podcast Index's "not found"), so the check asks
+  // nothing twice; `checked` is every song already asked about, so a move or a
+  // remove does not ask again; `dead` is the answer.
+  const known = useRef<Record<string, SongKnown>>({});
+  const checked = useRef<Set<string>>(new Set());
+  const [dead, setDead] = useState<Record<string, true>>({});
+  const [checkReady, setCheckReady] = useState(false);
+  // The signed-in user's own Blossom servers (kind:10063). `null` while the read
+  // is in flight; the promise is kept so an UPLOAD pressed before it lands waits for it.
+  const [userServers, setUserServers] = useState<string[] | null>(null);
+  const serversRead = useRef<Promise<string[]> | null>(null);
   const [busy, setBusy] = useState(false);
   const [refusals, setRefusals] = useState<Refusal[]>([]);
   const [note, setNote] = useState<string | null>(null);
@@ -132,6 +171,8 @@ export function PlaylistMaker() {
     setFormNpub(null); setTitle(''); setDescription(''); setArtUrl(''); setSongs([]); setLabels({});
     setEditingId(null); setExpectedUpdatedAt(null); setDirty(false); setUnsaved(false); setRefusals([]);
     setNote(null); setLoadError(null); setDeleted(null); setPublished(null); setConfirmDelete(false);
+    setUploadNote(null); setUploading(false); formGen.current += 1;
+    known.current = {}; checked.current = new Set(); setDead({}); setCheckReady(false);
     if (!npub) return;
     let live = true;
     const id = new URLSearchParams(window.location.search).get('id');
@@ -160,7 +201,7 @@ export function PlaylistMaker() {
         setSongs(p.songs); setEditingId(p.id); setExpectedUpdatedAt(p.updatedAt);
       }
       setFormNpub(npub);
-      if (cached && Object.keys(cached.labels).length) return;
+      if (cached && Object.keys(cached.labels).length) { setCheckReady(true); return; }
       // Titles for the rows: the app's own resolver, one page of RESOLVE_PAGE at a time.
       const l: Labels = {};
       try {
@@ -169,7 +210,13 @@ export function PlaylistMaker() {
           const r: Response = await fetch(`/api/playlist?url=${encodeURIComponent(communityFeedUrl(p.id))}&limit=${RESOLVE_PAGE}&offset=${offset}`);
           const j = r.ok ? await r.json() : null;
           if (!j) break;
-          for (const e of (j.episodes ?? []) as Array<{ guid?: string; title?: string; feedTitle?: string; image?: string; feedImage?: string; unresolved?: boolean }>) {
+          for (const e of (j.episodes ?? []) as Array<{ guid?: string; title?: string; feedTitle?: string; image?: string; feedImage?: string; enclosureUrl?: string; unresolved?: string }>) {
+            if (e.guid) {
+              known.current[e.guid] = {
+                ...(e.enclosureUrl ? { enclosureUrl: e.enclosureUrl } : {}),
+                ...(e.unresolved === 'not-found' ? { notFound: true } : {}),
+              };
+            }
             if (e.guid && e.title && !e.unresolved) {
               l[e.guid] = { title: e.title, ...(e.feedTitle ? { artist: e.feedTitle } : {}), ...((e.image || e.feedImage) ? { image: e.image || e.feedImage } : {}) };
             }
@@ -177,7 +224,7 @@ export function PlaylistMaker() {
           offset = typeof j.nextOffset === 'number' ? j.nextOffset : null;
         }
       } catch { /* rows keep a plain name */ }
-      if (live) setLabels(l);
+      if (live) { setLabels(l); setCheckReady(true); }
     })();
     return () => { live = false; };
   }, [npub, pubkey]);
@@ -208,9 +255,67 @@ export function PlaylistMaker() {
   }); };
   const remove = (i: number) => { setDirty(true); setSongs((s) => s.filter((_, k) => k !== i)); };
 
-  const failure = (e: unknown) => (e instanceof SignTimeoutError || e instanceof NoSignerError
-    ? (e instanceof NoSignerError ? e.message : 'Your signer did not answer. Open it and try again.')
-    : 'Could not reach the server. Try again.');
+  // Which step failed decides the words: a signer problem must never read as a
+  // server problem, or the user retries a request that never left.
+  const failure = (e: unknown) => {
+    if (e instanceof NoSignerError) return 'No signer is connected. Connect your signer, then try again.';
+    if (e instanceof SignTimeoutError) return 'Your signer did not answer. Open it and try again.';
+    if (e instanceof SignFailedError) return 'Your signer did not sign. Check that it is connected, then try again.';
+    return 'Could not reach the server. Try again.';
+  };
+
+  // UPLOAD: the picked file goes to the Blossom server under the user's own key,
+  // and only the returned link lands in the art field (lib/community/blossom.ts).
+  useEffect(() => {
+    setUserServers(null);
+    if (!identity) { serversRead.current = null; return; }
+    let live = true;
+    const p = fetchBlossomServers(identity);
+    serversRead.current = p;
+    void p.then((s) => { if (live) setUserServers(s); });
+    return () => { live = false; };
+    // The pubkey, not the identity object: a profile refresh must not read the list again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity?.pubkey]);
+
+  const uploadArt = async (file: File) => {
+    const gen = formGen.current;
+    setUploading(true); setUploadNote(null);
+    try {
+      const servers = userServers ?? (serversRead.current ? await serversRead.current : []);
+      const r = await uploadPlaylistArt(file, servers);
+      if (gen !== formGen.current) return;
+      setDirty(true); setArtUrl(r.url);
+      const host = new URL(r.server).host;
+      setUploadNote(r.skipped.length
+        ? `Your server ${r.skipped.map((s) => new URL(s).host).join(', ')} did not take the picture. It is on ${host}. The link is in the field above.`
+        : `Uploaded to ${host}. The link is in the field above.`);
+    } catch (e) {
+      if (gen !== formGen.current) return;
+      setUploadNote(e instanceof ArtUploadError ? UPLOAD_WORDS[e.reason] : failure(e));
+    } finally {
+      if (gen === formGen.current) setUploading(false);
+    }
+  };
+
+  // EDIT view: which songs already in the playlist cannot play any more (Chad,
+  // 2026-11-15: "make it obvious which ones are dead"). A song can die after it
+  // was added — RSS Blue closed under several — and the maker otherwise learns
+  // it only when the playlist stops. The same check as + ADD (`whyNotPlayable`),
+  // three songs at a time, once per song per load. Only a song found dead is
+  // marked: "could not ask" marks nothing.
+  useEffect(() => {
+    if (!editingId || !checkReady || !ready) return;
+    const todo = songs.filter((s) => !checked.current.has(s.itemGuid)).slice(0, MAX_EDIT_CHECKS - checked.current.size);
+    if (!todo.length) return;
+    for (const s of todo) checked.current.add(s.itemGuid);
+    const gen = formGen.current;
+    void mapLimit(todo, 3, async (s) => {
+      const why = await whyNotPlayable(s.feedGuid, s.itemGuid, known.current[s.itemGuid] ?? {});
+      if (why && gen === formGen.current) setDead((d) => ({ ...d, [s.itemGuid]: true }));
+    });
+  }, [editingId, checkReady, ready, songs]);
+  const deadCount = songs.filter((s) => dead[s.itemGuid]).length;
 
   const submit = useCallback(async () => {
     const v = validatePlaylistDraft(draft, textHoldsSecret);
@@ -390,15 +495,40 @@ export function PlaylistMaker() {
           <p id="pl-art-hint" className="mt-1 text-xs text-muted">
             Square is preferred, 1400–3000 px. Empty: BMB makes the cover from the first four songs.
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {/* The input is hidden and the button opens it: a bare file input has no
+                styling a phone shows as a control. */}
+            <input ref={artFileRef} type="file" accept="image/*" className="hidden" data-art-file
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = '';
+                if (f) void uploadArt(f);
+              }} />
+            <button type="button" className="btn-ghost" disabled={uploading || busy} data-art-upload
+              onClick={() => artFileRef.current?.click()}>
+              {uploading ? 'UPLOADING…' : '↑ UPLOAD PICTURE'}
+            </button>
+            <span className="text-xs text-muted" data-art-upload-host>
+              {userServers === null
+                ? 'signed with your key'
+                : `to ${new URL(artUploadServers(userServers)[0]).host}${userServers.length ? ' (your Blossom server)' : ''}, signed with your key`}
+            </span>
+          </div>
+          {uploadNote && <p className="mt-1 text-xs text-bone/80" role="status" data-art-upload-note>{uploadNote}</p>}
         </div>
       </div>
 
-      <div className="mt-6 max-w-xl border border-bone/15 bg-ink/90 px-3" data-songs-panel>
+      {deadCount > 0 && (
+        <p role="status" className="mt-6 max-w-xl text-xs text-nostr" data-dead-count>
+          ⚠ {deadCount === 1 ? '1 song' : `${deadCount} songs`} in this playlist can&apos;t be played. {deadCount === 1 ? 'It is' : 'They are'} marked below. Remove {deadCount === 1 ? 'it' : 'them'} with ×, then SAVE.
+        </p>
+      )}
+      <div className={`${deadCount > 0 ? 'mt-2' : 'mt-6'} max-w-xl border border-bone/15 bg-ink/90 px-3`} data-songs-panel>
       <ol className="divide-y divide-bone/15" aria-label="Songs">
         {songs.map((s, i) => {
           const l = labels[s.itemGuid];
           return (
-            <li key={`${s.feedGuid}:${s.itemGuid}`} className="flex flex-wrap items-center gap-2 py-2" data-song-row>
+            <li key={`${s.feedGuid}:${s.itemGuid}`} className="flex flex-wrap items-center gap-2 py-2" data-song-row {...(dead[s.itemGuid] ? { 'data-song-dead': '' } : {})}>
               {/* The track number is the row's place in the playlist, so it follows a move. */}
               <span className="w-6 shrink-0 text-right font-mono text-xs tabular-nums text-muted" data-song-number>{i + 1}</span>
               {/* The song's own cover, through /api/art with the raw URL behind it
@@ -412,6 +542,9 @@ export function PlaylistMaker() {
               <button type="button" className={ICON_BTN} aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
               <button type="button" className={ICON_BTN} aria-label="Move down" disabled={i === songs.length - 1} onClick={() => move(i, 1)}>↓</button>
               <button type="button" className={ICON_BTN} aria-label="Remove" onClick={() => remove(i)}>×</button>
+              {dead[s.itemGuid] && (
+                <p className="basis-full pl-8 text-[11px] text-nostr">⚠ Track not found. Remove it with ×.</p>
+              )}
             </li>
           );
         })}

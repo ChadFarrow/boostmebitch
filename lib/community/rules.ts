@@ -173,6 +173,108 @@ export function artVerdict(meta: {
   return { ok: true };
 }
 
+// ---- an uploaded cover (the UPLOAD button, lib/community/blossom.ts) --------
+
+/**
+ * The Blossom server an uploaded cover goes to when the user names none of their
+ * own (kind:10063), or when none of theirs takes it. No trailing slash.
+ */
+export const ART_UPLOAD_SERVER = 'https://blossom.primal.net';
+
+/** The kind of a user's Blossom server list (BUD-03). */
+export const BLOSSOM_SERVER_LIST_KIND = 10063;
+
+/** How many of the user's own servers an upload tries before the default. */
+export const MAX_USER_BLOSSOM_SERVERS = 3;
+
+/**
+ * The user's Blossom servers from a kind:10063's tags, in THEIR order (BUD-03:
+ * the first is the most trusted), normalised to `https://host[/path]` with no
+ * trailing slash. Third-party text, so: `https:` only (the upload carries a
+ * signed authorization, and a plain-http server hands it to the network), no
+ * credentials in the URL, query and fragment dropped, duplicates dropped, at
+ * most MAX_USER_BLOSSOM_SERVERS. Anything else is skipped, never repaired.
+ */
+export function blossomServersFromTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  const out: string[] = [];
+  for (const t of tags) {
+    if (out.length >= MAX_USER_BLOSSOM_SERVERS) break;
+    if (!Array.isArray(t) || t[0] !== 'server' || typeof t[1] !== 'string') continue;
+    let u: URL;
+    try {
+      u = new URL(t[1].trim());
+    } catch {
+      continue;
+    }
+    if (u.protocol !== 'https:' || !u.hostname || u.username || u.password) continue;
+    const base = `https://${u.host}${u.pathname.replace(/\/+$/, '')}`;
+    if (!out.includes(base)) out.push(base);
+  }
+  return out;
+}
+
+/** Where an upload is tried, in order: the user's own servers, then the default once. */
+export function artUploadServers(userServers: readonly string[]): string[] {
+  const out = userServers.filter((s, i) => userServers.indexOf(s) === i);
+  if (!out.includes(ART_UPLOAD_SERVER)) out.push(ART_UPLOAD_SERVER);
+  return out;
+}
+
+/**
+ * The longest side an uploaded cover keeps. The cover route serves 1400 px, and
+ * the art check reads at most 24 MP: a 24 MP phone photo (5712 x 4284) is over
+ * that, so it must shrink in the browser or the check refuses it.
+ */
+export const ART_UPLOAD_MAX_PX = 3000;
+
+/**
+ * The size a picked picture is re-encoded at: the longest side at most
+ * ART_UPLOAD_MAX_PX, never enlarged. `null` when the shortest side, AFTER the
+ * shrink, is under ART_MIN_PX — the art check would refuse that upload, and the
+ * user would learn it only at PUBLISH, with a file already on a public server.
+ */
+export function artUploadSize(width: number, height: number): { width: number; height: number } | null {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  const scale = Math.min(1, ART_UPLOAD_MAX_PX / Math.max(width, height));
+  const w = Math.round(width * scale);
+  const h = Math.round(height * scale);
+  if (Math.min(w, h) < ART_MIN_PX) return null;
+  return { width: w, height: h };
+}
+
+/**
+ * The cover link for a finished upload, REBUILT from the hash we computed, never
+ * read from the server's answer: BUD-01 says `<server>/<sha256>` serves the blob,
+ * and the answer is third-party data. `null` unless the answer names that same
+ * hash, so a server that stored something else is not given a playlist's cover.
+ */
+export function uploadedArtUrl(server: string, sha256: string, answer: unknown): string | null {
+  if (!/^[0-9a-f]{64}$/.test(sha256)) return null;
+  if (!answer || typeof answer !== 'object') return null;
+  const got = (answer as { sha256?: unknown }).sha256;
+  if (typeof got !== 'string' || got.toLowerCase() !== sha256) return null;
+  return `${server}/${sha256}.jpg`;
+}
+
+/**
+ * Which picture `/api/playlist-cover` makes for a playlist BMB does not host,
+ * when the feed's own cover fails. A v4vmusic.com playlist uses its FIRST
+ * song's art, because that is what v4vmusic itself shows for a playlist (Chad,
+ * 2026-11-15: "so we match their style"); every other host gets the 2 x 2 grid
+ * of the first four songs, BMB's own no-art cover. The host is matched exactly
+ * or as a subdomain, never as a substring: `v4vmusic.com.example` is not it.
+ */
+export function coverStyleFor(feedUrl: string): 'first-song' | 'grid' {
+  let host: string;
+  try {
+    host = new URL(feedUrl).hostname.toLowerCase();
+  } catch {
+    return 'grid';
+  }
+  return host === 'v4vmusic.com' || host.endsWith('.v4vmusic.com') ? 'first-song' : 'grid';
+}
+
 export interface StoredPlaylist extends PlaylistDraft {
   id: string;
   ownerPubkey: string;

@@ -70,7 +70,7 @@ import {
   payableValue,
   boostGate,
   boostButtonTitle,
-  isMusicMedium,
+  playsAsTracks,
   showShareUrl,
   targetWord,
   authorLine,
@@ -772,8 +772,11 @@ export function FullscreenPlayer({
   // open, the one the screenshot shows, still opened at row 1. Measured by
   // `e2e:shuffle` section 10, which opens on a fresh page every time.
   const followShuffleIdx = current ? shuffleIndexOf(shuffle?.items ?? null, current.episode) : -1;
+  // `playsAsTracks`, not `isMusicMedium`: a `musicL` playlist's rows are tracks
+  // too, and the panel is how a listener sees what plays next (Chad, 2026-11-15,
+  // on a community playlist: the now-playing screen listed nothing).
   const followAlbumIdx =
-    current && followShuffleIdx < 0 && isMusicMedium(current.podcast) && episodeQueue.length > 1
+    current && followShuffleIdx < 0 && playsAsTracks(current.podcast) && episodeQueue.length > 1
       ? playingRowIndex(episodeQueue, current)
       : -1;
   const listsMounted = open && everOpened;
@@ -783,7 +786,10 @@ export function FullscreenPlayer({
   if (!current) return null;
 
   const { episode, podcast } = current;
-  const isMusic = isMusicMedium(podcast);
+  // A `musicL` playlist plays as tracks, so it gets the track panel too. Its row
+  // number is the row's POSITION: a song's `episode` number is its track number
+  // on its OWN album, so "12" would label the playlist's first row.
+  const isPlaylist = podcast.medium?.toLowerCase() === 'musicl';
   // -1 with no shuffle, or when it does not hold this track.
   const shuffleIdx = shuffleIndexOf(shuffle?.items ?? null, episode);
   // Not `isMusic`: a playlist's tracks count too, and from /downloads the show has
@@ -1547,10 +1553,15 @@ export function FullscreenPlayer({
                   })}
                 </ul>
               </div>
-            ) : isMusic && episodeQueue.length > 1 && (
-              <div className="border-t border-bone/10 pt-5">
+            ) : followAlbumIdx >= 0 && (
+              /* Only while the playing track IS a row of `episodeQueue`.
+                 `episodeQueue` is the show opened last, so after browsing to
+                 another album it lists THAT album under this track, and a tap
+                 there played its song under this track's show. Widening the
+                 panel to playlists widened that too, so the panel now asks. */
+              <div className="border-t border-bone/10 pt-5" data-track-panel={isPlaylist ? 'playlist' : 'album'}>
                 <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
-                  Album · {episodeQueue.length} tracks
+                  {isPlaylist ? 'Playlist' : 'Album'} · {episodeQueue.length} tracks
                 </p>
                 <ul ref={albumListRef} className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
                   {episodeQueue.map((t, i) => {
@@ -1583,9 +1594,13 @@ export function FullscreenPlayer({
                               leaves nothing truer to show, and "which row am I
                               on" is the honest floor. */}
                           <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
-                            {active && isPlaying ? '❚❚' : t.episode ?? i + 1}
+                            {active && isPlaying ? '❚❚' : isPlaylist ? i + 1 : t.episode ?? i + 1}
                           </span>
-                          <span className="truncate flex-1">{t.title}</span>
+                          <span className="truncate flex-1">
+                            {t.title}
+                            {/* A playlist mixes artists: name the song's own album, as the shuffle panel does. */}
+                            {isPlaylist && t.feedTitle ? <span className="text-muted"> · {t.feedTitle}</span> : null}
+                          </span>
                           {t.duration ? (
                             <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.duration)}</span>
                           ) : null}

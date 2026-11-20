@@ -22,7 +22,8 @@ type Problem =
   | DraftProblem
   | { kind: 'art'; reason: ArtRefusal }
   | { kind: 'song-not-found'; itemGuid: string }
-  | { kind: 'not-music'; itemGuid: string };
+  | { kind: 'not-music'; itemGuid: string }
+  | { kind: 'song-gone'; itemGuid: string; service: string };
 
 const unavailable = NOT_CONFIGURED;
 const gone = () => NextResponse.json({ error: 'gone' }, { status: 410 });
@@ -82,12 +83,13 @@ export async function PUT(req: Request, ctx: Ctx) {
     const added = v.draft.songs.filter((s) => !had.has(key(s)));
     const [art, songs] = await Promise.all([
       v.draft.artUrl && v.draft.artUrl !== cur.artUrl ? checkArt(v.draft.artUrl) : Promise.resolve({ ok: true as const }),
-      added.length ? verifySongs(added) : Promise.resolve({ notFound: [], notMusic: [], feedUrls: new Map<string, string>() }),
+      added.length ? verifySongs(added) : Promise.resolve({ notFound: [], notMusic: [], gone: [], feedUrls: new Map<string, string>() }),
     ]);
     const problems: Problem[] = [];
     if (!art.ok) problems.push({ kind: 'art', reason: art.reason });
     for (const itemGuid of songs.notFound) problems.push({ kind: 'song-not-found', itemGuid });
     for (const itemGuid of songs.notMusic) problems.push({ kind: 'not-music', itemGuid });
+    for (const g of songs.gone) problems.push({ kind: 'song-gone', itemGuid: g.itemGuid, service: g.service });
     if (problems.length) return NextResponse.json({ error: 'not publishable', problems }, { status: 400 });
 
     // A kept song keeps the feedUrl stored when it was checked; an added one takes

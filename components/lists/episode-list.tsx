@@ -12,7 +12,7 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { valueNotRead, authorLine, albumHoldsCurrent, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { valueNotRead, authorLine, albumHoldsCurrent, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { IS_BETA } from '@/lib/beta';
@@ -659,6 +659,7 @@ export function EpisodeList({
               artwork={data.podcast.artwork}
               title={data.podcast.title}
               seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
+              fallbackSrc={playlistCoverFallback(data.podcast)}
               className="w-full h-full border border-bone/20 group-hover:border-bolt text-3xl"
             />
             <div
@@ -675,6 +676,7 @@ export function EpisodeList({
             artwork={data.podcast.artwork}
             title={data.podcast.title}
             seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
+            fallbackSrc={playlistCoverFallback(data.podcast)}
             className="w-20 h-20 lg:w-28 lg:h-28 border border-bone/20 flex-shrink-0 text-3xl"
           />
         )}

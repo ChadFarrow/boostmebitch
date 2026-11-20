@@ -23,6 +23,21 @@ export class NoSignerError extends Error {
   }
 }
 
+/**
+ * The signer answered with a failure, or its transport threw: a bunker whose
+ * connection dropped, a refused prompt, an extension that errored. The request
+ * never left, so this must never read as "could not reach the server" — it did
+ * (2026-11-15: a disconnected signer on beta showed exactly that, and only
+ * reconnecting the signer fixed it). `cause` is the signer's own rejection,
+ * which for a NIP-46 bunker is a bare string (docs/signers.md).
+ */
+export class SignFailedError extends Error {
+  constructor(public readonly cause: unknown) {
+    super('The signer did not sign.');
+    this.name = 'SignFailedError';
+  }
+}
+
 function signTimeoutMs(o?: { timeoutMs?: number }): number {
   // `window.__bmbSignTimeoutMs` is the e2e's lever: honoured only when it is set.
   const w = (typeof window !== 'undefined' ? (window as unknown as { __bmbSignTimeoutMs?: unknown }) : {}).__bmbSignTimeoutMs;
@@ -31,9 +46,31 @@ function signTimeoutMs(o?: { timeoutMs?: number }): number {
 }
 
 /**
+ * Race one signer call against the sign timeout. Rejects with `SignTimeoutError`
+ * when the signer is silent and `SignFailedError` when it fails: every rejection
+ * from the SIGN step is a signer problem, never a network one.
+ */
+export async function withSignTimeout<T>(p: Promise<T>, o?: { timeoutMs?: number }): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SignTimeoutError()), signTimeoutMs(o));
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } catch (e) {
+    if (e instanceof SignTimeoutError) throw e;
+    console.warn('[community] signer failed', e);
+    throw new SignFailedError(e);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * One request with a NIP-98 `Authorization` header. Only the SIGN step races the
  * timeout; the network call after it has its own life. Rejects with
- * `SignTimeoutError` when the signer is silent, `NoSignerError` with none.
+ * `SignTimeoutError` when the signer is silent, `SignFailedError` when it fails,
+ * `NoSignerError` with none.
  */
 export async function signedFetch(
   path: string,
@@ -44,16 +81,10 @@ export async function signedFetch(
   const nostr = activeNostr();
   if (!nostr) throw new NoSignerError();
   const url = `${location.origin}${path}`;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new SignTimeoutError()), signTimeoutMs(o));
-  });
-  let token: string;
-  try {
-    token = await Promise.race([getToken(url, method, (e) => nostr.signEvent(e), true, body as Record<string, unknown> | undefined), timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+  const token = await withSignTimeout(
+    getToken(url, method, (e) => nostr.signEvent(e), true, body as Record<string, unknown> | undefined),
+    o,
+  );
   return fetch(url, {
     method,
     headers: {

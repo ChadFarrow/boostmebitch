@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -483,6 +483,23 @@ console.log('\nWhich mediums ARE playlists, and which of those play as tracks');
   // community playlist in ChadFarrow/chadf-musicl-playlists is a real `podcastL`
   // with 949 entries and the identical wire shape.
   const isPl = (m) => isPlaylistMedium({ medium: m });
+
+  // The grid BMB draws when a playlist's own cover fails. Can fail: the obvious
+  // version keys on `endsWith('l')` or on any medium, and draws a song grid over
+  // an ALBUM whose cover failed, or builds a URL from a non-http feed address.
+  {
+    const fb = playlistCoverFallback;
+    const u = 'https://v4vmusic.com/playlist/508a029b-020f-4334-9704-e0a9a5f800fb.xml';
+    if (fb({ medium: 'musicL', url: u }) === `/api/playlist-cover?feedUrl=${encodeURIComponent(u)}&v=${PLAYLIST_COVER_STYLE}`) ok('cover fallback: a musicL playlist gets the grid route');
+    else fail('cover fallback: a musicL playlist should get the grid route');
+    if (fb({ medium: 'music', url: u }) === undefined) ok('cover fallback: an album gets none');
+    else fail('cover fallback: an album must get none');
+    if (fb({ medium: 'cool', url: u }) === undefined) ok('cover fallback: an unknown medium ending in l gets none');
+    else fail('cover fallback: an unknown medium must get none');
+    if (fb({ medium: 'musicL', url: 'javascript:alert(1)' }) === undefined && fb({ medium: 'musicL', url: undefined }) === undefined)
+      ok('cover fallback: no http(s) feed URL, no route');
+    else fail('cover fallback: a non-http feed URL must give no route');
+  }
   const tracks = (m) => playsAsTracks({ medium: m });
 
   for (const m of ['musicL', 'podcastL', 'videoL', 'filmL', 'audiobookL',

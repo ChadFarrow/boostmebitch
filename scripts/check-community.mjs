@@ -8,6 +8,8 @@ import {
 } from '../lib/curated-playlists.ts';
 import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
+  artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
+  blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -206,6 +208,70 @@ check('1400x299 too-small (the shortest side counts)', A({ format: 'jpeg', width
 check('webp format', A({ format: 'webp', width: 1400, height: 1400 }).reason === 'format');
 check('png with alpha ok', A({ format: 'png', width: 3000, height: 3000, hasAlpha: true }).ok);
 check('{} not-image', A({}).reason === 'not-image');
+
+// The UPLOAD button's two pure rules. Can fail: the obvious version keeps a
+// 24 MP phone photo whole (over the art check's pixel limit), or shrinks a
+// panorama under ART_MIN_PX and uploads a cover PUBLISH will then refuse.
+{
+  const S = (w, h) => JSON.stringify(artUploadSize(w, h));
+  check('24 MP phone photo shrinks to 3000 on the long side', S(5712, 4284) === JSON.stringify({ width: 3000, height: 2250 }));
+  check('portrait shrinks on the long side too', S(3024, 4032) === JSON.stringify({ width: 2250, height: 3000 }));
+  check('1400 square is kept, never enlarged', S(1400, 1400) === JSON.stringify({ width: 1400, height: 1400 }));
+  check('300 square is kept (the smallest)', S(300, 300) === JSON.stringify({ width: 300, height: 300 }));
+  check('299 square is refused', artUploadSize(299, 299) === null);
+  check('a panorama under ART_MIN_PX AFTER the shrink is refused', artUploadSize(12000, 1000) === null);
+  check('a panorama that stays over ART_MIN_PX passes', S(6000, 800) === JSON.stringify({ width: 3000, height: 400 }));
+  check('zero / NaN sizes are refused', artUploadSize(0, 500) === null && artUploadSize(NaN, 500) === null);
+  check('the shrunk size passes artVerdict', A({ format: 'jpeg', ...artUploadSize(5712, 4284) }).ok);
+
+  const h = 'ab'.repeat(32);
+  const U = (a) => uploadedArtUrl(ART_UPLOAD_SERVER, h, a);
+  check('upload url is rebuilt from OUR hash', U({ sha256: h, url: 'https://evil.example/x.jpg' }) === `${ART_UPLOAD_SERVER}/${h}.jpg`);
+  check('an answer naming another hash is refused', U({ sha256: 'cd'.repeat(32), url: `${ART_UPLOAD_SERVER}/${h}.jpg` }) === null);
+  check('an answer with no hash is refused', U({ url: `${ART_UPLOAD_SERVER}/${h}.jpg` }) === null);
+  check('a non-object answer is refused', U('ok') === null && U(null) === null);
+  check('an upper-case hash in the answer still matches', U({ sha256: h.toUpperCase() }) === `${ART_UPLOAD_SERVER}/${h}.jpg`);
+  check('a bad local hash is refused', uploadedArtUrl(ART_UPLOAD_SERVER, 'xyz', { sha256: 'xyz' }) === null);
+  check('the upload server is https with no trailing slash', /^https:\/\/[^/]+$/.test(ART_UPLOAD_SERVER));
+
+  // The user's own kind:10063 list. Can fail: the obvious version reads every
+  // tag's [1] (a `relay` tag becomes a server), keeps http, or loses the order.
+  const B = (tags) => JSON.stringify(blossomServersFromTags(tags));
+  check('servers keep the user order, normalised', B([['server', 'https://cdn.a.example/'], ['server', 'https://b.example']])
+    === JSON.stringify(['https://cdn.a.example', 'https://b.example']));
+  check('a server with a path keeps the path', B([['server', 'https://a.example/blossom/']]) === JSON.stringify(['https://a.example/blossom']));
+  check('http is skipped (a signed authorization over plain http)', B([['server', 'http://a.example']]) === '[]');
+  check('credentials in the URL are skipped', B([['server', 'https://u:p@a.example']]) === '[]');
+  check('query and fragment are dropped', B([['server', 'https://a.example/?x=1#y']]) === JSON.stringify(['https://a.example']));
+  check('a non-server tag is skipped', B([['relay', 'https://a.example'], ['r', 'https://b.example']]) === '[]');
+  check('junk is skipped', B([['server'], ['server', 42], ['server', 'not a url'], 'x', null]) === '[]');
+  check('duplicates are dropped', B([['server', 'https://a.example'], ['server', 'https://a.example/']]) === JSON.stringify(['https://a.example']));
+  check('at most MAX_USER_BLOSSOM_SERVERS', blossomServersFromTags(
+    [1, 2, 3, 4, 5].map((i) => ['server', `https://s${i}.example`])).length === MAX_USER_BLOSSOM_SERVERS);
+  check('non-array tags give []', B(undefined) === '[]' && B({}) === '[]');
+  check('order: user servers, then the default', JSON.stringify(artUploadServers(['https://a.example']))
+    === JSON.stringify(['https://a.example', ART_UPLOAD_SERVER]));
+  check('the default is not tried twice', JSON.stringify(artUploadServers([ART_UPLOAD_SERVER, 'https://a.example']))
+    === JSON.stringify([ART_UPLOAD_SERVER, 'https://a.example']));
+  check('no user servers: the default alone', JSON.stringify(artUploadServers([])) === JSON.stringify([ART_UPLOAD_SERVER]));
+  check('a server with a path builds <server>/<hash>.jpg', uploadedArtUrl('https://a.example/blossom', h, { sha256: h })
+    === `https://a.example/blossom/${h}.jpg`);
+}
+
+// The fallback cover of a playlist BMB does not host. Can fail: the obvious
+// version tests `includes('v4vmusic.com')`, which gives a lookalike host
+// v4vmusic's style and a path that merely names it too.
+{
+  const C = coverStyleFor;
+  check('a v4vmusic playlist uses its first song', C('https://v4vmusic.com/playlist/508a029b-020f-4334-9704-e0a9a5f800fb.xml') === 'first-song');
+  check('a v4vmusic subdomain uses its first song', C('https://www.v4vmusic.com/playlist/x.xml') === 'first-song');
+  check('the host is matched in any case', C('https://V4VMusic.com/playlist/x.xml') === 'first-song');
+  check('a lookalike host gets the grid', C('https://v4vmusic.com.example/playlist/x.xml') === 'grid');
+  check('a host that only ENDS in the name gets the grid', C('https://notv4vmusic.com/p.xml') === 'grid');
+  check('a path naming v4vmusic gets the grid', C('https://cdn.kolomona.com/v4vmusic.com/p.xml') === 'grid');
+  check('another host gets the grid', C('https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-music-playlist.xml') === 'grid');
+  check('junk gets the grid', C('not a url') === 'grid');
+}
 
 check('cleanText censors', cleanText('fuck this') === '**** this');
 for (const s of ['Scunthorpe classics', 'assassin', 'Cocktail hour', 'a  b\n c'])
