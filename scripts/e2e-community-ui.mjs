@@ -164,8 +164,8 @@ if (OFF) {
 console.log('--- 1. home: MAKE PLAYLIST next to BROWSE PLAYLISTS (390 x 844) ---');
 await go('/');
 t.ok('home shows + MAKE PLAYLIST', await waitFor(`document.body.innerText.includes('+ MAKE PLAYLIST')`), 'not found');
-const pair = await js(`(() => { const f = (t) => [...document.querySelectorAll('a')].find((a) => a.textContent.trim() === t)?.getBoundingClientRect();
-  const a = f('♫ BROWSE PLAYLISTS'), b = f('+ MAKE PLAYLIST'); return a && b ? { sameRow: Math.abs(a.top - b.top) < 4, gap: b.left - a.right } : null; })()`);
+const pair = await js(`(() => { const f = (t) => [...document.querySelectorAll('a')].find((a) => a.textContent.trim().endsWith(t))?.getBoundingClientRect();
+  const a = f('BROWSE PLAYLISTS'), b = f('+ MAKE PLAYLIST'); return a && b ? { sameRow: Math.abs(a.top - b.top) < 4, gap: b.left - a.right } : null; })()`);
 t.ok('both buttons on one row', pair?.sameRow === true, JSON.stringify(pair));
 t.ok('home: no horizontal overflow', await overflowFree());
 t.equal('home: both buttons at least 24 x 24', await tooSmall('section[aria-labelledby="home-playlists-heading"] a'), []);
@@ -176,18 +176,18 @@ t.equal('home: both buttons at least 24 x 24', await tooSmall('section[aria-labe
 console.log('--- 2. signed out: the form, and the PUBLISH checklist ---');
 await go('/playlists/make');
 t.ok('signed out: the form appears', await waitFor(`document.querySelector('#pl-title')`));
-t.ok('the footer says the draft stays on this device, and offers the sign-in',
-  await js(`/not signed in/i.test(document.querySelector('[data-testid=signed-out-note]')?.innerText ?? '') && !!document.querySelector('[data-testid=signed-out-note] button')`));
+t.ok('the footer says no account is needed, and still offers the sign-in',
+  await js(`/no account needed/i.test(document.querySelector('[data-testid=signed-out-note]')?.innerText ?? '') && !!document.querySelector('[data-testid=signed-out-note] button')`));
 t.ok('PUBLISH is on, not disabled', await js(`!${byText('PUBLISH')}.disabled`));
 t.equal('the reason line: Add 10 more songs', await js(`document.querySelector('[data-testid=why-blocked]')?.innerText`), 'Add 10 more songs');
 t.ok('signed out: no horizontal overflow', await overflowFree());
 t.equal('signed out: every button on the page is at least 24 x 24', await tooSmall('main button:not(.btn-inline), main a', 24, 24), []);
 await countWrites();
 t.ok('PUBLISH with nothing filled in opens the checklist', await pressPublish());
-t.equal('it lists the three things, all missing', await checkState(), [['signin', false], ['title', false], ['songs', false]]);
+t.equal('it lists the two things, both missing (no sign-in item: no account is needed)', await checkState(), [['title', false], ['songs', false]]);
 const c0 = await check();
-t.ok('the song line counts: 0 of 10, add 10 more', /0 of 10 now\. Add 10 more\./.test(c0[2]?.[2] ?? ''), c0[2]?.[2]);
-t.equal('each missing item has the button that fixes it', await checkFixes(), ['SIGN IN', 'ADD TITLE', '+ ADD SONGS']);
+t.ok('the song line counts: 0 of 10, add 10 more', /0 of 10 now\. Add 10 more\./.test(c0[1]?.[2] ?? ''), c0[1]?.[2]);
+t.equal('each missing item has the button that fixes it', await checkFixes(), ['ADD TITLE', '+ ADD SONGS']);
 t.equal('...and pressing PUBLISH sent nothing', await js(`window.__cpWrites`), 0);
 t.ok('the checklist: no horizontal overflow', await overflowFree());
 t.equal('the checklist: every button at least 24 x 24', await tooSmall('[role=dialog] button'), []);
@@ -200,29 +200,21 @@ await click(`[...document.querySelectorAll('[role=dialog] [role=tab]')].find((b)
 t.ok('signed out, FAVORITES says to sign in, not "Loading" forever', await waitFor(`document.querySelector('[role=dialog] [data-testid=fav-signed-out]')`, 5000));
 await click(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent.trim() === 'DONE')`);
 await waitFor(`!document.querySelector('[role=dialog]')`, 3000);
-t.ok('signed out, the upload line says to sign in first', await js(`/sign in first/i.test(document.querySelector('[data-art-upload-host]')?.innerText ?? '')`));
-t.ok('...and UPLOAD PICTURE opens the sign-in dialog, not a file picker',
-  (await click(`document.querySelector('[data-art-upload]')`)) && await waitFor(`/Browser Extension/.test(document.querySelector('[role=dialog]')?.innerText ?? '')`, 5000));
-await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-t.ok('Escape closes the sign-in dialog', await waitFor(`!document.querySelector('[role=dialog]')`, 3000));
+t.ok('signed out, the upload line says no account is needed', await js(`/no account needed/i.test(document.querySelector('[data-art-upload-host]')?.innerText ?? '')`));
+t.ok('...and UPLOAD PICTURE opens no sign-in dialog (it opens the file picker)',
+  (await click(`document.querySelector('[data-art-upload]')`)) && !(await waitFor(`document.querySelector('[role=dialog]')`, 1200)));
 
 // The playlist built signed out: twelve songs and a title in the :guest slot, as the form writes it.
 await seedGuest(draft(), labels);
 await go('/playlists/make');
 t.ok('signed out, the :guest draft comes back', await waitFor(`document.querySelectorAll('[data-song-row]').length === 12`));
-t.equal('the reason line: Sign in with Nostr to publish', await js(`document.querySelector('[data-testid=why-blocked]')?.innerText`), 'Sign in with Nostr to publish');
-t.ok('PUBLISH opens the checklist', await pressPublish());
-t.equal('only the sign-in is missing', await checkState(), [['signin', false], ['title', true], ['songs', true]]);
-const c1 = await check();
-t.ok('the done lines show the title and the count', (c1[1]?.[2] ?? '').includes('e2e community playlist') && (c1[2]?.[2] ?? '').includes('12 songs.'), JSON.stringify(c1));
-t.equal('...and the only fix button is SIGN IN', await checkFixes(), ['SIGN IN']);
-t.ok('OK closes it', await closeCheck());
+t.ok('a complete playlist: no reason line, nothing is missing (PUBLISH is not pressed here: signed out it would publish)', await js(`!document.querySelector('[data-testid=why-blocked]')`));
 await setValue('#pl-desc', 'written signed out');
 await wait(300);
 t.equal('a change signed out is written to the :guest slot', (await guestStored())?.draft.description, 'written signed out');
-t.ok('SIGN IN in the checklist closes it and opens the sign-in dialog',
-  (await pressPublish()) && (await click(checkButton('SIGN IN')))
-  && await waitFor(`!document.querySelector('[data-publish-check]') && /Browser Extension/.test(document.querySelector('[role=dialog]')?.innerText ?? '')`, 5000));
+t.ok('"Sign in with Nostr" in the footer opens the sign-in dialog',
+  (await click(`document.querySelector('[data-testid=signed-out-note] button')`))
+  && await waitFor(`/Browser Extension/.test(document.querySelector('[role=dialog]')?.innerText ?? '')`, 5000));
 // Sign in inside the page with the (fake) extension: the work moves to the account.
 await js(`localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))}); 1`);
 t.ok('the extension sign-in is offered', await click(`[...document.querySelectorAll('[role=dialog] button')].find((b) => /Browser Extension/.test(b.textContent))`));
@@ -248,9 +240,10 @@ t.equal('the account slot holds the moved draft; :guest is empty', [(await store
 // Signed out on an EDIT address: editing is the owner's alone.
 await js(`(() => { localStorage.removeItem('bmb:npub'); localStorage.removeItem('bmb:signer'); return 1; })()`);
 await go('/playlists/make?id=00000000-0000-0000-0000-000000000000');
-t.ok('signed out on ?id=: the page asks for a sign-in to edit', await waitFor(`document.querySelector('main')?.innerText.includes('Sign in to edit this playlist.')`));
-t.ok('...with no form', await js(`!document.querySelector('#pl-title')`));
-t.ok('and its SIGN IN opens the sign-in dialog', (await click(byText('SIGN IN'))) && await waitFor(`!!document.querySelector('[role="dialog"]')`, 3000));
+t.ok('signed out on ?id= (a playlist that does not exist): the page says it could not load it',
+  await waitFor(`document.querySelector('main')?.innerText.includes('We could not load that playlist.')`));
+t.ok('...with no form, and a way to make a new playlist', await js(`!document.querySelector('#pl-title') && !!${byText('+ MAKE A NEW PLAYLIST')}`));
+// (A playlist that EXISTS and is not this browser's says "only its maker can change it": scripts/e2e-guest-playlist.mjs.)
 
 // ---- 3. signed in: the saved draft comes back ----------------------------------
 console.log('--- 3. signed in: the saved draft ---');
@@ -386,8 +379,7 @@ await wait(300);
 t.ok('no title: PUBLISH stays on', await js(`!${byText('PUBLISH')}.disabled`));
 t.ok('and it says Add a title', (await js(`document.querySelector('[data-testid=why-blocked]')?.innerText`)) === 'Add a title');
 t.ok('pressing it opens the checklist', await pressPublish());
-t.equal('...with only the title missing', await checkState(), [['signin', true], ['title', false], ['songs', true]]);
-t.ok('...and the sign-in line names the account', /Signed in as \S+/.test((await check())[0]?.[2] ?? ''));
+t.equal('...with only the title missing', await checkState(), [['title', false], ['songs', true]]);
 await closeCheck();
 await setValue('#pl-title', 'shit mix');
 await wait(300);
@@ -425,8 +417,8 @@ await click(`document.querySelectorAll('[aria-label="Remove"]')[0]`);
 await wait(300);
 t.equal('nine songs: PUBLISH stays on, says Add 1 more', await js(`[${byText('PUBLISH')}.disabled, document.querySelector('[data-testid=why-blocked]')?.innerText]`), [false, 'Add 1 more song']);
 t.ok('pressing it opens the checklist', await pressPublish());
-t.equal('...with only the songs missing', await checkState(), [['signin', true], ['title', true], ['songs', false]]);
-t.ok('...counting 9 of 10', /9 of 10 now\. Add 1 more\./.test((await check())[2]?.[2] ?? ''));
+t.equal('...with only the songs missing', await checkState(), [['title', true], ['songs', false]]);
+t.ok('...counting 9 of 10', /9 of 10 now\. Add 1 more\./.test((await check())[1]?.[2] ?? ''));
 t.equal('...and its fix is + ADD SONGS', await checkFixes(), ['+ ADD SONGS']);
 await closeCheck();
 const first = real[3].guid; // the one now second

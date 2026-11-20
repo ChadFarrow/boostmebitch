@@ -7,27 +7,24 @@ import { MIN_SONGS } from '@/lib/community/rules';
 /**
  * What PUBLISH (or SAVE) still needs, opened when it is pressed too early.
  *
- * A playlist needs three things (Chad, 2026-11-15: "nostr, title and 10 tracks
- * is it"), and all three are listed every time, done or not, so one press shows
- * the whole list rather than one reason at a time. Each missing item carries the
- * button that fixes it. Anything else `validatePlaylistDraft` refuses (a secret
+ * A playlist needs two things now (Chad, 2026-11-15: "nostr, title and 10 tracks
+ * is it"; 2026-11-19: no Nostr account is needed, the browser keeps a key), and
+ * both are listed every time, done or not, so one press shows the whole list
+ * rather than one reason at a time. Each missing item carries the button that
+ * fixes it. Anything else `validatePlaylistDraft` refuses (a secret
  * key, a bad art link, a duplicate song) follows under ALSO FIX: those block the
  * send too, and a guard that withholds must say why.
  */
 export function PublishChecklist({
   action,
-  signedInAs,
   title,
   songs,
   others,
   onClose,
-  onSignIn,
   onAddTitle,
   onAddSongs,
 }: {
   action: 'PUBLISH' | 'SAVE';
-  /** The account's name, or null when nobody is signed in. */
-  signedInAs: string | null;
   /** The line under "A title": the title as it will publish, never one holding a key; null when it is missing. */
   title: string | null;
   /** `have` is what `validatePlaylistDraft` counts: valid songs, a duplicate once. */
@@ -35,7 +32,6 @@ export function PublishChecklist({
   /** Each further refusal, already in words. */
   others: string[];
   onClose: () => void;
-  onSignIn: () => void;
   onAddTitle: () => void;
   onAddSongs: () => void;
 }) {
@@ -46,18 +42,9 @@ export function PublishChecklist({
       <div className="p-5" data-publish-check>
         <h2 className="pr-8 font-display text-xl">Before you {verb}</h2>
         <p className="mt-1 text-sm text-bone/80">
-          A playlist needs all three of these. {action} works when each one has a ✓.
+          A playlist needs both of these. {action} works when each one has a ✓. You do not need a Nostr account.
         </p>
         <ul className="mt-3 divide-y divide-bone/15 border-y border-bone/15" aria-label="What a playlist needs">
-          <Item
-            id="signin"
-            ok={!!signedInAs}
-            label="Sign in with Nostr"
-            detail={signedInAs
-              ? `Signed in as ${signedInAs}.`
-              : 'The playlist goes out under your Nostr account. Your draft stays on this device.'}
-            fix={<button type="button" className="btn-bolt btn-compact" onClick={onSignIn}>SIGN IN</button>}
-          />
           <Item
             id="title"
             ok={title !== null}

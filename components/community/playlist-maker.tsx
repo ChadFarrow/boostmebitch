@@ -16,7 +16,10 @@ import {
 } from '@/lib/community/rules';
 import {
   NoSignerError, SignFailedError, SignTimeoutError, deleteOwnPlaylist, fetchCommunityPlaylists, fetchPlaylist, publishPlaylist, savePlaylist,
+  type CommunitySigner,
 } from '@/lib/community/client';
+import { ensureGuestKey, guestSigner } from '@/lib/community/guest-key';
+import { useGuestKey } from '@/lib/community/use-guest-key';
 import { ArtUploadError, fetchBlossomServers, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { textHoldsSecret } from '@/lib/nostr/npub-input';
@@ -84,11 +87,13 @@ function problemText(p: Refusal, labels: Labels): string {
 /**
  * What PUBLISH still needs, in one short line beside it; null when it can send.
  * A secret key in the title or description comes first: it must be removed
- * before anything is sent. The sign-in comes last, because the draft can be
- * finished signed out. The full list is <PublishChecklist>, opened by a press.
+ * before anything is sent. Nobody needs an account to publish: signed out, the
+ * playlist goes out under a key this browser makes and keeps (docs/feeds.md,
+ * "Making a playlist without a Nostr account"). The full list is
+ * <PublishChecklist>, opened by a press.
  */
-function whyNot(v: ReturnType<typeof validatePlaylistDraft>, signedIn: boolean): string | null {
-  if (v.ok) return signedIn ? null : 'Sign in with Nostr to publish';
+function whyNot(v: ReturnType<typeof validatePlaylistDraft>): string | null {
+  if (v.ok) return null;
   const order: DraftProblem['kind'][] = ['secret', 'too-few-songs', 'title-missing'];
   const first = order.map((k) => v.problems.find((p) => p.kind === k)).find(Boolean) ?? v.problems[0];
   return problemText(first, {}).replace(/\.$/, '');
@@ -105,6 +110,20 @@ const ICON_BTN = 'inline-flex h-8 w-8 items-center justify-center border border-
 export function PlaylistMaker() {
   const identity = useApp((s) => s.identity);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
+  // The guest key's PUBLIC half, read once at mount and never made by looking at
+  // the page (`undefined` while it is read). It decides which playlists this browser
+  // may edit signed out; the key is made only when someone publishes or uploads a
+  // cover with no account (`ensureGuestKey`, below).
+  const guest = useGuestKey();
+  // Who signs the playlist on screen. The playlist's OWNER decides when one is
+  // opened for editing (the account, or the guest key of this browser); a new
+  // playlist goes out under the account, or under the guest key when signed out.
+  const [signAs, setSignAs] = useState<'account' | 'guest'>('account');
+  // The guest key's npub while a guest-made playlist is open: the draft slot of that
+  // edit. `null` is the account's slot, or the `:guest` slot of a NEW signed-out one.
+  const [guestSlot, setGuestSlot] = useState<string | null>(null);
+  // After a publish without an account: did this browser keep the key? false says so, plainly.
+  const [guestKept, setGuestKept] = useState<boolean | null>(null);
 
   // Who the form on screen belongs to: an npub, or GUEST signed out. A draft is written
   // only while this equals the current owner, so one account's form is never saved under
@@ -173,6 +192,9 @@ export function PlaylistMaker() {
   const name = identity?.profile?.display_name || identity?.profile?.name || (npub ? `${npub.slice(0, 12)}…` : '');
   const owner = npub ?? GUEST;
   const ready = formOwner === owner;
+  // Where the draft on screen is kept: the account's slot, the guest key's slot for an
+  // edit of a guest-made playlist, or (null) the `:guest` slot of a new signed-out one.
+  const slot = guestSlot ?? npub;
 
   // A stored npub with no identity yet is a restore in flight, not a signed-out visitor.
   useEffect(() => {
@@ -184,7 +206,10 @@ export function PlaylistMaker() {
 
   // ---- load: the saved draft, or the stored playlist in edit mode ----------
   useEffect(() => {
+    // The guest key is still being read: an edit needs to know whose playlist is whose.
+    if (guest === undefined) return;
     // An account switch: nothing of the last account's form survives.
+    setSignAs('account'); setGuestSlot(null); setGuestKept(null);
     setFormOwner(null); setTitle(''); setDescription(''); setOwnerName(''); setArtUrl(''); setSongs([]); setLabels({});
     setEditingId(null); setExpectedUpdatedAt(null); setDirty(false); setUnsaved(false); setRefusals([]);
     setNote(null); setLoadError(null); setDeleted(null); setPublished(null); setConfirmDelete(false);
@@ -196,11 +221,10 @@ export function PlaylistMaker() {
       setTitle(c.draft.title); setDescription(c.draft.description); setOwnerName(c.draft.ownerName); setArtUrl(c.draft.artUrl ?? '');
       setSongs(c.draft.songs); setLabels(c.labels); setEditingId(c.editingId); setExpectedUpdatedAt(c.expectedUpdatedAt);
     };
-    if (!npub) {
+    if (!npub && !id) {
       // Signed out the form works on the `:guest` slot, so a visitor can build the
-      // playlist first and sign in at PUBLISH (Chad, 2026-11-15). Editing a stored
-      // playlist is its owner's alone.
-      if (id) { setEditNeedsSignIn(true); return; }
+      // playlist first, and publish with no account (the guest key) or sign in and
+      // publish as that account (Chad, 2026-11-15, 2026-11-19).
       const cached = storage.playlistDraft.get(null);
       if (cached) apply({ ...cached, editingId: null, expectedUpdatedAt: null });
       setFormOwner(GUEST);
@@ -208,7 +232,7 @@ export function PlaylistMaker() {
     }
     let live = true;
     (async () => {
-      if (!id) {
+      if (!id && npub) {
         // The draft made signed out MOVES to this account, as the listen queue's
         // `:guest` copy does: left under `:guest`, the next account to sign in on
         // this device would take it again. Cleared only once the account's copy
@@ -236,11 +260,23 @@ export function PlaylistMaker() {
         setFormOwner(npub);
         return;
       }
-      const cached = storage.playlistDraft.get(npub, id);
+      if (!id) return;
       const p = await fetchPlaylist(id);
       if (!live) return;
-      if (!p) { setLoadError('We could not load that playlist.'); setFormOwner(npub); return; }
-      if (p.ownerPubkey !== pubkey) { setLoadError('Only the person who made this playlist can edit it.'); setFormOwner(npub); return; }
+      if (!p) { setLoadError('We could not load that playlist.'); setFormOwner(owner); return; }
+      // The playlist's OWNER decides who signs: this account, or the guest key this
+      // browser holds. Anyone else may not edit it.
+      const mine: 'account' | 'guest' | null = pubkey && p.ownerPubkey === pubkey ? 'account'
+        : guest && p.ownerPubkey === guest.pubkey ? 'guest' : null;
+      if (!mine) {
+        if (!npub) setEditNeedsSignIn(true);
+        else setLoadError('Only the person who made this playlist can edit it.');
+        setFormOwner(owner);
+        return;
+      }
+      setSignAs(mine);
+      if (mine === 'guest') setGuestSlot(guest!.npub);
+      const cached = storage.playlistDraft.get(mine === 'guest' ? guest!.npub : npub, id);
       // A restored draft keeps the version it was MADE against. If the playlist changed
       // elsewhere since, SAVE then gets the 409 "changed elsewhere" warning; taking the
       // server's version here would overwrite that change with no word.
@@ -249,7 +285,7 @@ export function PlaylistMaker() {
         setTitle(p.title); setDescription(p.description); setOwnerName(p.ownerName ?? ''); setArtUrl(p.artUrl ?? '');
         setSongs(p.songs); setEditingId(p.id); setExpectedUpdatedAt(p.updatedAt);
       }
-      setFormOwner(npub);
+      setFormOwner(owner);
       if (cached && Object.keys(cached.labels).length) { setCheckReady(true); return; }
       // Titles for the rows: the app's own resolver, one page of RESOLVE_PAGE at a time.
       const l: Labels = {};
@@ -276,7 +312,9 @@ export function PlaylistMaker() {
       if (live) { setLabels(l); setCheckReady(true); }
     })();
     return () => { live = false; };
-  }, [npub, pubkey]);
+    // `guest` is read once at mount, so this runs again only when that read lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [npub, pubkey, guest]);
 
   // ---- save the draft after a user change ----------------------------------
   useEffect(() => {
@@ -285,17 +323,17 @@ export function PlaylistMaker() {
       draft: { title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
       editingId, expectedUpdatedAt, labels,
     };
-    if (!npub) guestWork.current = cache;
-    const ok = storage.playlistDraft.set(npub, cache, editingId ?? undefined);
+    if (!slot) guestWork.current = cache;
+    const ok = storage.playlistDraft.set(slot, cache, editingId ?? undefined);
     setUnsaved(!ok);
-  }, [npub, ready, dirty, published, deleted, loadError, title, description, ownerName, artUrl, songs, labels, editingId, expectedUpdatedAt]);
+  }, [slot, ready, dirty, published, deleted, loadError, title, description, ownerName, artUrl, songs, labels, editingId, expectedUpdatedAt]);
 
   const draft: PlaylistDraft = useMemo(
     () => ({ title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
     [title, description, ownerName, artUrl, songs],
   );
   const verdict = useMemo(() => validatePlaylistDraft(draft, textHoldsSecret), [draft]);
-  const blocked = whyNot(verdict, !!identity);
+  const blocked = whyNot(verdict);
   // What <PublishChecklist> lists: the three requirements, then every other refusal.
   const problems = verdict.ok ? [] : verdict.problems;
   const fewSongs = problems.find((p) => p.kind === 'too-few-songs');
@@ -314,12 +352,16 @@ export function PlaylistMaker() {
 
   // Which step failed decides the words: a signer problem must never read as a
   // server problem, or the user retries a request that never left.
-  const failure = (e: unknown) => {
+  const failure = useCallback((e: unknown) => {
+    // The guest key is not a signer the person connects, so its failures get their own words.
+    if ((editingId ? signAs === 'guest' : !identity) && (e instanceof NoSignerError || e instanceof SignFailedError)) {
+      return 'This browser could not use the key it keeps for your playlists. Try again, or make the playlist again.';
+    }
     if (e instanceof NoSignerError) return 'No signer is connected. Connect your signer, then try again.';
     if (e instanceof SignTimeoutError) return 'Your signer did not answer. Open it and try again.';
     if (e instanceof SignFailedError) return 'Your signer did not sign. Check that it is connected, then try again.';
     return 'Could not reach the server. Try again.';
-  };
+  }, [editingId, signAs, identity]);
 
   // UPLOAD: the picked file goes to the Blossom server under the user's own key,
   // and only the returned link lands in the art field (lib/community/blossom.ts).
@@ -340,7 +382,9 @@ export function PlaylistMaker() {
     setUploading(true); setUploadNote(null);
     try {
       const servers = userServers ?? (serversRead.current ? await serversRead.current : []);
-      const r = await uploadPlaylistArt(file, servers);
+      // Signed out, the cover is signed with the guest key: no account to ask.
+      if (!identity) await ensureGuestKey();
+      const r = await uploadPlaylistArt(file, servers, identity ? undefined : guestSigner);
       if (gen !== formGen.current) return;
       setDirty(true); setArtUrl(r.url);
       const host = new URL(r.server).host;
@@ -376,9 +420,16 @@ export function PlaylistMaker() {
 
   const submit = useCallback(async () => {
     const v = validatePlaylistDraft(draft, textHoldsSecret);
-    if (!v.ok || !npub || !pubkey) return;
+    if (!v.ok) return;
     setBusy(true); setNote(null); setRefusals([]);
     try {
+      // Who signs: the playlist's owner when editing; a NEW playlist goes out under
+      // the account, or under the guest key (made here, on first use) when signed out.
+      const as: 'account' | 'guest' = editingId ? signAs : identity ? 'account' : 'guest';
+      const kept = as === 'guest' ? await ensureGuestKey() : null;
+      const so = kept ? { signer: guestSigner satisfies CommunitySigner } : undefined;
+      const ownerPubkey = kept?.pubkey ?? pubkey;
+      if (!ownerPubkey) return;
       let res: Response;
       if (editingId) {
         // An edit never POSTs. A missing `expectedUpdatedAt` is read from the server first.
@@ -388,18 +439,19 @@ export function PlaylistMaker() {
           if (!expected) { setNote('We could not read the playlist. Try again.'); return; }
           setExpectedUpdatedAt(expected);
         }
-        res = await savePlaylist(editingId, v.draft, expected);
+        res = await savePlaylist(editingId, v.draft, expected, so);
       } else {
-        res = await publishPlaylist(v.draft);
+        res = await publishPlaylist(v.draft, so);
       }
       const body = await res.json().catch(() => null) as
         { id?: string; feedUrl?: string; error?: string; problems?: Refusal[]; playlist?: { id: string; updatedAt: string } } | null;
       if (res.ok) {
         const id = body?.id ?? body?.playlist?.id ?? editingId;
         if (!id) { setNote('Something went wrong. Try again.'); return; }
-        storage.playlistDraft.clear(npub, editingId ?? undefined);
+        storage.playlistDraft.clear(slot, editingId ?? undefined);
         setDirty(false); setUnsaved(false);
-        const list = await fetchCommunityPlaylists(pubkey);
+        if (kept) { setSignAs('guest'); setGuestSlot(kept.npub); setGuestKept(kept.persisted); }
+        const list = await fetchCommunityPlaylists(ownerPubkey);
         const summary = list?.find((p) => p.id === id) ?? null;
         setEditingId(id);
         setExpectedUpdatedAt(summary?.updatedAt ?? body?.playlist?.updatedAt ?? null);
@@ -416,9 +468,9 @@ export function PlaylistMaker() {
         if (cur) setExpectedUpdatedAt(cur.updatedAt);
         setNote('This playlist changed elsewhere. Your edits are kept; SAVE again to overwrite.');
       } else if (res.status === 410) {
-        storage.playlistDraft.clear(npub, editingId ?? undefined);
+        storage.playlistDraft.clear(slot, editingId ?? undefined);
         setDirty(false); setDeleted('gone');
-      } else if (res.status === 401) setNote('Your sign-in was refused. Sign in again.');
+      } else if (res.status === 401) setNote(as === 'guest' ? 'The check of this browser\'s key was refused. Try again.' : 'Your sign-in was refused. Sign in again.');
       else if (res.status === 403 || res.status === 503) setNote(body?.error ? `The server said: ${body.error}.` : 'The server refused this.');
       else if (res.status === 429) setNote('Too many changes. Wait a minute and try again.');
       else setNote('Could not save the playlist. Try again.');
@@ -427,7 +479,7 @@ export function PlaylistMaker() {
     } finally {
       setBusy(false);
     }
-  }, [draft, npub, pubkey, editingId, expectedUpdatedAt]);
+  }, [draft, identity, pubkey, slot, signAs, editingId, expectedUpdatedAt, failure]);
 
   // PUBLISH is never disabled for what is missing: a disabled button answers a
   // press with nothing (Chad, 2026-11-15). A press opens the list of what is
@@ -438,12 +490,12 @@ export function PlaylistMaker() {
   };
 
   async function remove_() {
-    if (!editingId || !npub) return;
+    if (!editingId) return;
     setConfirmDelete(false); setBusy(true); setNote(null);
     try {
-      const res = await deleteOwnPlaylist(editingId);
+      const res = await deleteOwnPlaylist(editingId, signAs === 'guest' ? { signer: guestSigner } : undefined);
       // 410: already deleted, which is what was asked for.
-      if (res.ok || res.status === 410) { storage.playlistDraft.clear(npub, editingId); setDirty(false); setDeleted('deleted'); }
+      if (res.ok || res.status === 410) { storage.playlistDraft.clear(slot, editingId); setDirty(false); setDeleted('deleted'); }
       else setNote('Could not delete the playlist. Try again.');
     } catch (e) {
       setNote(failure(e));
@@ -467,7 +519,9 @@ export function PlaylistMaker() {
     return (
       <section>
         <h1 className="headline text-3xl sm:text-4xl">edit playlist</h1>
-        <p className="mt-3 max-w-xl text-sm leading-relaxed text-bone/80">Sign in to edit this playlist. Only the person who made it can change it.</p>
+        <p className="mt-3 max-w-xl text-sm leading-relaxed text-bone/80" data-testid="not-yours">
+          Only the person who made this playlist can change it. Open it in the browser where you made it, or sign in with the Nostr account that made it.
+        </p>
         <button type="button" className="btn-bolt btn-compact mt-4" onClick={() => setSignInOpen(true)}>SIGN IN</button>
       </section>
     );
@@ -499,9 +553,10 @@ export function PlaylistMaker() {
       <PlaylistPublished
         feedUrl={published.feedUrl}
         title={published.title}
-        byName={name}
+        byName={name || cleanedName || 'you'}
         tracks={published.tracks}
         summary={published.summary}
+        guestKept={guestKept}
         onEdit={() => {
           setPublished(null);
           window.history.replaceState(null, '', `/playlists/make?id=${published.id}`);
@@ -582,15 +637,15 @@ export function PlaylistMaker() {
                 e.target.value = '';
                 if (f) void uploadArt(f);
               }} />
-            {/* The upload is signed with the user's key, so signed out the button
-                opens the sign-in instead of a file picker it could not use. */}
+            {/* Signed in, the upload is signed with the user's key; signed out, with the
+                guest key this browser keeps for the playlist (no account needed). */}
             <button type="button" className="btn-ghost" disabled={uploading || busy} data-art-upload
-              onClick={() => (identity ? artFileRef.current?.click() : setSignInOpen(true))}>
+              onClick={() => artFileRef.current?.click()}>
               {uploading ? 'UPLOADING…' : '↑ UPLOAD PICTURE'}
             </button>
             <span className="text-xs text-muted" data-art-upload-host>
               {!identity
-                ? 'sign in first: the upload is signed with your Nostr key'
+                ? `to ${new URL(artUploadServers([])[0]).host}, no account needed`
                 : userServers === null
                   ? 'signed with your key'
                   : `to ${new URL(artUploadServers(userServers)[0]).host}${userServers.length ? ' (your Blossom server)' : ''}, signed with your key`}
@@ -654,12 +709,16 @@ export function PlaylistMaker() {
           )}
           {blocked && <span className="text-xs text-muted" data-testid="why-blocked">{blocked}</span>}
         </div>
-        {identity ? (
+        {editingId && signAs === 'guest' ? (
+          <p className="mt-2 max-w-xl text-xs text-muted" data-testid="guest-edit-note">
+            Made without an account. Only this browser can change this playlist.
+          </p>
+        ) : identity ? (
           <p className="mt-2 text-xs text-muted">Signed in as {name}. Only you can change this playlist.</p>
         ) : (
-          <p className="mt-2 text-xs text-muted" data-testid="signed-out-note">
-            You are not signed in. This draft stays on this device.{' '}
-            <button type="button" className="btn-inline" onClick={() => setSignInOpen(true)}>Sign in with Nostr</button> to publish it.
+          <p className="mt-2 max-w-xl text-xs text-muted" data-testid="signed-out-note">
+            No account needed. This browser keeps what lets you edit this playlist later, and you save nothing. If you clear this browser&apos;s site data you cannot edit it, and you can make it again.{' '}
+            <button type="button" className="btn-inline" onClick={() => setSignInOpen(true)}>Sign in with Nostr</button> to publish it under your own account instead.
           </p>
         )}
         {unsaved && <p className="mt-1 text-xs text-muted" data-testid="unsaved">This draft is not being saved on this device.</p>}
@@ -668,7 +727,6 @@ export function PlaylistMaker() {
       {checkOpen && (
         <PublishChecklist
           action={editingId ? 'SAVE' : 'PUBLISH'}
-          signedInAs={identity ? name : null}
           title={problems.some((p) => p.kind === 'title-missing')
             ? null
             // Never quotes a title that holds a key: ALSO FIX names the problem, and the key
@@ -679,7 +737,6 @@ export function PlaylistMaker() {
           songs={{ ok: !fewSongs, have: fewSongs?.kind === 'too-few-songs' ? fewSongs.have : songs.length }}
           others={otherProblems.map((p) => problemText(p, labels))}
           onClose={() => setCheckOpen(false)}
-          onSignIn={() => { setCheckOpen(false); setSignInOpen(true); }}
           onAddTitle={() => {
             setCheckOpen(false);
             // After the dialog hands focus back to PUBLISH on close.

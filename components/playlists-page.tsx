@@ -13,6 +13,7 @@ import {
   playlistsNotInPi,
 } from '@/lib/playlist-collection';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { useGuestKey } from '@/lib/community/use-guest-key';
 import { isPlaylistMedium } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -133,6 +134,8 @@ export function PlaylistsPage() {
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
   const identity = useApp((s) => s.identity);
+  // The guest key's public half (never made here): a playlist made with no account is still editable.
+  const guest = useGuestKey();
   const router = useRouter();
 
   const patch = useCallback((i: number, next: Partial<SectionState>) => {
@@ -405,7 +408,9 @@ export function PlaylistsPage() {
                 }}
                 action={(p) => {
                   const id = communityIdFromFeedUrl(p.url);
-                  if (!id || !identity || p.nostrNpubs?.[0]?.pubkey !== identity.pubkey) return null;
+                  const maker = p.nostrNpubs?.[0]?.pubkey;
+                  // Mine: made under the signed-in account, or under the guest key this browser keeps.
+                  if (!id || !maker || (maker !== identity?.pubkey && maker !== guest?.pubkey)) return null;
                   return (
                     <Link href={`/playlists/make?id=${id}`} className="btn-mini" data-edit-playlist aria-label={`Edit ${p.title}`}>
                       EDIT
