@@ -2605,3 +2605,8 @@ That is the argument against rushing a fix, and it is why #313 stays open rather
 **`bmb:relays` cannot point the app at a local relay.** `storage.relays` has exactly one reader, `resolvePublishRelays` (`lib/nostr/relays.ts:161`), so it governs publishes and the reads that go with them — favorites, mutes, backups. The feed, the live-stream strip and the profile ladder use `DEFAULT_RELAYS` / `LIVE_STREAM_RELAYS` / `PROFILE_RELAYS` directly and ignore it. The first version of `e2e-yield.mjs` set it and received **zero** REQ frames while the page happily drained the public network — a run that looks hermetic and is not. Redirection has to happen at name resolution instead (`--host-resolver-rules` onto a local TLS pump), which is what the script does now.
 
 **A probe on `MessageChannel` must arm on `start()`, not on construction.** React's scheduler builds one and drives it with `onmessage`, never calling `start()`. Counting constructions folds it into the numbers, and a control that closes ports would close **React's scheduler channel** underneath the page.
+
+## Rules CLAUDE.md states in one clause: the rest of the reasoning
+
+- **`assertPublished`.** Put the assert in the feature's own publish wrapper, not at each call site: a call site is the place one gets forgotten, which is how the favorites baseline shipped without it.
+- **`trustworthy`.** nostr-tools also synthesizes an EOSE on a timer, so a query that does not pass `syntheticEoseTimeoutFor(maxWait)` can report "nothing answered" as an answer.

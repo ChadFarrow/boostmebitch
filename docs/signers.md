@@ -1666,3 +1666,10 @@ Two rules on it, each a way to make things worse:
 - **A winning attempt cannot be abandoned.** Once `ready` resolves, that pool and that subscription **are** the app's live signer — `finalizeBunkerLogin` installed them as `window.nostr`. A caller cannot reasonably know this: the modal abandons an attempt whenever it starts another or the user dismisses it, and the winner is holding the handle at exactly that moment. So the guard lives in `abandon` itself, not at the call sites.
 
 Conduit run the same rule as a `while` loop rather than a ref, with `tests/nostrconnect-return-recovery.test.ts` asserting that a foreground return leaves the URI and the client key unchanged (`uris.length === 1`, `keyCount() === 1`) while the superseded sockets close.
+
+## Rules CLAUDE.md states in one clause: the rest of the reasoning
+
+- **"Is this signer inside the browser?"** `unattendedDecryptOk()` once excluded a NIP-46 bunker on the ground that it answers "inside the browser". That is false for a bunker on the user's OWN PHONE, which Clave, Amber-as-bunker and nsec.app's mobile mode all are, so a wallet restore that needed the answer silently never ran.
+- **A rejection from a bunker.** Reading an error RESPONSE as a dead transport sent users to reconnect connections that were working. The signer answered; the answer was "no" or "not yet".
+- **A `?` in a request to Amber.** `AmberSigner.signEvent` writes `?` as `\u003f`, and a request that bypasses `signEvent` reintroduces the `?` Amber splits on. Every plaintext that is not event JSON goes through `encodeAmberSafe`.
+- **`nostrApi`.** `<ExportKeySection>` is the only place the key may be shown, and only to the user who pressed the button: the prohibition is on ambient reach, not on a user seeing their own key.
