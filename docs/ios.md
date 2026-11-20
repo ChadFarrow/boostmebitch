@@ -1,6 +1,6 @@
 # iOS — the Capacitor app (Boost Me Buddy)
 
-Read before touching `capacitor.config.json`, `ios/` or `ios-web/`.
+Read before touching `capacitor.config.json`, `ios/`, `ios-web/` or `lib/native/`.
 
 Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the plan and the reasoning. **Status: test build only.** Nothing here ships to the App Store yet.
 
@@ -26,7 +26,7 @@ A native app has its own bundle id (`com.boostmebuddy.app`) and its own audio se
 **What the WebView costs, from `android.md`'s Capacitor list:**
 - **Google sign-in will not work inside WKWebView** (`disallowed_useragent`). Hide "Continue with Google" in the native app, or open it in `ASWebAuthenticationSession`.
 - **Amber does not exist on iOS.** The native app signs with NIP-46 bunkers and the local key only. Hide the Amber and NIP-07 paths behind `isNativeIos()`.
-- **Payments are NWC only.** No Spark, no WebLN. NWC needs no change: it is a WebSocket from the page.
+- **Payments are NWC only.** No Spark, no WebLN. NWC needs no change: it is a WebSocket from the page. **Spark is done** (#637): `isNativeIos()` (`lib/native/platform.ts`) reads the `window.Capacitor` the bridge installs, and `sparkAvailable()` gates `sparkInitFromMnemonic`, the picker row and the page-load restore ([`wallets.md`](wallets.md)). WebLN needs nothing: its row shows only when an extension is detected, and WKWebView has none.
 
 ## Stage 1 — the shell (on this branch, ready to run)
 
