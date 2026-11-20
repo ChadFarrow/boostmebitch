@@ -64,10 +64,24 @@ if (stubAt >= 0) {
   let addMode = ADD_OK;
   let ppMode = PP_OK;
   const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+  // What a reader the ping woke would get: the stub reads the feed AS THE PING ARRIVES,
+  // the way Podcast Index and a podping reader do, before it answers. Loopback only, so
+  // the stub never fetches anything off this machine.
+  const readFeed = async (url) => {
+    try {
+      const u = new URL(url);
+      if (!['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)) return { status: 'not-loopback' };
+      const r = await fetch(u, { redirect: 'manual', signal: AbortSignal.timeout(7000) });
+      const t = await r.text();
+      return { status: r.status, title: (t.match(/<title>([^<]*)<\/title>/) ?? [])[1] ?? null };
+    } catch (e) {
+      return { status: 'error', error: String(e?.message ?? e) };
+    }
+  };
   http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
-    req.on('end', () => {
+    req.on('end', async () => {
       const u = new URL(req.url, 'http://stub');
       if (u.pathname === '/__log') {
         if (req.method === 'DELETE') log = [];
@@ -102,6 +116,7 @@ if (stubAt >= 0) {
       } else {
         Object.assign(entry, { auth: h.authorization, accept: h.accept, version: h['x-github-api-version'], body });
       }
+      if (u.pathname === PI_PING || u.pathname === PODPING) entry.fed = await readFeed(entry.url);
       log.push(entry);
       if (u.pathname === PI_ADD) {
         const m = addMode;
@@ -161,8 +176,11 @@ async function run() {
    * `after()` runs once the response is sent: wait until the expected number of
    * calls arrived (or `waitMs` passed), give a straggler 700 ms, then count each kind.
    * `feeds`: every PI call must name one of these, and the pings must cover them all.
+   * `fed`: what the stub must have read from the feed as each ping and podping arrived —
+   * `{ status, title }`, `title` a string or `{ [feedUrl]: title }`. The write must have
+   * LANDED before anything announces it: a reader the ping wakes gets the new feed.
    */
-  const expectCalls = async (label, { gh, add, ping, pp = PP_OFF ? 0 : ping, feeds, waitMs = 3000 }) => {
+  const expectCalls = async (label, { gh, add, ping, pp = PP_OFF ? 0 : ping, feeds, fed, waitMs = 3000 }) => {
     const total = gh + add + ping + pp;
     let log = [];
     for (const end = Date.now() + waitMs; Date.now() < end;) {
@@ -192,6 +210,13 @@ async function run() {
         pps.every((e) => e.method === 'GET' && e.medium === 'musicL' && e.reason === 'update' && e.detailed === 'true' && e.params === 4 && e.bearerOk && !!e.ua), JSON.stringify(pps));
       check(`${label}: the token is in no URL`, pps.every((e) => e.tokenInUrl === false));
     }
+    if (fed && (ping || pp)) {
+      const reads = log.filter((e) => e.path === PI_PING || e.path === PODPING);
+      const want = (e) => (typeof fed.title === 'object' ? fed.title[e.url] : fed.title);
+      check(`${label}: as each ping and podping arrived, the feed read ${fed.status}${fed.title ? ' with the saved title' : ''}`,
+        reads.length === ping + pp && reads.every((e) => e.fed?.status === fed.status && (fed.title === undefined || e.fed?.title === want(e))),
+        JSON.stringify(reads.map((e) => ({ path: e.path, url: e.url, fed: e.fed }))));
+    }
     return log;
   };
 
@@ -215,6 +240,8 @@ async function run() {
   const draft = (over = {}) => ({ title: 'e2e playlist pings', description: 'made by e2e-playlist-pings', artUrl: null, songs, ...over });
   const owner = Uint8Array.from(randomBytes(32));
   const other = Uint8Array.from(randomBytes(32));
+  // Build the feed route once, so the first ping's read of it does not wait on a compile.
+  await fetch(feedOf('00000000-0000-4000-8000-000000000000'));
   await mode(null);
   await ppMode(null);
   await clear();
@@ -250,7 +277,7 @@ async function run() {
   const feed = feedOf(id);
   check('the 201 names the feed URL the pings must carry', c.body.feedUrl === feed, c.body.feedUrl);
   check('no response body carries the podping token', !JSON.stringify(c).includes('test-podping-token'));
-  const log = await expectCalls('a publish', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+  const log = await expectCalls('a publish', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings' } });
   const d = log.find((e) => e.path === DISPATCH);
   check('the dispatch is a POST to the playlist-archive workflow', d?.method === 'POST', JSON.stringify(d));
   check('it carries the token as a Bearer header', d?.auth === 'Bearer test-archive-token');
@@ -271,7 +298,7 @@ async function run() {
   // Edit: a SAVE asks PI to add again (idempotent), so a refused add is retried.
   const put = await edit('e2e playlist pings 2');
   check('edit by the owner -> 200', put.status === 200, JSON.stringify(put).slice(0, 300));
-  await expectCalls('an edit', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+  await expectCalls('an edit', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings 2' } });
   const stale = await call('PUT', `${PLAYLISTS}/${id}`, { sk: owner, body: { draft: draft({ title: 'stale' }), expectedUpdatedAt: '2020-01-01T00:00:00.000Z' } });
   check('edit with a stale expectedUpdatedAt -> 409', stale.status === 409, JSON.stringify(stale));
   await expectCalls('a stale edit', { gh: 0, add: 0, ping: 0 });
@@ -284,19 +311,19 @@ async function run() {
   await mode({ status: 401, body: { status: 'false', description: 'Authorization error' } });
   const refused = await edit('e2e playlist pings 3');
   check('edit while PI refuses the add -> 200', refused.status === 200, JSON.stringify(refused).slice(0, 300));
-  await expectCalls('an edit PI refuses', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+  await expectCalls('an edit PI refuses', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings 3' } });
   // A 200 that says status "false" is a refusal too; same outcome.
   await mode({ status: 200, body: { status: 'false', description: 'Invalid feed' } });
   const soft = await edit('e2e playlist pings 4');
   check('edit while PI answers 200 status "false" -> 200', soft.status === 200);
-  await expectCalls('an edit PI answers status "false"', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+  await expectCalls('an edit PI answers status "false"', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings 4' } });
 
   // PI hangs: the response does not wait, and the ping goes after the 8 s timeout.
   await mode({ delayMs: 10_000 });
   const slow = await edit('e2e playlist pings 5');
   check('edit while PI hangs -> 200', slow.status === 200);
   check(`...and the response does not wait for PI (${slow.ms} ms)`, slow.ms < 5000);
-  await expectCalls('an edit while PI hangs (ping after the timeout)', { gh: 1, add: 1, ping: 1, feeds: [feed], waitMs: 14_000 });
+  await expectCalls('an edit while PI hangs (ping after the timeout)', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings 5' }, waitMs: 14_000 });
   await mode(null);
 
   // The pusher (podping) misbehaves: the save still succeeds, and one podping is tried.
@@ -304,28 +331,28 @@ async function run() {
     await ppMode({ status: 401, body: { message: 'unauthorized' } });
     const noAuth = await edit('e2e playlist pings 6');
     check('edit while the pusher answers 401 -> 200', noAuth.status === 200, JSON.stringify(noAuth).slice(0, 300));
-    await expectCalls('an edit the pusher refuses (401)', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+    await expectCalls('an edit the pusher refuses (401)', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings 6' } });
     await ppMode({ body: { message: 'duplicate' } });
     const dup = await edit('e2e playlist pings 7');
     check('edit while the pusher answers "duplicate" -> 200', dup.status === 200);
-    await expectCalls('an edit the pusher calls a duplicate', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+    await expectCalls('an edit the pusher calls a duplicate', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings 7' } });
     // A redirect is never followed: the token must not go where the pusher points.
     await ppMode({ status: 302, location: '/leak' });
     const redir = await edit('e2e playlist pings 8');
     check('edit while the pusher redirects -> 200', redir.status === 200);
-    await expectCalls('an edit the pusher redirects (the redirect is not followed: no other call)', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+    await expectCalls('an edit the pusher redirects (the redirect is not followed: no other call)', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings 8' } });
     await ppMode({ delayMs: 10_000 });
     const hang = await edit('e2e playlist pings 9');
     check('edit while the pusher hangs -> 200', hang.status === 200);
     check(`...and the response does not wait for the pusher (${hang.ms} ms)`, hang.ms < 5000);
-    await expectCalls('an edit while the pusher hangs', { gh: 1, add: 1, ping: 1, feeds: [feed] });
+    await expectCalls('an edit while the pusher hangs', { gh: 1, add: 1, ping: 1, feeds: [feed], fed: { status: 200, title: 'e2e playlist pings 9' } });
     await ppMode(null);
   }
 
   // Owner delete: a ping only (PI cannot delete; it reads the 410).
   const del = await call('DELETE', `${PLAYLISTS}/${id}`, { sk: owner });
   check('delete by the owner -> 200', del.status === 200, JSON.stringify(del));
-  await expectCalls('an owner delete', { gh: 1, add: 0, ping: 1, feeds: [feed] });
+  await expectCalls('an owner delete', { gh: 1, add: 0, ping: 1, feeds: [feed], fed: { status: 410 } });
   const del2 = await call('DELETE', `${PLAYLISTS}/${id}`, { sk: owner });
   check('delete again -> 410', del2.status === 410, JSON.stringify(del2));
   await expectCalls('a second delete', { gh: 0, add: 0, ping: 0 });
@@ -335,10 +362,11 @@ async function run() {
   for (const t of ['A', 'B', 'C']) made.push(await call('POST', PLAYLISTS, { sk: other, body: { draft: draft({ title: `e2e playlist pings ${t}` }) } }));
   check('three playlists by another key -> 201 x3', made.every((m) => m.status === 201), JSON.stringify(made.map((m) => m.status)));
   const [fa, fb, fc] = made.map((m) => feedOf(m.body.id));
-  await expectCalls('three publishes', { gh: 3, add: 3, ping: 3, feeds: [fa, fb, fc] });
+  await expectCalls('three publishes', { gh: 3, add: 3, ping: 3, feeds: [fa, fb, fc],
+    fed: { status: 200, title: { [fa]: 'e2e playlist pings A', [fb]: 'e2e playlist pings B', [fc]: 'e2e playlist pings C' } } });
   const ad = await call('POST', `${PLAYLISTS}/admin`, { sk: ADMIN_SK, body: { action: 'delete', id: made[0].body.id } });
   check('admin delete -> deleted 1', ad.body?.deleted === 1, JSON.stringify(ad));
-  await expectCalls('an admin delete', { gh: 1, add: 0, ping: 1, feeds: [fa] });
+  await expectCalls('an admin delete', { gh: 1, add: 0, ping: 1, feeds: [fa], fed: { status: 410 } });
   const ad2 = await call('POST', `${PLAYLISTS}/admin`, { sk: ADMIN_SK, body: { action: 'delete', id: made[0].body.id } });
   check('admin delete again -> deleted 0', ad2.body?.deleted === 0, JSON.stringify(ad2));
   await expectCalls('an admin delete of a deleted playlist', { gh: 0, add: 0, ping: 0 });
@@ -348,7 +376,7 @@ async function run() {
   await expectCalls('a ban that deletes nothing', { gh: 0, add: 0, ping: 0 });
   const banAll = await call('POST', `${PLAYLISTS}/admin`, { sk: ADMIN_SK, body: { action: 'ban', pubkey: otherPub, deleteAll: true } });
   check('ban and delete all -> deleted 2', banAll.body?.deleted === 2, JSON.stringify(banAll));
-  await expectCalls('a ban that deletes two playlists', { gh: 1, add: 0, ping: 2, feeds: [fb, fc] });
+  await expectCalls('a ban that deletes two playlists', { gh: 1, add: 0, ping: 2, feeds: [fb, fc], fed: { status: 410 } });
   const unban = await call('POST', `${PLAYLISTS}/admin`, { sk: ADMIN_SK, body: { action: 'unban', pubkey: otherPub } });
   check('unban -> ok', unban.body?.ok === true, JSON.stringify(unban));
   await expectCalls('an unban', { gh: 0, add: 0, ping: 0 });
