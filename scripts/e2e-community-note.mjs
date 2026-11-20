@@ -568,6 +568,12 @@ if (TEST_ORIGIN) {
     tagsOf(t1, 'i').find((x) => x[1] === `podcast:guid:${PL_GUID}`)?.[2], `${HOSTED_ORIGIN}/?podcast=${encodeURIComponent(PL_GUID)}`);
   const askedT1 = rec.sign.slice(signBefore);
   t.equal("the summary receipt was asked of THIS deploy's route only (refused here), never Buddy's", askedT1.map((x) => x.url), [`${APP}/api/nostr/zap-receipt-sign`]);
+  // The deploy's own brand builds the receipt's hints with `showShareUrl({ podcastGuid })`
+  // (`receiptRefUrls`): this origin's `?podcast=` links to the SONG's own feed. #631 made a
+  // playlist's app link `?playlist=`; a hint signed into a receipt must keep `?podcast=`.
+  const hintsT1 = receiptHints(askedT1[0]?.body);
+  const ownT1 = `${APP}/?podcast=${encodeURIComponent(song.podcastGuid)}`;
+  t.ok(`its URL hints are ${ownT1} and its &episode= form, never ?playlist=`, hintsT1.includes(ownT1) && hintsT1.every((h) => h.startsWith(ownT1)), JSON.stringify(hintsT1));
 
   // ---- T2. a TEST store's playlist, "Anonymous" ---------------------------------------------
   section("T2. Anonymous, a playlist on a TEST origin: the note goes to THIS deploy's signing route, never Buddy's production one");
