@@ -1,4 +1,5 @@
 'use client';
+import { useState } from 'react';
 import type {
   Episode,
   Podcast,
@@ -6,10 +7,12 @@ import type {
   FavoritePodcast,
   ValueTimeSplit,
 } from '@/lib/types';
+import { BRAND } from '@/lib/brand';
 import { useApp } from '@/lib/store';
 import { requestFavoritesSync } from '@/lib/nostr';
 import { targetWord } from '@/lib/util';
 import { communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { setArtistFollow, useArtistFollows } from '@/lib/use-artist-follows';
 
 // The ♡ / ♥ favorite toggle. Lives in its own module (rather than lists.tsx)
 // because several unrelated surfaces render it — the podcast rows + show header
@@ -217,6 +220,75 @@ export function FavHeart({
       label="podcast"
       word={nameTarget ? targetWord('feed', podcast) : undefined}
     />
+  );
+}
+
+/**
+ * ♡ ARTIST — follow the album's artist (its publisher feed) for NEW MUSIC on
+ * /favorites. **A Boost Me Bitch follow, on this device only — never a
+ * favorite** (the owner's choice, 2026-11-15, until cross-app artist
+ * favorites are decided): it writes `bmb:artists:<npub>` and nothing reaches
+ * Nostr, so an artist feed Podcast Index does not hold (every Wavlake artist,
+ * on 2026-11-15) can be followed without putting an entry no other app can open
+ * on the shared kind:10333 list. That is also why it needs no Podcast Index
+ * lookup: it stores the feed URL the album names.
+ *
+ * Same chip as `<FavHeart>` (`heartClasses`, the fixed glyph box), so the
+ * album page's two hearts look alike; the title and label say where it goes.
+ * An artist already in the reader's FAVORITES (a publisher feed hearted from
+ * search) is shown as a stamp instead: NEW MUSIC already follows it, and this
+ * chip must not remove a shared favorite.
+ */
+export function ArtistFollowChip({
+  feedGuid,
+  feedUrl,
+  artistName,
+}: {
+  feedGuid: string;
+  feedUrl: string;
+  artistName?: string;
+}) {
+  const npub = useApp((s) => s.identity?.npub ?? null);
+  const inFavorites = useApp((s) =>
+    Object.values(s.favorites).some(
+      (f) => f.podcastGuid?.toLowerCase() === feedGuid.toLowerCase() && f.medium?.toLowerCase() === 'publisher',
+    ),
+  );
+  const follows = useArtistFollows(npub);
+  const [unsaved, setUnsaved] = useState(false);
+  const following = !!follows[feedGuid];
+  const who = artistName || 'this artist';
+
+  if (inFavorites) {
+    return (
+      <span className="stamp text-nostr border-nostr/60" title={`${who} is in your favorites. NEW MUSIC follows it.`}>
+        ♥ ARTIST IN FAVORITES
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2" data-artist-follow>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          setUnsaved(!setArtistFollow(npub, { feedGuid, feedUrl, title: artistName }, !following));
+        }}
+        aria-pressed={following}
+        aria-label={following ? `Stop following ${who}` : `Follow ${who} for new music`}
+        title={
+          following
+            ? 'Stop following. New albums from this artist show under NEW MUSIC on Favorites.'
+            : `Follow for NEW MUSIC on Favorites. Kept in ${BRAND.displayName} on this device; not added to your shared favorites.`
+        }
+        className={heartClasses(following, 'sm')}
+      >
+        <span className="inline-block w-[0.9em] text-center text-base leading-none">{following ? '♥' : '♡'}</span>
+        <span>ARTIST</span>
+      </button>
+      {unsaved && <span className="text-[11px] text-muted">This device could not save that.</span>}
+    </span>
   );
 }
 

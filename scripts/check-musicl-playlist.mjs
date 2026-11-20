@@ -874,6 +874,8 @@ console.log('\nWhich search choice lists a publisher: what its feed publishes');
       switch (type) {
         case 'all': return true;
         case 'music': return music;
+        // #580's DEMU case before a publisher was read: the music half only.
+        case 'demu': return music;
         case 'playlist': return isPlaylistMedium(p);
         case 'podcast': return !music && !isPlaylistMedium(p);
         default: return false;
@@ -927,6 +929,13 @@ console.log('\nWhich search choice lists a publisher: what its feed publishes');
   vec('matches', 'read and naming none: still under PODCASTS', [pub([]), 'podcast'], true, { alsoNaive: true });
   vec('matches', 'a publisher of publishers says nothing: under PODCASTS', [pub(['publisher']), 'podcast'], true, { alsoNaive: true });
   vec('matches', 'a publisher of publishers is not MUSIC', [pub(['publisher']), 'music'], false, { alsoNaive: true });
+  // DEMU — Chad, 2026-11-16: "demu publisher should be in music and demu".
+  // This is the MUSIC half; the route's `isDemuFeed` then reads the publisher
+  // row's own generator and URL (check:demu), so a Fountain publisher of music
+  // passes here and is dropped there.
+  vec('matches', 'a music publisher is under DEMU (the music half)', [pub(['music']), 'demu'], true);
+  vec('matches', 'a playlist publisher is not under DEMU', [pub(['musicl']), 'demu'], false, { alsoNaive: true });
+  vec('matches', 'unknown: not claimed as DEMU', [pub(), 'demu'], false, { alsoNaive: true });
   vec('matches', 'every publisher is under ALL', [pub(['music']), 'all'], true, { alsoNaive: true });
   vec('matches', 'no publisher is a person', [pub(['music']), 'npub'], false, { alsoNaive: true });
 
@@ -1392,7 +1401,7 @@ console.log('\nWhich kind of thing the search box was asked for');
   // `/search/music/byterm` answered the medium question by BEING that endpoint,
   // so re-checking its rows throws away the answer it gave. This is the whole
   // asymmetry with `filterPlaylistsByQuery`, which re-checks because its output
-  // gets stamped ♫ PLAYLIST on screen and a stamp is a claim.
+  // gets stamped PLAYLIST on screen and a stamp is a claim.
   vec('merge', 'a trusted row whose PI medium disagrees is KEPT',
     [[{ id: 7683902, medium: 'podcast' }], [], 'music', 50], [{ id: 7683902, medium: 'podcast' }]);
   // The half naive() also gets right, and must not be lost while fixing the half

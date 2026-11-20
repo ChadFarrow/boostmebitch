@@ -77,6 +77,10 @@ interface EntryRecord {
   /** The id of the entry this one was pushed on top of — the entry immediately
    *  behind it. The entries behind an entry never change while it exists. */
   prev: string | null;
+  /** The ROUTE immediately behind this entry, when another page handed this
+   *  view over: `showOrigin.path`, set on the entry the hand-off's
+   *  `router.push('/')` made. What `stepBackToOrigin` asks. */
+  behind: string | null;
 }
 
 const STATE_FIELD = 'bmbView';
@@ -174,9 +178,12 @@ function nextHasPatched(): boolean {
   return window.history.replaceState !== History.prototype.replaceState;
 }
 
+/** What Next.js keeps in `history.state` (app-router.js, 15.5). */
+const NEXT_FIELDS = ['__NA', '__PRIVATE_NEXTJS_INTERNALS_TREE', '_N'];
+
 function write(mode: 'push' | 'replace', id: string, url: string) {
-  // Once patched: ONLY our field. The patch copies Next's `__NA` and tree in
-  // itself, and dispatches a restore so the router (and `useSearchParams`)
+  // Once patched: never Next's fields. The patch copies Next's `__NA` and tree
+  // in itself, and dispatches a restore so the router (and `useSearchParams`)
   // follows the new URL — but it skips that dispatch for data that already
   // carries `__NA`, so passing Next's fields here would leave the router on
   // the old URL.
@@ -187,10 +194,24 @@ function write(mode: 'push' | 'replace', id: string, url: string) {
   // home page and lost the search results, and every later step became a full
   // page load. The old `replaceState({})` mirror did the same to the entry a
   // visitor landed on.
-  const data: Record<string, unknown> = { [STATE_FIELD]: id };
+  //
+  // A REPLACE keeps the entry's OTHER fields too: it is the same entry, and an
+  // open overlay may have marked it — the fullscreen player's `bmbPlayer`, an
+  // open modal's `bmbModals` (components/use-modal-history.ts). The landing
+  // write can land on a modal's entry, when a modal opened while a deep link
+  // was still restoring; dropping the mark there left the modal's close no
+  // entry to step off. A PUSH is a new view with no overlay on it, so it
+  // carries nothing but the id.
+  const cur = window.history.state as Record<string, unknown> | null;
+  const data: Record<string, unknown> = {};
+  if (mode === 'replace' && cur) {
+    for (const [k, v] of Object.entries(cur)) {
+      if (!NEXT_FIELDS.includes(k)) data[k] = v;
+    }
+  }
+  data[STATE_FIELD] = id;
   if (!nextHasPatched()) {
-    const cur = window.history.state as Record<string, unknown> | null;
-    for (const k of ['__NA', '__PRIVATE_NEXTJS_INTERNALS_TREE']) {
+    for (const k of NEXT_FIELDS) {
       if (cur?.[k] !== undefined) data[k] = cur[k];
     }
   }
@@ -213,25 +234,31 @@ export function syncEntry(view: HomeView, mode: 'push' | 'replace') {
   const key = viewKey(view);
   const id = idOf(window.history.state);
   const known = id ? records.get(id) : undefined;
+  // An entry with no id is one this page has not written yet: the one a load
+  // or a `router.push('/')` made. With a `showOrigin` in the view it is a
+  // hand-off's push (every hand-off sets it just before `router.push('/')`,
+  // and every other way onto `/` clears it — `clearShowSelection`), so the
+  // route behind it is the origin. Read once, here, and kept with the record.
+  const behind = known ? known.behind : (!id && view.showOrigin?.path) || null;
   if (url === href) {
     if (id) {
-      remember(id, { view, key, prev: known?.prev ?? null });
+      remember(id, { view, key, prev: known?.prev ?? null, behind });
     } else {
       const fresh = newId();
       write('replace', fresh, url);
-      remember(fresh, { view, key, prev: null });
+      remember(fresh, { view, key, prev: null, behind });
     }
     return;
   }
   if (mode === 'push' && known?.key !== key) {
     const fresh = newId();
     write('push', fresh, url);
-    remember(fresh, { view, key, prev: id });
+    remember(fresh, { view, key, prev: id, behind: null });
     return;
   }
   const keep = id ?? newId();
   write('replace', keep, url);
-  remember(keep, { view, key, prev: known?.prev ?? null });
+  remember(keep, { view, key, prev: known?.prev ?? null, behind });
 }
 
 /**
@@ -284,4 +311,28 @@ export function backOr(patch: Partial<HomeView>, apply: () => void) {
     return;
   }
   apply();
+}
+
+/**
+ * "← back to <origin>" — favorites, DeMu, playlists, downloads, live, boosts:
+ * `history.back()` when the entry behind this one is the origin page, and
+ * `true` so the caller cancels its link. Else `false`, and the link navigates.
+ *
+ * It was a plain `<Link>`, so it PUSHED the origin page on top of the show,
+ * and the browser's back button then reopened the show the visitor had just
+ * left: `/demu` → an album → "← back to DeMu" → back → the album (measured
+ * 2026-11-19). That is the zigzag `backOr` exists to prevent, and the rule that
+ * every back control on `/` follows. The answer is the record's `behind`, set
+ * by `syncEntry` on the entry a hand-off landed on — never `document.referrer`,
+ * which a client-side navigation does not change. A link is still right when
+ * nothing behind is the origin: a reload (the records are gone), or a show
+ * entry pushed on top of the hand-off's.
+ */
+export function stepBackToOrigin(path: string): boolean {
+  if (typeof window === 'undefined') return false;
+  const id = idOf(window.history.state);
+  const rec = id ? records.get(id) : undefined;
+  if (rec?.behind !== path) return false;
+  window.history.back();
+  return true;
 }

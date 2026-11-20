@@ -835,6 +835,61 @@ stay publishable. **A new baseline reader uses that helper** — reading
 `storage.favBaseline` directly is how one caller comes to believe a baseline no
 other caller does.
 
+#### A create cannot know what it replaces — so it needs two answers, and a person (issue #600)
+
+**On 2026-11-18 a sign-in replaced an 81-entry list with 2.** The read found no
+kind:10333 event and was `trustworthy`: `readIsTrustworthy` counts only relays
+that CONNECTED, so one relay answering "none" while the relays holding the list
+were slow or down was proof enough. The planner then had no list to compare
+against, merged the two favorites the browser held (the signed-out `:guest`
+bucket) over nothing, and the hydrator published that on its own. Every wipe
+guard above compares against a list that was READ; a create compares against
+nothing, so none of them could fire. The published event (`535e897d…`) is byte
+for byte what `tagsFromList` makes from two shows over an empty read — no
+`visibility`, `medium` ahead of the `i` tags — which `check:favsync`'s #600
+section asserts.
+
+Three rules, each pinned there or in `npm run e2e:signin-favorites`:
+
+- **A create needs `MIN_ABSENCE_ANSWERS` (2) relays to have said "no list"**
+  (`absenceConfirmed`), or every relay asked when fewer were — a `bmb:relays`
+  override of one relay can only get one answer. `FavoritesRead.answered`
+  carries the count and `planFavoritesPublish` takes it as `absence`, REQUIRED
+  in the type so a caller cannot forget it. Fewer is `'degraded'` — "couldn't
+  confirm your list", retried by the read retry — never a publish. Two, not
+  "all": one dead relay in a user's set would otherwise block their first
+  favorite forever.
+- **A page load or a sign-in never creates the list.** `runHydrate` paints the
+  rows and sets `'create-pending'`; `<FavoritesSyncNotice>` offers RETRY (first)
+  and SAVE AS NEW LIST. A ♡ still creates it, because a tap is the user asking —
+  on a device that never saw a list.
+- **A device that SAW a list never creates one** (`'create-held'`, Chad's call
+  on #601). The baseline is recorded only when this device and the relays
+  agreed on a list, so `baselineSawList` — any entry in any of its four halves,
+  read from the RAW stored baseline, never `trustedBaseline` — is proof one
+  existed, and "no list" then means the read missed it. The planner takes it as
+  `sawList`, required like `absence`, so the page load AND a ♡ (through
+  `syncOptionsFor`) are held: the notice offers RETRY alone, and
+  `favoritesReadRetryable` lets the read retry re-read on its own. The ♡ half is
+  not optional: the merge reads "in the baseline, absent from the read" as
+  "removed by another app", so a create there publishes ONLY the new entries —
+  one show over the list the device saw (`check:favsync`'s naive vector). The
+  cost, accepted: a list deleted from every relay leaves that device retrying
+  until a backup file is restored. A device whose cache holds only baselined
+  entries was already refused by the older empty-merge guard; this covers the
+  one that also holds something new.
+- **A publish that takes more than half of the list read (and at least
+  `MASS_REMOVAL_MIN`) is held as `'mass-removal'`** until the user answers
+  "This would remove 79 of your 81 favorites". A signer's approval sheet never
+  says that, so the question has to be ours. The hydrator holds it BEFORE the
+  paint, or the shrunk store would write through and answer the question itself.
+  KEEP is `keepFavoritesOnRelays` — drop the baseline, re-hydrate as a union;
+  REMOVE confirms exactly the count shown (`removalConfirmed`), so a removal that
+  grew under the prompt is asked again. A delete-all and a withdrawal are the
+  user's own request and are not asked twice. `countRemoval` keys each entry on
+  its LAST identifier over both halves, so a legacy item rewritten to three
+  elements, or a mode switch, removes nothing.
+
 ### Carry what you can't read
 
 An identifier kind outside the table, a tag type we have no meaning for, a `k`
@@ -1946,6 +2001,13 @@ and a busy room introduces people in bursts. `<MutedAccounts>` fired one per
 muted pubkey the moment the list was expanded. All four now hand their whole
 list to `fetchProfilesFor`.
 
+The relay cap that makes the per-pubkey form wrong: nos.lol and relay.primal.net
+keep 20 subscriptions live per connection. The 21st still gets its stored events
+and an EOSE and then never a live one, so an over-cap LIVE subscription looks
+answered. And the read index must never index a kind that drives a destructive
+write, which is why `FORBIDDEN_KINDS` is checked in `ingest.ts` and not only in
+the subscription filters.
+
 The mute list carried a second bug the batch removes: it called
 `storage.profile.setMiss(pk)` itself whenever `fetchProfile` returned null — an
 absence it had not reliably observed, since that function returns the same null
@@ -2584,3 +2646,8 @@ That is the argument against rushing a fix, and it is why #313 stays open rather
 **`bmb:relays` cannot point the app at a local relay.** `storage.relays` has exactly one reader, `resolvePublishRelays` (`lib/nostr/relays.ts:161`), so it governs publishes and the reads that go with them — favorites, mutes, backups. The feed, the live-stream strip and the profile ladder use `DEFAULT_RELAYS` / `LIVE_STREAM_RELAYS` / `PROFILE_RELAYS` directly and ignore it. The first version of `e2e-yield.mjs` set it and received **zero** REQ frames while the page happily drained the public network — a run that looks hermetic and is not. Redirection has to happen at name resolution instead (`--host-resolver-rules` onto a local TLS pump), which is what the script does now.
 
 **A probe on `MessageChannel` must arm on `start()`, not on construction.** React's scheduler builds one and drives it with `onmessage`, never calling `start()`. Counting constructions folds it into the numbers, and a control that closes ports would close **React's scheduler channel** underneath the page.
+
+## Rules CLAUDE.md states in one clause: the rest of the reasoning
+
+- **`assertPublished`.** Put the assert in the feature's own publish wrapper, not at each call site: a call site is the place one gets forgotten, which is how the favorites baseline shipped without it.
+- **`trustworthy`.** nostr-tools also synthesizes an EOSE on a timer, so a query that does not pass `syntheticEoseTimeoutFor(maxWait)` can report "nothing answered" as an answer.

@@ -18,6 +18,13 @@
 // history entry of its own while it is open, so Android's back closes it rather
 // than stepping through the pages hidden under it and then closing the app.
 //
+// Sections 12-14 came from a desktop check of the back button (2026-11-19), and
+// each failed against production first: "← back to <origin>" pushed the origin
+// page on top of the show, so the back button reopened the show (12); back with
+// a modal open stepped the page behind the modal (13); and a focused tab took
+// Alt+← and ⌘← — the browser's back keys — as "previous tab" (14). Section 13
+// opens the BOOST modal and sends nothing: no wallet is connected.
+//
 // It talks to Podcast Index through the app, like a visitor: a search, a show,
 // its newest episodes and the playlists collection. Run it against a build:
 //
@@ -39,11 +46,13 @@ await requireApp(`${APP}/privacy`,
  * track instead of opening an episode view. "podcasting 2.0" was the first
  * query tried, and its top hit was the "Top 100 (Music)" playlist. Podnews
  * Weekly Review publishes every week; any other non-music hit is the fallback.
+ * A playlist row is told by its stamp's `data-stamp`, not by a `♫` in its text:
+ * the stamp's glyph is an SVG now, so no row's text carries one.
  */
 const QUERY = 'podnews weekly review';
 const PICK_SHOW = `(() => {
   const rows = [...document.querySelectorAll('aside li > button')];
-  return rows.find((b) => /podnews weekly review/i.test(b.textContent)) ?? rows.find((b) => !b.textContent.includes('♫'));
+  return rows.find((b) => /podnews weekly review/i.test(b.textContent)) ?? rows.find((b) => !b.querySelector('[data-stamp="playlist"]'));
 })()`;
 
 const browser = await launchChrome({ name: 'history', args: ['--window-size=1200,900'] });
@@ -344,6 +353,203 @@ await D.step(-1);
 t.ok('back from /favorites → the episode view, with the player still closed', await D.until(`location.pathname === '/' && ${EPISODE_UP} && ${PLAYER_DOWN}`, 10000));
 t.equal('…of this episode', await D.js('location.href'), episodeUrl);
 t.ok('no page load', await D.js(SAME_DOC));
+
+console.log('12. "← back to <origin>" steps back to the page that handed the show over');
+// It was a plain <Link>: it PUSHED the origin page on top of the show, and the
+// browser's back button then reopened the show just left (/demu → an album →
+// "← back to DeMu" → back → the album). Now it steps back when the entry
+// behind is that page (`stepBackToOrigin`, lib/view-history.ts).
+const E = await tab(await browser.openTab('about:blank'));
+await wait(500);
+await E.send('Page.navigate', { url: `${APP}/demu` });
+// An album's row is the unlabelled button in its <li>; the cover's ▶ beside it plays.
+const DEMU_LISTED = `document.querySelectorAll('main button[aria-label^="Play "]').length > 3`;
+const DEMU_ROW = `[...document.querySelectorAll('main li button')].find((b) => !b.getAttribute('aria-label'))`;
+t.ok('/demu listed albums', await E.until(`location.pathname === '/demu' && ${DEMU_LISTED}`, 30000));
+await E.js(MARK);
+const demuBase = await E.count();
+await E.click(DEMU_ROW);
+t.ok('an album opened on /, offering "← back to DeMu"', await E.until(`location.pathname === '/' && ${backIs('← back to DeMu')}`, 30000));
+t.equal('…and pushed one entry', await E.count(), demuBase + 1);
+await E.clickBack('← back to DeMu');
+t.ok('"← back to DeMu" → /demu', await E.until(`location.pathname === '/demu' && ${DEMU_LISTED}`, 15000));
+t.equal('…by stepping back: no entry added', await E.count(), demuBase + 1);
+t.equal('…so the back button now leaves for the page before /demu', await E.behind(), 'about:blank');
+await E.step(1);
+t.ok('forward → the album again', await E.until(`location.pathname === '/' && ${backIs('← back to DeMu')}`, 15000));
+await E.clickBack('← back to DeMu');
+t.ok('"← back to DeMu" after a step forward → /demu', await E.until(`location.pathname === '/demu'`, 15000));
+t.equal('…by stepping back again', [await E.count(), await E.behind()], [demuBase + 1, 'about:blank']);
+t.ok('no page load', await E.js(SAME_DOC));
+
+await E.send('Page.navigate', { url: `${APP}/playlists` });
+t.ok('/playlists listed playlists', await E.until(`location.pathname === '/playlists' && document.querySelectorAll('main li > button').length > 0`, 30000));
+await E.js(MARK);
+const plBase = await E.count();
+await E.click(`document.querySelector('main li > button')`);
+t.ok('a playlist opened on /, offering "← back to playlists"', await E.until(`location.pathname === '/' && ${backIs('← back to playlists')}`, 30000));
+await E.clickBack('← back to playlists');
+t.ok('"← back to playlists" → /playlists', await E.until(`location.pathname === '/playlists'`, 15000));
+t.equal('…by stepping back: no entry added', await E.count(), plBase + 1);
+t.equal('…and the entry behind is the one before /playlists', await E.behind(), `${APP}/demu`);
+t.ok('no page load', await E.js(SAME_DOC));
+
+console.log('13. an open modal is a step: back closes it, and its own close steps back');
+// Back with a modal open stepped the page BEHIND the modal: the sign-in modal
+// stayed up over the previous view, and the boost modal went away with the view
+// that owned it. Now each open modal is an entry (components/use-modal-history.ts).
+// Bowl After Bowl carries a value block, so its show page has BOOST; the boost
+// modal is only OPENED here — no wallet is connected, and nothing is sent.
+const BOWL = '2d418249-453a-5714-8abc-5b657570b641';
+const F = await tab(await browser.openTab('about:blank'));
+await wait(500);
+const DIALOGS = `document.querySelectorAll('[role="dialog"]').length`;
+const BOOST_BTN = `[...document.querySelectorAll('main button')].find((b) => b.textContent.trim() === 'BOOST')`;
+const IN_DIALOG = (re) => `[...(document.querySelector('[role="dialog"]')?.querySelectorAll('button') ?? [])].find((b) => ${re}.test(b.textContent.trim()) || ${re}.test(b.getAttribute('aria-label') ?? ''))`;
+const index = async (P) => (await P.send('Page.getNavigationHistory')).result.currentIndex;
+const escape = async (P) => {
+  for (const type of ['rawKeyDown', 'keyUp']) {
+    await P.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  }
+};
+await F.send('Page.navigate', { url: `${APP}/?podcast=${BOWL}` });
+t.ok('a value show opened, with BOOST', await F.until(`${SHOW_UP} && !!${BOOST_BTN}`, 30000));
+await F.js(MARK);
+await wait(800);
+const fUrl = await F.js('location.href');
+const fCount = await F.count();
+const fIndex = await index(F);
+const fBehind = await F.behind();
+
+await F.click(BOOST_BTN);
+t.ok('BOOST opened its modal', await F.until(`${DIALOGS} === 1`, 10000));
+await wait(300);
+t.equal('…and pushed one entry, on the same URL', [await F.count(), await F.js('location.href')], [fCount + 1, fUrl]);
+await F.step(-1);
+t.ok('back → the modal closed', await F.until(`${DIALOGS} === 0`, 5000));
+t.ok('…over the show view, still there', await F.until(SHOW_UP, 5000));
+t.equal('…on its URL, in this document', [await F.js('location.href'), await F.js(SAME_DOC)], [fUrl, true]);
+t.equal('…and the next back goes where it went before the modal opened', await F.behind(), fBehind);
+
+await F.click(BOOST_BTN);
+await F.until(`${DIALOGS} === 1`, 10000);
+await wait(300);
+t.ok('"+ Add a GIF" was there to press', await F.click(IN_DIALOG('/Add a GIF/')));
+t.ok('the GIF picker opened over the boost modal', await F.until(`${DIALOGS} === 2`, 10000));
+await wait(300);
+t.equal('…each modal pushed one entry', await index(F), fIndex + 2);
+await F.step(-1);
+t.ok('back → the GIF picker closed, the boost modal still open', await F.until(`${DIALOGS} === 1`, 5000));
+await wait(300);
+t.equal('…and still open a moment later', await F.js(DIALOGS), 1);
+await F.step(-1);
+t.ok('back again → the boost modal closed', await F.until(`${DIALOGS} === 0`, 5000));
+t.equal('…on the show view, its URL', [await F.js('location.href'), await F.js(SAME_DOC)], [fUrl, true]);
+
+await F.click(BOOST_BTN);
+await F.until(`${DIALOGS} === 1`, 10000);
+await wait(300);
+t.ok('the × was there to press', await F.click(IN_DIALOG('/^Close$/')));
+t.ok('× closed the modal', await F.until(`${DIALOGS} === 0`, 5000));
+await wait(500);
+t.equal('…by stepping back: the entry before it is current, on the same URL, the same entry behind',
+  [await index(F), await F.js('location.href'), await F.behind()], [fIndex, fUrl, fBehind]);
+
+await F.click(BOOST_BTN);
+await F.until(`${DIALOGS} === 1`, 10000);
+await wait(300);
+await escape(F);
+t.ok('Escape closed the modal', await F.until(`${DIALOGS} === 0`, 5000));
+await wait(500);
+t.equal('…by stepping back too', [await index(F), await F.behind()], [fIndex, fBehind]);
+
+await F.click(BOOST_BTN);
+await F.until(`${DIALOGS} === 1`, 10000);
+await wait(300);
+await F.click(IN_DIALOG('/Add a GIF/'));
+await F.until(`${DIALOGS} === 2`, 10000);
+await wait(300);
+await escape(F);
+t.ok('Escape in the GIF picker closed only the picker', await F.until(`${DIALOGS} === 1`, 5000));
+await wait(500);
+t.equal('…stepping back one entry, onto the boost modal\'s', await index(F), fIndex + 1);
+t.ok('Cancel was there to press', await F.click(IN_DIALOG('/^Cancel$/')));
+t.ok('Cancel closed the boost modal', await F.until(`${DIALOGS} === 0`, 5000));
+await wait(500);
+t.equal('…stepping back off its entry', [await index(F), await F.behind()], [fIndex, fBehind]);
+
+const signIn = `[...document.querySelectorAll('button')].find((b) => /^Sign in/.test(b.textContent.trim()))`;
+await F.click(signIn);
+t.ok('the account menu offers "Sign in with Nostr"', await F.until(`[...document.querySelectorAll('[role^="menuitem"]')].some((m) => /Sign in with Nostr/.test(m.textContent))`, 5000));
+await F.click(`[...document.querySelectorAll('[role^="menuitem"]')].find((m) => /Sign in with Nostr/.test(m.textContent))`);
+t.ok('the sign-in modal opened', await F.until(`${DIALOGS} === 1`, 5000));
+await wait(300);
+await F.step(-1);
+t.ok('back → the sign-in modal closed', await F.until(`${DIALOGS} === 0`, 5000));
+t.equal('…and the page behind it did not move', [await F.js('location.href'), await F.js(SAME_DOC)], [fUrl, true]);
+t.ok('…the show view still there', await F.until(SHOW_UP, 3000));
+
+// Over the fullscreen player: its entry and the modal's stack. The player's
+// own BOOST opens the modal; back closes the modal and leaves the player up,
+// and the next back closes the player. The show's first row can be a pending
+// live item, so the episode is a numbered one.
+const EPISODE_ROW = `[...document.querySelectorAll('section.card button')].find((b) => !b.getAttribute('aria-label') && /^Episode \\d+/.test(b.textContent.trim()))`;
+t.ok('a numbered episode was there to open', await F.until(`!!${EPISODE_ROW}`, 15000) && await F.click(EPISODE_ROW));
+t.ok('the episode view came up', await F.until(EPISODE_UP, 15000));
+const epUrl = await F.js('location.href');
+t.ok('▶ PLAY was there to press', await F.click(`[...document.querySelectorAll('main button')].find((b) => /▶ (PLAY|RESUME)/.test(b.textContent))`));
+t.ok('the mini-player came up', await F.until(`!!document.querySelector(${JSON.stringify(MINI_BAR)})`, 15000));
+await wait(800);
+const pIndex = await index(F);
+await F.click(`document.querySelector('[aria-label^="Open fullscreen player"]')`);
+t.ok('the fullscreen player opened', await F.until(PLAYER_UP, 10000));
+const PLAYER_BOOST = `[...(document.querySelector('[aria-label="Close fullscreen player"]')?.closest('div.fixed')?.querySelectorAll('button') ?? [])].find((b) => /^BOOST$/.test(b.textContent.trim()) && !b.disabled)`;
+t.ok('its BOOST was there to press', await F.until(`!!${PLAYER_BOOST}`, 15000) && await F.click(PLAYER_BOOST));
+t.ok('the boost modal opened over the player', await F.until(`${DIALOGS} === 1`, 10000));
+await wait(300);
+t.equal('…two entries above the page: the player\'s, then the modal\'s', await index(F), pIndex + 2);
+await F.step(-1);
+t.ok('back → the modal closed', await F.until(`${DIALOGS} === 0`, 5000));
+await wait(500);
+t.ok('…and the player is still open', await F.js(PLAYER_UP));
+await F.click(PLAYER_BOOST);
+await F.until(`${DIALOGS} === 1`, 10000);
+await wait(300);
+await F.click(IN_DIALOG('/^Close$/'));
+t.ok('× on the modal closed it', await F.until(`${DIALOGS} === 0`, 5000));
+await wait(500);
+t.equal('…stepping back onto the player\'s entry, the player still open', [await index(F), await F.js(PLAYER_UP)], [pIndex + 1, true]);
+await F.step(-1);
+t.ok('back → the player closed', await F.until(`!${PLAYER_UP}`, 5000));
+t.equal('…on the episode view\'s entry, its URL', [await index(F), await F.js('location.href')], [pIndex, epUrl]);
+t.ok('no page load', await F.js(SAME_DOC));
+
+console.log('14. a tab with focus leaves the browser\'s back shortcuts alone');
+// Alt+← (Windows, Linux) and ⌘← (macOS) are the browser's BACK. A click on a
+// tab leaves focus on it, and <UnderlineTabs> took those keys as "previous
+// tab": the tab moved and the navigation was cancelled. A plain ← still moves.
+// Headless Chrome on macOS does not run the browser's shortcuts, so the check
+// is the one the page controls: the key is not cancelled, and no tab moves.
+t.ok('the episode view has tabs', await F.until(`${EPISODE_UP} && document.querySelectorAll('main [role="tab"]').length > 1`, 15000));
+await F.js(`window.addEventListener('keydown', (e) => { window.__lastKeyPrevented = e.defaultPrevented; }); true`);
+const SELECTED_TAB = `[...document.querySelectorAll('main [role="tab"]')].findIndex((x) => x.getAttribute('aria-selected') === 'true')`;
+const keyOnTab = async (label, mods) => {
+  await F.click(`document.querySelectorAll('main [role="tab"]')[1]`);
+  await F.js(`document.querySelectorAll('main [role="tab"]')[1].focus(); true`);
+  await wait(200);
+  const before = await F.js(SELECTED_TAB);
+  for (const type of ['rawKeyDown', 'keyUp']) {
+    await F.send('Input.dispatchKeyEvent', { type, modifiers: mods, key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 });
+  }
+  await wait(200);
+  return { label, before, after: await F.js(SELECTED_TAB), prevented: await F.js('window.__lastKeyPrevented') };
+};
+for (const [label, mods] of [['Alt+←', 1], ['⌘←', 4], ['Ctrl+←', 2]]) {
+  const r = await keyOnTab(label, mods);
+  t.equal(`${label} on a focused tab: not cancelled, no tab moved`, [r.prevented, r.after], [false, r.before]);
+}
+const plain = await keyOnTab('←', 0);
+t.equal('a plain ← still moves to the previous tab', [plain.prevented, plain.after], [true, plain.before - 1]);
 
 t.equal('no uncaught exceptions', exceptions, []);
 console.log(t.fails ? `\nSMOKE FAILED (${t.fails} of ${t.count})` : `\nSMOKE OK (${t.count} checks)`);
