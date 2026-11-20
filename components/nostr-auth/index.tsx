@@ -27,7 +27,7 @@ import {
   unionMutedPubkeys,
   type NostrIdentity,
 } from '@/lib/nostr';
-import { hasSpark, sparkDisconnect, sparkInitFromMnemonic, sparkSeedIsActive } from '@/lib/v4v/spark';
+import { hasSpark, sparkAvailable, sparkDisconnect, sparkInitFromMnemonic, sparkSeedIsActive } from '@/lib/v4v/spark';
 import { hasNwc, saveNwcUri, clearNwcUri } from '@/lib/v4v/nwc-state';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -154,7 +154,10 @@ export function NostrAuth() {
     // `'user-initiated'`, spends the prompt on purpose, and already works.
     const decryptOk = unattendedDecryptOk();
     setWalletBackupWithheld(!decryptOk);
-    const shouldRestoreSpark = decryptOk && !hasSpark() && !storage.sparkOptOut.get(id.npub);
+    // Not inside the iOS app (`sparkAvailable`): the init would refuse anyway,
+    // but only after the signer was asked to decrypt a seed nothing will use,
+    // and after the header said "connecting…" for a wallet that never comes.
+    const shouldRestoreSpark = decryptOk && sparkAvailable() && !hasSpark() && !storage.sparkOptOut.get(id.npub);
 
     // Tell the header a wallet is on its way, so it shows "connecting…" rather
     // than offering "Connect wallet" for one the user already has —
