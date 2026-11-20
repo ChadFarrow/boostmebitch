@@ -8,30 +8,44 @@
 //   playlists/<uuid>.xml   the feed EXACTLY as www.boostmebuddy.com serves it, so a
 //                          playlist can be rebuilt, or pulled in as a test playlist,
 //                          from GitHub alone. Test playlists are copied too (Chad).
-//   playlists/index.json   one entry per copied feed, derived from the files.
+//   playlists/removed/<uuid>.xml
+//                          the last copy of a playlist that was deleted from the
+//                          site (its feed answers 410), unchanged. Chad, 2026-11-19:
+//                          "if I delete one from the admin page, can we note on
+//                          GitHub that it was removed from the site?"
+//   playlists/index.json   one entry per copied feed, derived from the files, and
+//                          under `removed` one per removed copy, with the time a
+//                          run first saw the 410 (`removed`).
 //   README.md, vercel.json the branch's own description, and Vercel told not to
 //                          build it (a commit here must never start a deploy).
 //
-// FOUR RULES, each a way the obvious version loses or corrupts a copy:
+// FIVE RULES, each a way the obvious version loses or corrupts a copy:
 //
-// 1. ONLY A 410 DELETES A COPY. A playlist missing from the list is not proof it
-//    is gone: the list stops at 200, the beta site can be down, and with both
-//    community switches off EVERY feed answers 404 (docs/ops.md). A deleted
-//    playlist answers 410, and that answer alone removes its file. The same rule
-//    as `read-trust.ts`: an empty answer is "nothing answered", never "nobody has it".
-// 2. EVERY COPY ON DISK IS ASKED AGAIN, listed or not (`idsToVisit`), so a feed past
-//    the list's cap still refreshes, and a deletion still reaches it.
+// 1. ONLY A 410 MOVES A COPY TO removed/. A playlist missing from the list is not
+//    proof it is gone: the list stops at 200, the beta site can be down, and with
+//    both community switches off EVERY feed answers 404 (docs/ops.md). A deleted
+//    playlist answers 410, and that answer alone moves its file. The same rule as
+//    `read-trust.ts`: an empty answer is "nothing answered", never "nobody has it".
+//    No answer DELETES a copy: a removed playlist keeps its last feed here.
+// 2. EVERY LIVE COPY ON DISK IS ASKED AGAIN, listed or not (`idsToVisit`), so a feed
+//    past the list's cap still refreshes, and a deletion still reaches it. A copy in
+//    removed/ is not asked again: the site cannot undo a delete. If its id is LISTED
+//    again (a row restored by hand in the database), its new feed is written and the
+//    removed copy goes, so one id is never in both places.
 // 3. A COPY IS REPLACED ONLY BY A WHOLE PLAYLIST FEED FOR THAT ID (`feedVerdict`):
 //    a 200 that is an error page, another playlist's feed, or a body cut off before
 //    `</rss>` keeps the old file. A redirect is not followed.
 // 4. NOTHING HERE CHANGES WITH THE CLOCK. No "generated at" field: the workflow
 //    commits only when a file changed, and a timestamp would commit every run.
+// 5. THE REMOVAL TIME IS WRITTEN ONCE (`removalTimes`). The run that moves a copy
+//    stamps it; every later run carries the time from the last `index.json`, so
+//    rule 4 holds. Only a removed copy with no readable time gets the run's clock.
 //
 // The id is the file name, so it is checked against a lower-case UUID before it
 // touches a path (`canonicalId`). Pure functions are exported for
 // `npm run check:playlistarchive`; this file has no imports but node: built-ins.
 
-import { readFile, writeFile, readdir, mkdir, rm } from 'node:fs/promises';
+import { readFile, writeFile, readdir, mkdir, rm, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -110,15 +124,46 @@ export function feedVerdict(id, origin, status, text) {
   return { kind: 'feed', xml: text };
 }
 
+/** The folder, inside `playlists/`, that holds the copies of removed playlists. */
+export const REMOVED_DIR = 'removed';
+
 /**
- * What to do with one file: 'write', 'remove', 'keep' (an old copy stays),
- * 'unchanged', or 'none' (no copy, and nothing to write).
+ * What to do with one live file: 'write', 'move-to-removed' (rule 1), 'keep' (an
+ * old copy stays), 'unchanged', or 'none' (no copy, and nothing to write).
  */
 export function fileAction(verdict, existingXml) {
   const exists = typeof existingXml === 'string';
   if (verdict.kind === 'feed') return exists && existingXml === verdict.xml ? 'unchanged' : 'write';
-  if (verdict.kind === 'gone') return exists ? 'remove' : 'none';
+  if (verdict.kind === 'gone') return exists ? 'move-to-removed' : 'none';
   return exists ? 'keep' : 'none';
+}
+
+/**
+ * The removal time of each removed copy, read from the LAST `index.json` text
+ * (rule 5): a Map of id to an ISO time. Anything unreadable gives no entry, never
+ * a throw: that copy is then stamped again, once.
+ */
+export function removalTimes(indexText) {
+  const out = new Map();
+  let body;
+  try {
+    body = JSON.parse(indexText);
+  } catch {
+    return out;
+  }
+  if (!body || typeof body !== 'object' || !Array.isArray(body.removed)) return out;
+  for (const e of body.removed) {
+    const id = canonicalId(e && typeof e === 'object' ? e.id : null);
+    const at = e && typeof e === 'object' ? e.removed : null;
+    if (!id || typeof at !== 'string' || Number.isNaN(Date.parse(at))) continue;
+    out.set(id, new Date(Date.parse(at)).toISOString());
+  }
+  return out;
+}
+
+/** The index entry of a removed copy: the feed's entry, its file in removed/, and when. */
+export function removedEntry(id, origin, xml, removedAt) {
+  return { ...indexEntry(id, origin, xml), file: `${REMOVED_DIR}/${id}.xml`, removed: removedAt };
 }
 
 /** The text of the FIRST `<tag>…</tag>` in a document, unescaped, or ''. */
@@ -177,27 +222,38 @@ export function indexEntry(id, origin, xml) {
   };
 }
 
-/** `playlists/index.json`: newest change first, then by id. No clock in it. */
-export function buildIndex(entries) {
+/**
+ * `playlists/index.json`: the live copies newest change first, then by id; the
+ * removed copies (`removed`) newest removal first, then by id. No run's clock in
+ * it: a removal time is carried, never restamped (rules 4 and 5).
+ */
+export function buildIndex(entries, removedEntries = []) {
   const sorted = [...entries].sort((a, b) => (
     (b.updated ?? '').localeCompare(a.updated ?? '') || a.id.localeCompare(b.id)
   ));
-  return `${JSON.stringify({ origin: FEED_ORIGIN, count: sorted.length, playlists: sorted }, null, 2)}\n`;
+  const removed = [...removedEntries].sort((a, b) => (
+    (b.removed ?? '').localeCompare(a.removed ?? '') || a.id.localeCompare(b.id)
+  ));
+  return `${JSON.stringify({ origin: FEED_ORIGIN, count: sorted.length, playlists: sorted, removed }, null, 2)}\n`;
 }
 
 /** The commit message for one run, or null when nothing changed. */
 export function commitMessage(changes) {
-  const { added = [], changed = [], removed = [] } = changes;
-  if (!added.length && !changed.length && !removed.length) return null;
+  const { added = [], changed = [], removed = [], restored = [] } = changes;
+  if (!added.length && !changed.length && !removed.length && !restored.length) return null;
   const parts = [];
   if (added.length) parts.push(`${added.length} added`);
   if (changed.length) parts.push(`${changed.length} changed`);
-  if (removed.length) parts.push(`${removed.length} removed`);
+  if (removed.length) parts.push(`${removed.length} removed from the site`);
+  if (restored.length) parts.push(`${restored.length} back on the site`);
   const line = (e) => `- ${e.id}${e.title ? ` ${e.title.replace(/[\r\n]+/g, ' ')}` : ''}`;
   const body = [
     ...(added.length ? ['Added:', ...added.map(line)] : []),
     ...(changed.length ? ['Changed:', ...changed.map(line)] : []),
-    ...(removed.length ? ['Removed (the feed answers 410):', ...removed.map(line)] : []),
+    ...(removed.length
+      ? [`Removed from the site (the feed answers 410). The last copy moves to playlists/${REMOVED_DIR}/:`, ...removed.map(line)]
+      : []),
+    ...(restored.length ? [`Back on the site (moved out of playlists/${REMOVED_DIR}/):`, ...restored.map(line)] : []),
   ];
   return `playlists: ${parts.join(', ')}\n\n${body.join('\n')}\n`;
 }
@@ -212,12 +268,16 @@ live site when a playlist is published, edited or deleted, and every 15 minutes.
 - \`playlists/<id>.xml\` is the playlist's Podcasting 2.0 feed (\`musicL\`), exactly
   as the site serves it. Each song is a \`<podcast:remoteItem>\` that names the
   song's own feed. The playlist takes no payment: a boost pays the song's artist.
+- \`playlists/${REMOVED_DIR}/<id>.xml\` is the last copy of a playlist that was removed
+  from the site, by its maker or by the site's admin. Its feed address answers
+  \`410 Gone\` now, so a podcast app cannot use it.
 - \`playlists/index.json\` lists every copy: title, \`podcast:guid\`, feed address,
-  song count and the time it last changed.
+  song count and the time it last changed. Under \`removed\` it lists the removed
+  copies, each with \`removed\`: the time (UTC) the copy job first saw the \`410\`.
+  The playlist was removed a short time before that.
 
 To use a playlist in a podcast app, subscribe to its \`feedUrl\`. To use one as a
-test playlist, read the \`.xml\` file here. A deleted playlist leaves this branch;
-its old copy stays in the history.
+test playlist, read the \`.xml\` file here.
 `;
 
 /** Vercel builds every pushed branch unless the branch's own config says no. */
@@ -325,22 +385,40 @@ function warn(msg) {
   console.log(process.env.GITHUB_ACTIONS ? `::warning::${msg}` : `warning: ${msg}`);
 }
 
+/** The ids of the copies in one folder: only a file named exactly `<lower-case uuid>.xml`. */
+async function copyIds(path) {
+  let names;
+  try {
+    names = await readdir(path);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((f) => f.endsWith('.xml') && f === `${canonicalId(f.slice(0, -4))}.xml`)
+    .map((f) => f.slice(0, -4))
+    .sort();
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const dir = join(args.root, 'playlists');
+  const removedDir = join(dir, REMOVED_DIR);
   await mkdir(dir, { recursive: true });
 
-  // Only a file named exactly `<lower-case uuid>.xml` is a copy this script owns.
-  const existing = (await readdir(dir))
-    .filter((f) => f.endsWith('.xml') && f === `${canonicalId(f.slice(0, -4))}.xml`)
-    .map((f) => f.slice(0, -4));
+  // This run's time is used only for a copy that moves to removed/ now, or one
+  // with no readable time; every other removal time is carried (rule 5).
+  const now = new Date().toISOString();
+  const times = removalTimes((await readIfExists(join(dir, 'index.json'))) ?? '');
+
+  const existing = await copyIds(dir);
+  const alreadyRemoved = new Set(await copyIds(removedDir));
   const list = await readList(args.lists);
   if (!list.ids) warn(`no playlist list answered (${args.lists.join(', ')}); only the copies on disk are refreshed`);
 
   const ids = idsToVisit(list.ids, existing);
   const verdicts = await mapLimit(ids, FEED_CONCURRENCY, (id) => readFeed(args.origin, id));
 
-  const changes = { added: [], changed: [], removed: [] };
+  const changes = { added: [], changed: [], removed: [], restored: [] };
   const kept = [];
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
@@ -352,23 +430,38 @@ async function main() {
       kept.push(id);
       warn(`${id}: ${v.why}; ${old === undefined ? 'no copy yet' : 'the old copy stays'}`);
     }
+    // Rule 2: a removed id whose feed answers again is back on the site; one id, one place.
+    const back = v.kind === 'feed' && alreadyRemoved.has(id);
+    if (back) {
+      changes.restored.push({ id, title: tagText(v.xml, 'title') });
+      if (!args.dryRun) await rm(join(removedDir, `${id}.xml`));
+      times.delete(id);
+    }
     if (action === 'write') {
-      (old === undefined ? changes.added : changes.changed).push({ id, title: tagText(v.xml, 'title') });
+      if (!back) (old === undefined ? changes.added : changes.changed).push({ id, title: tagText(v.xml, 'title') });
       if (!args.dryRun) await writeFile(path, v.xml);
-    } else if (action === 'remove') {
+    } else if (action === 'move-to-removed') {
+      // Rule 1: the copy is kept, unchanged, and the move is the note.
       changes.removed.push({ id, title: tagText(old, 'title') });
-      if (!args.dryRun) await rm(path);
+      times.set(id, now);
+      if (!args.dryRun) {
+        await mkdir(removedDir, { recursive: true });
+        await rename(path, join(removedDir, `${id}.xml`));
+      }
     }
   }
 
   if (!args.dryRun) {
     const entries = [];
-    for (const f of (await readdir(dir)).sort()) {
-      const id = f.endsWith('.xml') ? canonicalId(f.slice(0, -4)) : null;
-      if (!id || f !== `${id}.xml`) continue;
-      entries.push(indexEntry(id, args.origin, await readFile(join(dir, f), 'utf8')));
+    for (const id of await copyIds(dir)) {
+      entries.push(indexEntry(id, args.origin, await readFile(join(dir, `${id}.xml`), 'utf8')));
     }
-    await writeIfChanged(join(dir, 'index.json'), buildIndex(entries));
+    const removedEntries = [];
+    for (const id of await copyIds(removedDir)) {
+      const xml = await readFile(join(removedDir, `${id}.xml`), 'utf8');
+      removedEntries.push(removedEntry(id, args.origin, xml, times.get(id) ?? now));
+    }
+    await writeIfChanged(join(dir, 'index.json'), buildIndex(entries, removedEntries));
     await writeIfChanged(join(args.root, 'README.md'), README);
     await writeIfChanged(join(args.root, 'vercel.json'), VERCEL_JSON);
   }
@@ -382,6 +475,7 @@ async function main() {
     added: changes.added.length,
     changed: changes.changed.length,
     removed: changes.removed.length,
+    restored: changes.restored.length,
     keptOnFailure: kept.length,
     dryRun: args.dryRun,
   }));
