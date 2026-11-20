@@ -99,6 +99,14 @@ const click = (finder) => js(`(() => { const b = ${finder}; if (b) b.click(); re
 const byText = (label) => `[...document.querySelectorAll('main button, main a')].find((b) => b.textContent.trim() === ${JSON.stringify(label)})`;
 // The open dialogs' accessible names (<ModalShell> wires each to a hidden label).
 const DIALOG_NAMES = `[...document.querySelectorAll('[role=dialog]')].map((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent ?? '')`;
+// The open dialogs are exactly these, in this order (later = opened later).
+const dialogsAre = (...names) => `JSON.stringify(${DIALOG_NAMES}) === ${JSON.stringify(JSON.stringify(names))}`;
+const dialogNamed = (name) => `[...document.querySelectorAll('[role=dialog]')].find((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent === ${JSON.stringify(name)})`;
+// The dialog is the one a click at its top lands in: it is in front.
+const inFront = (name) => `(() => { const d = ${dialogNamed(name)}; if (!d) return false; const r = (d.querySelector('[tabindex="-1"]') ?? d).getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(40, r.height / 2)); return !!hit && d.contains(hit); })()`;
+// An open modal is a history entry (components/use-modal-history.ts); a closed one steps off it.
+const historyClear = `!(history.state?.bmbModals ?? []).length`;
 const setValue = (sel, v) => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)});
   const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(v)});
@@ -222,23 +230,49 @@ await go('/playlists/make');
 t.ok('signed out, the :guest draft comes back', await waitFor(`document.querySelectorAll('[data-song-row]').length === 12`));
 // A later visit with no choice made asks again. Its SIGN IN WITH NOSTR is the site's sign-in.
 t.ok('the start choice asks again on a later visit', await waitFor(`document.querySelector('[data-start-choice]')`, 10000));
-t.ok('its SIGN IN WITH NOSTR opens the site\'s sign-in dialog',
+// The sign-in opens OVER the start choice. Closing the start choice in the same press
+// closed the sign-in a moment later (both are history entries: the start choice's step
+// back landed after the sign-in had pushed), so this waits, then looks again.
+t.ok('its SIGN IN WITH NOSTR opens the site\'s sign-in dialog, over the start choice',
   (await click(`document.querySelector('[data-start-signin]')`))
-  && await waitFor(`!document.querySelector('[data-start-choice]') && ${DIALOG_NAMES}.includes('Sign in')`, 5000));
-await click(`document.querySelector('[role=dialog] button[aria-label=Close]')`);
-t.ok('closing the sign-in leaves the form, and the start choice does not come back on this page',
-  (await waitFor(`!document.querySelector('[role=dialog]')`, 3000)) && (await wait(800), await js(`!document.querySelector('[data-start-choice]') && !!document.querySelector('#pl-title')`)));
-t.ok('a complete playlist: no reason line, nothing is missing (PUBLISH is not pressed here: signed out it would publish)', await js(`!document.querySelector('[data-testid=why-blocked]')`));
+  && await waitFor(dialogsAre('Do you have Nostr?', 'Sign in'), 5000));
+t.ok('...the sign-in is in front', await js(inFront('Sign in')));
+t.ok('...and both stay open', (await wait(1500), await js(dialogsAre('Do you have Nostr?', 'Sign in'))));
+t.ok('closing the sign-in shows the start choice again, and it stays',
+  (await click(`${dialogNamed('Sign in')}?.querySelector('button[aria-label=Close]')`))
+  && await waitFor(dialogsAre('Do you have Nostr?'), 3000) && (await wait(1000), await js(dialogsAre('Do you have Nostr?'))));
+t.ok('...x on the start choice leaves the form and steps off both history entries',
+  (await click(`${dialogNamed('Do you have Nostr?')}?.querySelector('button[aria-label=Close]')`))
+  && await waitFor(`!document.querySelector('[role=dialog]') && ${historyClear}`, 3000));
+t.ok('...and the start choice does not come back by itself on this page',
+  (await wait(800), await js(`!document.querySelector('[data-start-choice]') && !!document.querySelector('#pl-title')`)));
+t.ok('a complete playlist: no reason line, nothing is missing', await js(`!document.querySelector('[data-testid=why-blocked]')`));
 await setValue('#pl-desc', 'written signed out');
 await wait(300);
 t.equal('a change signed out is written to the :guest slot', (await guestStored())?.draft.description, 'written signed out');
 t.ok('"Sign in with Nostr" in the footer opens the sign-in dialog',
   (await click(`document.querySelector('[data-testid=signed-out-note] button')`))
   && await waitFor(`/Browser Extension/.test(document.querySelector('[role=dialog]')?.innerText ?? '')`, 5000));
+t.ok('...it closes, and steps off its history entry',
+  (await click(`${dialogNamed('Sign in')}?.querySelector('button[aria-label=Close]')`))
+  && await waitFor(`!document.querySelector('[role=dialog]') && ${historyClear}`, 3000));
+// Signed out with no choice made, PUBLISH asks first (only I DON'T HAVE NOSTR makes a key).
+// The sign-in from there is the path a person who HAS Nostr takes.
+t.ok('PUBLISH with no choice made opens the start choice instead of publishing',
+  (await click(byText('PUBLISH'))) && await waitFor(`document.querySelector('[data-start-choice]')?.dataset.startChoice === 'publish'`, 3000));
+t.ok('...its SIGN IN WITH NOSTR opens the sign-in over it',
+  (await click(`document.querySelector('[data-start-signin]')`)) && await waitFor(dialogsAre('Do you have Nostr?', 'Sign in'), 5000)
+  && (await wait(800), await js(dialogsAre('Do you have Nostr?', 'Sign in'))));
 // Sign in inside the page with the (fake) extension: the work moves to the account.
 await js(`localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))}); 1`);
 t.ok('the extension sign-in is offered', await click(`[...document.querySelectorAll('[role=dialog] button')].find((b) => /Browser Extension/.test(b.textContent))`));
 t.ok('signed in: the footer names the account', await waitFor(`/Signed in as/.test(document.querySelector('main')?.innerText ?? '')`, 20000));
+t.ok('...the sign-in closed both dialogs and stepped off their history entries',
+  await waitFor(`!document.querySelector('[role=dialog]') && ${historyClear}`, 5000));
+t.ok('...and nothing was published: the person presses PUBLISH again', await js(`!document.querySelector('[data-testid=published]')`));
+t.equal('...and no browser key was made', await js(`new Promise((r) => { const q = indexedDB.open('bmb-guest', 1);
+  q.onupgradeneeded = () => q.result.createObjectStore('keys', { keyPath: 'id' });
+  q.onsuccess = () => { const c = q.result.transaction('keys', 'readonly').objectStore('keys').count(); c.onsuccess = () => { q.result.close(); r(c.result); }; }; })`), 0);
 t.equal('the work made signed out is still on the form', [await js(`document.querySelector('#pl-desc')?.value`), await rows()], ['written signed out', 12]);
 t.equal('it moved to the account slot', (await stored())?.draft.description, 'written signed out');
 t.equal('and the :guest slot is empty', await guestStored(), null);

@@ -19,7 +19,9 @@ export type StartChoiceFor = 'start' | 'publish' | 'upload';
  * I DON'T HAVE NOSTR sits under its own "No Nostr account?" heading, as the
  * choice for people without one, and says what that playlist cannot do.
  *
- * - SIGN IN WITH NOSTR opens the site's sign-in.
+ * - SIGN IN WITH NOSTR opens the site's sign-in OVER this dialog, which stays
+ *   until the account lands: closing the sign-in shows the choice again. The
+ *   caller must not close this in the same press (see `onSignIn` in the maker).
  * - I DON'T HAVE NOSTR makes the browser key (`ensureGuestKey`). It is the ONLY
  *   thing that makes one for a new playlist: PUBLISH and UPLOAD open this dialog
  *   instead while no choice is made, so a closed dialog never turns into a

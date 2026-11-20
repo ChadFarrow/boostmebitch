@@ -39,7 +39,7 @@
 //     I DON'T HAVE NOSTR sits under "No Nostr account?". Closing it (x, Escape) leaves
 //     the form and makes no key; PUBLISH and UPLOAD then open it again instead of making
 //     one, and I DON'T HAVE NOSTR from there goes on with the publish or the file picker.
-//     SIGN IN WITH NOSTR opens the site's sign-in. A browser holding a key, a signed-in
+//     SIGN IN WITH NOSTR opens the site's sign-in OVER it. A browser holding a key, a signed-in
 //     account and an edit address never see it. Clicks on it are real mouse events, so a
 //     dialog that is not in front fails them.
 // No EVENT reaches a public relay: the local relay is the only WebSocket allowed.
@@ -153,7 +153,11 @@ const START = `document.querySelector('[data-start-choice]')`;
 let fileChoosers = 0;
 page.on((m) => { if (m.method === 'Page.fileChooserOpened') fileChoosers++; });
 const START_CLOSE = `${START}?.closest('[role=dialog]')?.querySelector('button[aria-label=Close]')`;
-const DIALOG_NAMES = `[...document.querySelectorAll('[role=dialog]')].map((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent ?? '')`;
+// An open modal is a history entry (components/use-modal-history.ts), and a closed one
+// steps back off it one task later. A person never presses again inside that moment; a
+// script can, and a dialog opened inside it is closed by the step. So a close waits for it.
+const HISTORY_CLEAR = `!(history.state?.bmbModals ?? []).length`;
+const startClosed = (ms = 3000) => waitFor(`!${START} && ${HISTORY_CLEAR}`, ms);
 /** No start choice, still, a while after the page settled (it waits for the key read). */
 const noStart = async () => { await wait(1200); return js(`!${START}`); };
 const metrics = (mobile) => send('Emulation.setDeviceMetricsOverride', mobile
@@ -288,7 +292,7 @@ for (const mobile of [false, true]) {
   t.equal(`${name}: opening the maker made no key`, (await idbState()).records?.length ?? 0, 0);
   if (!mobile) {
     t.ok('x closes it (a real click)', await mouseClick(START_CLOSE));
-    t.ok('...and the form is there to build on, with PUBLISH', await waitFor(`!${START} && !!document.querySelector('#pl-title') && !!${byText('PUBLISH')}`, 3000));
+    t.ok('...and the form is there to build on, with PUBLISH', (await startClosed()) && await waitFor(`!!document.querySelector('#pl-title') && !!${byText('PUBLISH')}`, 3000));
     t.ok('...and it does not come back on this page', await noStart());
     t.equal('...and closing it made no key', (await idbState()).records?.length ?? 0, 0);
     // A closed start choice never turns into a key: PUBLISH asks again and sends nothing.
@@ -297,7 +301,7 @@ for (const mobile of [false, true]) {
     t.ok('...it says nothing is published until a choice is made', await js(`/nothing is published until you choose/i.test(${START}.innerText)`));
     t.equal('...and nothing was published, and no key made',
       [seen.requests.filter((r) => r.method === 'POST' && /\/api\/community-playlists$/.test(r.url ?? '')).length - postsBefore, (await idbState()).records?.length ?? 0], [0, 0]);
-    t.ok('...x closes it', (await mouseClick(START_CLOSE)) && await waitFor(`!${START}`, 3000));
+    t.ok('...x closes it', (await mouseClick(START_CLOSE)) && await startClosed());
     t.ok('UPLOAD PICTURE with no choice made opens the start choice too, not the file picker',
       (await mouseClick(`document.querySelector('[data-art-upload]')`)) && await waitFor(`${START}?.dataset.startChoice === 'upload'`, 3000) && fileChoosers === 0);
     await send('Page.setInterceptFileChooserDialog', { enabled: true });
@@ -310,13 +314,19 @@ for (const mobile of [false, true]) {
     await go('/playlists/make');
     t.ok('a later visit with no choice made asks again', await waitFor(START));
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-    t.ok('Escape closes it too', await waitFor(`!${START} && !!document.querySelector('#pl-title')`, 3000));
+    t.ok('Escape closes it too', (await startClosed()) && await js(`!!document.querySelector('#pl-title')`));
   } else {
     t.ok(`${name}: SIGN IN WITH NOSTR pressed (a real tap)`, await mouseClick(`${START}.querySelector('[data-start-signin]')`));
-    t.ok(`${name}: the start choice closes and the site's sign-in opens`, await waitFor(`!${START} && ${DIALOG_NAMES}.includes('Sign in')`, 5000));
-    t.equal(`${name}: the sign-in dialog fits at 390 wide`, await js(`(() => { const r = [...document.querySelectorAll('[role=dialog]')][0].getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`), true);
-    await mouseClick(`document.querySelector('[role=dialog] button[aria-label=Close]')`);
-    t.ok(`${name}: closing the sign-in leaves the form`, await waitFor(`!document.querySelector('[role=dialog]') && !!document.querySelector('#pl-title')`, 3000));
+    // The sign-in opens OVER the start choice, which closes when an account lands.
+    const signIn = `[...document.querySelectorAll('[role=dialog]')].find((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent === 'Sign in')`;
+    t.ok(`${name}: the site's sign-in opens over the start choice, and both stay`,
+      await waitFor(`!!${START} && !!${signIn}`, 5000) && (await wait(1500), await js(`!!${START} && !!${signIn}`)));
+    t.equal(`${name}: the sign-in dialog fits at 390 wide`, await js(`(() => { const r = ${signIn}.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`), true);
+    t.ok(`${name}: its x is in front (a real tap closes the sign-in only)`,
+      (await mouseClick(`${signIn}?.querySelector('button[aria-label=Close]')`)) && await waitFor(`!${signIn} && !!${START}`, 3000)
+      && (await wait(1000), await js(`!${signIn} && !!${START}`)));
+    t.ok(`${name}: the x of the start choice then leaves the form`,
+      (await mouseClick(START_CLOSE)) && (await startClosed()) && await js(`!document.querySelector('[role=dialog]') && !!document.querySelector('#pl-title')`));
     t.ok(`${name}: and the start choice does not come back on this page`, await noStart());
     t.equal(`${name}: and no key was made`, (await idbState()).records?.length ?? 0, 0);
   }
@@ -476,7 +486,7 @@ await seedGuest('e2e guest playlist after losing the key');
 await go('/playlists/make');
 await waitFor(`document.querySelector('#pl-title')?.value.startsWith('e2e guest playlist after')`);
 t.ok('a new playlist after losing the key: the start choice asks again (no key now)', await waitFor(START));
-t.ok('...closed with no choice', (await mouseClick(START_CLOSE)) && await waitFor(`!${START}`, 3000));
+t.ok('...closed with no choice', (await mouseClick(START_CLOSE)) && await startClosed());
 t.equal('...so still no key before PUBLISH', (await idbState()).records?.length ?? 0, 0);
 t.ok('a new playlist after losing the key: PUBLISH asks first', (await mouseClick(byText('PUBLISH'))) && await waitFor(`${START}?.dataset.startChoice === 'publish'`, 3000));
 t.ok('...I DON\'T HAVE NOSTR there goes on with the PUBLISH: the playlist is published', (await mouseClick(`${START}.querySelector('[data-start-guest]')`)) && await published());

@@ -221,8 +221,12 @@ export function PlaylistMaker() {
   // <StartChoice> opens by itself once per visit, when no sign-in is being restored (a
   // stored npub is a person who has Nostr) and the key read has answered
   // (`guest === undefined` is the read in flight: a key holder would see a flash).
-  const askStart = startFor !== null
-    || (!startDone && needsChoice && guest === null && !storage.npub.get());
+  // `needsChoice` gates both: a sign-in that lands closes it, whatever opened it.
+  const askStart = needsChoice
+    && (startFor !== null || (!startDone && guest === null && !storage.npub.get()));
+  // A sign-in answers a press of PUBLISH or UPLOAD too: forget it, so a later sign-out
+  // on this page does not bring that dialog back.
+  useEffect(() => { if (identity) setStartFor(null); }, [identity]);
 
   // ---- load: the saved draft, or the stored playlist in edit mode ----------
   useEffect(() => {
@@ -776,7 +780,13 @@ export function PlaylistMaker() {
         <StartChoice
           when={startFor ?? 'start'}
           onClose={() => { setStartDone(true); setStartFor(null); }}
-          onSignIn={() => { setStartDone(true); setStartFor(null); setSignInOpen(true); }}
+          // The sign-in opens OVER this dialog, which stays until the account lands
+          // (`needsChoice` turns false). Closing it here in the same press broke the
+          // sign-in: an open modal is a history entry (components/use-modal-history.ts),
+          // and this one's step back, one task later, landed after the sign-in had
+          // pushed its own entry and closed it. Measured 2026-11-19: no dialog left
+          // at +50 ms. Modals stack by design there; closing the sign-in shows this again.
+          onSignIn={() => setSignInOpen(true)}
           onNoNostr={async () => {
             const then = startFor;
             // Before the first await: the press is the user gesture a file picker needs.
