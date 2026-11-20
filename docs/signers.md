@@ -1481,6 +1481,8 @@ Ported from **Wisp** (github.com/barrydeen/wisp, `v1.1.0`). The central insight,
 >
 > The random key plus an encrypted blob is what makes the PIN merely the second of two layers; `backup-crypto.ts` names both, and app-private Drive storage is the first. Any scheme that removes the blob, or moves it somewhere a stranger can fetch (a relay at a `sub`-derived address, our own server), gives up that first layer and leaves a 6-digit secret alone in front of the identity. **The shared-wallet goal is answered in [`ops.md`](ops.md) — one Cloud project with a brand-neutral app name — and that answer costs a console field instead of the security model.**
 
+**Not offered inside the iOS app — `isGoogleAuthConfigured()` answers false there (`isNativeIos()`, `lib/native/platform.ts`), and every Google surface already reads it.** Google refuses OAuth in an app's embedded web view (`disallowed_useragent`), and the GIS consent popup has no window to open in the Capacitor shell, so the button could only fail; the owner asked for it gone on 2026-11-20. The predicate now depends on `window.Capacitor`, which the server cannot see, so **`<AuthControl>` reads it after mount** (`mounted && …`) — it used to read it in render, safe only while it was a build-time constant. Not measured in the app: hidden on Google's documented policy. `npm run e2e:iosapp` steps 6–7 pin the header menu, the sign-in window, Google's script never being fetched, and no hydration error.
+
 Construction (`lib/nostr/backup-crypto.ts`, mirroring Wisp's `BackupCrypto.kt`):
 
 ```

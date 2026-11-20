@@ -19,6 +19,8 @@ import { readCappedJson } from '@/lib/capped-body';
 /** A userinfo answer is a few hundred bytes; capped like every other body read. */
 const USERINFO_MAX_BYTES = 16 * 1024;
 
+import { isNativeIos } from '../native/platform';
+
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
 // `openid` is what makes the userinfo endpoint return `sub`; drive.appdata is
@@ -36,10 +38,18 @@ export function googleClientId(): string | null {
   return process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID?.trim() || null;
 }
 
-/** True when the deployment is configured for Google sign-in. The UI hides the
- *  entry point entirely when this is false rather than failing on tap. */
+/** True when the deployment is configured for Google sign-in AND this page can
+ *  finish it. The UI hides the entry point entirely when this is false rather
+ *  than failing on tap.
+ *
+ *  False inside the iOS app (`isNativeIos`): Google refuses OAuth in an app's
+ *  embedded web view (`disallowed_useragent`), and the consent popup has no
+ *  window to open in the Capacitor shell, so the button could only fail. Every
+ *  Google surface reads this one predicate, which is why the gate is here.
+ *  Inside the app it differs from the server's answer, so a component that
+ *  renders on the server reads it after mount (`<AuthControl>`). */
 export function isGoogleAuthConfigured(): boolean {
-  return googleClientId() !== null;
+  return googleClientId() !== null && !isNativeIos();
 }
 
 // Minimal shape of the GIS globals we touch. The full library types would be a

@@ -43,7 +43,7 @@
     "e2e:communitynote": "node --experimental-strip-types scripts/e2e-community-note.mjs",
     "e2e:communityui": "node scripts/e2e-community-ui.mjs",
     "e2e:guestplaylist": "node scripts/e2e-guest-playlist.mjs",
-    "e2e:ioswallet": "node scripts/e2e-ios-wallet.mjs",
+    "e2e:iosapp": "node scripts/e2e-ios-app.mjs",
     "e2e:playlistpings": "node scripts/e2e-playlist-pings.mjs",
     "e2e:playlistarchive": "node scripts/e2e-playlist-archive.mjs",
     "e2e:npubplaylists": "node scripts/e2e-npub-playlists.mjs",
