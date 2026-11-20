@@ -61,6 +61,7 @@ import {
   STREAM_TRACK_MIN_PLAY_MS,
   STREAM_ENDED_OBSERVATIONS,
   endedVerdict,
+  failedRunIsRefundable,
   trackBucket,
   createLedger,
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -1221,6 +1222,31 @@ console.log('\n  naive replay (each vector must fail against the obvious version
     } else proved++;
   }
   console.log(`        ${proved} vector(s) proved, ${exempt} exempted as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+// failedRunIsRefundable — may a settle that paid nobody put its sats back?
+// A wallet that never ANSWERED may have paid; refunding it pays the same
+// recipients again on the next window. naive() is the old behaviour: always
+// refund.
+// ---------------------------------------------------------------------------
+console.log('\nfailedRunIsRefundable — a refund after an unanswered wallet is a double pay');
+{
+  const naiveRefund = () => true;
+  const VECTORS = [
+    { why: 'a wallet that never answered may have paid: keep the sats debited', args: [true], want: false },
+    { why: 'a run that definitely failed (refused, no route, no wallet) goes back', args: [false], want: true, alsoNaive: true },
+  ];
+  for (const v of VECTORS) {
+    const got = failedRunIsRefundable(...v.args);
+    if (got !== v.want) {
+      console.error(`  FAIL failedRunIsRefundable(${v.args}) = ${got}, want ${v.want} — ${v.why}`);
+      failures++;
+    } else console.log(`  ok   ${v.why}`);
+    const naiveGot = naiveRefund(...v.args);
+    if (v.alsoNaive) { if (naiveGot !== v.want) { console.error(`  FAIL ${v.why}: marked alsoNaive but naive() disagrees`); failures++; } }
+    else if (naiveGot === v.want) { console.error(`  FAIL vector proves nothing — naive agrees: ${v.why}`); failures++; }
+  }
 }
 
 if (failures > 0) {
