@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>test</title>
+    <description>A community playlist on Boost Me Buddy.</description>
+    <link>https://www.boostmebuddy.com/feeds/playlists/d59b546e-3922-46e5-b916-1b19c4bbe89f.xml</link>
+    <language>en</language>
+    <pubDate>Fri, 20 Nov 2026 00:38:04 GMT</pubDate>
+    <lastBuildDate>Fri, 20 Nov 2026 00:38:04 GMT</lastBuildDate>
+    <generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>
+    <podcast:guid>2005a39f-7f7e-5ed8-a866-f2cf82da4484</podcast:guid>
+    <podcast:publisher>
+      <podcast:remoteItem medium="publisher" rel="curator" feedGuid="e6ecdf92-42a8-5b58-b3f0-9ac0bf5564f6" feedUrl="https://www.boostmebuddy.com/feeds/publishers/npub1qddlwdpt9tdfw76gt94d2hvajum8f5k8s9d9s8f6zt3jzrl6pwysyp3men.xml"/>
+    </podcast:publisher>
+    <podcast:medium>musicL</podcast:medium>
+    <podcast:txt purpose="npub">npub1qddlwdpt9tdfw76gt94d2hvajum8f5k8s9d9s8f6zt3jzrl6pwysyp3men</podcast:txt>
+    <itunes:image href="https://www.boostmebuddy.com/feeds/playlists/d59b546e-3922-46e5-b916-1b19c4bbe89f.jpg?v=1795135084"/>
+    <image>
+      <url>https://www.boostmebuddy.com/feeds/playlists/d59b546e-3922-46e5-b916-1b19c4bbe89f.jpg?v=1795135084</url>
+      <title>test</title>
+      <link>https://www.boostmebuddy.com/feeds/playlists/d59b546e-3922-46e5-b916-1b19c4bbe89f.xml</link>
+    </image>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="eeb873c6-3c82-4c2e-ac8c-9cd3368f446e" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="d301eb50-0695-4a25-b877-6e1fd4f07c36" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="33932ccc-c707-411b-b914-4e9a94ec7e89" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="3dedac40-8a50-4579-bea8-c7e488adba85" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="74bb6c2a-0071-4d18-a12a-ca345477d574" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="ee10ef21-e7d1-4ba5-858f-9663439a457f" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="7ad63686-68ca-49fb-b5f3-a5426f1e87c9" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="5e2774af-1e11-4386-86cd-be27338584dd" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="df0e4035-dd96-42d4-9748-ad2f7444aa4a" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="2155dfff-142f-4138-9607-65e8321bda85" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+  </channel>
+</rss>

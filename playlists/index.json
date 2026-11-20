@@ -1,7 +1,16 @@
 {
   "origin": "https://www.boostmebuddy.com",
-  "count": 2,
+  "count": 3,
   "playlists": [
+    {
+      "id": "d59b546e-3922-46e5-b916-1b19c4bbe89f",
+      "title": "test",
+      "podcastGuid": "2005a39f-7f7e-5ed8-a866-f2cf82da4484",
+      "feedUrl": "https://www.boostmebuddy.com/feeds/playlists/d59b546e-3922-46e5-b916-1b19c4bbe89f.xml",
+      "file": "d59b546e-3922-46e5-b916-1b19c4bbe89f.xml",
+      "songs": 10,
+      "updated": "2026-11-20T00:38:04.000Z"
+    },
     {
       "id": "ed79e282-3d6e-4764-adb5-8702eaf77086",
       "title": "BMB test playlist",
@@ -20,5 +29,6 @@
       "songs": 10,
       "updated": "2026-11-16T01:32:18.000Z"
     }
-  ]
+  ],
+  "removed": []
 }
