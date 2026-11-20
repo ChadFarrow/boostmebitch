@@ -2,6 +2,7 @@
 
 import { createObservable } from '../pubsub';
 import { BRAND } from '../brand';
+import { isNativeIos } from '../native/platform';
 
 // Spark rail — Spark Labs SDK adapter (@buildonspark/spark-sdk). Self-custodial
 // wallet whose mnemonic is bootstrapped from a NIP-44-encrypted backup on Nostr
@@ -61,6 +62,17 @@ const { subscribe: subscribeSpark, notify } = createObservable();
 
 /** Subscribe to wallet state changes. Returns an unsubscribe fn. */
 export { subscribeSpark };
+
+/**
+ * False inside the iOS app: Spark is a wallet this app HOLDS, and the iOS app
+ * holds no funds — it pays through NWC only (docs/wallets.md, "Spark is off
+ * inside the iOS app"). `sparkInitFromMnemonic` refuses on it, which stops
+ * every path that starts a wallet; the picker row and the page-load restore
+ * read it too, so the app neither offers Spark nor asks to decrypt its seed.
+ */
+export function sparkAvailable(): boolean {
+  return !isNativeIos();
+}
 
 /** True once a wallet has been initialized for the current session. */
 export function hasSpark(): boolean {
@@ -124,6 +136,11 @@ export async function sparkInitFromMnemonic(args: {
   // for Spark. Use `regtest` against a local node for development.
   network?: 'mainnet' | 'regtest';
 }): Promise<void> {
+  // THE ONE GATE. The picker row, the page-load restore of the seed backup,
+  // a local key's derived wallet and the Google new-account branch all start
+  // a wallet here, so a check at any one caller leaves the other three open.
+  // Before the SDK import: inside the app the Spark SDK is never fetched.
+  if (!sparkAvailable()) throw new Error('Spark is not available in the iOS app — connect a wallet with NWC');
   const key = normalizeSeed(args.mnemonic);
   // Already connected with this exact seed — the auto-restore beat a manual
   // restore (or vice versa). Nothing to do.

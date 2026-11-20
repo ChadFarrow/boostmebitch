@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { useState } from 'react';
 import { ModalShell } from './modal-shell';
 import { hasNwc } from '@/lib/v4v/nwc-state';
-import { hasSpark } from '@/lib/v4v/spark';
+import { hasSpark, sparkAvailable } from '@/lib/v4v/spark';
 import { hasWebln, isWeblnEnabled, weblnEnable } from '@/lib/v4v/webln';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
@@ -202,7 +202,10 @@ export function WalletModal({ onClose }: Props) {
       // first thing a newcomer reads about paying, and "NWC · Paste a
       // nostr+walletconnect:// URI" told them nothing about which to pick.
       { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Connect a Lightning wallet you already have (Nostr Wallet Connect)' },
-      { rail: 'spark', icon: '✶', title: 'Spark', desc: 'A wallet this app creates and backs up for you — self-custodial' },
+      // Not inside the iOS app, which holds no funds (`sparkAvailable`).
+      ...(sparkAvailable()
+        ? [{ rail: 'spark' as const, icon: '✶', title: 'Spark', desc: 'A wallet this app creates and backs up for you — self-custodial' }]
+        : []),
     ];
 
     return (
@@ -214,7 +217,15 @@ export function WalletModal({ onClose }: Props) {
             has touched anything. Refusing is right; leaving someone to wonder
             why their wallet did not come back is not, which is why this says so
             here, where they look when it is missing. */}
-        {backupWithheld && !activeRail && (
+        {backupWithheld && !activeRail && !sparkAvailable() && (
+          <div className="text-[11px] text-muted border border-bone/15 rounded p-3">
+            Your wallet backup was <strong className="text-bone">not</strong> read
+            automatically, so that your signer is not asked for it before you
+            touch anything. Pick <strong className="text-bone">NWC</strong> below to
+            restore it; your signer will ask once.
+          </div>
+        )}
+        {backupWithheld && !activeRail && sparkAvailable() && (
           <div className="text-[11px] text-muted border border-bone/15 rounded p-3">
             Your wallet backup was <strong className="text-bone">not</strong> read
             automatically, because Amber shows the decrypted text on screen — and
