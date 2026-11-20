@@ -11,6 +11,7 @@ import {
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
   blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
   foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
+  podpingEndpoint, podpingRequestUrl, PODPING_MEDIUM, PODPING_REASON,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -750,6 +751,67 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
     if (v.alsoNaive) check('pi notify: ' + v.kind + ' (naive agrees)', n === v.want);
     else check('pi notify: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
   }
+}
+
+// podpingEndpoint — where a podping (and PODPING_BEARER_TOKEN) may go
+// (lib/community/podping-notify.ts). A podping is written to Hive, so it is public and
+// permanent, and the request carries a bearer token: the switch, both variables, an
+// https endpoint with no userinfo, the real feed origin, and Vercel production or the
+// `beta` branch; or a loopback stub.
+{
+  const PUSHER = 'https://msp-podping-service-production.up.railway.app';
+  const env = (o) => ({ notify: 'on', endpoint: PUSHER + '/', hasToken: true, vercelEnv: undefined, gitRef: undefined, feedOrigin: PRODUCTION_FEED_ORIGIN, ...o });
+  const vectors = [
+    { kind: 'switch unset: nowhere', args: [env({ notify: undefined, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'switch "true", not "on": nowhere', args: [env({ notify: 'true', vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'no endpoint: nowhere', args: [env({ endpoint: undefined, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'no token: nowhere', args: [env({ hasToken: false, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'production: the pusher (path kept, query dropped)', args: [env({ vercelEnv: 'production', gitRef: 'main', endpoint: PUSHER + '/?x=1' })], want: PUSHER + '/', alsoNaive: false },
+    { kind: 'production: the pusher', args: [env({ vercelEnv: 'production', gitRef: 'main' })], want: PUSHER + '/', alsoNaive: true },
+    { kind: 'the beta branch preview: the pusher', args: [env({ vercelEnv: 'preview', gitRef: 'beta' })], want: PUSHER + '/', alsoNaive: true },
+    { kind: 'a PR preview: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'feat/playlist-podping' })], want: null },
+    { kind: 'a preview with no branch: nowhere', args: [env({ vercelEnv: 'preview' })], want: null },
+    { kind: 'a branch named like beta: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'beta-old' })], want: null },
+    { kind: 'vercel dev: nowhere', args: [env({ vercelEnv: 'development', gitRef: 'beta' })], want: null },
+    { kind: 'off Vercel (next dev / next start) with the real values: nowhere', args: [env({})], want: null },
+    { kind: 'production with a local feed origin: nowhere', args: [env({ vercelEnv: 'production', feedOrigin: 'http://localhost:3123' })], want: null },
+    { kind: 'a loopback stub, no deploy checks', args: [env({ endpoint: 'http://127.0.0.1:48555/', feedOrigin: 'http://localhost:3123' })], want: 'http://127.0.0.1:48555/', alsoNaive: true },
+    { kind: 'a localhost stub, query dropped', args: [env({ endpoint: 'http://localhost:48555/p?token=x' })], want: 'http://localhost:48555/p' },
+    { kind: 'a stub still needs the switch', args: [env({ notify: undefined, endpoint: 'http://127.0.0.1:48555/' })], want: null, alsoNaive: true },
+    { kind: 'a stub still needs the token', args: [env({ hasToken: false, endpoint: 'http://127.0.0.1:48555/' })], want: null, alsoNaive: true },
+    { kind: 'https to loopback: nowhere (the stub is http)', args: [env({ endpoint: 'https://127.0.0.1:48555/', vercelEnv: 'production' })], want: null },
+    { kind: 'plain http to a public host on production: nowhere (the token rides in a header)', args: [env({ endpoint: 'http://pusher.example/', vercelEnv: 'production' })], want: null },
+    { kind: 'a DNS name that resolves to loopback: nowhere', args: [env({ endpoint: 'http://127.0.0.1.nip.io:48555/', vercelEnv: 'production' })], want: null },
+    { kind: 'userinfo hiding another host: nowhere', args: [env({ endpoint: 'https://pusher.example@evil.example/', vercelEnv: 'production' })], want: null },
+    { kind: 'a loopback with userinfo: nowhere', args: [env({ endpoint: 'http://user:pw@127.0.0.1:1/' })], want: null },
+    { kind: 'an endpoint typo on production: nowhere, never sent as written', args: [env({ endpoint: 'msp-podping.example', vercelEnv: 'production' })], want: null },
+  ];
+  // The obvious wrong version: the switch, the two variables, and the endpoint as written.
+  const naive = (e) => (e.notify === 'on' && e.endpoint && e.hasToken ? e.endpoint : null);
+  for (const v of vectors) {
+    check('podping endpoint: ' + v.kind, podpingEndpoint(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('podping endpoint: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('podping endpoint: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+
+  // The request itself: musicL, update, the feed URL whole, and nothing else.
+  const feed = 'https://www.boostmebuddy.com/feeds/playlists/0b5a7c0e-1111-4222-8333-444455556666.xml';
+  const u = new URL(podpingRequestUrl(PUSHER + '/', feed));
+  check('podping request: the pusher, no path change', u.origin === PUSHER && u.pathname === '/');
+  check('podping request: url, reason and medium', u.searchParams.get('url') === feed
+    && u.searchParams.get('reason') === 'update' && u.searchParams.get('medium') === 'musicL');
+  check('podping request: the constants are what the updater sends', PODPING_MEDIUM === 'musicL' && PODPING_REASON === 'update');
+  check('podping request: asks for the detailed answer', u.searchParams.get('detailed_response') === 'true');
+  check('podping request: exactly four parameters, no token', [...u.searchParams.keys()].length === 4 && !u.href.toLowerCase().includes('bearer'));
+  check('podping request: a query already on the endpoint is replaced', new URL(podpingRequestUrl(PUSHER + '/?medium=podcast', feed)).searchParams.get('medium') === 'musicL');
+  check('podping request: a feed URL with a query survives whole', new URL(podpingRequestUrl(PUSHER + '/', feed + '?a=1&b=2')).searchParams.get('url') === feed + '?a=1&b=2');
+  check('podping request: a non-http feed is refused', podpingRequestUrl(PUSHER + '/', 'javascript:alert(1)') === null && podpingRequestUrl(PUSHER + '/', 'file:///etc/passwd') === null);
+  check('podping request: not a URL is refused', podpingRequestUrl(PUSHER + '/', 'nope') === null && podpingRequestUrl('nope', feed) === null);
+  // The obvious wrong version builds the string by hand and leaves the feed unencoded.
+  const naiveUrl = (e, f) => `${e}?url=${f}&reason=update&medium=musicL`;
+  check('podping request: a hand-built string breaks on a feed URL with a query (can fail)',
+    new URL(naiveUrl(PUSHER + '/', feed + '?a=1&b=2')).searchParams.get('url') !== feed + '?a=1&b=2');
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }

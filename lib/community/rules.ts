@@ -368,3 +368,76 @@ export function piNotifyBase(env: PiNotifyEnv): string | null {
   const deployed = env.vercelEnv === 'production' || (env.vercelEnv === 'preview' && env.gitRef === 'beta');
   return deployed ? PI_API_BASE : null;
 }
+
+/** What every playlist podping asks for. Every community playlist is `<podcast:medium>musicL`. */
+export const PODPING_MEDIUM = 'musicL';
+/** The podping reason: the feed changed. A deleted feed uses it too; an app that reads it finds the 410. */
+export const PODPING_REASON = 'update';
+
+/** What `podpingEndpoint` reads. It never sees the token: only whether one is set. */
+export interface PodpingEnv {
+  /** `COMMUNITY_PI_NOTIFY`: the one switch for every public notice a playlist write sends. */
+  notify: string | undefined;
+  /** `PODPING_ENDPOINT_URL`: Chad's msp-podping-service pusher. */
+  endpoint: string | undefined;
+  /** Is `PODPING_BEARER_TOKEN` set? (The value is read only where the request is made.) */
+  hasToken: boolean;
+  vercelEnv: string | undefined;
+  gitRef: string | undefined;
+  feedOrigin: string;
+}
+
+/**
+ * Where `lib/community/podping-notify.ts` may send a podping, or null for nowhere.
+ * A podping is written to the Hive blockchain, so it is public and permanent, and
+ * the request carries a bearer token. So, in the same order as `piNotifyBase`:
+ *
+ * - `COMMUNITY_PI_NOTIFY=on` (one switch turns every public notice off), and
+ * - the endpoint and the token are both set, and
+ * - the endpoint is `https:` with no userinfo (the token rides in a header), and
+ * - the feed origin is `https://www.boostmebuddy.com`, and
+ * - Vercel production, or the `beta` branch's preview; a PR preview and a laptop
+ *   with the real values in `.env.local` send nothing.
+ *
+ * A test's endpoint on a loopback address (`http://127.0.0.1:<port>`) skips the
+ * last two checks: nothing leaves the machine. Anything else that is not https is
+ * null, NEVER sent as written.
+ */
+export function podpingEndpoint(env: PodpingEnv): string | null {
+  if (env.notify !== 'on' || !env.endpoint || !env.hasToken) return null;
+  let u: URL;
+  try {
+    u = new URL(env.endpoint);
+  } catch {
+    return null;
+  }
+  if (u.username || u.password) return null;
+  const loopback = u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]';
+  if (loopback) return u.protocol === 'http:' ? u.origin + u.pathname : null;
+  if (u.protocol !== 'https:') return null;
+  if (env.feedOrigin !== PRODUCTION_FEED_ORIGIN) return null;
+  const deployed = env.vercelEnv === 'production' || (env.vercelEnv === 'preview' && env.gitRef === 'beta');
+  return deployed ? u.origin + u.pathname : null;
+}
+
+/**
+ * The pusher request for one feed: `GET <endpoint>?url=<feed>&reason=update&medium=musicL`.
+ * `detailed_response=true` makes the pusher answer `{ message: "enqueued" | "duplicate" }`
+ * instead of an empty 200. Null when the feed is not an http(s) URL.
+ */
+export function podpingRequestUrl(endpoint: string, feedUrl: string): string | null {
+  let feed: URL;
+  let u: URL;
+  try {
+    feed = new URL(feedUrl);
+    u = new URL(endpoint);
+  } catch {
+    return null;
+  }
+  if (feed.protocol !== 'https:' && feed.protocol !== 'http:') return null;
+  u.search = new URLSearchParams({
+    url: feed.href, reason: PODPING_REASON, medium: PODPING_MEDIUM, detailed_response: 'true',
+  }).toString();
+  return u.href;
+}
+
