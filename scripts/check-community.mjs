@@ -10,6 +10,7 @@ import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
   blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
+  foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -420,6 +421,36 @@ for (const v of docVectors.filter((x) => ['items', 'title well-formed', 'author 
 }
 check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
 
+// ---- The MADE BY box: PlaylistDraft.ownerName, printed as <itunes:author> ----
+{
+  const nsec = nsecEncode(generateSecretKey());
+  const name = (raw) => { const r = V(draft({ ownerName: raw })); return r.ok ? r.draft.ownerName : kinds(r); };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const nameVectors = [
+    { kind: 'plain', args: ['ChadF'], want: 'ChadF', alsoNaive: true },
+    { kind: 'trimmed', args: ['  ChadF  '], want: 'ChadF', alsoNaive: true },
+    { kind: 'absent is no name (an older draft)', args: [undefined], want: '', alsoNaive: true },
+    { kind: 'not a string is no name', args: [42], want: '', alsoNaive: true },
+    { kind: 'white space runs collapse', args: ['Chad \t\n  F'], want: 'Chad F' },
+    { kind: 'control characters go', args: ['Ch\x00ad\x1F\x7F\x85F'], want: 'Ch ad F' },
+    { kind: 'MAX_OWNER_NAME_LEN code points pass', args: ['é'.repeat(MAX_OWNER_NAME_LEN)], want: 'é'.repeat(MAX_OWNER_NAME_LEN), alsoNaive: true },
+    { kind: 'one more is refused', args: ['é'.repeat(MAX_OWNER_NAME_LEN + 1)], want: ['name-too-long'] },
+    { kind: 'a secret key is refused', args: [nsec], want: ['secret'] },
+    { kind: 'a key inside a name is refused (and too long)', args: [`hi ${nsec}`], want: ['secret', 'name-too-long'] },
+  ];
+  // The obvious wrong version: take the box as typed, trimmed, with no limit or key test.
+  const naive = (raw) => (typeof raw === 'string' ? raw.trim() : '');
+  for (const v of nameVectors) {
+    check('name box: ' + v.kind, same(name(...v.args), v.want));
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('name box: ' + v.kind + ' (naive agrees)', same(n, v.want));
+    else check('name box: ' + v.kind + ' fails against naive (can fail)', !same(n, v.want));
+  }
+  const r = V(draft({ ownerName: nsec }));
+  check('name box: the secret refusal names the field "name"', !r.ok && r.problems.some((p) => p.kind === 'secret' && p.field === 'name'));
+  check('foldName of a non-string is empty', foldName(null) === '' && foldName({}) === '');
+}
+
 // ---- the maker's publisher feed (buildPublisherFeedXml) ----
 {
   const pIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
@@ -586,6 +617,10 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const got = communityPlaylistToPodcast(summary);
   check('communityPlaylistToPodcast: exact shape', JSON.stringify(got) === JSON.stringify(want));
   check('communityPlaylistToPodcast: id is negative', got.id < 0);
+  // The list row's "who made it" line is `author`, as for a v4vmusic playlist.
+  const named = communityPlaylistToPodcast({ ...summary, ownerName: 'ChadF' });
+  check('communityPlaylistToPodcast: the maker name is the author', named.author === 'ChadF');
+  check('communityPlaylistToPodcast: no name, no author key', !('author' in communityPlaylistToPodcast({ ...summary, ownerName: null })));
 }
 
 {
@@ -648,6 +683,73 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   check('grid with a missing tile -> 1400 x 1400', gm.width === 1400 && gm.height === 1400);
   const rep = [...(await sharp(g).extract({ left: 1000, top: 300, width: 1, height: 1 }).raw().toBuffer())];
   check('a missing tile repeats the previous one', rep[0] > 200 && rep[1] < 60);
+}
+
+// archiveDispatchBase — where GITHUB_ARCHIVE_TOKEN may go (lib/community/archive-notify.ts).
+// The token can start this repo's workflows, so the only hosts are GitHub's API
+// on a real-feed server and a loopback test stub.
+{
+  const GH = 'https://api.github.com';
+  const vectors = [
+    { kind: 'production feed origin, no override: GitHub', args: [undefined, PRODUCTION_FEED_ORIGIN], want: GH, alsoNaive: true },
+    { kind: 'a local feed origin: nowhere', args: [undefined, 'http://localhost:3123'], want: null },
+    { kind: 'a beta feed origin: nowhere', args: [undefined, 'https://beta.boostmebitch.com'], want: null },
+    { kind: 'a loopback stub', args: ['http://127.0.0.1:48555', 'http://localhost:3123'], want: 'http://127.0.0.1:48555', alsoNaive: true },
+    { kind: 'a localhost stub, path dropped', args: ['http://localhost:48555/x', 'http://localhost:3123'], want: 'http://localhost:48555' },
+    { kind: 'a public host in the override: nowhere', args: ['https://evil.example', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'a DNS name that resolves to loopback: nowhere', args: ['http://127.0.0.1.nip.io', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'userinfo hiding another host: nowhere', args: ['http://localhost@evil.example', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'a loopback with userinfo: nowhere', args: ['http://user:pw@127.0.0.1:1', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'https to loopback: nowhere (the stub is http)', args: ['https://127.0.0.1:1', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'an override typo: nowhere, never GitHub', args: ['127.0.0.1:48555', PRODUCTION_FEED_ORIGIN], want: null },
+  ];
+  // The obvious wrong version: the override if set, else GitHub.
+  const naive = (override) => (override ? override.replace(/\/+$/, '') : GH);
+  for (const v of vectors) {
+    check('archive dispatch: ' + v.kind, archiveDispatchBase(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('archive dispatch: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('archive dispatch: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+}
+
+// piNotifyBase — where a playlist feed may be submitted (lib/community/pi-notify.ts).
+// A Podcast Index submission is public and permanent, so: the switch, the real
+// feed origin, and Vercel production or the `beta` branch; or a loopback stub.
+{
+  const PI = PI_API_BASE;
+  const env = (o) => ({ notify: 'on', override: undefined, vercelEnv: undefined, gitRef: undefined, feedOrigin: PRODUCTION_FEED_ORIGIN, ...o });
+  const vectors = [
+    { kind: 'switch unset: nowhere', args: [env({ notify: undefined, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'switch "true", not "on": nowhere', args: [env({ notify: 'true', vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'production: Podcast Index', args: [env({ vercelEnv: 'production', gitRef: 'main' })], want: PI, alsoNaive: true },
+    { kind: 'the beta branch preview: Podcast Index', args: [env({ vercelEnv: 'preview', gitRef: 'beta' })], want: PI, alsoNaive: true },
+    { kind: 'a PR preview: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'playlist-pi-submit' })], want: null },
+    { kind: 'a preview with no branch: nowhere', args: [env({ vercelEnv: 'preview' })], want: null },
+    { kind: 'a branch named like beta: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'beta-old' })], want: null },
+    { kind: 'vercel dev: nowhere', args: [env({ vercelEnv: 'development', gitRef: 'beta' })], want: null, alsoNaive: true },
+    { kind: 'off Vercel (next dev / next start): nowhere', args: [env({})], want: null, alsoNaive: true },
+    { kind: 'production with a local feed origin: nowhere', args: [env({ vercelEnv: 'production', feedOrigin: 'http://localhost:3123' })], want: null, alsoNaive: true },
+    { kind: 'a loopback stub', args: [env({ override: 'http://127.0.0.1:48555', feedOrigin: 'http://localhost:3123' })], want: 'http://127.0.0.1:48555/api/1.0', alsoNaive: true },
+    { kind: 'a localhost stub, path dropped', args: [env({ override: 'http://localhost:48555/x/' })], want: 'http://localhost:48555/api/1.0' },
+    { kind: 'switch off beats a stub: nowhere', args: [env({ notify: undefined, override: 'http://127.0.0.1:48555' })], want: null, alsoNaive: true },
+    { kind: 'a DNS name that resolves to loopback: nowhere', args: [env({ override: 'http://127.0.0.1.nip.io:48555', vercelEnv: 'production' })], want: null },
+    { kind: 'a public host in the override: nowhere', args: [env({ override: 'https://pi-proxy.example', vercelEnv: 'production' })], want: null },
+    { kind: 'an override typo on production: nowhere, never the real API', args: [env({ override: '127.0.0.1:48555', vercelEnv: 'production' })], want: null },
+  ];
+  // The obvious wrong versions: any preview counts as deployed, and the
+  // override is taken as written.
+  const naive = (e) => {
+    if (e.notify !== 'on') return null;
+    if (e.override) return e.override.replace(/\/+$/, '') + '/api/1.0';
+    return e.feedOrigin === PRODUCTION_FEED_ORIGIN && (e.vercelEnv === 'production' || e.vercelEnv === 'preview') ? PI : null;
+  };
+  for (const v of vectors) {
+    check('pi notify: ' + v.kind, piNotifyBase(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('pi notify: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('pi notify: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }

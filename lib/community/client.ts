@@ -1,10 +1,26 @@
 // Browser-only: signs NIP-98 calls to the community-playlist routes with whichever
 // signer is active (Amber, bunker, local key or NIP-07).
 import { getToken } from 'nostr-tools/nip98';
+import type { Event, EventTemplate } from 'nostr-tools/pure';
 import { activeNostr } from '@/lib/nostr/signer';
 import type { CommunityPlaylistSummary, PlaylistDraft, StoredPlaylist } from './rules';
 
 export const PLAYLISTS_PATH = '/api/community-playlists';
+
+/**
+ * What a community call needs from a signer: `signEvent`, nothing else. The active
+ * signer has it; so does the guest key (`lib/community/guest-key.ts`), which is not
+ * a signer the app signs in with and is never `window.nostr`.
+ */
+export interface CommunitySigner {
+  signEvent: (template: EventTemplate) => Promise<Event>;
+}
+
+/** `signer`: sign with this instead of the active one (the guest key). */
+export interface SignOptions {
+  timeoutMs?: number;
+  signer?: CommunitySigner;
+}
 const DEFAULT_SIGN_TIMEOUT_MS = 90_000;
 
 /** The signer did not answer in time (a closed Amber, a dismissed prompt). */
@@ -70,15 +86,15 @@ export async function withSignTimeout<T>(p: Promise<T>, o?: { timeoutMs?: number
  * One request with a NIP-98 `Authorization` header. Only the SIGN step races the
  * timeout; the network call after it has its own life. Rejects with
  * `SignTimeoutError` when the signer is silent, `SignFailedError` when it fails,
- * `NoSignerError` with none.
+ * `NoSignerError` with none. `o.signer` replaces the active signer for this one call.
  */
 export async function signedFetch(
   path: string,
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   body?: unknown,
-  o?: { timeoutMs?: number },
+  o?: SignOptions,
 ): Promise<Response> {
-  const nostr = activeNostr();
+  const nostr = o?.signer ?? activeNostr();
   if (!nostr) throw new NoSignerError();
   const url = `${location.origin}${path}`;
   const token = await withSignTimeout(
@@ -95,14 +111,14 @@ export async function signedFetch(
   });
 }
 
-export const publishPlaylist = (d: PlaylistDraft) =>
-  signedFetch(PLAYLISTS_PATH, 'POST', { draft: d });
+export const publishPlaylist = (d: PlaylistDraft, o?: SignOptions) =>
+  signedFetch(PLAYLISTS_PATH, 'POST', { draft: d }, o);
 
-export const savePlaylist = (id: string, d: PlaylistDraft, expectedUpdatedAt: string) =>
-  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'PUT', { draft: d, expectedUpdatedAt });
+export const savePlaylist = (id: string, d: PlaylistDraft, expectedUpdatedAt: string, o?: SignOptions) =>
+  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'PUT', { draft: d, expectedUpdatedAt }, o);
 
-export const deleteOwnPlaylist = (id: string) =>
-  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'DELETE');
+export const deleteOwnPlaylist = (id: string, o?: SignOptions) =>
+  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'DELETE', undefined, o);
 
 /** An unsigned read: the route answers anyone. `null` means it could not be loaded. */
 export async function fetchPlaylist(id: string): Promise<StoredPlaylist | null> {

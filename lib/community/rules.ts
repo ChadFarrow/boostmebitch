@@ -296,3 +296,75 @@ export interface CommunityPlaylistSummary {
   createdAt: string;
   updatedAt: string;
 }
+
+/** The feed origin of the production deploys (the default of `COMMUNITY_FEED_ORIGIN`). */
+export const PRODUCTION_FEED_ORIGIN = 'https://www.boostmebuddy.com';
+
+/**
+ * Where `lib/community/archive-notify.ts` may send `GITHUB_ARCHIVE_TOKEN`, or null
+ * for nowhere. GitHub's API, on a server whose feeds are the real ones; or the
+ * LOOPBACK stub a test names in `PLAYLIST_ARCHIVE_API`. An override that is set
+ * and is anything else is null, never GitHub: a typo in a test's env must not
+ * send a real dispatch, and the variable must not be a way to mail the token to
+ * another host (`http://127.0.0.1.nip.io`, `http://localhost@evil.example`).
+ */
+export function archiveDispatchBase(override: string | undefined, feedOrigin: string): string | null {
+  if (override) return loopbackOrigin(override);
+  return feedOrigin === PRODUCTION_FEED_ORIGIN ? 'https://api.github.com' : null;
+}
+
+/** The origin of a test stub: `http:` on a loopback NAME OR ADDRESS, no userinfo. Else null. */
+function loopbackOrigin(raw: string): string | null {
+  try {
+    const u = new URL(raw);
+    const loopback = u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]';
+    return u.protocol === 'http:' && loopback && !u.username && !u.password ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The Podcast Index API that `lib/community/pi-notify.ts` writes to. */
+export const PI_API_BASE = 'https://api.podcastindex.org/api/1.0';
+
+/** What `piNotifyBase` reads; the server passes `process.env` and `COMMUNITY_FEED_ORIGIN`. */
+export interface PiNotifyEnv {
+  /** `COMMUNITY_PI_NOTIFY`: only the exact value `on` turns it on. */
+  notify: string | undefined;
+  /** `PI_NOTIFY_API`: a test's loopback stub. */
+  override: string | undefined;
+  /** `VERCEL_ENV`: production, preview or development; unset off Vercel. */
+  vercelEnv: string | undefined;
+  /** `VERCEL_GIT_COMMIT_REF`: the branch the deploy was built from. */
+  gitRef: string | undefined;
+  feedOrigin: string;
+}
+
+/**
+ * Where `lib/community/pi-notify.ts` may send a playlist feed, or null for nowhere.
+ * A feed added to Podcast Index stays there for good (PI has no delete), so this
+ * says yes only on a deploy that serves the REAL feeds:
+ *
+ * - `COMMUNITY_PI_NOTIFY=on`, and
+ * - the feed origin is `https://www.boostmebuddy.com`, and
+ * - Vercel production, or the `beta` branch's preview (the maker is beta only
+ *   today, and beta writes the same database production's feeds read). A PR
+ *   preview is a preview too, so the branch is named; off Vercel (`next dev`,
+ *   `next start`) there is no `VERCEL_ENV`, so a laptop with the real database
+ *   and the switch in `.env.local` still sends nothing.
+ *
+ * A test's `PI_NOTIFY_API` replaces all three of the last checks, and only a
+ * loopback stub is accepted there. An override that is set and is anything else
+ * is null, NEVER the real API: a typo in a test's env must not become a real
+ * submission (`docs/feeds.md`, "Podcast Index").
+ */
+export function piNotifyBase(env: PiNotifyEnv): string | null {
+  if (env.notify !== 'on') return null;
+  if (env.override) {
+    const o = loopbackOrigin(env.override);
+    return o ? `${o}/api/1.0` : null;
+  }
+  if (env.feedOrigin !== PRODUCTION_FEED_ORIGIN) return null;
+  const deployed = env.vercelEnv === 'production' || (env.vercelEnv === 'preview' && env.gitRef === 'beta');
+  return deployed ? PI_API_BASE : null;
+}

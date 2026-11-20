@@ -188,13 +188,15 @@ export async function deletePlaylist(id: string, by: 'owner' | string): Promise<
   return (rowCount ?? 0) > 0;
 }
 
-export async function deletePlaylistsByOwner(owner: string, by: string): Promise<number> {
-  const { rowCount } = await db().query(
+/** Deletes every live playlist of one owner; returns their ids (for the Podcast Index ping). */
+export async function deletePlaylistsByOwner(owner: string, by: string): Promise<string[]> {
+  const { rows } = await db().query<{ id: string }>(
     `update community_playlists set deleted_at = now(), deleted_by = $2
-      where owner_pubkey = $1 and deleted_at is null`,
+      where owner_pubkey = $1 and deleted_at is null
+      returning id`,
     [owner, by],
   );
-  return rowCount ?? 0;
+  return rows.map((r) => r.id);
 }
 
 export async function isBanned(pubkey: string): Promise<boolean> {

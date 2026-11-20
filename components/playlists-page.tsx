@@ -10,8 +10,10 @@ import {
   COMMUNITY_COLLECTION_TITLE,
   loadCollection,
   playlistTrackCount,
+  playlistsNotInPi,
 } from '@/lib/playlist-collection';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { useGuestKey } from '@/lib/community/use-guest-key';
 import { isPlaylistMedium } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -132,6 +134,8 @@ export function PlaylistsPage() {
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
   const identity = useApp((s) => s.identity);
+  // The guest key's public half (never made here): a playlist made with no account is still editable.
+  const guest = useGuestKey();
   const router = useRouter();
 
   const patch = useCallback((i: number, next: Partial<SectionState>) => {
@@ -258,6 +262,40 @@ export function PlaylistsPage() {
   }, [urlKey, reserved]);
 
   /**
+   * The playlists made on BMB that Podcast Index ANSWERED "not found" for, by
+   * their id in our store. Only these rows print `NOT IN PI` (Chad, 2026-11-18:
+   * "my playlist need a not on PI badge").
+   *
+   * A stored row is built from our own database, so its `isPreview` is no answer
+   * from PI, and an id missing from this set renders NO stamp: "still asking",
+   * "could not ask" and "PI holds it" all look the same, because the stamp is a
+   * claim and only the first answer below may make it. ONE batch request for all
+   * of them (`playlistsNotInPi`), asked again only when the set of stored rows
+   * changes. Keyed by id, never by row, so the same playlist listed again under
+   * ChadF's playlists (his publisher feed names some of them) gets the same stamp.
+   */
+  const [notInPi, setNotInPi] = useState<ReadonlySet<string>>(() => new Set());
+  const ownKey = useMemo(
+    () => (communityState.playlists ?? [])
+      .map((p) => [communityIdFromFeedUrl(p.url), p.podcastGuid] as const)
+      .filter((pair): pair is readonly [string, string] => !!pair[0] && !!pair[1])
+      .map(([id, guid]) => `${id} ${guid}`)
+      .sort()
+      .join('\n'),
+    [communityState.playlists],
+  );
+  useEffect(() => {
+    if (!ownKey) return;
+    let live = true;
+    const pairs = ownKey.split('\n').map((line) => line.split(' ') as [string, string]);
+    void playlistsNotInPi(pairs.map(([, guid]) => guid)).then((missing) => {
+      if (!live || !missing) return;
+      setNotInPi(new Set(pairs.filter(([, guid]) => missing.has(guid)).map(([id]) => id)));
+    });
+    return () => { live = false; };
+  }, [ownKey]);
+
+  /**
    * Open a playlist: set the store, THEN navigate to `/`.
    *
    * Never `router.push('/?podcast=…')`. The show view is `<HomePage>` state and
@@ -361,12 +399,18 @@ export function PlaylistsPage() {
                 feeds={rows}
                 selected={null}
                 onSelect={openPlaylist}
-                // A playlist read from our own store was never asked about Podcast
-                // Index either, so `isPreview` says nothing about PI for it.
-                piUnasked={(p) => state.noPi || !!communityIdFromFeedUrl(p.url)}
+                // A playlist from our own store stamps only on PI's own answer
+                // (`notInPi` above), never on `isPreview`, which for it says
+                // nothing about PI.
+                piUnasked={(p) => {
+                  const own = communityIdFromFeedUrl(p.url);
+                  return own ? !notInPi.has(own) : state.noPi;
+                }}
                 action={(p) => {
                   const id = communityIdFromFeedUrl(p.url);
-                  if (!id || !identity || p.nostrNpubs?.[0]?.pubkey !== identity.pubkey) return null;
+                  const maker = p.nostrNpubs?.[0]?.pubkey;
+                  // Mine: made under the signed-in account, or under the guest key this browser keeps.
+                  if (!id || !maker || (maker !== identity?.pubkey && maker !== guest?.pubkey)) return null;
                   return (
                     <Link href={`/playlists/make?id=${id}`} className="btn-mini" data-edit-playlist aria-label={`Edit ${p.title}`}>
                       EDIT

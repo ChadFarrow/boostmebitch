@@ -20,6 +20,7 @@ import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
+import { FeedAddress } from './feed-address';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
 // download match that condition. `.then((m) => m.BoostModal)` because it is a
@@ -37,6 +38,7 @@ import { DeferredOnScroll } from '../deferred-on-scroll';
 import { ArtistFollowChip, FavHeart } from '../fav-heart';
 import { AlbumDownload } from '../album-download';
 import { AlbumShuffleButton } from '../album-shuffle-button';
+import { PlaylistRepeatButton, PlaylistShuffleButton } from '../playlist-shuffle-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
@@ -453,9 +455,12 @@ export function EpisodeList({
    * The generation guard the loaders carry is still what protects this: it
    * gates `setData`, and this only ever reflects whatever `data` settled on.
    */
+  // `complete` is false while a playlist has pages left: REPEAT must not wrap
+  // a prefix (docs/ui.md, "The playlist shuffle and repeat").
+  const queueComplete = !playlist || playlist.nextOffset == null;
   useEffect(() => {
-    setEpisodeQueue(orderedEpisodes);
-  }, [orderedEpisodes, setEpisodeQueue]);
+    setEpisodeQueue(orderedEpisodes, queueComplete);
+  }, [orderedEpisodes, queueComplete, setEpisodeQueue]);
 
   /**
    * Fetch the next page of a playlist while the listener is still on this one.
@@ -735,6 +740,7 @@ export function EpisodeList({
               )}
             </div>
           )}
+          {isPlaylist && <FeedAddress podcast={data.podcast} />}
         </div>
         {/* A `basis-full` SIBLING of the text column, not a child of it. DOM
             nesting can't be responsive, and nested under the author line this
@@ -824,8 +830,8 @@ export function EpisodeList({
               it sits over the list. `canReverse` is true for any album of two
               tracks or more, which is exactly when this control renders.
               ⤮ SHUFFLE sits here for the same reason, and ahead of it: it
-              plays, and DOWNLOAD only stores. Albums only, as DOWNLOAD —
-              `albumShuffleTracks` (lib/util.ts) says why not a playlist. */}
+              plays, and DOWNLOAD only stores. A playlist has its own row
+              below (`<PlaylistShuffleButton>`). */}
           {isMusic && !isPlaylist && data.podcast && (
             <AlbumShuffleButton episodes={orderedEpisodes} podcast={data.podcast} />
           )}
@@ -847,6 +853,21 @@ export function EpisodeList({
               one go, so the earliest episodes aren&apos;t here.
             </p>
           )}
+        </div>
+      )}
+      {/* ⤮ SHUFFLE and ↻ REPEAT on a playlist (docs/ui.md, "The playlist
+          shuffle and repeat"). Their own row: the album row above is gated on
+          `canReverse`, which a playlist never is. */}
+      {asTracks && isPlaylist && playlist && data.podcast && (
+        <div className="flex flex-wrap items-center gap-2 py-3" data-playlist-actions>
+          <PlaylistShuffleButton
+            episodes={orderedEpisodes}
+            playlist={data.podcast}
+            feedUrl={playlist.feedUrl}
+            nextOffset={playlist.nextOffset}
+            total={playlist.total}
+          />
+          <PlaylistRepeatButton playlist={data.podcast} />
         </div>
       )}
       <ul className="divide-y divide-bone/10">

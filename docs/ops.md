@@ -671,7 +671,8 @@ upgrade rather than forcing it.
 | `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` | `on` turns every community-playlist route and surface on; anything else answers 404, except the reads `COMMUNITY_FEEDS` keeps |
 | `COMMUNITY_FEEDS` | Server only. `on` keeps a published playlist working with the feature off: its feed and cover (`/feeds/playlists/*`), playing it from its feed URL, and finding it by guid. The maker, the list, search, admin and every write stay 404 |
 | `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` | Origin of the public feed URLs. Default `https://www.boostmebuddy.com`; local tests set `http://localhost:3123` |
-| `COMMUNITY_PI_NOTIFY` | `on` lets new and changed community feeds be sent to Podcast Index. It also needs `VERCEL_ENV=production` and the feed origin `https://www.boostmebuddy.com`. Leave it unset: Podcast Index is off for now |
+| `COMMUNITY_PI_NOTIFY` | `on` sends each published or saved community playlist to Podcast Index (`lib/community/pi-notify.ts`), test playlists included. PUBLIC AND PERMANENT: PI has no delete. It also needs the feed origin `https://www.boostmebuddy.com` and Vercel production or the branch `beta`; a PR preview and a laptop never send. Set it on the `boostmebitch` Preview environment scoped to branch `beta`, where the maker runs, and on Production when the maker launches. Needs a `PODCAST_INDEX_KEY` with PI's write permission. `PI_NOTIFY_API` (tests only) points it at a loopback stub |
+| `GITHUB_ARCHIVE_TOKEN` | Optional, sensitive. After each publish, edit and delete, the server asks GitHub to run `playlist-archive.yml`, which copies every playlist feed to the `playlists` branch (`lib/community/archive-notify.ts`). A fine-grained token on this repo only, with Actions: Read and write and nothing else; sent only where the feed origin is `https://www.boostmebuddy.com`. Set it on the `boostmebitch` Preview environment (branch `beta`) and on Production of both projects. Unset: no request, and the workflow's 15-minute schedule still copies. `PLAYLIST_ARCHIVE_API` (tests only) points it at a loopback stub |
 
 ### Where each setting goes: beta and production now, launch later
 
@@ -691,7 +692,7 @@ upgrade rather than forcing it.
 
 **The feeds are part of every playlist's address.** With both `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` and `COMMUNITY_FEEDS` off on `boostmebuddy`, every `/feeds/playlists/*` answers 404, so every podcast app subscribed to a playlist loses it. To stop new playlists and keep the feeds, turn the feature switch off and leave `COMMUNITY_FEEDS=on`.
 
-**Never set `COMMUNITY_PI_NOTIFY`** until the Podcast Index list in `docs/feeds.md` ("Community playlists", Known limits) is done: the ban-with-`deleteAll` notification, the `add/byfeedurl` method, and that our key may add feeds.
+**Turning on Podcast Index (Chad's step).** Each submission is public and permanent, so the switch goes on only when Chad says so. (1) Check that the `PODCAST_INDEX_KEY` beta uses has PI's write permission. (2) Add `COMMUNITY_PI_NOTIFY=on` to the `boostmebitch` Preview environment, scoped to branch `beta`, and redeploy beta. (3) Nothing is sent yet: the existing playlists go only when someone presses SAVE on them, and new ones when they are published. So the first playlist in PI is the one Chad saves or publishes first. (4) Read the `[community-pi]` line in the Vercel runtime log of that request: `feed <id> added` is success; `refused: 401` means the key lacks write permission (fix the key, then SAVE again). Remove the variable and redeploy to stop.
 
 ### The GitHub copy of the playlists
 
