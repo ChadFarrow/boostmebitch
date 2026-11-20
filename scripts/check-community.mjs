@@ -8,6 +8,10 @@ import {
 } from '../lib/curated-playlists.ts';
 import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
+  artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
+  blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
+  foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
+  podpingEndpoint, podpingRequestUrl, PODPING_MEDIUM, PODPING_REASON,
 } from '../lib/community/rules.ts';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
@@ -20,7 +24,7 @@ import { bech32 } from '@scure/base';
 import { generateSecretKey, finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { getToken, validateEventMethodTag } from 'nostr-tools/nip98';
 import { verifyNip98, adminPubkeys, authMessage } from '../lib/community/auth.ts';
-import { communityPlaylistToPodcast, fnvHash } from '../lib/util.ts';
+import { communityPlaylistToPodcast, fnvHash, playlistBoostContext, heardOnLines } from '../lib/util.ts';
 import { composeCover, noteSvg } from '../lib/community/cover-compose.ts';
 import sharp from 'sharp';
 import { BRANDS } from '../lib/brand.ts';
@@ -207,6 +211,70 @@ check('webp format', A({ format: 'webp', width: 1400, height: 1400 }).reason ===
 check('png with alpha ok', A({ format: 'png', width: 3000, height: 3000, hasAlpha: true }).ok);
 check('{} not-image', A({}).reason === 'not-image');
 
+// The UPLOAD button's two pure rules. Can fail: the obvious version keeps a
+// 24 MP phone photo whole (over the art check's pixel limit), or shrinks a
+// panorama under ART_MIN_PX and uploads a cover PUBLISH will then refuse.
+{
+  const S = (w, h) => JSON.stringify(artUploadSize(w, h));
+  check('24 MP phone photo shrinks to 3000 on the long side', S(5712, 4284) === JSON.stringify({ width: 3000, height: 2250 }));
+  check('portrait shrinks on the long side too', S(3024, 4032) === JSON.stringify({ width: 2250, height: 3000 }));
+  check('1400 square is kept, never enlarged', S(1400, 1400) === JSON.stringify({ width: 1400, height: 1400 }));
+  check('300 square is kept (the smallest)', S(300, 300) === JSON.stringify({ width: 300, height: 300 }));
+  check('299 square is refused', artUploadSize(299, 299) === null);
+  check('a panorama under ART_MIN_PX AFTER the shrink is refused', artUploadSize(12000, 1000) === null);
+  check('a panorama that stays over ART_MIN_PX passes', S(6000, 800) === JSON.stringify({ width: 3000, height: 400 }));
+  check('zero / NaN sizes are refused', artUploadSize(0, 500) === null && artUploadSize(NaN, 500) === null);
+  check('the shrunk size passes artVerdict', A({ format: 'jpeg', ...artUploadSize(5712, 4284) }).ok);
+
+  const h = 'ab'.repeat(32);
+  const U = (a) => uploadedArtUrl(ART_UPLOAD_SERVER, h, a);
+  check('upload url is rebuilt from OUR hash', U({ sha256: h, url: 'https://evil.example/x.jpg' }) === `${ART_UPLOAD_SERVER}/${h}.jpg`);
+  check('an answer naming another hash is refused', U({ sha256: 'cd'.repeat(32), url: `${ART_UPLOAD_SERVER}/${h}.jpg` }) === null);
+  check('an answer with no hash is refused', U({ url: `${ART_UPLOAD_SERVER}/${h}.jpg` }) === null);
+  check('a non-object answer is refused', U('ok') === null && U(null) === null);
+  check('an upper-case hash in the answer still matches', U({ sha256: h.toUpperCase() }) === `${ART_UPLOAD_SERVER}/${h}.jpg`);
+  check('a bad local hash is refused', uploadedArtUrl(ART_UPLOAD_SERVER, 'xyz', { sha256: 'xyz' }) === null);
+  check('the upload server is https with no trailing slash', /^https:\/\/[^/]+$/.test(ART_UPLOAD_SERVER));
+
+  // The user's own kind:10063 list. Can fail: the obvious version reads every
+  // tag's [1] (a `relay` tag becomes a server), keeps http, or loses the order.
+  const B = (tags) => JSON.stringify(blossomServersFromTags(tags));
+  check('servers keep the user order, normalised', B([['server', 'https://cdn.a.example/'], ['server', 'https://b.example']])
+    === JSON.stringify(['https://cdn.a.example', 'https://b.example']));
+  check('a server with a path keeps the path', B([['server', 'https://a.example/blossom/']]) === JSON.stringify(['https://a.example/blossom']));
+  check('http is skipped (a signed authorization over plain http)', B([['server', 'http://a.example']]) === '[]');
+  check('credentials in the URL are skipped', B([['server', 'https://u:p@a.example']]) === '[]');
+  check('query and fragment are dropped', B([['server', 'https://a.example/?x=1#y']]) === JSON.stringify(['https://a.example']));
+  check('a non-server tag is skipped', B([['relay', 'https://a.example'], ['r', 'https://b.example']]) === '[]');
+  check('junk is skipped', B([['server'], ['server', 42], ['server', 'not a url'], 'x', null]) === '[]');
+  check('duplicates are dropped', B([['server', 'https://a.example'], ['server', 'https://a.example/']]) === JSON.stringify(['https://a.example']));
+  check('at most MAX_USER_BLOSSOM_SERVERS', blossomServersFromTags(
+    [1, 2, 3, 4, 5].map((i) => ['server', `https://s${i}.example`])).length === MAX_USER_BLOSSOM_SERVERS);
+  check('non-array tags give []', B(undefined) === '[]' && B({}) === '[]');
+  check('order: user servers, then the default', JSON.stringify(artUploadServers(['https://a.example']))
+    === JSON.stringify(['https://a.example', ART_UPLOAD_SERVER]));
+  check('the default is not tried twice', JSON.stringify(artUploadServers([ART_UPLOAD_SERVER, 'https://a.example']))
+    === JSON.stringify([ART_UPLOAD_SERVER, 'https://a.example']));
+  check('no user servers: the default alone', JSON.stringify(artUploadServers([])) === JSON.stringify([ART_UPLOAD_SERVER]));
+  check('a server with a path builds <server>/<hash>.jpg', uploadedArtUrl('https://a.example/blossom', h, { sha256: h })
+    === `https://a.example/blossom/${h}.jpg`);
+}
+
+// The fallback cover of a playlist BMB does not host. Can fail: the obvious
+// version tests `includes('v4vmusic.com')`, which gives a lookalike host
+// v4vmusic's style and a path that merely names it too.
+{
+  const C = coverStyleFor;
+  check('a v4vmusic playlist uses its first song', C('https://v4vmusic.com/playlist/508a029b-020f-4334-9704-e0a9a5f800fb.xml') === 'first-song');
+  check('a v4vmusic subdomain uses its first song', C('https://www.v4vmusic.com/playlist/x.xml') === 'first-song');
+  check('the host is matched in any case', C('https://V4VMusic.com/playlist/x.xml') === 'first-song');
+  check('a lookalike host gets the grid', C('https://v4vmusic.com.example/playlist/x.xml') === 'grid');
+  check('a host that only ENDS in the name gets the grid', C('https://notv4vmusic.com/p.xml') === 'grid');
+  check('a path naming v4vmusic gets the grid', C('https://cdn.kolomona.com/v4vmusic.com/p.xml') === 'grid');
+  check('another host gets the grid', C('https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-music-playlist.xml') === 'grid');
+  check('junk gets the grid', C('not a url') === 'grid');
+}
+
 check('cleanText censors', cleanText('fuck this') === '**** this');
 for (const s of ['Scunthorpe classics', 'assassin', 'Cocktail hour', 'a  b\n c'])
   check('cleanText leaves ' + JSON.stringify(s), cleanText(s) === s);
@@ -353,6 +421,36 @@ for (const v of docVectors.filter((x) => ['items', 'title well-formed', 'author 
   check('feed doc: stored-guid vector fails against recomputing from the URL (can fail)', !v.test(v.build(recompute)));
 }
 check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
+
+// ---- The MADE BY box: PlaylistDraft.ownerName, printed as <itunes:author> ----
+{
+  const nsec = nsecEncode(generateSecretKey());
+  const name = (raw) => { const r = V(draft({ ownerName: raw })); return r.ok ? r.draft.ownerName : kinds(r); };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const nameVectors = [
+    { kind: 'plain', args: ['ChadF'], want: 'ChadF', alsoNaive: true },
+    { kind: 'trimmed', args: ['  ChadF  '], want: 'ChadF', alsoNaive: true },
+    { kind: 'absent is no name (an older draft)', args: [undefined], want: '', alsoNaive: true },
+    { kind: 'not a string is no name', args: [42], want: '', alsoNaive: true },
+    { kind: 'white space runs collapse', args: ['Chad \t\n  F'], want: 'Chad F' },
+    { kind: 'control characters go', args: ['Ch\x00ad\x1F\x7F\x85F'], want: 'Ch ad F' },
+    { kind: 'MAX_OWNER_NAME_LEN code points pass', args: ['é'.repeat(MAX_OWNER_NAME_LEN)], want: 'é'.repeat(MAX_OWNER_NAME_LEN), alsoNaive: true },
+    { kind: 'one more is refused', args: ['é'.repeat(MAX_OWNER_NAME_LEN + 1)], want: ['name-too-long'] },
+    { kind: 'a secret key is refused', args: [nsec], want: ['secret'] },
+    { kind: 'a key inside a name is refused (and too long)', args: [`hi ${nsec}`], want: ['secret', 'name-too-long'] },
+  ];
+  // The obvious wrong version: take the box as typed, trimmed, with no limit or key test.
+  const naive = (raw) => (typeof raw === 'string' ? raw.trim() : '');
+  for (const v of nameVectors) {
+    check('name box: ' + v.kind, same(name(...v.args), v.want));
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('name box: ' + v.kind + ' (naive agrees)', same(n, v.want));
+    else check('name box: ' + v.kind + ' fails against naive (can fail)', !same(n, v.want));
+  }
+  const r = V(draft({ ownerName: nsec }));
+  check('name box: the secret refusal names the field "name"', !r.ok && r.problems.some((p) => p.kind === 'secret' && p.field === 'name'));
+  check('foldName of a non-string is empty', foldName(null) === '' && foldName({}) === '');
+}
 
 // ---- the maker's publisher feed (buildPublisherFeedXml) ----
 {
@@ -520,6 +618,53 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const got = communityPlaylistToPodcast(summary);
   check('communityPlaylistToPodcast: exact shape', JSON.stringify(got) === JSON.stringify(want));
   check('communityPlaylistToPodcast: id is negative', got.id < 0);
+  // The list row's "who made it" line is `author`, as for a v4vmusic playlist.
+  const named = communityPlaylistToPodcast({ ...summary, ownerName: 'ChadF' });
+  check('communityPlaylistToPodcast: the maker name is the author', named.author === 'ChadF');
+  check('communityPlaylistToPodcast: no name, no author key', !('author' in communityPlaylistToPodcast({ ...summary, ownerName: null })));
+}
+
+{
+  // Note context for a song played from a playlist (Task 15).
+  const HOSTED = 'https://www.boostmebuddy.com/feeds/playlists/';
+  const list = { id: 1, podcastGuid: 'list-g', title: 'Road Trip', medium: 'musicL',
+    url: HOSTED + 'abc.xml', nostrNpubs: [{ npub: 'npub1maker', pubkey: 'pk' }] };
+  const song = { id: 9, title: 'Song', podcastGuid: 'album-g', feedTitle: 'The Album', feedId: 77, feedImage: 'https://x/a.jpg' };
+  const ctx = playlistBoostContext(list, song, HOSTED);
+  check('context: container is the playlist', ctx.container === list);
+  check('context: show is the track\'s own feed', ctx.show.podcastGuid === 'album-g' && ctx.show.title === 'The Album');
+  check('context: show carries NO container npubs', ctx.show.nostrNpubs === undefined);
+  check('context: hosted true for the hosted prefix', ctx.hosted === true);
+  const own = playlistBoostContext(list, { ...song, podcastGuid: 'list-g' }, HOSTED);
+  check('context: same guid -> no container, show is podcast', own.container === null && own.show === list && own.hosted === false);
+  const noEp = playlistBoostContext(list, undefined, HOSTED);
+  check('context: no episode -> no container', noEp.container === null && noEp.show === list);
+  const album = { id: 2, podcastGuid: 'al', title: 'Alb', medium: 'music', url: HOSTED + 'x.xml' };
+  const alb = playlistBoostContext(album, song, HOSTED);
+  check('context: a music album with a foreign guid is NOT a container', alb.container === null && alb.show === album && alb.hosted === false);
+  const bare = { id: -5, title: 'Preview List', medium: 'musicL', url: HOSTED + 'p.xml', nostrNpubs: [{ npub: 'npub1maker', pubkey: 'pk' }] };
+  const bc = playlistBoostContext(bare, song, HOSTED);
+  check('context: a guid-less playlist is still the container', bc.container === bare);
+  check('context: guid-less playlist -> show is the song\'s own feed',
+    bc.show.podcastGuid === 'album-g' && bc.show.title === 'The Album' && bc.show.nostrNpubs === undefined && bc.show !== bare);
+  check('context: guid-less playlist hosted per url', bc.hosted === true);
+  check('context: guid-less playlist, foreign url -> not hosted', playlistBoostContext({ ...bare, url: 'https://e.com/x.xml' }, song, HOSTED).hosted === false);
+  check('context: guid-less music album is NOT a container', playlistBoostContext({ ...bare, medium: 'music' }, song, HOSTED).container === null);
+  const ext = playlistBoostContext({ ...list, url: 'https://example.com/pl.xml' }, song, HOSTED);
+  check('context: hosted false for a foreign feed url', ext.container !== null && ext.hosted === false);
+  const noUrl = playlistBoostContext({ ...list, url: undefined }, song, HOSTED);
+  check('context: hosted false with no url', noUrl.hosted === false);
+
+  const j = (v) => JSON.stringify(v);
+  // ONE line, and no link (Chad, 2026-11-19): a client unfurled the playlist's
+  // link to the site's general card. The playlist's `i` tag keeps the link.
+  check('heardOn: with maker', j(heardOnLines(list, 'npub1maker')) ===
+    j(['🎧 Heard on Road Trip by nostr:npub1maker']));
+  check('heardOn: without maker', j(heardOnLines(list, null)) ===
+    j(['🎧 Heard on Road Trip']));
+  check('heardOn: no guid -> the same one line', j(heardOnLines({ ...list, podcastGuid: undefined }, 'npub1m')) ===
+    j(['🎧 Heard on Road Trip by nostr:npub1m']));
+  check('heardOn: never a link line, whatever the guid', heardOnLines({ ...list, podcastGuid: 'a b&c' }, null).length === 1);
 }
 
 {
@@ -539,6 +684,134 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   check('grid with a missing tile -> 1400 x 1400', gm.width === 1400 && gm.height === 1400);
   const rep = [...(await sharp(g).extract({ left: 1000, top: 300, width: 1, height: 1 }).raw().toBuffer())];
   check('a missing tile repeats the previous one', rep[0] > 200 && rep[1] < 60);
+}
+
+// archiveDispatchBase — where GITHUB_ARCHIVE_TOKEN may go (lib/community/archive-notify.ts).
+// The token can start this repo's workflows, so the only hosts are GitHub's API
+// on a real-feed server and a loopback test stub.
+{
+  const GH = 'https://api.github.com';
+  const vectors = [
+    { kind: 'production feed origin, no override: GitHub', args: [undefined, PRODUCTION_FEED_ORIGIN], want: GH, alsoNaive: true },
+    { kind: 'a local feed origin: nowhere', args: [undefined, 'http://localhost:3123'], want: null },
+    { kind: 'a beta feed origin: nowhere', args: [undefined, 'https://beta.boostmebitch.com'], want: null },
+    { kind: 'a loopback stub', args: ['http://127.0.0.1:48555', 'http://localhost:3123'], want: 'http://127.0.0.1:48555', alsoNaive: true },
+    { kind: 'a localhost stub, path dropped', args: ['http://localhost:48555/x', 'http://localhost:3123'], want: 'http://localhost:48555' },
+    { kind: 'a public host in the override: nowhere', args: ['https://evil.example', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'a DNS name that resolves to loopback: nowhere', args: ['http://127.0.0.1.nip.io', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'userinfo hiding another host: nowhere', args: ['http://localhost@evil.example', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'a loopback with userinfo: nowhere', args: ['http://user:pw@127.0.0.1:1', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'https to loopback: nowhere (the stub is http)', args: ['https://127.0.0.1:1', PRODUCTION_FEED_ORIGIN], want: null },
+    { kind: 'an override typo: nowhere, never GitHub', args: ['127.0.0.1:48555', PRODUCTION_FEED_ORIGIN], want: null },
+  ];
+  // The obvious wrong version: the override if set, else GitHub.
+  const naive = (override) => (override ? override.replace(/\/+$/, '') : GH);
+  for (const v of vectors) {
+    check('archive dispatch: ' + v.kind, archiveDispatchBase(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('archive dispatch: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('archive dispatch: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+}
+
+// piNotifyBase — where a playlist feed may be submitted (lib/community/pi-notify.ts).
+// A Podcast Index submission is public and permanent, so: the switch, the real
+// feed origin, and Vercel production or the `beta` branch; or a loopback stub.
+{
+  const PI = PI_API_BASE;
+  const env = (o) => ({ notify: 'on', override: undefined, vercelEnv: undefined, gitRef: undefined, feedOrigin: PRODUCTION_FEED_ORIGIN, ...o });
+  const vectors = [
+    { kind: 'switch unset: nowhere', args: [env({ notify: undefined, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'switch "true", not "on": nowhere', args: [env({ notify: 'true', vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'production: Podcast Index', args: [env({ vercelEnv: 'production', gitRef: 'main' })], want: PI, alsoNaive: true },
+    { kind: 'the beta branch preview: Podcast Index', args: [env({ vercelEnv: 'preview', gitRef: 'beta' })], want: PI, alsoNaive: true },
+    { kind: 'a PR preview: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'playlist-pi-submit' })], want: null },
+    { kind: 'a preview with no branch: nowhere', args: [env({ vercelEnv: 'preview' })], want: null },
+    { kind: 'a branch named like beta: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'beta-old' })], want: null },
+    { kind: 'vercel dev: nowhere', args: [env({ vercelEnv: 'development', gitRef: 'beta' })], want: null, alsoNaive: true },
+    { kind: 'off Vercel (next dev / next start): nowhere', args: [env({})], want: null, alsoNaive: true },
+    { kind: 'production with a local feed origin: nowhere', args: [env({ vercelEnv: 'production', feedOrigin: 'http://localhost:3123' })], want: null, alsoNaive: true },
+    { kind: 'a loopback stub', args: [env({ override: 'http://127.0.0.1:48555', feedOrigin: 'http://localhost:3123' })], want: 'http://127.0.0.1:48555/api/1.0', alsoNaive: true },
+    { kind: 'a localhost stub, path dropped', args: [env({ override: 'http://localhost:48555/x/' })], want: 'http://localhost:48555/api/1.0' },
+    { kind: 'switch off beats a stub: nowhere', args: [env({ notify: undefined, override: 'http://127.0.0.1:48555' })], want: null, alsoNaive: true },
+    { kind: 'a DNS name that resolves to loopback: nowhere', args: [env({ override: 'http://127.0.0.1.nip.io:48555', vercelEnv: 'production' })], want: null },
+    { kind: 'a public host in the override: nowhere', args: [env({ override: 'https://pi-proxy.example', vercelEnv: 'production' })], want: null },
+    { kind: 'an override typo on production: nowhere, never the real API', args: [env({ override: '127.0.0.1:48555', vercelEnv: 'production' })], want: null },
+  ];
+  // The obvious wrong versions: any preview counts as deployed, and the
+  // override is taken as written.
+  const naive = (e) => {
+    if (e.notify !== 'on') return null;
+    if (e.override) return e.override.replace(/\/+$/, '') + '/api/1.0';
+    return e.feedOrigin === PRODUCTION_FEED_ORIGIN && (e.vercelEnv === 'production' || e.vercelEnv === 'preview') ? PI : null;
+  };
+  for (const v of vectors) {
+    check('pi notify: ' + v.kind, piNotifyBase(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('pi notify: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('pi notify: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+}
+
+// podpingEndpoint — where a podping (and PODPING_BEARER_TOKEN) may go
+// (lib/community/podping-notify.ts). A podping is written to Hive, so it is public and
+// permanent, and the request carries a bearer token: the switch, both variables, an
+// https endpoint with no userinfo, the real feed origin, and Vercel production or the
+// `beta` branch; or a loopback stub.
+{
+  const PUSHER = 'https://msp-podping-service-production.up.railway.app';
+  const env = (o) => ({ notify: 'on', endpoint: PUSHER + '/', hasToken: true, vercelEnv: undefined, gitRef: undefined, feedOrigin: PRODUCTION_FEED_ORIGIN, ...o });
+  const vectors = [
+    { kind: 'switch unset: nowhere', args: [env({ notify: undefined, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'switch "true", not "on": nowhere', args: [env({ notify: 'true', vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'no endpoint: nowhere', args: [env({ endpoint: undefined, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'no token: nowhere', args: [env({ hasToken: false, vercelEnv: 'production' })], want: null, alsoNaive: true },
+    { kind: 'production: the pusher (path kept, query dropped)', args: [env({ vercelEnv: 'production', gitRef: 'main', endpoint: PUSHER + '/?x=1' })], want: PUSHER + '/', alsoNaive: false },
+    { kind: 'production: the pusher', args: [env({ vercelEnv: 'production', gitRef: 'main' })], want: PUSHER + '/', alsoNaive: true },
+    { kind: 'the beta branch preview: the pusher', args: [env({ vercelEnv: 'preview', gitRef: 'beta' })], want: PUSHER + '/', alsoNaive: true },
+    { kind: 'a PR preview: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'feat/playlist-podping' })], want: null },
+    { kind: 'a preview with no branch: nowhere', args: [env({ vercelEnv: 'preview' })], want: null },
+    { kind: 'a branch named like beta: nowhere', args: [env({ vercelEnv: 'preview', gitRef: 'beta-old' })], want: null },
+    { kind: 'vercel dev: nowhere', args: [env({ vercelEnv: 'development', gitRef: 'beta' })], want: null },
+    { kind: 'off Vercel (next dev / next start) with the real values: nowhere', args: [env({})], want: null },
+    { kind: 'production with a local feed origin: nowhere', args: [env({ vercelEnv: 'production', feedOrigin: 'http://localhost:3123' })], want: null },
+    { kind: 'a loopback stub, no deploy checks', args: [env({ endpoint: 'http://127.0.0.1:48555/', feedOrigin: 'http://localhost:3123' })], want: 'http://127.0.0.1:48555/', alsoNaive: true },
+    { kind: 'a localhost stub, query dropped', args: [env({ endpoint: 'http://localhost:48555/p?token=x' })], want: 'http://localhost:48555/p' },
+    { kind: 'a stub still needs the switch', args: [env({ notify: undefined, endpoint: 'http://127.0.0.1:48555/' })], want: null, alsoNaive: true },
+    { kind: 'a stub still needs the token', args: [env({ hasToken: false, endpoint: 'http://127.0.0.1:48555/' })], want: null, alsoNaive: true },
+    { kind: 'https to loopback: nowhere (the stub is http)', args: [env({ endpoint: 'https://127.0.0.1:48555/', vercelEnv: 'production' })], want: null },
+    { kind: 'plain http to a public host on production: nowhere (the token rides in a header)', args: [env({ endpoint: 'http://pusher.example/', vercelEnv: 'production' })], want: null },
+    { kind: 'a DNS name that resolves to loopback: nowhere', args: [env({ endpoint: 'http://127.0.0.1.nip.io:48555/', vercelEnv: 'production' })], want: null },
+    { kind: 'userinfo hiding another host: nowhere', args: [env({ endpoint: 'https://pusher.example@evil.example/', vercelEnv: 'production' })], want: null },
+    { kind: 'a loopback with userinfo: nowhere', args: [env({ endpoint: 'http://user:pw@127.0.0.1:1/' })], want: null },
+    { kind: 'an endpoint typo on production: nowhere, never sent as written', args: [env({ endpoint: 'msp-podping.example', vercelEnv: 'production' })], want: null },
+  ];
+  // The obvious wrong version: the switch, the two variables, and the endpoint as written.
+  const naive = (e) => (e.notify === 'on' && e.endpoint && e.hasToken ? e.endpoint : null);
+  for (const v of vectors) {
+    check('podping endpoint: ' + v.kind, podpingEndpoint(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('podping endpoint: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('podping endpoint: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+
+  // The request itself: musicL, update, the feed URL whole, and nothing else.
+  const feed = 'https://www.boostmebuddy.com/feeds/playlists/0b5a7c0e-1111-4222-8333-444455556666.xml';
+  const u = new URL(podpingRequestUrl(PUSHER + '/', feed));
+  check('podping request: the pusher, no path change', u.origin === PUSHER && u.pathname === '/');
+  check('podping request: url, reason and medium', u.searchParams.get('url') === feed
+    && u.searchParams.get('reason') === 'update' && u.searchParams.get('medium') === 'musicL');
+  check('podping request: the constants are what the updater sends', PODPING_MEDIUM === 'musicL' && PODPING_REASON === 'update');
+  check('podping request: asks for the detailed answer', u.searchParams.get('detailed_response') === 'true');
+  check('podping request: exactly four parameters, no token', [...u.searchParams.keys()].length === 4 && !u.href.toLowerCase().includes('bearer'));
+  check('podping request: a query already on the endpoint is replaced', new URL(podpingRequestUrl(PUSHER + '/?medium=podcast', feed)).searchParams.get('medium') === 'musicL');
+  check('podping request: a feed URL with a query survives whole', new URL(podpingRequestUrl(PUSHER + '/', feed + '?a=1&b=2')).searchParams.get('url') === feed + '?a=1&b=2');
+  check('podping request: a non-http feed is refused', podpingRequestUrl(PUSHER + '/', 'javascript:alert(1)') === null && podpingRequestUrl(PUSHER + '/', 'file:///etc/passwd') === null);
+  check('podping request: not a URL is refused', podpingRequestUrl(PUSHER + '/', 'nope') === null && podpingRequestUrl('nope', feed) === null);
+  // The obvious wrong version builds the string by hand and leaves the feed unencoded.
+  const naiveUrl = (e, f) => `${e}?url=${f}&reason=update&medium=musicL`;
+  check('podping request: a hand-built string breaks on a feed URL with a query (can fail)',
+    new URL(naiveUrl(PUSHER + '/', feed + '?a=1&b=2')).searchParams.get('url') !== feed + '?a=1&b=2');
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }

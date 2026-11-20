@@ -1,6 +1,6 @@
 'use client';
 import type { ShareNostrAs } from '@/lib/storage';
-import { BRAND } from '@/lib/brand';
+import { BRAND, type Brand } from '@/lib/brand';
 
 // The "Share boost on Nostr" chooser, shared by BoostModal and BoostAllModal.
 //
@@ -23,12 +23,19 @@ interface Props {
   onShareAsChange: (v: ShareNostrAs) => void;
   /** Subject for the descriptions: "A public note" / "One summary note". */
   noteNoun: string;
+  /**
+   * The brand whose site account posts the note when the site signs it —
+   * Buddy's for a song from a playlist BMB hosts on the Buddy origin
+   * (`noteBrandFor`), so the line
+   * names the account that will actually sign. Defaults to this deploy's.
+   */
+  brand?: Brand;
 }
 
 type ShareMode = ShareNostrAs | 'off';
 
 export function ShareNostrPicker({
-  signedIn, share, shareAs, onShareChange, onShareAsChange, noteNoun,
+  signedIn, share, shareAs, onShareChange, onShareAsChange, noteNoun, brand = BRAND,
 }: Props) {
   if (!signedIn) {
     return (
@@ -52,7 +59,7 @@ export function ShareNostrPicker({
             {/* The site signs only a note whose stamp was paid: 1% of the
                 boost, at least 1 sat (lib/site-stamp.ts; Chad, 2026-11-17). */}
             {share
-              ? `${noteNoun} posted from ${BRAND.domain}'s Nostr account, for 1% of the boost (at least 1 sat) plus a small network fee after the boost.`
+              ? `${noteNoun} posted from ${brand.domain}'s Nostr account, for 1% of the boost (at least 1 sat) plus a small network fee after the boost.`
               : 'Lightning only — nothing posted publicly.'}
           </div>
         </div>
@@ -80,7 +87,7 @@ export function ShareNostrPicker({
       // dropped to make room for the stamp's cost (lib/site-stamp.ts): 1% of
       // the boost (Chad, 2026-11-17), in the place of his "1 sat plus a small
       // network fee". "+ a small network fee" took a second line at 1280 px.
-      desc: `Posted by ${BRAND.domain}, not your npub: 1% of the boost + network fee.`,
+      desc: `Posted by ${brand.domain}, not your npub: 1% of the boost + network fee.`,
     },
     {
       value: 'off',

@@ -173,6 +173,108 @@ export function artVerdict(meta: {
   return { ok: true };
 }
 
+// ---- an uploaded cover (the UPLOAD button, lib/community/blossom.ts) --------
+
+/**
+ * The Blossom server an uploaded cover goes to when the user names none of their
+ * own (kind:10063), or when none of theirs takes it. No trailing slash.
+ */
+export const ART_UPLOAD_SERVER = 'https://blossom.primal.net';
+
+/** The kind of a user's Blossom server list (BUD-03). */
+export const BLOSSOM_SERVER_LIST_KIND = 10063;
+
+/** How many of the user's own servers an upload tries before the default. */
+export const MAX_USER_BLOSSOM_SERVERS = 3;
+
+/**
+ * The user's Blossom servers from a kind:10063's tags, in THEIR order (BUD-03:
+ * the first is the most trusted), normalised to `https://host[/path]` with no
+ * trailing slash. Third-party text, so: `https:` only (the upload carries a
+ * signed authorization, and a plain-http server hands it to the network), no
+ * credentials in the URL, query and fragment dropped, duplicates dropped, at
+ * most MAX_USER_BLOSSOM_SERVERS. Anything else is skipped, never repaired.
+ */
+export function blossomServersFromTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  const out: string[] = [];
+  for (const t of tags) {
+    if (out.length >= MAX_USER_BLOSSOM_SERVERS) break;
+    if (!Array.isArray(t) || t[0] !== 'server' || typeof t[1] !== 'string') continue;
+    let u: URL;
+    try {
+      u = new URL(t[1].trim());
+    } catch {
+      continue;
+    }
+    if (u.protocol !== 'https:' || !u.hostname || u.username || u.password) continue;
+    const base = `https://${u.host}${u.pathname.replace(/\/+$/, '')}`;
+    if (!out.includes(base)) out.push(base);
+  }
+  return out;
+}
+
+/** Where an upload is tried, in order: the user's own servers, then the default once. */
+export function artUploadServers(userServers: readonly string[]): string[] {
+  const out = userServers.filter((s, i) => userServers.indexOf(s) === i);
+  if (!out.includes(ART_UPLOAD_SERVER)) out.push(ART_UPLOAD_SERVER);
+  return out;
+}
+
+/**
+ * The longest side an uploaded cover keeps. The cover route serves 1400 px, and
+ * the art check reads at most 24 MP: a 24 MP phone photo (5712 x 4284) is over
+ * that, so it must shrink in the browser or the check refuses it.
+ */
+export const ART_UPLOAD_MAX_PX = 3000;
+
+/**
+ * The size a picked picture is re-encoded at: the longest side at most
+ * ART_UPLOAD_MAX_PX, never enlarged. `null` when the shortest side, AFTER the
+ * shrink, is under ART_MIN_PX — the art check would refuse that upload, and the
+ * user would learn it only at PUBLISH, with a file already on a public server.
+ */
+export function artUploadSize(width: number, height: number): { width: number; height: number } | null {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  const scale = Math.min(1, ART_UPLOAD_MAX_PX / Math.max(width, height));
+  const w = Math.round(width * scale);
+  const h = Math.round(height * scale);
+  if (Math.min(w, h) < ART_MIN_PX) return null;
+  return { width: w, height: h };
+}
+
+/**
+ * The cover link for a finished upload, REBUILT from the hash we computed, never
+ * read from the server's answer: BUD-01 says `<server>/<sha256>` serves the blob,
+ * and the answer is third-party data. `null` unless the answer names that same
+ * hash, so a server that stored something else is not given a playlist's cover.
+ */
+export function uploadedArtUrl(server: string, sha256: string, answer: unknown): string | null {
+  if (!/^[0-9a-f]{64}$/.test(sha256)) return null;
+  if (!answer || typeof answer !== 'object') return null;
+  const got = (answer as { sha256?: unknown }).sha256;
+  if (typeof got !== 'string' || got.toLowerCase() !== sha256) return null;
+  return `${server}/${sha256}.jpg`;
+}
+
+/**
+ * Which picture `/api/playlist-cover` makes for a playlist BMB does not host,
+ * when the feed's own cover fails. A v4vmusic.com playlist uses its FIRST
+ * song's art, because that is what v4vmusic itself shows for a playlist (Chad,
+ * 2026-11-15: "so we match their style"); every other host gets the 2 x 2 grid
+ * of the first four songs, BMB's own no-art cover. The host is matched exactly
+ * or as a subdomain, never as a substring: `v4vmusic.com.example` is not it.
+ */
+export function coverStyleFor(feedUrl: string): 'first-song' | 'grid' {
+  let host: string;
+  try {
+    host = new URL(feedUrl).hostname.toLowerCase();
+  } catch {
+    return 'grid';
+  }
+  return host === 'v4vmusic.com' || host.endsWith('.v4vmusic.com') ? 'first-song' : 'grid';
+}
+
 export interface StoredPlaylist extends PlaylistDraft {
   id: string;
   ownerPubkey: string;
@@ -194,3 +296,148 @@ export interface CommunityPlaylistSummary {
   createdAt: string;
   updatedAt: string;
 }
+
+/** The feed origin of the production deploys (the default of `COMMUNITY_FEED_ORIGIN`). */
+export const PRODUCTION_FEED_ORIGIN = 'https://www.boostmebuddy.com';
+
+/**
+ * Where `lib/community/archive-notify.ts` may send `GITHUB_ARCHIVE_TOKEN`, or null
+ * for nowhere. GitHub's API, on a server whose feeds are the real ones; or the
+ * LOOPBACK stub a test names in `PLAYLIST_ARCHIVE_API`. An override that is set
+ * and is anything else is null, never GitHub: a typo in a test's env must not
+ * send a real dispatch, and the variable must not be a way to mail the token to
+ * another host (`http://127.0.0.1.nip.io`, `http://localhost@evil.example`).
+ */
+export function archiveDispatchBase(override: string | undefined, feedOrigin: string): string | null {
+  if (override) return loopbackOrigin(override);
+  return feedOrigin === PRODUCTION_FEED_ORIGIN ? 'https://api.github.com' : null;
+}
+
+/** The origin of a test stub: `http:` on a loopback NAME OR ADDRESS, no userinfo. Else null. */
+function loopbackOrigin(raw: string): string | null {
+  try {
+    const u = new URL(raw);
+    const loopback = u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]';
+    return u.protocol === 'http:' && loopback && !u.username && !u.password ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The Podcast Index API that `lib/community/pi-notify.ts` writes to. */
+export const PI_API_BASE = 'https://api.podcastindex.org/api/1.0';
+
+/** What `piNotifyBase` reads; the server passes `process.env` and `COMMUNITY_FEED_ORIGIN`. */
+export interface PiNotifyEnv {
+  /** `COMMUNITY_PI_NOTIFY`: only the exact value `on` turns it on. */
+  notify: string | undefined;
+  /** `PI_NOTIFY_API`: a test's loopback stub. */
+  override: string | undefined;
+  /** `VERCEL_ENV`: production, preview or development; unset off Vercel. */
+  vercelEnv: string | undefined;
+  /** `VERCEL_GIT_COMMIT_REF`: the branch the deploy was built from. */
+  gitRef: string | undefined;
+  feedOrigin: string;
+}
+
+/**
+ * Where `lib/community/pi-notify.ts` may send a playlist feed, or null for nowhere.
+ * A feed added to Podcast Index stays there for good (PI has no delete), so this
+ * says yes only on a deploy that serves the REAL feeds:
+ *
+ * - `COMMUNITY_PI_NOTIFY=on`, and
+ * - the feed origin is `https://www.boostmebuddy.com`, and
+ * - Vercel production, or the `beta` branch's preview (the maker is beta only
+ *   today, and beta writes the same database production's feeds read). A PR
+ *   preview is a preview too, so the branch is named; off Vercel (`next dev`,
+ *   `next start`) there is no `VERCEL_ENV`, so a laptop with the real database
+ *   and the switch in `.env.local` still sends nothing.
+ *
+ * A test's `PI_NOTIFY_API` replaces all three of the last checks, and only a
+ * loopback stub is accepted there. An override that is set and is anything else
+ * is null, NEVER the real API: a typo in a test's env must not become a real
+ * submission (`docs/feeds.md`, "Podcast Index").
+ */
+export function piNotifyBase(env: PiNotifyEnv): string | null {
+  if (env.notify !== 'on') return null;
+  if (env.override) {
+    const o = loopbackOrigin(env.override);
+    return o ? `${o}/api/1.0` : null;
+  }
+  if (env.feedOrigin !== PRODUCTION_FEED_ORIGIN) return null;
+  const deployed = env.vercelEnv === 'production' || (env.vercelEnv === 'preview' && env.gitRef === 'beta');
+  return deployed ? PI_API_BASE : null;
+}
+
+/** What every playlist podping asks for. Every community playlist is `<podcast:medium>musicL`. */
+export const PODPING_MEDIUM = 'musicL';
+/** The podping reason: the feed changed. A deleted feed uses it too; an app that reads it finds the 410. */
+export const PODPING_REASON = 'update';
+
+/** What `podpingEndpoint` reads. It never sees the token: only whether one is set. */
+export interface PodpingEnv {
+  /** `COMMUNITY_PI_NOTIFY`: the one switch for every public notice a playlist write sends. */
+  notify: string | undefined;
+  /** `PODPING_ENDPOINT_URL`: Chad's msp-podping-service pusher. */
+  endpoint: string | undefined;
+  /** Is `PODPING_BEARER_TOKEN` set? (The value is read only where the request is made.) */
+  hasToken: boolean;
+  vercelEnv: string | undefined;
+  gitRef: string | undefined;
+  feedOrigin: string;
+}
+
+/**
+ * Where `lib/community/podping-notify.ts` may send a podping, or null for nowhere.
+ * A podping is written to the Hive blockchain, so it is public and permanent, and
+ * the request carries a bearer token. So, in the same order as `piNotifyBase`:
+ *
+ * - `COMMUNITY_PI_NOTIFY=on` (one switch turns every public notice off), and
+ * - the endpoint and the token are both set, and
+ * - the endpoint is `https:` with no userinfo (the token rides in a header), and
+ * - the feed origin is `https://www.boostmebuddy.com`, and
+ * - Vercel production, or the `beta` branch's preview; a PR preview and a laptop
+ *   with the real values in `.env.local` send nothing.
+ *
+ * A test's endpoint on a loopback address (`http://127.0.0.1:<port>`) skips the
+ * last two checks: nothing leaves the machine. Anything else that is not https is
+ * null, NEVER sent as written.
+ */
+export function podpingEndpoint(env: PodpingEnv): string | null {
+  if (env.notify !== 'on' || !env.endpoint || !env.hasToken) return null;
+  let u: URL;
+  try {
+    u = new URL(env.endpoint);
+  } catch {
+    return null;
+  }
+  if (u.username || u.password) return null;
+  const loopback = u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]';
+  if (loopback) return u.protocol === 'http:' ? u.origin + u.pathname : null;
+  if (u.protocol !== 'https:') return null;
+  if (env.feedOrigin !== PRODUCTION_FEED_ORIGIN) return null;
+  const deployed = env.vercelEnv === 'production' || (env.vercelEnv === 'preview' && env.gitRef === 'beta');
+  return deployed ? u.origin + u.pathname : null;
+}
+
+/**
+ * The pusher request for one feed: `GET <endpoint>?url=<feed>&reason=update&medium=musicL`.
+ * `detailed_response=true` makes the pusher answer `{ message: "enqueued" | "duplicate" }`
+ * instead of an empty 200. Null when the feed is not an http(s) URL.
+ */
+export function podpingRequestUrl(endpoint: string, feedUrl: string): string | null {
+  let feed: URL;
+  let u: URL;
+  try {
+    feed = new URL(feedUrl);
+    u = new URL(endpoint);
+  } catch {
+    return null;
+  }
+  if (feed.protocol !== 'https:' && feed.protocol !== 'http:') return null;
+  u.search = new URLSearchParams({
+    url: feed.href, reason: PODPING_REASON, medium: PODPING_MEDIUM, detailed_response: 'true',
+  }).toString();
+  return u.href;
+}
+

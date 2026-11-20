@@ -41,7 +41,7 @@
  */
 import { useApp } from '@/lib/store';
 import type { Episode, Podcast } from '@/lib/types';
-import { isPlaylistMedium } from '@/lib/util';
+import { showLinkParam } from '@/lib/util';
 
 export interface HomeView {
   selectedPodcast: Podcast | null;
@@ -91,16 +91,19 @@ const records = new Map<string, EntryRecord>();
 
 /** The URL params the views own. `t` is not one: it is a one-shot arrival
  *  param that `viewUrl` always deletes. */
-const VIEW_PARAMS = ['playlist', 'podcast', 'feed', 'episode', 'discussion', 'publisher'] as const;
+const VIEW_PARAMS = ['playlist', 'album', 'podcast', 'feed', 'episode', 'discussion', 'publisher'] as const;
 
 /**
  * `href` with the view's params written in — the one place the mapping lives.
  *
  * - `?podcast=<guid>` when the show has one, else `?feed=<id>`. A preview feed
  *   (not in PI) has a synthetic negative id and no guid, so it is not
- *   restorable and nothing is written for it — except a musicL PLAYLIST, which
- *   restores exactly from `?playlist=<feed url>` because `/api/playlist` keys
- *   off the feed URL.
+ *   restorable and nothing is written for it — except a PLAYLIST.
+ * - A playlist (`showLinkParam`) writes `?playlist=<guid>` instead of
+ *   `?podcast=` (Chad, 2026-11-20), and `?playlist=<feed url>` when it has no
+ *   guid, which restores exactly because `/api/playlist` keys off the feed URL.
+ * - An album writes `?album=<guid>` instead of `?podcast=` (Chad, 2026-11-20).
+ *   An album with no guid falls back to `?feed=<id>`, as a podcast does.
  * - `?episode=<guid>` from the episode view, or from the discussion when it was
  *   restored without one; `?discussion=1` on top. Neither for a preview feed.
  * - `?publisher=<feed url>` for the aside.
@@ -113,20 +116,24 @@ export function viewUrl(href: string, view: HomeView): string {
   const p = url.searchParams;
   const selected = view.selectedPodcast;
   const isPreview = !!selected?.isPreview;
-  const playlistUrl = selected && !selected.podcastGuid && isPlaylistMedium(selected)
-    ? selected.url : undefined;
-  if (playlistUrl) p.set('playlist', playlistUrl);
+  // A playlist is named by `?playlist=`: its guid when it has one, else its feed
+  // URL (`readPlaylistParam` tells the two apart on the way back in). So a
+  // playlist with a guid writes no `?podcast=` — an old `?podcast=` link to it
+  // is rewritten to `?playlist=` on landing, by the REPLACE that rule 1 makes.
+  const name = selected ? showLinkParam(selected) : null;
+  const playlistValue = selected && name === 'playlist' ? (selected.podcastGuid ?? selected.url) : undefined;
+  if (playlistValue) p.set('playlist', playlistValue);
   else p.delete('playlist');
-  if (selected?.podcastGuid) {
-    p.set('podcast', selected.podcastGuid);
-    p.delete('feed');
-  } else if (selected && !isPreview) {
-    p.set('feed', String(selected.id));
-    p.delete('podcast');
-  } else {
-    p.delete('podcast');
-    p.delete('feed');
+  // Any other show with a guid: `?album=<guid>` for an album, `?podcast=<guid>`
+  // for the rest. One name only, so a link never names a show twice — and an
+  // old `?podcast=` link to an album is rewritten to `?album=` the same way.
+  const guid = selected?.podcastGuid;
+  for (const k of ['podcast', 'album'] as const) {
+    if (guid && name === k) p.set(k, guid);
+    else p.delete(k);
   }
+  if (selected && !guid && !isPreview) p.set('feed', String(selected.id));
+  else p.delete('feed');
   const episodeForUrl = view.selectedEpisode ?? view.discussionEpisode;
   if (episodeForUrl?.guid && !isPreview) p.set('episode', episodeForUrl.guid);
   else p.delete('episode');

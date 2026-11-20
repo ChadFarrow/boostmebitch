@@ -734,7 +734,7 @@ function ShowCard({ show }: { show: LiveShow }) {
               show's payee moves per track, and only the player follows it. */}
           <FavHeart podcast={podcast} size="sm" nameTarget />
           <CopyLinkButton
-            url={showShareUrl(show.podcastGuid)}
+            url={showShareUrl({ podcastGuid: show.podcastGuid })}
             title="Copy link to this show"
             className="btn-mini"
           />

@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { HomePage } from '@/components/home-page';
 import { getPodcastByGuid, getPodcast, getEpisodeByGuid } from '@/lib/pi';
-import { stripHtml } from '@/lib/util';
+import { linkedShowGuid, stripHtml } from '@/lib/util';
 
 // Trim show notes / descriptions to a card-sized blurb. stripHtml first so we
 // never emit raw markup into og:description.
@@ -17,6 +17,8 @@ function firstParam(v: string | string[] | undefined): string | undefined {
 }
 
 // Per-show / per-episode Open Graph tags so a shared ?podcast=&episode= link
+// (or ?album=<guid> / ?playlist=<guid>, an album's and a playlist's spelling:
+// `linkedShowGuid`)
 // unfurls on Nostr with the real artwork + title instead of the static site
 // card. Best-effort: any failure returns {} and the page inherits the static
 // metadata from app/layout.tsx. Reading searchParams opts this route into
@@ -26,7 +28,7 @@ export async function generateMetadata(
 ): Promise<Metadata> {
   try {
     const sp = await searchParams;
-    const podcastGuid = firstParam(sp.podcast);
+    const podcastGuid = linkedShowGuid((k) => firstParam(sp[k]));
     const feedId = firstParam(sp.feed);
     const episodeGuid = firstParam(sp.episode);
 
@@ -88,12 +90,14 @@ export async function generateMetadata(
  * but it is also silent. `lib/podcast-meta.ts` owns both spellings; these two
  * mirror them, and nothing else here may build an API URL.
  *
- * `?playlist=` is deliberately absent. Its request carries a `limit` this file
- * would have to keep in step with `PLAYLIST_PAGE_SIZE`, and a hint that drifts
- * is the one failure mode this whole tag has.
+ * `?playlist=<feed url>` is deliberately absent. Its request carries a `limit`
+ * this file would have to keep in step with `PLAYLIST_PAGE_SIZE`, and a hint
+ * that drifts is the one failure mode this whole tag has. `?playlist=<guid>` and
+ * `?album=<guid>` are not: they restore through `/api/by-guid` exactly as
+ * `?podcast=` does.
  */
 function preloadHref(sp: Record<string, string | string[] | undefined>): string | null {
-  const guid = firstParam(sp.podcast);
+  const guid = linkedShowGuid((k) => firstParam(sp[k]));
   if (guid) return `/api/by-guid?guid=${encodeURIComponent(guid)}`;
   const feedId = firstParam(sp.feed);
   if (feedId && /^\d+$/.test(feedId)) return `/api/feed?id=${Number(feedId)}`;

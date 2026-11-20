@@ -28,6 +28,7 @@ function PodcastCoverImpl({
   fit = 'cover',
   lowPriority,
   localSrc,
+  fallbackSrc,
   preferOriginal,
   hold,
 }: {
@@ -51,6 +52,14 @@ function PodcastCoverImpl({
    * `nowPlayingCover` in lib/store.ts.
    */
   localSrc?: string | null;
+  /**
+   * A picture BMB makes when the feed's own cover fails — today the 2 x 2 song
+   * grid of a playlist (`playlistCoverFallback`, `/api/playlist-cover`). It goes
+   * AFTER every network candidate and BEFORE `localSrc`: the feed's own cover
+   * always wins while it loads, and the grid is still a network picture. Not
+   * proxied: it is our own route, already a 1400 x 1400 JPEG.
+   */
+  fallbackSrc?: string | null;
   title?: string | null;
   /** Optional seed for the fallback hue; defaults to the title. Use a guid
    *  or feed id when you want the color to follow identity, not display
@@ -166,8 +175,8 @@ function PodcastCoverImpl({
   // it either way, which is what makes both orders safe.
   const candidates = useMemo(() => {
     const net = artCandidates(image, artwork, w, { preferOriginal });
-    return localSrc ? [...net, localSrc] : net;
-  }, [image, artwork, w, localSrc, preferOriginal]);
+    return [...net, ...(fallbackSrc ? [fallbackSrc] : []), ...(localSrc ? [localSrc] : [])];
+  }, [image, artwork, w, localSrc, fallbackSrc, preferOriginal]);
   // The ladder records which URLs FAILED, never a position in the list.
   //
   // It was an index, reset to 0 by a passive effect on mount and whenever the

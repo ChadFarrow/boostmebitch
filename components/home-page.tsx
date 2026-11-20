@@ -15,10 +15,11 @@ import { demuView } from '@/lib/demu-view';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed, loadFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
-import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium } from '@/lib/util';
+import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium, linkedShowGuid, readPlaylistParam } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 
 import { loadCollection } from '@/lib/playlist-collection';
+import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import type { Podcast } from '@/lib/types';
 import { NO_SELECTION, applyStoreView, backOr, currentEntryView, stepBackToOrigin, syncEntry, viewForEntry } from '@/lib/view-history';
 import type { HomeView } from '@/lib/view-history';
@@ -229,9 +230,14 @@ export function HomePage() {
       return;
     }
     const params = new URLSearchParams(initialSearch.current);
-    const guid = params.get('podcast');
+    // `?podcast=<guid>`, `?album=<guid>` or `?playlist=<guid>` — an album's and
+    // a playlist's links have said so since 2026-11-20. All three resolve the
+    // same way; an old `?podcast=` link to either keeps opening, and the mirror
+    // then rewrites it.
+    const guid = linkedShowGuid((k) => params.get(k));
     const feedId = params.get('feed');
-    const playlistParam = params.get('playlist');
+    // `?playlist=<feed url>`: a playlist with no guid (`readPlaylistParam`).
+    const playlistParam = readPlaylistParam(params.get('playlist'))?.feedUrl;
     const episodeGuid = params.get('episode');
     const wantDiscussion = params.get('discussion') === '1';
     // ?t=<seconds> — a link to one moment, built by `showShareUrl` from a row of
@@ -265,8 +271,9 @@ export function HomePage() {
     let cancelled = false;
     (async () => {
       let podcast: Podcast | null = null;
-      // A playlist restores by FEED URL, because a musicL feed Podcast Index has
-      // not indexed has no id or guid to restore by — the same reason
+      // A playlist with no guid restores by FEED URL, because a musicL feed
+      // Podcast Index has not indexed may have no id or guid to restore by (one
+      // WITH a guid took the `guid` branch below) — the same reason
       // ?publisher=<feedUrl> exists. `/api/playlist` answers with the channel,
       // so one request both validates the URL and supplies the header.
       if (playlistParam && !guid && !feedId) {
@@ -389,7 +396,7 @@ export function HomePage() {
     // was missing, and this branch never ran at all before the fix above — so
     // `?publisher=…&playlist=…` would newly restore a publisher aside on top of
     // the show the link actually names.
-    if (!feedUrl || params.get('podcast') || params.get('feed') || params.get('playlist')) return;
+    if (!feedUrl || params.get('podcast') || params.get('album') || params.get('feed') || params.get('playlist')) return;
     if (publisherSource) return;
     setPublisherSource({ id: 0, title: 'Publisher', medium: 'publisher', url: feedUrl } as Podcast);
     setPublisherAlbums(null);
@@ -730,45 +737,74 @@ export function HomePage() {
             <FavoritesSyncNotice />
             <MutesSyncNotice />
           </div>
-          {/* The one curated entry point in the app. It NAVIGATES now — the
-              collection is `/playlists`, a page you can bookmark and leave with
-              the back button, rather than an aside this page swapped itself
-              into behind a `?publisher=` param `replaceState` wrote.
-              It renders at EVERY width. It was `lg:hidden` while the header
-              carried a `<PlaylistsLink>` from lg: up, the two composing so
-              exactly one was on screen; that chip is gone with the rest of the
-              header's navigation (see <AppHeader>), and playlists are not a
-              tab in <TabBar> — they are content, not a destination — so this
-              button and the search box's Playlists lane are the ways in.
-              It is discovery, not navigation: it hides as soon as the visitor
-              searches or drills in, which is the right shape for a hero button
-              and the wrong one for a nav item.
-              `entryResolved` costs nothing now that no fetch hangs off the
-              press, but it still keeps the button from flashing during a
-              `?podcast=` restore that is about to replace this whole hero. */}
-          {entryResolved && !inDetailView && !publisherSource && !query && !feeds.length && !loading && (
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Link
-                href="/playlists"
-                className="btn-ghost btn-compact"
-                title="Browse Podcasting 2.0 playlists"
-              >
-                <PlaylistIcon /> BROWSE PLAYLISTS
-              </Link>
-              {/* /demu — every self-hosted (non-Wavlake) album, newest first.
-                  The same kind of entry point as playlists, with the same
-                  visibility rule: discovery, not navigation. */}
-              <Link
-                href="/demu"
-                className="btn-ghost btn-compact"
-                title="Browse self-hosted music, newest first"
-              >
-                <EmuIcon /> BROWSE DEMU
-              </Link>
-            </div>
-          )}
         </div>
       </section>
+
+      {/* The one curated entry point in the app, as a section of its own.
+          It sat inside the search block above, 16px under the box, until
+          2026-11-12, and it read as part of the search rather than as a way
+          to the playlists — so it moved down here under its own heading,
+          styled like <GlobalNostrFeed>'s, while staying the same link.
+          It NAVIGATES — the collection is `/playlists`, a page you can
+          bookmark and leave with the back button, rather than an aside this
+          page swapped itself into behind a `?publisher=` param.
+          It renders at EVERY width. Playlists are not a tab in <TabBar> — they
+          are content, not a destination — and the header holds no navigation
+          (see <AppHeader>), so this section and the search box's Playlists
+          lane are the ways in. **Delete it and `/playlists` has no way in.**
+          It is discovery, not navigation: it hides as soon as the visitor
+          searches or drills in (`drilledIn` — a show, an episode or a
+          discussion), which is the right shape for discovery and the wrong
+          one for a nav item.
+          `entryResolved` keeps it from flashing during a `?podcast=` restore
+          that is about to replace this whole page. */}
+      {entryResolved && !drilledIn && !publisherSource && !query && !feeds.length && !loading && (
+        <section aria-labelledby="home-playlists-heading" className="max-w-7xl mx-auto px-4 pt-4">
+          <header className="border-b border-bone/15 pb-2 mb-3">
+            <h2 id="home-playlists-heading" className="font-display text-2xl">
+              <span aria-hidden className="text-bolt">♫</span> Playlists
+            </h2>
+          </header>
+          <p className="max-w-xl text-sm leading-relaxed text-bone/80">
+            Curated Podcasting 2.0 playlists. A boost pays the artist.
+          </p>
+          {/* gap-1.5, not gap-2: at 390px the first two buttons were 358.03px with 8px between
+              them and the row is 358px, so gap-2 wrapped the second one by 0.03px. With the
+              playlist icon (2026-11-19) they measure 189.7 + 158.5px, so gap-1.5 has 3.8px to
+              spare; BROWSE DEMU wraps to its own line. Measure again if a label changes. */}
+          <div className="mt-4 flex flex-wrap gap-1.5">
+            <Link
+              href="/playlists"
+              className="btn-ghost btn-compact"
+              title="Browse Podcasting 2.0 playlists"
+            >
+              <PlaylistIcon /> BROWSE PLAYLISTS
+            </Link>
+            {/* Signed out it still links: the maker page asks for sign-in itself. */}
+            {COMMUNITY_PLAYLISTS_ON && (
+              <Link
+                href="/playlists/make"
+                className="btn-bolt-soft btn-compact"
+                title="Make a playlist of your own"
+              >
+                + MAKE PLAYLIST
+              </Link>
+            )}
+            {/* /demu — every self-hosted album, newest first (#583). It joined
+                this row when main's hero button met this section: the row is
+                the home page's only set of discovery links, and it wraps to
+                its own line at 390px. Same visibility rule as playlists:
+                discovery, not navigation. */}
+            <Link
+              href="/demu"
+              className="btn-ghost btn-compact"
+              title="Browse self-hosted music, newest first"
+            >
+              <EmuIcon /> BROWSE DEMU
+            </Link>
+          </div>
+        </section>
+      )}
 
       {/* Results grid */}
       <section className="max-w-7xl mx-auto px-4 pt-2">
@@ -924,6 +960,9 @@ export function HomePage() {
                   feeds={feeds}
                   selected={null}
                   onSelect={handleSelect}
+                  // A stored community playlist is `isPreview` because it is not a
+                  // Podcast Index record, not because PI was asked and missed it.
+                  piUnasked={(p) => !!communityIdFromFeedUrl(p.url)}
                   empty={emptyState}
                 />
                 {/* After the search's own rows and its empty sentence, and only

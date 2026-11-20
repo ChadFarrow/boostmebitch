@@ -13,6 +13,7 @@ import { markDeliberateSeek, seekedRecently } from '@/lib/resume-position';
 import { storage } from '@/lib/storage';
 import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
+import { armStartSeek } from './player/start-seek';
 import { usePlayHistory } from './player/use-play-history';
 import { useNowPlaying } from './player/use-now-playing';
 import { useShowSpeed } from './player/use-show-speed';
@@ -606,42 +607,13 @@ export function Player() {
       // escape. Live means live — there is nothing else to resume to.
       const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
 
-      // ONE SEEK AT `loadedmetadata` IS NOT ENOUGH, and an HLS rendition got
-      // none at all. Reported from an iPhone: AUDIO → VIDEO mid-episode
-      // started the picture at 0:00. Buzzsprout publishes its video
-      // `alternateEnclosure` as an `.m3u8`, which takes the HLS branch below —
-      // written for live streams, where there is nothing to resume, so it
-      // never seeked. And Safari can accept an assignment at `loadedmetadata`
-      // and still start at 0:00. So for every video path the start position is
-      // re-checked at `loadedmetadata`, `canplay` and `playing`, and re-applied
-      // while the element is short of it. It stops for good once it has landed,
-      // after `playing` (the last chance before the listener sees the wrong
-      // place), or at the first seek it did not make — a scrub in that window
-      // is the listener's, and wins. A live item has `startAt === 0`, so it
-      // arms nothing.
-      const SEEK_EVENTS = ['loadedmetadata', 'canplay', 'playing'] as const;
-      let landed = startAt <= 0;
-      let ours = false;
-      const seekToStart = (e: Event) => {
-        if (landed) return;
-        if (Math.abs(el.currentTime - startAt) < 2) return doneSeeking();
-        ours = true;
-        el.currentTime = startAt;
-        if (e.type === 'playing') doneSeeking();
-      };
-      const onSeeking = () => {
-        if (ours) { ours = false; return; }
-        doneSeeking();
-      };
-      const doneSeeking = () => {
-        landed = true;
-        for (const ev of SEEK_EVENTS) el.removeEventListener(ev, seekToStart);
-        el.removeEventListener('seeking', onSeeking);
-      };
-      if (!landed) {
-        for (const ev of SEEK_EVENTS) el.addEventListener(ev, seekToStart);
-        el.addEventListener('seeking', onSeeking);
-      }
+      // Armed for EVERY video path, the HLS one included: Buzzsprout publishes
+      // its video `alternateEnclosure` as an `.m3u8`, which takes the HLS
+      // branch below — written for live streams, where there is nothing to
+      // resume, so it never seeked and the picture started at 0:00 (#485).
+      // Why the seek waits for the element to play, and is checked more than
+      // once: `armStartSeek`. The audio branch below arms the same helper.
+      const doneSeeking = armStartSeek(el, startAt, 'v');
 
       // A plain progressive video (mp4/webm) — an alternateEnclosure rendition —
       // plays natively; only HLS needs hls.js. isHlsUrl(url) distinguishes them.
@@ -854,11 +826,16 @@ export function Player() {
     const episode = current.episode;
     // Start position: play(episode, podcast, startSec) sets positionSec before
     // this effect runs, so an episode launched from a transcript line / chapter
-    // begins there. Applied once metadata is ready (currentTime isn't settable
-    // before). positionSec 0 (a normal play) → no seek. Live items force 0 for
-    // the same reason as the video branch above.
+    // begins there, and a restart comes back at the saved place. Applied by
+    // `armStartSeek` once the element PLAYS — never while it is paused, because
+    // an iPhone loses a seek on a paused, unbuffered element and then reports
+    // the target (the sound ran from 0:00 under a bar that read 1:40). See
+    // the helper. positionSec 0 (a normal play) → no seek. Live items force 0
+    // for the same reason as the video branch above.
     const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
-    const seekOnLoad = () => { el.currentTime = startAt; };
+    // Armed in `attach`, which can run after a download resolves; until then
+    // there is nothing to disarm.
+    let doneSeeking = () => {};
 
     let cancelled = false;
 
@@ -877,7 +854,7 @@ export function Player() {
       if (src.startsWith('blob:')) localSrcRef.current = src;
       logPlayback('src', { el: 'a', kind: src.startsWith('blob:') ? 'local' : isHlsUrl(src) ? 'hls' : 'stream', item: playbackItemId(episode) });
       el.src = src;
-      if (startAt > 0) el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
+      doneSeeking = armStartSeek(el, startAt, 'a');
       if (isPlayingRef.current) {
         primePlaybackAudioSession();
         el.play().catch(pauseIfStillCurrent(el, epKey(episode)));
@@ -929,21 +906,20 @@ export function Player() {
         attach(localSrc ?? episode.enclosureUrl);
       });
     }
-    // `{ once: true }` removes the listener when it FIRES, which is not the same
-    // as removing it when this effect is torn down — and the audio element is a
-    // single long-lived node (it lives in the reverse portal), so an unfired
-    // listener outlives the episode that registered it.
+    // The start seek's listeners go when this effect is torn down, not only
+    // when they land — the audio element is a single long-lived node (it lives
+    // in the reverse portal), so a listener left armed outlives the episode
+    // that armed it.
     //
-    // Switching episodes before `loadedmetadata` arrives is the ordinary way to
-    // get there: tapping the next row while the first is still opening its
-    // stream. A's listener is never removed, `el.src` is repointed at B, and B's
-    // metadata event then runs A's handler — seeking B to A's resume position.
+    // Switching episodes before the start lands is the ordinary way to get
+    // there: tapping the next row while the first is still opening its stream.
+    // A's listeners are never removed, `el.src` is repointed at B, and B's
+    // `loadedmetadata` then runs A's check — seeking B to A's resume position.
     // It is worst exactly where it is least expected, on a NEW episode: B has
-    // `startAt === 0`, so it registers no listener of its own to overwrite the
-    // stale one, and a fresh track silently opens partway in.
+    // `startAt === 0`, so it arms nothing of its own, and a fresh track
+    // silently opens partway in.
     //
-    // The video branch above already removes its copy in cleanup. This is the
-    // same line; the two branches had simply drifted.
+    // The video branch above disarms its copy in cleanup too.
     //
     // `cancelled` covers the resolve still being in flight; `revokeLocalSrc`
     // covers it having landed. A blob URL that is never revoked pins the whole
@@ -952,7 +928,7 @@ export function Player() {
     return () => {
       cancelled = true;
       pendingLocalSrc.current = false;
-      el.removeEventListener('loadedmetadata', seekOnLoad);
+      doneSeeking();
       revokeLocalSrc();
     };
   // `enclosureUrl` is a dep as well as `id`: an episode object can be enriched
@@ -1637,13 +1613,22 @@ export function Player() {
   }
 
   function showMediaError(code: number | undefined) {
-    // Fired by the <video> too, so name the right medium.
-    const what = isHlsRef.current ? 'live stream' : isVideoRef.current ? 'video' : 'audio';
+    // WORDS FOR A LISTENER, NOT A DEVELOPER (Chad, 2026-11-15: "they just need
+    // to know that it's an issue with what's trying to be played and not the
+    // app"). It read "audio format not supported or URL unreachable" over a
+    // song whose host had deleted the file — true, and no help. The noun names
+    // WHAT failed, so the fault reads as the item's; the element's error code is
+    // already in the playback log (`err=`) for a bug report. Fired by the <video> too, so the noun
+    // follows the medium.
+    const what = isHlsRef.current ? 'stream'
+      : isVideoRef.current ? 'video'
+      : isMusicItem(useApp.getState().current) ? 'track'
+      : 'episode';
+    const What = what[0].toUpperCase() + what.slice(1);
     setAudioErr(
-      code === 2 ? `network error while loading ${what}`
-      : code === 3 ? `${what} failed to decode`
-      : code === 4 ? `${what} format not supported or URL unreachable`
-      : `${what} playback failed`,
+      code === 4 ? `${What} not found.`
+      : code === 2 ? `Couldn't load this ${what}.`
+      : `This ${what} can't be played.`,
     );
     setPlaying(false);
   }
@@ -1804,6 +1789,12 @@ export function Player() {
           onEnded={() => {
             if (pendingLocalSrc.current) { logPlayback('advance', { via: 'pending' }); return; }
             forgetRestoreBaseline();
+            // A playlist-maker PREVIEW is one song: stop here, never advance.
+            if (current && useApp.getState().previewKey === epKey(current.episode)) {
+              logPlayback('advance', { via: 'preview' });
+              setPlaying(false);
+              return;
+            }
             if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
               const key = downloadManager.deletableAfterPlay(current.episode);
               if (key) void downloadManager.remove(key);

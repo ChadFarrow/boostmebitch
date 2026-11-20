@@ -70,7 +70,7 @@ import {
   payableValue,
   boostGate,
   boostButtonTitle,
-  isMusicMedium,
+  playsAsTracks,
   showShareUrl,
   targetWord,
   authorLine,
@@ -435,11 +435,11 @@ function ShareTargets({ podcast, episode }: { podcast: Podcast; episode: Episode
   // Never `showShareUrl(guid, undefined)` for the episode button: that returns
   // the SHOW link, so a guid-less episode would render two identical links
   // under two different words.
-  const episodeUrl = episode.guid ? showShareUrl(podcast.podcastGuid, episode.guid) : null;
+  const episodeUrl = episode.guid ? showShareUrl(podcast, episode.guid) : null;
   return (
     <>
       <CopyLinkButton
-        url={showShareUrl(podcast.podcastGuid)}
+        url={showShareUrl(podcast)}
         title={`Copy link to this ${showWord.toLowerCase()}`}
         word={showWord}
         className="tile"
@@ -772,8 +772,11 @@ export function FullscreenPlayer({
   // open, the one the screenshot shows, still opened at row 1. Measured by
   // `e2e:shuffle` section 10, which opens on a fresh page every time.
   const followShuffleIdx = current ? shuffleIndexOf(shuffle?.items ?? null, current.episode) : -1;
+  // `playsAsTracks`, not `isMusicMedium`: a `musicL` playlist's rows are tracks
+  // too, and the panel is how a listener sees what plays next (Chad, 2026-11-15,
+  // on a community playlist: the now-playing screen listed nothing).
   const followAlbumIdx =
-    current && followShuffleIdx < 0 && isMusicMedium(current.podcast) && episodeQueue.length > 1
+    current && followShuffleIdx < 0 && playsAsTracks(current.podcast) && episodeQueue.length > 1
       ? playingRowIndex(episodeQueue, current)
       : -1;
   const listsMounted = open && everOpened;
@@ -783,7 +786,10 @@ export function FullscreenPlayer({
   if (!current) return null;
 
   const { episode, podcast } = current;
-  const isMusic = isMusicMedium(podcast);
+  // A `musicL` playlist plays as tracks, so it gets the track panel too. Its row
+  // number is the row's POSITION: a song's `episode` number is its track number
+  // on its OWN album, so "12" would label the playlist's first row.
+  const isPlaylist = podcast.medium?.toLowerCase() === 'musicl';
   // -1 with no shuffle, or when it does not hold this track.
   const shuffleIdx = shuffleIndexOf(shuffle?.items ?? null, episode);
   // Not `isMusic`: a playlist's tracks count too, and from /downloads the show has
@@ -938,9 +944,9 @@ export function FullscreenPlayer({
               header at all, that left a listener with no login in reach.
 
               `overlay` drops the theme row, the balance number AND both wallet
-              chips; see <AuthControl>. The wallet is a tap away in the boost
-              modal this screen opens, which says "⚡ NO WALLET — CONNECT ONE"
-              when there is none. So with both logins set this renders nothing
+              chips; see <AuthControl>. The balance box below opens the wallet
+              when one is connected, and the boost modal this screen opens says
+              "⚡ NO WALLET — CONNECT ONE" when there is none. So with both logins set this renders nothing
               and the bar is ← BACK, ⋯ and ✕ — the account menu belongs to
               <NostrAuth>, which these routes mount hidden. */}
           {/* THE SEVEN SECONDARY ACTIONS, one tap away instead of on the screen.
@@ -974,10 +980,14 @@ export function FullscreenPlayer({
                 fixed 38px, so the glyph can grow without moving it. */}
             <span aria-hidden className="text-base lg:text-xl leading-none">⋯</span>
           </button>
-          {/* THE BALANCE, WITHOUT A WALLET BUTTON UNDER IT. The bar dropped both
-              wallet chips when the boost modal became the route to that modal,
-              and what the listener actually reads before pressing BOOST is the
-              number, not the control. `open` is the gate, not `everOpened`:
+          {/* THE BALANCE, AND A PRESS ON IT OPENS THE WALLET on top of this
+              screen, as the header's balance does (Chad, 2026-11-20: "when I
+              click my wallet here it should open the wallet modal like on the
+              main page"). The bar dropped both wallet CHIPS when the boost
+              modal became the route to that modal and kept only the number;
+              a number that looked like the header's and did nothing read as
+              broken. Still no chip while nothing is connected: the boost modal
+              says "⚡ NO WALLET — CONNECT ONE". `open` is the gate, not `everOpened`:
               this overlay stays mounted for the session once it has been
               opened, and a mounted `useWalletBalance` is a NIP-47 read on
               every `payment_sent` — see <WalletBalanceBox>. */}
@@ -1547,10 +1557,15 @@ export function FullscreenPlayer({
                   })}
                 </ul>
               </div>
-            ) : isMusic && episodeQueue.length > 1 && (
-              <div className="border-t border-bone/10 pt-5">
+            ) : followAlbumIdx >= 0 && (
+              /* Only while the playing track IS a row of `episodeQueue`.
+                 `episodeQueue` is the show opened last, so after browsing to
+                 another album it lists THAT album under this track, and a tap
+                 there played its song under this track's show. Widening the
+                 panel to playlists widened that too, so the panel now asks. */
+              <div className="border-t border-bone/10 pt-5" data-track-panel={isPlaylist ? 'playlist' : 'album'}>
                 <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
-                  Album · {episodeQueue.length} tracks
+                  {isPlaylist ? 'Playlist' : 'Album'} · {episodeQueue.length} tracks
                 </p>
                 <ul ref={albumListRef} className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
                   {episodeQueue.map((t, i) => {
@@ -1583,9 +1598,13 @@ export function FullscreenPlayer({
                               leaves nothing truer to show, and "which row am I
                               on" is the honest floor. */}
                           <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
-                            {active && isPlaying ? '❚❚' : t.episode ?? i + 1}
+                            {active && isPlaying ? '❚❚' : isPlaylist ? i + 1 : t.episode ?? i + 1}
                           </span>
-                          <span className="truncate flex-1">{t.title}</span>
+                          <span className="truncate flex-1">
+                            {t.title}
+                            {/* A playlist mixes artists: name the song's own album, as the shuffle panel does. */}
+                            {isPlaylist && t.feedTitle ? <span className="text-muted"> · {t.feedTitle}</span> : null}
+                          </span>
                           {t.duration ? (
                             <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.duration)}</span>
                           ) : null}
@@ -1631,7 +1650,7 @@ export function FullscreenPlayer({
               // makes a few hundred lines up, for the same reason.
               shareUrlFor={
                 episode.guid
-                  ? (t: number) => showShareUrl(podcast.podcastGuid, episode.guid, t)
+                  ? (t: number) => showShareUrl(podcast, episode.guid, t)
                   : undefined
               }
               // `||` not `??`, plus artwork — see the same prop in

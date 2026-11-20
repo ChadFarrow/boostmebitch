@@ -548,7 +548,13 @@ conflicts with its own change on `main`.
 **Beta protects the code, not the data.** It uses the same relays, the same
 `SITE_NOSTR_SK` and real sats. Favorites (kind:10333) and the kind:30078 wallet
 and settings backups have one copy per user across all deploys, so a beta bug can
-damage them. Boost notes keep `BRAND.origin`, so their links open `www`. Browser
+damage them. Boost notes keep `BRAND.origin`, so their links open `www`. A note
+for a song from a beta community playlist is a BUDDY note: beta leaves
+`NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` unset, so every playlist it publishes lives at
+`www.boostmebuddy.com`, and `noteBrandFor` gives the note Buddy's words, Buddy's
+`via` and, when the site signs, Buddy's key (see "Community playlists database"
+below). Only a playlist on a test feed origin keeps the bitch words. Its Heard-on
+line carries no link (`docs/nostr.md`). Browser
 storage is per origin, so on beta you sign in and connect the wallet again.
 
 **`NEXT_PUBLIC_BETA=1` marks the build** (`lib/beta.ts`), and it is inert anywhere
@@ -668,7 +674,9 @@ upgrade rather than forcing it.
 | `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` | `on` turns every community-playlist route and surface on; anything else answers 404, except the reads `COMMUNITY_FEEDS` keeps |
 | `COMMUNITY_FEEDS` | Server only. `on` keeps a published playlist working with the feature off: its feed and cover (`/feeds/playlists/*`), playing it from its feed URL, and finding it by guid. The maker, the list, search, admin and every write stay 404 |
 | `NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN` | Origin of the public feed URLs. Default `https://www.boostmebuddy.com`; local tests set `http://localhost:3123` |
-| `COMMUNITY_PI_NOTIFY` | `on` lets new and changed community feeds be sent to Podcast Index. It also needs `VERCEL_ENV=production` and the feed origin `https://www.boostmebuddy.com`. Leave it unset: Podcast Index is off for now |
+| `COMMUNITY_PI_NOTIFY` | `on` sends each published or saved community playlist to Podcast Index (`lib/community/pi-notify.ts`), test playlists included. PUBLIC AND PERMANENT: PI has no delete. It also needs the feed origin `https://www.boostmebuddy.com` and Vercel production or the branch `beta`; a PR preview and a laptop never send. Set it on the `boostmebitch` Preview environment scoped to branch `beta`, where the maker runs, and on Production when the maker launches. Needs a `PODCAST_INDEX_KEY` with PI's write permission. `PI_NOTIFY_API` (tests only) points it at a loopback stub |
+| `PODPING_ENDPOINT_URL`, `PODPING_BEARER_TOKEN` | Both set, and `COMMUNITY_PI_NOTIFY=on`, send a podping (medium `musicL`) through Chad's msp-podping-service each time a community playlist is published, saved or deleted (`lib/community/podping-notify.ts`). PUBLIC AND PERMANENT: it is written to Hive. The endpoint is the pusher's address (`https://…`, the `musicL-playlist-updater` value) and the token is `PODPING_BEARER_TOKEN` there, the Railway `PODPING_SHARED_SECRET`; mark the token *sensitive*. Same places as `COMMUNITY_PI_NOTIFY`: the `boostmebitch` Preview environment scoped to branch `beta`, and Production when the maker launches. A PR preview and a laptop never send. Tests use a loopback stub and a test token |
+| `GITHUB_ARCHIVE_TOKEN` | Optional, sensitive. After each publish, edit and delete, the server asks GitHub to run `playlist-archive.yml`, which copies every playlist feed to the `playlists` branch (`lib/community/archive-notify.ts`). A fine-grained token on this repo only, with Actions: Read and write and nothing else; sent only where the feed origin is `https://www.boostmebuddy.com`. Set it on the `boostmebitch` Preview environment (branch `beta`) and on Production of both projects. Unset: no request, and the workflow's 15-minute schedule still copies. `PLAYLIST_ARCHIVE_API` (tests only) points it at a loopback stub |
 
 ### Where each setting goes: beta and production now, launch later
 
@@ -688,7 +696,9 @@ upgrade rather than forcing it.
 
 **The feeds are part of every playlist's address.** With both `NEXT_PUBLIC_COMMUNITY_PLAYLISTS` and `COMMUNITY_FEEDS` off on `boostmebuddy`, every `/feeds/playlists/*` answers 404, so every podcast app subscribed to a playlist loses it. To stop new playlists and keep the feeds, turn the feature switch off and leave `COMMUNITY_FEEDS=on`.
 
-**Never set `COMMUNITY_PI_NOTIFY`** until the Podcast Index list in `docs/feeds.md` ("Community playlists", Known limits) is done: the ban-with-`deleteAll` notification, the `add/byfeedurl` method, and that our key may add feeds.
+**Turning on Podcast Index (Chad's step).** Each submission is public and permanent, so the switch goes on only when Chad says so. (1) Check that the `PODCAST_INDEX_KEY` beta uses has PI's write permission. (2) Add `COMMUNITY_PI_NOTIFY=on` to the `boostmebitch` Preview environment, scoped to branch `beta`, and redeploy beta. (3) Nothing is sent yet: the existing playlists go only when someone presses SAVE on them, and new ones when they are published. So the first playlist in PI is the one Chad saves or publishes first. (4) Read the `[community-pi]` line in the Vercel runtime log of that request: `feed <id> added` is success; `refused: 401` means the key lacks write permission (fix the key, then SAVE again). Remove the variable and redeploy to stop.
+
+**Turning on the podping (Chad's step).** A podping is public and permanent too. (1) `COMMUNITY_PI_NOTIFY=on` must already be on the `boostmebitch` Preview environment scoped to branch `beta` (the step above). (2) Add `PODPING_ENDPOINT_URL` and `PODPING_BEARER_TOKEN` there, scoped to branch `beta`, with the two values `musicL-playlist-updater` uses (`PODPING_ENDPOINT_URL`, and the Railway `PODPING_SHARED_SECRET` as `PODPING_BEARER_TOKEN`); type the token into Vercel yourself, never into a chat. Redeploy beta. (3) Press SAVE on a playlist on beta. (4) In the Vercel runtime log of that request read the `[community-podping]` line: `enqueued <feed url>` is success, `pusher answered 401` means the token is wrong. Remove either variable and redeploy to stop.
 
 ### The GitHub copy of the playlists
 

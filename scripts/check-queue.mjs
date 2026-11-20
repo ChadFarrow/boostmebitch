@@ -105,6 +105,9 @@ import {
   fnvHash,
   isPlayingRow,
   isShuffleableTrack,
+  listKey,
+  nextPlayableIndexRepeating,
+  playlistShuffleTracks,
   playingRowIndex,
   sameCurrentTrack,
   trimForQueue,
@@ -690,6 +693,75 @@ compare('isShuffleableTrack: an ended live item is out too — a stream has no e
 compare('isShuffleableTrack: an ordinary track with a file is in', isShuffleableTrack(TRACKS[0]), true);
 
 // ---------------------------------------------------------------------------
+section('The playlist shuffle: each track is the pair a row TAP plays');
+// ---------------------------------------------------------------------------
+// `playlistShuffleTracks` (2026-11-16). A playlist row taps as `play(row,
+// playlist)`, and `payableValue` keeps the curator out of that pair's payment.
+// The naive builds the show from the TRACK's own feed — a pairing nothing else
+// plays, which loses the "heard on" credit and reaches the payee through a
+// second, untested road. `[guid, show guid]` per track.
+const PLAYLIST_SHOW = { id: -1, podcastGuid: 'playlist-feed', title: 'The Playlist', medium: 'musicL', url: 'https://x.example/p.xml' };
+const plRow = (n, extra = {}) => ({
+  id: 900 + n, guid: `pl-${n}`, podcastGuid: `album-${n}`, feedId: 100 + n,
+  enclosureUrl: `https://cdn.example/pl-${n}.mp3`, ...extra,
+});
+const PL_ROWS = [1, 2, 3].map((n) => plRow(n));
+function checkPlaylist(label, args, expected, { alsoNaive = false } = {}) {
+  const [episodes, podcast, current, seq] = args;
+  compare(label, albumShape(playlistShuffleTracks(episodes, podcast, current, rng(seq))), expected);
+  vectors.push({ label, kind: 'plshuffle', args, alsoNaive });
+}
+// Fisher-Yates with j = 0 every time: [1 2 3] → [2 3 1].
+checkPlaylist('every playable row, each with the PLAYLIST as its show',
+  [PL_ROWS, PLAYLIST_SHOW, null, [0]],
+  [['pl-2', 'playlist-feed'], ['pl-3', 'playlist-feed'], ['pl-1', 'playlist-feed']]);
+checkPlaylist('a row with no file is not dealt, and the playing row goes last',
+  [[...PL_ROWS, plRow(4, { enclosureUrl: '' })], PLAYLIST_SHOW, { episode: PL_ROWS[1], podcast: PLAYLIST_SHOW }, [0]],
+  [['pl-3', 'playlist-feed'], ['pl-1', 'playlist-feed'], ['pl-2', 'playlist-feed']]);
+compare('playlistShuffleTracks adds no value block to a row that has none',
+  playlistShuffleTracks(PL_ROWS, PLAYLIST_SHOW, null, rng([0])).every((i) => !('value' in i.episode)), true);
+
+// ---------------------------------------------------------------------------
+section('REPEAT: which list it names, and where a step lands');
+// ---------------------------------------------------------------------------
+// `listKey` names the list `repeatList` holds. The naive is `??`, which keeps an
+// EMPTY guid — a feed publishing `<podcast:guid></podcast:guid>` would then
+// share the key '' with every other such feed and repeat all of them.
+function checkListKey(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, listKey(...args), expected);
+  vectors.push({ label, kind: 'listkey', args, alsoNaive });
+}
+checkListKey('the guid when there is one', [{ id: 5, podcastGuid: 'g', url: 'https://x/f.xml' }], 'g', { alsoNaive: true });
+checkListKey('an EMPTY guid falls through to the URL', [{ id: 5, podcastGuid: '', url: 'https://x/f.xml' }], 'https://x/f.xml');
+checkListKey('neither: the id', [{ id: 5 }], 'id:5', { alsoNaive: true });
+// `nextPlayableIndexRepeating`. Rows are `{ enclosureUrl }` by letter; '' has no
+// file. The naive is the first wrap anybody writes: `to < 0 ? 0 : to` whenever
+// repeat is on — it lands on a row with no file, reloads the one track of a
+// one-track list (which `<Player>` keys on `episode.id` and never restarts),
+// and wraps ⏮ at the first track too.
+const R = (s) => [...s].map((c) => ({ enclosureUrl: c === '_' ? '' : `https://cdn.example/${c}.mp3` }));
+function checkRepeatWalk(label, args, expected, { alsoNaive = false } = {}) {
+  const [rows, from, step, repeat] = args;
+  compare(label, nextPlayableIndexRepeating(R(rows), from, step, (e) => e, undefined, repeat), expected);
+  vectors.push({ label, kind: 'repeat', args, alsoNaive });
+}
+checkRepeatWalk('repeat off: the last row stops (-1), as before', ['abc', 2, 1, false], -1, { alsoNaive: true });
+checkRepeatWalk('repeat on, mid-list: the next row, as before', ['abc', 0, 1, true], 1, { alsoNaive: true });
+checkRepeatWalk('repeat on, last row: the first row', ['abc', 2, 1, true], 0, { alsoNaive: true });
+checkRepeatWalk('repeat on, last row: past a first row with no file', ['_bc', 2, 1, true], 1);
+checkRepeatWalk('repeat on, a one-track list does not wrap onto itself', ['a', 0, 1, true], -1);
+checkRepeatWalk('repeat on, the only other rows have no file: no wrap', ['__c', 2, 1, true], -1);
+checkRepeatWalk('repeat on, back from the first row: no wrap (⏮ is unchanged)', ['abc', 0, -1, true], -1);
+checkRepeatWalk('repeat on, a row not in the list (-1): no step, as before', ['abc', -1, 1, true], -1);
+{
+  // passOver: a dead first file is passed over by the wrap too.
+  const rows = R('abc');
+  const dead = (e) => e.enclosureUrl.endsWith('/a.mp3');
+  compare('repeat on, a dead first file is passed over by the wrap',
+    nextPlayableIndexRepeating(rows, 2, 1, (e) => e, dead, true), 1);
+}
+
+// ---------------------------------------------------------------------------
 section('The cap is a number this repo states, not one a caller passes');
 // ---------------------------------------------------------------------------
 compare('LISTEN_QUEUE_CAP is 50', LISTEN_QUEUE_CAP, 50);
@@ -768,6 +840,15 @@ section('Every vector above is replayed against the obvious wrong version');
   // may come first.
   const naiveAlbum = (episodes, podcast, _current, random) =>
     shuffleOrder(episodes, random).map((episode) => ({ episode, podcast }));
+  // The show built from the track's own feed (see the section).
+  const naivePlaylist = (episodes, _podcast, current, random) =>
+    albumShuffleTracks(episodes, { id: 0 }, current, random)
+      .map((i) => ({ episode: i.episode, podcast: { podcastGuid: i.episode.podcastGuid } }));
+  const naiveListKey = (p) => p.podcastGuid ?? p.url ?? `id:${p.id}`;
+  const naiveRepeatWalk = (rows, from, step, repeat) => {
+    const to = nextPlayableIndexBy(rows, from, step, (e) => e);
+    return to < 0 && repeat ? 0 : to;
+  };
 
   const call = (impl, v) => {
     try {
@@ -821,6 +902,18 @@ section('Every vector above is replayed against the obvious wrong version');
         case 'album': {
           const [episodes, podcast, current, seq] = v.args;
           return JSON.stringify(albumShape((real ? albumShuffleTracks : naiveAlbum)(episodes, podcast, current, rng(seq))));
+        }
+        case 'plshuffle': {
+          const [episodes, podcast, current, seq] = v.args;
+          return JSON.stringify(albumShape((real ? playlistShuffleTracks : naivePlaylist)(episodes, podcast, current, rng(seq))));
+        }
+        case 'listkey':
+          return JSON.stringify((real ? listKey : naiveListKey)(...v.args));
+        case 'repeat': {
+          const [rows, from, step, repeat] = v.args;
+          return JSON.stringify(real
+            ? nextPlayableIndexRepeating(R(rows), from, step, (e) => e, undefined, repeat)
+            : naiveRepeatWalk(R(rows), from, step, repeat));
         }
         default: throw new Error(`unknown vector kind ${v.kind}`);
       }

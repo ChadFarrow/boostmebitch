@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { PodcastResults } from '@/components/lists';
 import { useApp } from '@/lib/store';
@@ -9,7 +10,10 @@ import {
   COMMUNITY_COLLECTION_TITLE,
   loadCollection,
   playlistTrackCount,
+  playlistsNotInPi,
 } from '@/lib/playlist-collection';
+import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { useGuestKey } from '@/lib/community/use-guest-key';
 import { isPlaylistMedium } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -36,22 +40,36 @@ const PLAYLISTS_ORIGIN = { path: '/playlists', label: 'playlists' };
  */
 const MAX_COUNTED_ROWS = 12;
 const COUNT_CONCURRENCY = 3;
+/**
+ * Of those 12, how many are held back for playlists made on BMB. The cap is
+ * claimed eagerly by whichever section answers first, and ChadF's section can
+ * fill all 12 before the store answers — which left the newest listener-made
+ * playlist with no count. Reserved, so arrival order cannot decide it.
+ *
+ * Reserved ONLY while it can be used: 0 with the switch off (nothing is ever
+ * stored, and ChadF's section must keep every slot), and once the Community
+ * section has loaded, only as many as there are stored rows.
+ */
+const COUNT_RESERVED_OWN = 4;
 
 const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
+  // Community first, ChadF's music-show playlists below it (Chad, 2026-11-15).
+  {
+    url: COMMUNITY_COLLECTION_URL,
+    heading: COMMUNITY_COLLECTION_TITLE,
+    // With the switch off the list is the curated seven only, and NOT "made by
+    // other people": entry 2 of COMMUNITY_PLAYLIST_URLS is ChadF's own, made on
+    // v4vmusic rather than by the tooling that writes the publisher feed, so
+    // the true claim is the host. With it on, stored playlists are made by
+    // listeners on BMB, and the curated seven are still "other people".
+    blurb: COMMUNITY_PLAYLISTS_ON
+      ? 'Made by listeners on BMB, and by other people in the V4V community.'
+      : 'Built on other hosts, and mostly by other people in the V4V community.',
+  },
   {
     url: MUSICL_PUBLISHER_URL,
     heading: "ChadF's playlists",
     blurb: 'Published as a Podcasting 2.0 publisher feed, so this list updates itself.',
-  },
-  {
-    url: COMMUNITY_COLLECTION_URL,
-    heading: COMMUNITY_COLLECTION_TITLE,
-    // NOT "made by other people": entry 2 of COMMUNITY_PLAYLIST_URLS is ChadF's
-    // own, made on v4vmusic rather than by the tooling that writes the publisher
-    // feed. Every visitor read a false attribution about that row — the same
-    // class of wrong claim splitting the collections was meant to prevent, just
-    // pointing the other way. What is true of ALL of them is the host.
-    blurb: 'Built on other hosts, and mostly by other people in the V4V community.',
   },
 ];
 
@@ -82,10 +100,12 @@ interface SectionState {
   noPi: boolean;
   loading: boolean;
   failed: boolean;
+  /** Community only: the store of BMB-made playlists could not be read. */
+  storeDown: boolean;
 }
 
 const INITIAL: SectionState = {
-  playlists: null, listed: 0, noPi: false, loading: true, failed: false,
+  playlists: null, listed: 0, noPi: false, loading: true, failed: false, storeDown: false,
 };
 
 /**
@@ -113,6 +133,9 @@ export function PlaylistsPage() {
   const [counts, setCounts] = useState<Record<string, number>>({});
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
+  const identity = useApp((s) => s.identity);
+  // The guest key's public half (never made here): a playlist made with no account is still editable.
+  const guest = useGuestKey();
   const router = useRouter();
 
   const patch = useCallback((i: number, next: Partial<SectionState>) => {
@@ -121,7 +144,12 @@ export function PlaylistsPage() {
 
   const load = useCallback(async (i: number) => {
     patch(i, { loading: true, failed: false });
-    const collection = await loadCollection(SECTIONS[i].url);
+    // The rows BMB hosts paint as soon as the store answers, under the
+    // "loading playlists…" count, and only into an EMPTY section: on a retry the
+    // rows already on screen stay until the whole collection is back.
+    const collection = await loadCollection(SECTIONS[i].url, (stored) => {
+      setSections((prev) => prev.map((st, j) => (j === i && st.playlists === null ? { ...st, playlists: stored } : st)));
+    });
     if (!collection) {
       // Keep whatever is already on screen. A retry that fails must not empty a
       // list the visitor can still read.
@@ -133,6 +161,7 @@ export function PlaylistsPage() {
       playlists: collection.feeds,
       listed: collection.listed,
       noPi: collection.couldNotAskPi,
+      storeDown: collection.storeDown === true,
     });
   }, [patch]);
 
@@ -182,40 +211,89 @@ export function PlaylistsPage() {
     [sections],
   );
   const askedRef = useRef<Set<string>>(new Set());
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
+
+  /**
+   * How many count slots are held for stored rows RIGHT NOW. Part of the effect's
+   * key, so a freed slot goes to the other rows the moment it is known.
+   */
+  const communityState = sections[SECTIONS.findIndex((x) => x.url === COMMUNITY_COLLECTION_URL)];
+  const ownRows = (communityState.playlists ?? []).filter((p) => communityIdFromFeedUrl(p.url)).length;
+  const communityLoaded = !communityState.loading;
+  const reserved = !COMMUNITY_PLAYLISTS_ON
+    ? 0
+    : communityLoaded ? Math.min(ownRows, COUNT_RESERVED_OWN) : COUNT_RESERVED_OWN;
 
   useEffect(() => {
     if (!urlKey) return;
     // **The cap is a TOTAL for the page, not a per-run one**, and the claim is
-    // made EAGERLY. Both matter because this effect legitimately runs more than
-    // once: the two collections resolve in separate tasks, so `urlKey` grows,
-    // and React's development StrictMode invokes every effect twice. Claiming a
-    // URL only as a worker reached it left the rest unclaimed, so the next run
-    // re-asked about requests still in flight — measured at 30 requests for 17
-    // rows, worse than the uncapped version it replaced.
-    const budget = MAX_COUNTED_ROWS - askedRef.current.size;
-    if (budget <= 0) return;
-    const urls = urlKey.split('\n')
-      .filter((u) => !askedRef.current.has(u))
-      .slice(0, budget);
+    // made EAGERLY (see above). Cancellation is the PAGE's unmount, not this
+    // effect's cleanup: a re-run for a freed slot must not abandon the URLs an
+    // earlier run claimed and had not reached yet.
+    const isOwn = (u: string) => !!communityIdFromFeedUrl(u);
+    const asked = [...askedRef.current];
+    const ownLeft = (COMMUNITY_PLAYLISTS_ON ? COUNT_RESERVED_OWN : 0) - asked.filter(isOwn).length;
+    const restLeft = MAX_COUNTED_ROWS - reserved - asked.filter((u) => !isOwn(u)).length;
+    const fresh = urlKey.split('\n').filter((u) => !askedRef.current.has(u));
+    const urls = [
+      ...fresh.filter(isOwn).slice(0, Math.max(0, ownLeft)),
+      ...fresh.filter((u) => !isOwn(u)).slice(0, Math.max(0, restLeft)),
+    ];
     if (!urls.length) return;
     for (const u of urls) askedRef.current.add(u);
 
-    let live = true;
     let next = 0;
     const worker = async () => {
-      while (live) {
+      while (aliveRef.current) {
         const url = urls[next++];
         if (!url) return;
         const total = await playlistTrackCount(url);
-        if (!live || total === null) continue;
+        if (!aliveRef.current || total === null) continue;
         setCounts((prev) => (prev[url] === total ? prev : { ...prev, [url]: total }));
       }
     };
     void Promise.allSettled(
       Array.from({ length: Math.min(COUNT_CONCURRENCY, urls.length) }, worker),
     );
+  }, [urlKey, reserved]);
+
+  /**
+   * The playlists made on BMB that Podcast Index ANSWERED "not found" for, by
+   * their id in our store. Only these rows print `NOT IN PI` (Chad, 2026-11-18:
+   * "my playlist need a not on PI badge").
+   *
+   * A stored row is built from our own database, so its `isPreview` is no answer
+   * from PI, and an id missing from this set renders NO stamp: "still asking",
+   * "could not ask" and "PI holds it" all look the same, because the stamp is a
+   * claim and only the first answer below may make it. ONE batch request for all
+   * of them (`playlistsNotInPi`), asked again only when the set of stored rows
+   * changes. Keyed by id, never by row, so the same playlist listed again under
+   * ChadF's playlists (his publisher feed names some of them) gets the same stamp.
+   */
+  const [notInPi, setNotInPi] = useState<ReadonlySet<string>>(() => new Set());
+  const ownKey = useMemo(
+    () => (communityState.playlists ?? [])
+      .map((p) => [communityIdFromFeedUrl(p.url), p.podcastGuid] as const)
+      .filter((pair): pair is readonly [string, string] => !!pair[0] && !!pair[1])
+      .map(([id, guid]) => `${id} ${guid}`)
+      .sort()
+      .join('\n'),
+    [communityState.playlists],
+  );
+  useEffect(() => {
+    if (!ownKey) return;
+    let live = true;
+    const pairs = ownKey.split('\n').map((line) => line.split(' ') as [string, string]);
+    void playlistsNotInPi(pairs.map(([, guid]) => guid)).then((missing) => {
+      if (!live || !missing) return;
+      setNotInPi(new Set(pairs.filter(([, guid]) => missing.has(guid)).map(([id]) => id)));
+    });
     return () => { live = false; };
-  }, [urlKey]);
+  }, [ownKey]);
 
   /**
    * Open a playlist: set the store, THEN navigate to `/`.
@@ -295,6 +373,16 @@ export function PlaylistsPage() {
               </p>
             )}
 
+            {/* The store half is missing: say WHICH half, not "1 more". */}
+            {!state.loading && !state.failed && state.storeDown && (
+              <p className="text-xs text-muted mb-3 px-1 flex flex-wrap items-center gap-3" data-testid="store-down">
+                <span>Playlists made on BMB couldn&apos;t be loaded just now.</span>
+                <button type="button" onClick={() => void load(i)} className="btn-ghost btn-compact">
+                  ↻ RETRY
+                </button>
+              </p>
+            )}
+
             {/* Above the list, not instead of it: a retry that fails still
                 leaves the previously loaded rows readable underneath. */}
             {state.failed && (
@@ -311,7 +399,24 @@ export function PlaylistsPage() {
                 feeds={rows}
                 selected={null}
                 onSelect={openPlaylist}
-                piUnasked={state.noPi}
+                // A playlist from our own store stamps only on PI's own answer
+                // (`notInPi` above), never on `isPreview`, which for it says
+                // nothing about PI.
+                piUnasked={(p) => {
+                  const own = communityIdFromFeedUrl(p.url);
+                  return own ? !notInPi.has(own) : state.noPi;
+                }}
+                action={(p) => {
+                  const id = communityIdFromFeedUrl(p.url);
+                  const maker = p.nostrNpubs?.[0]?.pubkey;
+                  // Mine: made under the signed-in account, or under the guest key this browser keeps.
+                  if (!id || !maker || (maker !== identity?.pubkey && maker !== guest?.pubkey)) return null;
+                  return (
+                    <Link href={`/playlists/make?id=${id}`} className="btn-mini" data-edit-playlist aria-label={`Edit ${p.title}`}>
+                      EDIT
+                    </Link>
+                  );
+                }}
                 meta={(p) => {
                   const n = p.url ? counts[p.url] : undefined;
                   return n === undefined ? null : `${n.toLocaleString()} tracks`;

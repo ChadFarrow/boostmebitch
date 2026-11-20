@@ -1,7 +1,8 @@
-import { loadPlaylistPage, tripPiBreaker } from '@/lib/podcast-meta';
+import { loadPlaylistPage, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import type { Podcast } from '@/lib/types';
-import { mapLimit, PI_FANOUT } from '@/lib/util';
-import { COMMUNITY_COLLECTION_URL, COMMUNITY_PLAYLIST_URLS } from '@/lib/curated-playlists';
+import { communityPlaylistToPodcast, mapLimit, PI_FANOUT, piConfirmedMisses } from '@/lib/util';
+import { COMMUNITY_COLLECTION_URL, COMMUNITY_PLAYLIST_URLS, COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
+import { fetchCommunityPlaylists } from '@/lib/community/client';
 
 /**
  * The curated playlist collection: which feed it comes from, and how to read it.
@@ -90,11 +91,27 @@ export interface Collection {
    * paid for on the BOOST button.
    */
   couldNotAskPi: boolean;
+  /**
+   * Community only: the store of playlists made on BMB could not be read, so
+   * that half is MISSING — said by name, never folded into `listed`.
+   */
+  storeDown?: boolean;
 }
 
-export async function loadCollection(feedUrl: string): Promise<Collection | null> {
+/**
+ * `onStored` (Community only) is handed the rows made on BMB the moment the
+ * store answers, BEFORE the curated half — which pays a Podcast Index lookup per
+ * feed — is done. The store answers in milliseconds, and those are the
+ * playlists BMB hosts, so they never wait on a third party (Chad, 2026-11-15:
+ * "The playlists hosted on Boost Me Bitch should always load"). The final
+ * `Collection` still carries every row, stored first.
+ */
+export async function loadCollection(
+  feedUrl: string,
+  onStored?: (feeds: Podcast[]) => void,
+): Promise<Collection | null> {
   try {
-    if (feedUrl === COMMUNITY_COLLECTION_URL) return await loadUrlList(COMMUNITY_PLAYLIST_URLS);
+    if (feedUrl === COMMUNITY_COLLECTION_URL) return await loadCommunity(onStored);
     // A non-http(s) value is not a publisher feed, and refusing it HERE is what
     // keeps a missed sentinel branch honest. Sent to `/api/publisher` instead,
     // `safeFetch` rejects the scheme, `fetchFeedXml` SWALLOWS the throw,
@@ -128,6 +145,51 @@ export async function loadCollection(feedUrl: string): Promise<Collection | null
   } catch {
     return null;
   }
+}
+
+/**
+ * The Community collection: playlists made on BMB first (newest first), then the
+ * curated URL list.
+ *
+ * **A store that cannot be reached is a missing HALF, not an empty store.**
+ * `fetchCommunityPlaylists` answers `null` for a failure and `[]` for "nobody has
+ * made one", and only the second is a fact. On `null` this sets `storeDown`, so
+ * the page names what is missing (and offers RETRY) rather than folding it into
+ * a count; `listed` stays true to what was counted.
+ *
+ * **The two reads run in parallel** — they share nothing, and the store answers
+ * in milliseconds while the curated list pays for Podcast Index.
+ *
+ * **One feed URL, one row.** A curated entry whose URL a stored playlist holds is
+ * dropped after the merge and is not counted in `listed`. Rows are keyed by
+ * `p.id`, so two rows for one feed would make the second unreachable.
+ *
+ * The stored rows are built from our own database, so they need no Podcast Index
+ * call and are never counted against `couldNotAskPi`.
+ */
+async function loadCommunity(onStored?: (feeds: Podcast[]) => void): Promise<Collection | null> {
+  const curated = [...new Set(COMMUNITY_PLAYLIST_URLS)];
+  const storeRead = COMMUNITY_PLAYLISTS_ON ? fetchCommunityPlaylists() : Promise.resolve([]);
+  void storeRead.then((l) => {
+    if (l && l.length) onStored?.(l.map(communityPlaylistToPodcast));
+  });
+  const [list, rest] = await Promise.all([storeRead, loadUrlList(curated)]);
+  const storeDown = list === null;
+  const stored = (list ?? []).map(communityPlaylistToPodcast);
+  const have = new Set(stored.map((p) => p.url));
+  const dupes = curated.filter((u) => have.has(u)).length;
+  if (!rest) {
+    // The curated half failed outright. With stored rows in hand the page can
+    // still show them, with the curated ones counted as missing.
+    if (!stored.length) return null;
+    return { feeds: stored, listed: stored.length + curated.length - dupes, couldNotAskPi: false, storeDown };
+  }
+  return {
+    feeds: [...stored, ...rest.feeds.filter((f) => !have.has(f.url))],
+    listed: stored.length + rest.listed - dupes,
+    couldNotAskPi: rest.couldNotAskPi,
+    storeDown,
+  };
 }
 
 /**
@@ -212,6 +274,47 @@ export async function playlistTrackCount(feedUrl: string): Promise<number | null
   try {
     const { total } = await loadPlaylistPage({ feedUrl, offset: PAST_LAST_REF, limit: 1 });
     return typeof total === 'number' ? total : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The most guids one `/api/by-guid/batch` request takes (`MAX_BATCH` in `lib/pi-batch.ts`). */
+const PI_ASK_MAX = 100;
+
+/**
+ * The playlist guids Podcast Index ANSWERED "not found" for, or null when nothing
+ * could be asked. `/playlists` stamps a BMB-made row `NOT IN PI` only when its guid
+ * is in the set (Chad, 2026-11-18: "my playlist need a not on PI badge").
+ *
+ * **A stored row is built from our own database, so its `isPreview` says nothing
+ * about Podcast Index**, and the page used to suppress the stamp on every one of
+ * them. A BMB playlist goes to PI only once `COMMUNITY_PI_NOTIFY` is on and it is
+ * published or saved (docs/feeds.md, "Podcast Index"), PI may refuse or be slow to
+ * crawl it, and anybody can submit a feed URL to PI, so "not in PI" is still a fact
+ * to ask for and never one to assume.
+ *
+ * ONE request for the whole list, through the batch door. A key the answer leaves
+ * out is "could not ask" and stamps nothing (`piConfirmedMisses`).
+ *
+ * **Deliberately NOT `warmPodcastCache`.** That fills the tab's metadata cache, and
+ * a PI miss lands there as a cached `null` for the guid. `/api/by-guid` answers
+ * these same guids from the store on a PI miss (that is how a favorite or a
+ * `?podcast=` link opens a BMB-made playlist), and a cached `null` would stop
+ * `resolvePodcastByGuid` from ever asking it for the rest of the tab.
+ *
+ * Does not trip the breaker, for the reason `warmPodcastCache` gives: a stamp is
+ * an annotation, and it must not switch off metadata for the whole tab.
+ */
+export async function playlistsNotInPi(guids: readonly string[]): Promise<Set<string> | null> {
+  const asked = [...new Set(guids.filter(Boolean))].slice(0, PI_ASK_MAX);
+  if (!asked.length) return new Set();
+  if (!piMaybeUp()) return null;
+  try {
+    const r = await fetch(`/api/by-guid/batch?guids=${asked.map(encodeURIComponent).join(',')}`);
+    if (!r.ok) return null;
+    const body = (await r.json()) as { podcasts?: unknown } | null;
+    return new Set(piConfirmedMisses(asked, body?.podcasts));
   } catch {
     return null;
   }
