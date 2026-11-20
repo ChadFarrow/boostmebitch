@@ -611,8 +611,8 @@ export function Player() {
       // its video `alternateEnclosure` as an `.m3u8`, which takes the HLS
       // branch below — written for live streams, where there is nothing to
       // resume, so it never seeked and the picture started at 0:00 (#485).
-      // Why one seek at `loadedmetadata` is not enough: `armStartSeek`. The
-      // audio branch below arms the same helper.
+      // Why the seek waits for the element to play, and is checked more than
+      // once: `armStartSeek`. The audio branch below arms the same helper.
       const doneSeeking = armStartSeek(el, startAt, 'v');
 
       // A plain progressive video (mp4/webm) — an alternateEnclosure rendition —
@@ -827,10 +827,10 @@ export function Player() {
     // Start position: play(episode, podcast, startSec) sets positionSec before
     // this effect runs, so an episode launched from a transcript line / chapter
     // begins there, and a restart comes back at the saved place. Applied by
-    // `armStartSeek` once the new source is attached — checked at
-    // `loadedmetadata`, `canplay` and `playing`, because one seek at
-    // `loadedmetadata` let an iPhone start the sound at 0:00 under a bar that
-    // read 5:21. positionSec 0 (a normal play) → no seek. Live items force 0
+    // `armStartSeek` once the element PLAYS — never while it is paused, because
+    // an iPhone loses a seek on a paused, unbuffered element and then reports
+    // the target (the sound ran from 0:00 under a bar that read 1:40). See
+    // the helper. positionSec 0 (a normal play) → no seek. Live items force 0
     // for the same reason as the video branch above.
     const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
     // Armed in `attach`, which can run after a download resolves; until then

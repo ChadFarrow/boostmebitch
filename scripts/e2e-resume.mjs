@@ -145,56 +145,78 @@ await wait(5000);
 const a2 = await audioState();
 check('the element resumed at ~5:00', a2 && a2.t >= 299 && a2.t < 320, JSON.stringify(a2));
 
-console.log('\n2b. Reload where the engine drops the start seek, as Safari can — ▶ still starts at the saved place');
-// WebKit can take the one `currentTime` assignment made at `loadedmetadata` and
-// still start at 0:00 (docs/ui.md, "Switching AUDIO → VIDEO"; #485 measured it
-// on an iPhone). Chrome keeps every assignment, so step 2 cannot see that, and
-// the audio branch made ONE try until 2026-11-20: on an iPhone a reload and
-// ▶ RESUME started the episode over while the bar still read 5:21. This stub
-// makes Chrome drop the first `n` start seeks on the <audio> — `n = 2` leaves
-// only the last of the three tries (`loadedmetadata`, `canplay`, `playing`).
+console.log('\n2b. Reload where the engine LOSES the start seek, as the iPhone does — ▶ still starts at the saved place');
+// Chrome keeps every `currentTime` assignment, so step 2 cannot see what an
+// iPhone did on 2026-11-20 (iOS 27.2.1, Safari): after a reopen the episode
+// came back PAUSED at its saved 1:40, the player seeked the paused element at
+// `loadedmetadata` (readyState 1, nothing buffered), and WebKit never finished
+// that seek — no `seeked`, and from then on `currentTime` read 100 at every
+// event while ▶ played the SOUND from 0:00, never fired `playing`, and the bar
+// sat at 1:40. Its playback log:
+//   m.loadedmetadata el=a rs=1 ct=0 paused=1
+//   seek.start el=a ev=loadedmetadata from=0 to=100
+//   m.play el=a rs=1 ct=100 paused=0
+//   m.canplay el=a rs=3 ct=100 paused=0      (no m.seeked, no m.playing)
+// A seek made while the element PLAYS is the case #485 verified on an iPhone.
+// So the stub makes Chrome behave as both measurements did:
+//   'paused' — every seek made while the <audio> is paused is LOST. The rule
+//              this pins: the player makes none (it reads its own `currentTime`,
+//              which on the iPhone said "done" — so the outcome alone cannot
+//              catch a player that seeks while paused and is fooled by it);
+//   'once'   — the first seek made while it plays is lost too, as Safari can
+//              (docs/ui.md, "Switching AUDIO → VIDEO"); a later check re-applies.
 // It lets every assignment through again once the step has measured, so the
 // steps below seek as before.
-const dropStartSeeks = (n) => `(() => {
+const loseStartSeeks = (mode) => `(() => {
   const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
-  let left = ${n};
-  window.__droppedSeeks = [];
-  window.__stopDropping = () => { left = 0; };
+  let on = true;
+  let playingLeft = ${mode === 'once' ? 1 : 0};
+  window.__lost = { paused: [], playing: [] };
+  window.__stubOn = true;
+  window.__stopLosing = () => { on = false; };
   Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
     configurable: true,
     enumerable: d.enumerable,
     get() { return d.get.call(this); },
     set(v) {
-      if (left > 0 && this instanceof HTMLAudioElement && v > 1) {
-        left -= 1;
-        window.__droppedSeeks.push({ to: Math.round(v), rs: this.readyState, paused: this.paused });
-        return;
+      if (on && this instanceof HTMLAudioElement && v > 1) {
+        const seen = { to: Math.round(v), rs: this.readyState };
+        if (this.paused) { window.__lost.paused.push(seen); return; }
+        if (playingLeft > 0) { playingLeft -= 1; window.__lost.playing.push(seen); return; }
       }
       d.set.call(this, v);
     },
   });
 })();`;
-for (const n of [1, 2]) {
+for (const mode of ['paused', 'once']) {
   await pause();
   await wait(800);
   const saved = (await entry())?.t ?? null;
-  const { result: { identifier } } = await send('Page.addScriptToEvaluateOnNewDocument', { source: dropStartSeeks(n) });
+  const { result: { identifier } } = await send('Page.addScriptToEvaluateOnNewDocument', { source: loseStartSeeks(mode) });
   await go(`${APP}/?podcast=${POD}&episode=${encodeURIComponent(EPISODE_GUID)}`);
   await until(`!!${playButton}`);
   await until(`(() => { const v = ${seekAt}; return v !== null && v >= ${(saved ?? 300) - 1}; })()`);
+  // Long enough for a paused element's `loadedmetadata` and `canplay`, which
+  // is where a seek on a paused element came from.
+  await wait(2000);
   await js(`${playButton}.click()`);
   await until(playing);
   await wait(4000);
   const a = await audioState();
   const bar = await js(seekAt);
-  const dropped = await js(`window.__droppedSeeks`);
-  await js(`(() => { window.__stopDropping(); return true; })()`);
+  const lost = await js(`window.__stubOn ? window.__lost : null`);
+  await js(`(() => { window.__stopLosing(); return true; })()`);
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
-  check(`n=${n}: the stub dropped ${n} start seek(s), so this step measured something`,
-    Array.isArray(dropped) && dropped.length === n, JSON.stringify(dropped));
-  check(`n=${n}: the element resumed at the saved place (${saved})`,
+  check(`${mode}: the stub was installed, so this step measured something`, !!lost, JSON.stringify(lost));
+  check(`${mode}: no start seek was made while the element was paused`,
+    !!lost && lost.paused.length === 0, JSON.stringify(lost?.paused));
+  if (mode === 'once') {
+    check('once: one seek made while playing was lost, so a later check had to re-apply it',
+      !!lost && lost.playing.length === 1, JSON.stringify(lost?.playing));
+  }
+  check(`${mode}: the element resumed at the saved place (${saved})`,
     saved !== null && a && a.t >= saved - 1 && a.t < saved + 15, JSON.stringify(a));
-  check(`n=${n}: the bar shows the element's place, not only the saved one`,
+  check(`${mode}: the bar shows the element's place, not only the saved one`,
     a && bar !== null && Math.abs(bar - a.t) < 2, `bar: ${bar}, element: ${a?.t}`);
 }
 
