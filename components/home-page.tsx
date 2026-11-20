@@ -229,9 +229,10 @@ export function HomePage() {
       return;
     }
     const params = new URLSearchParams(initialSearch.current);
-    // `?podcast=<guid>`, or `?playlist=<guid>`, the spelling a playlist's link
-    // has used since 2026-11-20. Both resolve the same way; old `?podcast=`
-    // links to a playlist keep opening, and the mirror then rewrites them.
+    // `?podcast=<guid>`, `?album=<guid>` or `?playlist=<guid>` — an album's and
+    // a playlist's links have said so since 2026-11-20. All three resolve the
+    // same way; an old `?podcast=` link to either keeps opening, and the mirror
+    // then rewrites it.
     const guid = linkedShowGuid((k) => params.get(k));
     const feedId = params.get('feed');
     // `?playlist=<feed url>`: a playlist with no guid (`readPlaylistParam`).
@@ -394,7 +395,7 @@ export function HomePage() {
     // was missing, and this branch never ran at all before the fix above — so
     // `?publisher=…&playlist=…` would newly restore a publisher aside on top of
     // the show the link actually names.
-    if (!feedUrl || params.get('podcast') || params.get('feed') || params.get('playlist')) return;
+    if (!feedUrl || params.get('podcast') || params.get('album') || params.get('feed') || params.get('playlist')) return;
     if (publisherSource) return;
     setPublisherSource({ id: 0, title: 'Publisher', medium: 'publisher', url: feedUrl } as Podcast);
     setPublisherAlbums(null);

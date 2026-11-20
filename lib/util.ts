@@ -63,16 +63,22 @@ export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
 
 /**
  * The query parameter that names a show's guid in an app link: `playlist` for a
- * playlist, `podcast` for everything else (Chad, 2026-11-20: "the url links need
- * playlist also", as the feed addresses do). Read by the address-bar mirror
+ * playlist, `album` for an album (`medium` `music`), `podcast` for everything
+ * else (Chad, 2026-11-20: "the url links need playlist also", as the feed
+ * addresses do, and then "albums: yes"). Read by the address-bar mirror
  * (`viewUrl`) and the SHARE links (`showShareUrl`), so the two cannot disagree.
+ * It follows the same gates as `targetWord`'s container word, so a link says
+ * what the SHARE button that copies it says.
  *
  * Writing is the only half that changed. `?podcast=<guid>` still opens a
- * playlist, and must forever: every boost note carries one, and a signed note
- * cannot be edited.
+ * playlist and an album, and must forever: every boost note carries one, and a
+ * signed note cannot be edited (`linkedShowGuid`).
  */
-export function showLinkParam(show: Pick<Podcast, 'medium'> | undefined): 'playlist' | 'podcast' {
-  return show && isPlaylistMedium(show) ? 'playlist' : 'podcast';
+export type ShowLinkParam = 'playlist' | 'album' | 'podcast';
+export function showLinkParam(show: Pick<Podcast, 'medium'> | undefined): ShowLinkParam {
+  if (!show) return 'podcast';
+  if (isPlaylistMedium(show)) return 'playlist';
+  return isMusicMedium(show) ? 'album' : 'podcast';
 }
 
 /**
@@ -92,14 +98,21 @@ export function readPlaylistParam(
 }
 
 /**
- * The show guid a link names: `?podcast=<guid>`, else `?playlist=<guid>`.
- * `get` reads one query parameter, so the client's `URLSearchParams` and the
- * server's `searchParams` record share one rule. The restore, the link preview
- * and the preload hint all ask this, so a `?playlist=<guid>` link opens, unfurls
- * and preloads exactly as its `?podcast=` spelling does.
+ * The show guid a link names: `?podcast=<guid>`, else `?album=<guid>`, else
+ * `?playlist=<guid>`. `get` reads one query parameter, so the client's
+ * `URLSearchParams` and the server's `searchParams` record share one rule. The
+ * restore, the link preview and the preload hint all ask this, so an `?album=`
+ * or `?playlist=` link opens, unfurls and preloads exactly as its `?podcast=`
+ * spelling does.
+ *
+ * **It never checks that the name matches the medium.** All three resolve
+ * through one guid lookup, and the mirror then writes the right name, so an old
+ * `?podcast=` link to an album, or a hand-typed `?album=` to a podcast, opens
+ * the show and corrects the address bar. A check here could only refuse a link
+ * that works.
  */
-export function linkedShowGuid(get: (name: 'podcast' | 'playlist') => string | null | undefined): string | undefined {
-  return get('podcast') || readPlaylistParam(get('playlist'))?.guid || undefined;
+export function linkedShowGuid(get: (name: ShowLinkParam) => string | null | undefined): string | undefined {
+  return get('podcast') || get('album') || readPlaylistParam(get('playlist'))?.guid || undefined;
 }
 
 /**
@@ -4181,10 +4194,11 @@ export function feeNote(
  * moving <FavHeart> out). Two private `ShareButton` copies had already drifted
  * into two different URLs for the same show before it was centralized here.
  *
- * **A playlist's link says `?playlist=<guid>`** (`showLinkParam`), so pass the
- * show with its `medium`. A caller that passes only `{ podcastGuid }` gets
- * `?podcast=`, which is right for the NIP-73 hints the boost modals sign: those
- * name the song's own album, and a signed note cannot be edited later.
+ * **A playlist's link says `?playlist=<guid>` and an album's `?album=<guid>`**
+ * (`showLinkParam`), so pass the show with its `medium`. A caller that passes
+ * only `{ podcastGuid }` gets `?podcast=`, which is what the boost modals do for
+ * the NIP-73 hints they sign: `?podcast=` opens every kind of show, and the
+ * hints keep the one spelling every note signed before this carries.
  */
 export function showShareUrl(
   show: Pick<Podcast, 'podcastGuid' | 'medium'> | undefined,
