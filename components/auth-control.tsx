@@ -98,9 +98,10 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
 
   const walletConnected = mounted && hasAnyWallet();
   const needNostr = !identity;
-  // Reads an inlined NEXT_PUBLIC_* var, so it's identical on server and client —
-  // no `mounted` gate needed, unlike walletConnected (which reads localStorage).
-  const googleConfigured = isGoogleAuthConfigured();
+  // After mount, like walletConnected: it reads the inlined client id AND
+  // whether this page runs inside the iOS app, where Google cannot sign in —
+  // and the server cannot know that, so a first-render read would differ.
+  const googleConfigured = mounted && isGoogleAuthConfigured();
 
   // NOTHING TO RENDER IS A NULL, not an empty wrapper. In the overlay the two
   // wallet chips are gone, so a signed-in user leaves this component with no

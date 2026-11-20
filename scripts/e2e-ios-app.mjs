@@ -1,8 +1,8 @@
-// End-to-end for SPARK BEING OFF INSIDE THE iOS APP (docs/wallets.md, "Spark is
-// off inside the iOS app").
+// End-to-end for WHAT THE iOS APP HIDES: Spark (docs/wallets.md, "Spark is off
+// inside the iOS app") and Google sign-in (docs/signers.md, "Google onboarding").
 //
-//   npm run e2e:ioswallet
-//   BMB_APP=http://localhost:3001 npm run e2e:ioswallet
+//   npm run e2e:iosapp
+//   BMB_APP=http://localhost:3001 npm run e2e:iosapp
 //
 // The iOS app is a Capacitor shell that loads the live site, and Capacitor
 // puts `window.Capacitor` into the page before any page script runs. On
@@ -32,7 +32,14 @@
 //   5. A signer that may not decrypt unattended (Amber's stored session): the
 //      "backup was not read" note names Spark in the browser and only NWC in
 //      the app, whose picker has no Spark to send anyone to.
-//   Steps 2 and 3 run at 390 x 844 under CDP phone emulation, and the open
+//   6. Browser, signed out — "Continue with Google" is in the header menu and
+//      in the sign-in window, and opening the menu fetches Google's script.
+//   7. iOS app, signed out — none of the three. Google refuses OAuth inside an
+//      app's web view (`disallowed_useragent`), so the button could only fail;
+//      the owner asked for it gone on 2026-11-20. The gate reads
+//      `window.Capacitor`, which the server cannot see, so this step also
+//      asserts no hydration error.
+//   Steps 2 onward run at 390 x 844 under CDP phone emulation, and the open
 //   wallet window must not scroll sideways.
 
 import { createRelay } from './local-relay.mjs';
@@ -43,7 +50,7 @@ const APP = process.env.BMB_APP ?? 'http://localhost:3000';
 await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
 (and \`rm -rf .next\` first if you have just run a production build)`);
 
-const { page } = await launchChrome({ name: 'ios-wallet', args: ['--disable-gpu'] });
+const { page } = await launchChrome({ name: 'ios-app', args: ['--disable-gpu'] });
 const { send } = page;
 const js = page.jsOrThrow;
 const t = checker();
@@ -70,9 +77,18 @@ await send('Page.enable'); await send('Runtime.enable'); await send('Network.ena
 const SPARK_CHUNK = /buildonspark|spark-sdk/i;
 await send('Network.setBlockedURLs', { urls: ['*buildonspark*', '*spark-sdk*'] });
 let sparkRequests = [];
+let gisRequests = [];
+let hydrationErrors = [];
 page.on((m) => {
   if (m.method === 'Network.requestWillBeSent' && SPARK_CHUNK.test(m.params.request.url)) {
     sparkRequests.push(m.params.request.url);
+  }
+  if (m.method === 'Network.requestWillBeSent' && m.params.request.url.includes('accounts.google.com/gsi/client')) {
+    gisRequests.push(m.params.request.url);
+  }
+  if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
+    const text = (m.params.args || []).map((a) => a.value ?? a.description ?? '').join(' ');
+    if (/hydrat/i.test(text)) hydrationErrors.push(text.slice(0, 200));
   }
 });
 
@@ -266,6 +282,44 @@ await openWallet();
 note = await withheldNote();
 t.ok('iOS app: the note is shown, names NWC, and does not name Spark', !!note && /NWC/.test(note) && !/Spark/.test(note), String(note));
 await closeWallet();
+await asIosApp(false);
+
+// Where Google is offered: the header's SIGN IN menu, and the sign-in window
+// that menu's "Sign in with Nostr" opens.
+async function googleOffers() {
+  await js(`(() => { [...document.querySelectorAll('header button')].find((b) => /^SIGN IN/i.test(b.textContent.trim())).click(); return 1; })()`);
+  await page.until(`[...document.querySelectorAll('[role="menuitem"]')].some((b) => b.textContent.includes('Sign in with Nostr'))`, 5000);
+  await wait(300);
+  const inMenu = await js(`[...document.querySelectorAll('[role="menuitem"]')].some((b) => b.textContent.includes('Continue with Google'))`);
+  await js(`(() => { [...document.querySelectorAll('[role="menuitem"]')].find((b) => b.textContent.includes('Sign in with Nostr')).click(); return 1; })()`);
+  await page.until(`!!document.querySelector('[role="dialog"]')`, 5000);
+  await wait(800);
+  const inWindow = await js(`document.querySelector('[role="dialog"]').innerText.includes('Continue with Google')`);
+  await closeWallet();
+  return { inMenu, inWindow };
+}
+
+console.log('\n6. Browser, signed out — Google is offered (must still work)');
+await asIosApp(false);
+await signedIn(false);
+await load();
+gisRequests = [];
+let g = await googleOffers();
+t.ok('the header menu offers Continue with Google', g.inMenu);
+t.ok('the sign-in window offers Continue with Google', g.inWindow);
+t.ok("opening the menu fetched Google's sign-in script", gisRequests.length > 0, 'no request for accounts.google.com/gsi/client');
+
+console.log('\n7. iOS app, signed out — Google is not offered');
+await asIosApp(true);
+await signedIn(false);
+gisRequests = [];
+hydrationErrors = [];
+await load();
+g = await googleOffers();
+t.ok('the header menu does NOT offer Continue with Google', !g.inMenu);
+t.ok('the sign-in window does NOT offer Continue with Google', !g.inWindow);
+t.ok("Google's sign-in script was never fetched", gisRequests.length === 0, JSON.stringify(gisRequests));
+t.ok('no hydration error on the page', hydrationErrors.length === 0, JSON.stringify(hydrationErrors));
 await asIosApp(false);
 
 await signedIn(false);
