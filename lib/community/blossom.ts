@@ -19,7 +19,7 @@ import { fetchLatestEventDetailed } from '@/lib/nostr/event-queries';
 import { resolvePublishRelays } from '@/lib/nostr/relays';
 import { activeNostr } from '@/lib/nostr/signer';
 import type { NostrIdentity } from '@/lib/nostr/auth';
-import { NoSignerError, withSignTimeout } from './client';
+import { NoSignerError, withSignTimeout, type CommunitySigner } from './client';
 import {
   BLOSSOM_SERVER_LIST_KIND, artUploadServers, artUploadSize, blossomServersFromTags, uploadedArtUrl,
 } from './rules';
@@ -171,8 +171,12 @@ async function putTo(server: string, blob: Blob, hash: string, authHeader: strin
  * The hash is @noble's, not `crypto.subtle`'s: SubtleCrypto is secure-context
  * only, and this app is tested on a phone over `http://<LAN-IP>`.
  */
-export async function uploadPlaylistArt(file: File, userServers: readonly string[] = []): Promise<ArtUploadResult> {
-  const nostr = activeNostr();
+export async function uploadPlaylistArt(
+  file: File,
+  userServers: readonly string[] = [],
+  signer?: CommunitySigner,
+): Promise<ArtUploadResult> {
+  const nostr = signer ?? activeNostr();
   if (!nostr) throw new NoSignerError();
 
   const blob = await reencodeArt(file);

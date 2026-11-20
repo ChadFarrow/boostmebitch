@@ -19,6 +19,7 @@ export function PlaylistPublished({
   byName,
   tracks,
   summary,
+  guestKept,
   onEdit,
 }: {
   feedUrl: string;
@@ -26,6 +27,11 @@ export function PlaylistPublished({
   byName: string;
   tracks: number;
   summary: CommunityPlaylistSummary | null;
+  /**
+   * Published without an account: did this browser keep the key that lets it edit
+   * the playlist later? `null` for an account's playlist.
+   */
+  guestKept: boolean | null;
   onEdit: () => void;
 }) {
   const router = useRouter();
@@ -54,6 +60,14 @@ export function PlaylistPublished({
           <p className="mt-2 stamp">♫ PLAYLIST · {tracks} TRACKS</p>
         </div>
       </div>
+
+      {guestKept !== null && (
+        <p className="mt-3 max-w-xl text-xs text-bone/80" data-testid="guest-kept" data-guest-kept={guestKept ? 'true' : 'false'}>
+          {guestKept
+            ? 'Made without an account. You can edit this playlist again in this browser. If you clear its site data you cannot, and you can make the playlist again.'
+            : 'Made without an account, but this browser could not keep the key, so you cannot edit this playlist later. Copy the feed address now, and make the playlist again if you need to change it.'}
+        </p>
+      )}
 
       <div className="mt-4 flex flex-wrap gap-2">
         {summary && (
