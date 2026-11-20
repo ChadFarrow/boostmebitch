@@ -50,7 +50,25 @@ a real account.
 | `npm run e2e:boostnote` | A real boost against a stub NIP-46 signer that reads every request and answers none until the page reconnects (`connect`), a WebLN stand-in, and Chrome resolving no host but this one. Pins that the boost pays at once, the link is checked and rebuilt BEFORE anything is signed, a signer that never answers leaves the modal open with RETRY NOTE, and that a healthy link costs one ping and an extension none. Needs a built server: `APP_URL=http://127.0.0.1:<port> npm run e2e:boostnote`. See docs/signers.md, "The boost note signed into a link that had gone deaf". |
 | `npm run e2e:mentionlinks` | A real boost whose message holds a Castopod link (`/@handle/episodes/…`) and a mention picked from the real `@` list under the same name, with a NIP-07 stand-in over a CDP binding, a WebLN stand-in, a cached kind:0 for the person, and Chrome resolving no host but this one. Pins that the link reaches the note whole, the typed `@handle` becomes the URI in place, a name left only in the link goes to the trailing run, and the boostagram keeps the text as typed. Needs a built server: `APP_URL=http://127.0.0.1:<port> npm run e2e:mentionlinks`. See docs/nostr.md, "Only where the name STANDS ALONE". |
 | `npm run e2e:bunkerrevive` | The red reconnect dot that waited for a press, on a stub NIP-46 signer and a local relay, loading `/listen` (no Podcast Index). Pins that a request stranded on a transport a revive replaced does not raise the dot over the rebuilt link, that a dot raised while the session is busy still clears with no tap or press, and that a healthy wake pings and goes no further. See docs/signers.md, "The red dot that waited for a press". |
+| `npm run e2e:communityapi` | The community-playlist routes (`/api/playlists`, the `.xml` feeds) over HTTP against the real local Postgres: create, list, edit, delete, refusals, the 6-writes-a-minute limit. |
+| `npm run e2e:communityui` | The maker, the Published view, `/playlists`, edit and delete, in headless Chrome at 390 x 844 (`scrollWidth <= clientWidth`, every control at least 24 x 24). Uses a LOCAL relay and a fake NIP-07 signer. |
 | `npm run e2e:playlistarchive` | The GitHub copy of the community playlists, end to end: `scripts/playlist-archive.mjs` and `scripts/playlist-archive-git.sh` run as the workflow runs them, against a dev server's real feeds, with a LOCAL bare git repo in place of GitHub (`ARCHIVE_REMOTE`; no token). Pins that a playlist deleted by the admin action and by its owner keeps its last copy, byte for byte, in `playlists/removed/` (git records a rename), that `index.json` lists it under `removed` with the time, and that the next runs commit nothing, also with no list. Given the server's `COMMUNITY_DB_URL` too, it restores a row by hand and checks the copy moves back. The dev server is the one `scripts/e2e-community-api.mjs` describes. See docs/feeds.md, "The GitHub copy". |
+
+### The community-playlist e2e pair
+
+Both need the local Postgres on port 54329 (`bmb-community-pg`, schema from `npm run community:schema`)
+and a dev server started with its env on the command line, never in `.env.local`:
+
+    COMMUNITY_DB_URL=postgres://postgres:test@localhost:54329/postgres ADMIN_NPUBS=<any npub> \
+    NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 \
+    npm run dev -- -p 3123
+
+- **Switch-off half.** Restart the server without `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`, then run
+  `node scripts/e2e-community-api.mjs --off` and `node scripts/e2e-community-ui.mjs --off`.
+- **Network.** The UI script seeds its 12 songs from live Podcast Index data, so it needs the internet.
+- **Write limit.** The server allows 6 writes a minute per address. Each run sends its own random
+  `x-real-ip`, so repeated runs never wait.
+- **No public relay for events.** No EVENT reaches a public relay (checked by the assertion 'no event of any kind went to a public relay'). Feed reads and profile reads still reach the public network.
 
 ### Two things about the harness that look like detail and are not
 
