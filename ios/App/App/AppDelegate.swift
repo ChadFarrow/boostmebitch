@@ -11,7 +11,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Background audio (docs/ios.md, Stage 1). `.playback` is what lets the
         // WKWebView <audio> keep playing with the screen locked; the
         // `audio` entry in Info.plist's UIBackgroundModes is the other half.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .longFormAudio)
+        // Log both outcomes: the phone test needs to see whether this ran, and a
+        // silent failure here looks exactly like "WebKit drops background audio".
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .longFormAudio)
+            NSLog("[audio-session] category set: playback / longFormAudio")
+        } catch {
+            NSLog("[audio-session] setCategory failed: %@", String(describing: error))
+        }
         return true
     }
 

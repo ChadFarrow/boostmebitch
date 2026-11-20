@@ -48,6 +48,7 @@ The web player is unchanged: its `<audio>` element and `navigator.mediaSession` 
 5. iPhone: **Settings → Privacy & Security → Developer Mode** on (the phone restarts).
 6. Connect by cable, select the phone, **Run**.
 7. First launch: **Settings → General → VPN & Device Management** → trust the certificate.
+8. Xcode's console (or Console.app, filter `audio-session`) must show `[audio-session] category set: playback / longFormAudio`. A `setCategory failed` line means background audio cannot work, so the test below measures nothing.
 
 A free Personal Team build expires after 7 days; run it again from Xcode. TestFlight needs the paid program.
 
