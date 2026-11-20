@@ -19,6 +19,11 @@
 //      offers SIGN IN. Its own copy of the function (`useSignOut`), so it does
 //      not depend on a <NostrAuth> being mounted on the route.
 //   5. No horizontal overflow at 320 and 390, and the button clears 24×24.
+//   8. The wallet balance in the bar opens the wallet modal ON TOP of the
+//      player, which stays open under it and after it (2026-11-20, from a live
+//      show's now-playing screen: "when I click my wallet here it should open
+//      the wallet modal like on the main page"). It was a readout. The live
+//      screen and an episode's are the same <FullscreenPlayer> bar.
 //
 // A throwaway key behind `window.nostr` and an in-memory relay, as e2e:queue
 // does it; the album and its audio are answered here. NOTHING reaches a public
@@ -139,7 +144,7 @@ const BAR = `document.querySelector('[aria-label="Close fullscreen player"]')?.p
 const TRIGGER = `${BAR}?.querySelector('button[aria-haspopup="menu"][aria-label^="Account:"]')`;
 const MENU = `${BAR}?.querySelector('[role="menu"]')`;
 
-async function signedInPlayerOpen() {
+async function signedInPlayerOpen(beforePlay = null) {
   await send('Page.navigate', { url: `${APP}/privacy` });
   await until('document.readyState === "complete"');
   await js(`(() => { localStorage.clear();
@@ -151,6 +156,7 @@ async function signedInPlayerOpen() {
   await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
   await until(`[...document.querySelectorAll('ul > li')].some((li) => li.textContent.includes('Menu track 1'))`, 30000);
   await until(`!!document.querySelector('button[aria-label^="Account:"]')`, 30000);
+  if (beforePlay) await beforePlay();
   await js(`[...document.querySelectorAll('ul > li')].find((li) => li.textContent.includes('Menu track 0')).click()`);
   await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.2; })()`, 15000);
   await js(`document.querySelector('[aria-label^="Open fullscreen player"]')?.click()`);
@@ -267,6 +273,61 @@ const anchor = JSON.parse(await js(`JSON.stringify((() => {
   return { top: Math.round(box.getBoundingClientRect().top), under: Math.round(b.bottom + 8), vh: innerHeight };
 })())`));
 t.ok('the closed-menu notice anchor is just under the avatar', !!anchor && Math.abs(anchor.top - anchor.under) <= 2, JSON.stringify(anchor));
+
+// ---------------------------------------------------------------------------
+console.log('\n8. The balance in the bar opens the wallet on top of the player');
+// A WebLN stand-in that reports a balance and CAN PAY NOTHING. It is enabled in
+// module memory only, so each page load connects it once through the header's
+// Connect wallet → WebLN, which enables it and closes the modal
+// (wallet-modal.tsx, handleWeblnPickerClick) — before the player covers the header.
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+  window.webln = {
+    enable: async () => {},
+    isEnabled: async () => true,
+    getInfo: async () => ({ node: { alias: 'e2e' }, methods: ['getInfo', 'getBalance'] }),
+    getBalance: async () => ({ balance: 2169 }),
+    keysend: async () => { throw new Error('e2e: this wallet pays nothing'); },
+    sendPayment: async () => { throw new Error('e2e: this wallet pays nothing'); },
+    makeInvoice: async () => { throw new Error('e2e: this wallet pays nothing'); },
+  };
+` });
+const WALLET_BTN = `${BAR}?.querySelector('button[aria-label="Manage Lightning wallet"]')`;
+const DIALOG = `[...document.querySelectorAll('[role="dialog"]')].at(-1)`;
+// #617: a modal steps back off its history entry one task after it closes, and
+// a modal opened inside that moment is closed by the step. Wait it out.
+const NO_MODAL = `!document.querySelector('[role="dialog"]') && !(history.state?.bmbModals ?? []).length`;
+const PLAYER_OPEN = `(() => { const x = document.querySelector('[aria-label="Close fullscreen player"]'); return !!x && getComputedStyle(x).visibility !== 'hidden'; })()`;
+await signedInPlayerOpen(async () => {
+  await until(`!!document.querySelector('button[aria-label="Connect Lightning wallet"]')`, 15000);
+  await js(`document.querySelector('button[aria-label="Connect Lightning wallet"]').click()`);
+  await until(`[...(${DIALOG}?.querySelectorAll('button') ?? [])].some((b) => /webln/i.test(b.textContent))`, 10000);
+  await js(`[...${DIALOG}.querySelectorAll('button')].find((b) => /webln/i.test(b.textContent)).click()`);
+  await until(NO_MODAL, 10000);
+});
+t.ok('the bar shows the balance as a wallet button', await until(`/2,169/.test(${WALLET_BTN}?.textContent ?? '')`, 15000), await js(`${BAR}?.textContent`));
+await js(`${WALLET_BTN}.click()`);
+t.ok('a press opens the wallet', await until(`!!document.querySelector('[role="dialog"]')`, 5000));
+await wait(800); // past any history step: the modal must still be there
+const w = JSON.parse(await js(`JSON.stringify((() => { const d = ${DIALOG}; if (!d) return null; const r = d.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(60, r.height / 2));
+  return { onTop: !!hit && d.contains(hit), player: ${PLAYER_OPEN}, connected: /streaming sats/i.test(d.innerText) }; })())`));
+t.ok('…and it stays open', !!w, JSON.stringify(w));
+t.ok('…on top of the player, not under it', !!w?.onTop, JSON.stringify(w));
+t.ok('…with the player still open under it', !!w?.player, JSON.stringify(w));
+t.ok('…in its connected view, the one the header opens', !!w?.connected, JSON.stringify(w));
+await js(`${DIALOG}?.querySelector('button[aria-label^="Close"]')?.click()`);
+t.ok('closing the wallet leaves the player open', (await until(NO_MODAL, 5000)) && (await js(PLAYER_OPEN)));
+for (const width of [320, 390, 1280]) {
+  await send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: width > 900 ? 1 : 3, mobile: width < 900 });
+  await wait(400);
+  const m = JSON.parse(await js(`JSON.stringify((() => { const b = ${WALLET_BTN}?.getBoundingClientRect();
+    const x = document.querySelector('[aria-label="Close fullscreen player"]').getBoundingClientRect();
+    return b ? { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, w: Math.round(b.width), h: Math.round(b.height), closeH: Math.round(x.height), right: Math.round(b.right) } : null; })())`));
+  t.equal(`${width}: no horizontal overflow`, m?.sw, m?.cw);
+  t.ok(`${width}: the wallet button is at least 24×24, as tall as ✕, and on screen`,
+    !!m && m.w >= 24 && m.h >= 24 && m.h === m.closeH && m.right <= width, JSON.stringify(m));
+}
+await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
 
 t.equal('no uncaught page errors', pageErrors, []);
 console.log(`\n${t.count - t.fails} of ${t.count} passed`);

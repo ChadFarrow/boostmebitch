@@ -366,11 +366,21 @@ export function WalletBalanceChip() {
 }
 
 /**
- * The same number in a box of its own, for a bar with no wallet BUTTON to sit
+ * The same number in a box of its own, for a bar with no wallet button to sit
  * inside: the fullscreen player's. It carries the ⚡ the chip leaves to its
  * caller, and the `≤` marker for a budget-capped number, for the reason the
  * chip states — a figure that is a grant rather than a balance reads as a bug
  * beside the wallet app's own number.
+ *
+ * A PRESS OPENS THE WALLET, as the header's balance does (Chad, 2026-11-20:
+ * "when I click my wallet here it should open the wallet modal like on the main
+ * page"). It was a readout with no press, on the argument that the boost modal
+ * this screen opens already carries a ⚡ WALLET button; a number that looks like
+ * the header's and does nothing read as broken. It flips the store's
+ * `walletOpen`, and `<WalletModalHost>` in the root layout portals the modal to
+ * `document.body` at `z-[60]`, ON TOP of the player (`z-50`), which stays open
+ * underneath — never close the player in the same press (#617: the close's
+ * history step would close the modal it just opened).
  *
  * MOUNT IT ONLY WHILE THE SURFACE IS ON SCREEN. `useWalletBalance` re-reads on
  * every `payment_sent`, and each NWC read opens a NIP-47 connection; this file
@@ -378,32 +388,38 @@ export function WalletBalanceChip() {
  * took payments down mid-session. The player's overlay is never unmounted once
  * opened, so the call site gates this on the overlay actually being open —
  * otherwise every leg of every boost would carry a third read for the rest of
- * the session.
+ * the session. Being a button changes none of that: the press only flips a
+ * store flag, and the box mounts and unmounts exactly as it did.
  */
 export function WalletBalanceBox({ className = '' }: { className?: string }) {
   const { balance, rail, budget } = useWalletBalance();
+  const setWalletOpen = useApp((s) => s.setWalletOpen);
   if (rail === null || balance === null) return null;
   const formatted = balance.toLocaleString();
   const railName = rail === 'nwc' ? 'NWC' : rail === 'webln' ? 'WebLN' : 'Spark';
   return (
-    // ← BACK's and ✕'s shape, minus the hover: this is a readout, not a
-    // control, and a border that lights up under the finger promises a press
-    // that does nothing. `text-base leading-none` on the outside is what makes
-    // it 26px like them — the strut, not the digits, sets the line box, so the
-    // number can be 11px without the box standing shorter than its neighbours.
-    <span
-      className={`inline-flex items-center gap-1.5 border border-bone/40 px-2 py-1 text-base leading-none whitespace-nowrap ${className}`}
+    // ← BACK's and ✕'s shape and their `.btn-ghost` hover, so it looks like
+    // the control it now is. `text-base leading-none` on the outside is what
+    // makes it 26px like them — the strut, not the digits, sets the line box,
+    // so the number can be 11px without the box standing shorter than its
+    // neighbours. `tracking-normal` undoes `.btn-ghost`'s letter spacing, which
+    // would widen the number on a bar that has no pixel to spare at 320px.
+    <button
+      type="button"
+      onClick={() => setWalletOpen(true)}
+      className={`btn-ghost inline-flex items-center gap-1.5 px-2 py-1 text-base leading-none tracking-normal whitespace-nowrap flex-shrink-0 ${className}`}
+      // The header's label, so a screen reader hears one name for one control.
+      aria-label="Manage Lightning wallet"
       title={budget
         ? `${formatted} sats spendable (${railName}) — ${budgetTitle(budget)}`
         : `${formatted} sats (${railName})`}
     >
       <span aria-hidden className="text-bolt text-xs lg:text-sm">⚡</span>
-      <span className="sr-only">Wallet balance: </span>
       {/* lg:text-sm with the box at 38px from lg: (the caller's className). */}
       <span className="text-bolt text-[11px] lg:text-sm font-mono tabular-nums">
         {budget ? '≤' : ''}{formatted}
       </span>
-    </span>
+    </button>
   );
 }
 
