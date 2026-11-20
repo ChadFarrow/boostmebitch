@@ -122,3 +122,33 @@ export function acceptsEvent(expect: ReadExpectation, event: EventShape): boolea
   }
   return true;
 }
+
+/** What a wallet-backup read allows before something is published OVER it. */
+export type BackupOverwrite = 'safe' | 'warn-present' | 'warn-unknown';
+
+/**
+ * May a Spark seed be published over whatever sits at the backup coordinate
+ * without asking? kind:30078 is REPLACEABLE, so the publish destroys the old
+ * backup, and the old backup may be the only copy of a funded seed.
+ *
+ *  - `read` is `null` when the read THREW (a decrypt that failed or timed out):
+ *    we learned nothing, so the answer is "unknown", never "nothing there".
+ *    `.catch(() => null)` used to fold that into "no backup" and skip the
+ *    warning — the general "never record an absence you didn't reliably
+ *    observe" rule, with money attached.
+ *  - An empty read is "nobody has one" only when `trustworthy` (every relay we
+ *    reached sent a real EOSE). Otherwise it is "unknown" too.
+ *  - A backup that holds the very seed being connected is `safe` (re-pasting
+ *    the same seed overwrites it with itself). Whitespace is normalised.
+ */
+export function backupOverwriteVerdict(
+  read: { mnemonic: string | null; trustworthy: boolean } | null,
+  incoming?: string,
+): BackupOverwrite {
+  if (!read) return 'warn-unknown';
+  if (read.mnemonic) {
+    const norm = (t: string) => t.trim().replace(/\s+/g, ' ');
+    return incoming !== undefined && norm(read.mnemonic) === norm(incoming) ? 'safe' : 'warn-present';
+  }
+  return read.trustworthy ? 'safe' : 'warn-unknown';
+}

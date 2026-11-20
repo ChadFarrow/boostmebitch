@@ -21,7 +21,10 @@
 //     already moved on to a new resource, must not touch the new one — that is
 //     the same failure with a longer fuse;
 //   - a missed cancel of the idle timer closes a resource that has just been
-//     re-acquired.
+//     re-acquired;
+//   - a `discard` (the socket looks bad) that closes the resource while ANOTHER
+//     holder is mid-request: that request dies with a plain socket error, which
+//     for a payment reads as "failed" when it may have been paid.
 
 /** Injectable so a test can drive the idle timer without real time passing. */
 export interface Scheduler {
@@ -63,9 +66,18 @@ export function createLeasePool<T>(opts: {
 }): LeasePool<T> {
   const timers = opts.scheduler ?? defaultScheduler;
 
-  interface Live { value: T; key: string; refs: number; idle: unknown | null }
+  interface Live { value: T; key: string; refs: number; idle: unknown | null; closed: boolean }
   let live: Live | null = null;
   let creates = 0;
+
+  // Close one resource, once. `close` can throw, and a resource can be reached
+  // from more than one place (the pool, a retired holder's last release).
+  const closeResource = (dying: Live) => {
+    if (dying.closed) return;
+    dying.closed = true;
+    if (dying.idle !== null) { timers.clear(dying.idle); dying.idle = null; }
+    try { opts.close(dying.value); } catch { /* already closed / never opened */ }
+  };
 
   const closeNow = () => {
     if (!live) return;
@@ -74,8 +86,7 @@ export function createLeasePool<T>(opts: {
     // compares against `live` by identity — leaving it set while closing would
     // let a stale handle believe it still owns the current resource.
     live = null;
-    if (dying.idle !== null) timers.clear(dying.idle);
-    try { opts.close(dying.value); } catch { /* already closed / never opened */ }
+    closeResource(dying);
   };
 
   return {
@@ -83,7 +94,7 @@ export function createLeasePool<T>(opts: {
       if (live && live.key !== key) closeNow();
       if (!live) {
         creates += 1;
-        live = { value: opts.create(key), key, refs: 0, idle: null };
+        live = { value: opts.create(key), key, refs: 0, idle: null, closed: false };
       }
       const held = live;
       // Re-acquired inside the idle window: cancel the pending close, or it
@@ -97,9 +108,15 @@ export function createLeasePool<T>(opts: {
         release() {
           if (spent) return;          // idempotent
           spent = true;
-          if (held !== live) return;  // stale: the pool has moved on
+          if (held.closed) return;    // the pool already closed it: nothing to count
           held.refs -= 1;
           if (held.refs > 0) return;
+          if (held !== live) {
+            // RETIRED by a `discard` while others still held it: this was the
+            // last holder, so the socket it kept alive can go now.
+            closeResource(held);
+            return;
+          }
           held.idle = timers.set(() => {
             // Re-check: it may have been re-acquired or disposed since.
             if (held === live && held.refs <= 0) closeNow();
@@ -107,8 +124,15 @@ export function createLeasePool<T>(opts: {
         },
         discard() {
           if (held !== live) return;  // stale: never close someone else's
-          spent = true;
-          closeNow();
+          if (!spent) { spent = true; held.refs -= 1; }
+          if (held.refs <= 0) { closeNow(); return; }
+          // Others still hold it, and one of them may be a PAYMENT waiting for
+          // its answer on this very socket: closing now kills that request with
+          // a plain socket error, which reads as "failed" for a payment that may
+          // have gone through. Stop handing the resource out (the next acquire
+          // builds a fresh one) and let the last holder close it.
+          live = null;
+          if (held.idle !== null) { timers.clear(held.idle); held.idle = null; }
         },
       };
     },

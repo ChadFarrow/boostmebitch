@@ -14,7 +14,7 @@ import {
 import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/interactions';
 import { MessageInput } from './message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
-import { sendZap } from '@/lib/v4v/zap';
+import { sendZap, NwcIndeterminateError } from '@/lib/v4v/zap';
 import { DefaultAmountControl, MIN_BOOST_SATS, readAmountDefault } from './boost-modal/amount-input';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
@@ -758,6 +758,9 @@ function ZapDialog({
   const [comment, setComment] = useState('');
   const [state, setState] = useState<ActionState>('idle');
   const [err, setErr] = useState<string | null>(null);
+  // The wallet was asked and never answered: the zap MAY have been paid. Send
+  // stays disabled, because pressing it again is how the same sats go out twice.
+  const [unanswered, setUnanswered] = useState(false);
   // NoteCard renders inside feeds, which sit in the layout's `relative z-0`
   // content wrapper, so this dialog's z-index couldn't rise above the
   // body-level mini-player (z-30) without escaping it. <ModalShell> owns the
@@ -783,6 +786,10 @@ function ZapDialog({
       setState('done');
       setTimeout(onClose, 800);
     } catch (e) {
+      // `sendZap` keeps a reply timeout as `NwcIndeterminateError`: the request
+      // was published and the wallet may have paid. A plain failure re-enables
+      // Send; this one must not (boost invariant 11, docs/money-boosts.md).
+      if (e instanceof NwcIndeterminateError) setUnanswered(true);
       setErr(getErrorMessage(e, 'zap failed'));
       setState('error');
     }
@@ -855,12 +862,17 @@ function ZapDialog({
             )}
             <button
               onClick={onZap}
-              disabled={state === 'busy' || state === 'done' || amount < MIN_BOOST_SATS}
+              disabled={state === 'busy' || state === 'done' || unanswered || amount < MIN_BOOST_SATS}
               className="btn-bolt w-full"
             >
-              {state === 'busy' ? 'paying…' : state === 'done' ? 'zapped ⚡' : `Send ${amount} sats`}
+              {state === 'busy' ? 'paying…' : state === 'done' ? 'zapped ⚡' : unanswered ? 'check your wallet' : `Send ${amount} sats`}
             </button>
             {err && <p className="text-xs text-red-400 mt-2">{err}</p>}
+            {unanswered && (
+              <p className="text-xs text-muted mt-2">
+                Your wallet did not answer, so this zap may have been paid. Check your wallet before you zap again.
+              </p>
+            )}
           </>
         )}
     </ModalShell>
