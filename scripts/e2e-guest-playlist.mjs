@@ -279,11 +279,11 @@ for (const mobile of [false, true]) {
   t.ok(`${name}: it offers SIGN IN WITH NOSTR and I DON'T HAVE NOSTR`,
     await js(`${START}.querySelector('[data-start-signin]')?.textContent.trim() === 'SIGN IN WITH NOSTR' && /^I DON.T HAVE NOSTR$/.test(${START}.querySelector('[data-start-guest]')?.textContent.trim() ?? '')`));
   t.ok(`${name}: it asks "Do you have Nostr?" and says first that signing in ties the playlist to the account`,
-    await js(`/do you have nostr\?/i.test(${START}.querySelector('h2')?.innerText ?? '') && /^Sign in, and this playlist is tied to your Nostr account/.test(${START}.querySelector('p')?.innerText ?? '')`));
+    await js(`/do you have nostr\?/i.test(${START}.querySelector('h2')?.innerText ?? '') && /^Sign in to tie this playlist to your Nostr account\. Then you can edit the playlist from any device\./.test(${START}.querySelector('p')?.innerText ?? '')`));
   t.ok(`${name}: SIGN IN WITH NOSTR comes before I DON'T HAVE NOSTR, which sits under "No Nostr account?"`,
     await js(`(() => { const si = ${START}.querySelector('[data-start-signin]'); const g = ${START}.querySelector('[data-start-guest]'); const box = g?.closest('[data-start-no-nostr]');
       return !!si && !!g && !!(si.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING) && si.classList.contains('btn-bolt') && !g.classList.contains('btn-bolt')
-        && /no nostr account\?/i.test(box?.innerText ?? '') && /not tied to any account/i.test(box?.innerText ?? ''); })()`));
+        && /no nostr account\?/i.test(box?.innerText ?? '') && /edit the playlist only in this browser/i.test(box?.innerText ?? ''); })()`));
   t.ok(`${name}: it says what closing it does before it is closed`, await js(`/close this to decide later/i.test(${START}.innerText) && /before anything is published/i.test(${START}.innerText)`));
   t.ok(`${name}: the draft is loaded behind it`, await waitFor(`document.querySelector('#pl-title')?.value.startsWith('e2e start choice')`));
   t.ok(`${name}: no horizontal overflow`, await overflowFree());

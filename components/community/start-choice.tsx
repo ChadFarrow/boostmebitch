@@ -15,9 +15,15 @@ export type StartChoiceFor = 'start' | 'publish' | 'upload';
  * beta under a browser key: "I went there and just made that playlist without
  * even knowing that I could tie it to my Nostr. So we definitely need the pop-up
  * if we're going to allow non-Nostr users to make playlists." So a person who
- * HAS Nostr must read, first, that signing in ties the playlist to their account;
- * I DON'T HAVE NOSTR sits under its own "No Nostr account?" heading, as the
- * choice for people without one, and says what that playlist cannot do.
+ * HAS Nostr must read, first, that signing in ties the playlist to their account
+ * and lets them edit it from any device; I DON'T HAVE NOSTR sits under its own
+ * "No Nostr account?" heading, as the choice for people without one, and says
+ * what that playlist cannot do: be edited outside this browser.
+ *
+ * KEEP THE WORDS FEW, AND NAME "the playlist" — never "it". Chad, 2026-11-19, on
+ * the first version: "The non Nostr one is too wordy. The Nostr one also doesn't
+ * sound like you can edit the playlist from anywhere. It sounds more like it's
+ * the Nostr account" ("you can change it from any device" read as the account).
  *
  * - SIGN IN WITH NOSTR opens the site's sign-in OVER this dialog, which stays
  *   until the account lands: closing the sign-in shows the choice again. The
@@ -56,8 +62,7 @@ export function StartChoice({
       <div className="p-5" data-start-choice={when}>
         <h2 className="pr-8 font-display text-xl">Do you have Nostr?</h2>
         <p className="mt-2 text-sm text-bone">
-          Sign in, and this playlist is tied to your Nostr account. Your npub is its maker, and you can change it
-          from any device where you sign in.
+          Sign in to tie this playlist to your Nostr account. Then you can edit the playlist from any device.
         </p>
         <button type="button" className="btn-bolt btn-compact mt-3" disabled={making} onClick={onSignIn} data-start-signin>
           SIGN IN WITH NOSTR
@@ -66,9 +71,7 @@ export function StartChoice({
         <div className="mt-5 border-t border-bone/15 pt-4" data-start-no-nostr>
           <p className="font-mono text-xs uppercase tracking-wider text-muted">No Nostr account?</p>
           <p className="mt-1 text-xs text-bone/70">
-            This browser can make a key for your playlists instead. The playlist is then not tied to any account: you can
-            change it only in this browser, and there is no way yet to move it to a Nostr account. If you clear this
-            browser&apos;s site data, you cannot change it, and you can make it again.
+            This browser keeps a key for you. You can edit the playlist only in this browser.
           </p>
           <button type="button" className="btn-ghost btn-compact mt-2" disabled={making} data-start-guest
             onClick={async () => {
