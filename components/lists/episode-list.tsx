@@ -109,7 +109,7 @@ interface PlaylistMeta {
 function ShareButton({ podcast }: { podcast: Podcast }) {
   return (
     <CopyLinkButton
-      url={showShareUrl(podcast.podcastGuid)}
+      url={showShareUrl(podcast)}
       title="Copy link to this show"
       className="tile"
     />

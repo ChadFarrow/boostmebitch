@@ -873,8 +873,10 @@ export function BoostModal(props: Props) {
       hostRefs: {
         podcastGuid: showGuid,
         episodeGuid: itemGuid,
-        podcastUrl: showShareUrl(showGuid) ?? undefined,
-        episodeUrl: showShareUrl(showGuid, itemGuid) ?? undefined,
+        // `{ podcastGuid }` alone keeps these `?podcast=`: they name the
+        // song's own feed, and a signed hint is never re-spelled (`showShareUrl`).
+        podcastUrl: showShareUrl({ podcastGuid: showGuid }) ?? undefined,
+        episodeUrl: showShareUrl({ podcastGuid: showGuid }, itemGuid) ?? undefined,
       },
       noteSplit,
       noteArtist,

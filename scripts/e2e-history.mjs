@@ -129,7 +129,8 @@ const A = await tab(browser.page);
 const backIs = (label) => `[...document.querySelectorAll('main button, main a')].some((b) => b.textContent.trim() === ${JSON.stringify(label)})`;
 const SHOW_UP = backIs('← back to results');
 const EPISODE_UP = backIs('← back to episodes');
-const BROWSE_UP = `!new URLSearchParams(location.search).has('podcast') && ![...document.querySelectorAll('main button, main a')].some((b) => b.textContent.trim().startsWith('← back'))`;
+// A show is named by `?podcast=`, or by `?playlist=` for a playlist (lib/util.ts `showLinkParam`).
+const BROWSE_UP = `!['podcast', 'playlist'].some((k) => new URLSearchParams(location.search).has(k)) && ![...document.querySelectorAll('main button, main a')].some((b) => b.textContent.trim().startsWith('← back'))`;
 /** Set once per document. Still there after a step = the step stayed in this
  *  document; gone = the browser loaded the page again. */
 const MARK = `window.__historyE2e = true`;

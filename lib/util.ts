@@ -62,6 +62,47 @@ export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * The query parameter that names a show's guid in an app link: `playlist` for a
+ * playlist, `podcast` for everything else (Chad, 2026-11-20: "the url links need
+ * playlist also", as the feed addresses do). Read by the address-bar mirror
+ * (`viewUrl`) and the SHARE links (`showShareUrl`), so the two cannot disagree.
+ *
+ * Writing is the only half that changed. `?podcast=<guid>` still opens a
+ * playlist, and must forever: every boost note carries one, and a signed note
+ * cannot be edited.
+ */
+export function showLinkParam(show: Pick<Podcast, 'medium'> | undefined): 'playlist' | 'podcast' {
+  return show && isPlaylistMedium(show) ? 'playlist' : 'podcast';
+}
+
+/**
+ * What a `?playlist=` value names. Two spellings share the parameter: the
+ * playlist's GUID, written for every playlist that has one, and its FEED URL,
+ * written for one with no guid (a feed Podcast Index has not indexed may have
+ * none to restore by). A feed URL is always http(s) here — `/api/playlist` and
+ * `safeFetch` refuse any other scheme — and a guid never is, so the scheme
+ * tells them apart. Null for an empty value.
+ */
+export function readPlaylistParam(
+  value: string | null | undefined,
+): { guid: string; feedUrl?: undefined } | { feedUrl: string; guid?: undefined } | null {
+  const v = value?.trim();
+  if (!v) return null;
+  return /^https?:\/\//i.test(v) ? { feedUrl: v } : { guid: v };
+}
+
+/**
+ * The show guid a link names: `?podcast=<guid>`, else `?playlist=<guid>`.
+ * `get` reads one query parameter, so the client's `URLSearchParams` and the
+ * server's `searchParams` record share one rule. The restore, the link preview
+ * and the preload hint all ask this, so a `?playlist=<guid>` link opens, unfurls
+ * and preloads exactly as its `?podcast=` spelling does.
+ */
+export function linkedShowGuid(get: (name: 'podcast' | 'playlist') => string | null | undefined): string | undefined {
+  return get('podcast') || readPlaylistParam(get('playlist'))?.guid || undefined;
+}
+
+/**
  * Feeds whose rows are TRACKS rather than episodes: a row tap plays instead of
  * opening a detail page, the header cover is a play button, playback
  * auto-advances, and chapters/transcripts are suppressed.
@@ -4139,15 +4180,21 @@ export function feeNote(
  * that already caused one module cycle in this repo (podroll ↔ lists, fixed by
  * moving <FavHeart> out). Two private `ShareButton` copies had already drifted
  * into two different URLs for the same show before it was centralized here.
+ *
+ * **A playlist's link says `?playlist=<guid>`** (`showLinkParam`), so pass the
+ * show with its `medium`. A caller that passes only `{ podcastGuid }` gets
+ * `?podcast=`, which is right for the NIP-73 hints the boost modals sign: those
+ * name the song's own album, and a signed note cannot be edited later.
  */
 export function showShareUrl(
-  podcastGuid: string | undefined,
+  show: Pick<Podcast, 'podcastGuid' | 'medium'> | undefined,
   episodeGuid?: string,
   startSec?: number,
 ): string | null {
+  const podcastGuid = show?.podcastGuid;
   if (!podcastGuid || typeof window === 'undefined') return null;
   const url = new URL('/', window.location.origin);
-  url.searchParams.set('podcast', podcastGuid);
+  url.searchParams.set(showLinkParam(show), podcastGuid);
   if (episodeGuid) url.searchParams.set('episode', episodeGuid);
   if (episodeGuid && startSec !== undefined && Number.isFinite(startSec) && startSec > 0) {
     url.searchParams.set('t', String(Math.floor(startSec)));

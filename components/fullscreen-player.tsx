@@ -435,11 +435,11 @@ function ShareTargets({ podcast, episode }: { podcast: Podcast; episode: Episode
   // Never `showShareUrl(guid, undefined)` for the episode button: that returns
   // the SHOW link, so a guid-less episode would render two identical links
   // under two different words.
-  const episodeUrl = episode.guid ? showShareUrl(podcast.podcastGuid, episode.guid) : null;
+  const episodeUrl = episode.guid ? showShareUrl(podcast, episode.guid) : null;
   return (
     <>
       <CopyLinkButton
-        url={showShareUrl(podcast.podcastGuid)}
+        url={showShareUrl(podcast)}
         title={`Copy link to this ${showWord.toLowerCase()}`}
         word={showWord}
         className="tile"
@@ -1631,7 +1631,7 @@ export function FullscreenPlayer({
               // makes a few hundred lines up, for the same reason.
               shareUrlFor={
                 episode.guid
-                  ? (t: number) => showShareUrl(podcast.podcastGuid, episode.guid, t)
+                  ? (t: number) => showShareUrl(podcast, episode.guid, t)
                   : undefined
               }
               // `||` not `??`, plus artwork — see the same prop in
