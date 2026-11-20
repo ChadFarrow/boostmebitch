@@ -20,7 +20,7 @@ import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import WebSocket from 'ws';
 
-const APP = 'http://localhost:3000';
+const APP = process.env.BMB_APP ?? 'http://localhost:3000';
 await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.`);
 
 const WORRIED = '7153bbb0-b8c4-521f-80c0-cef62d8ef67b';

@@ -12,7 +12,7 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { valueNotRead, authorLine, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, listHolding, playingRowIndex, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { valueNotRead, authorLine, albumHoldsCurrent, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { IS_BETA } from '@/lib/beta';
@@ -34,7 +34,7 @@ import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
-import { FavHeart } from '../fav-heart';
+import { ArtistFollowChip, FavHeart } from '../fav-heart';
 import { AlbumDownload } from '../album-download';
 import { AlbumShuffleButton } from '../album-shuffle-button';
 import { ValueSplitRows } from '../value-split-rows';
@@ -606,23 +606,17 @@ export function EpisodeList({
   // start where the list starts or the button contradicts the rows under it. An
   // unresolved playlist placeholder has no enclosure, so it can never be the
   // thing that button starts.
-  const firstPlayable =
-    orderedEpisodes.find((e) => e.liveStatus !== 'pending' && !e.unresolved)
-    ?? orderedEpisodes.find((e) => !e.unresolved);
-  // Is the currently-playing track part of this show?
-  const showIsCurrent = !!current && (
-    (!!data.podcast.podcastGuid && current.podcast.podcastGuid === data.podcast.podcastGuid) ||
-    current.podcast.id === data.podcast.id
-  );
-  // …and is it playing AS this album? Not while the favorites shuffle or Up
-  // Next owns it (`listHolding`): that list decides what plays after it, so
-  // resuming the track is not "Play album". The header's ▶ then STARTS the
-  // album, and `play()` ends the shuffle. The glyph reads the same test, so it
-  // never draws ❚❚ over a press that starts the album instead of pausing.
-  // Reported from desktop, 2026-11-14: a shuffle reached a song, the album was
-  // opened to play it, and ▶ played the one song again and not the album.
-  const albumIsCurrent = !!current && showIsCurrent
-    && listHolding(shuffle?.items ?? null, listenQueue, current.episode) === null;
+  const firstPlayable = firstPlayableTrack(orderedEpisodes);
+  // Is the currently-playing track part of this show, playing AS this album?
+  // Not while the favorites shuffle or Up Next owns it (`listHolding`): that
+  // list decides what plays after it, so resuming the track is not "Play
+  // album". The header's ▶ then STARTS the album, and `play()` ends the
+  // shuffle. The glyph reads the same test, so it never draws ❚❚ over a press
+  // that starts the album instead of pausing. Reported from desktop,
+  // 2026-11-14: a shuffle reached a song, the album was opened to play it, and
+  // ▶ played the one song again and not the album. `/demu`'s cover asks the
+  // same `albumHoldsCurrent`.
+  const albumIsCurrent = albumHoldsCurrent(data.podcast, current, shuffle?.items ?? null, listenQueue);
   // Music feeds show the whole album (track order); other shows paginate 10 at a
   // time. A PLAYLIST renders everything it has fetched, because on that path the
   // fetch IS the page — a second reveal axis on top would make one new track
@@ -697,6 +691,19 @@ export function EpisodeList({
           </h2>
           {authorLine(data.podcast.title, data.podcast.author) && (
             <p className="text-sm text-muted mt-1">{authorLine(data.podcast.title, data.podcast.author)}</p>
+          )}
+          {/* ♡ ARTIST — follow the album's artist for NEW MUSIC on /favorites,
+              on this device only (see <ArtistFollowChip>). Under the artist's
+              name, not in the tile row below: that row is measured tight at
+              390px. Albums only — a playlist's channel is the curator's. */}
+          {isMusic && !isPlaylist && data.podcast.publisherFeed && (
+            <div className="mt-1.5">
+              <ArtistFollowChip
+                feedGuid={data.podcast.publisherFeed.feedGuid}
+                feedUrl={data.podcast.publisherFeed.feedUrl}
+                artistName={data.podcast.author}
+              />
+            </div>
           )}
           {/* Both stamps share one wrapper. They are `inline-flex` and each used
               to carry its own `mt-2`, so a preview feed that ALSO has a value

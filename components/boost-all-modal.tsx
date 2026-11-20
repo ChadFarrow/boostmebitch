@@ -11,7 +11,7 @@ import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { boostAllLines, getErrorMessage, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { boostAllLines, getErrorMessage, railAfterWalletChange, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
@@ -26,7 +26,7 @@ import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, signerCheckMessage, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
-import { RailPicker } from './rail-picker';
+import { RailPicker, availableRails } from './rail-picker';
 import { DroppedPayees } from './boost-modal/dropped-payees';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from './wallet-balance';
 import { LegStatusGlyph } from './leg-status-glyph';
@@ -135,7 +135,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // Sync rail if a wallet connects/disconnects while the modal is open. Covers
   // WebLN too — see the same note in boost-modal/index.tsx; both modals were
   // missing that third subscription while rendering a picker that reads it.
-  useWalletChange(() => setRail(pickRail()));
+  useWalletChange(() => setRail((cur) => railAfterWalletChange(cur, availableRails(), pickRail())));
 
   useEffect(() => {
     // pickRail() honors the stored rail pref when that rail is still
@@ -301,6 +301,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             value: { ...split.value!, recipients: track.recipients },
             totalSats: track.sats,
             boostagram: trackBoostagram,
+            // The episode's own feed, for an LNURL leg's BoostBox record — the
+            // one that holds `episode_guid`, never the track in remote_*.
+            feedGuid: episode.podcastGuid ?? podcast.podcastGuid,
             rail,
           });
           trackOk = paidAny(results);
@@ -373,6 +376,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             value: { ...hostValue!, recipients: host.recipients },
             totalSats: host.sats,
             boostagram: hostBoostagram,
+            feedGuid: episode.podcastGuid ?? podcast.podcastGuid,
             rail,
           });
           paidSats += hostResults.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);

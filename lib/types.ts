@@ -152,6 +152,7 @@ export interface Podcast {
   artwork?: string;
   url?: string;           // RSS feed URL
   medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
+  generator?: string;     // PI's copy of <generator>; the DEMU search lane reads it (lib/demu.ts)
   value?: ValueBlock | null;
   /** True when Podcast Index lists a value block for this show. A DISPLAY hint for
    *  the ⚡ V4V stamp and nothing else: it names nobody and opens no BOOST, so a
@@ -164,6 +165,13 @@ export interface Podcast {
    *  such a publisher stays under PODCASTS, the residual bucket. */
   publisherMediums?: string[];
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
+  /** The ARTIST (publisher) feed this album's channel names — either the
+   *  spec's `<podcast:publisher>` wrapper or Wavlake's bare
+   *  `<podcast:remoteItem medium="publisher">` (`parsePublisherRef`). From RSS
+   *  only. Naming it is not resolving it: Podcast Index often does not hold
+   *  it, so `<ArtistFollowChip>` follows it on this device only and never
+   *  writes it to the shared favorites list. */
+  publisherFeed?: { feedGuid: string; feedUrl: string };
   funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
   nostrNpubs?: FeedNpub[]; // <podcast:txt purpose="nostr"> — the show's own npub(s), from RSS
   /** Synthetic feed parsed directly from raw RSS because it isn't in Podcast
@@ -384,7 +392,10 @@ export interface Boostagram {
   action: 'boost' | 'stream' | 'auto';
   name?: string;             // recipient name, set per leg in lib/v4v/boost.ts
   uuid?: string;             // unique boost ID — shared across all legs
-  remote_feed_guid?: string; // RSS <podcast:guid> (NIP-73)
+  /** RSS <podcast:guid> (NIP-73). Inside a song window or a live redirect it is
+   *  the TRACK's feed. The PLAYED feed's guid is deliberately not on this type —
+   *  every key here is keysend-onion bytes — see `sendBoost`'s `feedGuid`. */
+  remote_feed_guid?: string;
   episode_guid?: string;     // RSS item <guid>
   remote_item_guid?: string; // duplicate of episode_guid for aggregator compat
   /** The Split Kit's own correlation ids, echoed back when a live show's
@@ -397,6 +408,19 @@ export interface Boostagram {
   eventAPI?: string;
 }
 
+/**
+ * An NWC leg's payment hash, and what to send to pay that same hash again: the
+ * keysend with the preimage the app made for it, or the same BOLT11. Paying the
+ * same hash is what makes a retry safe — a node that already took a payment for
+ * it refuses a second one. See docs/money-boosts.md, "The unanswered wallet".
+ */
+export interface NwcLegCheck {
+  paymentHash: string;
+  resend:
+    | { kind: 'keysend'; pubkey: string; amountMsat: number; tlv: { type: number; value: string }[]; preimage: string }
+    | { kind: 'invoice'; invoice: string };
+}
+
 export interface BoostResult {
   recipient: ValueRecipient;
   sats: number;
@@ -405,9 +429,17 @@ export interface BoostResult {
    * The leg neither succeeded nor provably failed — the wallet was asked and
    * never answered (see NwcIndeterminateError). `ok` is false because we have
    * no preimage, but the sats may well have gone out, so nothing may present
-   * this as a failure and nothing may retry it.
+   * this as a failure and nothing may retry it — except `resendLeg`, under the
+   * leg's own `nwcCheck`, once the wallet has said that payment failed.
    */
   indeterminate?: boolean;
+  /**
+   * How to ask the NWC wallet about this leg, and how to pay the SAME payment
+   * again: set on a leg the wallet never answered (and kept through a resend).
+   * IN MEMORY ONLY — a keysend's preimage is in it, and `storedBoostLegs` maps
+   * its fields one by one so this never reaches storage.
+   */
+  nwcCheck?: NwcLegCheck;
   preimage?: string;
   error?: string;
   // Set on LNURL legs when BoostBox accepted the metadata. The URL is the

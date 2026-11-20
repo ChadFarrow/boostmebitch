@@ -217,6 +217,38 @@ section('discard() drops a suspect resource now');
 }
 
 // ---------------------------------------------------------------------------
+section('discard() while ANOTHER holder is mid-request does not kill that request');
+// ---------------------------------------------------------------------------
+{
+  // The shared NIP-47 client has one holder per payment leg and one for the
+  // notification subscription. A balance read that finds the socket suspect
+  // discards it; closing it there kills a payment that is waiting for its
+  // answer with a plain socket error, which reads as "failed" for a payment
+  // that may have gone through (boost invariant 11).
+  const { pool, opened, closed } = makePool();
+  const reader = pool.acquire('w');
+  const payment = pool.acquire('w');
+  reader.discard();
+  check('the payment\'s socket is NOT closed under it', closed.length, 0);
+  check('...but the pool no longer hands it out', pool.stats().open, false);
+
+  const next = pool.acquire('w');
+  check('the next acquire builds a fresh one', opened.length, 2);
+  check('...not the retired value', next.value === payment.value, false);
+
+  reader.release();
+  check('a release after discard stays inert', closed.length, 0);
+
+  payment.release();
+  check('the LAST holder of the retired socket closes it', closed.length, 1);
+  check('...it closed the retired one, not the fresh one', closed[0] === payment.value, true);
+  check('...and the fresh one is untouched', pool.stats().refs, 1);
+
+  payment.release();
+  check('a second release does not close anything again', closed.length, 1);
+}
+
+// ---------------------------------------------------------------------------
 section('dispose() closes whoever holds it');
 // ---------------------------------------------------------------------------
 {

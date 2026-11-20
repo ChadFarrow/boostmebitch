@@ -62,6 +62,7 @@ import {
   accruedSats,
   allocationTrackBucket,
   createLedger,
+  failedRunIsRefundable,
   HOST_BUCKET,
   isStaleLedger,
   msUntilSettle,
@@ -1152,6 +1153,9 @@ async function runSettle(
       value,
       totalSats: sats,
       boostagram: buildBoostagram(c, bucket, sats, atPositionSec),
+      // The feed that holds `episode_guid`, for an LNURL leg's BoostBox
+      // record — never a track bucket's feed, which rides in remote_*.
+      feedGuid: c.episode.podcastGuid ?? c.podcast.podcastGuid,
       rail,
     });
     if (!paidAny(results)) {
@@ -1184,7 +1188,12 @@ async function runSettle(
     // A partial failure never lands here — paidAny() means money moved, and
     // re-sending the whole batch to recover one failed leg would pay the
     // others twice.
-    refund(c, bucket, sats);
+    //
+    // Nor is a wallet that never ANSWERED refunded: it may have paid, and the
+    // next window would send the same sats again. `failedRunIsRefundable`.
+    // The sats stay debited; `noteFailure` still counts the run and tells the
+    // user the payment may have gone through.
+    if (failedRunIsRefundable(indeterminate)) refund(c, bucket, sats);
     noteFailure(c, getErrorMessage(e, 'streaming payment failed'), 'failures', indeterminate);
   }
 }

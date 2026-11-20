@@ -15,7 +15,7 @@ import { nip19 } from 'nostr-tools';
 import type { FeedNpub } from './types';
 
 /**
- * Read one attribute off a raw tag's attribute string. Quote-agnostic.
+ * Read one attribute off a raw tag's attribute string. Single or double quotes.
  *
  * **The name is anchored to a whitespace or start-of-string boundary, NOT to
  * `\b`, and that is a money invariant — see `npm run check:feedxml`.**
@@ -39,14 +39,78 @@ import type { FeedNpub } from './types';
  * `href` lookup, routing a link to an attacker's URL past the reader's eye) and
  * `url` on funding/enclosure tags.
  *
- * `(?:^|\s)` requires the name to actually start an attribute. Namespaced
- * attributes (`xml:lang`) deliberately do NOT satisfy a bare-name lookup —
- * nothing here reads one, and treating `foo:url` as `url` is the same bug.
+ * A name must actually START an attribute: at the start of the string or after
+ * whitespace, and OUTSIDE every quoted value. Namespaced attributes
+ * (`xml:lang`) deliberately do NOT satisfy a bare-name lookup — nothing here
+ * reads one, and treating `foo:url` as `url` is the same bug.
+ *
+ * **It walks the string quote-aware instead of matching a regex, and that is the
+ * second half of the same invariant.** A regex finds `address='03EVIL'` INSIDE
+ * `name="Bob address='03EVIL' split='1'"`, because a single quote needs no
+ * escape in a double-quoted value. `check:feedxml` pins it.
  */
 export function readAttr(attrs: string, name: string): string | undefined {
-  const re = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
-  const m = attrs.match(re);
-  return m ? (m[1] ?? m[2]) : undefined;
+  // A forward walk over the attribute string, quote-aware. A regex over the raw
+  // string cannot be: `name="Bob address='03EVIL' split='1'" address="03REAL"`
+  // holds a complete-looking `address='…'` INSIDE the first value, and a single
+  // quote inside a double-quoted value needs no escaping, so any feed host that
+  // lets a collaborator edit a display name could steer the payee.
+  const want = asciiLower(name);
+  const n = attrs.length;
+  let i = 0;
+  let boundary = true; // a name may start the string, or follow whitespace
+  while (i < n) {
+    const ch = attrs[i]!;
+    if (isAttrSpace(ch)) {
+      boundary = true;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      // A quoted string where a name belongs: junk. Skip it WHOLE, so what it
+      // holds is never read as an attribute.
+      const close = attrs.indexOf(ch, i + 1);
+      if (close === -1) return undefined;
+      i = close + 1;
+      boundary = false;
+      continue;
+    }
+    if (ch === '=') {
+      i++;
+      boundary = false;
+      continue;
+    }
+    const nameStart = i;
+    while (i < n) {
+      const c = attrs[i]!;
+      if (isAttrSpace(c) || c === '=' || c === '"' || c === "'") break;
+      i++;
+    }
+    const token = attrs.slice(nameStart, i);
+    const atBoundary = boundary;
+    boundary = false;
+    let j = i;
+    while (j < n && isAttrSpace(attrs[j]!)) j++;
+    if (attrs[j] !== '=') continue; // a valueless attribute
+    j++;
+    while (j < n && isAttrSpace(attrs[j]!)) j++;
+    const q = attrs[j];
+    if (q !== '"' && q !== "'") {
+      // An unquoted value is not XML. Step past it and keep walking.
+      while (j < n && !isAttrSpace(attrs[j]!)) j++;
+      i = j;
+      continue;
+    }
+    const close = attrs.indexOf(q, j + 1);
+    if (close === -1) return undefined;
+    if (atBoundary && asciiLower(token) === want) return attrs.slice(j + 1, close);
+    i = close + 1;
+  }
+  return undefined;
+}
+
+function isAttrSpace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
 }
 
 // Decode the handful of XML entities that show up in short text nodes
@@ -125,6 +189,79 @@ export function decodeXmlEntities(raw: string): string {
 // regexes' `\b` (a word boundary), under which `<item-x>` and `<item:x>`
 // satisfied `<item\b` — the same class of decoy `readAttr`'s comment documents,
 // one level up.
+
+// ── Comments and CDATA are not markup ──────────────────────────────────────
+//
+// `findTags`/`findBlocks` look for `<name` with `indexOf`, so a tag written
+// inside `<!-- … -->` or `<![CDATA[ … ]]>` was found as a live one. Document
+// order wins (`firstBlock`), so a producer who commented out an OLD
+// `<podcast:value>` above the new one — or an item whose CDATA description
+// holds sample markup — was parsed as paying the stale or example recipient,
+// while every real XML parser pays the live one.
+//
+// `maskInert` blanks those spans with spaces, LENGTH-PRESERVING, so an index
+// found in the masked copy slices the original (`inner` is still the raw text,
+// CDATA included, as `decodeXmlText` expects). It walks the document once and
+// skips each real tag QUOTE-AWARE, so a `<!--` inside an attribute value never
+// opens a comment (that would let one recipient's `name` hide the next). An
+// unterminated comment or CDATA runs to the end of input: fewer tags, never a
+// wrong one, which is the direction this scanner already fails in.
+let maskedFor: string | null = null;
+let maskedOut = '';
+
+export function maskInert(xml: string): string {
+  if (xml.indexOf('<!--') === -1 && xml.indexOf('<![CDATA[') === -1) return xml;
+  if (xml === maskedFor) return maskedOut;
+  const n = xml.length;
+  const parts: string[] = [];
+  let kept = 0;
+  let i = 0;
+  const blank = (from: number, to: number) => {
+    parts.push(xml.slice(kept, from), ' '.repeat(to - from));
+    kept = to;
+  };
+  while (i < n) {
+    const lt = xml.indexOf('<', i);
+    if (lt === -1) break;
+    if (xml.startsWith('<!--', lt)) {
+      const end = xml.indexOf('-->', lt + 4);
+      const stop = end === -1 ? n : end + 3;
+      blank(lt, stop);
+      i = stop;
+      continue;
+    }
+    if (xml.startsWith('<![CDATA[', lt)) {
+      const end = xml.indexOf(']]>', lt + 9);
+      const stop = end === -1 ? n : end + 3;
+      blank(lt, stop);
+      i = stop;
+      continue;
+    }
+    if (xml.startsWith('<?', lt)) {
+      const end = xml.indexOf('?>', lt + 2);
+      i = end === -1 ? n : end + 2;
+      continue;
+    }
+    // An ordinary tag (or `<!DOCTYPE`): skip to its `>`, quote-aware.
+    let j = lt + 1;
+    let quote: string | null = null;
+    for (; j < n; j++) {
+      const ch = xml[j]!;
+      if (quote) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '>') {
+        break;
+      }
+    }
+    i = j + 1;
+  }
+  parts.push(xml.slice(kept));
+  maskedFor = xml;
+  maskedOut = parts.join('');
+  return maskedOut;
+}
 
 /** One open tag: `<name …>` or `<name …/>`. */
 export interface TagHit {
@@ -232,7 +369,8 @@ function nextClose(xml: string, lower: string, lname: string, from: number): { a
  * Every `<name …>` open tag in document order, self-closing ones included.
  * Stops at the first malformed one (see the header). `max` bounds the walk.
  */
-export function findTags(xml: string, name: string, opts?: { max?: number }): TagHit[] {
+export function findTags(source: string, name: string, opts?: { max?: number }): TagHit[] {
+  const xml = maskInert(source);
   const lower = asciiLower(xml);
   const lname = asciiLower(name);
   const max = opts?.max ?? Infinity;
@@ -258,7 +396,8 @@ export function firstTag(xml: string, name: string): TagHit | undefined {
  * same answer `[\s\S]*?` gave. Stops at a malformed open tag or a missing
  * close (see the header).
  */
-export function findBlocks(xml: string, name: string, opts?: { max?: number }): BlockHit[] {
+export function findBlocks(source: string, name: string, opts?: { max?: number }): BlockHit[] {
+  const xml = maskInert(source);
   const lower = asciiLower(xml);
   const lname = asciiLower(name);
   const max = opts?.max ?? Infinity;
@@ -274,7 +413,7 @@ export function findBlocks(xml: string, name: string, opts?: { max?: number }): 
     }
     const close = nextClose(xml, lower, lname, hit.openEnd);
     if (!close) break;
-    out.push({ ...hit, inner: xml.slice(hit.openEnd, close.at), end: close.end });
+    out.push({ ...hit, inner: source.slice(hit.openEnd, close.at), end: close.end });
     from = close.end;
   }
   return out;
@@ -617,6 +756,67 @@ const PODROLL_BLOCK_TAG = 'podcast:podroll';
 export const MAX_PLAYLIST_REFS = 5000;
 
 /**
+ * The cover of a feed's NEWEST track (by `<pubDate>`, never by document order),
+ * for a feed that names no cover of its own. Crem Road's feeds carry no channel
+ * `<itunes:image>` or `<image><url>` at all, only one per track, so Podcast Index
+ * holds no image and `/demu` drew a letter (Chad, 2026-11-16). A track without a
+ * cover is skipped; only an http(s) URL counts — `javascript:` and `data:` are not
+ * covers. With no dates at all, the first track with a cover. `undefined` when no
+ * track has one. Through `findBlocks`/`readAttr`, like every parser here.
+ */
+export function newestItemImage(xml: string): string | undefined {
+  let best: { at: number; url: string } | undefined;
+  for (const item of findBlocks(xml, 'item')) {
+    const tag = firstTag(item.inner, 'itunes:image');
+    const href = tag ? readAttr(tag.attrs, 'href')?.trim() : undefined;
+    if (!href || !/^https?:\/\//i.test(href)) continue;
+    const date = firstBlock(item.inner, 'pubDate');
+    const parsed = date ? Date.parse(decodeXmlText(date.inner).trim()) : NaN;
+    const at = Number.isFinite(parsed) ? parsed : -Infinity;
+    if (!best || at > best.at) best = { at, url: href };
+  }
+  return best?.url;
+}
+
+/**
+ * True when a feed carries any `<podcast:value>` block — on the channel OR on an
+ * item. Podcast Index's value data is channel-level only, so it calls an
+ * item-level-only feed valueless: MOOKY (Podhome) pays two recipients from its
+ * track while PI says none (2026-11-16). `/demu` asks this before it stamps a row
+ * NO VALUE BLOCK.
+ */
+export function feedHasValueTag(xml: string): boolean {
+  // `firstTag` matches the NAME exactly, so `<podcast:valueRecipient>` and
+  // `<podcast:valueTimeSplit>` are not a value block (check:demu pins both).
+  return firstTag(xml, 'podcast:value') !== undefined;
+}
+
+/**
+ * Every feed a document's `<podcast:remoteItem>` tags name — ANYWHERE in it:
+ * channel-level, inside an `<item>`, inside a `<podcast:valueTimeSplit>`.
+ * Lower-cased, deduped, in document order, capped at `MAX_PLAYLIST_REFS`.
+ *
+ * For `/demu`'s always-show list: Homegrown Hits plays only DeMu and names each
+ * song's feed in a valueTimeSplit's remoteItem (1,932 tags, 631 feeds on
+ * 2026-11-16). Through `readAttr`, like every parser here, so an
+ * `x-feedGuid` decoy is not a feedGuid. Unlike `parsePlaylistRemoteItems` this
+ * reads feeds only — no item guids, no podroll rule — because the caller asks
+ * "does this show play anything from that feed", not "which track is this".
+ */
+export function remoteItemFeedGuids(xml: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of findTags(xml, 'podcast:remoteItem')) {
+    const g = readAttr(tag.attrs, 'feedGuid')?.trim().toLowerCase();
+    if (!g || seen.has(g)) continue;
+    seen.add(g);
+    out.push(g);
+    if (out.length >= MAX_PLAYLIST_REFS) break;
+  }
+  return out;
+}
+
+/**
  * Per-guid length caps, mirroring app/api/episode-by-guid/batch/route.ts.
  * A feed guid is a UUID; an item guid is any globally-unique string and real
  * feeds use permalink URLs, so the two limits differ by a lot.
@@ -863,4 +1063,73 @@ export function parseOpml(xml: string): OpmlOutline[] | null {
     out.push({ xmlUrl, title: decodeXmlEntities(name).replace(/\s+/g, ' ').trim() });
   }
   return out;
+}
+
+/** An album feed's pointer to its artist's PUBLISHER feed. */
+export interface PublisherRef {
+  feedGuid: string;
+  feedUrl: string;
+}
+
+const FEED_GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `PLAYLIST_MAKER_REL` in lib/community/feed-doc.ts, which this module cannot
+ *  import (that one is server-only). `check:newmusic` asserts the two agree. */
+const NOT_THE_ARTIST_REL = 'curator';
+
+/**
+ * The artist (publisher) feed an album's channel names, or undefined.
+ *
+ * **TWO FORMS ARE ON THE WIRE, and a reader of one misses every feed of the
+ * other.** The Podcasting 2.0 spec wraps it — `<podcast:publisher>` around a
+ * `<podcast:remoteItem medium="publisher" …>` — and Fountain and MSP write
+ * that. **Wavlake writes the remoteItem BARE in the channel**, with
+ * `medium="publisher"` and no wrapper (measured 2026-11-15 on Tinderbox, Nate
+ * Johnivan, and on albums by Joe Martin and Ben Reneer). A survey that looked
+ * for the wrapper alone reported "0 of 57 Wavlake albums name an artist"; every
+ * one did. StableKraft reads both (`parsePublisherFeedFromXML`).
+ *
+ * **The bare form is read only OUTSIDE the blocks that hold remote items for
+ * another reason.** A `<podcast:podroll>` may recommend an artist with
+ * `medium="publisher"`, and a channel `<podcast:value>` may carry
+ * `<podcast:valueTimeSplit>`s; reading either as "this album's artist" puts a
+ * stranger's ♡ on the album page.
+ *
+ * Both attributes are required and checked: `feedGuid` is what a favorite
+ * would write, so it must be guid-shaped, and `feedUrl` must be http(s). The
+ * caller still has to establish that Podcast Index can RESOLVE the guid before
+ * it offers a favorite — see `previewPodcastFromChannel` in lib/pi.ts.
+ *
+ * **A `rel="curator"` link is NOT the artist.** A community playlist names its
+ * MAKER's publisher feed with that role (`PLAYLIST_MAKER_REL`,
+ * lib/community/feed-doc.ts, #586), and a playlist maker is not an artist (the
+ * owner's choice, 2026-11-17). The album page offers ♡ ARTIST on an album only,
+ * so this is the second guard, in the reader every caller goes through.
+ */
+export function parsePublisherRef(channelXml: string): PublisherRef | undefined {
+  const take = (attrs: string, needMedium: boolean): PublisherRef | undefined => {
+    const medium = readAttr(attrs, 'medium');
+    if (medium !== undefined ? asciiLower(medium.trim()) !== 'publisher' : needMedium) return undefined;
+    if (asciiLower(readAttr(attrs, 'rel')?.trim() ?? '') === NOT_THE_ARTIST_REL) return undefined;
+    const feedGuid = readAttr(attrs, 'feedGuid')?.trim();
+    const feedUrl = readAttr(attrs, 'feedUrl')?.trim();
+    if (!feedGuid || !FEED_GUID_RE.test(feedGuid)) return undefined;
+    if (!feedUrl || !/^https?:\/\/[^\s]+$/i.test(feedUrl)) return undefined;
+    return { feedGuid, feedUrl };
+  };
+  // The spec's form. Inside the wrapper a missing `medium` still means the
+  // publisher: that is what the wrapper says.
+  const wrapper = firstBlock(channelXml, 'podcast:publisher');
+  if (wrapper && !wrapper.selfClosing) {
+    for (const { attrs } of findTags(wrapper.inner, 'podcast:remoteItem', { max: 8 })) {
+      const ref = take(attrs, false);
+      if (ref) return ref;
+    }
+  }
+  // Wavlake's bare form: `medium="publisher"` is the only thing saying so.
+  const bare = stripBlocks(channelXml, ['podcast:publisher', 'podcast:podroll', 'podcast:value']);
+  for (const { attrs } of findTags(bare, 'podcast:remoteItem', { max: 64 })) {
+    const ref = take(attrs, true);
+    if (ref) return ref;
+  }
+  return undefined;
 }
