@@ -346,3 +346,8 @@ mid-listen rather than failing one settle.
 Two halves, and the first is the real fix. `LIVE_VALUE_TIMEOUT_MS` (12 s) turns a hang into the `catch` branch this code already handles properly — it keeps paying the last known artist and gives up only after `MAX_FAILURES`, which is the honest behaviour for a network blip. It sits under `POLL_MS` so a hung poll always resolves before the next tick rather than making ticks queue behind it, and over the route's own 8 s upstream deadline so a slow-but-alive Podcast Index still produces an answer. `stopLiveValueWatcher` also releases the latch now, as the recovery for anything a timeout cannot cover; a poll still in the air re-checks `watching !== w` before touching anything, so that cannot let a stale answer through.
 
 **Any new module-level in-flight latch inherits this.** The pattern is only safe when the thing it guards has a deadline — a latch plus an unbounded await is a one-way door.
+
+## `crypto.randomUUID` is secure-context-only — why `randomId()` exists
+
+Over `http://<LAN-IP>`, which is how this app is tested on a phone, `crypto.randomUUID` is absent and a bare call throws `TypeError`. `openContext` runs from the bare `setInterval(tick)` callback with nothing above it, so the throw landed before `ctx = c` and every later tick failed identically: an unattended payer that silently does not exist. Use `randomId()` (`lib/util.ts`) anywhere a throw is not already caught. It is for correlation tags and **never for anything where unpredictability is a security property**.
+
