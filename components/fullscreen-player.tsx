@@ -944,9 +944,9 @@ export function FullscreenPlayer({
               header at all, that left a listener with no login in reach.
 
               `overlay` drops the theme row, the balance number AND both wallet
-              chips; see <AuthControl>. The wallet is a tap away in the boost
-              modal this screen opens, which says "⚡ NO WALLET — CONNECT ONE"
-              when there is none. So with both logins set this renders nothing
+              chips; see <AuthControl>. The balance box below opens the wallet
+              when one is connected, and the boost modal this screen opens says
+              "⚡ NO WALLET — CONNECT ONE" when there is none. So with both logins set this renders nothing
               and the bar is ← BACK, ⋯ and ✕ — the account menu belongs to
               <NostrAuth>, which these routes mount hidden. */}
           {/* THE SEVEN SECONDARY ACTIONS, one tap away instead of on the screen.
@@ -980,10 +980,14 @@ export function FullscreenPlayer({
                 fixed 38px, so the glyph can grow without moving it. */}
             <span aria-hidden className="text-base lg:text-xl leading-none">⋯</span>
           </button>
-          {/* THE BALANCE, WITHOUT A WALLET BUTTON UNDER IT. The bar dropped both
-              wallet chips when the boost modal became the route to that modal,
-              and what the listener actually reads before pressing BOOST is the
-              number, not the control. `open` is the gate, not `everOpened`:
+          {/* THE BALANCE, AND A PRESS ON IT OPENS THE WALLET on top of this
+              screen, as the header's balance does (Chad, 2026-11-20: "when I
+              click my wallet here it should open the wallet modal like on the
+              main page"). The bar dropped both wallet CHIPS when the boost
+              modal became the route to that modal and kept only the number;
+              a number that looked like the header's and did nothing read as
+              broken. Still no chip while nothing is connected: the boost modal
+              says "⚡ NO WALLET — CONNECT ONE". `open` is the gate, not `everOpened`:
               this overlay stays mounted for the session once it has been
               opened, and a mounted `useWalletBalance` is a NIP-47 read on
               every `payment_sent` — see <WalletBalanceBox>. */}
