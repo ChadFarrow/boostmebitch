@@ -432,7 +432,15 @@ So the single BOOST panel (not BOOST ALL, not streaming) does three things:
 
 **The panel stays open while a leg is `?`**, and a check or a resend never closes it — the answer appears where the user is looking. **It is not dismissable while a RETRY pays** (`legChecks.resending`), as during the send: the hook drops a result that lands after the panel unmounts, so an Escape mid-RETRY left a leg that paid as `?` in the log. While it sends or a RETRY pays it says "Keep the app open until the boost is done." A leg found paid later updates the log, and posts the note if nothing had posted it.
 
-Not covered: BOOST ALL, streaming, and a boost after a reload (the hash is in memory only, like "Retry N failed").
+**HIDE and CANCEL while the legs go out — two controls, because one word promised what the button never did.** Chad, 2026-11-20: a node that had stopped answering left the panel waiting, so he pressed **Cancel** — which closed the panel and let every leg go out behind it. While `running`, the footer now offers both:
+
+- **HIDE** is the old behaviour, named: the panel closes and the boost finishes behind it — the confetti and sound (module-level, `lib/format.tsx`), the log and the note all still run. A `?` leg is then not asked about (the hook unmounts with the panel), which is why the line under the buttons says what each one does.
+- **CANCEL** stops the legs NOT YET STARTED (`sendBoost({ shouldStop })` → `payInOrder`, asked before each START). A leg the wallet already has cannot be called back: it runs on and is judged like any other, and the panel says so while it waits. A stopped run does not fire `onAllStarted`, so a redirect's show share does not begin; its `sendHostShare` call still runs, and `sendBoost` returns every show leg stopped before the capability probe (a round trip to the wallet that is not answering).
+- **A stopped leg is `stopped: true`, `ok: false`, never ✗** (`stoppedLeg` is the one place it is set; `<LegStatusGlyph>` draws `–`, `<LightningStatus>` counts it apart from "failed"). It is retryable by its FLAG, never its text (`retryableLegs`, `check:lnurl`): no wallet was asked, so paying it later cannot pay twice. The retry button reads "Retry N unsent" because it now covers both kinds.
+
+Not covered: BOOST ALL, streaming, and a boost after a reload (the hash is in memory only, like "Retry N unsent").
+
+**The payment trace in a bug report.** `sendBoost`, `checkLeg` and `resendLeg` write `pay.run` / `pay.leg` / `pay.check` / `pay.resend` lines into the playback log's ring (`lib/playback-log.ts`), so a report about a failed boost carries the rail, each unpaid leg's result and a fixed reason word (`legLogFields`, from `explainPaymentError(…).code`). **Never an amount, a recipient, a payment hash or the raw error** — the report is a public issue, and the raw text quotes hosts, addresses and a recipient's own reason. Only legs that did NOT pay get a line: streaming settles every track, and a line per paid leg would push the playback events out of the 150-line ring.
 
 ### The failed leg a user reads (`explainPaymentError`)
 

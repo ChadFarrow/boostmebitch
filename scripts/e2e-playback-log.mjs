@@ -184,12 +184,12 @@ const closeThanks = () => js(`(async () => {
 t.equal('the report modal opens', await openReport(), true);
 const shown = await js(`(() => {
   const d = (${DIALOG}).querySelector('details');
-  const p = [...d.querySelectorAll('p')].find((x) => /Playback log/.test(x.textContent));
+  const p = [...d.querySelectorAll('p')].find((x) => /Playback and payment log/.test(x.textContent));
   const pre = d.querySelector('pre');
   return { label: p?.textContent ?? null, lines: pre ? pre.textContent.split('\\n').length : 0 };
 })()`);
 const onDisk = (await lines()).length;
-t.equal('the modal names the log and its size', shown.label, `Playback log, ${onDisk} events (UTC)`);
+t.equal('the modal names the log and its size', shown.label, `Playback and payment log, ${onDisk} events (UTC)`);
 t.equal('...and shows every line it will send', shown.lines, onDisk);
 
 const sendReport = () => js(`(async () => {

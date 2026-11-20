@@ -274,7 +274,7 @@ section('6. The boost modal: the notice, Check again, and a payment never retrie
   t.equal('this boost shares no note', await js(`localStorage.getItem('bmb:share_nostr')`), '0');
   t.equal('nothing has been paid', wallet.paid, 0);
   t.ok('Send is live: the notice warns and never gates', await pressDialogButton(/send 100 sat/i));
-  t.ok('the leg fails and offers a retry', await until(`() => [...document.querySelectorAll('[role="dialog"] button')].some((b) => /retry 1 failed/i.test(b.innerText) && !b.disabled)`, 20000));
+  t.ok('the leg fails and offers a retry', await until(`() => [...document.querySelectorAll('[role="dialog"] button')].some((b) => /retry 1 unsent/i.test(b.innerText) && !b.disabled)`, 20000));
   t.equal('no payment reached the wallet', wallet.paid, 0);
 
   await wait(5200);
@@ -284,7 +284,7 @@ section('6. The boost modal: the notice, Check again, and a payment never retrie
   t.ok('and it clears the notice, with no re-paste', await until(`() => !document.querySelector('[role="dialog"]')?.innerText.includes(${JSON.stringify(NOTICE)})`, 10000), `dials +${gate.dials - before}`);
   t.ok('it reached the relay', gate.dials - before >= 1, `dials +${gate.dials - before}`);
 
-  t.ok('Retry is on screen', await pressDialogButton(/retry 1 failed/i));
+  t.ok('Retry is on screen', await pressDialogButton(/retry 1 unsent/i));
   t.ok('the retry pays', await untilNode(() => wallet.paid >= 1, 10000));
   await wait(3000);
   t.equal('exactly once', wallet.paid, 1);

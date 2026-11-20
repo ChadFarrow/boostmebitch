@@ -31,7 +31,10 @@ import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 // The PLAYBACK LOG (`lib/playback-log.ts`) rides under the same consent as the
 // snapshot and the same three rules, plus a fourth: every line must pass
 // `isPlaybackLogLine`, a character allowlist no URL, key or wallet string can
-// satisfy. A line that fails is dropped, never repaired.
+// satisfy. A line that fails is dropped, never repaired. The same ring holds
+// the PAYMENT lines (`pay.*`, written by `sendBoost`, `checkLeg` and
+// `resendLeg`): a rail, a result and a fixed reason word (`legLogFields`),
+// never an amount, a recipient, a payment hash or an error's own text.
 
 export interface BugReportAnswers {
   happened: string;
@@ -242,7 +245,7 @@ export function bugReportBody(answers: BugReportAnswers, info: AppInfo, log: str
     '### App snapshot',
     infoLines ? fenced(infoLines) : '_The reporter chose not to send app info._',
     '',
-    ...(log.length ? ['### Playback log (UTC, oldest first)', fenced(log.join('\n')), ''] : []),
+    ...(log.length ? ['### Playback and payment log (UTC, oldest first)', fenced(log.join('\n')), ''] : []),
     '_Sent from the in-app bug report._',
   ].join('\n');
 }
