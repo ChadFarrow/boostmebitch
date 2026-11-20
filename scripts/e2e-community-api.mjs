@@ -182,7 +182,10 @@ const created = [];
 // ── reads ───────────────────────────────────────────────────────────────────
 const empty = await call('GET', PLAYLISTS);
 check('GET list answers 200 with a playlists array', empty.status === 200 && Array.isArray(empty.body?.playlists), show(empty));
-check('GET list is cacheable without owner', /s-maxage=30/.test(empty.headers.get('cache-control') ?? ''), empty.headers.get('cache-control'));
+// no-store, never an edge cache: the "playlist deleted" screen links straight to
+// /playlists, and a CDN copy from before the delete showed the deleted playlist
+// there (beta, 2026-11-20). A local server has no CDN, so the header is the pin.
+check('GET list answers no-store without owner too', empty.headers.get('cache-control') === 'no-store', empty.headers.get('cache-control'));
 const byOwner = await call('GET', `${PLAYLISTS}?owner=${ownerPub}`);
 check('GET list?owner answers no-store and is empty for a new key',
   byOwner.status === 200 && byOwner.headers.get('cache-control') === 'no-store' && byOwner.body?.playlists?.length === 0, show(byOwner));
