@@ -1,6 +1,6 @@
 # iOS — the Capacitor app (Boost Me Buddy)
 
-Read before touching `capacitor.config.json`, `ios/`, `ios-web/` or `lib/native/`.
+Read before touching `capacitor.config.json`, `ios/` or `ios-web/`.
 
 Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the plan and the reasoning. **Status: test build only.** Nothing here ships to the App Store yet.
 
@@ -37,7 +37,7 @@ What it is: `@capacitor/ios` 8, `capacitor.config.json`, the generated Xcode pro
 
 The web player is unchanged: its `<audio>` element and `navigator.mediaSession` (`components/player/use-media-session.ts`) run inside WKWebView.
 
-**What Stage 1 is expected to fix:** fault 2 (the Dynamic Island), because the audio now belongs to a real bundle id. **What it might fix:** fault 1. WebKit owns the Now Playing entry for an `<audio>` element, and whether it keeps that entry on pause once the app is suspended is the question this stage exists to answer by measurement.
+**What Stage 1 fixes, measured on the owner's iPhone 11 (iOS 27.2.1) on 2026-11-20:** fault 2 — a tap on the Now Playing entry opens Boost Me Buddy, because the audio now belongs to a real bundle id. **What no app can fix:** fault 1. After 30 minutes paused the lock screen shows no card, but Control Center still holds the entry and its ▶ plays; the app was still running. A native `AVPlayer` that never deactivates the session and never clears `nowPlayingInfo` did exactly the same (see Stage 2), so this is iOS hiding a paused app's card, not the entry being lost.
 
 ### Run it on a phone (Mac Mini)
 
@@ -60,20 +60,13 @@ A free Personal Team build expires after 7 days; run it again from Xcode. TestFl
 4. With another PWA installed and opened earlier, tap the Dynamic Island. **Pass:** it opens Boost Me Buddy.
 5. Turn on streaming sats with a small budget. Play 30 minutes locked. **Pass:** settlements kept arriving (`bmb:streamed:<npub>`, or the wallet's history). The streaming timer is JS; iOS may throttle a WKWebView in the background even while audio plays.
 
-If 1–5 pass, Stage 2 is not needed.
+Results on 2026-11-20: step 1 pass; step 3 fails as described above for ANY player (the entry survives in Control Center); step 4 pass; **step 5 not run yet**.
 
-## Stage 2 — the native audio plugin (scaffold on this branch, NOT wired)
+## Stage 2 — a native audio player: measured, then removed
 
-If step 3 or step 5 fails, the `<audio>` element moves to native `AVPlayer`.
+**Do not rebuild it to fix fault 1 — it was measured and does not.** A native player plugin (`AVPlayer` + `MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`, registered by a `CAPBridgeViewController` subclass) was written on this branch and started by hand on the iPhone: paused from the lock screen, it lost the lock-screen card after 30 minutes exactly as the web `<audio>` did, although its pause kept the audio session active and kept `nowPlayingInfo` (rate 0) — the two rules that were expected to fix it. Control Center kept its tile and ▶ played, as for the web player. Since the web player does everything the native one did, the plugin was removed (2026-11-20) rather than wired: wiring it would put a second player behind every rule in [`ui.md`](ui.md) for no measured gain.
 
-- `ios/App/App/NativeAudioPlugin.swift` — `AVPlayer`, `MPNowPlayingInfoCenter`, `MPRemoteCommandCenter`. Registered by `MainViewController` (same file), which `SceneDelegate` uses instead of a bare `CAPBridgeViewController`. **It is compiled into the Stage 1 build but nothing calls it.**
-- `lib/native/native-audio.ts` — the typed JS side. Nothing imports it.
-
-**The two rules that fix fault 1**, both in the Swift file: pausing never calls `AVAudioSession.setActive(false)`, and never clears `nowPlayingInfo` — it sets the rate to 0 and writes the elapsed time. Only `stop()` (the player closed) removes the entry.
-
-**Remote commands act natively first, then tell JS.** iOS can wake a suspended app for ▶, but the WebView's JS may not run in time, so play/pause/seek/skip must not wait for it. Next/previous go to JS only, because the queue lives there.
-
-**Wiring it is a player change, so read [`ui.md`](ui.md) first** ("Players", "The lock screen is the third surface", "The lock-screen buttons", "An element that lost its buffer is put back"). The shape: on `isNativeIos()`, `<Player>` sends `loadTrack`/`play`/`pause`/`seek`/`setRate` to the plugin instead of the element, and drives `setPosition`/`setDuration`/`onEnded` from the plugin's `timeupdate`/`loaded`/`ended` events. **The streaming ledger's elapsed time must then read the native position**, or `min(wall, position)` ([`streaming.md`](streaming.md)) bills nothing. Art for the lock screen is the `/api/art` URL, as on the web.
+**The one open reason to bring it back is test step 5** (streaming sats while locked): the streaming timer is JS, and iOS may throttle a WKWebView in the background. If step 5 fails, the removed code is in git: `git show 23fb0fe8:ios/App/App/NativeAudioPlugin.swift` and `git show 23fb0fe8:lib/native/native-audio.ts`. Wiring it is then a player change: `<Player>` drives the plugin on `isNativeIos()`, and **the streaming ledger's elapsed time must read the native position**, or `min(wall, position)` ([`streaming.md`](streaming.md)) bills nothing.
 
 ## Before the App Store (not started)
 
