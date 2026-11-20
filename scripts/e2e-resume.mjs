@@ -80,6 +80,19 @@ const playing = `(() => { const a = document.querySelector('audio'); return a &&
 const backToList = async () => {
   await js(`(() => { const b = [...document.querySelectorAll('button')].find(b => /back to episodes/i.test(b.textContent)); b && b.click(); return !!b; })()`);
   await until(`document.querySelectorAll('li button[aria-label="Play"]').length > 1`);
+  await revealOwnRow();
+};
+/** The list opens at 10 rows and the show publishes weekly, so by 2026-11
+ *  episode 456 had dropped below the fold: every step that looks for its row
+ *  failed with "row not in the list". LOAD MORE until the row is there. */
+const revealOwnRow = async () => {
+  for (let i = 0; i < 5; i++) {
+    if (await js(`[...document.querySelectorAll('li')].some(l => l.textContent.includes(${JSON.stringify(title)}))`)) return true;
+    const more = await js(`(() => { const b = [...document.querySelectorAll('button')].find(b => /^Load more episodes/i.test(b.textContent.trim())); b && b.click(); return !!b; })()`);
+    if (!more) return false;
+    await wait(500);
+  }
+  return false;
 };
 let title = '';
 /** Press play on the first row that is not episode 456 and CAN play. The show
@@ -131,6 +144,59 @@ await until(playing);
 await wait(5000);
 const a2 = await audioState();
 check('the element resumed at ~5:00', a2 && a2.t >= 299 && a2.t < 320, JSON.stringify(a2));
+
+console.log('\n2b. Reload where the engine drops the start seek, as Safari can — ▶ still starts at the saved place');
+// WebKit can take the one `currentTime` assignment made at `loadedmetadata` and
+// still start at 0:00 (docs/ui.md, "Switching AUDIO → VIDEO"; #485 measured it
+// on an iPhone). Chrome keeps every assignment, so step 2 cannot see that, and
+// the audio branch made ONE try until 2026-11-20: on an iPhone a reload and
+// ▶ RESUME started the episode over while the bar still read 5:21. This stub
+// makes Chrome drop the first `n` start seeks on the <audio> — `n = 2` leaves
+// only the last of the three tries (`loadedmetadata`, `canplay`, `playing`).
+// It lets every assignment through again once the step has measured, so the
+// steps below seek as before.
+const dropStartSeeks = (n) => `(() => {
+  const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+  let left = ${n};
+  window.__droppedSeeks = [];
+  window.__stopDropping = () => { left = 0; };
+  Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+    configurable: true,
+    enumerable: d.enumerable,
+    get() { return d.get.call(this); },
+    set(v) {
+      if (left > 0 && this instanceof HTMLAudioElement && v > 1) {
+        left -= 1;
+        window.__droppedSeeks.push({ to: Math.round(v), rs: this.readyState, paused: this.paused });
+        return;
+      }
+      d.set.call(this, v);
+    },
+  });
+})();`;
+for (const n of [1, 2]) {
+  await pause();
+  await wait(800);
+  const saved = (await entry())?.t ?? null;
+  const { result: { identifier } } = await send('Page.addScriptToEvaluateOnNewDocument', { source: dropStartSeeks(n) });
+  await go(`${APP}/?podcast=${POD}&episode=${encodeURIComponent(EPISODE_GUID)}`);
+  await until(`!!${playButton}`);
+  await until(`(() => { const v = ${seekAt}; return v !== null && v >= ${(saved ?? 300) - 1}; })()`);
+  await js(`${playButton}.click()`);
+  await until(playing);
+  await wait(4000);
+  const a = await audioState();
+  const bar = await js(seekAt);
+  const dropped = await js(`window.__droppedSeeks`);
+  await js(`(() => { window.__stopDropping(); return true; })()`);
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+  check(`n=${n}: the stub dropped ${n} start seek(s), so this step measured something`,
+    Array.isArray(dropped) && dropped.length === n, JSON.stringify(dropped));
+  check(`n=${n}: the element resumed at the saved place (${saved})`,
+    saved !== null && a && a.t >= saved - 1 && a.t < saved + 15, JSON.stringify(a));
+  check(`n=${n}: the bar shows the element's place, not only the saved one`,
+    a && bar !== null && Math.abs(bar - a.t) < 2, `bar: ${bar}, element: ${a?.t}`);
+}
 
 console.log('\n3. Start another episode — the outgoing one is flushed from the store');
 await setTime(600);
@@ -185,8 +251,13 @@ check('the other episode was started again', await playOtherRow(), 'no other row
 await wait(1500);
 await openOwnRow();
 await until(`!!${playButton}`);
-await js(`(() => { const t = [...document.querySelectorAll('button, [role="tab"]')].find(b => /^Chapters/i.test(b.textContent.trim())); t && t.click(); return !!t; })()`);
-await wait(1000);
+// The Chapters tab exists only once the chapters JSON has arrived, and a fixed
+// 1 s wait pressed nothing on a slow fetch (measured 2026-11-20): wait for the
+// tab, then for the row.
+const CHAPTERS_TAB = `[...document.querySelectorAll('button, [role="tab"]')].find(b => /^Chapters/i.test(b.textContent.trim()))`;
+await until(`!!${CHAPTERS_TAB}`, 20000);
+await js(`(() => { const t = ${CHAPTERS_TAB}; t && t.click(); return !!t; })()`);
+await until(`[...document.querySelectorAll('button')].some(b => b.textContent.includes(${JSON.stringify(CHAPTER)}))`, 10000);
 const tapped = await js(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.includes(${JSON.stringify(CHAPTER)})); b && b.click(); return !!b; })()`);
 check(`the "${CHAPTER}" chapter row exists`, tapped, 'no chapter button');
 await until(playing);
