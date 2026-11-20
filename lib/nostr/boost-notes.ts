@@ -190,6 +190,16 @@ const tagsLen = (tags: string[][]) =>
  *  4. Podcast Index page — human-readable feed metadata
  *  5. raw RSS feed URL
  *
+ * **Levels 4 and 5 only when this site's own link is NOT in the note.** Both
+ * name the SHOW and nothing more, while `bmbLandingUrl` names the same show AND
+ * the episode, so with both in the body a client drew two cards for one album
+ * (Chad, on a beta note, 2026-11-19: "too many links"). The test is the same
+ * one `bmbLandingUrl` makes — a guid, and a link within `noteLink`'s length —
+ * spelled through `siteLandingUrl` so the rule needs no brand: the two brand
+ * origins are the same length. Without that link (no guid: a live stream, or
+ * a guid too long to print) the fallback stays, so a note is never left
+ * without a link it had.
+ *
  * Both episode sources are feed-supplied, so both are http(s)-validated before
  * going in a public note. Levels 3–5 are show-level: neither pod.link nor PI
  * has an episode URL constructible from a guid (pod.link's episode paths key
@@ -202,6 +212,7 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   const episodePage = noteLink(httpUrl(episode?.link)) ?? noteLink(httpUrl(episode?.guid));
   if (episodePage) return episodePage;
   if (podcast.itunesId) return `https://pod.link/${podcast.itunesId}`;
+  if (podcast.podcastGuid && noteLink(siteLandingUrl(podcast.podcastGuid, episode?.guid))) return null;
   if (podcast.id) return `https://podcastindex.org/podcast/${podcast.id}`;
   return noteLink(podcast.url);
 }
