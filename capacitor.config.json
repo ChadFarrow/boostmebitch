@@ -1,0 +1,13 @@
+{
+  "appId": "com.boostmebuddy.app",
+  "appName": "Boost Me Buddy",
+  "webDir": "ios-web",
+  "server": {
+    "url": "https://www.boostmebuddy.com",
+    "allowNavigation": ["boostmebuddy.com", "*.boostmebuddy.com"]
+  },
+  "ios": {
+    "contentInset": "never",
+    "limitsNavigationsToAppBoundDomains": false
+  }
+}

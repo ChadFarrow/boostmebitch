@@ -16,6 +16,8 @@
     "android:update": "cd android && npx --yes -p @bubblewrap/core@1.25.0 -p @bubblewrap/cli@1.25.0 bubblewrap update --skipVersionUpgrade",
     "android:release": "cd android && npx --yes -p @bubblewrap/core@1.25.0 -p @bubblewrap/cli@1.25.0 bubblewrap build --skipPwaValidation",
     "android:advance": "node scripts/android-advance.mjs",
+    "ios:sync": "cap sync ios",
+    "ios:open": "cap open ios",
     "check": "node scripts/run-checks.mjs",
     "check:sitestamp": "node --experimental-strip-types scripts/check-site-stamp.mjs",
     "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs",
@@ -146,6 +148,9 @@
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/ios": "^8.6.2",
     "@getalby/sdk": "^5.1.0",
     "@noble/hashes": "^2.0.1",
     "@scure/bip39": "^2.0.1",
@@ -165,6 +170,7 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
     "@eslint/eslintrc": "^3.3.5",
     "@types/node": "^22.10.7",
     "@types/pg": "^8.23.1",
