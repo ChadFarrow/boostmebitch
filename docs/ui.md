@@ -2129,6 +2129,15 @@ shows up on a screen nobody was looking at.
   terminates on a `data-fell-back` marker rather than a string compare.
 - **`<PodcastCover>`** — its `onError` ladder is **four** deep, and Podcast Index's
   `image` and `artwork` often disagree, so **always pass both**.
+- **`<FavEpisodeHeart>` and the rules CLAUDE.md states in one clause.** `size`:
+  `'sm'` is a slim border-chip, `'md'` matches `.btn-ghost`. A track row and a
+  chapter row sit next to each other, so "put a heart on the chapter row too"
+  looks harmless and is the bug: a chapter row has no `split` to hand
+  `<FavTrackHeart>`. `<NoteCard>` is memoized, so its store-driven values are
+  read through `useApp` selectors INSIDE the component, which is what lets them
+  bypass the memo. A new page that opens a show sets `showOrigin` so the show
+  page can offer a way back; `selectPodcast` CLEARS it, which is what makes the
+  default safe.
 
 ## Open items from the dock redesign
 
