@@ -329,7 +329,45 @@ const VECTORS = [
     want: 'x&lt;a&lt;b',
   },
 
+  {
+    name: 'a <podcast:value> inside an XML comment is not a value block',
+    kind: 'bites',
+    run: () => blocks('<item><!-- <podcast:value><podcast:valueRecipient address="OLD"/></podcast:value> --><podcast:value><podcast:valueRecipient address="NEW"/></podcast:value></item>', 'podcast:value').map((b) => b.inner),
+    naiveRun: () => naiveBlocks('<item><!-- <podcast:value><podcast:valueRecipient address="OLD"/></podcast:value> --><podcast:value><podcast:valueRecipient address="NEW"/></podcast:value></item>', 'podcast:value').map((b) => b.inner),
+    want: ['<podcast:valueRecipient address="NEW"/>'],
+  },
+  {
+    name: 'a <podcast:value> inside CDATA show notes is not a value block, and the CDATA itself still reads',
+    kind: 'bites',
+    run: () => {
+      const x = '<item><description><![CDATA[ <podcast:value><podcast:valueRecipient address="EVIL"/></podcast:value> ]]></description><podcast:value><podcast:valueRecipient address="REAL"/></podcast:value></item>';
+      return [blocks(x, 'podcast:value').map((b) => b.inner), blocks(x, 'description').map((b) => b.inner.includes('EVIL'))];
+    },
+    naiveRun: () => {
+      const x = '<item><description><![CDATA[ <podcast:value><podcast:valueRecipient address="EVIL"/></podcast:value> ]]></description><podcast:value><podcast:valueRecipient address="REAL"/></podcast:value></item>';
+      return [naiveBlocks(x, 'podcast:value').map((b) => b.inner), naiveBlocks(x, 'description').map((b) => b.inner.includes('EVIL'))];
+    },
+    want: [['<podcast:valueRecipient address="REAL"/>'], [true]],
+  },
+  {
+    name: 'a comment opener inside an attribute value does not hide the tags after it',
+    kind: 'bites',
+    run: () => tags('<podcast:valueRecipient name="a <!-- b" address="ONE"/><podcast:valueRecipient name="c --> d" address="TWO"/>', 'podcast:valueRecipient').map((a) => readAttr(a, 'address')),
+    naiveRun: () => naiveTags('<podcast:valueRecipient name="a <!-- b" address="ONE"/><podcast:valueRecipient name="c --> d" address="TWO"/>', 'podcast:valueRecipient').map((a) => readAttr(a, 'address')),
+    want: ['ONE', 'TWO'],
+  },
+  {
+    name: 'an unterminated <!-- hides the rest (fewer tags, never a wrong one)',
+    kind: 'bites',
+    run: () => tags('<podcast:funding url="a"/><!-- <podcast:funding url="b"/>', 'podcast:funding').map((a) => readAttr(a, 'url')),
+    naiveRun: () => naiveTags('<podcast:funding url="a"/><!-- <podcast:funding url="b"/>', 'podcast:funding').map((a) => readAttr(a, 'url')),
+    want: ['a'],
+  },
+
   // ── timing: the hostile shapes, under a bound; naive is never run ───────
+  { name: '1 MB of `<!--` through findBlocks', kind: 'timing', maxMs: 250, run: () => findBlocks(big('<!--', 262_144), 'item').length, want: 0 },
+  { name: '1 MB of `<![CDATA[` through findTags', kind: 'timing', maxMs: 250, run: () => findTags(big('<![CDATA[', 116_000), 'item').length, want: 0 },
+  { name: '500 000 × `<a x="<!--">` through findTags', kind: 'timing', maxMs: 400, run: () => findTags(big('<a x="<!--">', 80_000) + '<item/>', 'item').length, want: 1 },
   { name: '1 MB of `<!--` through stripComments', kind: 'timing', maxMs: 250, run: () => stripComments(big('<!--', 262_144)), want: '' },
   { name: '120 000 × `<script >` through stripBlocks(consume)', kind: 'timing', maxMs: 250, run: () => stripBlocks(big('<script >', 120_000), ['script'], { unclosed: 'consume' }), want: '' },
   { name: '150 000 × `<item >` through findBlocks', kind: 'timing', maxMs: 250, run: () => blocks(big('<item >', 150_000), 'item'), want: [] },

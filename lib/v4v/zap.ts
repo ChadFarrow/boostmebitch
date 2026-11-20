@@ -20,6 +20,9 @@ import { bolt11AmountMsat } from './bolt11';
 import { lnurlFetch } from './lnurl-fetch';
 import { zapRequestTags } from '@/lib/nostr/zap-request';
 import { NwcIndeterminateError } from './nwc-errors';
+// Re-exported so a component can tell "the wallet never answered" from a plain failure
+// without reaching past the v4v surface (docs/money-boosts.md, rule 11).
+export { NwcIndeterminateError };
 import { activeNostr } from '@/lib/nostr/signer';
 
 /** A provider's LUD-06 payRequest document, plus the two NIP-57 fields. */

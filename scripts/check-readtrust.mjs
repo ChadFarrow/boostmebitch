@@ -45,6 +45,7 @@
 // at all — keep it that way.
 
 import {
+  backupOverwriteVerdict,
   SYNTHETIC_EOSE_MARGIN_MS,
   acceptsEvent,
   readIsTrustworthy,
@@ -166,6 +167,32 @@ console.log('\nintake — reject at the door, never on the winner');
   // about, and `expect` is optional at the call site.
   check('an empty expectation accepts anything', acceptsEvent({}, theirs), true);
   check('a pubkey-only expectation ignores kind', acceptsEvent({ pubkey: 'aa11' }, wrongKind), true);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nbackupOverwriteVerdict — may a Spark seed be published over the backup unasked?');
+// ---------------------------------------------------------------------------
+{
+  // naive() is what the wallet panel did: `.catch(() => null)`, then "a null is
+  // no backup". It warns only when a mnemonic was read.
+  const naive = (read) => (read && read.mnemonic ? 'warn-present' : 'safe');
+  const W = 'abandon ability able about above absent absorb abstract absurd abuse access accident';
+  const V = [
+    ['the read threw (decrypt failed or timed out): unknown', [null], 'warn-unknown', false],
+    ['empty and NOT trustworthy (relays stayed silent): unknown', [{ mnemonic: null, trustworthy: false }], 'warn-unknown', false],
+    ['empty and trustworthy: nobody has a backup', [{ mnemonic: null, trustworthy: true }], 'safe', true],
+    ['a different backup is present', [{ mnemonic: W, trustworthy: true }, 'zoo zoo zoo'], 'warn-present', true],
+    ['a backup is present and no incoming seed is named', [{ mnemonic: W, trustworthy: true }], 'warn-present', true],
+    ['the same seed, with other whitespace, overwrites itself', [{ mnemonic: W, trustworthy: true }, '  ' + W.replace(/ /g, '  ') + '\n'], 'safe', false],
+  ];
+  for (const [label, args, want, naiveAgrees] of V) {
+    check(label, backupOverwriteVerdict(...args), want);
+    const n = naive(args[0]);
+    if (naiveAgrees ? n !== want : n === want) {
+      failures += 1;
+      console.log(`  FAIL naive() ${naiveAgrees ? 'disagrees' : 'agrees'} on "${label}" — ${naiveAgrees ? 'must-still-work is mislabelled' : 'this vector proves nothing'}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

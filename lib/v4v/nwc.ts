@@ -17,7 +17,7 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 // The budget arithmetic lives in `lib/util.ts` so `npm run check:nwcbudget`
 // can load the shipping functions under plain Node — this module imports the
 // SDK (and, through nwc-state, `../storage`) and cannot be loaded that way.
-import { parseNwcBudget, spendableSats, unreachableWalletRelay, type NwcBudget } from '../util';
+import { answerIsForConnectedWallet, parseNwcBudget, spendableSats, unreachableWalletRelay, type NwcBudget } from '../util';
 import type { LegVerdict } from './nwc-errors';
 import { createLeasePool, type Lease } from './lease';
 import {
@@ -68,10 +68,15 @@ export {
 /** Fetch and cache the wallet's supported methods. No-op if not connected. */
 export async function nwcFetchCapabilities(): Promise<string[]> {
   if (!hasNwc()) return [];
+  // The wallet this question is ASKED of. The answer can arrive after the user
+  // connected another one; it is then the old wallet's list and is dropped
+  // (`answerIsForConnectedWallet`).
+  const askedOf = loadNwcUri();
   try {
     // A read, so a retry is safe — see `withNwcClient`.
     const info = await withNwcClient((c) => c.getInfo(), { retry: true });
-    return setNwcMethods(info.methods ?? []);
+    if (!answerIsForConnectedWallet(askedOf, loadNwcUri())) return nwcGetMethods() ?? [];
+    return setNwcMethods(info.methods ?? [], askedOf ?? undefined);
   } catch {
     return nwcGetMethods() ?? [];
   }
