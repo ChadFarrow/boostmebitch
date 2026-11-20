@@ -103,6 +103,7 @@
     "e2e:favbuttons": "node scripts/e2e-fav-buttons.mjs",
     "e2e:shuffle": "node scripts/e2e-shuffle.mjs",
     "e2e:demuplay": "node scripts/e2e-demu-play.mjs",
+    "e2e:demuholiday": "node scripts/e2e-demu-holiday.mjs",
     "e2e:rsspay": "node scripts/e2e-rss-payment.mjs",
     "e2e:valuetotal": "node scripts/e2e-value-msat-total.mjs",
     "e2e:speed-gaps": "node scripts/e2e-speed-gaps.mjs",

@@ -20,6 +20,11 @@
 // the modal never stopped or redirected a leg; what the listener lost was the
 // screen that would have said so.
 //
+// AND THE BROWSER'S BACK BUTTON MID-SEND. An open modal is a history entry
+// (components/use-modal-history.ts) and back closes one — but not while legs are
+// out: section 2 presses it during the held send and the modal, the page and the
+// history all stay where they were.
+//
 // AND A LIVE SHOW, whose payee is the song on air and moves under an open modal
 // BY DESIGN. Section 4 pins both halves: before Send the modal still follows the
 // on-air song (the fix changes no live payee), and from the press it keeps the
@@ -312,6 +317,12 @@ const openPlayerBoost = async () => {
 /** Wait for the mini-bar to stop naming `title`: the player moved to the next item. */
 const movedOff = (title) => until(`() => { const m = document.querySelector('${MINI_BAR}'); return m && !m.innerText.includes(${JSON.stringify(title)}) ? true : null; }`, 15000);
 const storedBoosts = () => js(`JSON.parse(localStorage.getItem('bmb:boosts:guest') || '[]')`);
+/** The tab's place in its history, and the browser's own back button. */
+const historyIndex = async () => (await send('Page.getNavigationHistory')).result.currentIndex;
+const browserBack = async () => {
+  const h = (await send('Page.getNavigationHistory')).result;
+  await send('Page.navigateToHistoryEntry', { entryId: h.entries[h.currentIndex - 1].id });
+};
 
 section('0. A musicL playlist, a track playing, its payee read on play');
 await send('Page.navigate', { url: `${APP}/?playlist=${encodeURIComponent(PLAYLIST)}` });
@@ -384,11 +395,24 @@ section('2. The next track starts while the leg is still going out');
   t.ok('the leg reaches the wallet, which does not answer yet', await untilNode(() => wallet.held.length === 1, 15000));
   t.ok('the modal says it is sending', !!(await until(`() => document.querySelector('[role="dialog"]')?.innerText.toLowerCase().includes('sending')`, 5000)));
 
+  // The browser's back button mid-send changes NOTHING. An open modal is a
+  // history entry (components/use-modal-history.ts), and back closes one — but
+  // not this one: `dismissable={false}` while legs are out, so its entry is
+  // pushed again and the page under it does not move either.
+  const urlMidSend = await js('location.href');
+  const indexMidSend = await historyIndex();
+  await browserBack();
+  await wait(1000);
+  let m = await modal();
+  t.ok('a back press mid-send leaves the modal on screen', !!m);
+  t.ok('…still sending', !!m?.text.toLowerCase().includes('sending'));
+  t.equal('…on the same page, its entry pushed again', [await js('location.href'), await historyIndex()], [urlMidSend, indexMidSend]);
+
   valueHold.on = true;
   t.ok('⏭ is pressed mid-send', await pressNext());
   t.ok('the player moves to the next track', !!(await movedOff(titleB)));
   await wait(1000);
-  let m = await modal();
+  m = await modal();
   t.ok('the modal is still on screen mid-send', !!m);
   t.equal('it still names the track being paid', m?.title ?? null, titleB);
   t.ok('with the payee being paid', !!m?.text.includes('E2E payee 2'), m?.text.slice(0, 200));
@@ -414,6 +438,7 @@ section('2. The next track starts while the leg is still going out');
   t.ok('a paid boost still closes itself', !!(await until(`() => !document.querySelector('[role="dialog"]')`, 8000)));
   await wait(2000);
   t.equal('and no modal comes back for the new track', await modal(), null);
+  t.equal('…and its close stepped back off its entry', await historyIndex(), indexMidSend - 1);
 }
 
 section('3. The track ENDS on its own while a failed leg waits for Retry');

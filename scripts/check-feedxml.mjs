@@ -63,6 +63,15 @@ const MUST_READ_THE_REAL_ONE = [
   // value block is paid.
   ['x-feedUrl="https://attacker.example/f.xml" feedUrl="https://real.example/f.xml"', 'feedUrl', 'https://real.example/f.xml'],
   ['x-url="https://attacker.example/" url="https://real.example/"', 'url', 'https://real.example/'],
+  // A whole attribute written INSIDE another attribute's quoted value. A single
+  // quote needs no escape in a double-quoted value, so a feed host that lets a
+  // collaborator edit a display name could plant this. The name comes before
+  // the address in every real feed, so the decoy is always read first.
+  [` name="Bob address='03ATTACKER' split='1'" type="node" address="03REAL" split="100"`, 'address', '03REAL'],
+  [` name="Bob address='03ATTACKER' split='1'" type="node" address="03REAL" split="100"`, 'split', '100'],
+  [` name='Bob address="03ATTACKER"' address='03REAL'`, 'address', '03REAL'],
+  [` customKey="x customValue='EVIL'" customValue="REAL"`, 'customValue', 'REAL'],
+  [` title="a href='https://attacker.example/'" href="https://real.example/"`, 'href', 'https://real.example/'],
 ];
 
 // A decoy with NO real attribute beside it must read as absent, not as the
@@ -77,6 +86,11 @@ const MUST_NOT_READ_AT_ALL = [
   // Namespaced attributes deliberately do not satisfy a bare-name lookup.
   ['xml:lang="en"', 'lang'],
   ['podcast:url="https://attacker.example/"', 'url'],
+  // The decoy sits inside a value and nothing real follows it.
+  [` name="Bob address='03ATTACKER' split='1'" type="node"`, 'address'],
+  [` name="Bob address='03ATTACKER'"`, 'address'],
+  // Run together with no space: not an attribute start in XML.
+  [`name="Bob"address="03ATTACKER"`, 'address'],
 ];
 
 // Ordinary feed shapes that MUST keep reading. Over-anchoring is a real
@@ -107,6 +121,14 @@ const MUST_STILL_READ = [
     'address',
     '03ae9f2b5f2c1a4d8e7b6c5a4938271605f4e3d2c1b0a998877665544332211ff',
   ],
+  // The OTHER quote character inside a value is data, and must not derail the walk.
+  [`name="O'Brien" address="03REAL"`, 'address', '03REAL'],
+  [`name='say "hi"' address='03REAL'`, 'address', '03REAL'],
+  // `=` and `>` inside a value.
+  [`customValue="a=b>c" address="03REAL"`, 'address', '03REAL'],
+  // A valueless attribute, and an unquoted one (not XML), before the real one.
+  [`hidden address="03REAL"`, 'address', '03REAL'],
+  [`n=1 address="03REAL"`, 'address', '03REAL'],
   // A genuine hyphenated attribute read by its OWN full name still works.
   ['data-npub="npub1abc"', 'data-npub', 'npub1abc'],
 ];

@@ -8,12 +8,12 @@ import { sendBoost, pickRail, paidAny, payStampInvoice, SLOW_LEG_MS, type BoostR
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, isLiveStreamId, noteNpubs, mintSummaryReceipt, checkSignerLink, SignStoppedError, STAMP_FAILURE_TEXT, type QuotedZapReceipt, type SignerCheck, type SiteNoteState } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playsAsTracks, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
+import { getErrorMessage, railAfterWalletChange, hasValueRecipients, itemFeedGuid, payableLeg, payableValue, playsAsTracks, redirectLegs, retryableLegs, showShareUrl, storedBoostLegs, randomId, unreachableWalletRelay } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance, WalletRelayNotice, useWalletBalance } from '../wallet-balance';
-import { RailPicker } from '../rail-picker';
+import { RailPicker, availableRails } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS, readAmountDefault } from './amount-input';
 import { MessageInput, BOOSTAGRAM_MAX } from '../message-input';
 import { GifPicker } from './gif-picker';
@@ -353,7 +353,7 @@ export function BoostModal(props: Props) {
   // This covers WebLN as well as NWC and Spark — it used to watch only the
   // first two, so enabling a WebLN extension mid-modal never re-rendered
   // <RailPicker> and the rail the user had just enabled stayed unofferable.
-  useWalletChange(() => setRail(pickRail()));
+  useWalletChange(() => setRail((cur) => railAfterWalletChange(cur, availableRails(), pickRail())));
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
 

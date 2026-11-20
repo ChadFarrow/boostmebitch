@@ -79,6 +79,7 @@ import {
   shouldDemoteAddress,
 } from '../lib/v4v/nwc-errors.ts';
 import { bolt11PaymentHash } from '../lib/v4v/bolt11.ts';
+import { answerIsForConnectedWallet, railAfterWalletChange } from '../lib/util.ts';
 import { fakeBolt11 } from './fake-bolt11.mjs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -721,6 +722,52 @@ section('lookupErrorVerdict — a lookup that failed never says the PAYMENT fail
   const codes = ['NOT_FOUND', 'PAYMENT_FAILED', 'INTERNAL', 'OTHER', 'INSUFFICIENT_BALANCE', 'QUOTA_EXCEEDED', 'RATE_LIMITED', 'EXPIRED', 'NOT_IMPLEMENTED'];
   check('no lookup error, of any code, ever says paid or failed',
     codes.every((c) => lookupErrorVerdict(walletError(c)).state === 'unknown'), true);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nanswerIsForConnectedWallet — a get_info answer belongs to the wallet it was asked of');
+// ---------------------------------------------------------------------------
+{
+  // naive() is what shipped: the answer is cached for whatever is connected when
+  // it ARRIVES (or, in nwcValidate, for a candidate that is then cancelled).
+  const naive = () => true;
+  const A = 'nostr+walletconnect://aaaa?relay=wss://r&secret=1';
+  const B = 'nostr+walletconnect://bbbb?relay=wss://r&secret=2';
+  const V = [
+    ['asked of A, connected is B now: not for the connected wallet', [A, B], false],
+    ['a candidate that is not saved is not the connected wallet', [B, A], false],
+    ['no wallet is connected: nothing to cache for', [A, null], false],
+    ['no URI to answer for', [null, A], false],
+    ['asked of A, A still connected', [A, A], true],
+  ];
+  for (const [label, args, want] of V) {
+    check(label, answerIsForConnectedWallet(...args), want);
+    if (naive(...args) === want && want === false) { failures += 1; console.log(`  FAIL vector proves nothing — naive agrees: ${label}`); }
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nrailAfterWalletChange — a wallet event does not undo the user\'s rail');
+// ---------------------------------------------------------------------------
+{
+  // naive() is what shipped: re-pick the default on EVERY wallet event, and a
+  // WebLN payment notifies after each settled leg.
+  const naive = (_cur, _avail, picked) => picked;
+  const V = [
+    ['the user chose WebLN, NWC is the default, WebLN still offered: keep WebLN', ['webln', ['nwc', 'webln'], 'nwc'], 'webln', false],
+    ['the chosen rail was disconnected: fall back to the default', ['webln', ['nwc'], 'nwc'], 'nwc', true],
+    ['no rail chosen yet: take the default', [null, ['nwc', 'spark'], 'nwc'], 'nwc', true],
+    ['the chosen rail is the default anyway', ['nwc', ['nwc', 'spark'], 'nwc'], 'nwc', true],
+    ['every wallet disconnected: none', ['spark', [], null], null, true],
+  ];
+  for (const [label, args, want, naiveAgrees] of V) {
+    check(label, railAfterWalletChange(...args), want);
+    const n = naive(...args);
+    if (naiveAgrees ? n !== want : n === want) {
+      failures += 1;
+      console.log(`  FAIL naive() ${naiveAgrees ? 'disagrees' : 'agrees'} on "${label}" — ${naiveAgrees ? 'must-still-work is mislabelled' : 'this vector proves nothing'}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

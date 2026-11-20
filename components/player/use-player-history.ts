@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { useApp } from '@/lib/store';
+import { modalEntryOnTop } from '@/components/use-modal-history';
 
 /**
  * The open fullscreen player is a browser history entry, so the browser's back
@@ -52,6 +53,14 @@ function onPlayerEntry(): boolean {
 
 /** Set while a step back is on its way, so a second tap does not take a second step. */
 let stepping = false;
+/**
+ * The player closed by itself while a MODAL's entry was on top of its own — a
+ * BOOST modal opened from the player, and the episode ended with nothing next.
+ * A step back then would take the modal's entry, and the modal with it
+ * (components/use-modal-history.ts). So the step waits: the modal's own close
+ * steps off its entry onto this one, and the `popstate` below takes this one.
+ */
+let stepOffAfterModal = false;
 let steppingTimer: ReturnType<typeof setTimeout> | undefined;
 
 function stepOff() {
@@ -109,13 +118,16 @@ export function usePlayerHistory() {
     const unsubscribe = useApp.subscribe((s, prev) => {
       if (s.playerExpanded === prev.playerExpanded) return;
       if (s.playerExpanded) {
+        stepOffAfterModal = false;
         if (onPlayerEntry()) return; // opened BY a step onto its entry
         const cur = (window.history.state ?? {}) as Record<string, unknown>;
         window.history.pushState({ ...cur, [FIELD]: TOKEN }, '', window.location.href);
       } else if (onPlayerEntry()) {
         // Closed by something other than a step: the episode ended with
-        // nothing next, or a menu item collapsed it. Leave the entry too.
-        stepOff();
+        // nothing next, or a menu item collapsed it. Leave the entry too —
+        // after the modal over it, when there is one.
+        if (modalEntryOnTop()) stepOffAfterModal = true;
+        else stepOff();
       }
     });
     // In a TASK after the event, not in the listener. Next.js's own `popstate`
@@ -131,6 +143,12 @@ export function usePlayerHistory() {
         clearTimeout(steppingTimer);
         const s = useApp.getState();
         const marked = onPlayerEntry();
+        if (marked && !s.playerExpanded && stepOffAfterModal) {
+          if (modalEntryOnTop()) return; // still under a modal's entry
+          stepOffAfterModal = false;
+          stepOff();
+          return;
+        }
         if (marked && !s.playerExpanded && s.current) s.setPlayerExpanded(true);
         else if (!marked && s.playerExpanded) s.setPlayerExpanded(false);
       }, 0);

@@ -20,9 +20,10 @@ import {
   subscribeSparkEvents,
 } from '@/lib/v4v/spark';
 import {
-  fetchEncryptedMnemonic,
+  fetchEncryptedMnemonicDetailed,
   publishEncryptedMnemonic,
 } from '@/lib/nostr';
+import { backupOverwriteVerdict, type BackupOverwrite } from '@/lib/nostr/read-trust';
 import { getErrorMessage } from '@/lib/util';
 
 type InternalMode = 'idle' | 'creating' | 'restoring' | 'busy';
@@ -44,29 +45,54 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
 
   const owner = sparkOwner();
 
+  // Read what the backup coordinate holds BEFORE anything is published over it.
+  // kind:30078 is replaceable, so the publish destroys the old backup, which may
+  // be the only copy of a funded seed. A read that THREW or that no relay
+  // reliably answered is "unknown", never "no backup": `.catch(() => null)` here
+  // used to skip the warning on a flaky connection. `backupOverwriteVerdict`.
+  async function overwriteVerdict(incoming?: string): Promise<BackupOverwrite> {
+    if (!identity) return 'warn-unknown';
+    let read: Awaited<ReturnType<typeof fetchEncryptedMnemonicDetailed>> | null;
+    try {
+      read = await fetchEncryptedMnemonicDetailed(identity, 'user-initiated');
+    } catch {
+      read = null;
+    }
+    return backupOverwriteVerdict(read, incoming);
+  }
+
+  async function confirmOverwrite(verdict: BackupOverwrite, action: 'Creating a new wallet' | 'Connecting this seed') {
+    return confirm({
+      title: 'Overwrite your Spark wallet backup?',
+      body: (
+        <>
+          <p>
+            {verdict === 'warn-unknown'
+              ? 'We could not check whether a Spark wallet backup already exists on your relays. One may.'
+              : 'A different Spark wallet backup already exists on your relays.'}
+          </p>
+          <p>
+            {action} will <strong>overwrite</strong> that backup. The old wallet will be
+            unrecoverable unless you wrote its seed phrase down.
+          </p>
+        </>
+      ),
+      confirmLabel: 'Overwrite backup',
+      danger: true,
+    });
+  }
+
   async function startCreate() {
     setErr(null);
     if (!identity) { setErr('Sign in with Nostr first — backups need your pubkey.'); return; }
     setInternalMode('busy');
     try {
       // Replaceable kind:30078 — creating a new wallet overwrites any existing backup.
-      // Force the user to acknowledge before destroying the old one.
-      const existing = await fetchEncryptedMnemonic(identity, 'user-initiated').catch(() => null);
-      if (existing) {
-        const ok = await confirm({
-          title: 'Overwrite your Spark wallet backup?',
-          body: (
-            <>
-              <p>A Spark wallet backup already exists on your relays.</p>
-              <p>
-                Creating a new wallet will <strong>overwrite</strong> that backup. The old wallet
-                will be unrecoverable unless you wrote its seed phrase down.
-              </p>
-            </>
-          ),
-          confirmLabel: 'Overwrite backup',
-          danger: true,
-        });
+      // Force the user to acknowledge before destroying the old one, and also when
+      // we could not tell whether there is one.
+      const verdict = await overwriteVerdict();
+      if (verdict !== 'safe') {
+        const ok = await confirmOverwrite(verdict, 'Creating a new wallet');
         if (!ok) { setInternalMode('idle'); return; }
       }
       const m = await sparkGenerateMnemonic();
@@ -109,9 +135,14 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
     setInternalMode('restoring');
     try {
       storage.sparkOptOut.clear(identity?.npub);
-      const m = await fetchEncryptedMnemonic(identity, 'user-initiated');
+      const { mnemonic: m, trustworthy } = await fetchEncryptedMnemonicDetailed(identity, 'user-initiated');
       if (!m) {
-        setErr('No backup found on your write relays.');
+        // An empty read is "no backup" only when the relays reliably answered.
+        setErr(
+          trustworthy
+            ? 'No backup found on your write relays.'
+            : 'Could not reach enough of your relays to check. A backup may exist. Try again.',
+        );
         setInternalMode('idle');
         return;
       }
@@ -137,23 +168,11 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
     setInternalMode('busy');
     try {
       // kind:30078 is replaceable — only confirm an overwrite when a DIFFERENT
-      // wallet is already backed up. Re-pasting the same seed is harmless.
-      const existing = await fetchEncryptedMnemonic(identity, 'user-initiated').catch(() => null);
-      if (existing && existing.trim().replace(/\s+/g, ' ') !== trimmed) {
-        const ok = await confirm({
-          title: 'Overwrite your Spark wallet backup?',
-          body: (
-            <>
-              <p>A different Spark wallet backup already exists on your relays.</p>
-              <p>
-                Connecting this seed will <strong>overwrite</strong> that backup. The old wallet
-                will be unrecoverable unless you wrote its seed phrase down.
-              </p>
-            </>
-          ),
-          confirmLabel: 'Overwrite backup',
-          danger: true,
-        });
+      // wallet is already backed up, or when we could not tell. Re-pasting the
+      // same seed is harmless.
+      const verdict = await overwriteVerdict(trimmed);
+      if (verdict !== 'safe') {
+        const ok = await confirmOverwrite(verdict, 'Connecting this seed');
         if (!ok) { setInternalMode('idle'); return; }
       }
       storage.sparkOptOut.clear(identity?.npub);
