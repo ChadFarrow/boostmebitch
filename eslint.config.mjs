@@ -21,6 +21,10 @@ const config = [
       // rules that do not apply to a Node service and, like the worktree case
       // above, drowns real problems in noise.
       'services/**',
+      // The Capacitor iOS project (docs/ios.md). `npx cap sync` copies the
+      // bridge JS into ios/App/App/public, which is generated, not source.
+      'ios/**',
+      'ios-web/**',
     ],
   },
   ...compat.extends('next/core-web-vitals', 'next/typescript'),
