@@ -2018,14 +2018,26 @@ the GIF picker's search box carried one from the start and the cursor sat on the
 picker's Close button (Chad, 2026-11-21: "so I can start typing in the search
 right away"). `autoFocus` is how a modal puts the cursor elsewhere — never on a
 confirming button (`<ConfirmDialog>` keeps Cancel first on purpose, below).
-**Focus goes back on close from a LAYOUT-effect cleanup.** React runs that before
-it removes the card; the passive cleanup it used to be runs after, saw `<body>`
-focused, and restored nothing on any modal — so a closed GIF picker left focus
-outside the boost modal, where Escape and the Tab trap no longer reach the
-shell's key handler. When the control to return to is gone (a GIF pick swaps the
-button for its preview, and React removes it later in the same commit) or never
-had focus, focus lands on the modal underneath, checked in a microtask once the
-commit is done. `e2e:gifgrid` section 2f pins all three.
+**The card commits in the shell's FIRST client render** (`useIsClient`, a
+`useSyncExternalStore` that answers `false` on the server and while hydrating).
+It was a `useState(false)` flipped in an effect, which put the card — and its
+`autoFocus` — one render after the press that opened it, outside the press's own
+event; iOS raises the keyboard only for a focus made inside that event, so the
+box got a caret and no keyboard. A caller that wants the keyboard opens with
+`flushSync` in its click handler (`<GifPicker>`); `e2e:gifgrid` 2d checks that
+focus is in the box when the tap's click has finished dispatching.
+**Focus goes back on close.** The return target is read in the first render,
+before an `autoFocus` moves focus. The "was focus inside us" test is a
+LAYOUT-effect cleanup, which React runs before it removes the card; it was a
+passive cleanup, which runs after, saw `<body>` focused, and restored nothing on
+any modal — so a closed GIF picker left focus outside the boost modal, where
+Escape and the Tab trap no longer reach the shell's key handler. The restore
+itself waits for a microtask and does nothing while the card is still in the
+document: StrictMode's dev-only effect re-run unmounts and remounts a modal that
+stays open, and restoring then moved focus out of it. When the return target is
+gone (a GIF pick swaps the button for its preview, later in the same commit) or
+cannot take focus, focus lands on the modal underneath. `e2e:gifgrid` 2f and 2d
+pin it.
 
 #### An open modal is a history entry (`components/use-modal-history.ts`)
 
@@ -2053,7 +2065,12 @@ its own entry for one.
   off the entry**, decided one task after the unmount from the top of the
   CURRENT entry's list. Two modals that close in one commit take one `go(-2)`;
   a modal that closed because something navigated takes no step, because the
-  current entry is no longer its own.
+  current entry is no longer its own. **A modal that opens in the few
+  milliseconds between that `go()` and its `popstate` is closed by it.** Since
+  `<ModalShell>` commits in its first render (2026-11-21) a reopened modal pushes
+  at once; measured on the GIF picker, Close then + Add a GIF kept the picker 3
+  times in 4 with no gap and 4 in 4 from a 5 ms gap up. No person reopens that
+  fast; a script does, so `e2e:gifgrid` waits for the step (`closePicker`).
 - **Tokens are per page load**, like the player's: an entry from before a reload
   is left alone.
 - **Never close a modal and `router.push` in one handler.** The close's step back
