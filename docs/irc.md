@@ -45,3 +45,38 @@ connection to `irc.zeronode.net:6697`.
   tags: a WebSocket frame is a third-party body like any other.
 - **Text renders as text.** mIRC formatting is stripped; links go through
   `<LinkedText>`, so only `http(s)` becomes an `<a>`.
+
+## The panel (`components/irc-chat.tsx`)
+
+It shows beside an RSS live item from the opt-in list, while the item is live
+or after the listener joined on it (`showIrc` in `<FullscreenPlayer>`; layout
+in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
+
+- **Type a nick and you are in.** No account. The nick is the only thing
+  stored (`storage.ircNick`, per npub like `bmb:sender_name`); the rows live in
+  component state and go with it.
+- **One connection, never reopened by itself.** A drop or an `ERROR` shows JOIN
+  again; a refused JOIN (banned, invite only) closes the connection at once, so
+  it does not hold a slot. A taken nick is fixed on the SAME connection
+  (`ircNick`), and a KICK keeps the connection for REJOIN.
+- **It leaves when it goes**: `QUIT :bye` on unmount (another episode, the
+  player's show changed) and on a `pagehide` that is not `persisted`. Switching
+  to PLAYED or ABOUT does not unmount it.
+- **A secret is refused before it leaves**, in the nick box and the composer:
+  `textHoldsSecret` (every run of letters and digits, and NWC strings). IRC
+  is public and logged; a key typed there is burnt.
+- **Only `/me` and `/nick` work.** Any other `/command` is answered on screen
+  and never sent: a typed `/join` or `/msg NickServ` would act as the listener.
+- **200 rows, 500 characters.** The list keeps the newest 200; a long message
+  is cut into ≤ 400-byte lines by the codec.
+- **No report, no hide, no word filter.** Chad: the channels have moderators who
+  can kick, "so it's up to the podcaster for that. I'm just showing it."
+
+## Testing
+
+`npm run check:irc` pins the codec, the session reducer, the show list and the
+gateway switch. `npm run e2e:irc` drives the real client against
+`scripts/irc-fake-server.mjs`; `-- --browser` drives the panel too, against a
+dev server started with `NEXT_PUBLIC_IRC_GATEWAY_URL=ws://127.0.0.1:6790/`
+(the fake listens there). Neither reaches ZeroNode: the real gateway and the
+real network are tested on the deploy, with Chad.

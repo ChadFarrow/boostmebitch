@@ -15,8 +15,7 @@
  */
 import { ircStart, ircStep, ircSend, ircNick, ircRejoin, type IrcEvent, type IrcState, type IrcStepResult } from './protocol';
 
-/** Set per deploy; read literally so Next inlines it. Unset means no chat (`ircGatewayOk`). */
-export const IRC_GATEWAY_URL: string = process.env.NEXT_PUBLIC_IRC_GATEWAY_URL ?? '';
+export { IRC_GATEWAY_URL } from './shows';
 
 export interface IrcSession {
   send(text: string): void;

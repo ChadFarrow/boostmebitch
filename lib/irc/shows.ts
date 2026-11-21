@@ -33,6 +33,15 @@ export const IRC_CHAT_SHOWS: Readonly<Record<string, { title: string; channel: s
   '89bf141a-f4cf-575c-b09a-75dbce16332c': { title: 'Accidentally Interesting', channel: '#OffTopic' },
 };
 
+/**
+ * The gateway's address for this deploy (`NEXT_PUBLIC_IRC_GATEWAY_URL`), read
+ * literally so Next inlines it. It lives here, not in `client.ts`, so the
+ * player's first load carries this small list and not the IRC codec:
+ * `<FullscreenPlayer>` asks `ircGatewayOk(IRC_GATEWAY_URL)` on every render,
+ * and the client loads with the panel. Unset means no chat on any show.
+ */
+export const IRC_GATEWAY_URL: string = process.env.NEXT_PUBLIC_IRC_GATEWAY_URL ?? '';
+
 /** The show's channel, or null when the show is not on the list. */
 export function ircChannelFor(podcastGuid: string | null | undefined): string | null {
   if (!podcastGuid) return null;

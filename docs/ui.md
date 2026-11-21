@@ -998,7 +998,13 @@ The trigger is the avatar and a ▾ in the bar's chip size, the name `hidden sm:
 
 **Three properties, each a way to get it wrong.** It observes the SCROLL ROW and the BOOST LINE only — the cover is neither, so shrinking the cover cannot re-trigger the observer; a `ResizeObserver` on the media pane loops. It measures to the last control that must be on screen and no further: the value-split row under BOOST is 55px and is allowed to be scrolled to, which is the line the 30rem constant drew too. And it clears the inline value from `sm:` up, where the panes sit side by side and the cover competes with nothing.
 
-**A Podcasting 2.0 live item is this layout, and a Nostr live stream is not.** `liveStreamId` renders the video + `<LiveChat>` pane, whose `flex-1 min-h-0` chat gives up its own height first; it never overflowed at 375×667 or 393×852. To drive a live item when no show is on air, intercept `/api/feed` with CDP `Fetch` and set `liveStatus` on its episodes — one field of one response, everything downstream shipping code.
+**A Podcasting 2.0 live item is this layout — unless it has the IRC chat (next section) — and a Nostr live stream is not.** `liveStreamId` renders the video + `<LiveChat>` pane, whose `flex-1 min-h-0` chat gives up its own height first; it never overflowed at 375×667 or 393×852. To drive a live item when no show is on air, intercept `/api/feed` with CDP `Fetch` and set `liveStatus` on its episodes — one field of one response, everything downstream shipping code.
+
+### With the IRC chat: three tabs, and a fixed phone cover (docs/irc.md)
+
+An RSS live item from the opt-in list (`lib/irc/shows.ts`) swaps the RSS pane's scroll body for **CHAT · PLAYED · ABOUT**, CHAT first (Chad, 2026-11-21); a tab with nothing in it is left out, so a show with no Split Kit socket reads CHAT · ABOUT. The PLAYED and ABOUT bodies are built once (`playedBody`, `aboutBody`) and the ordinary scroll body stacks the same two, so the layouts cannot drift. **`<IrcChat>` stays mounted behind the other tabs** (`hidden`): unmounting it leaves the channel, and a look at ABOUT must not cost the listener the conversation.
+
+**Below `sm:` the cover is a fixed `12.5rem`** — the Nostr stream's video height at 390px — **and the cover-fit effect above stands aside** (`showIrc` clears its inline `max-width`). The effect hands the slack under BOOST to the cover; with the chat that slack belongs to the message list, which `e2e:irc` measures at **244px at 390×844** against a 240px floor, with BOOST on the transport's line (a live item has no skip buttons) and the pane's gap at `gap-3`. The row is `overflow-hidden` like the Nostr branch, so the list is the scroller and carries `overscroll-contain`. From `sm:` up nothing changes: the chat is the right-hand pane, under the title.
 
 ### Auto-advance: which feeds, and which rows (#279)
 

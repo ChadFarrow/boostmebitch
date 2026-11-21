@@ -3,7 +3,7 @@ import dynamic from 'next/dynamic';
 import { CopyLinkButton } from './copy-link-button';
 import { createPortal } from 'react-dom';
 import { useAnchoredMenu } from './use-anchored-menu';
-import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { cloneElement, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { isMusicItem, useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
@@ -209,6 +209,9 @@ import { TransportControls } from './transport-controls';
 import { SpeedButton, FastSpeedButton, SpeedSlider } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
+// The IRC chat beside an opted-in RSS live stream (docs/irc.md). Deferred like
+// <LiveChat>, and rendered inside <Pane> for the reason the block above gives.
+const IrcChat = dynamic(() => import('./irc-chat').then((m) => m.IrcChat), { ssr: false });
 import { AuthControl } from './auth-control';
 import { WalletBalanceBox } from './wallet-balance';
 import { NowPlayingAccountMenu } from './nostr-auth/now-playing-account-menu';
@@ -216,6 +219,8 @@ import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 import { LiveEdge } from './player/live-edge';
 import { useFollowActiveRow } from './player/use-follow-active-row';
+import { IRC_GATEWAY_URL, ircChannelFor, ircGatewayOk } from '@/lib/irc/shows';
+import { livePlayedSnapshot, subscribeLivePlayed } from '@/lib/live-played';
 
 // THE TOP BAR'S CONTROLS FROM lg:, all five — ← BACK, ⋯, the balance box, the
 // identity chip and ✕ — plus <AuthControl overlay>'s SIGN IN, which carries the
@@ -237,6 +242,20 @@ const BAR_CHIP_LG = 'lg:h-[38px] lg:px-3';
 // <EpisodeContents>. They were two tabs of near-identical rows that largely
 // named the same songs.
 type InfoTab = 'about' | 'contents' | 'transcript';
+/** The tabs over the RSS pane's body while the IRC chat shows (docs/irc.md). */
+type LiveTab = 'chat' | 'played' | 'about';
+
+/**
+ * The IRC channel for what is playing, or null (docs/irc.md): a show on the
+ * opt-in list, on a deploy with a gateway address, and not a Nostr stream —
+ * that one keeps <LiveChat>. Whether the panel SHOWS also needs the item to be
+ * live, or joined on (`showIrc`).
+ */
+function ircChannelOf(episode: Episode, podcast: Podcast): string | null {
+  if (!ircGatewayOk(IRC_GATEWAY_URL)) return null;
+  if (isHlsUrl(episode.enclosureUrl) && isLiveStreamId(episode.guid)) return null;
+  return ircChannelFor(podcast.podcastGuid);
+}
 function EpisodeInfoPanel({
   description,
   splits,
@@ -544,6 +563,25 @@ export function FullscreenPlayer({
   const playFromShuffle = useApp((s) => s.playFromShuffle);
   const togglePlay = useApp((s) => s.togglePlay);
   const [valueOpen, setValueOpen] = useState(false);
+  // THE IRC CHAT (docs/irc.md). `ircJoinedKey` is the episode the listener
+  // joined the chat on: the panel stays for it after the show stops being
+  // live, so a chat that is going on is not cut off by a status flag.
+  // `liveTab` is the strip that replaces the scroll body while the chat shows.
+  const [ircJoinedKey, setIrcJoinedKey] = useState<string | null>(null);
+  const [liveTab, setLiveTab] = useState<LiveTab>('chat');
+  const liveTabsId = useId();
+  // How many songs this broadcast has played, so PLAYED is a tab only when it
+  // has rows. The same log <LivePlayedTracks> reads.
+  const livePlayedCount = useSyncExternalStore(
+    subscribeLivePlayed,
+    () => livePlayedSnapshot(current?.episode.guid).length,
+    () => 0,
+  );
+  // Up here, not beside `liveStreamId`, because the cover-fit effect below
+  // must know it: with the chat, the cover keeps its CSS cap.
+  const ircChannel = current ? ircChannelOf(current.episode, current.podcast) : null;
+  const showIrc = !!ircChannel && !!current
+    && (current.episode.liveStatus === 'live' || ircJoinedKey === epKey(current.episode));
 
   // Lock the page behind the overlay. This used to be a local `overflow:
   // hidden` on <html> and <body>, which is not a scroll lock on iOS: in the
@@ -713,7 +751,9 @@ export function FullscreenPlayer({
     const row = scrollRowRef.current;
     if (!box || !controls || !row) return;
     const apply = () => {
-      if (window.matchMedia('(min-width: 640px)').matches) {
+      // With the IRC chat the cover keeps its 12.5rem class cap: the room
+      // under the controls belongs to the chat list, not to the cover.
+      if (window.matchMedia('(min-width: 640px)').matches || showIrc) {
         box.style.maxWidth = '';
         return;
       }
@@ -751,7 +791,7 @@ export function FullscreenPlayer({
     // the cover's inline cap stayed on it as the video's width — reported
     // from an iPhone as a video at ~57% of the screen. The keys stop the
     // node being shared; this dep re-measures the cover on the way back.
-  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo]);
+  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo, showIrc]);
 
   // ABOVE the early return: a hook may not be called conditionally, and
   // `useSavedPosition` takes null precisely so a surface can call it over its
@@ -876,6 +916,69 @@ export function FullscreenPlayer({
       {!isLive && !musicItem && <SpeedSlider />}
     </>
   );
+
+  // THE PLAYED AND ABOUT BODIES, built once: the ordinary scroll body stacks
+  // them, and with the IRC chat they are two of its tabs (docs/irc.md). One
+  // copy, so the two layouts cannot drift apart.
+  //
+  // PLAYED: what this broadcast has played, with a heart on each song.
+  // <EpisodeContents> has nothing to list on a live item — there are no
+  // valueTimeSplit windows to enumerate, only the blocks that have already gone
+  // by — so this is its live twin and sits above it. Renders nothing on an
+  // ordinary episode.
+  const playedBody = (
+    <Pane id={episode.id} label="LivePlayedTracks">
+      <LivePlayedTracks
+        episode={episode}
+        fallbackImg={episode.image || podcast.image || podcast.artwork}
+        className="border-t border-bone/10 pt-5"
+      />
+    </Pane>
+  );
+  const aboutBody = (
+    <>
+      <EpisodeInfoPanel
+        description={description}
+        splits={splits}
+        chapters={chapters}
+        chaptersLoading={chaptersLoading}
+        hasChaptersUrl={!isLive && !!episode.chaptersUrl}
+        transcriptCues={transcriptCues}
+        transcriptLoading={transcriptLoading}
+        transcriptActiveIdx={transcriptActiveIdx}
+        hasTranscriptUrl={hasTranscriptUrl}
+        onSeek={seekTo}
+        currentSec={positionSec}
+        // `undefined`, not a builder returning null, when the episode has
+        // no guid: `showShareUrl(guid, undefined, t)` returns a SHOW link,
+        // so a builder that fell through would give every row a button
+        // copying the same whole-show link. Same guard <ShareTargets>
+        // makes a few hundred lines up, for the same reason.
+        shareUrlFor={
+          episode.guid
+            ? (t: number) => showShareUrl(podcast, episode.guid, t)
+            : undefined
+        }
+        // `||` not `??`, plus artwork — see the same prop in
+        // <ChaptersList> (episode-detail-view.tsx) for why.
+        chapterFallbackImg={episode.image || podcast.image || podcast.artwork}
+      />
+
+      {episode.socialInteract?.length ? (
+        <div className="border-t border-bone/10 pt-5">
+          <Pane id={episode.id} label="EpisodeSocialThread"><EpisodeSocialThread entries={episode.socialInteract} /></Pane>
+        </div>
+      ) : null}
+    </>
+  );
+  const aboutHasContent = !!description || !!splits?.length || !!transcriptCues?.length
+    || !!episode.socialInteract?.length || (hasTranscriptUrl && transcriptLoading);
+  const liveTabs: { id: LiveTab; label: string }[] = [
+    { id: 'chat', label: 'Chat' },
+    ...(livePlayedCount > 0 ? [{ id: 'played' as const, label: 'Played' }] : []),
+    ...(aboutHasContent ? [{ id: 'about' as const, label: 'About' }] : []),
+  ];
+  const activeLiveTab: LiveTab = liveTabs.some((t) => t.id === liveTab) ? liveTab : 'chat';
 
   return (
     <div
@@ -1069,7 +1172,7 @@ export function FullscreenPlayer({
         document.body,
       )}
 
-      <div ref={scrollRowRef} className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
+      <div ref={scrollRowRef} className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId || showIrc ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
         {/* Artwork (or live video) — centered in the left half; sticky so it
             stays put as the page scrolls. For HLS streams the shared <video>
             is displayed here via its OutPortal while the player is open; when
@@ -1210,7 +1313,11 @@ export function FullscreenPlayer({
             // fit and a vanishing cover helps no one. From sm: up
             // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
             // info column, so its height is not the constraint.
-            <div key="cover" ref={coverBoxRef} className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
+            // WITH THE IRC CHAT, below sm: only, the cover is 12.5rem — the
+            // Nostr stream's video height at 390px — so the chat list keeps
+            // room under the header (docs/irc.md). From sm: up the chat is the
+            // right-hand pane and the cover is unchanged.
+            <div key="cover" ref={coverBoxRef} className={`w-full ${showIrc ? 'max-w-[12.5rem]' : 'max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))]'} sm:max-w-lg lg:max-w-xl aspect-square`}>
               {/* Whatever is playing at this second, via `nowPlayingArt`: the
                   LIVE BLOCK's art first — on a Split Kit show that's the cover
                   of the record actually playing, and it's the one thing on
@@ -1336,7 +1443,7 @@ export function FullscreenPlayer({
             </div>
           </div>
         ) : (
-        <div className={`${infoPane} px-4 pt-2 pb-4 sm:p-6 lg:p-10 flex flex-col gap-5 min-w-0 sm:h-full`}>
+        <div className={`${infoPane} px-4 pt-2 pb-4 sm:p-6 lg:p-10 flex flex-col min-w-0 sm:h-full ${showIrc ? 'gap-3 sm:gap-5 flex-1 min-h-0 sm:flex-none' : 'gap-5'}`}>
           {/* Fixed header: title, seek + transport controls stay put; only the
               About/Chapters body below scrolls (on desktop). */}
           {/* BELOW sm: A GAP IS THE COVER'S SIZE, not whitespace. The cover is
@@ -1459,7 +1566,9 @@ export function FullscreenPlayer({
                 <button
                   onClick={onBoost}
                   disabled={!hasValue}
-                  className="btn-bolt basis-full sm:basis-auto sm:flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                  // With the IRC chat a live item has no skip buttons, so
+                  // BOOST shares the transport's line and the chat keeps it.
+                  className={`btn-bolt ${showIrc ? 'flex-1' : 'basis-full sm:basis-auto sm:flex-1'} disabled:opacity-40 disabled:cursor-not-allowed`}
                   title={boostButtonTitle(boost, 'Episode')}
                 >
                   <BoltIcon /> BOOST
@@ -1617,53 +1726,39 @@ export function FullscreenPlayer({
             )}
           </div>
 
-          {/* Scrollable body — About / Chapters / Transcript (+ discussion). */}
-          <div className="flex-1 sm:min-h-0 sm:overflow-y-auto">
-            {/* What this broadcast has played, with a heart on each song.
-                <EpisodeContents> has nothing to list on a live item — there are
-                no valueTimeSplit windows to enumerate, only the blocks that have
-                already gone by — so this is its live twin and sits above it.
-                Renders nothing on an ordinary episode. */}
-            <Pane id={episode.id} label="LivePlayedTracks">
-              <LivePlayedTracks
-                episode={episode}
-                fallbackImg={episode.image || podcast.image || podcast.artwork}
-                className="border-t border-bone/10 pt-5"
-              />
-            </Pane>
-            <EpisodeInfoPanel
-              description={description}
-              splits={splits}
-              chapters={chapters}
-              chaptersLoading={chaptersLoading}
-              hasChaptersUrl={!isLive && !!episode.chaptersUrl}
-              transcriptCues={transcriptCues}
-              transcriptLoading={transcriptLoading}
-              transcriptActiveIdx={transcriptActiveIdx}
-              hasTranscriptUrl={hasTranscriptUrl}
-              onSeek={seekTo}
-              currentSec={positionSec}
-              // `undefined`, not a builder returning null, when the episode has
-              // no guid: `showShareUrl(guid, undefined, t)` returns a SHOW link,
-              // so a builder that fell through would give every row a button
-              // copying the same whole-show link. Same guard <ShareTargets>
-              // makes a few hundred lines up, for the same reason.
-              shareUrlFor={
-                episode.guid
-                  ? (t: number) => showShareUrl(podcast, episode.guid, t)
-                  : undefined
-              }
-              // `||` not `??`, plus artwork — see the same prop in
-              // <ChaptersList> (episode-detail-view.tsx) for why.
-              chapterFallbackImg={episode.image || podcast.image || podcast.artwork}
-            />
-
-            {episode.socialInteract?.length ? (
-              <div className="border-t border-bone/10 pt-5">
-                <Pane id={episode.id} label="EpisodeSocialThread"><EpisodeSocialThread entries={episode.socialInteract} /></Pane>
+          {/* WITH THE IRC CHAT the body is three tabs — CHAT · PLAYED · ABOUT,
+              CHAT first (Chad, 2026-11-21) — and an empty one is left out. The
+              chat stays MOUNTED behind the other two (`hidden`), because
+              unmounting it leaves the channel: a look at ABOUT must not drop
+              the listener out of the conversation. Below sm: the list scrolls
+              inside the pane, as <LiveChat>'s does (docs/irc.md). */}
+          {showIrc && ircChannel ? (
+            <div className="flex-1 min-h-0 flex flex-col">
+              {liveTabs.length > 1 && (
+                <div data-live-tabs className="flex-shrink-0">
+                  <UnderlineTabs className="mb-2" tabs={liveTabs} active={activeLiveTab} idBase={liveTabsId} onChange={setLiveTab} />
+                </div>
+              )}
+              <div {...tabPanelProps(liveTabsId, activeLiveTab)} className="flex-1 min-h-0 flex flex-col">
+                <div key={ircChannel} className={activeLiveTab === 'chat' ? 'flex-1 min-h-0' : 'hidden'}>
+                  <Pane id={ircChannel} label="IrcChat">
+                    <IrcChat channel={ircChannel} onJoined={() => setIrcJoinedKey(epKey(episode))} />
+                  </Pane>
+                </div>
+                {activeLiveTab !== 'chat' && (
+                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+                    {activeLiveTab === 'played' ? playedBody : aboutBody}
+                  </div>
+                )}
               </div>
-            ) : null}
+            </div>
+          ) : (
+          /* Scrollable body — About / Chapters / Transcript (+ discussion). */
+          <div className="flex-1 sm:min-h-0 sm:overflow-y-auto">
+            {playedBody}
+            {aboutBody}
           </div>
+          )}
         </div>
         )}
       </div>
