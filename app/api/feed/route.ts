@@ -4,7 +4,7 @@ import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLi
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { isMusicMedium, compareEpisodeOrder, feedItemValue, feedLiveItems } from '@/lib/util';
+import { isMusicMedium, compareEpisodeOrder, feedItemValue, feedEnclosure, feedLiveItems } from '@/lib/util';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -202,6 +202,10 @@ export async function GET(req: Request) {
       const rss = e.guid ? enrichMap.get(e.guid) : undefined;
       return {
         ...e,
+        // WHICH FILE PLAYS. The feed's own <enclosure> when the read lists the
+        // item: PI's can be years stale and miss the publisher's op3.dev
+        // prefix. `feedEnclosure` (lib/util.ts, pinned by check:musicl).
+        ...feedEnclosure(rss, e),
         // WHO GETS PAID. Only the RSS names a payee: PI's copy is not read at all.
         // An item with no block of its own inherits the channel's, and an unread
         // feed leaves `value` undefined, which means NOT READ, never "none".

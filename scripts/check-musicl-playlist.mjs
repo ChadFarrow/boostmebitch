@@ -36,8 +36,8 @@
 // URL, and a genuinely repeated pair (that feed writes 1770 entries of which
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
-import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey, piConfirmedMisses } from '../lib/util.ts';
+import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS, parseItemEnclosure } from '../lib/feed-xml.ts';
+import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, feedEnclosure, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey, piConfirmedMisses } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -1203,6 +1203,100 @@ console.log('\nWhose value block /api/feed ships on a row: only the RSS names a 
       fail(`"${v.label}" passes against naive() too — the vector proves nothing.\n`
         + '          Either it is a must-still-work input (mark it { alsoNaive: true })\n'
         + '          or it does not exercise anything feedItemValue adds.');
+    }
+  }
+  console.log(`  ${vv.length} vector(s) replayed, ${vv.filter((v) => v.alsoNaive).length} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nWhich file /api/feed ships on a row: the feed\'s <enclosure>, not PI\'s copy');
+// ---------------------------------------------------------------------------
+{
+  // `feedEnclosure` is the expression /api/feed runs where it used to ship PI's
+  // `enclosureUrl` as it came. Measured 2026-11-20: Podcast Index held the bare
+  // CloudFront URL for Wavlake track 42bdf099 (`dateCrawled` 1702106096,
+  // 2023-12-09), while the live feed (wavlake.com/feed/10b82d0f-…) wraps the
+  // same file in op3.dev. PI's copy plays the right bytes and hides the play
+  // from the publisher's analytics. 12 of 50 sampled playlist tracks.
+  //
+  // FROM THE WIRE: WAVLAKE_* and JB_* are copied verbatim from the live feeds
+  // and from PI's /episodes/byguid (2026-11-20); the other tags are synthetic
+  // and say so by their example.com hosts. Every rss item is read through the
+  // real `parseItemEnclosure` the enrichment pass uses, so the entity decode is
+  // pinned too.
+  const fromWire = (tag) => parseItemEnclosure(tag);
+  const WAVLAKE_TAG = '<enclosure url="https://op3.dev/e,pg=6b111f5d-3cc8-5af7-8640-152ca2f5c031/https://d12wklypp119aj.cloudfront.net/track/42bdf099-9dfb-4400-871f-f6a10fd298e7.mp3" length="1858178" type="audio/mpeg"/>';
+  const WAVLAKE_PI = { enclosureUrl: 'https://d12wklypp119aj.cloudfront.net/track/42bdf099-9dfb-4400-871f-f6a10fd298e7.mp3', enclosureType: 'audio/mpeg', enclosureLength: 1858178 };
+  const WAVLAKE_OP3 = { enclosureUrl: 'https://op3.dev/e,pg=6b111f5d-3cc8-5af7-8640-152ca2f5c031/https://d12wklypp119aj.cloudfront.net/track/42bdf099-9dfb-4400-871f-f6a10fd298e7.mp3', enclosureType: 'audio/mpeg', enclosureLength: 1858178 };
+  // An entity in the attribute: the feed writes `&#39;`, PI holds `'`. Decoded,
+  // they are the same file.
+  const JB_TAG = '<enclosure url="https://jimmiebratcher.s3.us-west-1.amazonaws.com/Man+It&#39;s+Chrismas+AGAIN/Joy+To+The+World.mp3" type="audio/mpeg" length="11281592"/>';
+  const JB_PI = { enclosureUrl: "https://jimmiebratcher.s3.us-west-1.amazonaws.com/Man+It's+Chrismas+AGAIN/Joy+To+The+World.mp3", enclosureType: 'audio/mpeg', enclosureLength: 11281592 };
+
+  const vv = [];
+  // args: [rssItem, row]
+  const enc = (label, args, expect, opts = {}) => vv.push({ label, args, expect, ...opts });
+
+  // ── the feed decides ─────────────────────────────────────────────────────
+  enc('Wavlake: the feed\'s op3.dev-prefixed URL replaces PI\'s bare CloudFront copy',
+    [fromWire(WAVLAKE_TAG), WAVLAKE_PI], WAVLAKE_OP3);
+  enc('a feed that moved its file: the feed\'s URL, type and length ship together',
+    [fromWire('<enclosure url="https://cdn.example.com/new.m4a" length="2000" type="audio/x-m4a"/>'), WAVLAKE_PI],
+    { enclosureUrl: 'https://cdn.example.com/new.m4a', enclosureType: 'audio/x-m4a', enclosureLength: 2000 });
+  enc('the URL ships byte for byte, never normalized (synthetic: a space and an upper-case host)',
+    [{ enclosureUrl: 'https://CDN.example.com/Track One.mp3' }, WAVLAKE_PI],
+    { enclosureUrl: 'https://CDN.example.com/Track One.mp3', enclosureType: 'audio/mpeg', enclosureLength: 1858178 });
+  enc('a tag with no length or type keeps the row\'s for those, and still ships the feed\'s URL',
+    [fromWire('<enclosure url="https://op3.dev/e/https://d12wklypp119aj.cloudfront.net/track/42bdf099-9dfb-4400-871f-f6a10fd298e7.mp3"/>'), WAVLAKE_PI],
+    { enclosureUrl: 'https://op3.dev/e/https://d12wklypp119aj.cloudfront.net/track/42bdf099-9dfb-4400-871f-f6a10fd298e7.mp3', enclosureType: 'audio/mpeg', enclosureLength: 1858178 });
+
+  // ── refusals: the row's file keeps playing ───────────────────────────────
+  enc('the feed was not read, or the scan did not reach the item: PI\'s row stands',
+    [undefined, WAVLAKE_PI], WAVLAKE_PI, { alsoNaive: true });
+  enc('an item with no <enclosure> keeps the row',
+    [{ enclosureUrl: undefined }, WAVLAKE_PI], WAVLAKE_PI, { alsoNaive: true });
+  enc('a blank url keeps the row',
+    [fromWire('<enclosure url="  " type="audio/mpeg"/>'), WAVLAKE_PI], WAVLAKE_PI, { alsoNaive: true });
+  enc('a non-http(s) scheme never reaches <audio src>',
+    [fromWire('<enclosure url="javascript:alert(1)" type="audio/mpeg"/>'), WAVLAKE_PI], WAVLAKE_PI, { alsoNaive: true });
+  enc('an unparseable url keeps the row',
+    [fromWire('<enclosure url="op3.dev/e/no-scheme.mp3"/>'), WAVLAKE_PI], WAVLAKE_PI, { alsoNaive: true });
+  enc('an http: feed URL never replaces an https: row (mixed audio on an https page)',
+    [fromWire('<enclosure url="http://d12wklypp119aj.cloudfront.net/track/42bdf099-9dfb-4400-871f-f6a10fd298e7.mp3" length="1858178" type="audio/mpeg"/>'), WAVLAKE_PI],
+    WAVLAKE_PI, { alsoNaive: true });
+
+  // ── must still work ──────────────────────────────────────────────────────
+  enc('an http: feed URL does replace an http: row: no downgrade happens',
+    [fromWire('<enclosure url="http://op3.dev/e/http://example.com/a.mp3" length="5" type="audio/mpeg"/>'), { enclosureUrl: 'http://example.com/a.mp3' }],
+    { enclosureUrl: 'http://op3.dev/e/http://example.com/a.mp3', enclosureType: 'audio/mpeg', enclosureLength: 5 });
+  enc('Jimmie Bratcher: an entity-encoded feed URL decodes to PI\'s own URL',
+    [fromWire(JB_TAG), JB_PI], JB_PI, { alsoNaive: true });
+  enc('a feed URL equal to the row\'s ships unchanged',
+    [fromWire(WAVLAKE_TAG), WAVLAKE_OP3], WAVLAKE_OP3, { alsoNaive: true });
+
+  const ser = (v) => JSON.stringify(v, ['enclosureUrl', 'enclosureType', 'enclosureLength']);
+  // The route as it was: PI's enclosure fields shipped as they came.
+  const naive = (_rssItem, row) => ({ enclosureUrl: row.enclosureUrl, enclosureType: row.enclosureType, enclosureLength: row.enclosureLength });
+  const call = (impl, v) => {
+    try {
+      return ser(impl === 'real' ? feedEnclosure(...v.args) : naive(...v.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+
+  for (const v of vv) {
+    const got = call('real', v);
+    if (got !== ser(v.expect)) {
+      fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+      continue;
+    }
+    if (v.alsoNaive) { ok(`${v.label} (must-still-work — naive() may agree)`); continue; }
+    if (got !== call('naive', v)) ok(`${v.label} — and naive() gets it wrong`);
+    else {
+      fail(`"${v.label}" passes against naive() too — the vector proves nothing.\n`
+        + '          Either it is a must-still-work input (mark it { alsoNaive: true })\n'
+        + '          or it does not exercise anything feedEnclosure adds.');
     }
   }
   console.log(`  ${vv.length} vector(s) replayed, ${vv.filter((v) => v.alsoNaive).length} exempt as must-still-work`);

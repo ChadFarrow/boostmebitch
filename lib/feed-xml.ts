@@ -390,6 +390,31 @@ export function firstTag(xml: string, name: string): TagHit | undefined {
 }
 
 /**
+ * An item's `<enclosure>` as the three fields an `Episode` carries, each
+ * undefined when the tag or the attribute is missing.
+ *
+ * **The URL is entity-decoded, and only that.** `readAttr` returns raw bytes,
+ * and `&#39;` or `&amp;` in an attribute are XML, not part of the URL: measured
+ * 2026-11-20, Jimmie Bratcher's album feed writes
+ * `Man+It&#39;s+Chrismas+AGAIN/Joy+To+The+World.mp3`, and S3 serves the key
+ * with an apostrophe. Nothing else is normalized — no `new URL().href` — because
+ * download keys and the dead-file set compare strings. `check:musicl` pins it
+ * through `feedEnclosure`'s wire vectors.
+ */
+export function parseItemEnclosure(inner: string): { enclosureUrl?: string; enclosureType?: string; enclosureLength?: number } {
+  const enc = firstTag(inner, 'enclosure');
+  if (!enc) return {};
+  const url = readAttr(enc.attrs, 'url');
+  const type = readAttr(enc.attrs, 'type');
+  const length = Number(readAttr(enc.attrs, 'length'));
+  return {
+    enclosureUrl: url === undefined ? undefined : decodeXmlEntities(url),
+    enclosureType: type === undefined ? undefined : decodeXmlEntities(type),
+    enclosureLength: Number.isFinite(length) && length > 0 ? length : undefined,
+  };
+}
+
+/**
  * Every `<name …>…</name>` block in document order. A self-closing tag is a
  * block with an empty `inner`; the caller decides whether that counts. The
  * FIRST close tag wins, so nested same-name tags end at the inner close — the

@@ -2473,6 +2473,54 @@ export function feedItemValue(
 }
 
 /**
+ * Which audio file `/api/feed` ships on an episode row: the feed's own
+ * `<enclosure url>` when the live read lists the item, else the row's.
+ *
+ * Podcast Index's `enclosureUrl` is a crawl, and it can be years stale.
+ * Measured 2026-11-20: on 12 of 50 sampled playlist tracks, all Wavlake, PI
+ * held the bare `d12wklypp119aj.cloudfront.net/track/….mp3` (`dateCrawled`
+ * 2023-12-09 and 2024-06-25 on the two checked), while the live feed wraps the
+ * same file in `op3.dev/e,pg=<feedGuid>/…`. PI's copy plays the right bytes and
+ * hides every play from OP3, the analytics the publisher chose. The rule is the
+ * one `value` and `medium` already follow: the publisher's feed, read moments
+ * ago, outranks PI's copy.
+ *
+ * The URL is kept byte for byte (trimmed only), never normalized through
+ * `new URL().href`: download keys and the dead-file set compare strings, and a
+ * signed URL is not ours to rewrite.
+ *
+ * Refusals that keep a row playable:
+ * - no item (feed not read, or the scan did not reach it), or a missing or
+ *   non-http(s) `url`: the row's file.
+ * - an `http:` URL never replaces an `https:` one. The page is https, so the
+ *   browser upgrades or blocks mixed audio, and the https copy is known to play.
+ *
+ * Type and length follow the feed's tag; the row's fill in only where the tag
+ * omits them.
+ */
+export function feedEnclosure(
+  rssItem: { enclosureUrl?: string; enclosureType?: string; enclosureLength?: number } | undefined,
+  row: Pick<Episode, 'enclosureUrl' | 'enclosureType' | 'enclosureLength'>,
+): Pick<Episode, 'enclosureUrl' | 'enclosureType' | 'enclosureLength'> {
+  const keep = { enclosureUrl: row.enclosureUrl, enclosureType: row.enclosureType, enclosureLength: row.enclosureLength };
+  const url = rssItem?.enclosureUrl?.trim();
+  if (!url) return keep;
+  let scheme: string;
+  try {
+    scheme = new URL(url).protocol;
+  } catch {
+    return keep;
+  }
+  if (scheme !== 'https:' && scheme !== 'http:') return keep;
+  if (scheme === 'http:' && /^\s*https:/i.test(row.enclosureUrl ?? '')) return keep;
+  return {
+    enclosureUrl: url,
+    enclosureType: rssItem?.enclosureType ?? row.enclosureType,
+    enclosureLength: rssItem?.enclosureLength ?? row.enclosureLength,
+  };
+}
+
+/**
  * True when no RSS read has answered for this item yet, so its missing `value`
  * says nothing about the payee. `value` has three states, and JSON keeps them
  * apart because it drops `undefined`:
