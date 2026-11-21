@@ -135,7 +135,9 @@ export function GifPicker({
   const [attempt, setAttempt] = useState(0);
   // A phone's keyboard would cover the grid, so the field takes focus on open
   // only where a pointer can hover. Headless Chrome matches neither, so tests
-  // see the phone's behaviour.
+  // see the phone's behaviour unless they emulate `hover` (e2e:gifgrid 2f).
+  // `<ModalShell>` keeps a focus that `autoFocus` gave; it used to move it to
+  // the first control, Close, so the cursor was never in the box.
   const [focusOnOpen] = useState(
     () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
       && window.matchMedia('(hover: hover)').matches,
@@ -219,8 +221,21 @@ export function GifPicker({
     );
   }
 
-  if (!open) {
-    return (
+  const close = () => { setOpen(false); setQ(''); setSearchQ(''); };
+
+  // The search opens as its OWN modal over the boost modal: inline, the grid
+  // got a 256px window inside a card already full of amount, message and
+  // splits, so on a phone a row of GIFs was cut in half. `<ModalShell>` stacks
+  // (portal + shared scroll-lock refcount), and its Escape handler stops
+  // propagation, so Escape closes this one and leaves the boost modal open.
+  //
+  // ONE trigger, mounted and enabled whether or not the search is open (the
+  // overlay covers it while it is). An open picker used to swap it for a
+  // disabled copy, so the button that had focus was gone and the shell had
+  // nothing to hand focus back to on close: it fell to <body>, and the boost
+  // modal stopped hearing Escape.
+  return (
+    <>
       <div>
         <button
           type="button"
@@ -234,23 +249,7 @@ export function GifPicker({
           + Add a GIF
         </button>
       </div>
-    );
-  }
-
-  const close = () => { setOpen(false); setQ(''); setSearchQ(''); };
-
-  // The search opens as its OWN modal over the boost modal: inline, the grid
-  // got a 256px window inside a card already full of amount, message and
-  // splits, so on a phone a row of GIFs was cut in half. `<ModalShell>` stacks
-  // (portal + shared scroll-lock refcount), and its Escape handler stops
-  // propagation, so Escape closes this one and leaves the boost modal open.
-  return (
-    <>
-      <div>
-        <button type="button" className="btn-ghost w-full" disabled>
-          + Add a GIF
-        </button>
-      </div>
+      {open && (
       <ModalShell
         onClose={close}
         label="Search GIFs"
@@ -371,6 +370,7 @@ export function GifPicker({
         <Attribution source={source} />
       </div>
       </ModalShell>
+      )}
     </>
   );
 }

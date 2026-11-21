@@ -2011,6 +2011,22 @@ box (wide × tall) in the corner, the card's first child — so initial focus la
 it is deliberately NOT gated on `dismissable`: that flag stops an accidental
 exit, and the × is a deliberate one every payment modal kept live mid-send.
 
+**Initial focus goes to the first control, UNLESS a control in the card already
+has it.** React's `autoFocus` focuses during the commit, before the shell's
+effect, so a shell that always moved focus silently overrode every `autoFocus`:
+the GIF picker's search box carried one from the start and the cursor sat on the
+picker's Close button (Chad, 2026-11-21: "so I can start typing in the search
+right away"). `autoFocus` is how a modal puts the cursor elsewhere — never on a
+confirming button (`<ConfirmDialog>` keeps Cancel first on purpose, below).
+**Focus goes back on close from a LAYOUT-effect cleanup.** React runs that before
+it removes the card; the passive cleanup it used to be runs after, saw `<body>`
+focused, and restored nothing on any modal — so a closed GIF picker left focus
+outside the boost modal, where Escape and the Tab trap no longer reach the
+shell's key handler. When the control to return to is gone (a GIF pick swaps the
+button for its preview, and React removes it later in the same commit) or never
+had focus, focus lands on the modal underneath, checked in a microtask once the
+commit is done. `e2e:gifgrid` section 2f pins all three.
+
 #### An open modal is a history entry (`components/use-modal-history.ts`)
 
 **The browser's back button — and Android's, which in the TWA is the same

@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { lockScroll } from '@/lib/scroll-lock';
 import { useModalHistory } from './use-modal-history';
@@ -145,19 +145,60 @@ export function ModalShell({
   // Move focus into the dialog once it exists. Prefer the first focusable
   // control; fall back to the card itself (which carries tabIndex={-1}) so
   // focus is at least inside the trap rather than left on the trigger behind it.
+  //
+  // UNLESS a control inside already holds it. React's `autoFocus` focuses its
+  // element while the card commits, BEFORE this effect runs, so moving focus
+  // here silently overrode every `autoFocus` in a modal: the GIF picker's
+  // search box carried one from the start and the cursor still landed on the
+  // picker's own Close button (Chad, 2026-11-21: "so I can start typing in the
+  // search right away"). A caller that wants the cursor somewhere says so with
+  // `autoFocus`; the first-focusable rule is only the default.
   useEffect(() => {
     if (!mounted) return;
     const card = cardRef.current;
     if (!card) return;
-    const first = card.querySelector<HTMLElement>(FOCUSABLE);
-    (first ?? card).focus({ preventScroll: true });
+    const held = document.activeElement;
+    if (!(held && held !== card && card.contains(held))) {
+      const first = card.querySelector<HTMLElement>(FOCUSABLE);
+      (first ?? card).focus({ preventScroll: true });
+    }
+  }, [mounted]);
+
+  // Hand focus back when the dialog closes. A LAYOUT effect, and that is the
+  // fix: React runs a removed component's layout cleanup BEFORE it takes the
+  // component's DOM out, and its passive cleanup AFTER. This restore sat in a
+  // passive cleanup, where the focused control was already gone and
+  // `document.activeElement` was <body>, so the "still inside us" test below
+  // always failed and nothing was ever restored. After the GIF picker closed,
+  // focus sat on <body>, outside the boost modal's own key handler: Escape no
+  // longer closed it and Tab walked the page behind (`e2e:gifgrid` 2f,
+  // 2026-11-21).
+  useLayoutEffect(() => {
+    if (!mounted) return;
+    const card = cardRef.current;
+    if (!card) return;
     return () => {
       // Restore focus only if it's still inside us — if something else has
       // taken it in the meantime, yanking it back is the more surprising move.
       const active = document.activeElement;
-      if (active && card.contains(active)) {
-        returnFocusRef.current?.focus?.({ preventScroll: true });
-      }
+      if (!active || !card.contains(active)) return;
+      const back = returnFocusRef.current;
+      if (back && back.isConnected && !card.contains(back)) back.focus({ preventScroll: true });
+      // Checked once the whole commit is done, not here: the same render can
+      // still remove `back` after this runs (a GIF pick turns the picker's
+      // button into its preview, and React removes the button later in the
+      // commit), and focus then drops to <body> with nothing to catch it.
+      // If focus ended up nowhere — `back` gone, disabled, or never focused
+      // (Safari does not focus a clicked button) — land on the modal under us,
+      // if there is one, so its Escape and its Tab trap still have focus.
+      queueMicrotask(() => {
+        const now = document.activeElement;
+        if (now && now !== document.body) return;
+        const under = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'))
+          .filter((d) => d !== card && d.isConnected)
+          .at(-1);
+        under?.focus({ preventScroll: true });
+      });
     };
   }, [mounted]);
 
