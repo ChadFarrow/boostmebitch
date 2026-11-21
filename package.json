@@ -151,7 +151,8 @@
     "e2e:moved": "node scripts/e2e-moved.mjs",
     "e2e:mentionlinks": "node scripts/e2e-mention-links.mjs",
     "e2e:newmusic": "node scripts/e2e-new-music.mjs",
-    "check:irc": "node --experimental-strip-types scripts/check-irc.mjs"
+    "check:irc": "node --experimental-strip-types scripts/check-irc.mjs",
+    "e2e:irc": "node --experimental-strip-types scripts/e2e-irc.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
