@@ -85,6 +85,7 @@ const KEYS = {
   nwcMethods: 'bmb:nwc_methods',      // { uri, methods } — NIP-47 capability list for the CURRENT connection; uri-keyed so a switched wallet invalidates it
   relays: 'bmb:relays',
   senderNamePrefix: 'bmb:sender_name', // + ':<npub>' — the boost modal's "From". Per-npub because it's an identity-linked display name, not a device setting.
+  ircNickPrefix: 'bmb:irc_nick', // + ':<npub>' — the IRC chat's nick (docs/irc.md). Per-npub for the same reason as sender_name.
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   streamReceipts: 'bmb:stream_receipts', // '1' when the listener opted into publishing kind:3369 value-playback receipts for streaming settles. Absent = OFF, unlike shareNostr — see the accessor.
@@ -1377,6 +1378,19 @@ export const storage = {
     get: (npub: string | null | undefined) => safeGet(identityKey(KEYS.senderNamePrefix, npub)),
     set: (npub: string | null | undefined, v: string) =>
       safeSet(identityKey(KEYS.senderNamePrefix, npub), v),
+  },
+
+  /**
+   * The nick last used in the IRC chat beside a live stream (docs/irc.md),
+   * per-npub (`:guest` signed out) for the `senderName` reason above: a nick
+   * typed under one identity must not pre-fill the box under another, where it
+   * would tie the two together in a public channel. Only the nick — no chat
+   * line is ever stored.
+   */
+  ircNick: {
+    get: (npub: string | null | undefined) => safeGet(identityKey(KEYS.ircNickPrefix, npub)),
+    set: (npub: string | null | undefined, v: string) =>
+      safeSet(identityKey(KEYS.ircNickPrefix, npub), v),
   },
 
   /**

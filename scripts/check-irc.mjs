@@ -25,6 +25,7 @@ import {
   parseLine, stripFormatting, ctcpAction, cleanOutgoing, splitText, buildPrivmsg, buildAction, isValidNick,
   ircStart, ircStep, ircSend, ircNick, ircRejoin,
 } from '../lib/irc/protocol.ts';
+import { IRC_CHAT_SHOWS, ircChannelFor, ircGatewayOk } from '../lib/irc/shows.ts';
 import { replayVectors } from './replay-vectors.mjs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -339,8 +340,67 @@ console.log('\nThe session, smaller cases:');
   else ok('nothing is sent before the JOIN');
 }
 
+// ── The opt-in list (Chad, 2026-11-21) and the gateway switch ───────────────
+// The 12 shows Chad chose, each channel seen in a ZeroNode LIST on 2026-11-21.
+// A show off this list gets no chat, even when its feed names a channel.
+console.log('\nThe opt-in show list:');
+{
+  const LIST = {
+    'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f': '#HomegrownHits',
+    '917393e3-1b1e-5cef-ace4-edaa54e1f810': '#Podcasting20',
+    'e0ac9365-689c-5043-8804-15b9dfcc545a': '#greenroom',
+    '31740861-81e8-5dda-8801-a2abb2634271': '#MMO',
+    '7c6f7875-2b73-491e-b32c-e2c8d6e91d53': '#candr',
+    'd5e73072-64a2-56a3-9dcd-4a00bfe561d5': '#SirLibre',
+    'c1959795-28f1-502d-ad3e-70abf5a034a9': '#v4vmusicShow',
+    '45b899bb-cbef-57b5-ab14-04aaf49e3ac3': '#VoidZero',
+    'c42a0900-c20e-59a2-a13b-c23b5c04e11f': '#HyperSpaceOut',
+    '2d418249-453a-5714-8abc-5b657570b641': '#BowlAfterBowl',
+    '41aace28-8679-5ef1-9958-75cf76c2b5f0': '#DoerfelVerse',
+    '89bf141a-f4cf-575c-b09a-75dbce16332c': '#OffTopic',
+  };
+  for (const [guid, channel] of Object.entries(LIST)) {
+    if (ircChannelFor(guid) !== channel) fail(`${guid} → ${ircChannelFor(guid)}, expected ${channel}`);
+    else ok(`${IRC_CHAT_SHOWS[guid]?.title ?? guid} → ${channel}`);
+  }
+  if (Object.keys(IRC_CHAT_SHOWS).length !== 12) fail(`the list has ${Object.keys(IRC_CHAT_SHOWS).length} shows, not 12`);
+  else ok('the list has exactly the 12 shows');
+  const cases = [
+    ['an upper-case guid finds its show', ircChannelFor('7C6F7875-2B73-491E-B32C-E2C8D6E91D53'), '#candr'],
+    ['Nick the Rat Radio (no live item) is not on the list', ircChannelFor('23cd2e78-6042-5834-9ca8-34feca4d02b9'), null],
+    ['no guid → no chat', ircChannelFor(undefined), null],
+    ['an empty guid → no chat', ircChannelFor(''), null],
+  ];
+  for (const [label, got, want] of cases) {
+    if (got !== want) fail(`${label} — got ${JSON.stringify(got)}`);
+    else ok(label);
+  }
+  const bad = Object.values(IRC_CHAT_SHOWS).filter((s) => !/^#[^\s,\x07]{1,49}$/.test(s.channel));
+  if (bad.length) fail(`channel names that are not valid: ${JSON.stringify(bad)}`);
+  else ok('every channel name is a valid IRC channel');
+}
+
+console.log('\nThe gateway switch:');
+{
+  const urls = [
+    ['wss://irc-ws.candr.space/webirc/websocket/', true],
+    ['', false],
+    [undefined, false],
+    ['ws://irc-ws.candr.space/', false],
+    ['ws://127.0.0.1:6790/', true],
+    ['ws://localhost:6790/', true],
+    ['https://irc-ws.candr.space/', false],
+    ['wss://', false],
+  ];
+  for (const [url, want] of urls) {
+    const got = ircGatewayOk(url);
+    if (got !== want) fail(`ircGatewayOk(${JSON.stringify(url)}) is ${got}, expected ${want}`);
+    else ok(`ircGatewayOk(${JSON.stringify(url)}) is ${want}`);
+  }
+}
+
 console.log('\nImport-free leaves:');
-for (const path of ['lib/irc/protocol.ts']) {
+for (const path of ['lib/irc/protocol.ts', 'lib/irc/shows.ts']) {
   const problems = importFreeProblems(path);
   if (problems.length) {
     explainImportFree(path, problems);
