@@ -13,6 +13,7 @@ import {
   loginWithExtension,
   loginWithAmber,
   loginWithBunker,
+  loginWithNsec,
   loginWithNostrConnect,
   clearPendingBunkerAttempts,
   isLikelyAndroid,
@@ -32,6 +33,7 @@ import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/ambe
 import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
 import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
+import { isNativeIos } from '@/lib/native/platform';
 import { AmberCompletion } from './login-methods';
 import { GoogleAuthPanel } from './google-auth-panel';
 import { KeyIcon, PuzzleIcon, QrIcon } from '../icons';
@@ -64,7 +66,7 @@ import { KeyIcon, PuzzleIcon, QrIcon } from '../icons';
  * rest: no listener survives behind it, and the iOS Clave pairing re-arms when
  * it hands the modal back.
  */
-type View = 'menu' | 'qr' | 'bunker' | 'primal' | 'google';
+type View = 'menu' | 'qr' | 'bunker' | 'primal' | 'google' | 'nsec';
 
 // How long a Clave tap sits with no return signal before the box says the app
 // may not be installed. Long enough to cover a cold launch of a signer that has
@@ -375,6 +377,10 @@ export function SignInModal({
   // under the panel and, because that effect is keyed on `[ios, view]`, no
   // re-subscribe afterwards — a Clave row whose anchor nothing listens to.
   const [googleConfigured] = useState(() => isGoogleAuthConfigured());
+  // The pasted-nsec row is the iOS app's alone: Google is off there, and a
+  // remote signer costs a relay round trip per signature. A browser keeps
+  // its extension, Amber and bunker paths (docs/signers.md, "Paste your nsec").
+  const [nativeIos] = useState(() => isNativeIos());
   // "Neither phone box renders here." Not a claim that a mouse is present — an
   // unknown mobile lands here too, and a code it can scan with a SECOND device
   // is the right offer for it as well. What it gates is the one thing that
@@ -515,6 +521,9 @@ export function SignInModal({
   const liveAttempt = useRef<{ abandon: () => void } | null>(null);
   // Paste bunker:// flow.
   const [pasteValue, setPasteValue] = useState('');
+  const [nsecValue, setNsecValue] = useState('');
+  const [nsecBusy, setNsecBusy] = useState(false);
+  const [nsecErr, setNsecErr] = useState<string | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
   const [pasteErr, setPasteErr] = useState<string | null>(null);
   const [pasteAuthUrl, setPasteAuthUrl] = useState<string | null>(null);
@@ -905,6 +914,23 @@ export function SignInModal({
     }
   }
 
+  async function onNsecSubmit() {
+    setNsecBusy(true);
+    setNsecErr(null);
+    try {
+      const id = await loginWithNsec(nsecValue);
+      setNsecValue('');
+      onSuccess(id, 'local');
+      onClose();
+    } catch (e) {
+      // nsecToHex's messages never quote the input; a storage failure's might
+      // not be readable, so it gets a plain fallback.
+      setNsecErr(getErrorMessage(e, 'Could not sign in with that key.'));
+    } finally {
+      setNsecBusy(false);
+    }
+  }
+
   async function copyGenUri() {
     if (!genUri) return;
     try {
@@ -1154,6 +1180,9 @@ export function SignInModal({
     setGenErr(null);
     setPasteErr(null);
     setClipErr(null);
+    setNsecErr(null);
+    // The key leaves component state as soon as its screen does.
+    if (next !== 'nsec') setNsecValue('');
     setView(next);
   }
 
@@ -1415,6 +1444,14 @@ export function SignInModal({
                   subtitle="Paste a bunker:// URI from Clave, nsec.app or Amber in server mode."
                   onClick={() => goto('bunker')}
                 />
+                {nativeIos && (
+                  <MethodRow
+                    icon={<MethodTile tone="bg-bolt text-ink"><KeyIcon className="w-3.5 h-3.5" /></MethodTile>}
+                    title="Paste your nsec"
+                    subtitle="Sign in with your private key. It stays on this phone, and signing needs no other app."
+                    onClick={() => goto('nsec')}
+                  />
+                )}
                 {/* A phone with an extension is rare enough that it earns a row
                     only when one is actually there — an always-visible disabled
                     row is noise on the platform with the least room for it. */}
@@ -1711,6 +1748,51 @@ export function SignInModal({
                     </div>
                   )}
                 </div>
+              </>
+            )}
+
+            {view === 'nsec' && (
+              <>
+                <DetailHeader title="Paste your nsec" onBack={() => goto('menu')} />
+                <form
+                  className="border border-bone/15 p-3 flex flex-col gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!nsecBusy && nsecValue.trim()) void onNsecSubmit();
+                  }}
+                >
+                  <p className="text-[11px] text-muted">
+                    Paste the private key that starts with{' '}
+                    <code className="text-[9px]">nsec1</code>. This app keeps it on this
+                    phone, encrypted, and never sends it anywhere.
+                  </p>
+                  <p className="text-[11px] text-bolt/90">
+                    Anyone who has this key is you, and a key cannot be changed. Keep a
+                    copy somewhere safe: signing out erases it from this phone.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      value={nsecValue}
+                      onChange={(e) => setNsecValue(e.target.value)}
+                      placeholder="nsec1…"
+                      aria-label="nsec"
+                      autoComplete="off"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="input flex-1 text-[11px]"
+                    />
+                    <button
+                      type="submit"
+                      disabled={nsecBusy || !nsecValue.trim()}
+                      className="btn-bolt text-[11px] py-1 px-3 disabled:opacity-40"
+                    >
+                      {nsecBusy ? 'Signing in…' : 'Sign in'}
+                    </button>
+                  </div>
+                  {nsecErr && <span className="text-[10px] text-nostr/80">{nsecErr}</span>}
+                </form>
               </>
             )}
           </div>

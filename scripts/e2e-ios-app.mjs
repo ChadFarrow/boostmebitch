@@ -1,5 +1,6 @@
-// End-to-end for WHAT THE iOS APP HIDES: Spark (docs/wallets.md, "Spark is off
-// inside the iOS app") and Google sign-in (docs/signers.md, "Google onboarding").
+// End-to-end for WHAT THE iOS APP HIDES AND ADDS: no Spark (docs/wallets.md,
+// "Spark is off inside the iOS app"), no Google sign-in, and a pasted nsec as
+// a local key (docs/signers.md, "Google onboarding" and "Paste your nsec").
 //
 //   npm run e2e:iosapp
 //   BMB_APP=http://localhost:3001 npm run e2e:iosapp
@@ -39,12 +40,21 @@
 //      the owner asked for it gone on 2026-11-20. The gate reads
 //      `window.Capacitor`, which the server cannot see, so this step also
 //      asserts no hydration error.
+//   8. Browser — the sign-in window has no "Paste your nsec" row (the app only).
+//   9. iOS app — the row is there; an npub is refused on screen; a generated
+//      burner nsec signs in as its own npub, signs an event that verifies,
+//      starts no Spark wallet (a local key's derived one is the fourth door),
+//      and is still signed in after a reload. Neither the nsec nor its hex
+//      appears in any request or any WebSocket frame the page sends. A typo'd
+//      nsec is refused without echoing it, and the screen fits at 390 px.
+//  10. iOS app — sign out warns that only the same nsec gets back in (not
+//      Google), erases the key, and a reload stays signed out.
 //   Steps 2 onward run at 390 x 844 under CDP phone emulation, and the open
 //   wallet window must not scroll sideways.
 
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
-import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04 } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04, verifyEvent } from 'nostr-tools';
 
 const APP = process.env.BMB_APP ?? 'http://localhost:3000';
 await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
@@ -109,7 +119,7 @@ page.on(async (m) => {
   } catch (e) { err = String(e?.message ?? e); }
   await page.js(`window.__bmbResolve(${JSON.stringify(rid)}, ${JSON.stringify({ out, err })})`);
 });
-await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+const { result: { identifier: nip07Script } } = await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   (() => {
     const waiting = new Map(); let n = 0;
     window.__bmbResolve = (rid, r) => { const p = waiting.get(rid); waiting.delete(rid); r.err ? p.reject(new Error(r.err)) : p.resolve(r.out); };
@@ -320,6 +330,116 @@ t.ok('the header menu does NOT offer Continue with Google', !g.inMenu);
 t.ok('the sign-in window does NOT offer Continue with Google', !g.inWindow);
 t.ok("Google's sign-in script was never fetched", gisRequests.length === 0, JSON.stringify(gisRequests));
 t.ok('no hydration error on the page', hydrationErrors.length === 0, JSON.stringify(hydrationErrors));
+await asIosApp(false);
+
+// --- The pasted nsec ------------------------------------------------------
+// From here the NIP-07 stand-in is gone: the local signer installs its own
+// `window.nostr`, and the stand-in would answer for a different key.
+await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: nip07Script });
+const burnerSk = generateSecretKey();
+const burnerHex = Buffer.from(burnerSk).toString('hex');
+const burnerPk = getPublicKey(burnerSk);
+const burnerNsec = nip19.nsecEncode(burnerSk);
+const outbound = [];
+page.on((m) => {
+  if (m.method === 'Network.requestWillBeSent') outbound.push(`${m.params.request.url} ${m.params.request.postData ?? ''}`);
+  if (m.method === 'Network.webSocketFrameSent') outbound.push(m.params.response?.payloadData ?? '');
+});
+const leaks = () => outbound.filter((x) => x.includes(burnerNsec) || x.includes(burnerHex));
+async function relaysOnly() {
+  await js(`(() => { localStorage.clear(); localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))}); return 1; })()`);
+}
+async function openSignInWindow() {
+  await js(`(() => { [...document.querySelectorAll('header button')].find((b) => /^SIGN IN/i.test(b.textContent.trim())).click(); return 1; })()`);
+  await page.until(`[...document.querySelectorAll('[role="menuitem"]')].some((b) => b.textContent.includes('Sign in with Nostr'))`, 5000);
+  await js(`(() => { [...document.querySelectorAll('[role="menuitem"]')].find((b) => b.textContent.includes('Sign in with Nostr')).click(); return 1; })()`);
+  await page.until(`!!document.querySelector('[role="dialog"]')`, 5000);
+  await wait(600);
+}
+const NSEC_ROW = `[...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.includes('Paste your nsec'))`;
+const NSEC_INPUT = 'input[aria-label="nsec"]';
+const typeNsec = (v) => js(`(() => {
+  const el = document.querySelector(${JSON.stringify(NSEC_INPUT)});
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(v)});
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  return 1;
+})()`);
+const pressSignIn = () => js(`(() => { [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === 'Sign in').click(); return 1; })()`);
+const ACCOUNT = 'button[aria-label^="Account:"]';
+const nostrPubkey = () => js(`window.nostr ? window.nostr.getPublicKey() : null`);
+
+console.log('\n8. Browser — the sign-in window has no nsec row');
+await asIosApp(false);
+await signedIn(false);
+await load();
+await openSignInWindow();
+t.ok('no "Paste your nsec" row in a browser', !(await js(`!!${NSEC_ROW}`)));
+await closeWallet();
+
+console.log('\n9. iOS app — a pasted burner nsec signs in, signs, and survives a reload');
+await asIosApp(true);
+await relaysOnly();
+await load();
+await openSignInWindow();
+const rowThere = await js(`!!${NSEC_ROW}`);
+t.ok('the sign-in window offers "Paste your nsec"', rowThere);
+if (rowThere) {
+  await js(`(() => { ${NSEC_ROW}.click(); return 1; })()`);
+  await page.until(`!!document.querySelector(${JSON.stringify(NSEC_INPUT)})`, 5000);
+  t.ok('the key field hides what is typed', await js(`document.querySelector(${JSON.stringify(NSEC_INPUT)}).type === 'password'`));
+  await typeNsec(nip19.npubEncode(burnerPk));
+  await pressSignIn();
+  await wait(500);
+  const refusal = await js(`document.querySelector('[role="dialog"]')?.innerText ?? ''`);
+  t.ok('an npub is refused on screen, and nobody is signed in', /nsec1/.test(refusal) && !(await js(`!!document.querySelector(${JSON.stringify(ACCOUNT)})`)), refusal.slice(0, 300));
+  // One character changed: the checksum fails. nip19.decode's own error quotes
+  // the string, so the screen must show ours.
+  const typo = burnerNsec.slice(0, -1) + (burnerNsec.endsWith('q') ? 'p' : 'q');
+  await typeNsec(typo);
+  await pressSignIn();
+  await wait(500);
+  const typoText = await js(`document.querySelector('[role="dialog"]')?.innerText ?? ''`);
+  t.ok('a mistyped nsec is refused, and the screen does not show what was typed', /typing error/.test(typoText) && !typoText.includes(typo.slice(5, 25)), typoText.slice(0, 300));
+  const fit = await js(`(() => {
+    const b = [...document.querySelectorAll('[role="dialog"] button')].find((x) => x.textContent.trim() === 'Sign in').getBoundingClientRect();
+    const i = document.querySelector(${JSON.stringify(NSEC_INPUT)}).getBoundingClientRect();
+    return JSON.stringify({ overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth, bw: b.width, bh: b.height, ih: i.height, width: innerWidth });
+  })()`).then(JSON.parse);
+  t.ok('at 390 px the nsec screen does not scroll sideways, and the field and button are 24 px or more', fit.width === 390 && fit.overflow <= 0 && fit.bw >= 24 && fit.bh >= 24 && fit.ih >= 24, JSON.stringify(fit));
+  sparkRequests = [];
+  await typeNsec(burnerNsec);
+  await pressSignIn();
+  const inUi = await page.until(`!document.querySelector('[role="dialog"]') && !!document.querySelector(${JSON.stringify(ACCOUNT)})`, 15000);
+  t.ok('signed in: the window closed and the header shows the account', inUi);
+  t.equal('window.nostr answers with the burner npub', await nostrPubkey(), burnerPk);
+  const signed = await js(`(async () => { const t0 = performance.now(); const e = await window.nostr.signEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'e2e: local signature, never published' }); return JSON.stringify({ e, ms: performance.now() - t0 }); })()`).then(JSON.parse);
+  t.ok('it signs an event that verifies, under the burner key', signed.e.pubkey === burnerPk && verifyEvent(signed.e), JSON.stringify(signed.e).slice(0, 200));
+  t.ok('the signature took under 1 s (no round trip)', signed.ms < 1000, `${Math.round(signed.ms)} ms`);
+  await wait(RESTORE_WINDOW_MS);
+  t.ok('no Spark wallet started from the key', sparkRequests.length === 0, JSON.stringify(sparkRequests));
+  await load();
+  await page.until(`!!document.querySelector(${JSON.stringify(ACCOUNT)})`, 15000);
+  await page.until(`!!window.nostr`, 10000);
+  t.equal('after a reload it is still signed in as the burner', await nostrPubkey(), burnerPk);
+  // So the next check reads real traffic: the app asked the relay about this key.
+  t.ok('the capture saw relay frames naming the burner pubkey', outbound.some((x) => x.includes(burnerPk)), `${outbound.length} captured`);
+  t.ok('the nsec never left the page (no request, no WebSocket frame)', leaks().length === 0, leaks().slice(0, 2).join(' | ').slice(0, 300));
+
+  console.log('\n10. iOS app — sign out names the nsec, erases the key, and stays signed out');
+  await js(`(() => { document.querySelector(${JSON.stringify(ACCOUNT)}).click(); return 1; })()`);
+  await page.until(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'sign out')`, 5000);
+  await js(`(() => { [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'sign out').click(); return 1; })()`);
+  await page.until(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Sign out and erase')`, 5000);
+  const warning = await js(`[...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')].map((d) => d.innerText).join(' ')`);
+  t.ok('the warning says only the same nsec gets back in, and does not mention Google', /nsec/.test(warning) && !/Google/.test(warning), warning.slice(0, 300));
+  await js(`(() => { [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Sign out and erase').click(); return 1; })()`);
+  await page.until(`[...document.querySelectorAll('header button')].some((b) => /^SIGN IN/i.test(b.textContent.trim()))`, 10000);
+  await load();
+  await wait(4000);
+  t.ok('after a reload it is still signed out (the key was erased)', !(await js(`!!document.querySelector(${JSON.stringify(ACCOUNT)})`)));
+} else {
+  await closeWallet();
+}
 await asIosApp(false);
 
 await signedIn(false);
