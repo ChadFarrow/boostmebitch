@@ -127,6 +127,16 @@ function safeAuthUrl(cb?: (url: string) => void): ((url: string) => void) | unde
 // connect 822 ms, live delivery 210 ms. The "costs nothing" argument below is
 // about THIS side's wait, not the signer's.
 //
+// relay.nostrconnect.com went the same way: on 2026-11-20 it refused 8 of 9
+// connections (HTTP 500 on the WebSocket upgrade), the evening the owner's
+// first Clave sign-in in the iOS app hung after the approval. Replaced by
+// offchain.pub, measured the same way: 3 of 3 round trips, connect 205–327 ms,
+// live delivery 117–217 ms (relay.nsec.app, relay.nostr.net and nostr.oxtr.dev
+// were all down; relay.coinos.io worked, a little slower). It shares no host
+// with DEFAULT_RELAYS or anything else the app opens — the rule below.
+// `npm run e2e:pairing` pairs a stand-in signer over EACH relay here alone,
+// against the real relays, so a dead one fails a run instead of a sign-in.
+//
 // THIS SET USED TO CARRY damus, primal AND nos.lol, and removing them is the
 // fix rather than a tidy-up. The reasoning for a wide set was ack redundancy
 // across an iOS app switch. On iOS it buys the opposite: WebKit bug 302561 —
@@ -135,7 +145,7 @@ function safeAuthUrl(cb?: (url: string) => void): ((url: string) => void) | unde
 // baseline. All three of those share a host with DEFAULT_RELAYS, so the bunker's
 // own SimplePool opens the SECOND socket to each and they may never connect —
 // three relays in the URI that the signer can reach and this page cannot.
-// relay.nostrconnect.com and relay.powr.build are the two nothing else in the app
+// offchain.pub and relay.powr.build are the two nothing else in the app
 // connects to, which is exactly why they are the pair left standing.
 //
 // Conduit reach the same number from the other side: `pairRemoteSignerFromNostrConnect`
@@ -149,7 +159,7 @@ function safeAuthUrl(cb?: (url: string) => void): ((url: string) => void) | unde
 // resolves on the first matching kind:24133 response, so a slow or silent relay
 // here costs nothing. The cost here is the socket, not the wait.
 const NOSTRCONNECT_RELAYS = [
-  'wss://relay.nostrconnect.com',
+  'wss://offchain.pub',
   CLAVE_RELAY,
 ];
 
@@ -283,8 +293,11 @@ const BUNKER_LOGOUT_TIMEOUT_MS = 4_000;
 // URI. The iOS Safari + Primal failure mode is that the user approves
 // in Primal, but iOS suspended the WebSocket while they were in the
 // other app, so the bunker's connect-ack is delivered to a dead
-// subscription and lost. nostr-tools' setupSubscription uses limit:0
-// with no `since`, so reconnecting can't replay the missed event.
+// subscription and lost. (2.19.4's filters carry no `limit`, so a relay
+// that keeps kind:24133 replays the ack to a fresh subscription —
+// relay.powr.build does, for at least 60 s, measured 2026-11-20 — but only
+// a relay that kept it, and only within its window; 2.20+'s `limit: 0`
+// would end even that. Asking again with the same key is the sure way.)
 //
 // On retry within the same paste session we want to reuse the SAME
 // clientSk so the bunker recognizes us as the already-approved client

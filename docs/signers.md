@@ -317,6 +317,14 @@ place a brand *string* may come from — a runtime origin is not one.
 agree. A signer with no icon falls back to initials in a coloured circle, which
 is what ours had been showing.
 
+### The pairing relays — both must be up, and a test asks the real ones
+
+**`NOSTRCONNECT_RELAYS` (`lib/nostr/bunker.ts`) is `wss://offchain.pub` + `wss://relay.powr.build` since 2026-11-20.** Every `nostrconnect://` pairing writes them into its URI — Sign in with Clave, Primal and Scan a QR code alike — and the signer acks on them. **Clave connects to every relay in the URI before it acks**, so a relay that is down delays the ack, and on an iPhone the switch back suspends Clave before it is sent. `relay.nsec.app` failed that way in September and `relay.nostrconnect.com` in November (8 of 9 connections refused, HTTP 500), the evening the owner's first Clave sign-in in the iOS app hung after the approval. The history and the two rules for this list (no host shared with `DEFAULT_RELAYS`; two to three relays) are in the comment above the constant.
+
+- **`relay.powr.build` replays a missed ack.** It keeps kind:24133 and serves it to a fresh subscription for at least 60 s — to a `since` filter or one with no limit, never to `limit: 0` (measured 2026-11-20). nostr-tools 2.19.4's pairing filter carries no limit, so the re-subscribe on the way back from the signer can recover an ack that landed while the page was suspended. The `2.19.4` pin protects that too.
+- **`npm run e2e:pairing` asks the REAL relays**, because a dead relay is exactly what a local one cannot show. It reads the URI off the QR screen, then a stand-in signer acks and answers on EACH relay alone; the app must sign in through each (about 0.76 s on 2026-11-20). Run it before reading "Clave is slow" as a bug in this code. It publishes only ephemeral kind:24133 from throwaway keys; the signed-in app is pointed at a local relay.
+- **Existing sessions keep the relays they paired on.** A stored `bunker://` pointer carries its URI's relays, so a session paired over `relay.nostrconnect.com` still has `relay.powr.build`, and runs on that.
+
 ### Coming back from the signer must never re-launch it — measured on a real iPhone
 
 Reported from an iPhone running **Brave**: tap "Sign in with Clave", approve in
