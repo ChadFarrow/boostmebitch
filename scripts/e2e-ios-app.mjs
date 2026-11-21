@@ -49,6 +49,11 @@
 //      nsec is refused without echoing it, and the screen fits at 390 px.
 //  10. iOS app — sign out warns that only the same nsec gets back in (not
 //      Google), erases the key, and a reload stays signed out.
+//  11. A connected NWC wallet: "Switch wallet" only where there is a choice;
+//      in the app Disconnect goes straight to the NWC form.
+//   With one wallet row (NWC, in the app) the window skips the picker: it
+//   opens on the NWC form, and a withheld backup is read only on a tap
+//   (steps 2, 5). docs/wallets.md, "A picker with one row".
 //   Steps 2 onward run at 390 x 844 under CDP phone emulation, and the open
 //   wallet window must not scroll sideways.
 
@@ -186,6 +191,19 @@ const walletView = () => js(`(() => {
   return JSON.stringify({ rows, sparkCard: /Spark\\s*·/.test(d.innerText) });
 })()`).then((s) => (s ? JSON.parse(s) : null));
 const hasRow = (v, word) => !!v && v.rows.some((r) => r.includes(word));
+const NWC_FIELD = 'input[aria-label^="NWC connection string"]';
+// The NWC form with no picker in front of it and no Back to a picker.
+const nwcFormAlone = () => js(`(() => {
+  const d = document.querySelector('[role="dialog"]');
+  if (!d) return JSON.stringify({ open: false });
+  return JSON.stringify({
+    open: true,
+    field: !!d.querySelector(${JSON.stringify(NWC_FIELD)}),
+    rows: d.querySelectorAll('button.card').length,
+    back: [...d.querySelectorAll('button')].some((b) => b.textContent.includes('Back')),
+  });
+})()`).then(JSON.parse);
+const dialogHasButton = (text) => js(`[...(document.querySelector('[role="dialog"]')?.querySelectorAll('button') ?? [])].some((b) => b.textContent.includes(${JSON.stringify(text)}))`);
 
 async function closeWallet() {
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
@@ -214,17 +232,20 @@ await openWallet();
 let v = await walletView();
 t.ok('the picker shows an NWC row', hasRow(v, 'NWC'), JSON.stringify(v));
 t.ok('the picker shows a Spark row', hasRow(v, 'Spark'), JSON.stringify(v));
+t.ok('with two rows the window opens on the picker, not a form', !(await nwcFormAlone()).field);
 await closeWallet();
 
-console.log('\n2. iOS app, signed out — no Spark row');
+console.log('\n2. iOS app, signed out — no Spark, and no picker with one row: straight to the NWC form');
 await asIosApp(true);
 await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
 await load();
 t.ok('the page sees the Capacitor stub', await js(`window.Capacitor?.getPlatform?.() === 'ios'`));
 await openWallet();
 v = await walletView();
-t.ok('the picker shows an NWC row', hasRow(v, 'NWC'), JSON.stringify(v));
-t.ok('the picker shows NO Spark row', v && !hasRow(v, 'Spark'), JSON.stringify(v));
+t.ok('NO Spark row', v && !hasRow(v, 'Spark'), JSON.stringify(v));
+let f = await nwcFormAlone();
+t.ok('the window opens on the NWC form: no picker rows, no Back button', f.field && f.rows === 0 && !f.back, JSON.stringify(f));
+t.ok('the header still says what NWC is', /Nostr Wallet Connect/.test(await js(`document.querySelector('[role="dialog"]').innerText`)));
 const overflow = await js(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
 t.ok('at 390 px the open wallet window does not scroll sideways', overflow <= 0, `overflow ${overflow}px`);
 await closeWallet();
@@ -243,7 +264,7 @@ t.ok('the app never asked for the Spark SDK', sparkRequests.length === 0, JSON.s
 await openWallet();
 v = await walletView();
 t.ok('the wallet window shows no Spark card', v && !v.sparkCard, JSON.stringify(v));
-t.ok('the picker shows NO Spark row', v && !hasRow(v, 'Spark'), JSON.stringify(v));
+t.ok('NO Spark row', v && !hasRow(v, 'Spark'), JSON.stringify(v));
 await closeWallet();
 
 console.log('\n4. Browser, the same sign-in — the restore DOES start Spark (so step 3 measured something)');
@@ -285,12 +306,28 @@ await openWallet();
 let note = await withheldNote();
 t.ok('browser: the note is shown and names Spark', !!note && /Spark/.test(note), String(note));
 await closeWallet();
+// In the app no picker stands between the wallet button and the NWC form, so
+// the tap that consents to the signer request has to be on the form itself.
+// The backup read is a REQ for the NWC d-tag; watch the frames for it.
 await asIosApp(true);
 await amberSession();
 await load();
+await wait(RESTORE_WINDOW_MS);
+const nwcReqs = [];
+const stopWatch = page.on((m) => {
+  if (m.method === 'Network.webSocketFrameSent' && (m.params.response?.payloadData ?? '').includes('boostmebitch:wallet:nwc')) nwcReqs.push(1);
+});
 await openWallet();
 note = await withheldNote();
-t.ok('iOS app: the note is shown, names NWC, and does not name Spark', !!note && /NWC/.test(note) && !/Spark/.test(note), String(note));
+t.ok('iOS app: the note is on the NWC form, names its restore button, and does not name Spark', !!note && /Restore from Nostr/.test(note) && !/Spark/.test(note), String(note));
+f = await nwcFormAlone();
+t.ok('iOS app: the window opened on the NWC form', f.field && f.rows === 0, JSON.stringify(f));
+await wait(3000);
+t.ok('iOS app: opening the window did not read the backup (no signer request without a tap)', nwcReqs.length === 0, `${nwcReqs.length} REQ(s) for the NWC backup`);
+await js(`(() => { [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.includes('Restore from Nostr')).click(); return 1; })()`);
+const read = await (async () => { for (let i = 0; i < 40; i++) { if (nwcReqs.length > 0) return true; await wait(250); } return false; })();
+t.ok('iOS app: a tap on Restore from Nostr backup reads it', read);
+stopWatch();
 await closeWallet();
 await asIosApp(false);
 
@@ -440,6 +477,34 @@ if (rowThere) {
 } else {
   await closeWallet();
 }
+await asIosApp(false);
+
+console.log('\n11. A connected NWC wallet — Switch wallet only with a choice; in the app Disconnect goes to the form');
+// A connection string no wallet answers: the card renders, nothing pays.
+const FAKE_NWC = `nostr+walletconnect://${'b'.repeat(64)}?relay=${encodeURIComponent(`ws://127.0.0.1:${PORT}`)}&secret=${'c'.repeat(64)}`;
+async function nwcConnected() {
+  await js(`(() => {
+    localStorage.clear();
+    localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
+    localStorage.setItem('bmb:nwc_uri', ${JSON.stringify(FAKE_NWC)});
+    return 1;
+  })()`);
+}
+await nwcConnected();
+await load();
+await openWallet();
+t.ok('browser: the connected card offers Switch wallet', await dialogHasButton('Switch wallet'));
+await closeWallet();
+await asIosApp(true);
+await nwcConnected();
+await load();
+await openWallet();
+t.ok('iOS app: the connected card has no Switch wallet (its picker would have one row)', (await nwcFormAlone()).open && !(await dialogHasButton('Switch wallet')));
+await js(`(() => { [...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === 'Disconnect').click(); return 1; })()`);
+const toForm = await page.until(`!!document.querySelector('[role="dialog"] ' + ${JSON.stringify(NWC_FIELD)})`, 5000);
+f = await nwcFormAlone();
+t.ok('iOS app: Disconnect goes straight to the NWC form, with no picker', toForm && f.rows === 0 && !f.back, JSON.stringify(f));
+await closeWallet();
 await asIosApp(false);
 
 await signedIn(false);
