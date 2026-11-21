@@ -68,6 +68,12 @@ Results on 2026-11-20: step 1 pass; step 3 fails as described above for ANY play
 
 **The one open reason to bring it back is test step 5** (streaming sats while locked): the streaming timer is JS, and iOS may throttle a WKWebView in the background. If step 5 fails, the removed code is in git: `git show 23fb0fe8:ios/App/App/NativeAudioPlugin.swift` and `git show 23fb0fe8:lib/native/native-audio.ts`. Wiring it is then a player change: `<Player>` drives the plugin on `isNativeIos()`, and **the streaming ledger's elapsed time must read the native position**, or `min(wall, position)` ([`streaming.md`](streaming.md)) bills nothing.
 
+## Waiting for the next Xcode build
+
+Xcode 27.2 is on the NAS, not on the Mac: `/Volumes/NAS/reference/downloads/xcode/Xcode-27.2-27B52-ssh/Xcode.app`, back in about 7 minutes with `node ~/Vibe/vibe-kit/nas-copy.mjs <that path> /Applications/Xcode.app` (10.3 GB on disk). The owner keeps it there until enough native work is queued to be worth a build (2026-11-20). Web changes need no build: the app loads the live site. Queue native work here:
+
+- **Background time around the Clave handoff.** Call `UIApplication.beginBackgroundTask` when the app goes to the background (or only while a pairing waits), and end it in its expiration handler, so the pairing's relay socket can still catch Clave's connect ack. Clave's own `docs/nip46-compatibility.md` recommends this to native partners: the partner's socket freezes 5–10 s after the switch, and kind:24133 is ephemeral. **Unmeasured:** whether a background task in the app process keeps WKWebView's separate WebContent and Networking processes from suspending. Measure it on the phone (pair Clave on a weak cell signal, where the owner sees the timeouts) and remove it if it does not help. The web side already covers most of the case: the sign-in window re-subscribes on return, `relay.powr.build` replays a missed ack for at least 60 s, and #641 replaced the failing pairing relay (`signers.md`, "The pairing relays").
+
 ## Before the App Store (not started)
 
 - Paid Apple Developer Program. An individual account is enough **because the app holds no funds**: NWC connects a wallet the user already has. Guideline 3.1.5's organization requirement is for apps that store currency. Castamatic, Fountain, Podverse, Podcast Guru and Pod Monster all ship V4V boosts today.
