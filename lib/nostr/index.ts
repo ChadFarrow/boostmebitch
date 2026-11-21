@@ -8,6 +8,7 @@ export {
   loginWithBunker,
   loginWithNostrConnect,
   loginWithLocalKey,
+  loginWithNsec,
   restoreAmberSigner,
   restoreBunkerSigner,
   startBunkerRevive,

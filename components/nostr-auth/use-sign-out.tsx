@@ -24,6 +24,7 @@ import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { cancelQueuedSummaries } from '@/lib/nostr/value-playback';
 import { resetFollows } from '@/lib/nostr/follows';
+import { isNativeIos } from '@/lib/native/platform';
 
 export function useSignOut(): [() => Promise<void>, ReactNode] {
   const identity = useApp((s) => s.identity);
@@ -42,11 +43,21 @@ export function useSignOut(): [() => Promise<void>, ReactNode] {
     // clearLocalSigner wipes the ciphertext AND the non-extractable wrap key,
     // and the only way back in is the same Google account plus the PIN. An
     // extension or bunker sign-out costs nothing, so it stays one click. Read
-    // the kind before the storage.signer.clear() below.
+    // the kind before the storage.signer.clear() below. Inside the iOS app the
+    // only local key is a pasted nsec (Google is off there), so the way back in
+    // is that nsec, not a Google account and a PIN.
     if (storage.signer.get() === 'local') {
       const ok = await confirm({
         title: 'Sign out and erase this key?',
-        body: (
+        body: isNativeIos() ? (
+          <>
+            <p>Signing out erases this account&apos;s key from this phone.</p>
+            <p>
+              You can only get back in by pasting the same nsec. If you have no other copy
+              of it, this account is gone for good.
+            </p>
+          </>
+        ) : (
           <>
             <p>Signing out erases this account&apos;s key from this browser.</p>
             <p>

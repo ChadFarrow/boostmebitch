@@ -8,7 +8,7 @@
 
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
-import { hexToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import {
   activateAmberSigner,
   activateBunkerSigner,
@@ -742,6 +742,44 @@ export async function loginWithLocalKey(skHex: string): Promise<NostrIdentity> {
     deactivateLocalSigner();
     throw e;
   }
+}
+
+/**
+ * Turn what the user pasted into a secret key, or throw a message the screen
+ * can show. Only the `nsec1…` form is accepted: a 64-character hex string is
+ * as often a PUBLIC key, and signing in as a key nobody holds is a silent dead
+ * end. The thrown messages never contain the input — `nip19.decode`'s own
+ * errors quote the string they failed on, so they are replaced, never passed on.
+ */
+export function nsecToHex(input: string): string {
+  const v = input.trim().replace(/^nostr:/i, '').toLowerCase();
+  if (v.startsWith('npub1')) {
+    throw new Error('That is your public key (npub). Paste your private key: it starts with nsec1.');
+  }
+  if (v.startsWith('ncryptsec1')) {
+    throw new Error('That key is encrypted (ncryptsec). Paste the plain key that starts with nsec1.');
+  }
+  if (!v.startsWith('nsec1')) {
+    throw new Error('A private key starts with nsec1.');
+  }
+  let decoded: ReturnType<typeof nip19.decode>;
+  try {
+    decoded = nip19.decode(v);
+  } catch {
+    throw new Error('That nsec is not complete or has a typing error. Copy it again.');
+  }
+  if (decoded.type !== 'nsec') throw new Error('A private key starts with nsec1.');
+  return bytesToHex(decoded.data);
+}
+
+/**
+ * Sign in with a pasted nsec — the iOS app's own key, because Google is off
+ * there and a remote signer costs a relay round trip per signature. The key
+ * goes the Google path's way from here: `loginWithLocalKey` keeps it behind a
+ * non-extractable CryptoKey on this device. Nothing here touches the network.
+ */
+export async function loginWithNsec(input: string): Promise<NostrIdentity> {
+  return loginWithLocalKey(nsecToHex(input));
 }
 
 /**

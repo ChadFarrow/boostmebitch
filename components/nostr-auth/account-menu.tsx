@@ -14,6 +14,7 @@ import { BugReportModal } from '../bug-report-modal';
 import { BunkerApprovalNotice } from '../bunker-approval-notice';
 import { BunkerRestoreNotice } from '../bunker-restore-notice';
 import { Avatar } from '../avatar';
+import { isNativeIos } from '@/lib/native/platform';
 
 // Surfaced inside AccountMenu when the NIP-46 bunker subscription has
 // gone stale (typically because iOS suspended the PWA's WebSocket while
@@ -32,7 +33,9 @@ function LocalKeyEphemeralBanner() {
   return (
     <div className="text-[11px] text-bolt/80 border border-bolt/40 bg-bolt/10 px-2 py-1.5 mb-3">
       Storage is restricted in this browser — you&apos;ll be signed out when you
-      reload. Sign in with Google and your PIN to come back.
+      reload. {isNativeIos()
+        ? 'Paste your nsec again to come back.'
+        : 'Sign in with Google and your PIN to come back.'}
     </div>
   );
 }
