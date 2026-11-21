@@ -690,6 +690,109 @@ if (BRAND_ID !== 'bmb') {
   })()`, 20000));
   await js(`localStorage.removeItem('bmb:boosts:guest')`);
 
+  // Chad, 2026-11-21: "when I click the gif button [can] the cursor go to the
+  // search box so I can start typing in the search right away?" The field
+  // carried `autoFocus` from the start, and <ModalShell> then moved focus to
+  // the first control in the card — the picker's Close button — so the cursor
+  // was never in the box. Every press here is a REAL input event: a script's
+  // `b.click()` moves no focus, and typing goes to whatever has it.
+  section('2f. Desktop: the cursor is in the search box at once, by mouse and by keyboard');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  // Headless Chrome matches neither (hover: hover) nor (hover: none); a desktop
+  // with a mouse matches the first, which is the picker's test for "no
+  // on-screen keyboard to cover the grid".
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'hover', value: 'hover' }, { name: 'pointer', value: 'fine' }] });
+  t.ok('(hover: hover) matches', await js(`matchMedia('(hover: hover)').matches`));
+  const SEARCH_FOCUSED = `document.activeElement?.matches?.('[role="dialog"] input[type="search"]') === true`;
+  const focusedName = () => js(`(() => { const a = document.activeElement;
+    return a ? a.tagName.toLowerCase() + (a.getAttribute('type') ? '[' + a.getAttribute('type') + ']' : '') + ' ' + (a.innerText ?? '').trim().slice(0, 20) : null; })()`);
+  const KEYS = {
+    Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
+    Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+  };
+  const press = async (name) => {
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', ...KEYS[name] });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...KEYS[name], text: undefined });
+    await wait(200);
+  };
+  /** Real key presses, one per character, to whatever has focus. Not
+   *  `Input.insertText`: that writes at the page's text selection, which stays
+   *  in the box after focus moves to a button, so it passed with the cursor
+   *  on Close. */
+  const typeKeys = async (text) => {
+    for (const ch of text) {
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, unmodifiedText: ch });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
+    }
+  };
+  const boxValue = () => js(`document.querySelector('[role="dialog"] input[type="search"]')?.value ?? null`);
+  /** A real mouse click on the first enabled button whose text matches. */
+  const mouseClick = async (re) => {
+    const at = await js(`(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => ${re}.test(x.innerText) && !x.disabled);
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return [r.left + r.width / 2, r.top + r.height / 2];
+    })()`);
+    if (!at) return false;
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await send('Input.dispatchMouseEvent', { type, x: at[0], y: at[1], button: 'left', clickCount: 1 });
+    }
+    return true;
+  };
+  const pickerOpen = `!!document.querySelector('[data-gif-scroll]')`;
+  const TRIGGER_FOCUSED = `/add a gif/i.test(document.activeElement?.innerText ?? '') && document.activeElement?.closest('[role="dialog"]') !== null`;
+  const boostModalOpen = `[...document.querySelectorAll('button')].some((b) => /add a gif/i.test(b.innerText) && !b.disabled)`;
+
+  await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
+  await until(`!!document.querySelector('button[aria-label="Boost this track"]')`, 90000);
+  // The boost modal opens from the keyboard too, so the last step can see focus
+  // go back to the BOOST that opened it.
+  await js(`document.querySelector('button[aria-label="Boost this track"]').focus()`);
+  await press('Enter');
+  await until(boostModalOpen, 20000);
+  t.ok('a mouse click on + Add a GIF opens the picker', await mouseClick('/add a gif/i') && await until(pickerOpen, 5000));
+  // Wait for the first list, so every effect of the open has run.
+  await until(`document.querySelectorAll('[data-gif-key]').length >= 10`, 20000);
+  t.ok('the cursor is in the search box', await js(SEARCH_FOCUSED), `focus is on: ${await focusedName()}`);
+  before = nbStub.log.length;
+  await typeKeys('applause');
+  t.equal('typing at once, with no click in the box, fills it', await boxValue(), 'applause');
+  t.ok('and runs the search', await until(`document.querySelector('[data-gif-key="${keysOf(FIX.applause)[0]}"]') !== null`, 8000)
+    && nbStub.log.slice(before).some((r) => r.q === 'applause'));
+  await press('Escape');
+  t.ok('Escape closes the picker', await until(`!(${pickerOpen})`, 3000));
+  t.ok('and leaves the boost modal open', await js(boostModalOpen));
+  t.ok('focus is back on + Add a GIF', await js(TRIGGER_FOCUSED), `focus is on: ${await focusedName()}`);
+
+  await js(`[...document.querySelectorAll('button')].find((b) => /add a gif/i.test(b.innerText) && !b.disabled)?.focus()`);
+  await press('Enter');
+  t.ok('Enter on a focused + Add a GIF opens the picker', await until(pickerOpen, 5000));
+  await until(`document.querySelectorAll('[data-gif-key]').length >= 10`, 20000);
+  t.ok('the cursor is in the search box again', await js(SEARCH_FOCUSED), `focus is on: ${await focusedName()}`);
+  before = nbStub.log.length;
+  await typeKeys('cat');
+  t.equal('typing at once fills the box', await boxValue(), 'cat');
+  t.ok('and runs that search too', await until(`document.querySelector('[data-gif-key="${keysOf(FIX.cat)[0]}"]') !== null`, 8000)
+    && nbStub.log.slice(before).some((r) => r.q === 'cat'));
+  t.ok('the Close button closes the picker', await mouseClick('/^close$/i') && await until(`!(${pickerOpen})`, 3000));
+  t.ok('and leaves the boost modal open', await js(boostModalOpen));
+  t.ok('focus is back on + Add a GIF', await js(TRIGGER_FOCUSED), `focus is on: ${await focusedName()}`);
+
+  // A pick swaps the trigger for the preview, so the control that opened the
+  // picker is gone: focus must land in the boost modal, not on <body>.
+  await press('Enter');
+  await until(`document.querySelectorAll('[data-gif-key]').length >= 10`, 20000);
+  await js(`document.querySelector('[data-gif-key]').focus()`);
+  await press('Enter');
+  t.ok('Enter on a GIF picks it and closes the picker', await until(`!(${pickerOpen}) && !!document.querySelector('img[alt="The GIF this boost will carry"]')`, 3000));
+  t.ok('focus stays inside the boost modal', await js(`(() => { const a = document.activeElement; return !!a && a !== document.body && !!a.closest('[role="dialog"]'); })()`),
+    `focus is on: ${await focusedName()}`);
+  await press('Escape');
+  t.ok('a second Escape closes the boost modal', await until(`!document.querySelector('[role="dialog"]')`, 3000));
+  t.ok('and focus is back on the BOOST that opened it', await js(`document.activeElement?.getAttribute('aria-label') === 'Boost this track'`), `focus is on: ${await focusedName()}`);
+  await send('Emulation.setEmulatedMedia', { features: [] });
+
   section('2d. Phone (390×844, touch): the field is not focused on open');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
