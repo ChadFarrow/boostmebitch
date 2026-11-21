@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { lockScroll } from '@/lib/scroll-lock';
 import { useModalHistory } from './use-modal-history';
@@ -21,7 +21,8 @@ import { useModalHistory } from './use-modal-history';
  * - **Portal to `document.body`.** `app/layout.tsx` wraps page content in
  *   `relative z-0`, which creates a stacking context — a `fixed` overlay inside
  *   it can never rise above the body-level `<Player>`, whatever its z-index.
- *   The `mounted` gate keeps SSR rendering nothing.
+ *   The `mounted` gate keeps SSR (and hydration) rendering nothing, and is
+ *   true from a later mount's FIRST render — see `useIsClient`.
  *
  * - **Dialog semantics.** `role="dialog"`, `aria-modal`, and a generated id
  *   wired to the title via `aria-labelledby`. The app had **zero** of these:
@@ -115,6 +116,19 @@ export interface ModalShellProps {
   clearsPlayer?: boolean;
 }
 
+// `false` on the server and while hydrating, `true` from the first render of a
+// modal mounted after that. It replaces a `useState(false)` flipped in an
+// effect, which kept SSR rendering nothing too but put the portal — and any
+// `autoFocus` inside it — one render AFTER the press that opened the modal,
+// outside the press's own event. iOS raises the keyboard only for a focus made
+// inside that event, so the GIF picker's search box got a caret and no keyboard
+// (Chad, 2026-11-21: "yes, open the keyboard on the phone too"). A caller that
+// opens with `flushSync` now commits the whole card inside its click handler.
+const noSubscribe = () => () => {};
+function useIsClient(): boolean {
+  return useSyncExternalStore(noSubscribe, () => true, () => false);
+}
+
 export function ModalShell({
   onClose,
   label,
@@ -124,16 +138,14 @@ export function ModalShell({
   clearsPlayer = true,
   closeButton = false,
 }: ModalShellProps) {
-  const [mounted, setMounted] = useState(false);
+  const mounted = useIsClient();
   const cardRef = useRef<HTMLDivElement | null>(null);
   const labelId = useId();
-  // Captured before the portal mounts, so focus can go back where it came from.
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    returnFocusRef.current = document.activeElement as HTMLElement | null;
-    setMounted(true);
-  }, []);
+  // Where focus goes back to on close. Read in the FIRST render, before the
+  // card commits: an `autoFocus` inside it takes focus during that commit, so
+  // an effect would read the card's own control.
+  const [returnFocus] = useState<HTMLElement | null>(() =>
+    typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null));
 
   useEffect(() => {
     if (!mounted) return;
@@ -164,43 +176,49 @@ export function ModalShell({
     }
   }, [mounted]);
 
-  // Hand focus back when the dialog closes. A LAYOUT effect, and that is the
-  // fix: React runs a removed component's layout cleanup BEFORE it takes the
-  // component's DOM out, and its passive cleanup AFTER. This restore sat in a
-  // passive cleanup, where the focused control was already gone and
-  // `document.activeElement` was <body>, so the "still inside us" test below
-  // always failed and nothing was ever restored. After the GIF picker closed,
-  // focus sat on <body>, outside the boost modal's own key handler: Escape no
-  // longer closed it and Tab walked the page behind (`e2e:gifgrid` 2f,
-  // 2026-11-21).
+  // Hand focus back when the dialog closes. The "was focus inside us" test is
+  // made in a LAYOUT cleanup: React runs it BEFORE it takes the card out, and a
+  // passive cleanup AFTER, when the focused control is gone and
+  // `document.activeElement` is <body>. The restore sat in a passive cleanup,
+  // so the test always failed and nothing was ever restored: after the GIF
+  // picker closed, focus sat on <body>, outside the boost modal's key handler,
+  // so Escape no longer closed it and Tab walked the page behind
+  // (`e2e:gifgrid` 2f, 2026-11-21).
+  //
+  // The restore itself waits for a microtask, after the whole commit:
+  // - StrictMode (dev) runs a mount's effects twice, with a simulated unmount
+  //   between, and the card is still there afterwards. Restoring then moved
+  //   focus out of a modal that stays open, and the re-run initial-focus
+  //   effect put it on the first control, not the `autoFocus` one.
+  // - The same commit can still remove `back` after this cleanup runs (a GIF
+  //   pick turns the picker's button into its preview).
   useLayoutEffect(() => {
     if (!mounted) return;
     const card = cardRef.current;
     if (!card) return;
     return () => {
-      // Restore focus only if it's still inside us — if something else has
-      // taken it in the meantime, yanking it back is the more surprising move.
+      // Restore focus only if it was inside us — if something else had taken
+      // it, yanking it back is the more surprising move.
       const active = document.activeElement;
       if (!active || !card.contains(active)) return;
-      const back = returnFocusRef.current;
-      if (back && back.isConnected && !card.contains(back)) back.focus({ preventScroll: true });
-      // Checked once the whole commit is done, not here: the same render can
-      // still remove `back` after this runs (a GIF pick turns the picker's
-      // button into its preview, and React removes the button later in the
-      // commit), and focus then drops to <body> with nothing to catch it.
-      // If focus ended up nowhere — `back` gone, disabled, or never focused
-      // (Safari does not focus a clicked button) — land on the modal under us,
-      // if there is one, so its Escape and its Tab trap still have focus.
       queueMicrotask(() => {
+        if (card.isConnected) return; // not closed: StrictMode's re-run
+        // Something focused since (a modal opened in the same press) wins.
         const now = document.activeElement;
         if (now && now !== document.body) return;
-        const under = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'))
-          .filter((d) => d !== card && d.isConnected)
-          .at(-1);
+        const back = returnFocus;
+        if (back && back.isConnected) {
+          back.focus({ preventScroll: true });
+          if (document.activeElement === back) return;
+        }
+        // `back` is gone, disabled, or never had focus (Safari does not focus
+        // a clicked button): land on the modal under us, if there is one, so
+        // its Escape and its Tab trap still have focus to work with.
+        const under = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')).at(-1);
         under?.focus({ preventScroll: true });
       });
     };
-  }, [mounted]);
+  }, [mounted, returnFocus]);
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

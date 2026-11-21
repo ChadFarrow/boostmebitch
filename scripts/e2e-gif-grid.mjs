@@ -316,6 +316,16 @@ const clickButton = (re) => js(`(() => {
   b.click();
   return true;
 })()`);
+/** Close the picker, and wait until its history entry has been stepped off.
+ *  A modal opened in the few milliseconds before that step's `popstate` is
+ *  closed by it (docs/ui.md, "An open modal is a history entry"): a person
+ *  cannot reopen that fast, a script can, and since <ModalShell> commits in
+ *  its first render the reopened picker pushes its entry inside that window. */
+async function closePicker() {
+  await clickButton('/^close$/i');
+  await until(`!document.querySelector('[data-gif-scroll]') && (history.state?.bmbModals ?? []).length <= 1`, 3000);
+  await wait(50);
+}
 async function openPicker(minTiles = 20) {
   await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
   t.ok('the album offers BOOST', await until(`!!document.querySelector('button[aria-label="Boost this track"]')`, 90000));
@@ -420,7 +430,7 @@ if (BRAND_ID !== 'buddy') {
   t.ok('ten searches: videos made ≤ the most attached at once + 4', made <= maxAttached + 4,
     `made ${made}, most attached ${maxAttached}`);
 
-  await clickButton('/^close$/i');
+  await closePicker();
   t.ok('close releases every video', await until(`document.querySelectorAll('video[data-gif-tile]').length === 0`, 3000));
   await clickButton('/add a gif/i');
   const replays = await until(`document.querySelectorAll('[data-gif-key][data-state="playing"]').length > 0`, 15000);
@@ -461,7 +471,7 @@ if (BRAND_ID !== 'buddy') {
   t.ok('it offers Play anyway', await clickButton('/play anyway/i'));
   t.ok('Play anyway: the on-screen tiles play', await until(`!!document.querySelector('[data-gif-key][data-state="playing"]')`, 15000));
   t.equal('and this device remembers it (bmb:gif_motion)', await js(`localStorage.getItem('bmb:gif_motion')`), '1');
-  await clickButton('/^close$/i');
+  await closePicker();
   await clickButton('/add a gif/i');
   t.ok('opened again: it plays at once', await until(`!!document.querySelector('[data-gif-key][data-state="playing"]')`, 15000));
   t.ok('and offers still pictures again', /show still pictures/i.test(await dialogText()), await dialogText());
@@ -605,7 +615,7 @@ if (BRAND_ID !== 'bmb') {
   // One letter typed while the first list is still on its way is not a search,
   // so it must not cancel that list either: the grid would pulse its skeleton
   // under "Keep typing to search." for good (final review).
-  await clickButton('/^close$/i');
+  await closePicker();
   nbStub.slow[''] = 1500;
   await clickButton('/add a gif/i');
   await until(`!!document.querySelector('input[type="search"]')`, 5000);
@@ -620,7 +630,7 @@ if (BRAND_ID !== 'bmb') {
   const firstKey = keysOf(FIX.chibi)[0];
   const srcOf = () => js(`document.querySelector('[data-gif-key="${firstKey}"] video')?.getAttribute('src') ?? ''`);
   t.ok('Chrome plays the WebM', (await srcOf()).startsWith(`${B}/webm/orig/`), await srcOf());
-  await clickButton('/^close$/i');
+  await closePicker();
   nbStub.failWebm = firstKey.split(':')[1];
   await clickButton('/add a gif/i');
   t.ok('a failed WebM falls back to the MP4', await until(`(document.querySelector('[data-gif-key="${firstKey}"] video')?.getAttribute('src') ?? '').startsWith('${B}/mp4/orig/')`, 10000),
@@ -698,11 +708,7 @@ if (BRAND_ID !== 'bmb') {
   // `b.click()` moves no focus, and typing goes to whatever has it.
   section('2f. Desktop: the cursor is in the search box at once, by mouse and by keyboard');
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
-  // Headless Chrome matches neither (hover: hover) nor (hover: none); a desktop
-  // with a mouse matches the first, which is the picker's test for "no
-  // on-screen keyboard to cover the grid".
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'hover', value: 'hover' }, { name: 'pointer', value: 'fine' }] });
-  t.ok('(hover: hover) matches', await js(`matchMedia('(hover: hover)').matches`));
   const SEARCH_FOCUSED = `document.activeElement?.matches?.('[role="dialog"] input[type="search"]') === true`;
   const focusedName = () => js(`(() => { const a = document.activeElement;
     return a ? a.tagName.toLowerCase() + (a.getAttribute('type') ? '[' + a.getAttribute('type') + ']' : '') + ' ' + (a.innerText ?? '').trim().slice(0, 20) : null; })()`);
@@ -793,14 +799,60 @@ if (BRAND_ID !== 'bmb') {
   t.ok('and focus is back on the BOOST that opened it', await js(`document.activeElement?.getAttribute('aria-label') === 'Boost this track'`), `focus is on: ${await focusedName()}`);
   await send('Emulation.setEmulatedMedia', { features: [] });
 
-  section('2d. Phone (390×844, touch): the field is not focused on open');
+  // Chad, 2026-11-21, asked whether a phone should open the keyboard too: "yes,
+  // open the keyboard on the phone too". iOS raises the keyboard only for a
+  // focus() made INSIDE the tap's own event; a focus one render later puts the
+  // caret in the box with no keyboard. No emulation raises a keyboard, so this
+  // checks what decides it: where focus is when the tap's click has finished
+  // dispatching (a listener on window runs after React's, which sit lower).
+  section('2d. Phone (390×844, touch): the search box takes focus INSIDE the tap, so the keyboard opens');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
-  await openPicker(10);
-  t.ok('the keyboard does not cover the grid', await js(`document.activeElement?.getAttribute('type') !== 'search'`));
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'hover', value: 'none' }, { name: 'pointer', value: 'coarse' }] });
+  /** A real tap (a touch gesture, which makes the click) on an element. */
+  const tap = async (expr) => {
+    const at = await js(`(() => {
+      const b = ${expr};
+      if (!b) return null;
+      b.scrollIntoView({ block: 'center' });
+      const r = b.getBoundingClientRect();
+      return [r.left + r.width / 2, r.top + r.height / 2];
+    })()`);
+    if (!at) return false;
+    await send('Input.synthesizeTapGesture', { x: at[0], y: at[1], gestureSourceType: 'touch' });
+    await wait(300);
+    return true;
+  };
+  const ADD_GIF = `[...document.querySelectorAll('[role="dialog"] button')].find((b) => /add a gif/i.test(b.innerText) && !b.disabled)`;
+  await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
+  await until(`!!document.querySelector('button[aria-label="Boost this track"]')`, 90000);
+  await tap(`document.querySelector('button[aria-label="Boost this track"]')`);
+  await until(boostModalOpen, 20000);
+  await js(`(() => {
+    window.__atClickEnd = [];
+    window.addEventListener('click', () => {
+      const a = document.activeElement;
+      window.__atClickEnd.push(a?.matches?.('input[type="search"]') ? 'search' : (a?.tagName ?? 'none') + ' ' + (a?.innerText ?? '').trim().slice(0, 20));
+    });
+  })()`);
+  t.ok('a tap on + Add a GIF opens the picker', await tap(ADD_GIF) && await until(pickerOpen, 5000));
+  t.equal("the search box had focus when the tap's click finished", await js(`window.__atClickEnd.at(-1) ?? null`), 'search');
+  await until(`document.querySelectorAll('[data-gif-key]').length >= 10`, 20000);
+  t.ok('and still has it once the first list arrived', await js(SEARCH_FOCUSED), `focus is on: ${await focusedName()}`);
+  before = nbStub.log.length;
+  await typeKeys('applause');
+  t.equal('typing fills the box', await boxValue(), 'applause');
+  t.ok('and runs the search', await until(`document.querySelector('[data-gif-key="${keysOf(FIX.applause)[0]}"]') !== null`, 8000)
+    && nbStub.log.slice(before).some((r) => r.q === 'applause'));
   const w = await js(`[document.documentElement.scrollWidth, document.documentElement.clientWidth]`);
   t.ok('no sideways overflow', w && w[0] <= w[1], JSON.stringify(w));
+  t.ok('a tap on Close closes the picker', await tap(`[...document.querySelectorAll('[role="dialog"] button')].find((b) => /^close$/i.test(b.innerText))`)
+    && await until(`!(${pickerOpen})`, 3000));
+  t.ok('and leaves the boost modal open', await js(boostModalOpen));
+  t.ok('a second tap opens it with the cursor in the box again', await tap(ADD_GIF) && await until(pickerOpen, 5000)
+    && (await js(`window.__atClickEnd.at(-1) ?? null`)) === 'search');
   await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await send('Emulation.setEmulatedMedia', { features: [] });
 }
 
 if (!REAL_NB) {
@@ -847,7 +899,7 @@ if (!REAL_NB) {
     await js(`window.__msLog.some((e) => e.action === 'nexttrack' && e.fn && e.tile >= ${lastTile})`),
     JSON.stringify((await js('window.__msLog')).slice(-4)));
 
-  await clickButton('/^close$/i');
+  await closePicker();
   await js(`(() => { const a = document.querySelector('audio'); a.pause(); setTimeout(() => a.play(), 300); })()`);
   t.ok("the player's own playing still logs ms.reg", await until(`(JSON.parse(localStorage.getItem('bmb:plog:device') ?? '[]')).filter((l) => / ms\\.reg/.test(l)).length > ${regBefore}`, 8000));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: recorder.identifier });

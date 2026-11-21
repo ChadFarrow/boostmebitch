@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useId, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type { GifResult } from '@/lib/giphy';
 import { giphyTile, gifPreviewUrl, nbTile, type GifPick, type GifTile } from '@/lib/gifs/pick';
 import { NB_BROWSE_URL, nbSearchUrl, normalizeNbQuery, parseNbResults } from '@/lib/gifs/nostr-build';
@@ -133,15 +134,6 @@ export function GifPicker({
   const [refused, setRefused] = useState(false);
   // Bumped by "Try again", which sends the same search once more.
   const [attempt, setAttempt] = useState(0);
-  // A phone's keyboard would cover the grid, so the field takes focus on open
-  // only where a pointer can hover. Headless Chrome matches neither, so tests
-  // see the phone's behaviour unless they emulate `hover` (e2e:gifgrid 2f).
-  // `<ModalShell>` keeps a focus that `autoFocus` gave; it used to move it to
-  // the first control, Close, so the cursor was never in the box.
-  const [focusOnOpen] = useState(
-    () => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-      && window.matchMedia('(hover: hover)').matches,
-  );
   const source = BRAND.gifSource;
   const tiles = state.kind === 'ready' ? state.tiles : state.kind === 'loading' && state.previous ? state.previous : [];
   const searching = state.kind === 'loading' && tiles.length > 0;
@@ -243,7 +235,13 @@ export function GifPicker({
           // between the message and FROM it read as a hint, not a control.
           // Not bolt-yellow — that colour is the money action's.
           className="btn-ghost w-full"
-          onClick={() => setOpen(true)}
+          // `flushSync`: the picker, and the search box's `autoFocus`, commit
+          // INSIDE this click. iOS raises the keyboard only for a focus made
+          // inside the tap's own event; one render later the box gets a caret
+          // and no keyboard. On every device the cursor is in the box at once
+          // (Chad, 2026-11-21: "yes, open the keyboard on the phone too" —
+          // it covers the lower part of the grid, and that was his choice).
+          onClick={() => flushSync(() => setOpen(true))}
           disabled={disabled}
         >
           + Add a GIF
@@ -273,7 +271,9 @@ export function GifPicker({
         onChange={(e) => onQuery(e.target.value)}
         placeholder={source === 'giphy' ? 'search GIPHY…' : 'search GIFs…'}
         autoComplete="off"
-        autoFocus={focusOnOpen}
+        // `<ModalShell>` keeps a focus `autoFocus` gave; it used to move it to
+        // the first control, Close, so the cursor was never in the box.
+        autoFocus
         disabled={disabled}
       />
       {notASearch && !secretHit && (
