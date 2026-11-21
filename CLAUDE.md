@@ -31,6 +31,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, **`app/api/audio/`**, and `<Player>`'s local-source branch — the worker is network-first, which is NOT precaching |
 | [`docs/spark-sdk-swap.md`](docs/spark-sdk-swap.md) | `lib/v4v/spark.ts`, `spark-derive.ts` — why the wallet derives at account 0, the path BlitzWallet and Primal use |
 | [`docs/pc20-favorites.md`](docs/pc20-favorites.md) | `lib/nostr/favorites-*.ts` — only a pointer to the kind:10333 spec in PC20-Nostr; a wire-format change is a PR there first |
+| [`docs/irc.md`](docs/irc.md) | `lib/irc/`, `components/irc-chat.tsx` and the player's IRC tabs — ZeroNode is reached through Chad's gateway (thelounge-candr), never directly |
 
 ## Names
 
@@ -114,6 +115,7 @@ npm run dev / build / start / lint
 | `check:opml` | `parseOpml`, `planOpmlImport` (what leaves the device) | a paid feed's key sent to Podcast Index |
 | `check:moved` | `moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked | a copycat feed collects boosts |
 | `check:demu` | `isDemuFeed` | Wavlake passes as DeMu |
+| `check:irc` | `lib/irc/protocol.ts` (the line codec, the session) and `lib/irc/shows.ts` | typed text becomes a second IRC command |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** No `check:*` sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused: all three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
