@@ -20,19 +20,61 @@ import { WeblnWallet } from './webln-wallet';
 import { StreamRate, StreamedLog } from './streaming-settings';
 import { DefaultAmounts } from './boost-modal/default-amounts';
 
+type Rail = 'nwc' | 'spark' | 'webln';
+
+// `picked`: a tap in the picker chose this form. False when the modal opened
+// straight on it because the picker would have had one row — that tap is what
+// consents to the form's backup read, so without it the read waits for one.
 type WalletView =
   | { kind: 'picker'; switching: boolean }
-  | { kind: 'connecting'; rail: 'nwc' | 'spark' | 'webln'; switching: boolean }
+  | { kind: 'connecting'; rail: Rail; switching: boolean; picked: boolean }
   | { kind: 'connected' };
 
-function railConnected(rail: 'nwc' | 'spark' | 'webln'): boolean {
+type PickerRow = { rail: Rail; icon: string; title: string; desc: string };
+
+// The rows the picker offers. Read per call, not captured: an extension can
+// inject `window.webln` after the modal mounted.
+function pickerRows(): PickerRow[] {
+  return [
+    ...(hasWebln()
+      ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Use the Alby browser extension · tap to enable' }]
+      : []),
+    // Plain words first, the protocol name second: these three rows are the
+    // first thing a newcomer reads about paying, and "NWC · Paste a
+    // nostr+walletconnect:// URI" told them nothing about which to pick.
+    { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Connect a Lightning wallet you already have (Nostr Wallet Connect)' },
+    // Not inside the iOS app, which holds no funds (`sparkAvailable`).
+    ...(sparkAvailable()
+      ? [{ rail: 'spark' as const, icon: '✶', title: 'Spark', desc: 'A wallet this app creates and backs up for you — self-custodial' }]
+      : []),
+  ];
+}
+
+// A picker with one row is not a choice — inside the iOS app it is NWC alone.
+// The modal skips it: the wallet button opens that rail's form, Disconnect
+// returns to it, and "Switch wallet" is not offered (docs/wallets.md).
+function onlyPickerRow(): PickerRow | null {
+  const rows = pickerRows();
+  return rows.length === 1 ? rows[0] : null;
+}
+
+// Where the modal stands with nothing connected — and where it opens.
+function firstView(): WalletView {
+  if (getActiveRail() !== null) return { kind: 'connected' };
+  const only = onlyPickerRow();
+  return only
+    ? { kind: 'connecting', rail: only.rail, switching: false, picked: false }
+    : { kind: 'picker', switching: false };
+}
+
+function railConnected(rail: Rail): boolean {
   return rail === 'nwc' ? hasNwc() : rail === 'spark' ? hasSpark() : isWeblnEnabled();
 }
 
 // Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority)
 // but gates WebLN on isWeblnEnabled — inside the wallet UI "active" means
 // the user explicitly enabled it, not merely that the extension exists.
-function getActiveRail(): 'nwc' | 'spark' | 'webln' | null {
+function getActiveRail(): Rail | null {
   const pref = storage.railPref.get();
   if (pref && railConnected(pref)) return pref;
   if (hasNwc()) return 'nwc';
@@ -48,15 +90,13 @@ interface Props {
 export function WalletModal({ onClose }: Props) {
   const identity = useApp((s) => s.identity);
   const backupWithheld = useApp((s) => s.walletBackupWithheld);
-  const [view, setView] = useState<WalletView>(() =>
-    getActiveRail() !== null ? { kind: 'connected' } : { kind: 'picker', switching: false }
-  );
+  const [view, setView] = useState<WalletView>(firstView);
   // Sync view when wallet state changes externally (e.g. auto-restore completes
   // after the modal is already open, or a disconnect fires from outside).
   useWalletChange(() => {
     setView((v) => {
       const active = getActiveRail();
-      if (v.kind === 'connected' && !active) return { kind: 'picker', switching: false };
+      if (v.kind === 'connected' && !active) return firstView();
       if (v.kind === 'picker' && !v.switching && active) return { kind: 'connected' };
       // Auto-restore completing while the form for that rail is showing:
       // flip straight to connected without requiring the user to re-paste.
@@ -66,7 +106,7 @@ export function WalletModal({ onClose }: Props) {
   });
 
 
-  async function handleConnected(rail: 'nwc' | 'spark' | 'webln') {
+  async function handleConnected(rail: Rail) {
     await clearOtherWallets(rail, identity?.npub);
     onClose();
   }
@@ -75,14 +115,14 @@ export function WalletModal({ onClose }: Props) {
   // active payer (rail pref → pickRail / balance chip / menu summary follow)
   // without touching the other connections. Only connecting a NEW wallet
   // disconnects the others (clearOtherWallets in handleConnected).
-  function handlePickerClick(rail: 'nwc' | 'spark' | 'webln', switching: boolean) {
+  function handlePickerClick(rail: Rail, switching: boolean) {
     if (switching && railConnected(rail)) {
       recordLastRail(rail, identity);
       setView({ kind: 'connected' });
       return;
     }
     if (rail === 'webln') { void handleWeblnPickerClick(switching); return; }
-    setView({ kind: 'connecting', rail, switching });
+    setView({ kind: 'connecting', rail, switching, picked: true });
   }
 
   async function handleWeblnPickerClick(switching: boolean) {
@@ -93,16 +133,16 @@ export function WalletModal({ onClose }: Props) {
       onClose();
     } catch {
       // Enable failed (user denied) — fall back to the form so they see the error.
-      setView({ kind: 'connecting', rail: 'webln', switching });
+      setView({ kind: 'connecting', rail: 'webln', switching, picked: true });
     }
   }
 
   function handleDisconnected() {
-    setView({ kind: 'picker', switching: false });
+    setView(firstView());
   }
 
   const activeRail = getActiveRail();
-  const weblnDetected = hasWebln();
+  const onlyRow = onlyPickerRow();
 
   let headerTitle = 'Connect a wallet';
   let headerSub: string | null = 'Pick one to send Lightning payments.';
@@ -114,7 +154,8 @@ export function WalletModal({ onClose }: Props) {
     headerSub = null;
   } else if (view.kind === 'connecting') {
     headerTitle = view.rail === 'nwc' ? 'NWC' : view.rail === 'spark' ? 'Spark' : 'WebLN';
-    headerSub = null;
+    // No picker row explained this rail, so the header does.
+    headerSub = view.picked ? null : onlyRow?.desc ?? null;
   } else if (view.kind === 'picker' && view.switching) {
     headerTitle = 'Switch wallet';
     headerSub = null;
@@ -153,33 +194,54 @@ export function WalletModal({ onClose }: Props) {
             <StreamRate />
             <StreamedLog npub={identity?.npub} />
           </div>
-          <div className="border-t border-bone/15 pt-3 text-center">
-            <button
-              onClick={() => setView({ kind: 'picker', switching: true })}
-              className="btn-mini"
-            >
-              Switch wallet →
-            </button>
-          </div>
+          {!onlyRow && (
+            <div className="border-t border-bone/15 pt-3 text-center">
+              <button
+                onClick={() => setView({ kind: 'picker', switching: true })}
+                className="btn-mini"
+              >
+                Switch wallet →
+              </button>
+            </div>
+          )}
         </div>
       );
     }
 
     if (view.kind === 'connecting') {
-      const { rail, switching } = view;
-      const back: WalletView = switching
+      const { rail, switching, picked } = view;
+      // Nothing to go back to when the modal opened straight on this form.
+      const back: WalletView | null = switching
         ? { kind: 'connected' }
-        : { kind: 'picker', switching: false };
+        : onlyRow ? null : { kind: 'picker', switching: false };
       return (
         <div className="p-5 space-y-4">
-          <button
-            onClick={() => setView(back)}
-            className="btn-mini"
-          >
-            ← Back
-          </button>
+          {back && (
+            <button
+              onClick={() => setView(back)}
+              className="btn-mini"
+            >
+              ← Back
+            </button>
+          )}
+          {/* The picker's withheld-backup note, for the form that stands in for
+              a one-row picker. No tap chose this form, so it does not read the
+              backup on mount; the tap that asks the signer is the button. */}
+          {rail === 'nwc' && !picked && backupWithheld && !activeRail && (
+            <div className="text-[11px] text-muted border border-bone/15 rounded p-3">
+              Your wallet backup was <strong className="text-bone">not</strong> read
+              automatically, so that your signer is not asked for it before you
+              touch anything. Tap{' '}
+              <strong className="text-bone">Restore from Nostr backup</strong> below
+              to restore it; your signer will ask once.
+            </div>
+          )}
           {rail === 'nwc' && (
-            <NwcWallet mode="form" onConnected={() => handleConnected('nwc')} />
+            <NwcWallet
+              mode="form"
+              onConnected={() => handleConnected('nwc')}
+              autoRestore={picked || !backupWithheld}
+            />
           )}
           {rail === 'spark' && (
             <SparkWallet mode="form" onConnected={() => handleConnected('spark')} />
@@ -193,20 +255,7 @@ export function WalletModal({ onClose }: Props) {
 
     // State 1 (nothing connected) or State 4 (switching)
     const { switching } = view;
-    type PickerRow = { rail: 'nwc' | 'spark' | 'webln'; icon: string; title: string; desc: string };
-    const rows: PickerRow[] = [
-      ...(weblnDetected
-        ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Use the Alby browser extension · tap to enable' }]
-        : []),
-      // Plain words first, the protocol name second: these three rows are the
-      // first thing a newcomer reads about paying, and "NWC · Paste a
-      // nostr+walletconnect:// URI" told them nothing about which to pick.
-      { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Connect a Lightning wallet you already have (Nostr Wallet Connect)' },
-      // Not inside the iOS app, which holds no funds (`sparkAvailable`).
-      ...(sparkAvailable()
-        ? [{ rail: 'spark' as const, icon: '✶', title: 'Spark', desc: 'A wallet this app creates and backs up for you — self-custodial' }]
-        : []),
-    ];
+    const rows = pickerRows();
 
     return (
       <div className="p-5 space-y-3">

@@ -232,6 +232,14 @@ interface Props {
   mode: 'form' | 'card';
   onConnected?: () => void;
   onDisconnected?: () => void;
+  /**
+   * The form reads the Nostr backup on mount (default). False when no tap
+   * chose this form and the signer would be asked to decrypt: the wallet modal
+   * opens straight on it when NWC is the only row, and for a signer that
+   * renders plaintext (`walletBackupWithheld`) the wallet button alone must not
+   * put a connection string in an approval sheet. The manual button stays.
+   */
+  autoRestore?: boolean;
 }
 
 // Opt-in checkbox to encrypt + back up the NWC connection string to Nostr.
@@ -339,7 +347,7 @@ function BackupStatus({ head, written, canRepair }: {
 const autoCheckedNpubs = new Set<string>();
 
 
-export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
+export function NwcWallet({ mode, onConnected, onDisconnected, autoRestore = true }: Props) {
   const [, setTick] = useState(0);
   const [draft, setDraft] = useState('');
   const [err, setErr] = useState<string | null>(null);
@@ -411,7 +419,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   // at most once per npub per page load; "no backup found" stays silent (the
   // manual restore button remains for retries).
   useEffect(() => {
-    if (mode !== 'form' || hasNwc()) return;
+    if (mode !== 'form' || hasNwc() || !autoRestore) return;
     if (!identity || getNip44() === null) return;
     if (autoCheckedNpubs.has(identity.npub)) return;
     autoCheckedNpubs.add(identity.npub);
@@ -433,7 +441,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
       .finally(() => { if (!cancelled) setAutoChecking(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, identity]);
+  }, [mode, identity, autoRestore]);
 
   // One-time restore confirmation: visible while this card mount lives,
   // cleared on unmount so the next modal open shows the plain card.
