@@ -23,6 +23,7 @@ import {
   remoteItemFeedGuids,
   feedHasValueTag,
   newestItemImage,
+  parseItemEnclosure,
 } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
@@ -1722,6 +1723,12 @@ function linkifyNostrRefs(html: string): string {
 }
 
 interface RssEpisodeEnrichment {
+  /** The item's own `<enclosure url>`, byte for byte. Read from the live feed
+   *  because Podcast Index can hold a stale one — see `feedEnclosure`
+   *  (lib/util.ts). */
+  enclosureUrl?: string;
+  enclosureType?: string;
+  enclosureLength?: number;
   nostrNpubs?: FeedNpub[];
   socialInteract?: SocialInteract[];
   contentEncoded?: string;
@@ -1989,7 +1996,11 @@ export async function getRssEpisodeEnrichment(
     // Who gets paid during a song, for the same reason. Guarded so a long feed
     // with no windows does not run the block scan once per item.
     const valueTimeSplits = inner.includes(VALUE_TIME_SPLIT_TAG) ? itemValueTimeSplits(inner) : undefined;
-    episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, funding, value, valueTimeSplits });
+    // The file this item plays, for the same reason: PI's `enclosureUrl` can be
+    // a crawl from years ago that lacks the publisher's analytics prefix
+    // (`op3.dev/e,pg=…/`). `feedEnclosure` decides whether it ships.
+    const { enclosureUrl, enclosureType, enclosureLength } = parseItemEnclosure(inner);
+    episodes.set(guid, { enclosureUrl, enclosureType, enclosureLength, socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, funding, value, valueTimeSplits });
   }
   const feedValue = parseValueBlock(channelXml);
   return { episodes, rssRead: true, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle, feedPublisher };
