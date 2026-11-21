@@ -569,6 +569,7 @@ export function FullscreenPlayer({
   // `liveTab` is the strip that replaces the scroll body while the chat shows.
   const [ircJoinedKey, setIrcJoinedKey] = useState<string | null>(null);
   const [liveTab, setLiveTab] = useState<LiveTab>('chat');
+  const [liveTabChannel, setLiveTabChannel] = useState<string | null>(null);
   const liveTabsId = useId();
   // How many songs this broadcast has played, so PLAYED is a tab only when it
   // has rows. The same log <LivePlayedTracks> reads.
@@ -582,6 +583,13 @@ export function FullscreenPlayer({
   const ircChannel = current ? ircChannelOf(current.episode, current.podcast) : null;
   const showIrc = !!ircChannel && !!current
     && (current.episode.liveStatus === 'live' || ircJoinedKey === epKey(current.episode));
+  // Another show opens on CHAT (Chad: CHAT first), whatever tab was left open
+  // on the last one. Set during render, React's pattern for state that follows
+  // a value, so no frame paints the old tab.
+  if (liveTabChannel !== ircChannel) {
+    setLiveTabChannel(ircChannel);
+    setLiveTab('chat');
+  }
 
   // Lock the page behind the overlay. This used to be a local `overflow:
   // hidden` on <html> and <body>, which is not a scroll lock on iOS: in the

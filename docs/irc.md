@@ -37,10 +37,16 @@ connection to `irc.zeronode.net:6697`.
   into a space before any line is built. A panel that wrote
   `PRIVMSG #chan :${text}` would let a pasted "hi\r\nJOIN #x" — or "\r\nQUIT", or a
   line to NickServ — run as the listener, with their real address behind it.
+- **`\x01` opens a CTCP, so `cleanOutgoing` removes it.** A pasted
+  `\x01VERSION\x01` makes every client in the channel answer, and `\x01DCC…`
+  offers a file as the listener; the composer cannot show the character. `/me`
+  is the one CTCP the panel builds (`buildAction`).
 - **512 bytes per line, prefix included, and the server adds the prefix.** A
-  text chunk is at most 400 UTF-8 bytes, cut at the last space, else on a code
-  point boundary: a split inside a character prints mojibake on every other
-  client.
+  text chunk is at most 350 UTF-8 bytes (`MAX_TEXT_BYTES`), cut at the last
+  space, else on a code point boundary: a split inside a character prints
+  mojibake on every other client. 350, not 400: the RELAYED line carries our
+  full `nick!user@host`, and a 30-character nick with a 63-character WEBIRC host
+  took a 400-byte text to 531 bytes, which the server cuts (final review).
 - **A line from the server over 8191 bytes is dropped**, IRCv3's ceiling with
   tags: a WebSocket frame is a third-party body like any other.
 - **Text renders as text.** mIRC formatting is stripped; links go through
@@ -57,18 +63,32 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   component state and go with it.
 - **One connection, never reopened by itself.** A drop or an `ERROR` shows JOIN
   again; a refused JOIN (banned, invite only) closes the connection at once, so
-  it does not hold a slot. A taken nick is fixed on the SAME connection
-  (`ircNick`), and a KICK keeps the connection for REJOIN.
-- **It leaves when it goes**: `QUIT :bye` on unmount (another episode, the
-  player's show changed) and on a `pagehide` that is not `persisted`. Switching
-  to PLAYED or ABOUT does not unmount it.
+  it does not hold a slot — the first JOIN and a JOIN AGAIN after a kick alike.
+  A taken nick is fixed on the SAME connection (`ircNick`), and a KICK keeps the
+  connection for JOIN AGAIN. A gateway that takes the socket and never
+  welcomes is given up after 20 s (`IRC_REGISTER_TIMEOUT_MS`), so "Joining…" is
+  never a screen with no way out.
+- **A refused MESSAGE is shown, never dropped.** 404 (quieted, banned without a
+  kick, `+m`) and 492 come back as the server's text under the composer: the
+  listener's own row is otherwise the only copy, and they would talk to nobody.
+- **Only a nick the listener asked for is stored.** `nickChanged.requested` is
+  true for the echo of a typed `/nick`; a rename by services (a guest on a
+  registered nick becomes `Guest4821`) is said in the list and is not stored,
+  or the box would offer `Guest4821` next time.
+- **The privacy line sits under the nick box**, where it is read before JOIN;
+  in the list it scrolled away as soon as rows came.
+- **It leaves when it goes**: `QUIT :bye` on unmount (the player's SHOW
+  changed, or the show ended and was never joined) and on a `pagehide` that is
+  not `persisted`. The panel is keyed by channel, so a new live episode of the
+  same show keeps the session. Switching to PLAYED or ABOUT does not unmount it,
+  and another show opens on CHAT whatever tab was left open.
 - **A secret is refused before it leaves**, in the nick box and the composer:
   `textHoldsSecret` (every run of letters and digits, and NWC strings). IRC
   is public and logged; a key typed there is burnt.
 - **Only `/me` and `/nick` work.** Any other `/command` is answered on screen
   and never sent: a typed `/join` or `/msg NickServ` would act as the listener.
 - **200 rows, 500 characters.** The list keeps the newest 200; a long message
-  is cut into ≤ 400-byte lines by the codec.
+  is cut into ≤ 350-byte lines by the codec.
 - **No report, no hide, no word filter.** Chad: the channels have moderators who
   can kick, "so it's up to the podcaster for that. I'm just showing it."
 

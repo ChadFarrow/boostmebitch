@@ -59,6 +59,13 @@ const vectors = [
     kind: 'build', args: ['#candr', 'hi\r\nJOIN #evil'], expect: ['PRIVMSG #candr :hi  JOIN #evil'],
   },
   {
+    // \x01 opens a CTCP: a pasted "\x01VERSION\x01" makes every client in the
+    // channel answer, and "\x01DCC SEND…" offers a file as the listener. The
+    // composer cannot show the character, so it is removed, not sent.
+    label: 'a pasted \\x01 cannot start a CTCP',
+    kind: 'build', args: ['#candr', '\x01VERSION\x01'], expect: ['PRIVMSG #candr :VERSION'],
+  },
+  {
     label: 'a plain message is one PRIVMSG',
     kind: 'build', args: ['#candr', 'hello'], expect: ['PRIVMSG #candr :hello'], alsoNaive: true,
   },
@@ -67,17 +74,17 @@ const vectors = [
     kind: 'build', args: ['#candr', '  \r\n '], expect: [],
   },
   {
-    label: `a ${bytes(LONG)}-byte message is cut on spaces into lines of at most 400 bytes`,
+    label: `a ${bytes(LONG)}-byte message is cut on spaces into lines of at most 350 bytes`,
     kind: 'build', args: ['#candr', LONG],
     check: (lines) => lines.length === 3
-      && lines.every((l) => l.startsWith('PRIVMSG #candr :') && bytes(textOf(l)) <= 400)
+      && lines.every((l) => l.startsWith('PRIVMSG #candr :') && bytes(textOf(l)) <= 350)
       && lines.map(textOf).join(' ') === LONG,
   },
   {
     label: `${bytes(EMOJI)} bytes of é🎸 are cut on character boundaries, never inside one`,
     kind: 'build', args: ['#candr', EMOJI],
     check: (lines) => lines.length >= 3
-      && lines.every((l) => { const t = textOf(l); return bytes(t) <= 400 && Buffer.from(t).toString() === t; })
+      && lines.every((l) => { const t = textOf(l); return bytes(t) <= 350 && Buffer.from(t).toString() === t; })
       && lines.map(textOf).join('') === EMOJI,
   },
   {
@@ -146,6 +153,7 @@ console.log('\nThe smaller helpers:');
 {
   const cases = [
     ['cleanOutgoing turns CR, LF and NUL into spaces and trims', cleanOutgoing(' a\rb\nc\0d '), 'a b c d'],
+    ['cleanOutgoing removes \\x01', cleanOutgoing('\x01x\x01'), 'x'],
     ['parseLine returns null for an empty line', parseLine(''), null],
     ['parseLine returns null for a line over 8191 bytes', parseLine('PRIVMSG #c :' + 'x'.repeat(8200)), null],
     ['parseLine upper-cases the command', parseLine(':a!b@c privmsg #c :x')?.command, 'PRIVMSG'],
@@ -158,9 +166,9 @@ console.log('\nThe smaller helpers:');
     else ok(label);
   }
   const longAction = buildAction('#candr', LONG);
-  if (!(longAction.length > 1 && longAction.every((l) => bytes(l.slice(l.indexOf(' :') + 2)) <= 400))) {
-    fail(`buildAction cuts a long /me into lines of at most 400 bytes — got ${longAction.length} line(s)`);
-  } else ok('buildAction cuts a long /me into lines of at most 400 bytes');
+  if (!(longAction.length > 1 && longAction.every((l) => bytes(l.slice(l.indexOf(' :') + 2)) <= 350))) {
+    fail(`buildAction cuts a long /me into lines of at most 350 bytes — got ${longAction.length} line(s)`);
+  } else ok('buildAction cuts a long /me into lines of at most 350 bytes');
 }
 
 console.log('\nThe nick rule:');
@@ -276,6 +284,25 @@ const sessionVectors = [
     label: 'a refused JOIN shows the server\'s own reason',
     args: [[WELCOME, { line: ':sparrow.zeronode.net 474 bmbfan #candr :Cannot join channel (+b)' }]],
     expect: { out: ['JOIN #candr'], events: [{ type: 'error', text: 'Cannot join channel (+b)' }], phase: 'registering' },
+  },
+  {
+    // A quiet, a ban with no kick, or +m: the server refuses the line and the
+    // listener's own row is the only copy. They must be told.
+    label: 'a refused channel message (404) is shown, not dropped',
+    args: [[WELCOME, JOINED, { line: ':sparrow.zeronode.net 404 bmbfan #candr :Cannot send to channel (+m)' }]],
+    expect: { out: ['JOIN #candr'], events: [joinedEvent, { type: 'error', text: 'Cannot send to channel (+m)' }], phase: 'joined' },
+  },
+  {
+    // NickServ renames a guest on a registered nick. The panel must not store
+    // `Guest4821` as the listener's choice.
+    label: 'a nick change the listener did not ask for is marked as such',
+    args: [[WELCOME, JOINED, { line: ':bmbfan!webchat@cloaked NICK :Guest4821' }]],
+    expect: { out: ['JOIN #candr'], events: [joinedEvent, { type: 'nickChanged', to: 'Guest4821', requested: false }], phase: 'joined' },
+  },
+  {
+    label: 'a /nick the listener typed is marked as asked for',
+    args: [[WELCOME, JOINED, { send: '/nick bmbfan_' }, { line: ':bmbfan!webchat@cloaked NICK :bmbfan_' }]],
+    expect: { out: ['JOIN #candr', 'NICK bmbfan_'], events: [joinedEvent, { type: 'nickChanged', to: 'bmbfan_', requested: true }], phase: 'joined' },
   },
   {
     label: 'ERROR closes the session',

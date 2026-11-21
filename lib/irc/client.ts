@@ -31,7 +31,16 @@ export interface IrcSessionOptions {
   onEvent(e: IrcEvent): void;
   /** Once per session, whatever closed it. */
   onClose(reason: string): void;
+  /**
+   * Give up when the channel is not joined this long after the socket opens
+   * (default 20 s): a gateway that accepts the socket and never welcomes would
+   * otherwise leave "Joining…" on screen with no way out.
+   */
+  registerTimeoutMs?: number;
 }
+
+/** The default for `registerTimeoutMs`. */
+export const IRC_REGISTER_TIMEOUT_MS = 20_000;
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -40,17 +49,35 @@ export function openIrcSession(o: IrcSessionOptions): IrcSession {
   const start = ircStart(o.nick, o.channel);
   let state: IrcState = start.state;
   let closed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const clearTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
 
   const apply = (r: IrcStepResult) => {
     state = r.state;
     if (ws.readyState === WebSocket.OPEN) for (const line of r.out) ws.send(line);
+    if (state.phase === 'joined') clearTimer();
     for (const e of r.events) o.onEvent(e);
   };
   const finish = (reason: string) => {
+    clearTimer();
     if (closed) return;
     closed = true;
     o.onClose(reason);
   };
+  const quit = () => {
+    clearTimer();
+    if (ws.readyState === WebSocket.OPEN) ws.send('QUIT :bye');
+    try { ws.close(1000); } catch { /* already closing */ }
+  };
+  timer = setTimeout(() => {
+    // `finish` first, so the reason the listener reads is this one and not
+    // the close that `quit` causes.
+    finish('no answer from the chat server');
+    quit();
+  }, o.registerTimeoutMs ?? IRC_REGISTER_TIMEOUT_MS);
 
   ws.onopen = () => {
     for (const line of start.out) ws.send(line);
@@ -69,9 +96,6 @@ export function openIrcSession(o: IrcSessionOptions): IrcSession {
     send: (text) => apply(ircSend(state, text, nowSec())),
     nick: (n) => apply(ircNick(state, n)),
     rejoin: () => apply(ircRejoin(state)),
-    quit: () => {
-      if (ws.readyState === WebSocket.OPEN) ws.send('QUIT :bye');
-      try { ws.close(1000); } catch { /* already closing */ }
-    },
+    quit,
   };
 }

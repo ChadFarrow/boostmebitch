@@ -121,8 +121,15 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         setErr(NICK_TAKEN);
         break;
       case 'nickChanged':
-        setNickDraft(e.to);
-        storage.ircNick.set(npubRef.current, e.to);
+        // Only a nick the listener asked for is theirs to keep. Services
+        // rename a guest on a registered nick (`Guest4821`); storing that would
+        // fill the box with it next time, so say what happened instead.
+        if (e.requested) {
+          setNickDraft(e.to);
+          storage.ircNick.set(npubRef.current, e.to);
+        } else {
+          notice(`The network changed your nick to ${e.to}. The nick you chose may be registered to someone.`);
+        }
         break;
       case 'kicked':
         setPhase('kicked');
@@ -130,8 +137,9 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         break;
       case 'error':
         setErr(e.text);
-        // A refused JOIN (banned, invite only…) leaves nothing to do on this
-        // connection, so free its slot and offer JOIN again.
+        // A refused JOIN (banned, invite only…), first or after a kick, leaves
+        // nothing to do on this connection, so free its slot and offer JOIN
+        // again. (JOIN AGAIN sets 'connecting' too.)
         if (phaseRef.current === 'connecting') {
           quit();
           setPhase('closed');
@@ -141,7 +149,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
     }
   }, [addRows, notice, channel, quit]);
 
-  // Leave the channel when the panel goes (another episode, the show ended and
+  // Leave the channel when the panel goes (another show, the show ended and
   // was never joined) and when the tab closes. A page kept in the back/forward
   // cache (`persisted`) is not leaving.
   useEffect(() => {
@@ -220,7 +228,6 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         // player's row is `overflow-hidden`, so this is the outermost scroller.
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain space-y-3 pr-1"
       >
-        <p className="text-xs text-muted">{PRIVACY}</p>
         {rows.map((r) =>
           r.kind === 'notice' ? (
             <p key={r.id} data-irc-row className="text-xs text-muted">{r.text}</p>
@@ -249,6 +256,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
 
       <div className="flex-shrink-0 pt-3 mt-2 border-t border-bone/10 flex flex-col gap-1.5">
         {askNick ? (
+          <>
           <form
             className="flex gap-2 items-center"
             onSubmit={(e) => { e.preventDefault(); join(); }}
@@ -270,13 +278,17 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
               {nickTaken ? 'TRY' : 'JOIN'}
             </button>
           </form>
+          {/* Under the nick box, where it is read before JOIN (spec); in the
+              list it scrolled away as soon as rows came. */}
+          <p data-irc-privacy className="text-[11px] text-muted">{PRIVACY}</p>
+          </>
         ) : phase === 'connecting' ? (
           <p className="text-xs text-muted">Joining {channel}…</p>
         ) : phase === 'kicked' ? (
           <button
             type="button"
             data-irc-rejoin
-            onClick={() => { setErr(null); sessionRef.current?.rejoin(); }}
+            onClick={() => { setErr(null); setPhase('connecting'); sessionRef.current?.rejoin(); }}
             className="btn-mini self-start"
           >
             JOIN {channel} AGAIN

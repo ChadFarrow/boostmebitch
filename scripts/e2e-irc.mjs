@@ -33,10 +33,11 @@ async function until(cond, ms = 3000) {
   return !!cond();
 }
 
-function session(fake, nick) {
+function session(fake, nick, extra = {}) {
   const events = [];
   const closes = [];
   const s = openIrcSession({
+    ...extra,
     url: fake.url, nick, channel: '#candr',
     onEvent: (e) => events.push(e),
     onClose: (r) => closes.push(r),
@@ -46,7 +47,7 @@ function session(fake, nick) {
 
 async function nodeHalf() {
   console.log('Node: lib/irc/client.ts against the fake server');
-  const fake = await createIrcFake({ taken: ['taken_nick'] });
+  const fake = await createIrcFake({ taken: ['taken_nick'], stall: ['slowfan'] });
   try {
     const a = session(fake, 'bmbfan');
     c.ok('the session joins the show channel', await until(() => a.joins() === 1), JSON.stringify(a.events));
@@ -93,6 +94,21 @@ async function nodeHalf() {
     c.equal('3 s later: no new connection (no reconnect)', fake.connections, conns);
     c.equal('…and onClose fired once', a.closes.length, 1);
 
+    // A gateway that takes the socket and never welcomes: the session gives
+    // up by itself (the panel's default is 20 s; 300 ms here), so "Joining…"
+    // is never a screen with no way out.
+    const slowConns = fake.connections;
+    const slow = session(fake, 'slowfan', { registerTimeoutMs: 300 });
+    c.ok('a session the server never welcomes closes by itself', await until(() => slow.closes.length === 1, 3000), JSON.stringify(slow.closes));
+    c.ok('…saying the server did not answer', /no answer/i.test(slow.closes[0] ?? ''), JSON.stringify(slow.closes));
+    await wait(500);
+    c.equal('…once, and with no new connection', [slow.closes.length, fake.connections - slowConns], [1, 1]);
+    const ok2 = session(fake, 'patient', { registerTimeoutMs: 300 });
+    await until(() => ok2.joins() === 1);
+    await wait(600);
+    c.equal('a welcomed session is not closed by the timer', ok2.closes.length, 0);
+    ok2.s.quit();
+
     const q = session(fake, 'quitter');
     await until(() => q.joins() === 1);
     q.s.quit();
@@ -136,7 +152,8 @@ async function browserHalf(APP) {
   });
   const LIVE = [show(900801, CANDR_GUID, 'E2E Chad Show'), show(900802, OTHER_GUID, 'E2E Other Show')];
 
-  const fake = await createIrcFake({ port: GATEWAY_PORT });
+  const fake = await createIrcFake({ port: GATEWAY_PORT, taken: ['takenfan'] });
+  fake.banned.add('bannedfan');
   const { page } = await launchChrome({ name: 'irc', autoplay: true, args: ['--disable-gpu'] });
   const { send, js, until } = page;
   try {
@@ -235,7 +252,8 @@ async function browserHalf(APP) {
     const t1 = await tabs();
     c.equal('tabs: CHAT first and active, then ABOUT (PLAYED is left out while nothing has played)', t1,
       [['chat', 'true'], ['about', 'false']]);
-    c.ok('the privacy line shows', (await text('[data-irc-chat]')).includes(PRIVACY));
+    c.ok('the privacy line shows under the nick box', (await text('[data-irc-privacy]')).includes(PRIVACY)
+      && await js(`${q('[data-irc-nick]')}.compareDocumentPosition(${q('[data-irc-privacy]')}) === Node.DOCUMENT_POSITION_FOLLOWING`));
     c.ok('the nick box shows', await js(`!!${q('[data-irc-nick]')}`));
 
     await type('[data-irc-nick]', NSEC);
@@ -244,9 +262,31 @@ async function browserHalf(APP) {
     c.ok('a nick that is an nsec is refused', (await text('[data-irc-chat]')).includes(SECRET));
     c.equal('…and no connection was opened', fake.connections, 0);
 
+    const liveConns = async (n, ms = 3000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) { if (fake.live === n) return true; await wait(50); }
+      return false;
+    };
+    const chatHas = (s, ms = 5000) => until(`(${q('[data-irc-chat]')}?.innerText ?? '').includes(${JSON.stringify(s)})`, ms);
+
+    // A refused JOIN closes the connection at once: a banned listener must not
+    // hold a slot of the per-address limit.
+    await type('[data-irc-nick]', 'bannedfan');
+    await click('[data-irc-join]');
+    c.ok('a refused JOIN shows the server\'s reason', await chatHas('Cannot join channel (+b)', 8000));
+    c.ok('…offers JOIN again', await until(`!!${q('[data-irc-join]')}`, 3000));
+    c.ok('…and closes its connection', await liveConns(0), `live ${fake.live}`);
+    c.equal('…which was the first one', fake.connections, 1);
+
+    // A taken nick is fixed on the SAME connection, from the panel.
+    await type('[data-irc-nick]', 'takenfan');
+    await click('[data-irc-join]');
+    c.ok('a taken nick says so and offers TRY', await until(`(${q('[data-irc-chat]')}?.innerText ?? '').includes('That nick is taken') && ${q('[data-irc-join]')}?.textContent.trim() === 'TRY'`, 8000));
     await type('[data-irc-nick]', 'e2efan');
     await click('[data-irc-join]');
     c.ok('JOIN reaches the server as JOIN #candr', await fakeGot((r) => r.includes('JOIN #candr')));
+    await until(`!!${q('[data-irc-input]')}`, 5000);
+    c.equal('…on the same connection as the taken nick', fake.connections, 2);
     c.equal('the gateway sees the app\'s own origin', fake.origins[0], new URL(APP).origin);
     c.ok('the history line shows', await until(`(${q('[data-irc-chat]')}?.innerText ?? '').includes(${JSON.stringify(HISTORY)})`, 5000));
 
@@ -273,22 +313,51 @@ async function browserHalf(APP) {
     const links = await js(`JSON.stringify([...([...document.querySelectorAll('[data-irc-row]')].find((r) => r.innerText.includes('javascript:alert(1)'))?.querySelectorAll('a') ?? [])].map((a) => a.href))`).then(JSON.parse);
     c.equal('only the https URL is a link', links, ['https://example.com/']);
 
+    fake.sayRaw(':fake.irc 404 e2efan #candr :Cannot send to channel (+m)');
+    c.ok('a refused message (404) is shown, not dropped', await chatHas('Cannot send to channel (+m)'));
+
     for (let i = 0; i < 250; i++) fake.say('flood', '#candr', `line ${i}`);
     c.ok('250 lines arrive', await until(`[...document.querySelectorAll('[data-irc-row]')].some((r) => r.innerText.includes('line 249'))`, 10000));
     c.equal('…and the panel keeps 200 rows', await rows(), 200);
     c.ok('…the newest ones', (await js(`document.querySelector('[data-irc-list] [data-irc-row]').innerText`)).includes('line 50'));
 
+    const quitsAtAbout = fake.received.filter((l) => l === 'QUIT :bye').length;
     await js(`[...document.querySelectorAll('[data-live-tabs] [role=tab]')].find((t) => /about/i.test(t.textContent)).click()`);
     await wait(300);
     c.ok('ABOUT shows the episode notes', (await js(`document.body.innerText`)).includes('The E2E Chad Show broadcast.'));
     await js(`[...document.querySelectorAll('[data-live-tabs] [role=tab]')].find((t) => /chat/i.test(t.textContent)).click()`);
     await wait(300);
-    c.ok('back on CHAT: no QUIT was sent', !fake.received.includes('QUIT :bye'));
+    c.equal('back on CHAT: no QUIT was sent', fake.received.filter((l) => l === 'QUIT :bye').length, quitsAtAbout);
     c.equal('…and the rows are kept', await rows(), 200);
 
     await js(`window.dispatchEvent(new Event('focus'))`);
     await wait(1500);
     c.ok('a live-status poll that reports nothing live leaves the panel', await js(`!!${q('[data-irc-chat]')}`));
+
+    const joinCount = () => fake.received.filter((l) => l === 'JOIN #candr').length;
+    let joinsNow = joinCount();
+    fake.kick('e2efan', 'spam');
+    c.ok('a kick says who and why, and offers JOIN AGAIN', await until(`!!${q('[data-irc-rejoin]')}`, 5000) && await chatHas('op removed you from #candr: spam'));
+    await click('[data-irc-rejoin]');
+    c.ok('JOIN AGAIN joins on the same connection', await fakeGot((r) => r.filter((l) => l === 'JOIN #candr').length > joinsNow) && await until(`!!${q('[data-irc-input]')}`, 5000));
+
+    // Kicked AND banned: the rejoin is refused, and the slot is let go.
+    fake.banned.add('e2efan');
+    fake.kick('e2efan', 'bye');
+    await until(`!!${q('[data-irc-rejoin]')}`, 5000);
+    await click('[data-irc-rejoin]');
+    c.ok('a refused rejoin shows the reason and JOIN', await until(`!!${q('[data-irc-join]')}`, 5000) && await chatHas('Cannot join channel (+b)'));
+    c.ok('…and closes its connection', await liveConns(0), `live ${fake.live}`);
+    fake.banned.delete('e2efan');
+
+    // Services rename a guest on a registered nick: say so, and do not store it.
+    joinsNow = joinCount();
+    await click('[data-irc-join]');
+    await fakeGot((r) => r.filter((l) => l === 'JOIN #candr').length > joinsNow);
+    await until(`!!${q('[data-irc-input]')}`, 5000);
+    fake.sayRaw(':e2efan!webchat@fake NICK :Guest4821');
+    c.ok('a nick change the listener did not ask for is explained', await chatHas('The network changed your nick to Guest4821'));
+    c.equal('…and is not stored as their nick', await js(`localStorage.getItem('bmb:irc_nick:guest')`), 'e2efan');
 
     const conns = fake.connections;
     fake.dropAll();
@@ -297,14 +366,21 @@ async function browserHalf(APP) {
     c.equal('3 s later: no new connection', fake.connections, conns);
 
     c.equal('the nick box remembers the last nick', await js(`${q('[data-irc-nick]')}.value`), 'e2efan');
-    let joins = fake.received.filter((l) => l === 'JOIN #candr').length;
+    let joins = joinCount();
     await click('[data-irc-join]');
     c.ok('JOIN again on a press', await fakeGot((r) => r.filter((l) => l === 'JOIN #candr').length > joins));
     await until(`!!${q('[data-irc-input]')}`, 5000);
 
+    // Leave ABOUT open: the next show with a chat must still open on CHAT.
+    await js(`[...document.querySelectorAll('[data-live-tabs] [role=tab]')].find((t) => /about/i.test(t.textContent)).click()`);
+    const quits = () => fake.received.filter((l) => l === 'QUIT :bye').length;
+    const quitsBefore = quits();
     await closePlayer();
     await playCard('E2E Other Show');
-    c.ok('playing another show quits the channel', await fakeGot((r) => r.includes('QUIT :bye')));
+    c.ok('playing another show quits the channel', await fakeGot(() => quits() > quitsBefore));
+    await playCard('E2E Chad Show');
+    await openPlayer('E2E Chad Show live now');
+    c.equal('a show opened after ABOUT was left open starts on CHAT', (await tabs())[0], ['chat', 'true']);
 
     console.log('\nBrowser: a 390 x 844 phone');
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });

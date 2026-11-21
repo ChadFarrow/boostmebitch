@@ -29,8 +29,14 @@ export interface IrcLine {
 /** The longest line we read: 8191 bytes is IRCv3's ceiling with message tags. */
 const MAX_LINE_BYTES = 8191;
 
-/** Text bytes per PRIVMSG line — room left for `:nick!user@host PRIVMSG #chan :`. */
-export const MAX_TEXT_BYTES = 400;
+/**
+ * Text bytes per PRIVMSG line. The server relays each line with our full
+ * prefix in front, and cuts the text when the relayed line passes 512 bytes:
+ * a 30-character nick, a 63-character WEBIRC host and a long channel name take
+ * ~131 bytes of it (review, 2026-11-21). 350 leaves that room, so no message
+ * loses its end on the way.
+ */
+export const MAX_TEXT_BYTES = 350;
 
 const encoder = new TextEncoder();
 const byteLength = (s: string) => encoder.encode(s).length;
@@ -102,9 +108,13 @@ export function ctcpAction(text: string): string | null {
   return m ? m[1] ?? '' : null;
 }
 
-/** What a listener typed, made safe to put in ONE line: CR, LF, NUL → space; trimmed. */
+/**
+ * What a listener typed, made safe to put in ONE line: CR, LF, NUL → space;
+ * `\x01` removed, because it opens a CTCP (a pasted `\x01VERSION\x01` makes
+ * every client in the channel answer) and the composer cannot show it; trimmed.
+ */
 export function cleanOutgoing(text: string): string {
-  return text.replace(/[\r\n\0]/g, ' ').trim();
+  return text.replace(/[\r\n\0]/g, ' ').replace(/\x01/g, '').trim();
 }
 
 /**
@@ -175,13 +185,16 @@ export interface IrcState {
   phase: IrcPhase;
   nick: string;
   channel: string;
+  /** The nick a typed `/nick` asked for, until the server's NICK echo. */
+  pendingNick: string | null;
 }
 
 export type IrcEvent =
   | { type: 'joined'; channel: string; nick: string }
   | { type: 'message'; from: string; text: string; action: boolean; self: boolean; time: number }
   | { type: 'nickInUse'; nick: string }
-  | { type: 'nickChanged'; to: string }
+  /** `requested`: the listener typed `/nick` for it; false when the network renamed them (services). */
+  | { type: 'nickChanged'; to: string; requested: boolean }
   | { type: 'kicked'; by: string; reason: string }
   | { type: 'error'; text: string };
 
@@ -201,12 +214,19 @@ const NICK_REFUSED = 'That nick is not allowed.';
  */
 const JOIN_REFUSALS = new Set(['471', '473', '474', '475', '477', '489']);
 
+/**
+ * Numerics that refuse a CHANNEL MESSAGE: 404 (quieted, banned without a kick,
+ * `+m`) and 492 (no CTCP). The listener's own row is then the only copy, so the
+ * panel shows the server's text rather than letting them talk to nobody.
+ */
+const SEND_REFUSALS = new Set(['404', '492']);
+
 const same = (a: string | null | undefined, b: string) => !!a && a.toLowerCase() === b.toLowerCase();
 const result = (state: IrcState, out: string[] = [], events: IrcEvent[] = []): IrcStepResult => ({ state, out, events });
 
 /** Register on a new connection. The gateway may replace USER's fields. */
 export function ircStart(nick: string, channel: string): IrcStepResult {
-  return result({ phase: 'registering', nick, channel }, [`NICK ${nick}`, 'USER webchat 0 * :webchat']);
+  return result({ phase: 'registering', nick, channel, pendingNick: null }, [`NICK ${nick}`, 'USER webchat 0 * :webchat']);
 }
 
 function timeOf(line: IrcLine, nowSec: number): number {
@@ -233,7 +253,7 @@ export function ircStep(state: IrcState, raw: string, nowSec: number): IrcStepRe
       return result({ ...state, phase: 'joined' }, [], [{ type: 'joined', channel: state.channel, nick: state.nick }]);
     case 'NICK':
       if (!same(line.nick, state.nick) || !p[0]) return result(state);
-      return result({ ...state, nick: p[0] }, [], [{ type: 'nickChanged', to: p[0] }]);
+      return result({ ...state, nick: p[0], pendingNick: null }, [], [{ type: 'nickChanged', to: p[0], requested: same(state.pendingNick, p[0]) }]);
     case 'PRIVMSG':
     case 'NOTICE': {
       if (!same(p[0], state.channel) || p[1] == null) return result(state);
@@ -250,7 +270,9 @@ export function ircStep(state: IrcState, raw: string, nowSec: number): IrcStepRe
     case 'ERROR':
       return result({ ...state, phase: 'closed' }, [], [{ type: 'error', text: p[0] ?? '' }]);
     default:
-      if (JOIN_REFUSALS.has(line.command)) return result(state, [], [{ type: 'error', text: p.at(-1) ?? line.command }]);
+      if (JOIN_REFUSALS.has(line.command) || SEND_REFUSALS.has(line.command)) {
+        return result(state, [], [{ type: 'error', text: p.at(-1) ?? line.command }]);
+      }
       return result(state);
   }
 }
@@ -272,7 +294,7 @@ export function ircSend(state: IrcState, text: string, nowSec: number): IrcStepR
     if (cmd === 'nick') {
       const nick = cleanOutgoing(arg);
       if (!isValidNick(nick)) return result(state, [], [{ type: 'error', text: NICK_REFUSED }]);
-      return result(state, [`NICK ${nick}`]);
+      return result({ ...state, pendingNick: nick }, [`NICK ${nick}`]);
     }
     return result(state, [], [{ type: 'error', text: ONLY_ME_AND_NICK }]);
   }

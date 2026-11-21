@@ -12,11 +12,16 @@ import { WebSocketServer } from 'ws';
 const SERVER = 'fake.irc';
 
 /**
- * @param {{ port?: number, taken?: string[] }} [opts]
+ * @param {{ port?: number, taken?: string[], stall?: string[] }} [opts]
  *   `taken`: nicks the server answers with 433, as if someone held them.
+ *   `stall`: nicks it never welcomes, as a gateway that accepted the socket
+ *   and then lost its upstream would.
  */
-export async function createIrcFake({ port = 0, taken = [] } = {}) {
+export async function createIrcFake({ port = 0, taken = [], stall = [] } = {}) {
   const takenNicks = new Set(taken.map((n) => n.toLowerCase()));
+  const stallNicks = new Set(stall.map((n) => n.toLowerCase()));
+  /** Nicks whose JOIN is refused with 474, as a channel ban would. Mutable. */
+  const banned = new Set();
   const received = [];
   const origins = [];
   const clients = new Set();
@@ -39,7 +44,7 @@ export async function createIrcFake({ port = 0, taken = [] } = {}) {
     const c = { ws, nick: null, user: false, registered: false, channels: new Set() };
     clients.add(c);
     const welcome = () => {
-      if (c.registered || !c.nick || !c.user) return;
+      if (c.registered || !c.nick || !c.user || stallNicks.has(c.nick.toLowerCase())) return;
       c.registered = true;
       send(c, `:${SERVER} 001 ${c.nick} :Welcome to the fake IRC network ${c.nick}`);
     };
@@ -75,6 +80,10 @@ export async function createIrcFake({ port = 0, taken = [] } = {}) {
           case 'JOIN': {
             const channel = rest[0];
             if (!c.registered || !channel) break;
+            if (banned.has(c.nick.toLowerCase())) {
+              send(c, `:${SERVER} 474 ${c.nick} ${channel} :Cannot join channel (+b)`);
+              break;
+            }
             c.channels.add(channel.toLowerCase());
             for (const other of inChannel(channel)) send(other, `:${prefixOf(c)} JOIN ${channel}`);
             break;
@@ -102,6 +111,9 @@ export async function createIrcFake({ port = 0, taken = [] } = {}) {
     received,
     origins,
     get connections() { return connections; },
+    /** Connections open right now. */
+    get live() { return clients.size; },
+    banned,
     /** A channel message from another user, to everyone in the channel. */
     say(from, channel, text) {
       for (const c of inChannel(channel)) send(c, `:${from}!u@elsewhere PRIVMSG ${channel} :${text}`);
