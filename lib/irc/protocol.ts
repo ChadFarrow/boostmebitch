@@ -157,3 +157,137 @@ export function buildAction(target: string, text: string): string[] {
 export function isValidNick(nick: string): boolean {
   return /^[A-Za-z[\]\\`_^{|}][A-Za-z0-9[\]\\`_^{|}-]{0,29}$/.test(nick);
 }
+
+// ── The session ──────────────────────────────────────────────────────────────
+//
+// A PURE REDUCER, so `check:irc` can pin the whole conversation with the server
+// without a socket: each call takes the state and one input and returns the new
+// state, the lines to send and the events for the panel. `lib/irc/client.ts`
+// only moves lines between this and a WebSocket.
+//
+// Deliberately small: one channel, no private messages, no user list, and no
+// join/part/quit events (the panel does not show them). A KICK keeps the
+// connection, so REJOIN costs no new connection; an ERROR ends it.
+
+export type IrcPhase = 'registering' | 'joined' | 'parted' | 'closed';
+
+export interface IrcState {
+  phase: IrcPhase;
+  nick: string;
+  channel: string;
+}
+
+export type IrcEvent =
+  | { type: 'joined'; channel: string; nick: string }
+  | { type: 'message'; from: string; text: string; action: boolean; self: boolean; time: number }
+  | { type: 'nickInUse'; nick: string }
+  | { type: 'nickChanged'; to: string }
+  | { type: 'kicked'; by: string; reason: string }
+  | { type: 'error'; text: string };
+
+export interface IrcStepResult {
+  state: IrcState;
+  out: string[];
+  events: IrcEvent[];
+}
+
+/** Shown when the listener types a command other than `/me` or `/nick`. */
+export const ONLY_ME_AND_NICK = 'Only /me and /nick work here.';
+const NICK_REFUSED = 'That nick is not allowed.';
+
+/**
+ * Numerics that refuse a JOIN (banned, full, invite only, key, registered
+ * nicks only, TLS only). The panel shows the server's own text for each.
+ */
+const JOIN_REFUSALS = new Set(['471', '473', '474', '475', '477', '489']);
+
+const same = (a: string | null | undefined, b: string) => !!a && a.toLowerCase() === b.toLowerCase();
+const result = (state: IrcState, out: string[] = [], events: IrcEvent[] = []): IrcStepResult => ({ state, out, events });
+
+/** Register on a new connection. The gateway may replace USER's fields. */
+export function ircStart(nick: string, channel: string): IrcStepResult {
+  return result({ phase: 'registering', nick, channel }, [`NICK ${nick}`, 'USER webchat 0 * :webchat']);
+}
+
+function timeOf(line: IrcLine, nowSec: number): number {
+  const t = line.tags.time ? Date.parse(line.tags.time) : NaN;
+  return Number.isFinite(t) ? Math.floor(t / 1000) : nowSec;
+}
+
+/** One line from the server. */
+export function ircStep(state: IrcState, raw: string, nowSec: number): IrcStepResult {
+  const line = parseLine(raw);
+  if (!line) return result(state);
+  const p = line.params;
+  switch (line.command) {
+    case 'PING':
+      return result(state, [`PONG :${p[0] ?? ''}`]);
+    case '001':
+      if (state.phase !== 'registering') return result(state);
+      return result({ ...state, nick: p[0] || state.nick }, [`JOIN ${state.channel}`]);
+    case '432':
+    case '433':
+      return result(state, [], [{ type: 'nickInUse', nick: p[1] ?? state.nick }]);
+    case 'JOIN':
+      if (!same(line.nick, state.nick) || !same(p[0], state.channel)) return result(state);
+      return result({ ...state, phase: 'joined' }, [], [{ type: 'joined', channel: state.channel, nick: state.nick }]);
+    case 'NICK':
+      if (!same(line.nick, state.nick) || !p[0]) return result(state);
+      return result({ ...state, nick: p[0] }, [], [{ type: 'nickChanged', to: p[0] }]);
+    case 'PRIVMSG':
+    case 'NOTICE': {
+      if (!same(p[0], state.channel) || p[1] == null) return result(state);
+      const action = ctcpAction(p[1]);
+      if (action == null && p[1].startsWith('\x01')) return result(state); // another CTCP
+      const text = stripFormatting(action ?? p[1]);
+      return result(state, [], [{
+        type: 'message', from: line.nick ?? line.prefix ?? '', text, action: action != null, self: false, time: timeOf(line, nowSec),
+      }]);
+    }
+    case 'KICK':
+      if (!same(p[0], state.channel) || !same(p[1], state.nick)) return result(state);
+      return result({ ...state, phase: 'parted' }, [], [{ type: 'kicked', by: line.nick ?? line.prefix ?? '', reason: p[2] ?? '' }]);
+    case 'ERROR':
+      return result({ ...state, phase: 'closed' }, [], [{ type: 'error', text: p[0] ?? '' }]);
+    default:
+      if (JOIN_REFUSALS.has(line.command)) return result(state, [], [{ type: 'error', text: p.at(-1) ?? line.command }]);
+      return result(state);
+  }
+}
+
+/** What the listener typed. Nothing leaves before the JOIN. */
+export function ircSend(state: IrcState, text: string, nowSec: number): IrcStepResult {
+  if (state.phase !== 'joined') return result(state);
+  const self = (t: string, action: boolean): IrcEvent =>
+    ({ type: 'message', from: state.nick, text: t, action, self: true, time: nowSec });
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith('/')) {
+    const m = /^\/(\S+)\s*([\s\S]*)$/.exec(trimmed);
+    const cmd = m?.[1].toLowerCase();
+    const arg = m?.[2] ?? '';
+    if (cmd === 'me') {
+      const chunks = splitText(cleanOutgoing(arg), MAX_TEXT_BYTES - '\x01ACTION \x01'.length);
+      return result(state, buildAction(state.channel, arg), chunks.map((c) => self(c, true)));
+    }
+    if (cmd === 'nick') {
+      const nick = cleanOutgoing(arg);
+      if (!isValidNick(nick)) return result(state, [], [{ type: 'error', text: NICK_REFUSED }]);
+      return result(state, [`NICK ${nick}`]);
+    }
+    return result(state, [], [{ type: 'error', text: ONLY_ME_AND_NICK }]);
+  }
+  const chunks = splitText(cleanOutgoing(text));
+  return result(state, buildPrivmsg(state.channel, text), chunks.filter(Boolean).map((c) => self(c, false)));
+}
+
+/** A new nick on the same connection, after 432/433. */
+export function ircNick(state: IrcState, nick: string): IrcStepResult {
+  if (!isValidNick(nick)) return result(state, [], [{ type: 'error', text: NICK_REFUSED }]);
+  return result(state.phase === 'registering' ? { ...state, nick } : state, [`NICK ${nick}`]);
+}
+
+/** JOIN the channel again after a KICK, on the same connection. */
+export function ircRejoin(state: IrcState): IrcStepResult {
+  if (state.phase === 'closed') return result(state);
+  return result(state, [`JOIN ${state.channel}`]);
+}

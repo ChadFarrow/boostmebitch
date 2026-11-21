@@ -23,6 +23,7 @@
 
 import {
   parseLine, stripFormatting, ctcpAction, cleanOutgoing, splitText, buildPrivmsg, buildAction, isValidNick,
+  ircStart, ircStep, ircSend, ircNick, ircRejoin,
 } from '../lib/irc/protocol.ts';
 import { replayVectors } from './replay-vectors.mjs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
@@ -172,6 +173,170 @@ console.log('\nThe nick rule:');
     if (got !== want) fail(`isValidNick(${JSON.stringify(nick)}) is ${got}, expected ${want}`);
     else ok(`isValidNick(${JSON.stringify(nick.length > 12 ? nick.slice(0, 6) + '…' : nick)}) is ${want}`);
   }
+}
+
+// ── The session: what the panel does with each server line ──────────────────
+// A vector is a script of steps run after `ircStart('bmbfan', '#candr')`:
+// `{ line }` a server line, `{ nick }`, `{ rejoin: true }`, `{ send }`. The
+// result is every `out` line and event after the start, and the last phase.
+//
+// `naiveSession` is the obvious reducer and it is wrong where a listener would
+// notice: it ignores PING (the server drops the connection after its timeout),
+// compares channel names case-sensitively (ZeroNode echoes `#CandR` as typed by
+// the sender, so the room goes silent), treats every KICK as the listener's own,
+// shows private messages in the channel panel, sends `/join` raw, and stamps
+// every line with the local clock instead of the server's `@time`.
+const NOW = 1000;
+function runSession(steps) {
+  let { state } = ircStart('bmbfan', '#candr');
+  const out = [];
+  const events = [];
+  for (const s of steps) {
+    const r = 'line' in s ? ircStep(state, s.line, NOW)
+      : 'nick' in s ? ircNick(state, s.nick)
+      : 'rejoin' in s ? ircRejoin(state)
+      : ircSend(state, s.send, NOW);
+    state = r.state;
+    out.push(...r.out);
+    events.push(...r.events);
+  }
+  return { out, events, phase: state.phase };
+}
+function naiveSession(steps) {
+  const state = { phase: 'registering', nick: 'bmbfan', channel: '#candr' };
+  const out = [];
+  const events = [];
+  for (const s of steps) {
+    if ('nick' in s) { out.push(`NICK ${s.nick}`); state.nick = s.nick; continue; }
+    if ('rejoin' in s) { out.push(`JOIN ${state.channel}`); continue; }
+    if ('send' in s) {
+      if (s.send.startsWith('/')) out.push(s.send.slice(1));
+      else { out.push(`PRIVMSG ${state.channel} :${s.send}`); events.push({ type: 'message', from: state.nick, text: s.send, action: false, self: true, time: NOW }); }
+      continue;
+    }
+    const m = naiveParse(s.line);
+    const text = m.params.slice(1).join(' ').replace(/^:/, '');
+    if (m.command === '001') out.push(`JOIN ${state.channel}`);
+    else if (m.command === '433') events.push({ type: 'nickInUse', nick: m.params[1] });
+    else if (m.command === 'JOIN' && m.params[0] === state.channel) { state.phase = 'joined'; events.push({ type: 'joined', channel: state.channel, nick: m.nick }); }
+    else if (m.command === 'PRIVMSG') events.push({ type: 'message', from: m.nick, text, action: false, self: false, time: NOW });
+    else if (m.command === 'KICK') { state.phase = 'parted'; events.push({ type: 'kicked', by: m.nick, reason: m.params.slice(2).join(' ').replace(/^:/, '') }); }
+    else if (m.command === 'ERROR') { state.phase = 'closed'; events.push({ type: 'error', text: m.params.join(' ').replace(/^:/, '') }); }
+  }
+  return { out, events, phase: state.phase };
+}
+
+const WELCOME = { line: ':sparrow.zeronode.net 001 bmbfan :Welcome to the ZeroNode IRC Network' };
+const JOINED = { line: ':bmbfan!webchat@cloaked JOIN #candr' };
+const joinedEvent = { type: 'joined', channel: '#candr', nick: 'bmbfan' };
+const msg = (from, text, extra = {}) => ({ type: 'message', from, text, action: false, self: false, time: NOW, ...extra });
+
+const sessionVectors = [
+  {
+    label: 'a PING is answered, or the server drops the listener',
+    args: [[{ line: 'PING :sparrow.zeronode.net' }]],
+    expect: { out: ['PONG :sparrow.zeronode.net'], events: [], phase: 'registering' },
+  },
+  {
+    label: 'welcome joins the show channel; the echo of our JOIN says we are in',
+    args: [[WELCOME, JOINED]],
+    expect: { out: ['JOIN #candr'], events: [joinedEvent], phase: 'joined' }, alsoNaive: true,
+  },
+  {
+    // ZeroNode answers with the channel's own case: LIST showed `#homegrownhits`
+    // for the `#HomegrownHits` the list names (2026-11-21).
+    label: 'the server\'s own channel case still counts, for our JOIN and for messages',
+    args: [[WELCOME, { line: ':bmbfan!webchat@cloaked JOIN #CandR' }, { line: ':dude!u@h PRIVMSG #CandR :yo' }]],
+    expect: { out: ['JOIN #candr'], events: [joinedEvent, msg('dude', 'yo')], phase: 'joined' },
+  },
+  {
+    label: 'a private message is not shown in the channel panel',
+    args: [[WELCOME, JOINED, { line: ':dude!u@h PRIVMSG bmbfan :psst' }]],
+    expect: { out: ['JOIN #candr'], events: [joinedEvent], phase: 'joined' },
+  },
+  {
+    label: 'a /me from someone else reads as an action, with formatting stripped',
+    args: [[WELCOME, JOINED, { line: ':dude!u@h PRIVMSG #candr :\x01ACTION \x02waves\x02\x01' }]],
+    expect: { out: ['JOIN #candr'], events: [joinedEvent, msg('dude', 'waves', { action: true })], phase: 'joined' },
+  },
+  {
+    label: 'a nick in use is retried on the SAME connection',
+    args: [[{ line: ':sparrow.zeronode.net 433 * bmbfan :Nickname is already in use' }, { nick: 'bmbfan2' },
+      { line: ':sparrow.zeronode.net 001 bmbfan2 :Welcome' }]],
+    expect: { out: ['NICK bmbfan2', 'JOIN #candr'], events: [{ type: 'nickInUse', nick: 'bmbfan' }], phase: 'registering' },
+    alsoNaive: true,
+  },
+  {
+    label: 'someone else\'s kick is not ours; our own kick parts us and REJOIN joins again',
+    args: [[WELCOME, JOINED, { line: ':op!u@h KICK #candr dude :bye' }, { line: ':op!u@h KICK #candr bmbfan :spam' }, { rejoin: true }]],
+    expect: { out: ['JOIN #candr', 'JOIN #candr'], events: [joinedEvent, { type: 'kicked', by: 'op', reason: 'spam' }], phase: 'parted' },
+  },
+  {
+    label: 'a refused JOIN shows the server\'s own reason',
+    args: [[WELCOME, { line: ':sparrow.zeronode.net 474 bmbfan #candr :Cannot join channel (+b)' }]],
+    expect: { out: ['JOIN #candr'], events: [{ type: 'error', text: 'Cannot join channel (+b)' }], phase: 'registering' },
+  },
+  {
+    label: 'ERROR closes the session',
+    args: [[WELCOME, { line: 'ERROR :Closing link: (bmbfan@1.2.3.4) [Ping timeout]' }]],
+    expect: { out: ['JOIN #candr'], events: [{ type: 'error', text: 'Closing link: (bmbfan@1.2.3.4) [Ping timeout]' }], phase: 'closed' },
+    alsoNaive: true,
+  },
+  {
+    label: 'a line stamped with @time keeps the server\'s time',
+    args: [[WELCOME, JOINED, { line: '@time=2026-11-21T20:00:00.000Z :dude!u@h PRIVMSG #candr :t' }]],
+    expect: { out: ['JOIN #candr'], events: [joinedEvent, msg('dude', 't', { time: 1795291200 })], phase: 'joined' },
+  },
+  {
+    label: 'a multi-line paste leaves as ONE PRIVMSG',
+    args: [[WELCOME, JOINED, { send: 'a\nb' }]],
+    expect: { out: ['JOIN #candr', 'PRIVMSG #candr :a b'], events: [joinedEvent, msg('bmbfan', 'a b', { self: true })], phase: 'joined' },
+  },
+  {
+    label: '/join is not sent; the panel says which commands work',
+    args: [[WELCOME, JOINED, { send: '/join #evil' }]],
+    expect: { out: ['JOIN #candr'], events: [joinedEvent, { type: 'error', text: 'Only /me and /nick work here.' }], phase: 'joined' },
+  },
+  {
+    label: '/me and /nick are sent',
+    args: [[WELCOME, JOINED, { send: '/me waves' }, { send: '/nick bmbfan_' }]],
+    expect: {
+      out: ['JOIN #candr', 'PRIVMSG #candr :\x01ACTION waves\x01', 'NICK bmbfan_'],
+      events: [joinedEvent, msg('bmbfan', 'waves', { action: true, self: true })], phase: 'joined',
+    },
+  },
+];
+
+const callSession = (impl, v) => {
+  try {
+    return JSON.stringify(impl === 'real' ? runSession(...v.args) : naiveSession(...v.args));
+  } catch (e) {
+    return `threw ${(e && e.message) || e}`;
+  }
+};
+
+console.log('\nThe session — the shipping answer:');
+for (const v of sessionVectors) {
+  const got = callSession('real', v);
+  if (got !== JSON.stringify(v.expect)) fail(`"${v.label}"\n          expected ${JSON.stringify(v.expect)}\n          got      ${got}`);
+  else ok(v.label);
+}
+console.log('\nThe session replay against naiveSession():');
+replayVectors({ vectors: sessionVectors, invoke: callSession, fail });
+
+console.log('\nThe session, smaller cases:');
+{
+  const nickChange = runSession([WELCOME, JOINED, { line: ':bmbfan!u@h NICK :bmbfan_' }, { send: 'hi' }]);
+  if (JSON.stringify(nickChange.out.at(-1)) !== JSON.stringify('PRIVMSG #candr :hi')
+    || !nickChange.events.some((e) => e.type === 'nickChanged' && e.to === 'bmbfan_')
+    || nickChange.events.at(-1).from !== 'bmbfan_') fail(`our own NICK change is followed — got ${JSON.stringify(nickChange)}`);
+  else ok('our own NICK change is followed, and later lines carry the new nick');
+  const badNick = runSession([WELCOME, JOINED, { send: '/nick 9bad' }]);
+  if (badNick.out.length !== 1 || badNick.events.at(-1).type !== 'error') fail(`an invalid /nick is refused — got ${JSON.stringify(badNick)}`);
+  else ok('an invalid /nick is refused, nothing sent');
+  const beforeJoin = runSession([{ send: 'too early' }]);
+  if (beforeJoin.out.length !== 0) fail(`nothing is sent before the JOIN — got ${JSON.stringify(beforeJoin)}`);
+  else ok('nothing is sent before the JOIN');
 }
 
 console.log('\nImport-free leaves:');
