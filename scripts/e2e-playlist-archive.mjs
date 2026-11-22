@@ -18,7 +18,7 @@
 //   NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123
 //   npm run dev -- -p 3123
 // APP_URL overrides the server. Pass the same COMMUNITY_DB_URL to this script for
-// the restore half; without it that half is skipped and says so.
+// the restore half (both on this machine only: scripts/local-target.mjs); without it that half is skipped and says so.
 //
 // NOTHING LEAVES THE MACHINE but the song reads the API e2e makes too: no GitHub
 // (the remote is a bare repo in a temp folder, and GITHUB_TOKEN is removed from the
@@ -31,8 +31,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { getToken } from 'nostr-tools/nip98';
+import { localAppUrl, localDbUrl } from './local-target.mjs';
 
-const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
+const APP = localAppUrl('http://localhost:3123');
+const DB_URL = localDbUrl();
 const PLAYLISTS = '/api/community-playlists';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ARCHIVE = join(HERE, 'playlist-archive.mjs');
@@ -166,12 +168,12 @@ try {
   check('newest removal first, and A keeps its time', JSON.stringify(ids(r5.json.removed).filter((x) => x === A || x === B)) === JSON.stringify([B, A])
     && r5.json.removed.find((e) => e.id === A)?.removed === eA.removed, JSON.stringify(r5.json.removed));
 
-  if (!process.env.COMMUNITY_DB_URL) {
+  if (!DB_URL) {
     console.log('--- restore half SKIPPED: give this script the server\'s COMMUNITY_DB_URL to run it');
   } else {
     console.log('--- A is restored by hand in the database');
     const { default: pg } = await import('pg');
-    const db = new pg.Client({ connectionString: process.env.COMMUNITY_DB_URL });
+    const db = new pg.Client({ connectionString: DB_URL });
     await db.connect();
     try {
       await db.query('update community_playlists set deleted_at = null, deleted_by = null where id = $1', [A]);

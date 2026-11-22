@@ -1,6 +1,7 @@
 // Pins the community-playlist rules: validatePlaylistDraft (with the secret-key test it is
 // handed, textHoldsSecret), withIndexFeedUrls, artVerdict, cleanText, the feed document
-// and the feed URL helpers in lib/curated-playlists.ts. Imports the real modules.
+// and the feed URL helpers in lib/curated-playlists.ts, and localTarget, the guard that keeps
+// the playlist e2e scripts on this machine (scripts/local-target.mjs). Imports the real modules.
 import {
   COMMUNITY_FEED_ORIGIN, COMMUNITY_FEED_PATH, COMMUNITY_PLAYLISTS_ON,
   communityFeedUrl, communityCoverUrl, communityIdFromFeedUrl, coverVersion,
@@ -29,6 +30,7 @@ import { composeCover, noteSvg } from '../lib/community/cover-compose.ts';
 import sharp from 'sharp';
 import { BRANDS } from '../lib/brand.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
+import { localTarget } from './local-target.mjs';
 
 let failed = 0;
 const fail = (m) => { console.error('  ✗ ' + m); failed++; };
@@ -812,6 +814,48 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const naiveUrl = (e, f) => `${e}?url=${f}&reason=update&medium=musicL`;
   check('podping request: a hand-built string breaks on a feed URL with a query (can fail)',
     new URL(naiveUrl(PUSHER + '/', feed + '?a=1&b=2')).searchParams.get('url') !== feed + '?a=1&b=2');
+}
+
+// localTarget — the app server and the database an e2e script that WRITES playlists
+// may use (scripts/local-target.mjs). Beta submits every playlist it stores to Podcast
+// Index and Hive, for good, so a test aimed at it makes a permanent public feed:
+// loopback names only, and a postgres URL may not carry a host parameter that pg
+// would connect to instead.
+{
+  const vectors = [
+    { kind: 'app: the default dev server', args: ['http://localhost:3123', 'app'], want: 'http://localhost:3123', alsoNaive: true },
+    { kind: 'app: a trailing slash is dropped', args: ['http://localhost:3123/', 'app'], want: 'http://localhost:3123', alsoNaive: true },
+    { kind: 'app: 127.0.0.1', args: ['http://127.0.0.1:3000', 'app'], want: 'http://127.0.0.1:3000', alsoNaive: true },
+    { kind: 'app: [::1]', args: ['http://[::1]:3000', 'app'], want: 'http://[::1]:3000', alsoNaive: true },
+    { kind: 'app: beta is refused', args: ['https://beta.boostmebitch.com', 'app'], want: null },
+    { kind: 'app: production is refused', args: ['https://www.boostmebitch.com', 'app'], want: null },
+    { kind: 'app: the feed origin is refused', args: ['https://www.boostmebuddy.com', 'app'], want: null },
+    { kind: "app: beta's Vercel branch URL is refused", args: ['https://boostmebitch-git-beta-chadfs-projects.vercel.app', 'app'], want: null },
+    { kind: 'app: a DNS name that resolves to loopback is refused', args: ['http://127.0.0.1.nip.io:3123', 'app'], want: null },
+    { kind: 'app: a name that starts with localhost is refused', args: ['http://localhost.example.com:3123', 'app'], want: null },
+    { kind: 'app: userinfo hiding beta is refused', args: ['http://localhost@beta.boostmebitch.com', 'app'], want: null },
+    { kind: 'app: a LAN address is refused', args: ['http://192.168.0.10:3000', 'app'], want: null },
+    { kind: 'app: 0.0.0.0 is refused', args: ['http://0.0.0.0:3000', 'app'], want: null },
+    { kind: 'app: a host with no scheme is refused', args: ['beta.boostmebitch.com', 'app'], want: null },
+    { kind: 'app: another scheme on loopback is refused', args: ['ftp://localhost:3123', 'app'], want: null },
+    { kind: 'app: empty is refused', args: ['', 'app'], want: null },
+    { kind: 'db: the local test store', args: ['postgres://postgres:test@localhost:54329/postgres', 'db'], want: 'postgres://postgres:test@localhost:54329/postgres', alsoNaive: true },
+    { kind: 'db: postgresql:// on 127.0.0.1', args: ['postgresql://u:p@127.0.0.1:5432/db', 'db'], want: 'postgresql://u:p@127.0.0.1:5432/db', alsoNaive: true },
+    { kind: 'db: [::1]', args: ['postgres://u:p@[::1]:5432/db', 'db'], want: 'postgres://u:p@[::1]:5432/db', alsoNaive: true },
+    { kind: 'db: a hosted store is refused', args: ['postgresql://u:p@ep-x.us-east-2.aws.neon.tech/db?sslmode=require', 'db'], want: null },
+    { kind: 'db: a host parameter overriding localhost is refused', args: ['postgres://u:p@localhost/db?host=db.example.com', 'db'], want: null },
+    { kind: 'db: a hostaddr parameter is refused', args: ['postgres://u:p@localhost/db?hostaddr=203.0.113.5', 'db'], want: null },
+    { kind: 'db: a socket path with no host is refused', args: ['postgres:///db?host=/tmp', 'db'], want: null },
+    { kind: 'db: an http URL is refused', args: ['http://localhost:54329', 'db'], want: null },
+  ];
+  // The obvious wrong version, which every playlist script shipped: the value as written.
+  const naive = (raw, kind) => (kind === 'app' ? raw.replace(/\/$/, '') : raw);
+  for (const v of vectors) {
+    check('local target: ' + v.kind, localTarget(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('local target: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('local target: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
 }
 
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }

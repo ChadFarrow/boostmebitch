@@ -67,6 +67,14 @@ and a dev server started with its env on the command line, never in `.env.local`
     NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 \
     npm run dev -- -p 3123
 
+- **This machine only, enforced (2026-11-22).** Beta sends every playlist it publishes, saves or
+  deletes to Podcast Index and Hive, and neither can take it back, so a playlist test runs against a
+  local server and the local Postgres, never against beta. Each script that writes playlists reads
+  `APP_URL` through `localAppUrl` and `COMMUNITY_DB_URL` through `localDbUrl`
+  (`scripts/local-target.mjs`, pinned by `check:community`): a host other than `localhost`,
+  `127.0.0.1` or `[::1]` (a DNS name that resolves there too), or a database URL with a `host` or
+  `hostaddr` parameter, ends the run with exit 2 before the first request. A new script that writes
+  playlists uses the same two helpers.
 - **Switch-off half.** Restart the server without `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`, then run
   `node scripts/e2e-community-api.mjs --off` and `node scripts/e2e-community-ui.mjs --off`.
 - **Network.** The UI script seeds its 12 songs from live Podcast Index data, so it needs the internet.

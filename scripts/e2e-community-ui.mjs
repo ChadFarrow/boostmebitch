@@ -6,7 +6,7 @@
 //   ADMIN_NPUBS=npub1nzwqkakt2cuhrlwfhme3asrvx4s0xfyadm57tkpu2a39t9hqtahs7fsn89 (the test-only admin key of
 //   e2e-community-api.mjs; section 11 signs in with it) NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
 //   NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 npm run dev -- -p 3123
-// APP_URL overrides the server.
+// APP_URL overrides the server, on this machine only (scripts/local-target.mjs).
 //
 // The switch-OFF half is a second run against a second server, in two commands:
 //   1. the same dev server command WITHOUT NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
@@ -18,11 +18,12 @@
 // public network.
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, MINI_BAR, requireApp, wait } from './cdp.mjs';
+import { localAppUrl } from './local-target.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { getToken } from 'nostr-tools/nip98';
 
 const OFF = process.argv.includes('--off'); // run against a dev server started WITHOUT the switch
-const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
+const APP = localAppUrl('http://localhost:3123');
 await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
 
 const sk = generateSecretKey();

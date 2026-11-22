@@ -47,21 +47,16 @@ import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { localAppUrl, localDbUrl } from './local-target.mjs';
 
 const OFF = process.argv.includes('--off');
-const APP = (process.env.APP_URL || 'http://localhost:3124').replace(/\/$/, '');
-await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
-
-const DB_URL = process.env.COMMUNITY_DB_URL;
+const APP = localAppUrl('http://localhost:3124');
+const DB_URL = localDbUrl();
 if (!DB_URL) {
   console.error('Set COMMUNITY_DB_URL to the LOCAL test database (see the top of this file).');
   process.exit(2);
 }
-const dbHost = new URL(DB_URL).hostname;
-if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(dbHost)) {
-  console.error(`Refusing to write to ${dbHost}: this script only writes to a database on this machine.`);
-  process.exit(2);
-}
+await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
 
 const key = () => {
   const pk = getPublicKey(generateSecretKey());

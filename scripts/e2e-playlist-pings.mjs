@@ -19,6 +19,7 @@
 //   PODPING_ENDPOINT_URL=http://127.0.0.1:48555/podping PODPING_BEARER_TOKEN=test-podping-token \
 //   npm run dev -- -p 3123
 //   STUB_URL=http://127.0.0.1:48555 node scripts/e2e-playlist-pings.mjs
+// APP_URL overrides the server, on this machine only (scripts/local-target.mjs).
 //
 // The server still needs the real PODCAST_INDEX_KEY/SECRET in .env.local: the
 // publish route verifies each song against Podcast Index (a READ). The stub
@@ -47,6 +48,7 @@ import { randomBytes } from 'node:crypto';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { getToken } from 'nostr-tools/nip98';
 import { npubEncode } from 'nostr-tools/nip19';
+import { localAppUrl } from './local-target.mjs';
 
 const DISPATCH = '/repos/ChadFarrow/boostmebitch/actions/workflows/playlist-archive.yml/dispatches';
 const PI_ADD = '/api/1.0/add/byfeedurl';
@@ -138,7 +140,7 @@ if (stubAt >= 0) {
 }
 
 async function run() {
-  const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
+  const APP = localAppUrl('http://localhost:3123');
   const STUB = (process.env.STUB_URL || 'http://127.0.0.1:48555').replace(/\/$/, '');
   const QUIET = process.argv.includes('--quiet-server');
   const PI_OFF = process.argv.includes('--pi-switch-off');
