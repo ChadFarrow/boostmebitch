@@ -3384,6 +3384,85 @@ export function recipientOrder(recipients: readonly Pick<ValueRecipient, 'split'
 }
 
 /**
+ * The guids a feed's `<item>`s carry, when that list can vouch for the WHOLE
+ * feed — else `null`, which means "this read proves nothing about what the feed
+ * does not list".
+ *
+ * `itemGuids` is every `<item>` the scan reached, in document order, with a
+ * missing `<guid>` as `null`/`undefined`. Three reads cannot vouch:
+ *
+ *   - an item with no `<guid>`. Podcast Index names such a row by its file URL
+ *     (Able Kirby's feed, PI 4374133), so the row is listed under a name this
+ *     set would not hold;
+ *   - a scan that stopped at `MAX_RSS_ITEMS` (`capped`), which never saw the rest;
+ *   - a read that found no item at all. An error page answers 200 and parses,
+ *     and "the artist removed every track" is not a claim one read should make.
+ *
+ * Pinned by `check:trackorder`.
+ */
+export function listedTrackGuids(
+  itemGuids: readonly (string | null | undefined)[],
+  capped: boolean,
+): ReadonlySet<string> | null {
+  if (capped || itemGuids.length === 0) return null;
+  const out = new Set<string>();
+  for (const g of itemGuids) {
+    if (!g) return null;
+    out.add(g);
+  }
+  return out;
+}
+
+/**
+ * A MUSIC album's Podcast Index rows, less every row its feed no longer lists.
+ *
+ * Podcast Index keeps a row after the publisher removes the item, and keeps the
+ * old one when a track is replaced under a new guid. Measured 2026-11-22: "Tinderbox"
+ * (PI 6422170) played a replaced "Analysis Paralysis" FIRST, an older recording,
+ * because that row carries no `<podcast:episode>` and `episode ?? 0` sorts it to
+ * the front; "Live at Rockpile" (7612000) listed 15 rows for 8 tracks. Seven of
+ * 154 music feeds surveyed carried such rows. The album's own feed is the
+ * authority for which tracks exist, as it already is for who gets paid.
+ *
+ * Music only, because a podcast's RSS often keeps just its newest items while
+ * Podcast Index keeps the archive. `listed` is `listedTrackGuids`' answer; `null`
+ * keeps every row. A row with no guid cannot be judged and stays.
+ *
+ * Pinned by `check:trackorder`.
+ */
+export function onlyListedTracks<T extends { guid?: string | null }>(
+  rows: T[],
+  listed: ReadonlySet<string> | null,
+  isMusic: boolean,
+): T[] {
+  if (!isMusic || !listed) return rows;
+  return rows.filter((r) => !r.guid || listed.has(r.guid));
+}
+
+/**
+ * The `datePublished` after which `/api/feed` appends RSS items Podcast Index
+ * did not return (`getRssEpisodesNewerThan`).
+ *
+ * Normally Podcast Index's newest row: past it, a missing item means "not
+ * crawled yet", and an older one is PI's decision or its 1000-row ceiling
+ * (docs/feeds.md). For a music album whose read vouches for the whole list
+ * (`listedTrackGuids` non-null) it is 0, because `onlyListedTracks` just dropped
+ * every unlisted row: a track replaced under a new guid that Podcast Index has
+ * not crawled would otherwise vanish, where it used to show as the old copy. An
+ * album's rows are ordered by track number, so appending an older item reorders
+ * nothing the way it would an archive show.
+ *
+ * Pinned by `check:trackorder`.
+ */
+export function rssCatchUpAfter(
+  newestPi: number,
+  listed: ReadonlySet<string> | null,
+  isMusic: boolean,
+): number {
+  return isMusic && listed ? 0 : newestPi;
+}
+
+/**
  * How a feed's items are ordered for display: a music album sorts by disc
  * (`<podcast:season>`) then track (`<podcast:episode>`) ASCENDING; everything
  * else sorts newest-first by `datePublished`.
@@ -3403,17 +3482,33 @@ export function recipientOrder(recipients: readonly Pick<ValueRecipient, 'split'
  * season at all), while `episode ?? 0` sorts an untagged track to the FRONT of
  * its disc. Don't "tidy" them to match.
  *
+ * **Two music rows with the same disc and track number keep the FEED's order**,
+ * when the caller passes `feedPosition` (the item's index in the document). That
+ * is every track of an album that numbers nothing, and the unnumbered tracks of
+ * one that numbers some. Without it they kept whatever order they arrived in —
+ * Podcast Index's, on /api/feed — which put "Carol Of The Bells", 10th in the
+ * Doerfel-Verse feed (PI 6642704), ahead of "Make It", 4th. A row the feed does
+ * not list (`undefined`) goes after the ones it does. The raw-RSS path needs no
+ * `feedPosition`: it builds its rows in document order and the sort is stable.
+ * Pinned by `check:trackorder`.
+ *
  * Returns a comparator rather than sorting, because the API route needs this as
  * the tail of a larger sort that ranks live items above everything else.
  */
-export function compareEpisodeOrder(
+export function compareEpisodeOrder<T extends Pick<Episode, 'season' | 'episode' | 'datePublished'>>(
   isMusic: boolean,
-): (a: Pick<Episode, 'season' | 'episode' | 'datePublished'>, b: Pick<Episode, 'season' | 'episode' | 'datePublished'>) => number {
+  feedPosition?: (e: T) => number | undefined,
+): (a: T, b: T) => number {
   return (a, b) => {
     if (isMusic) {
       const seasonDiff = (a.season ?? 1) - (b.season ?? 1);
       if (seasonDiff !== 0) return seasonDiff;
-      return (a.episode ?? 0) - (b.episode ?? 0);
+      const trackDiff = (a.episode ?? 0) - (b.episode ?? 0);
+      if (trackDiff !== 0 || !feedPosition) return trackDiff;
+      const pa = feedPosition(a);
+      const pb = feedPosition(b);
+      if (pa === undefined || pb === undefined) return pa === pb ? 0 : pa === undefined ? 1 : -1;
+      return pa - pb;
     }
     return (b.datePublished ?? 0) - (a.datePublished ?? 0);
   };

@@ -29,7 +29,7 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue, FEED_FANOUT } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, listedTrackGuids, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue, FEED_FANOUT } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
@@ -1746,6 +1746,10 @@ interface RssEpisodeEnrichment {
   value: ValueBlock | null;
   /** The item's `<podcast:valueTimeSplit>` windows. Absent when it has none. */
   valueTimeSplits?: ValueTimeSplit[];
+  /** The index of the first `<item>` carrying this guid in the document,
+   *  counting items with no guid too: the music sort's tiebreak
+   *  (`compareEpisodeOrder`). */
+  position: number;
 }
 
 export interface RssFeedEnrichment {
@@ -1755,6 +1759,9 @@ export interface RssFeedEnrichment {
   /** True when the feed document was read. Every other field is only an
    *  answer about the feed when this is. */
   rssRead?: boolean;
+  /** Every guid the feed lists, when the read can vouch for the whole list,
+   *  else null (`listedTrackGuids`, lib/util.ts). Absent when not read. */
+  listedGuids?: ReadonlySet<string> | null;
   /** The channel `<podcast:value>`, or null when the channel declares none. */
   feedValue?: ValueBlock | null;
   feedMedium?: string;
@@ -1964,9 +1971,14 @@ export async function getRssEpisodeEnrichment(
   const feedTitle = extractText(channelXml, 'title') || undefined;
   const feedPublisher = parsePublisherRef(channelXml);
 
+  // Every item's guid in document order, a missing one included, so the route
+  // can tell a feed that lists every row from one this scan cannot vouch for.
+  const itemGuids: (string | undefined)[] = [];
   for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
     const inner = item.inner;
     const guid = extractText(inner, 'guid');
+    const position = itemGuids.length;
+    itemGuids.push(guid || undefined);
     if (!guid) continue;
     const socialInteract = parseSocialInteractsFromRss(inner) ?? undefined;
     // Full show notes: prefer <content:encoded>; when a feed doesn't use it
@@ -2000,10 +2012,14 @@ export async function getRssEpisodeEnrichment(
     // a crawl from years ago that lacks the publisher's analytics prefix
     // (`op3.dev/e,pg=…/`). `feedEnclosure` decides whether it ships.
     const { enclosureUrl, enclosureType, enclosureLength } = parseItemEnclosure(inner);
-    episodes.set(guid, { enclosureUrl, enclosureType, enclosureLength, socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, funding, value, valueTimeSplits });
+    // A feed that repeats a guid keeps the later item's fields, as it always
+    // did, and the FIRST item's place.
+    const firstAt = episodes.get(guid)?.position ?? position;
+    episodes.set(guid, { enclosureUrl, enclosureType, enclosureLength, socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs, funding, value, valueTimeSplits, position: firstAt });
   }
   const feedValue = parseValueBlock(channelXml);
-  return { episodes, rssRead: true, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle, feedPublisher };
+  const listedGuids = listedTrackGuids(itemGuids, itemGuids.length >= MAX_RSS_ITEMS);
+  return { episodes, rssRead: true, listedGuids, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle, feedPublisher };
 }
 
 // --- Non-PI feed preview ---------------------------------------------------

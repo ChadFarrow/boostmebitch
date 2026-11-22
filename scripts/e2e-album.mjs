@@ -19,14 +19,17 @@
 // enclosure request and fulfils it with 4 KB after a short delay. So the album
 // page, Podcast Index, the feed and the app's own routes are all real, and the
 // engine, the Cache API bucket and the IndexedDB records are the shipping ones —
-// but the run costs 56 KB instead of the album's 43 MB, which matters for a
+// but the run costs 52 KB instead of the album's 38 MB, which matters for a
 // feature whose whole point is that bandwidth is scarce. The delay is what makes
 // "one at a time" measurable: a parallel queue would show several requests
 // paused at once.
 //
 // THE ALBUM IS THE FIXTURE. Tinderbox (podcast:guid
-// 537df90e-0cc4-535b-84d0-dcb3ca87f1f8): 14 tracks, 43,051,087 bytes, every
-// size stated, on CloudFront and behind op3.dev. If it leaves Podcast Index,
+// 537df90e-0cc4-535b-84d0-dcb3ca87f1f8): 13 tracks, 37,501,907 bytes, every
+// size stated, on CloudFront and behind op3.dev. It was 14 tracks and 43 MB
+// until 2026-11-22, when /api/feed stopped listing the replaced copy of
+// "Analysis Paralysis" that Podcast Index still holds (docs/feeds.md, "A music
+// album lists what its feed lists"). If it leaves Podcast Index,
 // replace the constants with any `medium=music` album of a few tracks.
 //
 //   npm run build && npm start          # in another terminal
@@ -35,9 +38,9 @@ import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 const ALBUM_GUID = '537df90e-0cc4-535b-84d0-dcb3ca87f1f8';
-const TRACKS = 14;
-/** `fmtBytes(43,051,087)`. */
-const ALBUM_SIZE = '43 MB';
+const TRACKS = 13;
+/** `fmtBytes(37,501,907)`. */
+const ALBUM_SIZE = '38 MB';
 /** The two hosts this album's enclosures live on. */
 const ENCLOSURE = /d12wklypp119aj\.cloudfront\.net\/track\/|op3\.dev\/e,pg=537df90e/;
 /** How long each fulfilment is held, so overlapping requests would be visible. */
@@ -174,8 +177,8 @@ section('1. An album that cannot fit is refused WHOLE, before one request');
 // ---------------------------------------------------------------------------
 {
   // 90 MB of quota: every track fits on its own (7.8 MB + the 64 MB reserve),
-  // the album does not (43 MB + 64 MB). So only the album-wide check can refuse
-  // here — without it the per-track checks pass all fourteen, and a smaller
+  // the album does not (38 MB + 64 MB). So only the album-wide check can refuse
+  // here — without it the per-track checks pass all thirteen, and a smaller
   // quota would download seven of twelve and then stop, having spent the data
   // and left no album.
   // `send` resolves with the whole CDP message, so the id is under `.result`.
@@ -192,7 +195,7 @@ section('1. An album that cannot fit is refused WHOLE, before one request');
   await wait(2500);
   const c = await control();
   t.ok('the refusal is a sentence that names the album and its size',
-    !!c.alert && /Not enough space for this album \(43 MB\)/.test(c.alert), JSON.stringify(c));
+    !!c.alert && c.alert.includes(`Not enough space for this album (${ALBUM_SIZE})`), JSON.stringify(c));
   t.equal('...and not one enclosure was requested', requests.length, 0);
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
 }
