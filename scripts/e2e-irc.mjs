@@ -256,6 +256,9 @@ async function browserHalf(APP) {
       && await js(`${q('[data-irc-nick]')}.compareDocumentPosition(${q('[data-irc-privacy]')}) === Node.DOCUMENT_POSITION_FOLLOWING`));
     c.ok('the nick box shows', await js(`!!${q('[data-irc-nick]')}`));
     c.equal('the nick box takes at most 17 characters (ZeroNode NICKLEN)', await js(`${q('[data-irc-nick]')}.maxLength`), 17);
+    // Chad, 2026-11-21: an empty panel did not read as a chat. Before the first
+    // row the list says what it is and how to join.
+    c.ok('before JOIN the list says what it is', (await text('[data-irc-list] [data-irc-empty]')).includes('Pick a nick'));
 
     await type('[data-irc-nick]', NSEC);
     await click('[data-irc-join]');
@@ -290,6 +293,7 @@ async function browserHalf(APP) {
     c.equal('…on the same connection as the taken nick', fake.connections, 2);
     c.equal('the gateway sees the app\'s own origin', fake.origins[0], new URL(APP).origin);
     c.ok('the history line shows', await until(`(${q('[data-irc-chat]')}?.innerText ?? '').includes(${JSON.stringify(HISTORY)})`, 5000));
+    c.ok('…and the empty line is gone', !(await js(`!!${q('[data-irc-empty]')}`)));
 
     fake.say('dude', '#candr', 'hello from irc');
     c.ok('a channel message shows with its nick', await until(`[...document.querySelectorAll('[data-irc-row]')].some((r) => r.innerText.includes('dude') && r.innerText.includes('hello from irc'))`, 5000));
@@ -398,6 +402,7 @@ async function browserHalf(APP) {
       const box = (el) => { const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; };
       return {
         list: Math.round(${q('[data-irc-list]')}.getBoundingClientRect().height),
+        border: getComputedStyle(${q('[data-irc-chat]')}).borderTopWidth,
         sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
         send: box(${q('[data-irc-send]')}),
         tabs: [...document.querySelectorAll('[data-live-tabs] [role=tab]')].map(box),
@@ -414,6 +419,7 @@ async function browserHalf(APP) {
       return out;
     })())`)));
     c.equal('no sideways overflow', m.sw, m.cw);
+    c.equal('no frame on a phone, as <LiveChat>', m.border, '0px');
     c.ok('Send is at least 24 x 24', m.send[0] >= 24 && m.send[1] >= 24, JSON.stringify(m.send));
     c.ok('every tab is at least 24 x 24', m.tabs.length >= 2 && m.tabs.every(([w, h]) => w >= 24 && h >= 24), JSON.stringify(m.tabs));
 
@@ -427,11 +433,13 @@ async function browserHalf(APP) {
       const chat = ${q('[data-irc-chat]')}.getBoundingClientRect();
       const h1 = [...document.querySelectorAll('h1')].find((h) => h.textContent.includes('E2E Chad Show live now') && h.getBoundingClientRect().width > 0).getBoundingClientRect();
       return { chatLeft: Math.round(chat.left), chatH: Math.round(chat.height), mid: innerWidth / 2, titleLeft: Math.round(h1.left),
+        border: getComputedStyle(${q('[data-irc-chat]')}).borderTopWidth,
         sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
     })())`).then(JSON.parse);
     c.ok('the chat is in the right-hand pane, under the title', d.chatLeft >= d.mid && d.titleLeft >= d.mid, JSON.stringify(d));
     c.ok(`…and tall (${d.chatH}px)`, d.chatH >= 300, JSON.stringify(d));
     c.equal('…with no sideways overflow', d.sw, d.cw);
+    c.ok('…in a frame, so it reads as a chat window', d.border !== '0px', JSON.stringify(d));
   } finally {
     await fake.close();
   }

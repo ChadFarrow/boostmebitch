@@ -215,7 +215,10 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
   const askNick = phase === 'idle' || phase === 'closed' || (phase === 'connecting' && nickTaken);
 
   return (
-    <div className="flex flex-col h-full min-h-0" data-irc-chat data-irc-phase={phase}>
+    // A frame from sm: up, so the panel reads as a chat window beside the cover
+    // (Chad, 2026-11-21); none on a phone, where it is the screen's lower half,
+    // as <LiveChat> is.
+    <div className="flex flex-col h-full min-h-0 sm:border sm:border-bone/10 sm:rounded sm:p-3" data-irc-chat data-irc-phase={phase}>
       <p className="text-[11px] uppercase tracking-widest text-muted mb-2 flex-shrink-0">
         IRC chat · <span className="normal-case tracking-normal text-bone/60">{channel}</span>
       </p>
@@ -228,6 +231,15 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         // player's row is `overflow-hidden`, so this is the outermost scroller.
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain space-y-3 pr-1"
       >
+        {rows.length === 0 && (
+          // IRC keeps no history, so before JOIN there is nothing to show; say
+          // what this is instead of an empty box.
+          <div data-irc-empty className="h-full flex items-center justify-center text-center px-4">
+            <p className="text-xs text-muted max-w-xs">
+              Live chat in {channel} on ZeroNode. Pick a nick below to join; messages show from the moment you join.
+            </p>
+          </div>
+        )}
         {rows.map((r) =>
           r.kind === 'notice' ? (
             <p key={r.id} data-irc-row className="text-xs text-muted">{r.text}</p>

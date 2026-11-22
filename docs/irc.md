@@ -79,6 +79,10 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   or the box would offer `Guest4821` next time.
 - **The privacy line sits under the nick box**, where it is read before JOIN;
   in the list it scrolled away as soon as rows came.
+- **It reads as a chat window before anyone has joined** (Chad, 2026-11-21: an
+  empty panel "is kind of hard to tell that it's an actual chat"): a frame from
+  `sm:` up, and a line in the empty list saying what it is and how to join. No
+  frame on a phone, where it is the screen's lower half, as `<LiveChat>` is.
 - **It leaves when it goes**: `QUIT :bye` on unmount (the player's SHOW
   changed, or the show ended and was never joined) and on a `pagehide` that is
   not `persisted`. The panel is keyed by channel, so a new live episode of the
