@@ -88,6 +88,8 @@
 
 import {
   addToHistory,
+  advanceBeforeEnd,
+  HIDDEN_ADVANCE_LEAD_SEC,
   albumShuffleTracks,
   boostedOnDevice,
   epKey,
@@ -928,6 +930,68 @@ section('Every vector above is replayed against the obvious wrong version');
   // `{ alsoNaive: true }` vector used to have its `differs` result discarded, so
   // the exemption hid exactly what it was granted to protect.
   replayVectors({ vectors, invoke: call, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
+}
+
+// ---------------------------------------------------------------------------
+section('A hidden iPhone page moves to the next track BEFORE the end (#647)');
+// ---------------------------------------------------------------------------
+{
+  // REPORTED 2026-11-22 from Chad's iPhone, the installed app on beta, a musicL
+  // playlist in the background: a track ENDED, the app moved on at once
+  // (`advance via=tracks`, `src`, `play.call vis=hidden`), the next file reached
+  // HAVE_METADATA, `stalled`, and played only when the app came back to the
+  // screen, 41 ms after `vis state=visible`.
+  //
+  // WebKit (MediaSessionManagerCocoa::sessionWillEndPlayback) deactivates the
+  // audio session when the last playing session is audio that has ENDED, and
+  // that rule has no background test. The iOS rule beside it skips deactivation
+  // on a plain pause in the background, and Apple documents why: a nonmixable
+  // audio session cannot be made active while the app is in the background
+  // (AVAudioSession.ErrorCode.cannotInterruptOthers). A source swapped while
+  // the old one still PLAYS never ends, so it never deactivates — the same path
+  // as the lock-screen ⏭. So the page swaps about a second early, but only
+  // where all of that applies.
+  //
+  // `naive()` is the obvious overreach: advance near the end everywhere. That
+  // cuts the last second of every track in the foreground, on Android and on a
+  // desktop, where nothing is broken.
+  const L = HIDDEN_ADVANCE_LEAD_SEC;
+  const naive = (s) => Number.isFinite(s.duration) && s.duration - s.currentTime <= L;
+  const base = { hidden: true, ios: true, paused: false, hasNext: true, done: false, playbackRate: 1, duration: 183, currentTime: 183 - L / 2 };
+  const vv = [];
+  const v = (label, over, expect, opts = {}) => vv.push({ label, args: [{ ...base, ...over }], expect, ...opts });
+
+  // ── Where it applies ────────────────────────────────────────────────────
+  v('hidden, iOS, half a lead from the end, a next track: advance now', {}, true, { alsoNaive: true });
+  v('…at exactly one lead from the end', { currentTime: 183 - L }, true, { alsoNaive: true });
+  // A podcast in the listen queue may play faster. The lead is wall-clock time,
+  // or a 2× episode reaches its end before the swap.
+  v('at 2× a media lead and a half from the end is under a second of wall time', { playbackRate: 2, currentTime: 183 - L * 1.5 }, true);
+
+  // ── Where it must not ───────────────────────────────────────────────────
+  v('on screen: the track plays to its last second', { hidden: false }, false);
+  v('not iOS (Android, a desktop): unchanged', { ios: false }, false);
+  v('nothing plays next: the track plays to its end, which stops', { hasNext: false }, false);
+  v('paused: nothing moves', { paused: true }, false);
+  v('once per track', { done: true }, false);
+  v('two leads from the end: not yet', { currentTime: 183 - 2 * L }, false, { alsoNaive: true });
+  v('at 2× two and a half media leads from the end: not yet', { playbackRate: 2, currentTime: 183 - L * 2.5 }, false, { alsoNaive: true });
+  // An element AT its end is ended: its `ended` handler owns it.
+  v('at the end: the ended handler moves on, not this', { currentTime: 183 }, false);
+  // A track shorter than two leads would be skipped from its first second.
+  v('a track shorter than two leads is never cut', { duration: L * 1.5, currentTime: L }, false);
+  v('a live stream has no end', { duration: Infinity, currentTime: 3600 }, false, { alsoNaive: true });
+  v('no duration yet', { duration: NaN, currentTime: 0 }, false, { alsoNaive: true });
+
+  for (const x of vv) compare(x.label, advanceBeforeEnd(...x.args), x.expect);
+  const invoke = (impl, x) => {
+    try {
+      return JSON.stringify(impl === 'real' ? advanceBeforeEnd(...x.args) : naive(...x.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  replayVectors({ vectors: vv, invoke, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
 }
 
 if (failures) {

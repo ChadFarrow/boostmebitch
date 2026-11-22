@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { isMusicMedium } from './util';
+import { readsEpisodeDocs } from './util';
 import { transcriptRequestUrl } from './downloads/download-rules';
 import { fetchDoc } from './downloads/downloads-cache';
 import type { Episode, Podcast } from './types';
@@ -161,12 +161,13 @@ export function useTranscript(url: string, type?: string): { cues: TranscriptCue
 }
 
 /** The transcript source for a now-playing item, or an empty url to skip.
- *  Transcripts are a podcast feature: gated off for live streams and music
- *  feeds, mirroring `chapterUrlFor`. */
+ *  Transcripts are a podcast feature: gated off for live streams and for
+ *  anything that plays as tracks, through the same gate as `chapterUrlFor`
+ *  (`readsEpisodeDocs`). */
 export function transcriptSourceFor(
   current: { episode: Episode; podcast: Podcast } | null,
 ): { url: string; type?: string } {
-  if (!current || current.episode.liveStatus === 'live' || isMusicMedium(current.podcast)) {
+  if (!current || !readsEpisodeDocs(current)) {
     return { url: '' };
   }
   return { url: current.episode.transcriptUrl ?? '', type: current.episode.transcriptType };

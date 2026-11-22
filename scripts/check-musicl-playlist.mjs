@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS, parseItemEnclosure } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, feedEnclosure, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey, piConfirmedMisses } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, feedEnclosure, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey, piConfirmedMisses, readsEpisodeDocs } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -1682,6 +1682,72 @@ console.log('\nWhich kind of thing the search box was asked for');
     else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
   }
   replayVectors({ vectors, invoke, fail });
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nA playlist track reads no chapters, so ⏮/⏭ stay the playlist\'s (#647)');
+// ---------------------------------------------------------------------------
+{
+  // REPORTED 2026-11-22 from Chad's iPhone (the installed app on beta), on the
+  // musicL playlist "WrathfulTs Top Tracks": ⏭ greyed out on track 10 while
+  // tracks 11-17 sat below it. Track 10 comes from a podhome `music` feed that
+  // writes `<podcast:chapters>` with ONE chapter, start 0, "100 sats from
+  // ChadF". The gate read `isMusicMedium(current.podcast)`, and the podcast of
+  // a playlist row is the PLAYLIST, so the track's chapters loaded and
+  // `buildChapterNav` took ⏮/⏭ over: one chapter leaves no next chapter, and a
+  // spent chapter override falls through to the listen queue only, never to
+  // the playlist. The same track played from its own album read no chapters.
+  // `playsAsTracks` is the rule its own comment states ("chapters/transcripts
+  // are suppressed").
+  const naive = (current) => !!current && current.episode.liveStatus !== 'live'
+    && current.podcast.medium?.toLowerCase() !== 'music';
+  const ep = (o = {}) => ({ guid: 'e2e-track-10', chaptersUrl: 'https://feeds.example.invalid/chapters/10.json', ...o });
+  const vectors = [];
+  const vec = (label, args, expect, opts = {}) => vectors.push({ label, args, expect, ...opts });
+
+  // ── The report ──────────────────────────────────────────────────────────
+  vec('a musicL playlist track with <podcast:chapters>: no chapters', [{ episode: ep(), podcast: { medium: 'musicL' } }], false);
+  vec('…whatever the case of the medium', [{ episode: ep(), podcast: { medium: 'musicl' } }], false);
+
+  // ── What must keep working ──────────────────────────────────────────────
+  vec('a podcast episode still reads its chapters', [{ episode: ep(), podcast: { medium: 'podcast' } }], true, { alsoNaive: true });
+  vec('a feed with no medium is a podcast', [{ episode: ep(), podcast: {} }], true, { alsoNaive: true });
+  // A podcastL row is an EPISODE: its chapters are why somebody plays it.
+  vec('a podcastL playlist episode still reads its chapters', [{ episode: ep(), podcast: { medium: 'podcastL' } }], true, { alsoNaive: true });
+  vec('a music album reads none, as before', [{ episode: ep(), podcast: { medium: 'music' } }], false, { alsoNaive: true });
+  vec('a live item reads none', [{ episode: ep({ liveStatus: 'live' }), podcast: { medium: 'podcast' } }], false, { alsoNaive: true });
+  vec('nothing playing reads none', [null], false, { alsoNaive: true });
+
+  const ser = (v) => JSON.stringify(v);
+  const invoke = (impl, v) => {
+    try {
+      return ser((impl === 'real' ? readsEpisodeDocs : naive)(...v.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  for (const v of vectors) {
+    const got = invoke('real', v);
+    if (got === ser(v.expect)) ok(v.label);
+    else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+  }
+  replayVectors({ vectors, invoke, fail });
+
+  // THE WIRING. A pure gate nobody calls proves nothing: the two now-playing
+  // readers must ask it, and must not keep a second, narrower test of their own.
+  const body = (rel, fn) => {
+    const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|\s)\/\/.*$/gm, '$1');
+    const m = new RegExp(`export function ${fn}\\b[\\s\\S]*?\\n}\\n`).exec(src);
+    return m ? m[0] : null;
+  };
+  for (const [rel, fn] of [['lib/chapters.ts', 'chapterUrlFor'], ['lib/transcript.ts', 'transcriptSourceFor']]) {
+    const b = body(rel, fn);
+    if (!b) { fail(`${rel}: \`${fn}\` not found`); continue; }
+    if (/\breadsEpisodeDocs\(/.test(b) && !/\bisMusicMedium\(/.test(b)) ok(`${fn} asks readsEpisodeDocs, and nothing narrower`);
+    else fail(`${rel}: \`${fn}\` must gate on readsEpisodeDocs(current), never isMusicMedium — a playlist track's chapters take ⏭ (#647)`);
+  }
 }
 
 if (failures) {

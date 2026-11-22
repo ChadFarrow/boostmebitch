@@ -81,7 +81,7 @@ npm run dev / build / start / lint
 | `check:nip46error` | `isApprovalPending`, `nip46RequestFits` (the 65535-byte ceiling), `holdErrorsForResult` | Clave signs nothing; a follow list over 849 reads as a dead signer |
 | `check:vpsummary` | `value-playback-summary.ts` — the kind:33369 arithmetic and publish predicate | two writers rewrite one address forever |
 | `check:nwcbudget` | `parseNwcBudget`, `spendableSats` — a NIP-47 `get_budget` answer, and which number is spendable | advertises sats the budget will refuse, or blanks a wallet that can pay |
-| `check:musicl` | `parsePlaylistRemoteItems`, `isPlaylistMedium`, `playsAsTracks`, **`curatedNotListed`**, **`payableValue`**, **`feedItemValue`**, **`feedEnclosure`**, **`valueNotRead`**, **`boostGate`**, **`withoutStoredValue`**, `piConfirmedMisses`, and a source scan | a playlist publishes no `<item>`, so a mis-parse pays the CURATOR; a payee no feed names gets paid; PI's stale file hides plays from OP3 |
+| `check:musicl` | `parsePlaylistRemoteItems`, `isPlaylistMedium`, `playsAsTracks`, `readsEpisodeDocs`, **`curatedNotListed`**, **`payableValue`**, **`feedItemValue`**, **`feedEnclosure`**, **`valueNotRead`**, **`boostGate`**, **`withoutStoredValue`**, `piConfirmedMisses`, and a source scan | a playlist publishes no `<item>`, so a mis-parse pays the CURATOR; a payee no feed names gets paid; PI's stale file hides plays from OP3 |
 | `check:mutes` | `classifyMuteContent`, `parseMuteTags`, `privateHalfAlreadyOpened` — which cipher a kind:10000 private half is written in | another client's mute list re-encoded, unreadable, from a successful publish |
 | `check:chapters` | `chapters-json.ts` — the one corruption a chapters document may carry | chapter titles lose characters |
 | `check:art` | `artWidth`, `artCandidates`, `artGateOpen` | a failing proxy blanks every cover |
@@ -104,7 +104,7 @@ npm run dev / build / start / lint
 | `check:cappedbody` | `capped-body.ts` — the capped readers, server AND browser | one feed fills the heap |
 | `check:brand` | `BRANDS`, `clientTag` — **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy |
 | `check:downloads` | `downloadKey`, `roomVerdict`, `albumPlan` | a download nothing finds |
-| `check:queue` | `epKey`, `trimForQueue`, `listenStep`, `shuffle*` | the queue removes the wrong episode; history claims unsettled sats |
+| `check:queue` | `epKey`, `trimForQueue`, `listenStep`, `shuffle*`, `advanceBeforeEnd` | the queue removes the wrong episode; history claims unsettled sats |
 | `check:favnew` | `selectNewEpisodes`, `advanceMarks` | a new episode nobody sees, or a year of back catalogue |
 | `check:likes` | `tallyLikes`, `likeTags`, `unlikeTags` | a like Fountain cannot count |
 | `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards |
