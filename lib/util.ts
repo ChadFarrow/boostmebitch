@@ -602,12 +602,12 @@ export function listHolding(
 }
 
 /**
- * Is the item playing now a track of `album`, playing AS that album? Then the
- * album's ▶ pauses and resumes it; otherwise the ▶ STARTS the album.
+ * Is the item playing now a track of `album`, playing AS that album? Then a
+ * cover in a list of albums (`useAlbumCoverPlay`, `/demu`) pauses and resumes
+ * it; otherwise that cover STARTS the album.
  *
- * Two surfaces press it: the album page's header cover (`<EpisodeList>`) and a
- * cover in a list of albums (`useAlbumCoverPlay`, `/demu`). One rule, because a
- * second copy is how the two came to disagree about the same album.
+ * The album page's header cover asked this too until 2026-11-22; it now always
+ * starts the album over (`coverStartSeeks`).
  *
  * The show matches by `podcastGuid`, else by `id`. A track the favorites shuffle
  * or Up Next holds is NOT the album's (`listHolding`): resuming it would play
@@ -637,39 +637,27 @@ export function firstPlayableTrack<T extends Pick<Episode, 'liveStatus' | 'unres
     ?? rows.find((e) => !e.unresolved);
 }
 
-/** What a press on a track list's header cover does — see `coverPress`. */
-export type CoverPress = { kind: 'toggle' } | { kind: 'start'; seek: boolean };
-
 /**
- * What a press on the header cover of a track list does (`<EpisodeList>`'s ▶).
+ * The header cover of a track list (`<EpisodeList>`'s ▶) ALWAYS starts the
+ * list over: its first playable row, from 0:00, in the list's order. A playlist
+ * since #652 (Chad, 2026-11-22: "I think the album art play button should just
+ * start the playlist over again, even if you were already playing it."), and an
+ * album since the same day ("album-over: yes"). It never pauses, so it never
+ * draws ❚❚; pause is the mini player's. After a reload `revealNowPlaying` puts
+ * the song back alone with the list as its show, and the old toggle resumed it.
  *
- * - `toggle`: pause or resume the item playing. Only an ALBUM that holds it
- *   (`albumHoldsCurrent`), as before.
- * - `start`: play `first` from 0:00, in the list's order. `play()` ends a
- *   shuffle. `seek` is true when `first` is the item the player already holds
- *   (the same `episode.id`, which `<Player>`'s source effect is keyed on): then
- *   `play()` loads nothing, its `positionSec: 0` is a store mirror the next
- *   `timeupdate` overwrites, and the song goes on from where it was — so the
- *   caller seeks to 0 as well (`requestSeek(0)`).
- *
- * **A PLAYLIST never toggles** (Chad, 2026-11-22: "I think the album art play
- * button should just start the playlist over again, even if you were already
- * playing it."). After a reload `revealNowPlaying` puts the song back alone,
- * with the playlist as its show, so the album rule adopted it and ▶ resumed
- * track 13. The glyph reads the same answer: a cover that always starts never
- * draws ❚❚ (anything that draws ❚❚ must pause — docs/ui.md).
+ * True when the cover must also SEEK to 0: `first` is the item the player holds
+ * already (the same `episode.id`, which `<Player>`'s source effect is keyed
+ * on). Then `play()` loads nothing, its `positionSec: 0` is a store mirror the
+ * next `timeupdate` overwrites, and the song would go on from where it was.
  *
  * Pinned by `check:queue`.
  */
-export function coverPress(
-  list: Pick<Podcast, 'id' | 'podcastGuid' | 'medium'>,
+export function coverStartSeeks(
   first: Pick<Episode, 'id'>,
-  current: { episode: Pick<Episode, 'guid' | 'feedId' | 'id'>; podcast: Pick<Podcast, 'id' | 'podcastGuid'> } | null,
-  shuffle: readonly QueueItem[] | null,
-  listenQueue: readonly QueueItem[],
-): CoverPress {
-  if (!isPlaylistMedium(list) && albumHoldsCurrent(list, current, shuffle, listenQueue)) return { kind: 'toggle' };
-  return { kind: 'start', seek: !!current && current.episode.id === first.id };
+  current: { episode: Pick<Episode, 'id'> } | null,
+): boolean {
+  return !!current && current.episode.id === first.id;
 }
 
 type RowIds = Pick<Episode, 'id' | 'guid' | 'feedId' | 'podcastGuid'>;

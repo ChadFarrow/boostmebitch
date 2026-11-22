@@ -379,11 +379,14 @@ console.log('\n7. The rest of the row still opens the album');
 await js(`(() => { const li = ${rowOf('E2E Album A')}; [...li.children].find((c) => c.tagName === 'BUTTON' && !c.dataset.coverPlay).click(); })()`);
 t.ok('A: the row opens the album page', await until(`location.pathname === '/' && document.body.textContent.includes('back to DeMu') && document.body.textContent.includes('A track 2')`, 20000));
 t.equal('C still plays under the open album', await track(), 'C-0');
-const header = () => js(`document.querySelector('header button[aria-label="Play album"], header button[aria-label="Pause"]')?.getAttribute('aria-label') ?? null`);
-t.equal('the album header offers Play album', await header(), 'Play album');
-await js(`document.querySelector('header button[aria-label="Play album"]')?.click()`);
+const header = () => js(`document.querySelector('header button.group')?.getAttribute('aria-label') ?? null`);
+t.equal('the album header offers the album from the start', await header(), 'Play album from the start');
+await js(`document.querySelector('header button.group')?.click()`);
 t.ok('the header ▶ plays A track 0', await plays('A-0'));
-t.ok('…and then offers Pause', await until(`!!document.querySelector('header button[aria-label="Pause"]')`, 5000));
+// The header always starts the album over (Chad, 2026-11-22: "album-over:
+// yes"); the list covers on /demu keep their pause, checked below.
+await wait(500);
+t.equal('…and still offers the start, never a pause', await header(), 'Play album from the start');
 await js(`[...document.querySelectorAll('a, button')].find((x) => /back to DeMu/.test(x.textContent))?.click()`);
 t.ok('← back to DeMu returns', await until(`location.pathname === '/demu' && !!${coverOf('E2E Album A')}`, 20000));
 t.equal('A: the cover says playing', (await cover('E2E Album A'))?.state, 'playing');

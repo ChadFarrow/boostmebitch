@@ -1,4 +1,4 @@
-// The ▶ on a playlist's art starts the playlist over; an album's still pauses.
+// The ▶ on a playlist's or an album's art starts the list over.
 //
 // Usage:
 //   npm run dev                                   # in another terminal
@@ -15,9 +15,11 @@
 // playlist's art resumed track 13. In his words: "I think the album art play
 // button should just start the playlist over again, even if you were already
 // playing it." The cover shared the ALBUM rule (`albumHoldsCurrent`): while
-// the list holds the track, the cover pauses and resumes it.
+// the list holds the track, the cover pauses and resumes it. #652 made the
+// playlist cover start over; asked about albums, Chad answered "album-over:
+// yes" the same day, so the album cover now does the same.
 //
-// WHAT IT PINS (`coverPress` in lib/util.ts; `check:queue` pins the decision):
+// WHAT IT PINS (`coverStartSeeks` in lib/util.ts, pinned by `check:queue`):
 //   1. Nothing playing: the cover reads "Play playlist from the start" and
 //      starts the first row.
 //   2. Another row of the playlist PLAYING mid-way: the cover draws ▶, never
@@ -30,7 +32,10 @@
 //      REPEAT stays on.
 //   6. After a reload, the song back alone in the mini player (Chad's case):
 //      a press plays the first row.
-//   7. An ALBUM is unchanged: ❚❚ pauses, ▶ resumes the same track where it was.
+//   7. An ALBUM starts over the same way: another song playing or paused,
+//      its first song mid-way, its own shuffle, and after a reload. (The
+//      album covers in a LIST, on /demu, keep their pause and resume:
+//      `e2e:demuplay`.)
 //   8. Layout at 390 × 844 under device emulation: no sideways scroll, and the
 //      cover is a 24 × 24 target or larger.
 //
@@ -288,21 +293,68 @@ await pressCover();
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n7. An ALBUM is unchanged');
+console.log('\n7. An ALBUM starts over too ("album-over: yes")');
+const ALBUM_START = { label: 'Play album from the start', glyph: '▶' };
 t.ok('the album opens', await openByUrl(ALBUM_GUID, 'Album song 2'));
-t.equal('the cover offers the album', await cover(), { label: 'Play album', glyph: '▶' });
+t.equal('the cover offers the album from the start', await cover(), ALBUM_START);
 await tapRow('Album song 1');
 t.ok('song 1 plays past 2 s', await playingPast(aRe(1), 2));
-t.equal('the album holds it, so the cover is a pause', await cover(), { label: 'Pause', glyph: '❚❚' });
+t.equal('the cover draws ▶ and offers the start — not ❚❚', await cover(), ALBUM_START);
 await pressCover();
-t.ok('❚❚ pauses', await until(`document.querySelector('audio')?.paused === true`, 5000));
-const at = (await audio())?.t ?? 0;
-t.equal('the cover offers the album again', await cover(), { label: 'Play album', glyph: '▶' });
+{
+  const r = await startedFresh(aRe(0));
+  t.ok('playing song 1, the press plays song 0 from its start', r.ok, JSON.stringify(r.a));
+}
+await tapRow('Album song 1');
+t.ok('song 1 plays past 2 s', await playingPast(aRe(1), 2));
+t.ok('the mini player pauses it', await pause());
 await pressCover();
-t.ok('▶ resumes the same song', await until(`!(document.querySelector('audio')?.paused ?? true)`, 5000) && await js(on(aRe(1))));
+{
+  const r = await startedFresh(aRe(0));
+  t.ok('paused on song 1, the press plays song 0 from its start', r.ok, JSON.stringify(r.a));
+}
+t.ok('song 0 plays past 3 s', await playingPast(aRe(0), 3));
+await pressCover();
+{
+  const r = await startedFresh(aRe(0), 5000);
+  t.ok('song 0 mid-way: back to its start, playing', r.ok, JSON.stringify(r.a));
+}
+t.ok('song 0 plays past 3 s again', await playingPast(aRe(0), 3));
+t.ok('the mini player pauses it', await pause());
+await pressCover();
+{
+  const r = await startedFresh(aRe(0), 5000);
+  t.ok('song 0 paused mid-way: back to its start, playing', r.ok, JSON.stringify(r.a));
+}
+// The album's own shuffle. The song playing (song 0) goes LAST in a new
+// shuffle, so it opens on another song.
+await js(`document.querySelector('button[data-album-shuffle]')?.click()`);
+t.ok('the album shuffle plays another song', await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && /[?&]a=[12](\\D|$)/.test(a.currentSrc); })()`, 10000));
+t.equal('⏭ is the shuffle\'s', (await miniButton('/^Next/'))?.label, 'Next in shuffle');
+await wait(1500);
+t.equal('the cover offers the start', await cover(), ALBUM_START);
+await pressCover();
+{
+  const r = await startedFresh(aRe(0));
+  t.ok('the press plays song 0 from its start', r.ok, JSON.stringify(r.a));
+}
+t.equal('…and ends the shuffle: ⏭ is the album\'s', await miniButton('/^Next/'), { label: 'Next track', disabled: false });
+// After a reload: the song comes back alone, paused.
+await tapRow('Album song 2');
+t.ok('song 2 plays past 3 s', await playingPast(aRe(2), 3));
+await send('Page.reload');
+await until('document.readyState === "complete"');
+await until(`document.body.textContent.includes('Album song 2')`, 20000);
+await wait(1000);
 {
   const a = await audio();
-  t.ok('…where it was, not from its start', a.t >= at - 0.5, JSON.stringify({ was: at, now: a.t }));
+  t.ok('after a reload the mini player is back on song 2, paused', !!a && /[?&]a=2(\D|$)/.test(a.src) && a.paused, JSON.stringify(a));
+}
+t.equal('the cover offers the start — not a resume of song 2', await cover(), ALBUM_START);
+await pressCover();
+{
+  const r = await startedFresh(aRe(0));
+  t.ok('the press plays song 0 from its start', r.ok, JSON.stringify(r.a));
 }
 await pause();
 

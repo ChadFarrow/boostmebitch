@@ -90,7 +90,8 @@ import {
   addToHistory,
   advanceBeforeEnd,
   albumHoldsCurrent,
-  coverPress,
+  coverStartSeeks,
+  isPlaylistMedium,
   HIDDEN_ADVANCE_LEAD_SEC,
   albumShuffleTracks,
   boostedOnDevice,
@@ -997,26 +998,31 @@ section('A hidden iPhone page moves to the next track BEFORE the end (#647)');
 }
 
 // ---------------------------------------------------------------------------
-section('The cover ▶: a playlist starts over, an album pauses and resumes');
+section('The cover ▶ starts the list over: a playlist and an album');
 // ---------------------------------------------------------------------------
 {
   // REPORTED 2026-11-22 from Chad's iPhone, the installed app on beta, on the
   // musicL playlist "WrathfulTs Top Tracks": the app came back from a reload on
   // track 13, and the ▶ on the playlist's art resumed track 13. Chad: "I think
   // the album art play button should just start the playlist over again, even
-  // if you were already playing it."
+  // if you were already playing it." #652 made a playlist's cover start over;
+  // asked about albums, Chad answered "album-over: yes" the same day.
   //
-  // `coverPress` is what `<EpisodeList>`'s header cover does. A PLAYLIST always
-  // STARTS at its first playable row; an ALBUM keeps its pause and resume while
-  // it holds the track (`albumHoldsCurrent`, unchanged). `seek` is the half
-  // nobody sees: when the first row IS the item in the player (the same
-  // `episode.id`, `<Player>`'s source key), `play()` loads nothing and the
-  // song goes on from where it was, so the caller must seek to 0 too.
+  // So the header cover (`<EpisodeList>`) ALWAYS starts its list at the first
+  // playable row, from 0:00. What is left to decide is `coverStartSeeks`: when
+  // the first row IS the item in the player (the same `episode.id`,
+  // `<Player>`'s source key), `play()` loads nothing and the song goes on from
+  // where it was, so the cover must seek to 0 too.
   //
-  // `naive()` is the code that shipped: the album rule for both, and a start
-  // that never seeks.
-  const naive = (list, _first, current, shuffle, listenQueue) =>
-    (albumHoldsCurrent(list, current, shuffle, listenQueue) ? { kind: 'toggle' } : { kind: 'start', seek: false });
+  // `naive()` is the code #652 shipped: an album that holds the track toggles
+  // (pause/resume) instead of starting over. Each vector is `[list, first,
+  // current, shuffle, listenQueue]`, the context the cover is pressed in; the
+  // real decision reads `first` and `current` only, which is the point.
+  const naive = (list, first, current, shuffle, listenQueue) =>
+    (!isPlaylistMedium(list) && albumHoldsCurrent(list, current, shuffle, listenQueue)
+      ? 'toggle'
+      : !!current && current.episode.id === first.id);
+  const real = (_list, first, current) => coverStartSeeks(first, current);
   const MUSICL = { ...PLAYLIST_SHOW };
   const ROWS = [1, 2, 3].map((n) => plRow(n));
   const on = (episode, podcast) => ({ episode, podcast });
@@ -1024,51 +1030,44 @@ section('The cover ▶: a playlist starts over, an album pauses and resumes');
   const vv = [];
   const v = (label, args, expect, opts = {}) => vv.push({ label, args, expect, ...opts });
 
-  // ── A playlist: always a start ──────────────────────────────────────────
-  v('playlist, nothing in the player: start at the first row',
-    [MUSICL, ROWS[0], null, null, []], { kind: 'start', seek: false }, { alsoNaive: true });
-  v('playlist, its third row playing or paused: start at the first, never resume the third',
-    [MUSICL, ROWS[0], on(ROWS[2], MUSICL), null, []], { kind: 'start', seek: false });
-  // What Chad hit: `revealNowPlaying` puts the song back alone after a reload,
-  // with the playlist as its show, so no list holds it and the album rule
-  // adopted it.
-  v('playlist after a reload, the song back alone with the playlist as its show: start',
-    [{ ...MUSICL, medium: 'musicl' }, ROWS[0], on(ROWS[2], { ...MUSICL, medium: 'musicl' }), null, []], { kind: 'start', seek: false });
-  v('playlist, its FIRST row in the player: start, and seek to 0 — play() alone loads nothing',
-    [MUSICL, ROWS[0], on(ROWS[0], MUSICL), null, []], { kind: 'start', seek: true });
-  v('playlist, its own shuffle on the third row: start in order at the first',
-    [MUSICL, ROWS[0], on(ROWS[2], MUSICL), [asItem(ROWS[2], MUSICL), asItem(ROWS[0], MUSICL)], []],
-    { kind: 'start', seek: false }, { alsoNaive: true });
-  v('playlist, its own shuffle on the FIRST row: start, and seek to 0',
-    [MUSICL, ROWS[0], on(ROWS[0], MUSICL), [asItem(ROWS[0], MUSICL), asItem(ROWS[2], MUSICL)], []],
-    { kind: 'start', seek: true });
+  // ── An album: now a start, as a playlist is ─────────────────────────────
+  v('album, its second track playing or paused: start at track 1, never resume track 2',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[1], ALBUM_SHOW), null, []], false);
+  // `revealNowPlaying` puts the song back alone after a reload, with the album
+  // as its show: no list holds it, so the old rule resumed it.
+  v('album after a reload, the song back alone: start at track 1',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[2], ALBUM_SHOW), null, []], false);
+  v('album, its FIRST track playing or paused: back to 0:00 (seek), never pause',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[0], ALBUM_SHOW), null, []], true);
+  v('album, nothing in the player: start, no seek',
+    [ALBUM_SHOW, TRACKS[0], null, null, []], false, { alsoNaive: true });
+  v('album, a shuffle on its third track: start in order at track 1',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[2], ALBUM_SHOW), [asItem(TRACKS[2], ALBUM_SHOW)], []],
+    false, { alsoNaive: true });
+  v('album, a shuffle on its FIRST track: start, and seek to 0',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[0], ALBUM_SHOW), [asItem(TRACKS[0], ALBUM_SHOW)], []],
+    true, { alsoNaive: true });
+  v('album, another show playing: start, no seek',
+    [ALBUM_SHOW, TRACKS[0], on(ROWS[1], MUSICL), null, []], false, { alsoNaive: true });
+
+  // ── A playlist: as #652 shipped it ──────────────────────────────────────
+  v('playlist, nothing in the player: start, no seek',
+    [MUSICL, ROWS[0], null, null, []], false, { alsoNaive: true });
+  v('playlist, its third row playing or paused: start at the first row',
+    [MUSICL, ROWS[0], on(ROWS[2], MUSICL), null, []], false, { alsoNaive: true });
+  v('playlist, its FIRST row in the player: start, and seek to 0',
+    [MUSICL, ROWS[0], on(ROWS[0], MUSICL), null, []], true, { alsoNaive: true });
   v('playlist, Up Next holds its first row: start, and seek to 0',
-    [MUSICL, ROWS[0], on(ROWS[0], MUSICL), null, [asItem(ROWS[0], MUSICL)]], { kind: 'start', seek: true });
+    [MUSICL, ROWS[0], on(ROWS[0], MUSICL), null, [asItem(ROWS[0], MUSICL)]], true, { alsoNaive: true });
   // The favorites shuffle builds the song from the favorite (`-fnvHash`), so
   // it is a different `episode.id`: the player loads the row's file from 0.
-  v('playlist, the same song under another id: start, no seek — the player reloads it',
-    [MUSICL, ROWS[0], on({ ...ROWS[0], id: -12345 }, ALBUM_SHOW), null, []], { kind: 'start', seek: false }, { alsoNaive: true });
+  v('the same song under another id: no seek — the player reloads it',
+    [MUSICL, ROWS[0], on({ ...ROWS[0], id: -12345 }, ALBUM_SHOW), null, []], false, { alsoNaive: true });
 
-  // ── An album: unchanged while it holds the track ────────────────────────
-  v('album, its second track playing or paused: pause or resume it',
-    [ALBUM_SHOW, TRACKS[0], on(TRACKS[1], ALBUM_SHOW), null, []], { kind: 'toggle' }, { alsoNaive: true });
-  v('album, its first track playing or paused: pause or resume it, never restart',
-    [ALBUM_SHOW, TRACKS[0], on(TRACKS[0], ALBUM_SHOW), null, []], { kind: 'toggle' }, { alsoNaive: true });
-  v('album, nothing in the player: start at the first track',
-    [ALBUM_SHOW, TRACKS[0], null, null, []], { kind: 'start', seek: false }, { alsoNaive: true });
-  v('album, the favorites shuffle on its third track: start the album',
-    [ALBUM_SHOW, TRACKS[0], on(TRACKS[2], ALBUM_SHOW), [asItem(TRACKS[2], ALBUM_SHOW)], []],
-    { kind: 'start', seek: false }, { alsoNaive: true });
-  v('album, a shuffle on its FIRST track: start, and seek to 0 — "Play album" must not go on mid-song',
-    [ALBUM_SHOW, TRACKS[0], on(TRACKS[0], ALBUM_SHOW), [asItem(TRACKS[0], ALBUM_SHOW)], []],
-    { kind: 'start', seek: true });
-  v('album, another show playing: start at the first track',
-    [ALBUM_SHOW, TRACKS[0], on(ROWS[1], MUSICL), null, []], { kind: 'start', seek: false }, { alsoNaive: true });
-
-  for (const x of vv) compare(x.label, coverPress(...x.args), x.expect);
+  for (const x of vv) compare(x.label, real(...x.args), x.expect);
   const invoke = (impl, x) => {
     try {
-      return JSON.stringify(impl === 'real' ? coverPress(...x.args) : naive(...x.args));
+      return JSON.stringify(impl === 'real' ? real(...x.args) : naive(...x.args));
     } catch (e) {
       return `threw ${(e && e.message) || e}`;
     }
