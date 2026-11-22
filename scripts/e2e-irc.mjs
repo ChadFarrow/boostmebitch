@@ -580,6 +580,14 @@ async function browserHalf(APP) {
     c.ok('a session that ended while away says so, and offers JOIN',
       await until(`!!${q('[data-irc-join]')}`, 8000) && await chatHas('The chat connection ended while you were away.'));
     c.ok('…without "Disconnected (…)" around it', !(await chatHas('Disconnected (The chat', 300)));
+
+    // Leaving the page is a QUIT, not a drop: without it the hold keeps the
+    // nick in the channel for 5 minutes after the listener has gone.
+    await click('[data-irc-join]');
+    await until(`!!${q('[data-irc-input]')}`, 8000);
+    const quitsBeforeLeave = fake.quits.length;
+    await send('Page.navigate', { url: 'about:blank' });
+    c.ok('leaving the page sends QUIT, so the hold keeps no session', await fakeGot(() => fake.quits.length > quitsBeforeLeave, 5000), JSON.stringify(fake.quits));
   } finally {
     await fake.close();
   }
