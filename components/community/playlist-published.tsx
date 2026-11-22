@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/store';
 import { CopyLinkButton } from '@/components/copy-link-button';
@@ -7,6 +8,33 @@ import { RowThumb } from '@/components/chapter-ui';
 import { artCandidates } from '@/lib/util';
 import { communityPlaylistToPodcast } from '@/lib/util';
 import type { CommunityPlaylistSummary } from '@/lib/community/rules';
+
+/** PI's add form. The site cannot add a feed itself: its key is read-only (docs/feeds.md, "Podcast Index"). */
+export const PI_ADD_FORM = 'https://podcastindex.org/add';
+
+/**
+ * Is this feed in Podcast Index? `undefined` while asking; a PI feed id when it is
+ * listed; `null` when it is not, or when no answer came (a 429, a 5xx, offline). The
+ * add form is the safe offer for both: PI answers a feed it already holds with that
+ * feed, and adds nothing.
+ */
+function usePiFeedId(feedUrl: string): number | null | undefined {
+  const [id, setId] = useState<number | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    setId(undefined);
+    fetch(`/api/by-guid?url=${encodeURIComponent(feedUrl)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { podcast?: { id?: unknown } } | null) => {
+        const n = j?.podcast?.id;
+        // A positive id is PI's; the RSS fallbacks elsewhere mint negative ones.
+        if (live) setId(typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : null);
+      })
+      .catch(() => { if (live) setId(null); });
+    return () => { live = false; };
+  }, [feedUrl]);
+  return id;
+}
 
 /**
  * Screen 5: the playlist is live. `summary` is what the owner listing says about
@@ -35,6 +63,7 @@ export function PlaylistPublished({
   onEdit: () => void;
 }) {
   const router = useRouter();
+  const piFeedId = usePiFeedId(feedUrl);
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
 
@@ -95,6 +124,43 @@ export function PlaylistPublished({
         <p className="mt-2 max-w-xl text-xs leading-relaxed text-muted">
           Paste this address into any Podcasting 2.0 app to follow the playlist. It updates when you edit it.
         </p>
+      </div>
+
+      <div
+        className="mt-6"
+        data-testid="pi-listing"
+        data-pi={piFeedId === undefined ? 'checking' : piFeedId ? 'listed' : 'not-listed'}
+      >
+        <h2 className="text-xs font-mono uppercase tracking-wider text-muted">Podcast Index</h2>
+        {piFeedId === undefined ? (
+          <p className="mt-1 text-xs text-muted">Checking Podcast Index…</p>
+        ) : piFeedId ? (
+          <>
+            <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted">
+              This playlist is in Podcast Index, so people can find it in Podcasting 2.0 apps.
+            </p>
+            <a
+              href={`https://podcastindex.org/podcast/${piFeedId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-ghost btn-compact mt-2 inline-flex"
+            >
+              OPEN IN PODCAST INDEX →
+            </a>
+          </>
+        ) : (
+          <>
+            <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted">
+              Not in Podcast Index yet. To let people find it in Podcasting 2.0 apps, open the
+              Podcast Index form, paste the feed address above, and send it. Podcast Index cannot
+              remove a feed: if you delete the playlist later, it stays listed there until Podcast
+              Index marks it dead.
+            </p>
+            <a href={PI_ADD_FORM} target="_blank" rel="noopener noreferrer" className="btn-ghost btn-compact mt-2 inline-flex">
+              ADD IT TO PODCAST INDEX →
+            </a>
+          </>
+        )}
       </div>
     </section>
   );
