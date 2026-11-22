@@ -48,7 +48,7 @@ sent toward the page in this session, from 1.
 
 | Direction | Line | When |
 | --- | --- | --- |
-| service → page | `HOLD TOKEN <token> <seconds>` | The first frame of a new session. `<token>` is at least 128 random bits, base64url; `<seconds>` is the hold (300). |
+| service → page | `HOLD TOKEN <token> <seconds>` | The first frame the service sends in a new session, as soon as the page's first frame shows it is not a resume, and before any IRC line. `<token>` is at least 128 random bits, base64url; `<seconds>` is the hold (300). |
 | page → service | `HOLD RESUME <token> <seq>` | The first frame of a socket that resumes. `<seq>` is the last line the page received. |
 | service → page | `HOLD RESUMED <nick> <channel> <missed>` | The session is held. Then every kept line after `<seq>`, in order, then live lines. `<channel>` is `*` when the nick is in none (kicked); `<missed>` counts the lines after `<seq>` the service no longer has. |
 | service → page | `HOLD GONE :<reason>` | The token is unknown or expired, or the session's IRC connection ended. Then the service closes the socket. |
@@ -125,8 +125,11 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   longer nick comes back as 432, which the panel would show as "taken". **At
   least 2** (`MIN_NICK_LENGTH`, ours: IRC allows one). The listener always types
   a name; the panel makes up no guest names (Chad, 2026-11-21).
-- **One connection, never reopened by itself.** A drop or an `ERROR` shows JOIN
-  again; a refused JOIN (banned, invite only) closes the connection at once, so
+- **One IRC connection, never registered twice by itself.** With the hold
+  service, a drop shows "Reconnecting…" and the session comes back by itself
+  (above): the rows stay, the composer waits with its draft, and a notice says
+  whether anything was missed. A hold that ran out, an `ERROR`, or a gateway
+  with no hold service shows JOIN again; a refused JOIN (banned, invite only) closes the connection at once, so
   it does not hold a slot — the first JOIN and a JOIN AGAIN after a kick alike.
   A taken nick is fixed on the SAME connection (`ircNick`), and a KICK keeps the
   connection for JOIN AGAIN. A gateway that takes the socket and never

@@ -4,9 +4,11 @@
 //  1. NODE: the shipping `lib/irc/client.ts` (through the e2e resolve hook)
 //     against `scripts/irc-fake-server.mjs`. This pins what goes on the wire:
 //     one typed message is one PRIVMSG, a taken nick is fixed on the SAME
-//     connection, a kick keeps the connection, and a dropped connection is
-//     NEVER reopened by itself (each one is a slot in ZeroNode's limit of 3
-//     per address — a reconnect loop would spend them for everyone).
+//     connection, a kick keeps the connection, and the session NEVER
+//     registers on IRC again by itself (each connection is a slot in ZeroNode's
+//     limit of 3 per address — a reconnect loop would spend them for
+//     everyone). With the hold service (1b) it reopens only the socket, to a
+//     held session, with `HOLD RESUME`.
 //  2. BROWSER (`--browser`): the panel in the fullscreen player, driven over
 //     CDP, with the fake server on port 6790 standing in for the gateway and
 //     Fetch fixtures for /api/live-shows and the audio. The dev server must be
@@ -119,6 +121,117 @@ async function nodeHalf() {
   }
 }
 
+// ── 1b. The hold service: a drop is not the end of the session ──────────────
+// docs/irc.md, "Holding a dropped connection". The fake plays the service with
+// a short hold; the session gets `HOLD TOKEN` and, after a drop, comes back
+// with `HOLD RESUME` — never with a new NICK/USER, so it still cannot spend a
+// ZeroNode slot by itself.
+async function holdHalf() {
+  console.log('Node: the hold service');
+  const QUICK = { resumeDelaysMs: [50, 100, 200] };
+  const fake = await createIrcFake({ hold: 2 });
+  try {
+    const links = [];
+    const a = session(fake, 'holder', { ...QUICK, onLink: (l) => links.push(l) });
+    c.ok('a held session joins', await until(() => a.joins() === 1), JSON.stringify(a.events));
+    fake.say('dude', '#candr', 'before');
+    await until(() => a.events.some((e) => e.text === 'before'));
+    const regs = fake.received.filter((l) => /^(NICK|USER) /.test(l)).length;
+    const created = fake.sessionsCreated;
+
+    fake.drop('holder');
+    c.ok('a drop is reported as lost, not closed', await until(() => links.some((l) => l.kind === 'lost')), JSON.stringify(links));
+    fake.say('dude', '#candr', 'during one');
+    fake.say('dude', '#candr', 'during two');
+    c.ok('…then it comes back by itself', await until(() => links.some((l) => l.kind === 'back'), 3000), JSON.stringify(links));
+    c.equal('…with nothing missed', links.find((l) => l.kind === 'back')?.missed, 0);
+    c.ok('…and the lines said while it was away arrive, in order', await until(() => {
+      const t = a.events.filter((e) => e.type === 'message').map((e) => e.text);
+      return t.indexOf('during one') > t.indexOf('before') && t.indexOf('during two') > t.indexOf('during one');
+    }), JSON.stringify(a.events.map((e) => e.text ?? e.type)));
+    c.equal('…and onClose never fired', a.closes, []);
+    const resume = fake.received.find((l) => l.startsWith('HOLD RESUME '));
+    c.ok('it resumed with HOLD RESUME <token> <seq>', /^HOLD RESUME [A-Za-z0-9_-]{16,} \d+$/.test(resume ?? ''), String(resume));
+    c.equal('…and registered nothing again (no NICK, no USER)', fake.received.filter((l) => /^(NICK|USER) /.test(l)).length, regs);
+    c.equal('…on the same IRC session', fake.sessionsCreated, created);
+    c.equal('…so the channel saw no QUIT', fake.quits, []);
+    a.s.send('back again');
+    c.ok('it can talk after the resume', await until(() => fake.received.includes('PRIVMSG #candr :back again')));
+
+    // A phone that changes network: the server keeps writing into a socket
+    // that delivers nothing. The page asks for those lines back by seq.
+    fake.blackhole('holder');
+    fake.say('dude', '#candr', 'lost in flight');
+    await wait(100);
+    c.ok('a line written into a dead socket has not arrived', !a.events.some((e) => e.text === 'lost in flight'));
+    fake.drop('holder');
+    c.ok('…and arrives after the resume, by seq', await until(() => a.events.some((e) => e.text === 'lost in flight'), 3000),
+      JSON.stringify(a.events.map((e) => e.text ?? e.type)));
+    c.equal('…once', a.events.filter((e) => e.text === 'lost in flight').length, 1);
+
+    // A takeover (another window resumed the session): stop, never retry,
+    // or two windows would take it from each other forever.
+    const resumesBefore = fake.resumes.length;
+    fake.closeWith('holder', 4001, 'resumed elsewhere');
+    c.ok('a takeover closes the session', await until(() => a.closes.length === 1), JSON.stringify(a.closes));
+    c.ok('…saying it went on in another window', /another window/i.test(a.closes[0] ?? ''), JSON.stringify(a.closes));
+    await wait(500);
+    c.equal('…and it never tries to resume', fake.resumes.length, resumesBefore);
+
+    // The session ended while away (hold ran out, or ZeroNode closed it): the
+    // service answers HOLD GONE. No retry, no new session.
+    const late = session(fake, 'latecomer', { resumeDelaysMs: [300] });
+    await until(() => late.joins() === 1);
+    const createdLate = fake.sessionsCreated;
+    fake.drop('latecomer');
+    fake.endSession('latecomer');
+    c.ok('a resume after the hold ran out is told GONE and closes', await until(() => late.closes.length === 1, 5000), JSON.stringify(late.closes));
+    c.ok('…saying the chat ended while it was away', /ended while you were away/i.test(late.closes[0] ?? ''), JSON.stringify(late.closes));
+    await wait(400);
+    c.equal('…with one resume and no new IRC session', [fake.resumes.filter((r) => r.token === fake.resumes.at(-1).token).length, fake.sessionsCreated], [1, createdLate]);
+
+    // ZeroNode ends the connection while the page is attached: the server's
+    // ERROR, then HOLD GONE on the live socket. That is the end — no resume.
+    const ended = session(fake, 'endme', QUICK);
+    await until(() => ended.joins() === 1);
+    const r0 = fake.resumes.length;
+    fake.endSession('endme');
+    c.ok('an IRC connection that ends while attached closes the session', await until(() => ended.closes.length === 1), JSON.stringify(ended.closes));
+    c.ok('…showing the server\'s ERROR', ended.events.some((e) => e.type === 'error' && /Closing link/.test(e.text)), JSON.stringify(ended.events));
+    c.ok('…and not as "while you were away"', !/away/i.test(ended.closes[0] ?? ''), JSON.stringify(ended.closes));
+    await wait(400);
+    c.equal('…and it never tries to resume', fake.resumes.length, r0);
+
+    // A network that stays down: it tries until the hold runs out, then stops.
+    const down = session(fake, 'tunnel', QUICK);
+    await until(() => down.joins() === 1);
+    const createdDown = fake.sessionsCreated;
+    const tries = fake.resumes.length;
+    fake.refuseResume = true;
+    fake.drop('tunnel');
+    c.ok('with the network down it gives up when the hold runs out', await until(() => down.closes.length === 1, 4000), JSON.stringify(down.closes));
+    c.ok('…as a lost connection', /connection lost/i.test(down.closes[0] ?? ''), JSON.stringify(down.closes));
+    const triesMade = fake.resumes.length - tries;
+    c.ok('…after several tries, each a HOLD RESUME', triesMade >= 3, String(triesMade));
+    await wait(500);
+    c.equal('…then none, and no new IRC session', [fake.resumes.length - tries, fake.sessionsCreated], [triesMade, createdDown]);
+    fake.refuseResume = false;
+
+    // LEAVE ends the session at once: no hold, no resume.
+    const leaver = session(fake, 'leaver', QUICK);
+    await until(() => leaver.joins() === 1);
+    const live = fake.sessions;
+    const resumesAtQuit = fake.resumes.length;
+    leaver.s.quit();
+    c.ok('quit() ends the held session at once', await until(() => fake.sessions === live - 1));
+    await wait(400);
+    c.equal('…and nothing resumes it', fake.resumes.length, resumesAtQuit);
+    c.equal('…onClose fired once', leaver.closes.length, 1);
+  } finally {
+    await fake.close();
+  }
+}
+
 // ── 2. The panel in the browser ─────────────────────────────────────────────
 const GATEWAY_PORT = 6790;
 const CANDR_GUID = '7c6f7875-2b73-491e-b32c-e2c8d6e91d53';
@@ -152,7 +265,7 @@ async function browserHalf(APP) {
   });
   const LIVE = [show(900801, CANDR_GUID, 'E2E Chad Show'), show(900802, OTHER_GUID, 'E2E Other Show')];
 
-  const fake = await createIrcFake({ port: GATEWAY_PORT, taken: ['takenfan'] });
+  let fake = await createIrcFake({ port: GATEWAY_PORT, taken: ['takenfan'] });
   fake.banned.add('bannedfan');
   const { page } = await launchChrome({ name: 'irc', autoplay: true, args: ['--disable-gpu'] });
   const { send, js, until } = page;
@@ -440,12 +553,40 @@ async function browserHalf(APP) {
     c.ok(`…and tall (${d.chatH}px)`, d.chatH >= 300, JSON.stringify(d));
     c.equal('…with no sideways overflow', d.sw, d.cw);
     c.ok('…in a frame, so it reads as a chat window', d.border !== '0px', JSON.stringify(d));
+
+    // The hold service (docs/irc.md): the same port, now with a hold. The
+    // panel is idle here, so no session is cut by the swap.
+    console.log('\nBrowser: the hold service');
+    await fake.close();
+    fake = await createIrcFake({ port: GATEWAY_PORT, hold: 300 });
+    await click('[data-irc-join]');
+    await until(`!!${q('[data-irc-input]')}`, 8000);
+    fake.say('dude', '#candr', 'before the drop');
+    await chatHas('before the drop');
+    await type('[data-irc-input]', 'half typed');
+    fake.drop('e2efan');
+    c.ok('a drop shows Reconnecting…', await until(`(${q('[data-irc-away]')}?.innerText ?? '').includes('Reconnecting')`, 3000));
+    c.ok('…keeps the rows', await chatHas('before the drop', 500));
+    c.ok('…keeps the draft while the composer waits', await js(`${q('[data-irc-input]')}?.disabled === true && ${q('[data-irc-input]')}.value === 'half typed'`));
+    c.ok('…and offers no JOIN', !(await js(`!!${q('[data-irc-join]')}`)));
+    fake.say('dude', '#candr', 'said while away');
+    c.ok('it comes back by itself, with what was said while away', await chatHas('said while away', 8000));
+    c.ok('…says so, and that nothing was missed', await chatHas('Reconnected; nothing was missed.'));
+    c.ok('…and the composer works again', await until(`${q('[data-irc-input]')}?.disabled === false && !${q('[data-irc-away]')}`, 3000));
+    c.equal('…on the same IRC session, with no QUIT in the channel', [fake.sessionsCreated, fake.quits], [1, []]);
+
+    fake.drop('e2efan');
+    fake.endSession('e2efan');
+    c.ok('a session that ended while away says so, and offers JOIN',
+      await until(`!!${q('[data-irc-join]')}`, 8000) && await chatHas('The chat connection ended while you were away.'));
+    c.ok('…without "Disconnected (…)" around it', !(await chatHas('Disconnected (The chat', 300)));
   } finally {
     await fake.close();
   }
 }
 
 await nodeHalf();
+await holdHalf();
 const bi = process.argv.indexOf('--browser');
 if (bi !== -1) {
   const next = process.argv[bi + 1];

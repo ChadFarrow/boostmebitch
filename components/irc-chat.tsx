@@ -67,6 +67,8 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
   const [draft, setDraft] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  /** The hold service holds the session while its socket is away (docs/irc.md). */
+  const [away, setAway] = useState(false);
 
   const sessionRef = useRef<IrcSession | null>(null);
   const nextId = useRef(0);
@@ -179,12 +181,23 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
       nick,
       channel,
       onEvent,
+      onLink: (l) => {
+        if (sessionRef.current !== session) return;
+        setAway(l.kind === 'lost');
+        if (l.kind === 'back') {
+          notice(l.missed > 0
+            ? `Reconnected. ${l.missed} line${l.missed === 1 ? '' : 's'} from while you were away could not be kept.`
+            : 'Reconnected; nothing was missed.');
+        }
+      },
       onClose: (reason) => {
         if (sessionRef.current !== session) return;
         sessionRef.current = null;
+        setAway(false);
         setPhase('closed');
         setNickTaken(false);
-        setErr((prev) => prev ?? `Disconnected (${reason}).`);
+        // A reason that is already a sentence is shown as it is.
+        setErr((prev) => prev ?? (/[.]$/.test(reason) ? reason : `Disconnected (${reason}).`));
       },
     });
     sessionRef.current = session;
@@ -192,7 +205,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
 
   function send() {
     const text = draft;
-    if (!text.trim() || !sessionRef.current) return;
+    if (!text.trim() || !sessionRef.current || away) return;
     const refusal = secretRefusal(text);
     if (refusal) { setErr(refusal); return; }
     setErr(null);
@@ -306,6 +319,12 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
             JOIN {channel} AGAIN
           </button>
         ) : (
+          <>
+          {away && (
+            <p data-irc-away role="status" className="text-[11px] text-bolt">
+              Connection lost. Reconnecting…
+            </p>
+          )}
           <div className="flex gap-2 items-end">
             <label className="sr-only" htmlFor="irc-input">Send a message</label>
             <textarea
@@ -314,6 +333,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
               className="input flex-1 min-w-0 resize-none"
               rows={1}
               value={draft}
+              disabled={away}
               maxLength={CHAT_MAX}
               placeholder="Send a message…"
               onChange={(e) => setDraft(e.target.value)}
@@ -328,12 +348,13 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
               type="button"
               data-irc-send
               onClick={send}
-              disabled={!draft.trim()}
+              disabled={away || !draft.trim()}
               className="btn-bolt text-xs disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Send
             </button>
           </div>
+          </>
         )}
         {err && <p className="text-[11px] text-nostr" role="alert">⚠ {err}</p>}
       </div>
