@@ -1,7 +1,25 @@
 {
   "origin": "https://www.boostmebuddy.com",
-  "count": 2,
+  "count": 3,
   "playlists": [
+    {
+      "id": "a4aa16f4-976a-4b72-a111-b9ed274a27da",
+      "title": "Test playlist from my phone.",
+      "podcastGuid": "4633a3fd-cb83-5032-b10a-38b4e629d483",
+      "feedUrl": "https://www.boostmebuddy.com/feeds/playlists/a4aa16f4-976a-4b72-a111-b9ed274a27da.xml",
+      "file": "a4aa16f4-976a-4b72-a111-b9ed274a27da.xml",
+      "songs": 10,
+      "updated": "2026-11-22T10:54:22.000Z"
+    },
+    {
+      "id": "685b68fa-fc17-4d8d-b154-e77bd15fec8a",
+      "title": "WrathfulTs Top Tracks",
+      "podcastGuid": "8ed57dc7-24ae-5d02-9ea9-af5b639a3722",
+      "feedUrl": "https://www.boostmebuddy.com/feeds/playlists/685b68fa-fc17-4d8d-b154-e77bd15fec8a.xml",
+      "file": "685b68fa-fc17-4d8d-b154-e77bd15fec8a.xml",
+      "songs": 65,
+      "updated": "2026-11-22T09:46:54.000Z"
+    },
     {
       "id": "ed79e282-3d6e-4764-adb5-8702eaf77086",
       "title": "BMB test playlist",
@@ -10,15 +28,6 @@
       "file": "ed79e282-3d6e-4764-adb5-8702eaf77086.xml",
       "songs": 10,
       "updated": "2026-11-16T01:32:37.000Z"
-    },
-    {
-      "id": "a4aa16f4-976a-4b72-a111-b9ed274a27da",
-      "title": "Test playlist from my phone.",
-      "podcastGuid": "4633a3fd-cb83-5032-b10a-38b4e629d483",
-      "feedUrl": "https://www.boostmebuddy.com/feeds/playlists/a4aa16f4-976a-4b72-a111-b9ed274a27da.xml",
-      "file": "a4aa16f4-976a-4b72-a111-b9ed274a27da.xml",
-      "songs": 10,
-      "updated": "2026-11-16T01:32:18.000Z"
     }
   ],
   "removed": [

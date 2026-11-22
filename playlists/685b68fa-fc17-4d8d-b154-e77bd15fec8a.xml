@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>WrathfulTs Top Tracks</title>
+    <description>A playlist of v4v tracks i can vibe with</description>
+    <link>https://www.boostmebuddy.com/feeds/playlists/685b68fa-fc17-4d8d-b154-e77bd15fec8a.xml</link>
+    <language>en</language>
+    <pubDate>Sun, 22 Nov 2026 09:46:54 GMT</pubDate>
+    <lastBuildDate>Sun, 22 Nov 2026 09:46:54 GMT</lastBuildDate>
+    <generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>
+    <podcast:guid>8ed57dc7-24ae-5d02-9ea9-af5b639a3722</podcast:guid>
+    <podcast:publisher>
+      <podcast:remoteItem medium="publisher" rel="curator" feedGuid="50d0ec09-bb8a-5037-a004-4eb56c598d3f" feedUrl="https://www.boostmebuddy.com/feeds/publishers/npub1u6h46jatm7dwdxtef3lr6nu37wuwjhu98wazgkdv870k7rag9dnqscckn9.xml"/>
+    </podcast:publisher>
+    <podcast:medium>musicL</podcast:medium>
+    <podcast:txt purpose="npub">npub1u6h46jatm7dwdxtef3lr6nu37wuwjhu98wazgkdv870k7rag9dnqscckn9</podcast:txt>
+    <itunes:author>Sir TJ The Wrathful</itunes:author>
+    <itunes:image href="https://www.boostmebuddy.com/feeds/playlists/685b68fa-fc17-4d8d-b154-e77bd15fec8a.jpg?v=1795340814"/>
+    <image>
+      <url>https://www.boostmebuddy.com/feeds/playlists/685b68fa-fc17-4d8d-b154-e77bd15fec8a.jpg?v=1795340814</url>
+      <title>WrathfulTs Top Tracks</title>
+      <link>https://www.boostmebuddy.com/feeds/playlists/685b68fa-fc17-4d8d-b154-e77bd15fec8a.xml</link>
+    </image>
+    <podcast:remoteItem feedGuid="b2a87a4c-86f0-5194-9eb3-dcba42ce0695" itemGuid="3298db5c-2753-4d45-8d8f-e4dc3878d748" feedUrl="https://www.doerfelverse.com/feeds/disco-swag-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="816b418c-4e41-5fa3-a608-d4059083a78e" itemGuid="4ddf4e62-c14b-4347-af00-aee318dbb8dc" feedUrl="https://wavlake.com/feed/music/d43fcb38-c112-4e01-a2ec-7d4bd338161b" medium="music"/>
+    <podcast:remoteItem feedGuid="57203632-2003-55d2-b710-c699db963f18" itemGuid="b66d8b6c-686d-45e0-804a-1881b9b519ce" feedUrl="https://www.wavlake.com/feed/6bece1b8-5385-4a33-9224-09e7f3ee6965" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="7ad63686-68ca-49fb-b5f3-a5426f1e87c9" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="a1077af6-602b-5daf-957b-68a65a03cad1" itemGuid="458fe282-8866-4c8d-a156-5ffa7ef50af1" feedUrl="https://www.doerfelverse.com/feeds/bloodshot-lies-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="69c634ad-afea-5826-ad9a-8e1f06d6470b" itemGuid="5b960e74-5bc8-40cb-a64a-37222ccc95dc" feedUrl="https://www.sirtjthewrathful.com/wp-content/uploads/2023/08/Kurtisdrums-V1.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="0bc8103c-7e22-5a59-b152-04af80746b49" itemGuid="b93c4a1f-5c84-482c-9ac3-b841405c20b0" feedUrl="https://www.doerfelverse.com/artists/middleseason/no-way-back-single.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a1077af6-602b-5daf-957b-68a65a03cad1" itemGuid="1892256d-7d69-42ee-af80-f10305c38ed8" feedUrl="https://www.doerfelverse.com/feeds/bloodshot-lies-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="95e5f7a9-d88e-5e51-b2ae-f4b1865d19c4" itemGuid="0e207ead-0b90-4497-8e59-4e86aa0fad31" feedUrl="https://wavlake.com/feed/music/8aaf0d1e-7ac3-4f7d-993b-6f59f936d780" medium="music"/>
+    <podcast:remoteItem feedGuid="6c047b0d-3d30-4eb7-894c-82fdd40d7e33" itemGuid="e0d83516-76f3-4b33-b4bf-53c643a350aa" feedUrl="https://serve.podhome.fm/rss/6c047b0d-3d30-4eb7-894c-82fdd40d7e33" medium="music"/>
+    <podcast:remoteItem feedGuid="de032037-63e0-5c6b-820d-13d4319a2b19" itemGuid="e046f9dd-aca3-4c7a-b396-2148a90ac0f2" feedUrl="https://wavlake.com/feed/music/169e65e4-c3fa-471f-a473-b75f3890848b" medium="music"/>
+    <podcast:remoteItem feedGuid="7b2228f8-9963-483d-8741-1b6f37f830c4" itemGuid="c676892c-850a-426c-9dbd-8524f39334c1" feedUrl="https://headstarts.uk/msp/frankie-peroni/singles/Singles.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="75f0b434-19dc-5959-9920-0fb5304be61b" itemGuid="640abac0-697e-4702-8871-48438c3e3138" feedUrl="https://static.staticsave.com/mspfiles/deathdreams.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a2d2e313-9cbd-5169-b89c-ab07b33ecc33" itemGuid="e4cbee64-63cb-469c-b9a2-4880355ec663" feedUrl="https://files.heycitizen.xyz/Songs/Albums/The-Heycitizen-Experience/the_heycitizen_experience.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="b2a87a4c-86f0-5194-9eb3-dcba42ce0695" itemGuid="071ca667-2c6d-4681-a26c-c465cc4c797a" feedUrl="https://www.doerfelverse.com/feeds/disco-swag-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="00f7669f-050e-551f-9e43-6195893835bc" itemGuid="4cc7672d-7886-4b29-9a0f-f6581b6cec2d" feedUrl="https://www.wavlake.com/feed/f70e90cb-0649-4909-b7fc-dda904af826f" medium="music"/>
+    <podcast:remoteItem feedGuid="207f1305-84df-5162-a05f-441394a046d2" itemGuid="a168547e-de8b-4faa-9e2c-ab67f3e90be7" feedUrl="https://wavlake.com/feed/music/3ac96a20-0752-4724-82b6-056b61613c6d" medium="music"/>
+    <podcast:remoteItem feedGuid="08604071-83cc-5810-bec2-bea0f0cd0033" itemGuid="bb9c21e4-6c98-44b9-bf0b-125d244bd013" feedUrl="https://www.doerfelverse.com/feeds/ben-doerfel.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="37844ae6-7303-53d2-a733-aed9585d253f" itemGuid="6baa5e31-8fc4-4960-b0d0-98303d6a6ad5" feedUrl="https://wavlake.com/feed/music/3d9e23b0-e723-45b9-9ec1-aa65873afdcf" medium="music"/>
+    <podcast:remoteItem feedGuid="e88a4a67-877c-5e03-b8fd-a70cebc821af" itemGuid="9f515f93-eda1-4146-8637-7def160879b5" feedUrl="https://phafe.com/wp-content/uploads/rssfeed/music/matt_finlay/kulture_collection/Kulture_Collection.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="6eef0b66-bb86-5d0c-b260-099bcc920b7c" itemGuid="bd305f20-3c55-47b1-9722-6d68aeeaede7" feedUrl="https://www.doerfelverse.com/feeds/sensitive-guy.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="b84c3345-55db-54e0-ac41-4b1cc6f3df67" itemGuid="6941fa17-0b82-4acf-aba0-79bdb219c98f" feedUrl="https://www.doerfelverse.com/feeds/pour-over.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="5d5be024-321d-5342-838e-988d1653296b" itemGuid="fb279ed1-10ec-4060-967d-9af45c19505f" feedUrl="https://wavlake.com/feed/music/2663f4e8-aa52-4398-89e7-d26381b65545" medium="music"/>
+    <podcast:remoteItem feedGuid="f9cda211-d7f5-5928-aba5-fe64b2295b43" itemGuid="6c570555-0019-4e17-9c2d-b4028d9d9347" feedUrl="https://www.wavlake.com/feed/48470d4c-2371-4385-9def-3c138e8f4996" medium="music"/>
+    <podcast:remoteItem feedGuid="85e076c0-d4e3-5ae4-9586-0ab862dadf64" itemGuid="8e175c89-437c-4543-ae0a-aba553da0e05" feedUrl="https://wavlake.com/feed/music/3d8c7279-6aa6-41e7-be1c-2680e57af6c8" medium="music"/>
+    <podcast:remoteItem feedGuid="c690112f-e347-463b-a9a8-9d61b3a5ddc7" itemGuid="02d7867a-7420-40bc-814c-eeb90c6b899d" feedUrl="https://www.doerfelverse.com/artists/middleseason/no-longer-afraid.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="377602c1-b049-5c14-bddf-eb4e349bee5c" itemGuid="3634469f-61ad-4e42-97f2-f1335c6ad267" feedUrl="https://wavlake.com/feed/music/87c4f77c-f400-4548-bb7d-78f1ec8a7fa9" medium="music"/>
+    <podcast:remoteItem feedGuid="b2a87a4c-86f0-5194-9eb3-dcba42ce0695" itemGuid="fdf2f3ef-891e-4685-a6ab-7e6d7217a8cc" feedUrl="https://www.doerfelverse.com/feeds/disco-swag-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a2d2e313-9cbd-5169-b89c-ab07b33ecc33" itemGuid="9ff8f18b-cc79-474c-a3e9-2948113b8bf5" feedUrl="https://files.heycitizen.xyz/Songs/Albums/The-Heycitizen-Experience/the_heycitizen_experience.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="c8d77c9c-e661-5d79-8d5f-735cfe9a95b7" itemGuid="17249ca4-fc26-45bb-afa3-d86212c9b2f8" feedUrl="https://www.wavlake.com/feed/4a0dac66-22c0-49f9-9ec2-bcfdf4b4ef10" medium="music"/>
+    <podcast:remoteItem feedGuid="1e7ed1fa-0456-5860-9b34-825d1335d8f8" itemGuid="5334a806-1c60-481e-a978-7577ce988b56" feedUrl="https://www.sirtjthewrathful.com/wp-content/uploads/2023/08/Nostalgic.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="75078ec0-e0ab-5873-ad66-3908a0eebf30" itemGuid="5f365d87-f277-4ba3-9b71-b4dd55423ff8" feedUrl="https://www.wavlake.com/feed/071f543d-b247-4fc0-8f3a-7b97cab929ca" medium="music"/>
+    <podcast:remoteItem feedGuid="66740bed-5dca-540f-98ff-0411593dab82" itemGuid="c660daaf-c499-4c36-af7c-f41171d9b612" feedUrl="https://www.wavlake.com/feed/24449797-c9b7-4151-a31a-8b9a74b1dd86" medium="music"/>
+    <podcast:remoteItem feedGuid="f314df41-22c1-5fde-bc55-6f48e1625d96" itemGuid="2ebf7868-7696-4520-9c9c-ff4900978427" feedUrl="https://wavlake.com/feed/music/ef800a88-9a1c-4f8e-a7c5-f83d7d9b1c87" medium="music"/>
+    <podcast:remoteItem feedGuid="bb820c11-1e77-5f96-a3bd-ca1ff4e8510e" itemGuid="77b84175-06a9-401b-b58f-f91e0c38dc75" feedUrl="https://www.wavlake.com/feed/cbcbb39b-003d-46d1-8286-d3af3bd7a37a" medium="music"/>
+    <podcast:remoteItem feedGuid="3074902b-b2dc-5877-bfc3-30f5df0fbe6a" itemGuid="c59c7ffe-3847-4d55-ac27-5a1c1fbe6140" feedUrl="https://www.doerfelverse.com/feeds/middle-season-let-go.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="9becc0e2-aa67-5924-b9d4-61b943c265c2" itemGuid="64b7ea46-ff25-4127-8dcf-aca01a5b4ff5" feedUrl="https://wavlake.com/feed/a76a0302-8dd5-462a-9421-fdbfd707d974" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="33932ccc-c707-411b-b914-4e9a94ec7e89" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="204099cf-bcb0-4b78-99f9-2e64d366a3f1" itemGuid="a86026bb-0507-4cdd-9a29-f62e6cc9be0b" feedUrl="https://phafe.com/wp-content/uploads/rssfeed/music/matt_finlay/government_approved_ep/Government_Approved_EP_432Hz.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="af99d1b4-e10e-503f-8321-8d748bdc76f8" itemGuid="514b299d-935b-4424-9ab4-62eecf7ef0a7" feedUrl="https://www.doerfelverse.com/feeds/think-ep.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="f511794d-437f-5cbd-8fcd-c541652a7931" itemGuid="6eca8237-c9c5-4fde-ae50-0823d267a205" feedUrl="https://www.doerfelverse.com/artists/opus/opus/opus.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="dbfd9254-6f92-5b76-9b1a-25d86299f988" itemGuid="8280911b-8de3-42ce-85df-c91002bc5e1a" feedUrl="https://www.doerfelverse.com/feeds/jam-with-nate.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="4a483a4b-867c-50d5-a61a-e99fe03ea57e" itemGuid="b9c1c065-9f1b-4e24-a5cc-296cf39766e2" feedUrl="https://www.doerfelverse.com/feeds/wrath-of-banjo.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="1dc549bf-c1ef-5a30-813f-a2918d37b38d" itemGuid="f5f51623-49f7-4c8d-ad7a-e1bafa10bab8" feedUrl="https://www.doerfelverse.com/artists/middleseason/inside-out.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a2d2e313-9cbd-5169-b89c-ab07b33ecc33" itemGuid="ae81976d-a05e-4ff9-9adf-cdb11a33fff9" feedUrl="https://files.heycitizen.xyz/Songs/Albums/The-Heycitizen-Experience/the_heycitizen_experience.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a1077af6-602b-5daf-957b-68a65a03cad1" itemGuid="e938bdb7-eee8-46f1-b9f8-853d38c42584" feedUrl="https://www.doerfelverse.com/feeds/bloodshot-lies-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="20e84e84-db1b-5187-a315-f683a1d519c1" itemGuid="b8bf4066-e03b-493a-99b2-cee87148d872" feedUrl="https://feeds.fountain.fm/9XXsBdcc61EpaFgI05tj" medium="music"/>
+    <podcast:remoteItem feedGuid="3ae285ab-434c-59d8-aa2f-59c6129afb92" itemGuid="c97ea153-9ca2-4dcf-8c0e-24c018351616" feedUrl="https://wavlake.com/feed/music/99ed143c-c461-4f1a-9d0d-bee6f70d8b7e" medium="music"/>
+    <podcast:remoteItem feedGuid="69c634ad-afea-5826-ad9a-8e1f06d6470b" itemGuid="2b8cef29-6aa5-4e2f-a726-92f916f2424a" feedUrl="https://www.sirtjthewrathful.com/wp-content/uploads/2023/08/Kurtisdrums-V1.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="f511794d-437f-5cbd-8fcd-c541652a7931" itemGuid="540541a9-1b3e-41bf-b5c8-6c01d023f0dc" feedUrl="https://www.doerfelverse.com/artists/opus/opus/opus.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="b2a87a4c-86f0-5194-9eb3-dcba42ce0695" itemGuid="8e89115c-f375-406b-82d7-f9d7a55e75fd" feedUrl="https://www.doerfelverse.com/feeds/disco-swag-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="95e5f7a9-d88e-5e51-b2ae-f4b1865d19c4" itemGuid="3587c342-cd4a-481c-838c-de242e5beb0b" feedUrl="https://wavlake.com/feed/music/8aaf0d1e-7ac3-4f7d-993b-6f59f936d780" medium="music"/>
+    <podcast:remoteItem feedGuid="78771e44-95b0-5f9b-93c7-a3dda7d41522" itemGuid="e0cb2750-1763-470c-8ebc-8098b6448b55" feedUrl="https://wavlake.com/feed/music/76407adf-773c-4eb2-b5e2-8aef137d781f" medium="music"/>
+    <podcast:remoteItem feedGuid="75f0b434-19dc-5959-9920-0fb5304be61b" itemGuid="58f0d461-7ff0-4abc-bb04-3919cabf61a8" feedUrl="https://static.staticsave.com/mspfiles/deathdreams.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="537df90e-0cc4-535b-84d0-dcb3ca87f1f8" itemGuid="2155dfff-142f-4138-9607-65e8321bda85" feedUrl="https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1" medium="music"/>
+    <podcast:remoteItem feedGuid="b2a87a4c-86f0-5194-9eb3-dcba42ce0695" itemGuid="1d09435b-96bf-4348-aff1-514d600eccfe" feedUrl="https://www.doerfelverse.com/feeds/disco-swag-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="65cd72e4-fc7b-595d-baee-6c35feba420a" itemGuid="d186993b-5230-43a2-aefb-418d79e03c6a" feedUrl="https://wavlake.com/feed/e6a50ff6-8e1b-445f-a9ef-21096af86e49" medium="music"/>
+    <podcast:remoteItem feedGuid="1e7ed1fa-0456-5860-9b34-825d1335d8f8" itemGuid="76ae1822-d630-4af4-b2b3-253bf8033459" feedUrl="https://www.sirtjthewrathful.com/wp-content/uploads/2023/08/Nostalgic.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a2d2e313-9cbd-5169-b89c-ab07b33ecc33" itemGuid="c2264e2b-a564-43d2-bf7e-5be6298e2ea2" feedUrl="https://files.heycitizen.xyz/Songs/Albums/The-Heycitizen-Experience/the_heycitizen_experience.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="73ca299e-ff77-5779-98bb-ab72994a0a2a" itemGuid="8ef324c7-f372-420f-8be8-aa158b9332b9" feedUrl="https://www.doerfelverse.com/artists/middleseason/deconstruction-of-self.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="1e683ce1-0af5-50ac-9fbd-668519174391" itemGuid="5c8e3b28-30c9-47ba-b253-54b2f33904f5" feedUrl="https://www.sirtjthewrathful.com/tracks/emo-stormtrooper.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="69c634ad-afea-5826-ad9a-8e1f06d6470b" itemGuid="584953af-7321-4bfe-882d-7cadd697e807" feedUrl="https://www.sirtjthewrathful.com/wp-content/uploads/2023/08/Kurtisdrums-V1.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="e88a4a67-877c-5e03-b8fd-a70cebc821af" itemGuid="9287595a-72b1-40ec-bded-30fe4f0fec1a" feedUrl="https://phafe.com/wp-content/uploads/rssfeed/music/matt_finlay/kulture_collection/Kulture_Collection.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="a2d2e313-9cbd-5169-b89c-ab07b33ecc33" itemGuid="d2346732-acc5-4256-afe5-0a0f3e670e6b" feedUrl="https://files.heycitizen.xyz/Songs/Albums/The-Heycitizen-Experience/the_heycitizen_experience.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="acddbb03-064b-5098-87ca-9b146beb12e8" itemGuid="0d616fe3-16ab-40be-a33c-98468f81fc11" feedUrl="https://ableandthewolf.com/static/media/feed.xml" medium="music"/>
+  </channel>
+</rss>
