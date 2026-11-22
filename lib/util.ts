@@ -637,6 +637,41 @@ export function firstPlayableTrack<T extends Pick<Episode, 'liveStatus' | 'unres
     ?? rows.find((e) => !e.unresolved);
 }
 
+/** What a press on a track list's header cover does — see `coverPress`. */
+export type CoverPress = { kind: 'toggle' } | { kind: 'start'; seek: boolean };
+
+/**
+ * What a press on the header cover of a track list does (`<EpisodeList>`'s ▶).
+ *
+ * - `toggle`: pause or resume the item playing. Only an ALBUM that holds it
+ *   (`albumHoldsCurrent`), as before.
+ * - `start`: play `first` from 0:00, in the list's order. `play()` ends a
+ *   shuffle. `seek` is true when `first` is the item the player already holds
+ *   (the same `episode.id`, which `<Player>`'s source effect is keyed on): then
+ *   `play()` loads nothing, its `positionSec: 0` is a store mirror the next
+ *   `timeupdate` overwrites, and the song goes on from where it was — so the
+ *   caller seeks to 0 as well (`requestSeek(0)`).
+ *
+ * **A PLAYLIST never toggles** (Chad, 2026-11-22: "I think the album art play
+ * button should just start the playlist over again, even if you were already
+ * playing it."). After a reload `revealNowPlaying` puts the song back alone,
+ * with the playlist as its show, so the album rule adopted it and ▶ resumed
+ * track 13. The glyph reads the same answer: a cover that always starts never
+ * draws ❚❚ (anything that draws ❚❚ must pause — docs/ui.md).
+ *
+ * Pinned by `check:queue`.
+ */
+export function coverPress(
+  list: Pick<Podcast, 'id' | 'podcastGuid' | 'medium'>,
+  first: Pick<Episode, 'id'>,
+  current: { episode: Pick<Episode, 'guid' | 'feedId' | 'id'>; podcast: Pick<Podcast, 'id' | 'podcastGuid'> } | null,
+  shuffle: readonly QueueItem[] | null,
+  listenQueue: readonly QueueItem[],
+): CoverPress {
+  if (!isPlaylistMedium(list) && albumHoldsCurrent(list, current, shuffle, listenQueue)) return { kind: 'toggle' };
+  return { kind: 'start', seek: !!current && current.episode.id === first.id };
+}
+
 type RowIds = Pick<Episode, 'id' | 'guid' | 'feedId' | 'podcastGuid'>;
 
 /**

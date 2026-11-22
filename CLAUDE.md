@@ -104,7 +104,7 @@ npm run dev / build / start / lint
 | `check:cappedbody` | `capped-body.ts` — the capped readers, server AND browser | one feed fills the heap |
 | `check:brand` | `BRANDS`, `clientTag` — **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy |
 | `check:downloads` | `downloadKey`, `roomVerdict`, `albumPlan` | a download nothing finds |
-| `check:queue` | `epKey`, `trimForQueue`, `listenStep`, `shuffle*`, `advanceBeforeEnd` | the queue removes the wrong episode; history claims unsettled sats |
+| `check:queue` | `epKey`, `trimForQueue`, `listenStep`, `shuffle*`, `advanceBeforeEnd`, `coverPress` | the queue removes the wrong episode; history claims unsettled sats; a playlist's ▶ resumes instead of starting over |
 | `check:favnew` | `selectNewEpisodes`, `advanceMarks` | a new episode nobody sees, or a year of back catalogue |
 | `check:likes` | `tallyLikes`, `likeTags`, `unlikeTags` | a like Fountain cannot count |
 | `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards |

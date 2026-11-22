@@ -118,6 +118,7 @@
     "e2e:music-hold": "node scripts/e2e-music-hold.mjs",
     "e2e:lockbuttons": "node scripts/e2e-lockscreen-buttons.mjs",
     "e2e:hiddenadvance": "node scripts/e2e-hidden-advance.mjs",
+    "e2e:playlistcover": "node scripts/e2e-playlist-cover.mjs",
     "e2e:androidkeeper": "node scripts/e2e-android-keeper.mjs",
     "e2e:nwcrelay": "node scripts/e2e-nwc-relay.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
