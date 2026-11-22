@@ -108,7 +108,7 @@ section('1. On the show page, STREAM opens a dialog, on screen, naming the show'
 section('2. In the player, STREAM in the ⋯ menu opens the SAME dialog, on screen');
 // ---------------------------------------------------------------------------
 {
-  await tap(`document.querySelector('button[aria-label="Play album"]')`);
+  await tap(`document.querySelector('button[aria-label="Play album from the start"]')`);
   const bar = await until(() => js(`!!document.querySelector(${JSON.stringify(MINI_BAR)})`), 15000);
   t.ok('a track is playing, so the player exists', bar, 'no now-playing bar');
   await wait(1500);

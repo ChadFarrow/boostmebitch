@@ -12,7 +12,7 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { valueNotRead, authorLine, coverPress, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { valueNotRead, authorLine, coverStartSeeks, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { IS_BETA } from '@/lib/beta';
@@ -254,9 +254,6 @@ export function EpisodeList({
   const requestSeek = useApp((s) => s.requestSeek);
   const isPlaying = useApp((s) => s.isPlaying);
   const current = useApp((s) => s.current);
-  // Only the album header's ▶ reads these two: which list owns the track.
-  const shuffle = useApp((s) => s.shuffle);
-  const listenQueue = useApp((s) => s.listenQueue);
   const openEpisode = useApp((s) => s.openEpisode);
   const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
   const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
@@ -613,26 +610,15 @@ export function EpisodeList({
   // unresolved playlist placeholder has no enclosure, so it can never be the
   // thing that button starts.
   const firstPlayable = firstPlayableTrack(orderedEpisodes);
-  // Is the currently-playing track part of this show, playing AS this album?
-  // Not while the favorites shuffle or Up Next owns it (`listHolding`): that
-  // list decides what plays after it, so resuming the track is not "Play
-  // album". The header's ▶ then STARTS the album, and `play()` ends the
-  // shuffle. The glyph reads the same test, so it never draws ❚❚ over a press
-  // that starts the album instead of pausing. Reported from desktop,
-  // 2026-11-14: a shuffle reached a song, the album was opened to play it, and
-  // ▶ played the one song again and not the album. `/demu`'s cover asks the
-  // same `albumHoldsCurrent`.
-  //
-  // A PLAYLIST's cover never toggles: it always starts the playlist over, at
-  // its first row from 0:00 (Chad, 2026-11-22, after a reload brought back
-  // track 13 and ▶ resumed it). `coverPress` decides both (lib/util.ts,
-  // `check:queue`), and `seek` covers the press on the row already in the
-  // player, where `play()` alone loads nothing.
-  const press = firstPlayable
-    ? coverPress(data.podcast, firstPlayable, current, shuffle?.items ?? null, listenQueue)
-    : null;
-  const coverPauses = press?.kind === 'toggle' && isPlaying;
-  const coverLabel = coverPauses ? 'Pause' : isPlaylist ? 'Play playlist from the start' : 'Play album';
+  // The header's ▶ ALWAYS starts the list over: `firstPlayable`, from 0:00, in
+  // the list's order. A playlist since #652 (Chad, 2026-11-22, after a reload
+  // brought back track 13 and ▶ resumed it), an album since the same day
+  // ("album-over: yes"). It never pauses, so it never draws ❚❚: pause is the
+  // mini player's. `play()` ends a shuffle; ⤮ starts a new one. When the first
+  // row is already in the player, `play()` loads nothing, so the press seeks to
+  // 0 too (`coverStartSeeks`, `check:queue`). `/demu`'s album covers, in a LIST
+  // of albums, keep their pause and resume (`albumHoldsCurrent`).
+  const coverLabel = isPlaylist ? 'Play playlist from the start' : 'Play album from the start';
   // Music feeds show the whole album (track order); other shows paginate 10 at a
   // time. A PLAYLIST renders everything it has fetched, because on that path the
   // fetch IS the page — a second reveal axis on top would make one new track
@@ -663,11 +649,13 @@ export function EpisodeList({
           <button
             type="button"
             onClick={() => {
-              if (!press || !data.podcast) return;
-              if (press.kind === 'toggle') { togglePlay(); return; }
-              // Inside the press, as before: iOS ties `play()` to the gesture.
+              if (!data.podcast) return;
+              // Read in the press, not the render: the seek must follow what
+              // the player holds NOW. Inside the press, as before: iOS ties
+              // `play()` to the gesture.
+              const seek = coverStartSeeks(firstPlayable, useApp.getState().current);
               play(firstPlayable, data.podcast, 0);
-              if (press.seek) requestSeek(0);
+              if (seek) requestSeek(0);
             }}
             className="group relative w-20 h-20 lg:w-28 lg:h-28 flex-shrink-0"
             title={coverLabel}
@@ -682,11 +670,9 @@ export function EpisodeList({
               className="w-full h-full border border-bone/20 group-hover:border-bolt text-3xl"
             />
             <div
-              className={`absolute inset-0 grid place-items-center bg-ink/45 transition pointer-events-none text-2xl ${
-                coverPauses ? 'text-bolt' : 'text-bone group-hover:text-bolt group-hover:bg-ink/55'
-              }`}
+              className="absolute inset-0 grid place-items-center bg-ink/45 transition pointer-events-none text-2xl text-bone group-hover:text-bolt group-hover:bg-ink/55"
             >
-              {coverPauses ? '❚❚' : '▶'}
+              ▶
             </div>
           </button>
         ) : (
