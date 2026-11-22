@@ -181,6 +181,9 @@ console.log('\nThe nick rule:');
   const nicks = [
     ['candr_fan', true], ['[Dude]', true], ['a-b', true],
     ['9lives', false], ['has space', false], ['', false], ['-dash', false], ['x'.repeat(18), false], ['x'.repeat(17), true],
+    // Chad, 2026-11-21: a listener types a name; no generated guest names. IRC
+    // allows one character, but a one-letter nick reads as nobody in the list.
+    ['a', false], ['_', false], ['Al', true],
   ];
   for (const [nick, want] of nicks) {
     const got = isValidNick(nick);

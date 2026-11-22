@@ -168,10 +168,12 @@ export function buildAction(target: string, text: string): string[] {
  * is refused with 432, so the nick box and `/nick` stop it before it leaves.
  */
 export const MAX_NICK_LENGTH = 17;
+/** Ours, not ZeroNode's: IRC allows one character, but a one-letter nick reads as nobody (Chad, 2026-11-21). */
+export const MIN_NICK_LENGTH = 2;
 
-const NICK_RE = new RegExp(`^[A-Za-z[\\]\\\\\`_^{|}][A-Za-z0-9[\\]\\\\\`_^{|}-]{0,${MAX_NICK_LENGTH - 1}}$`);
+const NICK_RE = new RegExp(`^[A-Za-z[\\]\\\\\`_^{|}][A-Za-z0-9[\\]\\\\\`_^{|}-]{${MIN_NICK_LENGTH - 1},${MAX_NICK_LENGTH - 1}}$`);
 
-/** 1–17 characters; a letter or `[]\`_^{|}` first; then also digits and `-`. */
+/** 2–17 characters; a letter or `[]\`_^{|}` first; then also digits and `-`. */
 export function isValidNick(nick: string): boolean {
   return NICK_RE.test(nick);
 }
