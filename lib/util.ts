@@ -175,6 +175,73 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * Does the now-playing item read its EPISODE's chapters and transcript? The ONE
+ * gate for both (`chapterUrlFor`, `transcriptSourceFor`), pinned by
+ * `check:musicl`. No for nothing playing, a live item, and anything that plays
+ * as tracks.
+ *
+ * **`playsAsTracks`, never `isMusicMedium`.** The podcast of a playlist row is
+ * the PLAYLIST, while the track is from somebody's album, and an album can write
+ * `<podcast:chapters>`: a podhome music feed writes ONE chapter per track, "100
+ * sats from ChadF". With `isMusicMedium` those loaded for a `musicL` row and
+ * `buildChapterNav` took ⏮/⏭ over — one chapter has no next chapter, so ⏭
+ * greyed out over a playlist with 40 tracks to go, and a spent chapter override
+ * falls through to the listen queue only, never to the playlist (Chad's iPhone,
+ * 2026-11-22, #647). The same track played from its album read none.
+ */
+export function readsEpisodeDocs(
+  current: { episode: Pick<Episode, 'liveStatus'>; podcast: Pick<Podcast, 'medium'> } | null,
+): boolean {
+  return !!current && current.episode.liveStatus !== 'live' && !playsAsTracks(current.podcast);
+}
+
+/** How long before the end (wall-clock seconds) `advanceBeforeEnd` moves on. */
+export const HIDDEN_ADVANCE_LEAD_SEC = 1;
+
+/**
+ * Should a HIDDEN iPhone page move to the next item NOW, before this one ends?
+ * `<Player>` asks on every `timeupdate`, and moves through the same step an
+ * ending takes. Pinned by `check:queue`.
+ *
+ * **Why an iPhone in the background cannot simply wait for `ended`.** WebKit
+ * deactivates the audio session when the last playing session is audio that
+ * has ENDED (`MediaSessionManagerCocoa::sessionWillEndPlayback`), and that rule
+ * has no background test. The iOS rule beside it skips deactivation on a plain
+ * pause in the background, and Apple documents the reason: a nonmixable audio
+ * session cannot be made active while the app is in the background
+ * (`AVAudioSession.ErrorCode.cannotInterruptOthers`). So the next track's
+ * `play()` is accepted and sits at HAVE_METADATA until the app is on screen
+ * again: reported from Chad's iPhone on 2026-11-22 (#647), where it played 41 ms
+ * after `vis state=visible`. A source swapped while the old one still PLAYS
+ * never ends, so the session stays active — the lock-screen ⏭'s path.
+ *
+ * Yes only when ALL of these hold, so the foreground, Android and the desktop
+ * keep every second of every track:
+ * - the page is hidden, on iOS, playing, and something DIFFERENT plays next;
+ * - it has not already moved on for this item (`done`);
+ * - the time left, at the playback rate, is more than 0 and at most the lead
+ *   (an element AT its end is ended, and its `ended` handler owns it);
+ * - the duration is finite and over two leads (a stream has no end, and a
+ *   shorter track would be skipped from its first second).
+ */
+export function advanceBeforeEnd(s: {
+  hidden: boolean;
+  ios: boolean;
+  paused: boolean;
+  hasNext: boolean;
+  done: boolean;
+  currentTime: number;
+  duration: number;
+  playbackRate: number;
+}): boolean {
+  if (!s.hidden || !s.ios || s.paused || !s.hasNext || s.done) return false;
+  if (!Number.isFinite(s.duration) || s.duration <= 2 * HIDDEN_ADVANCE_LEAD_SEC) return false;
+  const rate = Number.isFinite(s.playbackRate) && s.playbackRate > 0 ? s.playbackRate : 1;
+  const left = (s.duration - s.currentTime) / rate;
+  return left > 0 && left <= HIDDEN_ADVANCE_LEAD_SEC;
+}
+
+/**
  * The picture BMB makes for a PLAYLIST whose own cover fails: the 2 x 2 grid of
  * its first four songs (`/api/playlist-cover`). For `<PodcastCover>`'s
  * `fallbackSrc`, the rung after the feed's own cover. Undefined for anything

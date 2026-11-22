@@ -835,8 +835,9 @@ export function FullscreenPlayer({
   }
 
   // When the episode has chapters, the prev/next transport buttons step between
-  // chapters instead of episodes (chapters are already gated off for music/live
-  // upstream in <Player>). Prev restarts the current chapter if >3s in, else
+  // chapters instead of episodes (chapters are already gated off upstream in
+  // <Player> for live items and for anything that plays as tracks, a playlist's
+  // tracks included: `readsEpisodeDocs`, #647). Prev restarts the current chapter if >3s in, else
   // jumps to the previous one.
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekTo);
 
