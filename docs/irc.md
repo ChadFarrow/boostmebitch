@@ -93,7 +93,11 @@ sent toward the page in this session, from 1.
   `storage.ircHold`). The next page in the tab shows the rows and starts with
   `HOLD RESUME` (`openIrcSession`'s `resume`): no NICK, no USER, no new ZeroNode
   slot, and the lines said during the reload arrive by `seq`. The rows are saved
-  and the seq read in the same handler, so they agree.
+  and the seq read in the same handler, so they agree. The panel mounts again
+  because the player comes back on its own: the live item, its full-screen
+  player and its playing state are saved beside it (`bmb:live_refresh`,
+  docs/ui.md "A refresh picks a live stream back up"), so a refresh needs no
+  press to return to the chat.
 - **The cost: a closed tab keeps the nick in the channel until the hold runs
   out** (5 minutes). The page cannot tell a refresh from a closed tab, so it
   sends no `QUIT` on `pagehide` while a hold token exists (Chad accepted this,

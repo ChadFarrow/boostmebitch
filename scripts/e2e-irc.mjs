@@ -289,7 +289,8 @@ function silentWav(seconds) {
 async function browserHalf(APP) {
   console.log(`\nBrowser: the panel in the fullscreen player (${APP})`);
   await requireApp(APP, `Nothing is serving ${APP}. Start it with \`NEXT_PUBLIC_IRC_GATEWAY_URL=ws://127.0.0.1:${GATEWAY_PORT}/ npm run dev\`.`);
-  const AUDIO = silentWav(60);
+  // Long enough to be still playing when the hold section refreshes the page.
+  const AUDIO = silentWav(900);
   const now = Math.floor(Date.now() / 1000);
   const show = (feedId, podcastGuid, feedTitle) => ({
     guid: `irc-e2e-live-${feedId}`, title: `${feedTitle} live now`, description: `The ${feedTitle} broadcast.`,
@@ -305,8 +306,20 @@ async function browserHalf(APP) {
   const { send, js, until } = page;
   try {
     const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
+    // The item a refresh reads again (`loadEpisodeFromFeed`). `feedLive` false
+    // is the broadcast having ended while the page reloaded.
+    let feedLive = true;
+    const feedOf = (id) => {
+      const item = LIVE.find((x) => x.feedId === id);
+      if (!item) return {};
+      return {
+        podcast: { id, title: item.feedTitle, url: item.feedUrl, podcastGuid: item.podcastGuid, author: '', image: '', artwork: '', description: '', medium: 'podcast' },
+        episodes: [{ ...item, liveStatus: feedLive ? 'live' : 'ended' }],
+      };
+    };
     const answer = (u) => {
       if (u.pathname === '/api/live-shows') return { items: LIVE, unverifiedFeeds: 0, truncated: false };
+      if (u.pathname === '/api/feed') return feedOf(Number(u.searchParams.get('id')));
       if (u.pathname === '/api/live-status') return { ok: true, items: [] };
       return {};
     };
@@ -633,9 +646,16 @@ async function browserHalf(APP) {
     c.ok('…without "Disconnected (…)" around it', !(await chatHas('Disconnected (The chat', 300)));
 
     // A refresh is a drop (Chad, 2026-11-22: "if you refresh the page, you
-    // should come back with your nick and chat"). The page saves the held
-    // session in this tab; the reloaded page shows the rows and resumes it.
+    // should come back with your nick and chat"), and a live stream picks back
+    // up ("if you're listening to a live stream and you hit refresh ... you
+    // want it to pick back up"). The page saves the held session and the live
+    // item in this tab; the reloaded page reads the item from its feed again,
+    // opens the full-screen player it had open, plays, and resumes the chat.
     const regs = () => fake.received.filter((l) => /^(NICK|USER) /.test(l)).length;
+    const playingCount = () => js(`[...document.querySelectorAll('audio,video')].filter((m) => !m.paused).length`);
+    const fullOn = (title, ms = 15000) => until(`[...document.querySelectorAll('h1')].some((h) => h.textContent.includes(${JSON.stringify(title)}) && h.getBoundingClientRect().width > 0)`, ms);
+    // The /live page has a "live now" heading of its own: read the player's close button.
+    const fullOff = () => js(`!(document.querySelector('[aria-label="Close fullscreen player"]')?.getBoundingClientRect().width > 0)`);
     const reopen = async () => {
       await until(`document.body.innerText.includes('E2E Chad Show')`, 30000);
       await playCard('E2E Chad Show');
@@ -643,13 +663,20 @@ async function browserHalf(APP) {
     };
     await click('[data-irc-join]');
     await until(`!!${q('[data-irc-input]')}`, 8000);
+    if (await playingCount() === 0) await click('[aria-label="Play"]');
+    c.ok('the live item plays before the refresh', await until(`[...document.querySelectorAll('audio,video')].some((m) => !m.paused)`, 8000));
     fake.say('dude', '#candr', 'before the refresh');
     await chatHas('before the refresh');
     const atRefresh = [fake.sessionsCreated, regs(), fake.quits.length];
     await send('Page.reload');
     fake.say('dude', '#candr', 'said during the refresh');
-    await reopen();
-    c.ok('a refresh shows the rows again', await chatHas('before the refresh', 8000));
+    c.ok('a refresh with the full-screen player open comes back to it, on the same live item, with no press', await fullOn('E2E Chad Show live now'));
+    c.ok('…and the stream plays again by itself', await until(`[...document.querySelectorAll('audio,video')].some((m) => !m.paused)`, 10000));
+    await wait(1000);
+    c.equal('…one stream, not two', await playingCount(), 1);
+    c.ok('…from the live edge, not an old place', await js(`[...document.querySelectorAll('audio,video')].find((m) => !m.paused).currentTime < 10`));
+    c.ok('…with no TAP TO RESUME', !(await js(`!!document.querySelector('[data-live-resume]')`)));
+    c.ok('the chat shows the rows again', await chatHas('before the refresh', 8000));
     c.ok('…resumes by itself, with what was said during the refresh', await chatHas('said during the refresh', 8000));
     c.ok('…says so', await chatHas('Reconnected; nothing was missed.'));
     c.ok('…offers no JOIN, and the composer works', await until(`${q('[data-irc-input]')}?.disabled === false && !${q('[data-irc-join]')}`, 5000));
@@ -657,15 +684,83 @@ async function browserHalf(APP) {
     await type('[data-irc-input]', 'after the refresh');
     await click('[data-irc-send]');
     c.ok('…and what you type goes out on it', await fakeGot(() => fake.received.includes('PRIVMSG #candr :after the refresh')));
-    c.equal('the saved session is in this tab only (sessionStorage), never in localStorage',
-      await js(`[!!sessionStorage.getItem('bmb:irc_hold'), Object.keys(localStorage).some((k) => k.includes('irc_hold'))].join()`), 'true,false');
+    c.equal('the saved session and live item are in this tab only (sessionStorage), never in localStorage',
+      await js(`[!!sessionStorage.getItem('bmb:irc_hold'), Object.keys(localStorage).some((k) => /irc_hold|live_refresh/.test(k))].join()`), 'true,false');
+
+    // A browser that refuses sound with no click after a reload (Firefox and
+    // Safari by default): play() rejects with NotAllowedError until a click,
+    // as this patch makes it. The player says TAP TO RESUME, not a bare ▶.
+    const { identifier: refuse } = (await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+      let armed = true;
+      addEventListener('click', () => { armed = false; }, true);
+      const play = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () { return armed ? Promise.reject(new DOMException('no click yet', 'NotAllowedError')) : play.call(this); };
+    })()` })).result;
+    await send('Page.reload');
+    c.ok('a refused start after a refresh: the full-screen player is back', await fullOn('E2E Chad Show live now'));
+    c.ok('…and says TAP TO RESUME', await until(`(document.querySelector('[data-live-resume]')?.innerText ?? '').includes('TAP TO RESUME')`, 10000));
+    c.equal('…over silence, with ▶ on the transport', [await playingCount(), await js(`!!document.querySelector('[aria-label="Play"]')`)], [0, true]);
+    c.ok('…while the chat resumed anyway', await chatHas('Reconnected; nothing was missed.', 8000));
+    // The mini-bar says it too, and on a 390 px phone the longer label must
+    // fit beside ▶ without growing the bar (GO LIVE once ran under ▶ there).
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    await closePlayer();
+    const miniFit = () => js(`(() => {
+      const bar = document.querySelector(${JSON.stringify(MINI_BAR)});
+      const b = bar?.querySelector('[data-live-resume]');
+      const p = bar?.querySelector('[aria-label="Play"],[aria-label="Pause"]');
+      const de = document.documentElement;
+      if (!bar || !p) return null;
+      const r = b?.getBoundingClientRect(), q = p.getBoundingClientRect();
+      return { barH: Math.round(bar.getBoundingClientRect().height), tap: !!b,
+        h: r ? Math.round(r.height) : 0, w: r ? Math.round(r.width) : 0,
+        clear: !r || !(r.right > q.left && r.left < q.right && r.bottom > q.top && r.top < q.bottom),
+        inView: !r || r.right <= innerWidth, noScroll: de.scrollWidth <= de.clientWidth };
+    })()`);
+    await until(`!!document.querySelector(${JSON.stringify(MINI_BAR)} + ' [data-live-resume]')`, 5000);
+    const blockedFit = await miniFit();
+    c.ok('…in the mini-bar at 390 px: at least 24 x 24, clear of ▶, on screen, no sideways scroll',
+      !!blockedFit && blockedFit.tap && blockedFit.h >= 24 && blockedFit.w >= 24 && blockedFit.clear && blockedFit.inView && blockedFit.noScroll, JSON.stringify(blockedFit));
+    await click(`${MINI_BAR} [data-live-resume]`);
+    c.ok('one press plays it', await until(`[...document.querySelectorAll('audio,video')].some((m) => !m.paused)`, 8000));
+    c.ok('…and TAP TO RESUME goes', await until(`!document.querySelector('[data-live-resume]')`, 3000));
+    const playingFit = await miniFit();
+    c.equal('…and the mini-bar keeps its height', blockedFit?.barH, playingFit?.barH);
+    await send('Emulation.clearDeviceMetricsOverride');
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: refuse });
+    await openPlayer('E2E Chad Show live now');
+
+    // Paused before the refresh stays paused, with no TAP TO RESUME.
+    await click('[aria-label="Pause"]');
+    await until(`[...document.querySelectorAll('audio,video')].every((m) => m.paused)`, 5000);
+    await send('Page.reload');
+    c.ok('paused before a refresh: the full-screen player is back', await fullOn('E2E Chad Show live now'));
+    await wait(2500);
+    c.equal('…still paused, and no TAP TO RESUME', [await playingCount(), await js(`!!document.querySelector('[data-live-resume]')`)], [0, false]);
+
+    // With the full-screen player closed, it comes back closed, in the mini-bar.
+    await click('[aria-label="Play"]');
+    await until(`[...document.querySelectorAll('audio,video')].some((m) => !m.paused)`, 8000);
+    await closePlayer();
+    await send('Page.reload');
+    c.ok('closed before a refresh: the live item is back in the mini-bar', await until(`(document.querySelector(${JSON.stringify(MINI_BAR)})?.innerText ?? '').includes('E2E Chad Show live now')`, 15000));
+    c.ok('…playing', await until(`[...document.querySelectorAll('audio,video')].some((m) => !m.paused)`, 8000));
+    c.ok('…with the full-screen player still closed', await fullOff());
+    await openPlayer('E2E Chad Show live now');
 
     // Leaving on purpose (another show) still quits, and forgets the session.
     await closePlayer();
     await playCard('E2E Other Show');
     c.ok('another show still quits the channel', await fakeGot(() => fake.quits.includes('e2efan')), JSON.stringify(fake.quits));
     c.ok('…and forgets the saved session', await until(`!sessionStorage.getItem('bmb:irc_hold')`, 3000));
+    // The other show is live and playing, but its feed now says it ended.
+    feedLive = false;
     await send('Page.reload');
+    await until(`document.body.innerText.includes('E2E Chad Show')`, 30000);
+    await wait(2500);
+    c.ok('a live item whose feed says it ended is not picked back up',
+      !(await js(`(document.querySelector(${JSON.stringify(MINI_BAR)})?.innerText ?? '').includes('live now')`)) && await playingCount() === 0);
+    feedLive = true;
     await reopen();
     c.ok('so a refresh after it offers JOIN, not a resume', await until(`!!${q('[data-irc-join]')}`, 8000) && !(await js(`!!${q('[data-irc-away]')}`)));
 

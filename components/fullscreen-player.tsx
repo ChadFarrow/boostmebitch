@@ -562,6 +562,13 @@ export function FullscreenPlayer({
   const play = useApp((s) => s.play);
   const playFromShuffle = useApp((s) => s.playFromShuffle);
   const togglePlay = useApp((s) => s.togglePlay);
+  const setPlaying = useApp((s) => s.setPlaying);
+  const isPlayingNow = useApp((s) => s.isPlaying);
+  const liveResumeBlocked = useApp((s) => s.liveResumeBlocked);
+  // The browser refused the start a refresh made by itself (docs/ui.md, "A
+  // refresh picks a live stream back up"): <LiveEdge> says TAP TO RESUME.
+  const onResume = current && !isPlayingNow && liveResumeBlocked === epKey(current.episode)
+    ? () => setPlaying(true) : undefined;
   const [valueOpen, setValueOpen] = useState(false);
   // THE IRC CHAT (docs/irc.md). `ircJoinedKey` is the episode the listener
   // joined the chat on: the panel stays for it after the show stops being
@@ -1418,7 +1425,7 @@ export function FullscreenPlayer({
           <div className={`flex-1 min-h-0 sm:flex-none ${infoPane} p-4 sm:p-6 lg:p-10 flex flex-col gap-3 sm:gap-4 sm:h-full`}>
             <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
               <div>
-                <LiveEdge variant="full" className="flex-wrap" behindSec={liveBehindSec} onGoLive={onGoLive} />
+                <LiveEdge variant="full" className="flex-wrap" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
                 <h1 className="font-display text-xl sm:text-2xl lg:text-3xl leading-tight mt-2">{episode.title}</h1>
                 {podcast.title && podcast.title !== episode.title && (
                   <p className="text-sm text-muted mt-1">{podcast.title}</p>
@@ -1483,7 +1490,7 @@ export function FullscreenPlayer({
             </div>
 
             {isLive ? (
-              <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
+              <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
             ) : (
               <div className="flex flex-col gap-1.5">
                 <div className="relative flex items-center">

@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue, withoutStoredValue, episodeWithoutValue } from './util';
+import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, readLiveRefresh, trimForQueue, withoutStoredValue, episodeWithoutValue, type LiveRefresh } from './util';
 import type { PlaylistDraft, PlaylistSong } from './community/rules';
 import type { StreamLedger } from './v4v/stream-ledger';
 // An import-free leaf (`check:newmusic` scans it), so a value import here
@@ -146,6 +146,7 @@ const KEYS = {
   piDead: 'bmb:pi:dead',              // '1' while the Podcast Index breaker is tripped. Survives a reload (an outage doesn't end because someone refreshed), not the tab.
   launcher: 'bmb:launcher',           // the `android-app://<package>/` package that opened this tab at `/`, per lib/launcher.ts. A package NAME and nothing else; tab-scoped because the referrer belongs to the first document.
   launcherDismissed: 'bmb:launcher_dismissed', // '1' once the unofficial-app notice was dismissed in this tab.
+  liveRefresh: 'bmb:live_refresh',    // the LIVE item in this tab's player when the page hid: feed id, item guid, playing, full screen open, time. A refresh within 5 min reads the item from its feed again and picks it back up (docs/ui.md). Ids only, never the episode. Tab-scoped: a new tab is a fresh load.
   ircHold: 'bmb:irc_hold',            // the IRC chat's held session in this tab: the hold token, the last line number, the nick and the last 200 rows, so a refresh resumes it (docs/irc.md "A refresh is a drop"). Tab-scoped: a closed tab's session runs out at the hold service.
   // Streaming rate and streaming on/off are SEPARATE keys, at both scopes, so
   // switching streaming off doesn't destroy the number the user typed. Also the
@@ -2595,6 +2596,34 @@ export const storage = {
    * coming back on the next sign-in, and it was one character away from no
    * longer matching the writer, with nothing to catch the mismatch.
    */
+  /**
+   * The LIVE item in this tab's player when the page hid (docs/ui.md, "A
+   * refresh picks a live stream back up"; Chad, 2026-11-22: "if you're
+   * listening to a live stream and you hit refresh ... you want it to pick
+   * back up"). `bmb:now_playing` never holds a live item, so without this a
+   * refresh reopened whatever was in the player before the show. Ids only: the
+   * reload reads the item from its feed again (`loadEpisodeFromFeed`), because
+   * a copy from disk names no payee. sessionStorage, so a new tab or a tab
+   * refreshed after 5 minutes (`LIVE_REFRESH_WINDOW_MS`) opens as a fresh load does.
+   */
+  liveRefresh: {
+    get: (): LiveRefresh | null => {
+      if (!isBrowser()) return null;
+      try {
+        const raw = sessionStorage.getItem(KEYS.liveRefresh);
+        return raw ? readLiveRefresh(JSON.parse(raw), Date.now()) : null;
+      } catch { return null; }
+    },
+    set: (v: LiveRefresh) => {
+      if (!isBrowser()) return;
+      try { sessionStorage.setItem(KEYS.liveRefresh, JSON.stringify(v)); } catch { /* blocked or full: a refresh then opens as a fresh load */ }
+    },
+    clear: () => {
+      if (!isBrowser()) return;
+      try { sessionStorage.removeItem(KEYS.liveRefresh); } catch { /* blocked */ }
+    },
+  },
+
   /**
    * The IRC chat's held session in THIS TAB (docs/irc.md, "A refresh is a
    * drop"): the panel saves it when the page hides, and the next page in the

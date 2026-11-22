@@ -28,23 +28,45 @@ import { LiveBadge } from '../live-badge';
  * the end of GO LIVE. Below `sm:` `<Player>` says the number on the line above
  * instead (`miniSecondary`), the way it folds the buffering line — hidden
  * here, never dropped.
+ *
+ * **`onResume` replaces both with `▶ TAP TO RESUME`.** `<Player>` passes it only
+ * when a refresh picked a live item back up and the browser refused the sound
+ * that started with no click (docs/ui.md, "A refresh picks a live stream back
+ * up"). A bare ▶ over a paused live row reads as "the stream stopped"; this
+ * says what one press does. Same sizes as GO LIVE, so the bar does not move.
  */
 export function LiveEdge({
   behindSec,
   onGoLive,
   variant,
   className = '',
+  onResume,
 }: {
   behindSec: number;
   onGoLive: () => void;
   variant: 'mini' | 'full';
   className?: string;
+  onResume?: () => void;
 }) {
   const text = variant === 'mini' ? 'text-[10px]' : 'text-xs';
   return (
     <div data-live-edge={variant} className={`flex items-center gap-2 ${className}`}>
       <LiveBadge status="live" />
-      {behindSec > 0 ? (
+      {onResume ? (
+        <button
+          type="button"
+          data-live-resume
+          className={`btn-mini shrink-0 whitespace-nowrap text-bolt border-bolt/60 ${variant === 'mini' ? 'min-h-6 py-0 -my-0.5' : ''}`}
+          title="Your browser stopped the sound after the refresh"
+          aria-label="Tap to resume the live stream"
+          onClick={(e) => {
+            e.stopPropagation();
+            onResume();
+          }}
+        >
+          ▶ TAP TO RESUME
+        </button>
+      ) : behindSec > 0 ? (
         <>
           <span className={`${text} text-muted tabular-nums whitespace-nowrap ${variant === 'mini' ? 'hidden sm:inline' : ''}`}>
             {behindSec} s behind

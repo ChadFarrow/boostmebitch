@@ -116,6 +116,8 @@ import {
   playingRowIndex,
   sameCurrentTrack,
   trimForQueue,
+  readLiveRefresh,
+  LIVE_REFRESH_WINDOW_MS,
 } from '../lib/util.ts';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -1063,6 +1065,55 @@ section('The cover ▶ starts the list over: a playlist and an album');
   // it is a different `episode.id`: the player loads the row's file from 0.
   v('the same song under another id: no seek — the player reloads it',
     [MUSICL, ROWS[0], on({ ...ROWS[0], id: -12345 }, ALBUM_SHOW), null, []], false, { alsoNaive: true });
+
+  for (const x of vv) compare(x.label, real(...x.args), x.expect);
+  const invoke = (impl, x) => {
+    try {
+      return JSON.stringify(impl === 'real' ? real(...x.args) : naive(...x.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  replayVectors({ vectors: vv, invoke, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
+}
+
+// ---------------------------------------------------------------------------
+section('A refresh brings back the LIVE item in this tab (readLiveRefresh)');
+// ---------------------------------------------------------------------------
+// Chad, 2026-11-22: a refresh on a live stream "should pick back up", with the
+// full-screen player and the chat. `bmb:now_playing` never holds a live item
+// (a broadcast that ended is nothing to come back to), so the tab keeps its own
+// record in sessionStorage when the page hides: the feed id and item guid ONLY,
+// never the episode, because a copy from disk names no payee and the live
+// status must be fresh. The reload reads the item from its feed again.
+//
+// What comes back from storage is input. The naive reader trusts it: any age
+// (a tab left a day then refreshed would reopen a show long over), a missing
+// guid, a `playing` that is any truthy value.
+{
+  const NOW = 1_700_000_000_000;
+  const rec = (over = {}) => ({ feedId: 7123, guid: 'live-guid-1', playing: true, expanded: true, at: NOW - 60_000, ...over });
+  const shape = (r) => (r ? { feedId: r.feedId, guid: r.guid, playing: r.playing, expanded: r.expanded } : null);
+  const real = (raw, now) => shape(readLiveRefresh(raw, now));
+  const naive = (raw) => (raw && typeof raw === 'object'
+    ? { feedId: raw.feedId, guid: raw.guid, playing: !!raw.playing, expanded: !!raw.expanded } : null);
+  const vv = [];
+  const v = (label, args, expect, opts = {}) => vv.push({ label, kind: 'liverefresh', args, expect, ...opts });
+  const PICK = { feedId: 7123, guid: 'live-guid-1', playing: true, expanded: true };
+  v('a minute old, playing, full screen: back as it was', [rec(), NOW], PICK, { alsoNaive: true });
+  v('paused and closed stay paused and closed', [rec({ playing: false, expanded: false }), NOW],
+    { ...PICK, playing: false, expanded: false }, { alsoNaive: true });
+  v('just inside the window', [rec({ at: NOW - LIVE_REFRESH_WINDOW_MS }), NOW], PICK, { alsoNaive: true });
+  v('past the window (a tab left, then refreshed): nothing', [rec({ at: NOW - LIVE_REFRESH_WINDOW_MS - 1 }), NOW], null);
+  v('saved in the future (a clock step): nothing', [rec({ at: NOW + 60_000 }), NOW], null);
+  v('no guid: nothing', [rec({ guid: '' }), NOW], null);
+  v('a feed id that is not a positive integer: nothing', [rec({ feedId: '7123' }), NOW], null);
+  v('playing as a string is not playing', [rec({ playing: 'true' }), NOW], { ...PICK, playing: false });
+  v('expanded as a number is not expanded', [rec({ expanded: 1 }), NOW], { ...PICK, expanded: false });
+  v('no time: nothing', [rec({ at: undefined }), NOW], null);
+  v('null: nothing', [null, NOW], null, { alsoNaive: true });
+  v('an array: nothing', [[rec()], NOW], null);
+  compare('the window is the chat hold: 5 minutes', LIVE_REFRESH_WINDOW_MS, 300_000);
 
   for (const x of vv) compare(x.label, real(...x.args), x.expect);
   const invoke = (impl, x) => {
