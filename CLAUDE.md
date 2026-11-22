@@ -28,6 +28,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent, Vercel env vars, beta site, Railway and `railway up` |
 | [`docs/testing.md`](docs/testing.md) | Running `build` and `dev` against one `.next`, any session that tests favorites, mutes, follows or the profile, and any `scripts/e2e-*` or `scripts/cdp.mjs` |
 | [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, **both** `android/twa-manifest*.json` and `zapstore*.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest*.json` |
+| [`docs/ios.md`](docs/ios.md) | `capacitor.config.json`, `ios/`, `lib/native/` — the iOS app is a Capacitor shell around the live origin, Buddy brand only; the web `<audio>` plays inside it, and a native player was measured and removed |
 | [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, **`app/api/audio/`**, and `<Player>`'s local-source branch — the worker is network-first, which is NOT precaching |
 | [`docs/spark-sdk-swap.md`](docs/spark-sdk-swap.md) | `lib/v4v/spark.ts`, `spark-derive.ts` — why the wallet derives at account 0, the path BlitzWallet and Primal use |
 | [`docs/pc20-favorites.md`](docs/pc20-favorites.md) | `lib/nostr/favorites-*.ts` — only a pointer to the kind:10333 spec in PC20-Nostr; a wire-format change is a PR there first |
