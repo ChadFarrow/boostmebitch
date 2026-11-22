@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { fmt } from '@/lib/format';
 import { chapterState, type ChapterEntry } from '@/lib/chapters';
+import { LinkIcon } from './icons';
 
 /**
  * The 36–40px thumbnail on a chapter or track row, with the two-URL-then-hide
@@ -189,68 +190,115 @@ export function ChapterHoverTip({
 }
 
 /**
+ * The chain-link mark after a chapter title that published a `url` — ONE
+ * component for every surface that names such a chapter, so the list row and
+ * the now-playing line cannot drift into two different marks again.
+ *
+ * **It replaced a `↗` that nobody found.** The row's `↗` sat at the far right
+ * of the row, in `text-muted`, beside the share icon, and the player line's was
+ * the same small grey arrow: reported by Chad (2026-11-22) as "hard to see, and
+ * I didn't even know that it had it". So the mark is a chain link — the glyph
+ * most sites use for "this goes somewhere else" — in `text-bolt`, and it sits
+ * right after the title it belongs to rather than at the edge of the row.
+ *
+ * **24×24 for the pointer, and only 14px of the line.** The box is `w-6 h-6` —
+ * a real WCAG 2.5.8 target on its own, not one that leans on the inline
+ * exception — and `-my-[5px]` takes 10px back off its MARGIN box. A flex line
+ * and an inline line box both size from the margin box, so the mark adds
+ * nothing to the 15/16px line it sits in, while hit-testing uses the 24px
+ * border box. That matters twice: `<FullscreenPlayer>`'s cover is capped
+ * against a hard-coded `30rem` reserve measured from these rows (see
+ * `<ChapterLabel>`), and a line that grew only on a chapter that links would
+ * move the mini-bar whenever playback crossed into or out of one.
+ *
+ * **`label` decides whether it is a link to a screen reader at all.** Pass the
+ * accessible name where the mark is the ONLY link to the url (a list row, whose
+ * title seeks). Omit it where the title beside it already links to the same
+ * href (`<ChapterLabel>`): the mark is then a decorative twin — `aria-hidden`,
+ * `tabIndex={-1}` — because two adjacent anchors to one href read out twice and
+ * take two tab stops.
+ *
+ * **`stopPropagation` is load-bearing.** `<Player>`'s mini-bar is a click
+ * target that opens the fullscreen player, so without it one tap both follows
+ * the link and expands the player behind it.
+ *
+ * **The href is not re-checked here and must not need to be.** `useChapters`
+ * (`lib/chapters.ts`) runs every chapter `url` through `httpUrl` at the parse
+ * boundary, so a rejected scheme arrives as `undefined` and no caller renders
+ * this at all.
+ *
+ * **Square, never `rounded`.** Hit-testing follows `border-radius`, so a
+ * rounded 24px box answers to less than 24×24 — its corners fall through to
+ * whatever is underneath (in a list row, the row's seek overlay).
+ */
+export function ChapterUrlLink({
+  href,
+  label,
+  className = '',
+}: {
+  href: string;
+  /** The accessible name. Omit it ONLY when the title beside the mark is
+   *  already a link to this same `href`. */
+  label?: string;
+  className?: string;
+}) {
+  const a11y = label
+    ? { 'aria-label': label }
+    : ({ 'aria-hidden': true, tabIndex: -1 } as const);
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={label ?? 'Open chapter link'}
+      onClick={(e) => e.stopPropagation()}
+      {...a11y}
+      className={`inline-flex flex-shrink-0 items-center justify-center align-middle w-6 h-6 -my-[5px] text-bolt hover:bg-bolt/15 transition ${className}`}
+    >
+      <LinkIcon className="w-4 h-4" />
+    </a>
+  );
+}
+
+/**
  * The current-chapter label shown by the seek bar: `start–end · title`. When the
- * chapter published a `url` the title becomes a link and a trailing `↗` marks
- * it.
+ * chapter published a `url` the title becomes a link and `<ChapterUrlLink>`'s
+ * chain mark follows it.
  * `className` carries the per-player size/margin. Renders null without a title.
  *
  * **The link is here because a chapter that publishes one is the only place it
- * is ever said.** `<EpisodeContents>` already hangs a `↗` off its chapter rows,
+ * is ever said.** `<EpisodeContents>` marks the link on its chapter rows too,
  * but that list is a tab the listener has to open, so the chapter playing right
  * now announced its title and silently dropped the URL that goes with it —
  * reported against the *Chad and Reeds* 006 chapter linking Zapstore. Both
  * players render this one component, so putting it here is what stops the two
  * seek bars drifting the way the two chapter lists did.
  *
- * **The href is already guarded and must not be re-derived here.** `useChapters`
- * (`lib/chapters.ts`) runs every chapter `url` through `httpUrl` at the parse
- * boundary, so a rejected scheme arrives as `undefined` and renders no `↗` at
- * all. A chapters document is attacker-chosen bytes at a URL the FEED names, and
- * React does not block a `javascript:` href — it only warns in dev — while this
- * origin holds the wallet credential. Guard at the parse site, not per surface.
- *
- * **The TITLE is the link and the `↗` repeats it, which is a deliberate pair of
+ * **The TITLE is the link and the mark repeats it, which is a deliberate pair of
  * affordances for one destination — so exactly one of them is a link to a screen
  * reader.** The title carries the accessible name a link should have ("Boost Me
- * Buddy launches on Zap Store"); the `↗` carries none, which is why it is
- * `aria-hidden` with `tabIndex={-1}` rather than given a second label. Two
- * adjacent anchors to one href otherwise read out twice and take two tab stops,
- * and the second announces only "link, Open chapter link" — the arrow exists for
- * sighted discovery, because an underline-on-hover alone is invisible on touch
- * and says nothing at rest about *where* the chapter points.
+ * Buddy launches on Zap Store"); the mark is rendered without a `label`, which
+ * makes it the `aria-hidden` twin. The mark exists for sighted discovery,
+ * because an underline alone says little at rest about the chapter pointing
+ * anywhere, and nothing at all on touch.
  *
- * **`stopPropagation` is load-bearing in the mini-bar, and on BOTH anchors.**
- * `<Player>`'s whole bar is a `role="button"` that opens the fullscreen player,
- * so without it one tap both follows the link and expands the player behind it.
- * **A linked title does change what a tap on that line does there** — it used to
- * open the player and now follows the chapter's URL. That is confined to `sm:`
- * and up, because the mini-bar folds this whole line away below it, and the rest
- * of the bar still expands the player.
+ * **A linked title does change what a tap on that line does in the mini-bar** —
+ * it used to open the player and now follows the chapter's URL. That is
+ * confined to `sm:` and up, because the mini-bar folds this whole line away
+ * below it, and the rest of the bar still expands the player. Both anchors stop
+ * propagation for the reason given on `<ChapterUrlLink>`.
  *
- * **The control takes its 24px on the axis that is free, and NOT on the one that
- * is spoken for.** Width is free — the title truncates, so the link costs it
- * nothing. Height is not: `<FullscreenPlayer>`'s cover is capped against a
- * hard-coded `30rem` reserve that is measured from this pane's rows, the
- * active-chapter label among them, and the measured clearance under the tile row
- * is **+22px at 390×844 and already −60px at 375×667** (docs/ui.md). Giving the
- * row a `min-h-6` would eat 8 of those 22 and silently falsify the constant, on
- * the surface where nobody would look for the cause. It would also make the
- * mini-bar change height on its own as playback crossed between chapters that
- * link and chapters that do not — feeds link a handful and leave the rest bare.
- *
- * So the link is `self-stretch`: 24px wide, and as tall as the line box the
- * title already sets. Measured against the built CSS: the mini-bar label stays
- * **15px** and the fullscreen label **16px**, both unchanged from before this
- * link existed, and the mini-bar label measures 15px WITH and WITHOUT the `↗`
- * — which is the no-jitter property, not just the no-growth one. The target
- * comes out 24×16, and the linked title **192×16** on the reported chapter — so
- * the real target is the title and the arrow is the marker. Both sit under
- * WCAG 2.5.8's *inline* exception, which exempts a
- * target "whose size is otherwise constrained by the line-height of non-target
- * text" — the same carve-out CLAUDE.md states as "a link inside a sentence is
- * exempt". `<EpisodeContents>`' row `↗` is NOT line-constrained (it is a flex
- * sibling of the row button), which is why that one pays for `px-2 py-1.5` and
- * this one must not copy it.
+ * **Height is spoken for on this line, and the mark must not take any.**
+ * `<FullscreenPlayer>`'s cover is capped against a hard-coded `30rem` reserve
+ * that is measured from this pane's rows, the active-chapter label among them,
+ * and the measured clearance under the tile row is **+22px at 390×844 and
+ * already −60px at 375×667** (docs/ui.md). A taller line would eat that and
+ * silently falsify the constant, on the surface where nobody would look for the
+ * cause; it would also make the mini-bar change height on its own as playback
+ * crossed between chapters that link and chapters that do not. So the mark's
+ * 24px box rides on negative margins (see `<ChapterUrlLink>`) and the line keeps
+ * the height its text sets — the mini-bar label **15px** and the fullscreen
+ * label **16px**, with the mark and without it.
  */
 export function ChapterLabel({
   chapter,
@@ -292,21 +340,16 @@ export function ChapterLabel({
             chapter.title
           )}
         </span>
-        {chapter.url && (
-          <a
-            href={chapter.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            // Decorative twin of the linked title above — see the note on the
-            // component. It must not become a second link in the a11y tree.
-            aria-hidden
-            tabIndex={-1}
-            onClick={(e) => e.stopPropagation()}
-            className="flex-shrink-0 self-stretch inline-flex items-center justify-center w-6 text-muted hover:text-bolt transition"
-          >
-            ↗
-          </a>
-        )}
+        {/* No `label`: the linked title above is the one link a screen reader
+            hears, and this is its twin.
+            `translate-y-[3px] pb-1.5` moves the 24px BOX 3px down and keeps the
+            ICON where it was (centred on the text). In the mini-bar the line
+            sits 2px under the seek row, and a centred box reached 2px up into
+            the seek input's 14px mouse box (measured: box top 812.5, input
+            bottom 814.5 at 1280px), so one of the two targets lost a strip to
+            the other. Below the line there is room: 7.5px to the bar's edge in
+            the mini-bar, a 14–20px gap in the fullscreen pane. */}
+        {chapter.url && <ChapterUrlLink href={chapter.url} className="translate-y-[3px] pb-1.5" />}
       </div>
     </div>
   );

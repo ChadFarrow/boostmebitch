@@ -44,12 +44,13 @@ export function useChapters(url: string): { chapters: ChapterEntry[] | null; loa
               title: typeof c.title === 'string' ? c.title : undefined,
               img: typeof c.img === 'string' && c.img ? c.img : undefined,
               // `httpUrl`, not a bare string test. This one is rendered as an
-              // `href` by <EpisodeContents>' ↗ control, and a chapters document
-              // is attacker-chosen bytes at a URL the FEED names — the same
+              // `href` by <ChapterUrlLink> (a chapter row and the player's
+              // chapter line), and a chapters document is attacker-chosen
+              // bytes at a URL the FEED names — the same
               // trust level as the feed itself. React does not block a
               // `javascript:` href, it only warns in dev, and this origin holds
               // the wallet credential. A rejected url leaves the entry with no
-              // link, which renders no ↗ at all.
+              // link, which renders no link mark at all.
               //
               // `img` deliberately stays a plain string: it is only ever an
               // <img src>, where no scheme executes, and narrowing it would
