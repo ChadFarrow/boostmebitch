@@ -381,12 +381,12 @@ We emit the boostagram in TLV `7629169` only — never a separate `696969` sende
 | --- | --- |
 | `i`, `k` | `podcast:guid:<feed-guid>` + `k=podcast:guid` (NIP-73) |
 | `i`, `k` | `podcast:item:guid:<item-guid>` + `k=podcast:item:guid` (omitted on show-level boosts) |
-| `r` | a listen link **and** a deep link back into this app — both episode-specific when boosting an episode |
+| `r` | a deep link back into this app — episode-specific when boosting an episode |
 | `amount` | total millisats *intended* (not sum of successful legs) |
 | `client` | `BRAND.wireName` |
 | `t` | `boostagram` + `value4value` |
 
-**Both `r` tags point at the episode when there is one** — a note about one episode that lands the reader on the show's front door makes them go hunting. The listen link prefers the episode's own web page (RSS `<link>`), then a URL-shaped item guid, then `pod.link/<itunesId>` → PI page → raw RSS (those last three are show-level: neither pod.link nor PI has an episode URL constructible from a guid). The app link is `?podcast=<guid>&episode=<guid>` — a restorable view that emits episode-level OG tags, so the unfurl carries the episode's own title and art. Everything derived from feed text goes through `httpUrl`, an http(s) allowlist, before landing in a public note.
+**The body's one link is this site's host with no scheme (`www.boostmebitch.com`)**, since 2026-11-22: every Nostr client read that day draws a preview card for an `https://` URL and none for a bare host, and two cards above the banner showed the show's art three times. The deep link `?podcast=<guid>&episode=<guid>` — a restorable view that emits episode-level OG tags — is the `r` tag and the NIP-73 `i` hints. There is no listen link (pod.link, Podcast Index, the episode page) any more. Everything derived from feed text goes through `httpUrl`, an http(s) allowlist, before landing in a public note.
 
 **Who signs it.** Signed in → your own key via `window.nostr` (`signAndPublish`). Signed out → the site's own Nostr identity, signed **server-side** at `app/api/nostr/site-sign` (which validates the note is boost-shaped, and bounds tag size as well as tag count, before signing with `SITE_NOSTR_SK`) and published from the browser via `publishBoostNoteViaSite`.
 

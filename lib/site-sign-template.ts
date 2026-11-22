@@ -11,13 +11,15 @@ import type { EventTemplate } from 'nostr-tools/pure';
 import { httpUrl } from '@/lib/util';
 import { BRAND } from '@/lib/brand';
 
-// Just above the largest REAL boost note (about 5,030 characters, measured by
-// `e2e:mentions` with every part at its maximum), so a real boost never meets
-// it — at 2000 a real note measured 2032 and was refused, RETRY NOTE with it.
-// It is still the bound on the free text a caller can have this key sign, so
-// not far above. lib/nostr/boost-notes.ts keeps the same number
-// (SITE_SIGN_MAX_CONTENT); change both together.
-const MAX_CONTENT = 5500;
+// Just above the largest REAL boost note (about 4,025 characters, and BOOST ALL
+// about 4,280, measured by `e2e:mentions` with every part at its maximum), so a
+// real boost never meets it — at 2000 a real note measured 2032 and was
+// refused, RETRY NOTE with it. It is still the bound on the free text a caller
+// can have this key sign, so not far above. It was 5500 until 2026-11-22, when
+// the body still carried two links of up to 512 characters each.
+// lib/nostr/boost-notes.ts keeps the same number (SITE_SIGN_MAX_CONTENT);
+// change both together.
+const MAX_CONTENT = 4800;
 const MAX_TAGS = 40;
 // MAX_TAGS bounds the tag COUNT; these bound their size. Without them the
 // oracle would sign an event whose tags carry megabytes of attacker-chosen
@@ -91,8 +93,9 @@ const MAX_P_TAGS = 8;
 // to the shape `buildBoostNoteTemplate` (lib/nostr/boost-notes.ts) actually
 // emits, rather than to "any 512-character string":
 //
-//   - `r` is the episode's landing page and this site's own link — at most two,
-//     and each one an http(s) URL. Tested with `httpUrl(v) !== null`, not
+//   - `r` is this site's own deep link. A note built before 2026-11-22 (an old
+//     open tab) also carries the episode's listen link, so at most two, and
+//     each one an http(s) URL. Tested with `httpUrl(v) !== null`, not
 //     `httpUrl(v) === v`: `bmbLandingUrl` does not encode the guid it embeds,
 //     so the normalised form can differ from the literal by a character.
 //   - `imeta` names the banner, which is ALWAYS this deploy's own

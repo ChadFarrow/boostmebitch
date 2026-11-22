@@ -112,6 +112,18 @@ const NOTES = [
       ['i', `podcast:item:guid:${SING}`], ['k', 'podcast:item:guid'],
     ],
   }),
+  // The body this app has written since 2026-11-22: ONE link, this site's host
+  // with no scheme, between the sentence and the banner — for a signed-out
+  // boost, under the default sender name that holds the same word.
+  note('E2E-ONE-LINK', {
+    client: 'BoostMeBitch', podcastGuid: DISCO, episodeGuids: [SING],
+    body: '⚡ Boost ⚡\n\nE2E-ONE-LINK\n\nboostmebitch.com user boosted 100 sats to Sing For You by The Doerfels from Disco Swag - The Album via BoostMeBitch\n\nwww.boostmebitch.com\n\nhttps://www.boostmebitch.com/api/og/boost.png?title=Disco+Swag&sats=100',
+    tags: [
+      ['i', `podcast:guid:${DISCO}`], ['k', 'podcast:guid'],
+      ['i', `podcast:item:guid:${SING}`], ['k', 'podcast:item:guid'],
+      ['r', `https://www.boostmebitch.com/?podcast=${DISCO}&episode=${SING}`],
+    ],
+  }),
   note('E2E-ART', {
     client: 'BoostMeBuddy', podcastGuid: HGH, episodeGuids: [HGH_ITEM],
     tags: [
@@ -281,6 +293,14 @@ t.ok('an old note still renders, naming the playlist',
   await until(`(${ARTICLE('E2E-PL-OLD')}?.innerText ?? '').includes('ITDV music playlist')`, 40000),
   (await textOf('E2E-PL-OLD')).slice(0, 300));
 t.equal('...and keeps its "via BoostMeBitch" label', await js(LABEL('E2E-PL-OLD')), true);
+
+// ---------------------------------------------------------------------------
+console.log('\n9. The one-link body: our card drops the host line, and only it');
+await js(`${ARTICLE('E2E-ONE-LINK')}?.scrollIntoView({ block: 'center' })`);
+t.ok('the note renders', await until(`(${ARTICLE('E2E-ONE-LINK')}?.innerText ?? '').includes('boosted 100 sats')`, 40000));
+const oneLink = String(await textOf('E2E-ONE-LINK'));
+t.ok('the default sender name stays whole', oneLink.includes('boostmebitch.com user boosted 100 sats to Sing For You'), oneLink.slice(0, 300));
+t.ok('the host line is gone (it names the page the reader is on)', !oneLink.split('\n').some((l) => l.trim() === 'www.boostmebitch.com'), oneLink.slice(0, 300));
 
 t.equal('no page exception', pageErrors, []);
 

@@ -5286,6 +5286,35 @@ export function landingLinksInNote(tags: string[][], body: string): string[] {
   });
 }
 
+/**
+ * A boost note we published, without the line that names our site by its host
+ * with no scheme (`www.boostmebitch.com`).
+ *
+ * Since 2026-11-22 `formatContent` writes the site that way, with no
+ * `https://`, so no client draws a card for it. On our own card that line
+ * names the page the reader is already on, so it goes, as the two landing
+ * links of older notes do (`landingLinksInNote`).
+ *
+ * **The WHOLE LINE, never an `indexOf` — which is why `removeUrl` is not used.**
+ * The same word is inside the default sender name (`boostmebitch.com user
+ * boosted …`) and inside the banner's URL, and both come before it; removing
+ * the first occurrence cut the sentence. A line matches only when it is the
+ * domain and nothing else (case aside), and only the LAST such line goes: the
+ * builder writes it after the message, so a message line that happens to be
+ * the same word stays. `domains` is the caller's (`BRANDS`), so this file
+ * stays import-free for `check:notelink`.
+ */
+export function withoutSiteDomainLine(body: string, domains: readonly string[]): string {
+  const want = new Set(domains.map((d) => d.toLowerCase()));
+  const lines = body.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!want.has(lines[i].trim().toLowerCase())) continue;
+    lines.splice(i, 1);
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  return body;
+}
+
 // Strip HTML tags and entity-decode. Used by server components (lib/format.tsx
 // is 'use client' so can't be imported on the server side). Pure string regex,
 // no DOM required — isomorphic.

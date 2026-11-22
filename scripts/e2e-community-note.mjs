@@ -659,8 +659,8 @@ if (TEST_ORIGIN) {
   t.equal('the note template says client BoostMeBuddy', tag1(tmpl2, 'client'), ['client', BUDDY.wireName]);
   t.ok("the template's imeta passes Buddy's own banner rule", tag1(tmpl2, 'imeta')?.[1]?.startsWith(`url ${BUDDY.origin}/api/og/boost.png?`), JSON.stringify(tag1(tmpl2, 'imeta')));
   t.ok("the template names Buddy's anonymous sender", tmpl2?.content?.includes(`${BUDDY.senderName} boosted 100 sats`), tmpl2?.content);
-  t.ok('the template is within the route limits (5500 / 40 / 4096)',
-    (tmpl2?.content?.length ?? 9e9) <= 5500 && (tmpl2?.tags?.length ?? 99) <= 40
+  t.ok('the template is within the route limits (4800 / 40 / 4096)',
+    (tmpl2?.content?.length ?? 9e9) <= 4800 && (tmpl2?.tags?.length ?? 99) <= 40
     && (tmpl2?.tags ?? []).flat().reduce((s, x) => s + x.length, 0) <= 4096);
   const n2 = await newNote(before);
   t.ok('the note reached the LOCAL relay', !!n2);

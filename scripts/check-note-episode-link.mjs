@@ -61,7 +61,8 @@
  * `podcast:publisher:guid:` target, which is neither the item nor its show, and
  * a note tagging all three (a real shape, below) must not resolve to it.
  */
-import { episodeLinkInNote, landingLinksInNote, noteOwnItemGuid } from '../lib/util.ts';
+import { episodeLinkInNote, landingLinksInNote, noteOwnItemGuid, withoutSiteDomainLine } from '../lib/util.ts';
+import { BRANDS } from '../lib/brand.ts';
 import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
@@ -97,6 +98,18 @@ function checkLanding(label, tags, body, expected, { alsoNaive = false } = {}) {
   compare(label, landingLinksInNote(tags, body), expected);
   vectors.push({ label, kind: 'landing', args: [tags, body], alsoNaive });
 }
+
+/**
+ * The same, for `withoutSiteDomainLine`: the body our card prints for a boost
+ * note we published, without the line naming our site by its host.
+ */
+function checkSiteLine(label, body, expected, { alsoNaive = false } = {}) {
+  compare(label, withoutSiteDomainLine(body, OUR_DOMAINS), expected);
+  vectors.push({ label, kind: 'siteLine', args: [body, OUR_DOMAINS], alsoNaive });
+}
+// As components/nostr-note-card.tsx builds it: each brand's origin host and
+// its bare domain.
+const OUR_DOMAINS = Object.values(BRANDS).flatMap((b) => [new URL(b.origin).host, b.domain]);
 
 function section(name) {
   console.log(`\n${name}`);
@@ -591,6 +604,36 @@ checkLanding(
 );
 
 // ---------------------------------------------------------------------------
+section('withoutSiteDomainLine — the one link a boost note has written since 2026-11-22');
+// ---------------------------------------------------------------------------
+
+// Built by the SHIPPING builder (publishBoostNote, 2026-11-22) against a local
+// relay: the body names the site by its host with no scheme, between the
+// sentence and the banner. The same word is in the banner's URL below it and,
+// for a signed-out boost, in the default sender name above it — so the whole
+// line goes, never an indexOf (removeUrl), which cut the sentence or the URL.
+const BANNER = 'https://www.boostmebitch.com/api/og/boost.png?art=https%3A%2F%2Fassets.podhome.fm%2Fa.jpg&title=Chad+and+Reeds+Podcast&sats=100';
+const SIGNED_IN = `⚡ Boost ⚡\n\nChadF and 33 others boosted 100 sats to Chad and Reeds Podcast via BoostMeBitch\n\nwww.boostmebitch.com\n\n${BANNER}`;
+const SITE_DEFAULT = `⚡ Boost ⚡\n\ngreat show\n\nboostmebitch.com user boosted 100 sats to Chad and Reeds Podcast via BoostMeBitch\n\nwww.boostmebitch.com\n\n${BANNER}`;
+const BUDDY_BANNER = BANNER.replace('boostmebitch', 'boostmebuddy');
+const BUDDY = `⚡ Boost ⚡\n\nboostmebuddy.com user boosted 100 sats to Chad and Reeds Podcast via BoostMeBuddy\n\nwww.boostmebuddy.com\n\n${BUDDY_BANNER}`;
+checkSiteLine('a signed-in note loses the host line, and only it', SIGNED_IN,
+  `⚡ Boost ⚡\n\nChadF and 33 others boosted 100 sats to Chad and Reeds Podcast via BoostMeBitch\n\n${BANNER}`);
+checkSiteLine('a signed-out note keeps "boostmebitch.com user" whole', SITE_DEFAULT,
+  `⚡ Boost ⚡\n\ngreat show\n\nboostmebitch.com user boosted 100 sats to Chad and Reeds Podcast via BoostMeBitch\n\n${BANNER}`);
+checkSiteLine('a Buddy note loses its own host line', BUDDY,
+  `⚡ Boost ⚡\n\nboostmebuddy.com user boosted 100 sats to Chad and Reeds Podcast via BoostMeBuddy\n\n${BUDDY_BANNER}`);
+// A message that IS the host, typed by the sender: the builder writes its line
+// after the message, so only the last one goes.
+checkSiteLine('a message line that is the host stays; the builder\'s line goes',
+  SITE_DEFAULT.replace('great show', 'www.boostmebitch.com'),
+  `⚡ Boost ⚡\n\nwww.boostmebitch.com\n\nboostmebitch.com user boosted 100 sats to Chad and Reeds Podcast via BoostMeBitch\n\n${BANNER}`);
+// A note from before 2026-11-22 (SALTY_BODY, verbatim off the relays) has no
+// host line, and the host inside its deep link and its banner is not one.
+checkSiteLine('an older note, with no host line, is left as it is', SALTY_BODY, SALTY_BODY);
+checkSiteLine('a body with no link at all is left as it is', '⚡ Boost ⚡\n\nChadF boosted 100 sats to X', '⚡ Boost ⚡\n\nChadF boosted 100 sats to X', { alsoNaive: true });
+
+// ---------------------------------------------------------------------------
 section('total replay against naive()');
 // ---------------------------------------------------------------------------
 
@@ -637,6 +680,19 @@ function naiveLanding(tags, body) {
   return (tags ?? []).filter((t) => t[0] === 'r').map((t) => t[1]);
 }
 
+/**
+ * The obvious wrong `withoutSiteDomainLine`: `removeUrl` (an indexOf) for each
+ * of our domains — what the card did for every other link it hid.
+ */
+function naiveSiteLine(body, domains) {
+  let text = body;
+  for (const d of domains) {
+    const at = text.indexOf(d);
+    if (at >= 0) text = (text.slice(0, at) + text.slice(at + d.length)).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  return text;
+}
+
 {
   const repr = (v) => {
     try {
@@ -647,8 +703,10 @@ function naiveLanding(tags, body) {
   };
   const call = (which, v) => {
     try {
-      const real = v.kind === 'ownItem' ? noteOwnItemGuid : v.kind === 'landing' ? landingLinksInNote : episodeLinkInNote;
-      const wrong = v.kind === 'ownItem' ? naiveOwnItem : v.kind === 'landing' ? naiveLanding : naive;
+      const real = v.kind === 'ownItem' ? noteOwnItemGuid : v.kind === 'landing' ? landingLinksInNote
+        : v.kind === 'siteLine' ? withoutSiteDomainLine : episodeLinkInNote;
+      const wrong = v.kind === 'ownItem' ? naiveOwnItem : v.kind === 'landing' ? naiveLanding
+        : v.kind === 'siteLine' ? naiveSiteLine : naive;
       return repr(which === 'real' ? real(...v.args) : wrong(...v.args));
     } catch (e) {
       // A wrong implementation is allowed to throw where the real one returns.
