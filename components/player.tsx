@@ -23,12 +23,13 @@ import { serverAnswers, useNextProbe } from './player/use-next-probe';
 import { useAndroidSessionKeeper } from './player/use-android-session-keeper';
 import { closePlayer, usePlayerHistory } from './player/use-player-history';
 import { fmt } from '@/lib/format';
-import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
+import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip, advanceBeforeEnd } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { downloadManager } from '@/lib/downloads/download-manager';
+import { isLikelyIOS } from '@/lib/nostr';
 import type { Episode, Podcast } from '@/lib/types';
 import { logPlayback, playbackItemId, startPlaybackLog, watchMediaElement } from '@/lib/playback-log';
 import { loadItemValue } from '@/lib/podcast-meta';
@@ -257,6 +258,14 @@ export function Player() {
  */
   const lastGoodPos = useRef(0);
   const restoreTries = useRef(0);
+  /**
+   * True from the moment `advanceBeforeEnd` moves the store on until the source
+   * effect hands the element the next file (`attach` clears it). In between the
+   * OLD file still plays, and it belongs to nothing on screen: its `timeupdate`
+   * would write its position onto the next item (whose start the source effect
+   * reads), and its `ended`, if it gets there first, would move on a second time.
+   */
+  const advancedEarly = useRef(false);
   /**
    * An element that reached its end starts again at 0 on the next play() — the
    * spec requires it. Left at the duration, the baseline read that restart as a
@@ -841,6 +850,7 @@ export function Player() {
 
     const attach = (src: string) => {
       pendingLocalSrc.current = false;
+      advancedEarly.current = false;
       // A new source starts with NO baseline, and seeding it from `startAt`
       // was a real bug: a fresh source reports ~0 for a moment before
       // `loadedmetadata` seeks to `startAt`, so a seeded baseline read that
@@ -1525,6 +1535,86 @@ export function Player() {
   }
 
   /**
+   * What an item reaching its end does: on `ended`, and (`early`) from
+   * `advanceBeforeEnd`, about a second before the end on a hidden iPhone page,
+   * which can no longer start audio once the element has ended (#647). ONE
+   * copy, so the two can never continue different lists or forget different
+   * things. An early move that finds nothing to move to does nothing at all:
+   * the item plays out, and its `ended` stops it here as before.
+   */
+  function moveOnFromEnd(early: boolean): void {
+    if (pendingLocalSrc.current) { logPlayback('advance', { via: 'pending' }); return; }
+    // The `ended` of a file an early move already left, before the source
+    // effect swapped it: the store is on the next item, and stepping again
+    // would skip it.
+    if (!early && advancedEarly.current) { logPlayback('advance', { via: 'early.done' }); return; }
+    forgetRestoreBaseline();
+    // A playlist-maker PREVIEW is one song: stop here, never advance.
+    if (current && useApp.getState().previewKey === epKey(current.episode)) {
+      if (early) return;
+      logPlayback('advance', { via: 'preview' });
+      setPlaying(false);
+      return;
+    }
+    if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
+      const key = downloadManager.deletableAfterPlay(current.episode);
+      if (key) void downloadManager.remove(key);
+    }
+    // `advanceOnItsOwn` is these two steps — the queue, then a feed of
+    // tracks — and `skipDeadTrack` moves on through the same one, so a
+    // dead file and an ended one continue the same lists.
+    const before = useApp.getState().current?.episode;
+    const via = advanceOnItsOwn();
+    // Set only when the source effect WILL run (a new id or enclosure, its
+    // deps): a step that answered without moving — a shuffle's last track
+    // stops — must not leave this file's `timeupdate` and `ended` ignored.
+    const after = useApp.getState().current?.episode;
+    if (early && via && after && (after.id !== before?.id || after.enclosureUrl !== before?.enclosureUrl)) {
+      advancedEarly.current = true;
+    }
+    if (via === 'queue') {
+      logPlayback('advance', { via: 'queue', early: early || undefined, playing: useApp.getState().isPlaying });
+      return;
+    }
+    if (via === 'tracks') {
+      logPlayback('advance', { via: 'tracks', early: early || undefined });
+      return;
+    }
+    if (early) return;
+    logPlayback('advance', { via: 'none' });
+    // Nothing plays next, so the fullscreen player is a screen over a
+    // finished episode: collapse it to the mini-bar, which still carries
+    // BOOST. Only here — an advance above keeps it open on the next item.
+    setPlaying(false);
+    setPlayerExpanded(false);
+  }
+
+  /** `advanceBeforeEnd` for the audio element now. The cheap half first, so the
+   *  store's next-item walk runs only in the last second of a hidden track. */
+  function earlyMoveDue(el: HTMLMediaElement): boolean {
+    const state = {
+      hidden: document.visibilityState === 'hidden',
+      ios: isLikelyIOS(),
+      paused: el.paused,
+      done: advancedEarly.current,
+      currentTime: el.currentTime,
+      duration: el.duration,
+      playbackRate: el.playbackRate,
+    };
+    if (!advanceBeforeEnd({ ...state, hasNext: true })) return false;
+    const s = useApp.getState();
+    const now = s.current;
+    if (!now || s.previewKey === epKey(now.episode)) return false;
+    const next = s.peekNextOnEnd();
+    // The source effect re-runs on a new id or enclosure. A "next" that is the
+    // same file (a one-track list on repeat) would leave this one playing to an
+    // `ended` that the guard above then ignores.
+    const moves = !!next
+      && (next.episode.id !== now.episode.id || next.episode.enclosureUrl !== now.episode.enclosureUrl);
+    return advanceBeforeEnd({ ...state, hasNext: moves });
+  }
+
+  /**
    * A file that is GONE does not stop a list that plays on its own.
    *
    * Reported from Chad's iPhone on 2026-11-13: a favorites shuffle reached
@@ -1718,6 +1808,9 @@ export function Player() {
           onTimeUpdate={(e) => {
             // The previous episode, still playing while a download resolves.
             if (pendingLocalSrc.current) return;
+            // The previous item, still playing after an early move: see
+            // `advancedEarly`. Its position must not land on the next item.
+            if (advancedEarly.current) return;
             const t = e.currentTarget.currentTime;
             // PUT IT BACK. A large jump BACKWARDS that no control asked for is
             // the element having lost its buffer — see `lastGoodPos`. The same
@@ -1733,6 +1826,10 @@ export function Player() {
               e.currentTarget.currentTime = lastGoodPos.current;
               return;
             }
+            // A hidden iPhone page moves on before the end, while it can still
+            // start audio (`advanceBeforeEnd`, #647). It returns at once: this
+            // file's time is not the next item's.
+            if (earlyMoveDue(e.currentTarget)) { moveOnFromEnd(true); return; }
             if (t > 0) lastGoodPos.current = t;
             syncMusicHold(t);
             const tick = Math.floor(t);
@@ -1786,38 +1883,7 @@ export function Player() {
           // Each branch writes its decision to the playback log: "the next
           // item did not play" needs to tell an advance that never happened
           // from one the browser refused.
-          onEnded={() => {
-            if (pendingLocalSrc.current) { logPlayback('advance', { via: 'pending' }); return; }
-            forgetRestoreBaseline();
-            // A playlist-maker PREVIEW is one song: stop here, never advance.
-            if (current && useApp.getState().previewKey === epKey(current.episode)) {
-              logPlayback('advance', { via: 'preview' });
-              setPlaying(false);
-              return;
-            }
-            if (current && !playsAsTracks(current.podcast) && storage.deleteAfterPlay.get()) {
-              const key = downloadManager.deletableAfterPlay(current.episode);
-              if (key) void downloadManager.remove(key);
-            }
-            // `advanceOnItsOwn` is these two steps — the queue, then a feed of
-            // tracks — and `skipDeadTrack` moves on through the same one, so a
-            // dead file and an ended one continue the same lists.
-            const via = advanceOnItsOwn();
-            if (via === 'queue') {
-              logPlayback('advance', { via: 'queue', playing: useApp.getState().isPlaying });
-              return;
-            }
-            if (via === 'tracks') {
-              logPlayback('advance', { via: 'tracks' });
-              return;
-            }
-            logPlayback('advance', { via: 'none' });
-            // Nothing plays next, so the fullscreen player is a screen over a
-            // finished episode: collapse it to the mini-bar, which still carries
-            // BOOST. Only here — an advance above keeps it open on the next item.
-            setPlaying(false);
-            setPlayerExpanded(false);
-          }}
+          onEnded={() => moveOnFromEnd(false)}
           // `waiting` fires the moment playback runs dry; `stalled` when the
           // browser has had no data for a while. Neither is an error and neither
           // pauses anything — they only make the starved state SAYABLE, and arm

@@ -4,7 +4,7 @@ import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLi
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { isMusicMedium, compareEpisodeOrder, feedItemValue, feedEnclosure, feedLiveItems } from '@/lib/util';
+import { isMusicMedium, compareEpisodeOrder, onlyListedTracks, rssCatchUpAfter, feedItemValue, feedEnclosure, feedLiveItems } from '@/lib/util';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -139,17 +139,31 @@ export async function GET(req: Request) {
     const EMPTY_ENRICHMENT = {
       episodes: new Map(), feedMedium: undefined, feedPodroll: undefined,
       feedFunding: undefined, feedNostrNpubs: undefined, feedTitle: undefined, feedPublisher: undefined,
-      rssRead: false, feedValue: undefined,
+      rssRead: false, listedGuids: null, feedValue: undefined,
     };
-    const { episodes: enrichMap, rssRead, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle, feedPublisher } =
+    const { episodes: enrichMap, rssRead, listedGuids, feedValue, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle, feedPublisher } =
       podcast?.url
         ? await getRssEpisodeEnrichment(podcast.url).catch(() => EMPTY_ENRICHMENT)
         : EMPTY_ENRICHMENT;
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    // Music album feeds (medium=music) sort by disc (podcast:season) then track
+    // (podcast:episode) instead of by date, and list only what their feed lists.
+    const isMusic = isMusicMedium(podcast) || feedMedium === 'music';
+    // A MUSIC album lists the tracks its feed lists — Podcast Index keeps a row
+    // after the artist removes or replaces the track, and with no track number
+    // that row sorts FIRST ("Tinderbox", PI 6422170). `null` (podcast, unread
+    // feed, an item with no guid, a capped scan) keeps every row. Both rules,
+    // and why the catch-up below then reaches back to the start, are pinned by
+    // check:trackorder (lib/util.ts).
+    const listed = listedGuids ?? null;
+    const piRows = onlyListedTracks(episodes, listed, isMusic);
     // Episodes the feed published since PI last crawled it. PI crawls on its
     // own schedule, so a new episode could stay off this page for a day while
     // every app that reads the RSS itself already listed it. Only items newer
-    // than PI's newest — see `getRssEpisodesNewerThan` for why the bound. They
+    // than PI's newest — see `getRssEpisodesNewerThan` for why the bound —
+    // except on a music album whose list the read vouches for, which takes
+    // every listed item PI lacks (`rssCatchUpAfter`), so a track replaced under
+    // a guid PI has not crawled is not lost with the row dropped above. They
     // go through the same dedupe and value merge below as PI's rows, and they
     // are in `enrichMap`, so their payee is the feed's item block, else its
     // channel block, else none. Best-effort, like the enrichment itself.
@@ -158,7 +172,7 @@ export async function GET(req: Request) {
       ? await getRssEpisodesNewerThan(
           podcast.url,
           id,
-          newestPi,
+          rssCatchUpAfter(newestPi, listed, isMusic),
           new Set(episodes.map((e) => e.guid).filter((g): g is string => !!g)),
         ).catch(() => [] as Episode[])
       : [];
@@ -185,7 +199,7 @@ export async function GET(req: Request) {
     const seenRegularGuid = new Set<string>();
     const seenRegularId = new Set<number>();
     const seenTitleDate = new Set<string>();
-    const regular = [...episodes, ...fresh].filter((e) => {
+    const regular = [...piRows, ...fresh].filter((e) => {
       if (e.guid && seenGuid.has(e.guid)) return false;   // collides with a live item
       if (liveIds.has(e.id)) return false;
       if (e.guid && seenRegularGuid.has(e.guid)) return false;
@@ -243,13 +257,12 @@ export async function GET(req: Request) {
     // Within `pending`, sort ascending — the next-to-air show should be at
     // the top of the list. Within `live`, sort descending (most recent
     // broadcast first) on the off chance more than one stream is live.
-    // Music album feeds (medium=music) sort by disc (podcast:season) then
-    // track (podcast:episode) ascending instead of by date.
-    const isMusic = isMusicMedium(podcast) || feedMedium === 'music';
+    // Music album feeds sort by disc then track (`isMusic` above); a tie keeps
+    // the feed's own order, read from the enrichment pass.
     // Live ranking is this route's own concern; the non-live tail is the shared
     // rule in lib/util.ts, which lib/pi.ts's raw-RSS path sorts by too. It used
     // to be a second copy inlined here.
-    const byEpisodeOrder = compareEpisodeOrder(isMusic);
+    const byEpisodeOrder = compareEpisodeOrder<Episode>(isMusic, (e) => (e.guid ? enrichMap.get(e.guid)?.position : undefined));
     merged.sort((a, b) => {
       const ra = a.liveStatus ? LIVE_RANK[a.liveStatus] ?? 3 : 3;
       const rb = b.liveStatus ? LIVE_RANK[b.liveStatus] ?? 3 : 3;

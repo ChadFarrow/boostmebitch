@@ -827,13 +827,15 @@ is the show's actions and is measured tight at 390px (docs/ui.md).
 
 `npm run e2e:album` drives Tinderbox in a real browser at 390px. Podcast Index,
 the feed and the engine are real; the enclosure requests are paused by CDP
-`Fetch` and answered with 4 KB after 400 ms, so a run costs 56 KB instead of
-43 MB and a parallel queue would show as more than one request in flight. It
+`Fetch` and answered with 4 KB after 400 ms, so a run costs 52 KB instead of
+38 MB and a parallel queue would show as more than one request in flight (13
+tracks since 2026-11-22; the 14th was a replaced copy that Podcast Index keeps,
+see feeds.md, "A music album lists what its feed lists"). It
 checks: a 90 MB quota refuses the album before one request (every track fits
 alone, the album does not — so only the album-wide check can refuse there); the
 first press spends nothing; STOP keeps the finished tracks and requests nothing
 more; the rest fetches only what was missing, never more than one at a time,
-and ends with 14 records in `BmbDownloadsDB`. Against one build with no
+and ends with 13 records in `BmbDownloadsDB`. Against one build with no
 album-wide room check, no question, and a pool in place of the queue, it fails
 14 of its 22 checks, those three directly.
 

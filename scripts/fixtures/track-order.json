@@ -1,0 +1,557 @@
+{
+ "_about": "Recorded 2026-11-22. feedItems: each <item>'s <guid> in document order, null for an item with no <guid> (from the feed URL). apiRows: the rows https://www.boostmebitch.com/api/feed?id=<id> served, in its order, cut to the four fields the track order reads. Do not edit to make a check pass.",
+ "feeds": [
+  {
+   "id": 6422170,
+   "title": "Tinderbox",
+   "author": "Nate Johnivan",
+   "url": "https://wavlake.com/feed/music/d677db67-0310-4813-970e-e65927c689f1",
+   "feedItems": [
+    "d301eb50-0695-4a25-b877-6e1fd4f07c36",
+    "ee10ef21-e7d1-4ba5-858f-9663439a457f",
+    "1ea099a5-bb58-493a-ba4f-fa3e47502f60",
+    "1432bdff-80eb-4d3f-b9ae-f483b61bfb49",
+    "d1fb9eb1-d530-499b-927b-3c360ceadeee",
+    "74bb6c2a-0071-4d18-a12a-ca345477d574",
+    "df0e4035-dd96-42d4-9748-ad2f7444aa4a",
+    "2155dfff-142f-4138-9607-65e8321bda85",
+    "33932ccc-c707-411b-b914-4e9a94ec7e89",
+    "3dedac40-8a50-4579-bea8-c7e488adba85",
+    "7ad63686-68ca-49fb-b5f3-a5426f1e87c9",
+    "e465a2ab-3ab2-4901-b64f-eb0b8961a861",
+    "5e2774af-1e11-4386-86cd-be27338584dd"
+   ],
+   "apiRows": [
+    {
+     "guid": "eeb873c6-3c82-4c2e-ac8c-9cd3368f446e",
+     "title": "Analysis Paralysis",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "d301eb50-0695-4a25-b877-6e1fd4f07c36",
+     "title": "Time",
+     "season": 1,
+     "episode": 1
+    },
+    {
+     "guid": "33932ccc-c707-411b-b914-4e9a94ec7e89",
+     "title": "Bad People",
+     "season": 1,
+     "episode": 2
+    },
+    {
+     "guid": "3dedac40-8a50-4579-bea8-c7e488adba85",
+     "title": "We Promise We'll Buy It",
+     "season": 1,
+     "episode": 3
+    },
+    {
+     "guid": "74bb6c2a-0071-4d18-a12a-ca345477d574",
+     "title": "Mom",
+     "season": 1,
+     "episode": 4
+    },
+    {
+     "guid": "ee10ef21-e7d1-4ba5-858f-9663439a457f",
+     "title": "Surrounded",
+     "season": 1,
+     "episode": 5
+    },
+    {
+     "guid": "7ad63686-68ca-49fb-b5f3-a5426f1e87c9",
+     "title": "Late",
+     "season": 1,
+     "episode": 6
+    },
+    {
+     "guid": "5e2774af-1e11-4386-86cd-be27338584dd",
+     "title": "Sar Chasm",
+     "season": 1,
+     "episode": 7
+    },
+    {
+     "guid": "df0e4035-dd96-42d4-9748-ad2f7444aa4a",
+     "title": "Analysis Paralysis",
+     "season": 1,
+     "episode": 8
+    },
+    {
+     "guid": "2155dfff-142f-4138-9607-65e8321bda85",
+     "title": "Stranger Things",
+     "season": 1,
+     "episode": 9
+    },
+    {
+     "guid": "1ea099a5-bb58-493a-ba4f-fa3e47502f60",
+     "title": "Back Road",
+     "season": 1,
+     "episode": 10
+    },
+    {
+     "guid": "e465a2ab-3ab2-4901-b64f-eb0b8961a861",
+     "title": "Mouth to Mouth",
+     "season": 1,
+     "episode": 11
+    },
+    {
+     "guid": "1432bdff-80eb-4d3f-b9ae-f483b61bfb49",
+     "title": "Density",
+     "season": 1,
+     "episode": 12
+    },
+    {
+     "guid": "d1fb9eb1-d530-499b-927b-3c360ceadeee",
+     "title": "Creatives",
+     "season": 1,
+     "episode": 13
+    }
+   ]
+  },
+  {
+   "id": 6471423,
+   "title": "Two Ships",
+   "author": "Ainsley Costello",
+   "url": "https://wavlake.com/feed/e5c8aedd-13a1-449c-aaa8-13cfbfbbac97",
+   "feedItems": [
+    "04cead49-6aab-46ca-af7e-01c51c3bddbf"
+   ],
+   "apiRows": [
+    {
+     "guid": "33165fd2-b12c-4b22-b3d7-886f35fcb55b",
+     "title": "Cherry On Top",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "04cead49-6aab-46ca-af7e-01c51c3bddbf",
+     "title": "Two Ships",
+     "season": 1,
+     "episode": 1
+    }
+   ]
+  },
+  {
+   "id": 7612000,
+   "title": "Live at Rockpile",
+   "author": "Strange Love",
+   "url": "https://new.musicsideproject.com/api/hosted/7192ec54-3aa2-5c61-987b-51bf75f68568.xml",
+   "feedItems": [
+    "2578cdea-e57b-4f3e-8637-c630c95d086b",
+    "8f2c9124-5e34-46f5-883d-2d15e2d92339",
+    "ac0e64f8-3bf9-4825-acb5-5b1b83ffccfd",
+    "4f08b11e-7daa-4859-9191-4f1a77c5dbfd",
+    "98e5e7fa-643c-465e-a9f8-8560f2681c26",
+    "58df0149-61a2-469f-bc52-ca94907dd7f6",
+    "f0e48dc0-d0b0-494f-8b75-c1741f0db81e",
+    "5c2b6629-a344-4e38-90e3-a395cb1860e1"
+   ],
+   "apiRows": [
+    {
+     "guid": "facd476b-7f5c-42aa-8b7b-1cfa03302412",
+     "title": "The Middle (Live)",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "2b1f3425-7d30-4e24-a1c3-8b63aae9380a",
+     "title": "Country Gin (Live)",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "a5613ac6-8a50-4c79-8e4e-49f7f031a15c",
+     "title": "The Moment We Leave (Live)",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "93900acc-f969-496c-8403-69030fb9e3d8",
+     "title": "What Frankie Wants (Live)",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "03990582-c211-4b7a-9bca-a673300727c9",
+     "title": "Too Late To Be Found (Live)",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "bedd7730-abba-4bf0-9ac4-d25ef25e3970",
+     "title": "Come Back To Me Now (Live)",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "42d4b668-85ac-4f08-b6a1-f977cbf4cccf",
+     "title": "To Be Intended (Live)",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "2578cdea-e57b-4f3e-8637-c630c95d086b",
+     "title": "The Moment We Leave (Live)",
+     "season": 1,
+     "episode": 1
+    },
+    {
+     "guid": "8f2c9124-5e34-46f5-883d-2d15e2d92339",
+     "title": "Too Late To Be Found (Live)",
+     "season": 1,
+     "episode": 2
+    },
+    {
+     "guid": "ac0e64f8-3bf9-4825-acb5-5b1b83ffccfd",
+     "title": "To Be Intended (Live)",
+     "season": 1,
+     "episode": 3
+    },
+    {
+     "guid": "4f08b11e-7daa-4859-9191-4f1a77c5dbfd",
+     "title": "Come Back To Me Now (Live)",
+     "season": 1,
+     "episode": 4
+    },
+    {
+     "guid": "98e5e7fa-643c-465e-a9f8-8560f2681c26",
+     "title": "What Frankie Wants (Live)",
+     "season": 1,
+     "episode": 5
+    },
+    {
+     "guid": "58df0149-61a2-469f-bc52-ca94907dd7f6",
+     "title": "Country Gin (Live)",
+     "season": 1,
+     "episode": 6
+    },
+    {
+     "guid": "f0e48dc0-d0b0-494f-8b75-c1741f0db81e",
+     "title": "Cats in the Hall (Live)",
+     "season": 1,
+     "episode": 7
+    },
+    {
+     "guid": "5c2b6629-a344-4e38-90e3-a395cb1860e1",
+     "title": "The Middle (Live)",
+     "season": 1,
+     "episode": 8
+    }
+   ]
+  },
+  {
+   "id": 4374133,
+   "title": "Able Kirby misc",
+   "author": "Able Kirby",
+   "url": "https://ablekirby.com/bobcat/ablekirby_misc/AbleKirby_AbleKirbymisc.xml",
+   "feedItems": [
+    null
+   ],
+   "apiRows": [
+    {
+     "guid": "http://ablekirby.com/bobcat/ablekirby_misc/01_PodcastRingOfFire.mp3",
+     "title": "Podcast Ring of Fire",
+     "season": null,
+     "episode": null
+    }
+   ]
+  },
+  {
+   "id": 6642704,
+   "title": "Music From The Doerfel-Verse",
+   "author": "The Doerfels",
+   "url": "https://www.doerfelverse.com/feeds/music-from-the-doerfelverse.xml",
+   "feedItems": [
+    "bbc9bfe3-3db1-400b-9ff0-613f57899614",
+    "765a7360-3c4c-4df6-becb-121abe595f4d",
+    "2f1fabc9-54c0-4e96-93d8-98737356b448",
+    "caae8d61-bedd-40d9-ad57-8c86c1509020",
+    "123cf73d-a241-4139-b15a-fd7b2fcfe0f7",
+    "41b5f3b0-cc2a-4e49-a40a-5ed002762029",
+    "3b60e3d7-93c2-404e-8679-c541668fa121",
+    "ee76d94b-aee4-4fed-b36e-2b34b295ec65",
+    "6282df25-5b00-425a-8c32-10e582112c65",
+    "d8928087-3ca9-4b7d-90cd-f63350832b83",
+    "6be0a7f5-da40-49fa-889e-a69733269eed",
+    "a58d266a-2421-4772-9ae9-83ebbeb80d79",
+    "d2079b97-b5a7-4e39-94e1-67ef5974e69a",
+    "a15e8173-6cc5-40a1-8b44-57402bc4fc07",
+    "50bc5e8f-050f-4f23-9255-96ec361059df",
+    "40d92e5e-7846-4077-88f1-feac94c3b4d8",
+    "26071e5e-74f4-4dd6-bb4f-19bfa259801f",
+    "2658bf69-bd20-4b1c-8fa9-89c827cb5569",
+    "ae930ad6-5966-4033-b17f-b4e39519701d",
+    "2db7b882-50f9-47c3-8a3f-bbc1b13d568f",
+    "be4da809-a7d3-42fb-aec9-7050144bf814",
+    "9de8e45c-f543-4f6d-8e63-2482c22c9f66",
+    "28b43b7e-2118-4835-add7-39abf048204e",
+    "58c9b50a-6d5f-4dcd-90ae-e3a76a9d2c0e",
+    "eb69c0a1-c8b3-4898-8eef-af496d04a4e5",
+    "2897c8bf-e276-4f52-9b52-eeb64d7e7e2d",
+    "27663b18-4c67-4d48-9f69-1641cdbc1de1",
+    "82b4c004-9af4-4f8d-aff7-f033bba7429b",
+    "7f2eb92d-289e-4408-ac6c-47fea5905dc1",
+    "3bb9e8da-e11a-452b-beb4-c5192f46f5f7",
+    "92d2cd13-6474-41c6-b661-344f9412418e",
+    "7ccdb8b1-e9c1-474a-acc5-3afcbbc0f261",
+    "3aaaebf8-e10f-4058-82af-509b4a61689f",
+    "fedb7f31-c90a-4aca-9ab8-87db350af674",
+    "495ed3cd-ca83-443b-add4-fbc75d58dcac",
+    "b4c6270b-b6a5-4d11-b15b-251d450e2c9d",
+    "96dd07b1-04c3-4b1a-a5e0-1e0a5c1f8125",
+    "edde3926-bfa9-4432-abb7-9eeb115ec62c",
+    "41339be2-3d61-4223-9641-3e7dd12be2b0",
+    "eb6dd6e5-c960-4d5f-ae26-0e3dec7af1f0",
+    "d62bfa8f-657f-4a9c-ab13-eaf933286547"
+   ],
+   "apiRows": [
+    {
+     "guid": "bbc9bfe3-3db1-400b-9ff0-613f57899614",
+     "title": "Long As You're Loving Me",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "765a7360-3c4c-4df6-becb-121abe595f4d",
+     "title": "What Love Is",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "2f1fabc9-54c0-4e96-93d8-98737356b448",
+     "title": "Now I Know",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "d8928087-3ca9-4b7d-90cd-f63350832b83",
+     "title": "Carol Of The Bells",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "caae8d61-bedd-40d9-ad57-8c86c1509020",
+     "title": "Make It",
+     "season": null,
+     "episode": null
+    },
+    {
+     "guid": "123cf73d-a241-4139-b15a-fd7b2fcfe0f7",
+     "title": "Disco Swag",
+     "season": 1,
+     "episode": 1
+    },
+    {
+     "guid": "41b5f3b0-cc2a-4e49-a40a-5ed002762029",
+     "title": "Underwater",
+     "season": 1,
+     "episode": 2
+    },
+    {
+     "guid": "3b60e3d7-93c2-404e-8679-c541668fa121",
+     "title": "Possible",
+     "season": 1,
+     "episode": 3
+    },
+    {
+     "guid": "ee76d94b-aee4-4fed-b36e-2b34b295ec65",
+     "title": "Diamonds",
+     "season": 1,
+     "episode": 4
+    },
+    {
+     "guid": "6282df25-5b00-425a-8c32-10e582112c65",
+     "title": "Days Gone By",
+     "season": 1,
+     "episode": 5
+    },
+    {
+     "guid": "6be0a7f5-da40-49fa-889e-a69733269eed",
+     "title": "Love Is A War",
+     "season": 1,
+     "episode": 6
+    },
+    {
+     "guid": "a58d266a-2421-4772-9ae9-83ebbeb80d79",
+     "title": "Breakaway (demo)",
+     "season": 1,
+     "episode": 7
+    },
+    {
+     "guid": "d2079b97-b5a7-4e39-94e1-67ef5974e69a",
+     "title": "Autumn - CityBeach",
+     "season": 1,
+     "episode": 8
+    },
+    {
+     "guid": "a15e8173-6cc5-40a1-8b44-57402bc4fc07",
+     "title": "Big Pine Song",
+     "season": 1,
+     "episode": 9
+    },
+    {
+     "guid": "50bc5e8f-050f-4f23-9255-96ec361059df",
+     "title": "Still A Man",
+     "season": 1,
+     "episode": 10
+    },
+    {
+     "guid": "40d92e5e-7846-4077-88f1-feac94c3b4d8",
+     "title": "Pour Over - CityBeach",
+     "season": 1,
+     "episode": 11
+    },
+    {
+     "guid": "26071e5e-74f4-4dd6-bb4f-19bfa259801f",
+     "title": "Happy New Year(demo)",
+     "season": 1,
+     "episode": 12
+    },
+    {
+     "guid": "2658bf69-bd20-4b1c-8fa9-89c827cb5569",
+     "title": "Love Like Yours",
+     "season": 1,
+     "episode": 13
+    },
+    {
+     "guid": "ae930ad6-5966-4033-b17f-b4e39519701d",
+     "title": "Worth Fighting For",
+     "season": 1,
+     "episode": 14
+    },
+    {
+     "guid": "2db7b882-50f9-47c3-8a3f-bbc1b13d568f",
+     "title": "The Movie I'll Never See",
+     "season": 1,
+     "episode": 15
+    },
+    {
+     "guid": "be4da809-a7d3-42fb-aec9-7050144bf814",
+     "title": "Morning Love",
+     "season": 1,
+     "episode": 16
+    },
+    {
+     "guid": "9de8e45c-f543-4f6d-8e63-2482c22c9f66",
+     "title": "Bloodshot Lies(Acoustic)",
+     "season": 1,
+     "episode": 17
+    },
+    {
+     "guid": "28b43b7e-2118-4835-add7-39abf048204e",
+     "title": "You Feel Like Home(CityBeach)",
+     "season": 1,
+     "episode": 18
+    },
+    {
+     "guid": "58c9b50a-6d5f-4dcd-90ae-e3a76a9d2c0e",
+     "title": "Sing For You",
+     "season": 1,
+     "episode": 19
+    },
+    {
+     "guid": "eb69c0a1-c8b3-4898-8eef-af496d04a4e5",
+     "title": "Maybe It's You",
+     "season": 1,
+     "episode": 20
+    },
+    {
+     "guid": "2897c8bf-e276-4f52-9b52-eeb64d7e7e2d",
+     "title": "Call Me Medley - Kurtisdrums",
+     "season": 1,
+     "episode": 21
+    },
+    {
+     "guid": "27663b18-4c67-4d48-9f69-1641cdbc1de1",
+     "title": "Way In My Life",
+     "season": 1,
+     "episode": 22
+    },
+    {
+     "guid": "82b4c004-9af4-4f8d-aff7-f033bba7429b",
+     "title": "Angel Beast",
+     "season": 1,
+     "episode": 23
+    },
+    {
+     "guid": "7f2eb92d-289e-4408-ac6c-47fea5905dc1",
+     "title": "If I Promise(Demo)",
+     "season": 1,
+     "episode": 24
+    },
+    {
+     "guid": "3bb9e8da-e11a-452b-beb4-c5192f46f5f7",
+     "title": "Pulls Me Up - Ben Doerfel",
+     "season": 1,
+     "episode": 25
+    },
+    {
+     "guid": "92d2cd13-6474-41c6-b661-344f9412418e",
+     "title": "Come Back To Me",
+     "season": 1,
+     "episode": 26
+    },
+    {
+     "guid": "7ccdb8b1-e9c1-474a-acc5-3afcbbc0f261",
+     "title": "HEARTBREAK",
+     "season": 1,
+     "episode": 27
+    },
+    {
+     "guid": "3aaaebf8-e10f-4058-82af-509b4a61689f",
+     "title": "They Don't Know",
+     "season": 1,
+     "episode": 28
+    },
+    {
+     "guid": "fedb7f31-c90a-4aca-9ab8-87db350af674",
+     "title": "Thought It Was Real",
+     "season": 1,
+     "episode": 29
+    },
+    {
+     "guid": "495ed3cd-ca83-443b-add4-fbc75d58dcac",
+     "title": "Tired of Dreaming",
+     "season": 1,
+     "episode": 30
+    },
+    {
+     "guid": "b4c6270b-b6a5-4d11-b15b-251d450e2c9d",
+     "title": "NOSTALGIC - CityBeach",
+     "season": 1,
+     "episode": 31
+    },
+    {
+     "guid": "96dd07b1-04c3-4b1a-a5e0-1e0a5c1f8125",
+     "title": "3 Years",
+     "season": 1,
+     "episode": 32
+    },
+    {
+     "guid": "edde3926-bfa9-4432-abb7-9eeb115ec62c",
+     "title": "Figured You Out",
+     "season": 1,
+     "episode": 33
+    },
+    {
+     "guid": "41339be2-3d61-4223-9641-3e7dd12be2b0",
+     "title": "So Far Away",
+     "season": 1,
+     "episode": 34
+    },
+    {
+     "guid": "eb6dd6e5-c960-4d5f-ae26-0e3dec7af1f0",
+     "title": "Don't Forget Me",
+     "season": 1,
+     "episode": 35
+    },
+    {
+     "guid": "d62bfa8f-657f-4a9c-ab13-eaf933286547",
+     "title": "Bloodshot Lies",
+     "season": 1,
+     "episode": 36
+    }
+   ]
+  }
+ ]
+}

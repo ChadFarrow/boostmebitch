@@ -17,11 +17,13 @@ const albumKey = (p: Pick<Podcast, 'id' | 'podcastGuid'>) => p.podcastGuid || St
  * the per-row `coverPlay` for `<PodcastResults>`, or null for a row that is not
  * an album, whose cover stays inside the row and opens it as before.
  *
- * It does what the album page's header ▶ does (`<EpisodeList>`), without the
- * album page:
+ * It plays the album without the album page. It is NOT the album page's
+ * header ▶, which always starts the album over since 2026-11-22 (Chad:
+ * "album-over: yes"; `coverStartSeeks`). In a grid of albums ❚❚ marks the one
+ * playing, so this cover keeps its pause:
  * - **A press on the album that holds the player pauses or resumes it**
- *   (`albumHoldsCurrent`, the header's own test). Anything that draws ❚❚ must
- *   pause; a `play()` over the current item is a silent no-op (docs/ui.md).
+ *   (`albumHoldsCurrent`). Anything that draws ❚❚ must pause; a `play()` over
+ *   the current item is a silent no-op (docs/ui.md).
  * - **Otherwise it loads the album and starts its first track**
  *   (`firstPlayableTrack`) in the feed's order, which is the album page's
  *   default order.

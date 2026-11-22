@@ -6,7 +6,7 @@
 //   ADMIN_NPUBS=npub1nzwqkakt2cuhrlwfhme3asrvx4s0xfyadm57tkpu2a39t9hqtahs7fsn89 (the test-only admin key of
 //   e2e-community-api.mjs; section 11 signs in with it) NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
 //   NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 npm run dev -- -p 3123
-// APP_URL overrides the server.
+// APP_URL overrides the server, on this machine only (scripts/local-target.mjs).
 //
 // The switch-OFF half is a second run against a second server, in two commands:
 //   1. the same dev server command WITHOUT NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
@@ -18,11 +18,12 @@
 // public network.
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, MINI_BAR, requireApp, wait } from './cdp.mjs';
+import { localAppUrl } from './local-target.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { getToken } from 'nostr-tools/nip98';
 
 const OFF = process.argv.includes('--off'); // run against a dev server started WITHOUT the switch
-const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
+const APP = localAppUrl('http://localhost:3123');
 await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
 
 const sk = generateSecretKey();
@@ -551,6 +552,14 @@ const id = /feeds\/playlists\/([0-9a-f-]{36})\.xml$/.exec(feedUrl)?.[1];
 t.ok('the feed address is the playlist feed', !!id, feedUrl);
 t.equal('the feed answers 200', (await fetch(feedUrl)).status, 200);
 t.equal('the saved draft is gone', await stored(), null);
+// The site's Podcast Index key is read-only, so the maker is offered PI's own add form.
+// A localhost feed is never in the index: this is the REAL lookup answering "not listed".
+t.ok('published: Podcast Index says not listed (the real lookup)', await waitFor(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi === 'not-listed'`, 20000),
+  await js(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi ?? 'no section'`));
+t.equal('published: the add link opens PI\'s form in a new tab',
+  await js(`(() => { const a = document.querySelector('[data-testid=pi-listing] a'); return a && [a.href, a.target, a.rel, a.innerText.trim()]; })()`),
+  ['https://podcastindex.org/add', '_blank', 'noopener noreferrer', 'ADD IT TO PODCAST INDEX →']);
+t.ok('published: it says how, and that PI keeps the feed', await js(`(() => { const x = document.querySelector('[data-testid=pi-listing]').innerText; return x.includes('paste the feed address above') && x.includes('Podcast Index cannot remove a feed'); })()`));
 t.ok('published: no horizontal overflow', await overflowFree());
 t.equal('published: controls at least 24 x 24', await tooSmall('main button, main a, main input', 24, 24), []);
 
@@ -811,8 +820,17 @@ t.equal('the edit slot is cleared after a save', await js(`localStorage.getItem(
 await click(byText('EDIT'));
 await waitFor(`!!${byText('SAVE')}`);
 await setValue('#pl-title', 'e2e community playlist v3');
+// The lookup answers from a stub from here: 'listed' as PI answers a feed it holds,
+// '429' as a rate limit does. The wrapper reads the mode on each call.
+const piMode = (m) => js(`(() => { if (!window.__piWrapped) { const f0 = window.fetch; window.fetch = (u, i) => { const m = window.__piMode; if (m && String(u).startsWith('/api/by-guid?url=')) return Promise.resolve(m === 'listed' ? new Response(JSON.stringify({ podcast: { id: 920666 } }), { status: 200, headers: { 'content-type': 'application/json' } }) : new Response('{"error":"rate limited"}', { status: 429 })); return f0(u, i); }; window.__piWrapped = true; } window.__piMode = ${JSON.stringify(m)}; return 1; })()`);
+await piMode('listed');
 await click(byText('SAVE'));
 t.ok('a second SAVE works', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('e2e community playlist v3')`, 30000));
+t.ok('a listed feed: Podcast Index says listed', await waitFor(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi === 'listed'`, 10000));
+t.equal('a listed feed: the link opens its PI page, and no add link',
+  await js(`[...document.querySelectorAll('[data-testid=pi-listing] a')].map((a) => [a.href, a.innerText.trim()])`),
+  [['https://podcastindex.org/podcast/920666', 'OPEN IN PODCAST INDEX →']]);
+t.equal('a listed feed: controls at least 24 x 24', await tooSmall('main button, main a, main input', 24, 24), []);
 
 await click(byText('EDIT'));
 await waitFor(`!!${byText('SAVE')}`);
@@ -824,8 +842,12 @@ await click(byText('SAVE'));
 t.ok('a 409 shows the warning', await waitFor(`document.querySelector('[data-testid=refusals]')?.innerText.includes('This playlist changed elsewhere. Your edits are kept; SAVE again to overwrite.')`, 20000));
 t.equal('and keeps the form', await js(`document.querySelector('#pl-title').value`), 'my edit');
 await wait(500);
+await piMode('429');
 await click(byText('SAVE'));
 t.ok('the next SAVE succeeds', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('my edit')`, 30000));
+t.ok('no answer from the lookup (429): the add form is offered', await waitFor(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi === 'not-listed'`, 10000)
+  && await js(`document.querySelector('[data-testid=pi-listing] a')?.href === 'https://podcastindex.org/add'`));
+await piMode(null);
 t.equal('the server has the user edit', (await serverVersion()).title, 'my edit');
 
 console.log('--- 8b. a draft restored after a change elsewhere ---');

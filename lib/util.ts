@@ -175,6 +175,73 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * Does the now-playing item read its EPISODE's chapters and transcript? The ONE
+ * gate for both (`chapterUrlFor`, `transcriptSourceFor`), pinned by
+ * `check:musicl`. No for nothing playing, a live item, and anything that plays
+ * as tracks.
+ *
+ * **`playsAsTracks`, never `isMusicMedium`.** The podcast of a playlist row is
+ * the PLAYLIST, while the track is from somebody's album, and an album can write
+ * `<podcast:chapters>`: a podhome music feed writes ONE chapter per track, "100
+ * sats from ChadF". With `isMusicMedium` those loaded for a `musicL` row and
+ * `buildChapterNav` took ⏮/⏭ over — one chapter has no next chapter, so ⏭
+ * greyed out over a playlist with 40 tracks to go, and a spent chapter override
+ * falls through to the listen queue only, never to the playlist (Chad's iPhone,
+ * 2026-11-22, #647). The same track played from its album read none.
+ */
+export function readsEpisodeDocs(
+  current: { episode: Pick<Episode, 'liveStatus'>; podcast: Pick<Podcast, 'medium'> } | null,
+): boolean {
+  return !!current && current.episode.liveStatus !== 'live' && !playsAsTracks(current.podcast);
+}
+
+/** How long before the end (wall-clock seconds) `advanceBeforeEnd` moves on. */
+export const HIDDEN_ADVANCE_LEAD_SEC = 1;
+
+/**
+ * Should a HIDDEN iPhone page move to the next item NOW, before this one ends?
+ * `<Player>` asks on every `timeupdate`, and moves through the same step an
+ * ending takes. Pinned by `check:queue`.
+ *
+ * **Why an iPhone in the background cannot simply wait for `ended`.** WebKit
+ * deactivates the audio session when the last playing session is audio that
+ * has ENDED (`MediaSessionManagerCocoa::sessionWillEndPlayback`), and that rule
+ * has no background test. The iOS rule beside it skips deactivation on a plain
+ * pause in the background, and Apple documents the reason: a nonmixable audio
+ * session cannot be made active while the app is in the background
+ * (`AVAudioSession.ErrorCode.cannotInterruptOthers`). So the next track's
+ * `play()` is accepted and sits at HAVE_METADATA until the app is on screen
+ * again: reported from Chad's iPhone on 2026-11-22 (#647), where it played 41 ms
+ * after `vis state=visible`. A source swapped while the old one still PLAYS
+ * never ends, so the session stays active — the lock-screen ⏭'s path.
+ *
+ * Yes only when ALL of these hold, so the foreground, Android and the desktop
+ * keep every second of every track:
+ * - the page is hidden, on iOS, playing, and something DIFFERENT plays next;
+ * - it has not already moved on for this item (`done`);
+ * - the time left, at the playback rate, is more than 0 and at most the lead
+ *   (an element AT its end is ended, and its `ended` handler owns it);
+ * - the duration is finite and over two leads (a stream has no end, and a
+ *   shorter track would be skipped from its first second).
+ */
+export function advanceBeforeEnd(s: {
+  hidden: boolean;
+  ios: boolean;
+  paused: boolean;
+  hasNext: boolean;
+  done: boolean;
+  currentTime: number;
+  duration: number;
+  playbackRate: number;
+}): boolean {
+  if (!s.hidden || !s.ios || s.paused || !s.hasNext || s.done) return false;
+  if (!Number.isFinite(s.duration) || s.duration <= 2 * HIDDEN_ADVANCE_LEAD_SEC) return false;
+  const rate = Number.isFinite(s.playbackRate) && s.playbackRate > 0 ? s.playbackRate : 1;
+  const left = (s.duration - s.currentTime) / rate;
+  return left > 0 && left <= HIDDEN_ADVANCE_LEAD_SEC;
+}
+
+/**
  * The picture BMB makes for a PLAYLIST whose own cover fails: the 2 x 2 grid of
  * its first four songs (`/api/playlist-cover`). For `<PodcastCover>`'s
  * `fallbackSrc`, the rung after the feed's own cover. Undefined for anything
@@ -535,12 +602,12 @@ export function listHolding(
 }
 
 /**
- * Is the item playing now a track of `album`, playing AS that album? Then the
- * album's ▶ pauses and resumes it; otherwise the ▶ STARTS the album.
+ * Is the item playing now a track of `album`, playing AS that album? Then a
+ * cover in a list of albums (`useAlbumCoverPlay`, `/demu`) pauses and resumes
+ * it; otherwise that cover STARTS the album.
  *
- * Two surfaces press it: the album page's header cover (`<EpisodeList>`) and a
- * cover in a list of albums (`useAlbumCoverPlay`, `/demu`). One rule, because a
- * second copy is how the two came to disagree about the same album.
+ * The album page's header cover asked this too until 2026-11-22; it now always
+ * starts the album over (`coverStartSeeks`).
  *
  * The show matches by `podcastGuid`, else by `id`. A track the favorites shuffle
  * or Up Next holds is NOT the album's (`listHolding`): resuming it would play
@@ -568,6 +635,29 @@ export function albumHoldsCurrent(
 export function firstPlayableTrack<T extends Pick<Episode, 'liveStatus' | 'unresolved'>>(rows: readonly T[]): T | undefined {
   return rows.find((e) => e.liveStatus !== 'pending' && !e.unresolved)
     ?? rows.find((e) => !e.unresolved);
+}
+
+/**
+ * The header cover of a track list (`<EpisodeList>`'s ▶) ALWAYS starts the
+ * list over: its first playable row, from 0:00, in the list's order. A playlist
+ * since #652 (Chad, 2026-11-22: "I think the album art play button should just
+ * start the playlist over again, even if you were already playing it."), and an
+ * album since the same day ("album-over: yes"). It never pauses, so it never
+ * draws ❚❚; pause is the mini player's. After a reload `revealNowPlaying` puts
+ * the song back alone with the list as its show, and the old toggle resumed it.
+ *
+ * True when the cover must also SEEK to 0: `first` is the item the player holds
+ * already (the same `episode.id`, which `<Player>`'s source effect is keyed
+ * on). Then `play()` loads nothing, its `positionSec: 0` is a store mirror the
+ * next `timeupdate` overwrites, and the song would go on from where it was.
+ *
+ * Pinned by `check:queue`.
+ */
+export function coverStartSeeks(
+  first: Pick<Episode, 'id'>,
+  current: { episode: Pick<Episode, 'id'> } | null,
+): boolean {
+  return !!current && current.episode.id === first.id;
 }
 
 type RowIds = Pick<Episode, 'id' | 'guid' | 'feedId' | 'podcastGuid'>;
@@ -3294,6 +3384,85 @@ export function recipientOrder(recipients: readonly Pick<ValueRecipient, 'split'
 }
 
 /**
+ * The guids a feed's `<item>`s carry, when that list can vouch for the WHOLE
+ * feed — else `null`, which means "this read proves nothing about what the feed
+ * does not list".
+ *
+ * `itemGuids` is every `<item>` the scan reached, in document order, with a
+ * missing `<guid>` as `null`/`undefined`. Three reads cannot vouch:
+ *
+ *   - an item with no `<guid>`. Podcast Index names such a row by its file URL
+ *     (Able Kirby's feed, PI 4374133), so the row is listed under a name this
+ *     set would not hold;
+ *   - a scan that stopped at `MAX_RSS_ITEMS` (`capped`), which never saw the rest;
+ *   - a read that found no item at all. An error page answers 200 and parses,
+ *     and "the artist removed every track" is not a claim one read should make.
+ *
+ * Pinned by `check:trackorder`.
+ */
+export function listedTrackGuids(
+  itemGuids: readonly (string | null | undefined)[],
+  capped: boolean,
+): ReadonlySet<string> | null {
+  if (capped || itemGuids.length === 0) return null;
+  const out = new Set<string>();
+  for (const g of itemGuids) {
+    if (!g) return null;
+    out.add(g);
+  }
+  return out;
+}
+
+/**
+ * A MUSIC album's Podcast Index rows, less every row its feed no longer lists.
+ *
+ * Podcast Index keeps a row after the publisher removes the item, and keeps the
+ * old one when a track is replaced under a new guid. Measured 2026-11-22: "Tinderbox"
+ * (PI 6422170) played a replaced "Analysis Paralysis" FIRST, an older recording,
+ * because that row carries no `<podcast:episode>` and `episode ?? 0` sorts it to
+ * the front; "Live at Rockpile" (7612000) listed 15 rows for 8 tracks. Seven of
+ * 154 music feeds surveyed carried such rows. The album's own feed is the
+ * authority for which tracks exist, as it already is for who gets paid.
+ *
+ * Music only, because a podcast's RSS often keeps just its newest items while
+ * Podcast Index keeps the archive. `listed` is `listedTrackGuids`' answer; `null`
+ * keeps every row. A row with no guid cannot be judged and stays.
+ *
+ * Pinned by `check:trackorder`.
+ */
+export function onlyListedTracks<T extends { guid?: string | null }>(
+  rows: T[],
+  listed: ReadonlySet<string> | null,
+  isMusic: boolean,
+): T[] {
+  if (!isMusic || !listed) return rows;
+  return rows.filter((r) => !r.guid || listed.has(r.guid));
+}
+
+/**
+ * The `datePublished` after which `/api/feed` appends RSS items Podcast Index
+ * did not return (`getRssEpisodesNewerThan`).
+ *
+ * Normally Podcast Index's newest row: past it, a missing item means "not
+ * crawled yet", and an older one is PI's decision or its 1000-row ceiling
+ * (docs/feeds.md). For a music album whose read vouches for the whole list
+ * (`listedTrackGuids` non-null) it is 0, because `onlyListedTracks` just dropped
+ * every unlisted row: a track replaced under a new guid that Podcast Index has
+ * not crawled would otherwise vanish, where it used to show as the old copy. An
+ * album's rows are ordered by track number, so appending an older item reorders
+ * nothing the way it would an archive show.
+ *
+ * Pinned by `check:trackorder`.
+ */
+export function rssCatchUpAfter(
+  newestPi: number,
+  listed: ReadonlySet<string> | null,
+  isMusic: boolean,
+): number {
+  return isMusic && listed ? 0 : newestPi;
+}
+
+/**
  * How a feed's items are ordered for display: a music album sorts by disc
  * (`<podcast:season>`) then track (`<podcast:episode>`) ASCENDING; everything
  * else sorts newest-first by `datePublished`.
@@ -3313,17 +3482,33 @@ export function recipientOrder(recipients: readonly Pick<ValueRecipient, 'split'
  * season at all), while `episode ?? 0` sorts an untagged track to the FRONT of
  * its disc. Don't "tidy" them to match.
  *
+ * **Two music rows with the same disc and track number keep the FEED's order**,
+ * when the caller passes `feedPosition` (the item's index in the document). That
+ * is every track of an album that numbers nothing, and the unnumbered tracks of
+ * one that numbers some. Without it they kept whatever order they arrived in —
+ * Podcast Index's, on /api/feed — which put "Carol Of The Bells", 10th in the
+ * Doerfel-Verse feed (PI 6642704), ahead of "Make It", 4th. A row the feed does
+ * not list (`undefined`) goes after the ones it does. The raw-RSS path needs no
+ * `feedPosition`: it builds its rows in document order and the sort is stable.
+ * Pinned by `check:trackorder`.
+ *
  * Returns a comparator rather than sorting, because the API route needs this as
  * the tail of a larger sort that ranks live items above everything else.
  */
-export function compareEpisodeOrder(
+export function compareEpisodeOrder<T extends Pick<Episode, 'season' | 'episode' | 'datePublished'>>(
   isMusic: boolean,
-): (a: Pick<Episode, 'season' | 'episode' | 'datePublished'>, b: Pick<Episode, 'season' | 'episode' | 'datePublished'>) => number {
+  feedPosition?: (e: T) => number | undefined,
+): (a: T, b: T) => number {
   return (a, b) => {
     if (isMusic) {
       const seasonDiff = (a.season ?? 1) - (b.season ?? 1);
       if (seasonDiff !== 0) return seasonDiff;
-      return (a.episode ?? 0) - (b.episode ?? 0);
+      const trackDiff = (a.episode ?? 0) - (b.episode ?? 0);
+      if (trackDiff !== 0 || !feedPosition) return trackDiff;
+      const pa = feedPosition(a);
+      const pb = feedPosition(b);
+      if (pa === undefined || pb === undefined) return pa === pb ? 0 : pa === undefined ? 1 : -1;
+      return pa - pb;
     }
     return (b.datePublished ?? 0) - (a.datePublished ?? 0);
   };

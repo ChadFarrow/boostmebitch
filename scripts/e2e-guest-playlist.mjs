@@ -6,7 +6,7 @@
 //   (the local Postgres with the schema applied: `npm run community:schema`)
 //   NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 \
 //   npm run dev -- -p 3123 > /path/to/server.log 2>&1
-// APP_URL overrides the server; SERVER_LOG=/path/to/server.log adds the server's own
+// APP_URL overrides the server (this machine only: scripts/local-target.mjs); SERVER_LOG=/path/to/server.log adds the server's own
 // output to the search for the key. COMMUNITY_PI_NOTIFY, GITHUB_ARCHIVE_TOKEN and the
 // podping variables are NOT set, so nothing reaches Podcast Index, GitHub or Hive.
 // The server still needs the real PODCAST_INDEX_KEY/SECRET in .env.local: the publish
@@ -46,9 +46,10 @@
 import { readFileSync } from 'node:fs';
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { localAppUrl } from './local-target.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 
-const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
+const APP = localAppUrl('http://localhost:3123');
 await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
 const SERVER_LOG = process.env.SERVER_LOG;
 

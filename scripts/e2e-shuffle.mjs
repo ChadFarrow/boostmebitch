@@ -44,10 +44,12 @@
 //      sheet or the page. The album panel does the same for a 40-track album.
 //  11. A shuffled single that is ALSO a track of the album opened on screen,
 //      built from the favorite (so its id is not the album row's). While the
-//      shuffle owns it the row is lit and the cover offers "Play album", which
-//      starts the album at track 1. After a reload drops the shuffle, the row
-//      is still lit, ⏭ is on, and the song's end continues the album (Chad,
-//      desktop, 2026-11-14: `advance via=none` had stopped it).
+//      shuffle owns it the row is lit and the cover offers "Play album from
+//      the start", which starts the album at track 1 — and goes on doing so
+//      while the album plays (Chad, 2026-11-22: "album-over: yes"); it never
+//      draws ❚❚. After a reload drops the shuffle, the row is still lit, ⏭ is
+//      on, and the song's end continues the album (Chad, desktop, 2026-11-14:
+//      `advance via=none` had stopped it).
 //  12. ⤮ SHUFFLE on an album, opened by its `/?podcast=` URL (Chad, 2026-11-14:
 //      "BMB needs album shuffles here"). It sits ahead of DOWNLOAD ALBUM, plays
 //      the album's playable tracks in a random order through the shuffle's
@@ -744,7 +746,10 @@ const ALBUM_SINGLE = {
   itemGuid: ALBUM_EPISODES[1].guid, feedGuid: ALBUM_GUID, title: 'Album track 1', podcastTitle: 'E2E Album',
   medium: 'music', addedAt: 1700000000100, enclosureUrl: `${APP}/api/e2e-audio.wav?album=1`,
 };
-const COVER = `[...document.querySelectorAll('header button.group')].find((b) => /^(Play album|Pause)$/.test(b.getAttribute('aria-label') ?? ''))`;
+// `Pause` stays in the pattern so a cover that drew ❚❚ again would be FOUND,
+// and fail the label check, rather than read as missing.
+const COVER = `[...document.querySelectorAll('header button.group')].find((b) => /^(Play album from the start|Pause)$/.test(b.getAttribute('aria-label') ?? ''))`;
+const ALBUM_START = { label: 'Play album from the start', glyph: '▶' };
 const cover = async () => JSON.parse(await js(`JSON.stringify((() => { const b = ${COVER};
   return b ? { label: b.getAttribute('aria-label'), glyph: b.lastElementChild?.textContent.trim() } : null; })())`));
 const litRows = async () => JSON.parse(await js(`JSON.stringify([...document.querySelectorAll('ul > li')]
@@ -777,16 +782,18 @@ const nx = await miniNext();
 t.ok('A: ⏭ stays the shuffle\'s — its next, or off at its end — never the album\'s',
   nx?.label === 'Next in shuffle' ? nx.disabled === false : nx?.disabled === true, JSON.stringify(nx));
 console.log(`       (this run: ${nx?.label}, ${nx?.disabled ? 'off' : 'on'})`);
-t.equal('A: the cover offers the album, not a pause', await cover(), { label: 'Play album', glyph: '▶' });
+t.equal('A: the cover offers the album, not a pause', await cover(), ALBUM_START);
 await js(`${COVER}?.click()`);
 t.ok('A: ▶ starts the album at its first track', await waitSrc((s) => /album(=|%3D)0(\D|$)/.test(s)), await src());
 t.ok('A: …and ends the shuffle', (await miniNext())?.label !== 'Next in shuffle', JSON.stringify(await miniNext()));
 await until(`!(document.querySelector('audio')?.paused ?? true)`, 5000);
-t.equal('A: the album owns it now, so the cover pauses', await cover(), { label: 'Pause', glyph: '❚❚' });
+t.equal('A: the album plays now, and the cover still offers the start — never ❚❚', await cover(), ALBUM_START);
 await endTrack();
 t.ok('A: the album goes on to its second track', await waitSrc((s) => /album(=|%3D)1(\D|$)/.test(s), 10000), await src());
 await js(`${COVER}?.click()`);
-t.ok('A: ❚❚ on the cover pauses', await until(`document.querySelector('audio')?.paused === true`, 5000));
+t.ok('A: on track 2, ▶ on the cover starts the album over at track 1', await waitSrc((s) => /album(=|%3D)0(\D|$)/.test(s), 5000), await src());
+await pressMini('/^Pause$/');
+await until(`document.querySelector('audio')?.paused === true`, 5000);
 
 // B: a reload drops the shuffle and puts the song back on its own — Chad's log.
 t.ok('B: the shuffle reaches the album\'s song', await shuffleToAlbumSingle(), await src());
@@ -798,13 +805,16 @@ t.ok('B: the reload puts the song back, paused',
 t.ok('B: the album opens', await openAlbum());
 t.equal('B: the song\'s row is lit', await litRows(), ['Album track 1']);
 t.equal('B: ⏭ is the album\'s and is on', await miniNext(), { label: 'Next track', disabled: false });
-t.equal('B: no list owns the song, so the cover resumes it', await cover(), { label: 'Play album', glyph: '▶' });
-await js(`${COVER}?.click()`);
+t.equal('B: the cover offers the album from the start', await cover(), ALBUM_START);
+// The song is resumed from the mini player: the cover now starts the album over.
+await pressMini('/^Play$/');
 await until(`!(document.querySelector('audio')?.paused ?? true)`, 5000);
-t.ok('B: ▶ plays the song in the player', /album(=|%3D)1(\D|$)/.test(await src()) && await paused() === false, await src());
+t.ok('B: ▶ in the mini player plays the song', /album(=|%3D)1(\D|$)/.test(await src()) && await paused() === false, await src());
 await endTrack();
 t.ok('B: when it ends, the album goes on to the next track', await waitSrc((s) => /album(=|%3D)2(\D|$)/.test(s), 10000), await src());
 t.equal('B: the playback log says the album moved it', await lastAdvance(), 'advance via=tracks');
+await js(`${COVER}?.click()`);
+t.ok('B: ▶ on the cover starts the album over at track 1', await waitSrc((s) => /album(=|%3D)0(\D|$)/.test(s), 5000), await src());
 
 // ---------------------------------------------------------------------------
 console.log('\n12. ⤮ SHUFFLE on an album');
@@ -851,7 +861,7 @@ t.ok('B: never the row with no file', firstK !== 4 && firstK !== null, String(fi
 await until(`!(document.querySelector('audio')?.paused ?? true)`, 5000);
 t.equal('B: ⏭ is the shuffle\'s', await miniNext(), { label: 'Next in shuffle', disabled: false });
 t.equal('B: the playing track\'s row is lit', await shufLit(), [`Shuf track ${firstK}`]);
-t.equal('B: the cover offers the album in order, not a pause', await cover(), { label: 'Play album', glyph: '▶' });
+t.equal('B: the cover offers the album in order, not a pause', await cover(), ALBUM_START);
 const bPanel = await panel();
 t.equal('B: the now-playing screen lists the shuffle', bPanel.heading, 'shuffle · 5 tracks');
 t.equal('B: …every playable track once, and not the row with no file',

@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { isMusicMedium, httpUrl } from './util';
+import { readsEpisodeDocs, httpUrl } from './util';
 import { chaptersRequestUrl } from './downloads/download-rules';
 import { fetchDoc } from './downloads/downloads-cache';
 import type { ChapterEntry, Episode, Podcast } from './types';
@@ -68,14 +68,13 @@ export function useChapters(url: string): { chapters: ChapterEntry[] | null; loa
 }
 
 /** The chapters JSON url to fetch for a now-playing item, or '' to skip. Chapters
- *  are a podcast feature: gated off for live streams and music feeds. Shared by
+ *  are a podcast feature: gated off for live streams and for anything that plays
+ *  as tracks, a playlist's tracks included (`readsEpisodeDocs`, #647). Shared by
  *  the players so the gate lives in one place. */
 export function chapterUrlFor(
   current: { episode: Episode; podcast: Podcast } | null,
 ): string {
-  if (!current || current.episode.liveStatus === 'live' || isMusicMedium(current.podcast)) {
-    return '';
-  }
+  if (!current || !readsEpisodeDocs(current)) return '';
   return current.episode.chaptersUrl ?? '';
 }
 

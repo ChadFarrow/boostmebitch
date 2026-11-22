@@ -88,6 +88,11 @@
 
 import {
   addToHistory,
+  advanceBeforeEnd,
+  albumHoldsCurrent,
+  coverStartSeeks,
+  isPlaylistMedium,
+  HIDDEN_ADVANCE_LEAD_SEC,
   albumShuffleTracks,
   boostedOnDevice,
   epKey,
@@ -928,6 +933,146 @@ section('Every vector above is replayed against the obvious wrong version');
   // `{ alsoNaive: true }` vector used to have its `differs` result discarded, so
   // the exemption hid exactly what it was granted to protect.
   replayVectors({ vectors, invoke: call, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
+}
+
+// ---------------------------------------------------------------------------
+section('A hidden iPhone page moves to the next track BEFORE the end (#647)');
+// ---------------------------------------------------------------------------
+{
+  // REPORTED 2026-11-22 from Chad's iPhone, the installed app on beta, a musicL
+  // playlist in the background: a track ENDED, the app moved on at once
+  // (`advance via=tracks`, `src`, `play.call vis=hidden`), the next file reached
+  // HAVE_METADATA, `stalled`, and played only when the app came back to the
+  // screen, 41 ms after `vis state=visible`.
+  //
+  // WebKit (MediaSessionManagerCocoa::sessionWillEndPlayback) deactivates the
+  // audio session when the last playing session is audio that has ENDED, and
+  // that rule has no background test. The iOS rule beside it skips deactivation
+  // on a plain pause in the background, and Apple documents why: a nonmixable
+  // audio session cannot be made active while the app is in the background
+  // (AVAudioSession.ErrorCode.cannotInterruptOthers). A source swapped while
+  // the old one still PLAYS never ends, so it never deactivates — the same path
+  // as the lock-screen ⏭. So the page swaps about a second early, but only
+  // where all of that applies.
+  //
+  // `naive()` is the obvious overreach: advance near the end everywhere. That
+  // cuts the last second of every track in the foreground, on Android and on a
+  // desktop, where nothing is broken.
+  const L = HIDDEN_ADVANCE_LEAD_SEC;
+  const naive = (s) => Number.isFinite(s.duration) && s.duration - s.currentTime <= L;
+  const base = { hidden: true, ios: true, paused: false, hasNext: true, done: false, playbackRate: 1, duration: 183, currentTime: 183 - L / 2 };
+  const vv = [];
+  const v = (label, over, expect, opts = {}) => vv.push({ label, args: [{ ...base, ...over }], expect, ...opts });
+
+  // ── Where it applies ────────────────────────────────────────────────────
+  v('hidden, iOS, half a lead from the end, a next track: advance now', {}, true, { alsoNaive: true });
+  v('…at exactly one lead from the end', { currentTime: 183 - L }, true, { alsoNaive: true });
+  // A podcast in the listen queue may play faster. The lead is wall-clock time,
+  // or a 2× episode reaches its end before the swap.
+  v('at 2× a media lead and a half from the end is under a second of wall time', { playbackRate: 2, currentTime: 183 - L * 1.5 }, true);
+
+  // ── Where it must not ───────────────────────────────────────────────────
+  v('on screen: the track plays to its last second', { hidden: false }, false);
+  v('not iOS (Android, a desktop): unchanged', { ios: false }, false);
+  v('nothing plays next: the track plays to its end, which stops', { hasNext: false }, false);
+  v('paused: nothing moves', { paused: true }, false);
+  v('once per track', { done: true }, false);
+  v('two leads from the end: not yet', { currentTime: 183 - 2 * L }, false, { alsoNaive: true });
+  v('at 2× two and a half media leads from the end: not yet', { playbackRate: 2, currentTime: 183 - L * 2.5 }, false, { alsoNaive: true });
+  // An element AT its end is ended: its `ended` handler owns it.
+  v('at the end: the ended handler moves on, not this', { currentTime: 183 }, false);
+  // A track shorter than two leads would be skipped from its first second.
+  v('a track shorter than two leads is never cut', { duration: L * 1.5, currentTime: L }, false);
+  v('a live stream has no end', { duration: Infinity, currentTime: 3600 }, false, { alsoNaive: true });
+  v('no duration yet', { duration: NaN, currentTime: 0 }, false, { alsoNaive: true });
+
+  for (const x of vv) compare(x.label, advanceBeforeEnd(...x.args), x.expect);
+  const invoke = (impl, x) => {
+    try {
+      return JSON.stringify(impl === 'real' ? advanceBeforeEnd(...x.args) : naive(...x.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  replayVectors({ vectors: vv, invoke, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
+}
+
+// ---------------------------------------------------------------------------
+section('The cover ▶ starts the list over: a playlist and an album');
+// ---------------------------------------------------------------------------
+{
+  // REPORTED 2026-11-22 from Chad's iPhone, the installed app on beta, on the
+  // musicL playlist "WrathfulTs Top Tracks": the app came back from a reload on
+  // track 13, and the ▶ on the playlist's art resumed track 13. Chad: "I think
+  // the album art play button should just start the playlist over again, even
+  // if you were already playing it." #652 made a playlist's cover start over;
+  // asked about albums, Chad answered "album-over: yes" the same day.
+  //
+  // So the header cover (`<EpisodeList>`) ALWAYS starts its list at the first
+  // playable row, from 0:00. What is left to decide is `coverStartSeeks`: when
+  // the first row IS the item in the player (the same `episode.id`,
+  // `<Player>`'s source key), `play()` loads nothing and the song goes on from
+  // where it was, so the cover must seek to 0 too.
+  //
+  // `naive()` is the code #652 shipped: an album that holds the track toggles
+  // (pause/resume) instead of starting over. Each vector is `[list, first,
+  // current, shuffle, listenQueue]`, the context the cover is pressed in; the
+  // real decision reads `first` and `current` only, which is the point.
+  const naive = (list, first, current, shuffle, listenQueue) =>
+    (!isPlaylistMedium(list) && albumHoldsCurrent(list, current, shuffle, listenQueue)
+      ? 'toggle'
+      : !!current && current.episode.id === first.id);
+  const real = (_list, first, current) => coverStartSeeks(first, current);
+  const MUSICL = { ...PLAYLIST_SHOW };
+  const ROWS = [1, 2, 3].map((n) => plRow(n));
+  const on = (episode, podcast) => ({ episode, podcast });
+  const asItem = (episode, podcast) => ({ episode, podcast });
+  const vv = [];
+  const v = (label, args, expect, opts = {}) => vv.push({ label, args, expect, ...opts });
+
+  // ── An album: now a start, as a playlist is ─────────────────────────────
+  v('album, its second track playing or paused: start at track 1, never resume track 2',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[1], ALBUM_SHOW), null, []], false);
+  // `revealNowPlaying` puts the song back alone after a reload, with the album
+  // as its show: no list holds it, so the old rule resumed it.
+  v('album after a reload, the song back alone: start at track 1',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[2], ALBUM_SHOW), null, []], false);
+  v('album, its FIRST track playing or paused: back to 0:00 (seek), never pause',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[0], ALBUM_SHOW), null, []], true);
+  v('album, nothing in the player: start, no seek',
+    [ALBUM_SHOW, TRACKS[0], null, null, []], false, { alsoNaive: true });
+  v('album, a shuffle on its third track: start in order at track 1',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[2], ALBUM_SHOW), [asItem(TRACKS[2], ALBUM_SHOW)], []],
+    false, { alsoNaive: true });
+  v('album, a shuffle on its FIRST track: start, and seek to 0',
+    [ALBUM_SHOW, TRACKS[0], on(TRACKS[0], ALBUM_SHOW), [asItem(TRACKS[0], ALBUM_SHOW)], []],
+    true, { alsoNaive: true });
+  v('album, another show playing: start, no seek',
+    [ALBUM_SHOW, TRACKS[0], on(ROWS[1], MUSICL), null, []], false, { alsoNaive: true });
+
+  // ── A playlist: as #652 shipped it ──────────────────────────────────────
+  v('playlist, nothing in the player: start, no seek',
+    [MUSICL, ROWS[0], null, null, []], false, { alsoNaive: true });
+  v('playlist, its third row playing or paused: start at the first row',
+    [MUSICL, ROWS[0], on(ROWS[2], MUSICL), null, []], false, { alsoNaive: true });
+  v('playlist, its FIRST row in the player: start, and seek to 0',
+    [MUSICL, ROWS[0], on(ROWS[0], MUSICL), null, []], true, { alsoNaive: true });
+  v('playlist, Up Next holds its first row: start, and seek to 0',
+    [MUSICL, ROWS[0], on(ROWS[0], MUSICL), null, [asItem(ROWS[0], MUSICL)]], true, { alsoNaive: true });
+  // The favorites shuffle builds the song from the favorite (`-fnvHash`), so
+  // it is a different `episode.id`: the player loads the row's file from 0.
+  v('the same song under another id: no seek — the player reloads it',
+    [MUSICL, ROWS[0], on({ ...ROWS[0], id: -12345 }, ALBUM_SHOW), null, []], false, { alsoNaive: true });
+
+  for (const x of vv) compare(x.label, real(...x.args), x.expect);
+  const invoke = (impl, x) => {
+    try {
+      return JSON.stringify(impl === 'real' ? real(...x.args) : naive(...x.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  replayVectors({ vectors: vv, invoke, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
 }
 
 if (failures) {
