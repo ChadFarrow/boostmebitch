@@ -339,7 +339,7 @@ Everything else lives in `localStorage` and is never sent server-side.
 
 ## Styling tokens
 
-Custom palette in `tailwind.config.ts` — don't introduce new colors without adding them here: `ink` (page bg), `bone` (primary fg), `bolt` (Lightning yellow), `nostr` (magenta), `muted` (secondary), `line` (borders). Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono).
+Custom palette in `tailwind.config.ts` — don't introduce new colors without adding them here: `ink` (page bg), `bone` (primary fg), `bolt` (Lightning yellow), `nostr` (magenta), `muted` (secondary), `line` (borders), `nick-0`…`nick-9` (the IRC chat's per-person name colors, picked by `nickColor`). Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono).
 
 **Fonts are loaded by `next/font` in `app/layout.tsx` and reached through `var(--font-display)` / `var(--font-mono)` — never name the family literally, and NEVER add an `@import` to `app/globals.css`**: an `@import` serializes the critical path four hops across three origins, and a literal family name bypasses the size-adjusted fallback that stops `display: swap` shifting layout. Three places move together: the two `next/font` calls in `app/layout.tsx`, `fontFamily` in `tailwind.config.ts`, and the two raw declarations in `globals.css`.
 

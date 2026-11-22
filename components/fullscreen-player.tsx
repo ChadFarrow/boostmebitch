@@ -1451,7 +1451,12 @@ export function FullscreenPlayer({
             </div>
           </div>
         ) : (
-        <div className={`${infoPane} px-4 pt-2 pb-4 sm:p-6 lg:p-10 flex flex-col min-w-0 sm:h-full ${showIrc ? 'gap-3 sm:gap-5 flex-1 min-h-0 sm:flex-none' : 'gap-5'}`}>
+        <div className={`${infoPane} px-4 pt-2 pb-4 flex flex-col min-w-0 sm:h-full ${showIrc ? 'sm:px-6 sm:py-4 lg:px-10 lg:py-6 gap-3 sm:gap-2 flex-1 min-h-0 sm:flex-none' : 'sm:p-6 lg:p-10 gap-5'}`}>
+          {/* WITH THE IRC CHAT, from sm: up, the pane is tighter above the chat
+              (Chad, 2026-11-22: "the chat window is kind of small … squeeze a
+              little space out of the sections above"): less padding top and
+              bottom, smaller gaps between the rows and before the tabs. Nothing
+              moves, and below sm: nothing changes. */}
           {/* Fixed header: title, seek + transport controls stay put; only the
               About/Chapters body below scrolls (on desktop). */}
           {/* BELOW sm: A GAP IS THE COVER'S SIZE, not whitespace. The cover is
@@ -1464,7 +1469,7 @@ export function FullscreenPlayer({
               `sm:` RESTORES ALL THREE, here and on both panes. From sm: up the
               panes sit side by side with their own heights, the cover competes
               with nothing, and the open layout is what the width is for. */}
-          <div className="flex-shrink-0 flex flex-col gap-3.5 sm:gap-5">
+          <div className={`flex-shrink-0 flex flex-col gap-3.5 ${showIrc ? 'sm:gap-3' : 'sm:gap-5'}`}>
             <div>
               <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
               <p className="text-sm text-muted mt-1.5">{podcast.title}</p>

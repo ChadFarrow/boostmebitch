@@ -22,7 +22,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { openIrcSession, IRC_GATEWAY_URL, type IrcSession } from '@/lib/irc/client';
-import { isValidNick, MAX_NICK_LENGTH, MIN_NICK_LENGTH, type IrcEvent } from '@/lib/irc/protocol';
+import { isValidNick, nickColor, MAX_NICK_LENGTH, MIN_NICK_LENGTH, type IrcEvent } from '@/lib/irc/protocol';
 import { looksLikeSecretKey, textHoldsSecret } from '@/lib/nostr/npub-input';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
@@ -38,6 +38,14 @@ const PRIVACY = 'IRC is public: the channel can keep a log of what you write, an
 const SECRET = 'That looks like a Nostr secret key (nsec). It was not sent.';
 const WALLET = 'That looks like a wallet connection string. It was not sent.';
 const BAD_NICK = `Use ${MIN_NICK_LENGTH} to ${MAX_NICK_LENGTH} letters, digits, _ or -, and start with a letter.`;
+
+// Written out whole so Tailwind finds each class; index = `nickColor(nick)`.
+const NICK_CLASSES = [
+  'text-nick-0', 'text-nick-1', 'text-nick-2', 'text-nick-3', 'text-nick-4',
+  'text-nick-5', 'text-nick-6', 'text-nick-7', 'text-nick-8', 'text-nick-9',
+];
+/** One color per person; your own name stays in the text color, so you find it. */
+const nameColor = (from: string | undefined, self: boolean | undefined) => (self ? 'text-bone' : NICK_CLASSES[nickColor(from ?? '')]);
 const NICK_TAKEN = 'That nick is taken. Try another.';
 
 type Phase = 'idle' | 'connecting' | 'joined' | 'kicked' | 'closed';
@@ -263,11 +271,11 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
                   <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(r.time * 1000).toLocaleString()}>
                     {fmtClock(r.time)}
                   </span>
-                  * <span className="font-display text-bolt not-italic">{r.from}</span> <LinkedText text={r.text} />
+                  * <span className={`font-display font-bold not-italic ${nameColor(r.from, false)}`}>{r.from}</span> <LinkedText text={r.text} />
                 </span>
               ) : (
                 <>
-                  <span className={`text-xs font-display mr-1.5 ${r.self ? 'text-bone' : 'text-bolt'}`}>{r.from}</span>
+                  <span data-irc-from className={`text-sm font-display font-bold mr-1.5 ${nameColor(r.from, r.self)}`}>{r.from}</span>
                   <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(r.time * 1000).toLocaleString()}>
                     {fmtClock(r.time)}
                   </span>

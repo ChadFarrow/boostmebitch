@@ -431,6 +431,22 @@ async function browserHalf(APP) {
     const links = await js(`JSON.stringify([...([...document.querySelectorAll('[data-irc-row]')].find((r) => r.innerText.includes('javascript:alert(1)'))?.querySelectorAll('a') ?? [])].map((a) => a.href))`).then(JSON.parse);
     c.equal('only the https URL is a link', links, ['https://example.com/']);
 
+    // Names (Chad, 2026-11-22): 14px and bold, one color per person, your own
+    // in the text color. `dude` is --nick-3 and `phifer` --nick-1 (check:irc).
+    fake.say('phifer', '#candr', 'not brown yet');
+    await chatHas('not brown yet');
+    const names = await js(`JSON.stringify([...document.querySelectorAll('[data-irc-from]')].map((n) => {
+      const cs = getComputedStyle(n);
+      return { from: n.textContent, size: cs.fontSize, weight: Number(cs.fontWeight), color: cs.color };
+    }))`).then(JSON.parse);
+    const textColor = await js(`getComputedStyle(document.body).color`);
+    const colorOf = (from) => [...new Set(names.filter((n) => n.from === from).map((n) => n.color))];
+    c.ok('names are 14px and bold', names.length >= 4 && names.every((n) => n.size === '14px' && n.weight >= 700), JSON.stringify(names));
+    c.ok('…one person keeps one color', colorOf('dude').length === 1, JSON.stringify(colorOf('dude')));
+    c.ok('…two people get two colors', colorOf('dude')[0] !== colorOf('phifer')[0], JSON.stringify([colorOf('dude'), colorOf('phifer')]));
+    c.ok('…not the text color', ![...colorOf('dude'), ...colorOf('phifer')].includes(textColor), textColor);
+    c.equal('…and your own name is in the text color', colorOf('e2efan'), [textColor]);
+
     fake.sayRaw(':fake.irc 404 e2efan #candr :Cannot send to channel (+m)');
     c.ok('a refused message (404) is shown, not dropped', await chatHas('Cannot send to channel (+m)'));
 
@@ -550,7 +566,8 @@ async function browserHalf(APP) {
         sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
     })())`).then(JSON.parse);
     c.ok('the chat is in the right-hand pane, under the title', d.chatLeft >= d.mid && d.titleLeft >= d.mid, JSON.stringify(d));
-    c.ok(`…and tall (${d.chatH}px)`, d.chatH >= 300, JSON.stringify(d));
+    // 405px before the pane above it was tightened (Chad, 2026-11-22), 465px after.
+    c.ok(`…and tall (${d.chatH}px)`, d.chatH >= 450, JSON.stringify(d));
     c.equal('…with no sideways overflow', d.sw, d.cw);
     c.ok('…in a frame, so it reads as a chat window', d.border !== '0px', JSON.stringify(d));
 

@@ -23,6 +23,7 @@
 
 import {
   parseLine, stripFormatting, ctcpAction, cleanOutgoing, splitText, buildPrivmsg, buildAction, isValidNick, MAX_NICK_LENGTH,
+  nickColor, NICK_COLORS,
   ircStart, ircStep, ircSend, ircNick, ircRejoin,
 } from '../lib/irc/protocol.ts';
 import { IRC_CHAT_SHOWS, ircChannelFor, ircGatewayOk } from '../lib/irc/shows.ts';
@@ -190,6 +191,35 @@ console.log('\nThe nick rule:');
     if (got !== want) fail(`isValidNick(${JSON.stringify(nick)}) is ${got}, expected ${want}`);
     else ok(`isValidNick(${JSON.stringify(nick.length > 12 ? nick.slice(0, 6) + '…' : nick)}) is ${want}`);
   }
+}
+
+console.log('\nThe nick color:');
+{
+  // Chad, 2026-11-22: "each user has like their own color to their name … it
+  // helps make following the chat better." The color is picked from the nick
+  // alone, so every listener sees one nick in one color, and a reload keeps it.
+  // IRC nicks are case-insensitive (ZeroNode is InspIRCd 4, CASEMAPPING
+  // ascii), so `Doug` and `doug` are one person and one color.
+  const inRange = (k) => Number.isInteger(k) && k >= 0 && k < NICK_COLORS;
+  if (NICK_COLORS !== 10) fail(`NICK_COLORS is ${NICK_COLORS}, expected 10 (one --nick-N token each in app/globals.css)`);
+  else ok('NICK_COLORS is 10, one --nick-N token each');
+  const same = ['Doug', 'doug', 'DOUG'].map(nickColor);
+  if (!same.every(inRange) || new Set(same).size !== 1) fail(`Doug/doug/DOUG get ${JSON.stringify(same)}, expected one color`);
+  else ok('Doug, doug and DOUG get one color');
+  // Pinned from the shipping hash: a change here moves every listener's color
+  // for every nick at once. Change the hash only on purpose.
+  const pinned = { notChadF: nickColor('notChadF'), phifer: nickColor('phifer'), ppwatch: nickColor('ppwatch') };
+  const want = { notChadF: 0, phifer: 1, ppwatch: 8 };
+  if (JSON.stringify(pinned) !== JSON.stringify(want)) fail(`pinned colors moved: ${JSON.stringify(pinned)}, expected ${JSON.stringify(want)}`);
+  else ok('the pinned nicks keep their colors');
+  // A spread over nicks that differ in one place only. The obvious wrong pick,
+  // `nick.length % N`, gives all 200 one color.
+  const counts = Array(NICK_COLORS).fill(0);
+  for (let i = 0; i < 200; i++) counts[nickColor(`user${String(i).padStart(3, '0')}`)]++;
+  if (counts.some((n) => n === 0) || Math.max(...counts) > 40) fail(`200 nicks spread as ${JSON.stringify(counts)}; expected every color used, none above 40`);
+  else ok(`200 nicks use every color, none above 40 (${counts.join(' ')})`);
+  if (!inRange(nickColor(''))) fail('an empty nick is out of range');
+  else ok('an empty nick still gets a color in range');
 }
 
 // ── The session: what the panel does with each server line ──────────────────

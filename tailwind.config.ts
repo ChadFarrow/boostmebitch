@@ -16,6 +16,8 @@ const config: Config = {
         nostr: 'rgb(var(--nostr) / <alpha-value>)',
         muted: 'rgb(var(--muted) / <alpha-value>)',
         line: 'rgb(var(--line) / <alpha-value>)',
+        // The IRC chat's nick colors, `text-nick-0` … `text-nick-9` (lib/irc/protocol.ts `nickColor`).
+        nick: Object.fromEntries(Array.from({ length: 10 }, (_, i) => [i, `rgb(var(--nick-${i}) / <alpha-value>)`])),
       },
       // The families come from next/font (app/layout.tsx), which self-hosts
       // them and exposes each as a CSS variable on <html>. Naming the family

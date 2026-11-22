@@ -34,6 +34,19 @@
   --nostr: 255 45 146;
   --muted: 138 133 122;
   --line:  31 29 24;
+  /* The IRC chat's nick colors (lib/irc/protocol.ts `nickColor`), one per
+     person as IRC clients do. Each is at least 4.5:1 on --ink in its theme
+     (dark: 7.8 and up; light: 4.84 and up), measured 2026-11-22. */
+  --nick-0: 255 122 112;
+  --nick-1: 255 162 84;
+  --nick-2: 240 204 72;
+  --nick-3: 184 226 92;
+  --nick-4: 108 218 120;
+  --nick-5: 72 214 190;
+  --nick-6: 96 196 250;
+  --nick-7: 140 162 255;
+  --nick-8: 190 146 255;
+  --nick-9: 255 124 204;
   color-scheme: dark;
   /* App header height used for sticky podcast header offset.
      py-4 (32px) + tallest row child + bottom border (1px).
@@ -80,6 +93,16 @@
   --nostr: 197 20 117;        /* deeper magenta — same readability fix */
   --muted: 110 105 95;        /* darker neutral — fg-side reads on light */
   --line:  225 220 207;       /* light hairline */
+  --nick-0: 196 40 40;
+  --nick-1: 176 82 0;
+  --nick-2: 140 104 0;
+  --nick-3: 86 118 0;
+  --nick-4: 22 128 48;
+  --nick-5: 0 122 108;
+  --nick-6: 0 108 168;
+  --nick-7: 52 82 214;
+  --nick-8: 122 62 200;
+  --nick-9: 178 32 128;
   color-scheme: light;
 }
 

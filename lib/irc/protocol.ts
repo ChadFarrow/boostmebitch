@@ -178,6 +178,23 @@ export function isValidNick(nick: string): boolean {
   return NICK_RE.test(nick);
 }
 
+/** How many nick colors there are: `--nick-0` … `--nick-9` in app/globals.css, `text-nick-N` in the panel. */
+export const NICK_COLORS = 10;
+
+/**
+ * The color of a nick, `0` … `NICK_COLORS - 1`, from the nick alone (Chad,
+ * 2026-11-22: one color per person, as IRC clients do), so every listener sees
+ * one nick in one color and a reload keeps it. Case-insensitive, as IRC nicks
+ * are (ZeroNode: CASEMAPPING ascii). FNV-1a, 32 bit: changing it moves every
+ * nick's color at once, which `check:irc` pins.
+ */
+export function nickColor(nick: string): number {
+  const s = nick.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return (h >>> 0) % NICK_COLORS;
+}
+
 // ── The session ──────────────────────────────────────────────────────────────
 //
 // A PURE REDUCER, so `check:irc` can pin the whole conversation with the server

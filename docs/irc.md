@@ -148,6 +148,17 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   empty panel "is kind of hard to tell that it's an actual chat"): a frame from
   `sm:` up, and a line in the empty list saying what it is and how to join. No
   frame on a phone, where it is the screen's lower half, as `<LiveChat>` is.
+- **One color per person** (Chad, 2026-11-22: "each user has like their own
+  color to their name … it helps make following the chat better"). Names are
+  14px and bold. `nickColor` (`lib/irc/protocol.ts`) picks one of ten
+  `--nick-N` tokens from the nick alone, case-insensitive, so every listener
+  sees one nick in one color and a reload keeps it; `check:irc` pins the hash,
+  because a change moves every color at once. Each token is at least 4.5:1 on
+  `--ink` in its theme. Your own name stays in the text color.
+- **The chat gets the room above it** (Chad, 2026-11-22): from `sm:` up, a show
+  with the chat has less padding and smaller gaps above the tabs, so the chat
+  is 465px tall at 1280 x 800 (405px before). Nothing moved; the phone layout
+  is unchanged.
 - **It leaves when it goes**: `QUIT :bye` on unmount (the player's SHOW
   changed, or the show ended and was never joined) and on a `pagehide` that is
   not `persisted`. The panel is keyed by channel, so a new live episode of the
