@@ -60,7 +60,9 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
 
 - **Type a nick and you are in.** No account. The nick is the only thing
   stored (`storage.ircNick`, per npub like `bmb:sender_name`); the rows live in
-  component state and go with it.
+  component state and go with it. **At most 17 characters** (`MAX_NICK_LENGTH`):
+  ZeroNode's `005` says `NICKLEN=17` (seen live by the gateway agent), and a
+  longer nick comes back as 432, which the panel would show as "taken".
 - **One connection, never reopened by itself.** A drop or an `ERROR` shows JOIN
   again; a refused JOIN (banned, invite only) closes the connection at once, so
   it does not hold a slot — the first JOIN and a JOIN AGAIN after a kick alike.

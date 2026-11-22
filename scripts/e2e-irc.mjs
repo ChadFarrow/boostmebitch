@@ -255,6 +255,7 @@ async function browserHalf(APP) {
     c.ok('the privacy line shows under the nick box', (await text('[data-irc-privacy]')).includes(PRIVACY)
       && await js(`${q('[data-irc-nick]')}.compareDocumentPosition(${q('[data-irc-privacy]')}) === Node.DOCUMENT_POSITION_FOLLOWING`));
     c.ok('the nick box shows', await js(`!!${q('[data-irc-nick]')}`));
+    c.equal('the nick box takes at most 17 characters (ZeroNode NICKLEN)', await js(`${q('[data-irc-nick]')}.maxLength`), 17);
 
     await type('[data-irc-nick]', NSEC);
     await click('[data-irc-join]');

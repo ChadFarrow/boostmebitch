@@ -22,7 +22,7 @@
 // 2026-11-21); the formatting codes are mIRC's, as clients in those channels send.
 
 import {
-  parseLine, stripFormatting, ctcpAction, cleanOutgoing, splitText, buildPrivmsg, buildAction, isValidNick,
+  parseLine, stripFormatting, ctcpAction, cleanOutgoing, splitText, buildPrivmsg, buildAction, isValidNick, MAX_NICK_LENGTH,
   ircStart, ircStep, ircSend, ircNick, ircRejoin,
 } from '../lib/irc/protocol.ts';
 import { IRC_CHAT_SHOWS, ircChannelFor, ircGatewayOk } from '../lib/irc/shows.ts';
@@ -173,9 +173,14 @@ console.log('\nThe smaller helpers:');
 
 console.log('\nThe nick rule:');
 {
+  // ZeroNode answers NICKLEN=17 in its 005 (seen live by the gateway agent,
+  // 2026-11-21): an 18-character nick is refused with 432, which the panel
+  // would show as "taken". The box and the rule stop it before it leaves.
+  if (MAX_NICK_LENGTH !== 17) fail(`MAX_NICK_LENGTH is ${MAX_NICK_LENGTH}, expected ZeroNode's NICKLEN 17`);
+  else ok('MAX_NICK_LENGTH is ZeroNode\'s NICKLEN, 17');
   const nicks = [
     ['candr_fan', true], ['[Dude]', true], ['a-b', true],
-    ['9lives', false], ['has space', false], ['', false], ['-dash', false], ['x'.repeat(31), false], ['x'.repeat(30), true],
+    ['9lives', false], ['has space', false], ['', false], ['-dash', false], ['x'.repeat(18), false], ['x'.repeat(17), true],
   ];
   for (const [nick, want] of nicks) {
     const got = isValidNick(nick);

@@ -22,7 +22,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { openIrcSession, IRC_GATEWAY_URL, type IrcSession } from '@/lib/irc/client';
-import { isValidNick, type IrcEvent } from '@/lib/irc/protocol';
+import { isValidNick, MAX_NICK_LENGTH, type IrcEvent } from '@/lib/irc/protocol';
 import { looksLikeSecretKey, textHoldsSecret } from '@/lib/nostr/npub-input';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
@@ -37,7 +37,7 @@ const CHAT_MAX = 500;
 const PRIVACY = 'IRC is public: the channel can keep a log of what you write, and ZeroNode sees your IP address.';
 const SECRET = 'That looks like a Nostr secret key (nsec). It was not sent.';
 const WALLET = 'That looks like a wallet connection string. It was not sent.';
-const BAD_NICK = 'Use 1 to 30 letters, digits, _ or -, and start with a letter.';
+const BAD_NICK = `Use 1 to ${MAX_NICK_LENGTH} letters, digits, _ or -, and start with a letter.`;
 const NICK_TAKEN = 'That nick is taken. Try another.';
 
 type Phase = 'idle' | 'connecting' | 'joined' | 'kicked' | 'closed';
@@ -269,7 +269,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
               value={nickDraft}
               onChange={(e) => setNickDraft(e.target.value)}
               placeholder="Your nick"
-              maxLength={30}
+              maxLength={MAX_NICK_LENGTH}
               autoComplete="nickname"
               autoCapitalize="off"
               spellCheck={false}

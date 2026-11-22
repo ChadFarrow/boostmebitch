@@ -32,7 +32,7 @@ const MAX_LINE_BYTES = 8191;
 /**
  * Text bytes per PRIVMSG line. The server relays each line with our full
  * prefix in front, and cuts the text when the relayed line passes 512 bytes:
- * a 30-character nick, a 63-character WEBIRC host and a long channel name take
+ * a 30-character nick (more than ZeroNode's 17), a 63-character WEBIRC host and a long channel name take
  * ~131 bytes of it (review, 2026-11-21). 350 leaves that room, so no message
  * loses its end on the way.
  */
@@ -163,9 +163,17 @@ export function buildAction(target: string, text: string): string[] {
     .map((chunk) => `PRIVMSG ${target} :\x01ACTION ${chunk}\x01`);
 }
 
-/** 1–30 characters; a letter or `[]\`_^{|}` first; then also digits and `-`. */
+/**
+ * ZeroNode's NICKLEN, from its 005 reply (seen live, 2026-11-21). A longer nick
+ * is refused with 432, so the nick box and `/nick` stop it before it leaves.
+ */
+export const MAX_NICK_LENGTH = 17;
+
+const NICK_RE = new RegExp(`^[A-Za-z[\\]\\\\\`_^{|}][A-Za-z0-9[\\]\\\\\`_^{|}-]{0,${MAX_NICK_LENGTH - 1}}$`);
+
+/** 1–17 characters; a letter or `[]\`_^{|}` first; then also digits and `-`. */
 export function isValidNick(nick: string): boolean {
-  return /^[A-Za-z[\]\\`_^{|}][A-Za-z0-9[\]\\`_^{|}-]{0,29}$/.test(nick);
+  return NICK_RE.test(nick);
 }
 
 // ── The session ──────────────────────────────────────────────────────────────
