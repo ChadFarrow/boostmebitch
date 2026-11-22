@@ -16,7 +16,7 @@
 //     `npm run e2e:communitynote -- --test-origin`: a TEST store's playlist, as on beta,
 //     keeps the deploy's own words and never asks Buddy (final review C1). Sections 0, T1, T2.
 // Each run refuses to go on when the server's origin does not fit it. APP_URL overrides
-// the server.
+// the server, on this machine only (scripts/local-target.mjs).
 //
 // THE SECOND SERVER — the Buddy deploy — is started BY THIS SCRIPT, never by hand and never
 // production. A BMB-hosted playlist's site-signed note is signed by the Buddy deploy, so the
@@ -67,12 +67,13 @@ import { fileURLToPath } from 'node:url';
 import { createRelay } from './local-relay.mjs';
 import { createFakeStampAddress } from './fake-stamp-address.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
+import { localAppUrl } from './local-target.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44 } from 'nostr-tools';
 import { getToken } from 'nostr-tools/nip98';
 import { BRANDS } from '../lib/brand.ts';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
-const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
+const APP = localAppUrl('http://localhost:3123');
 await requireApp(APP, `Nothing is serving ${APP}. Start the dev server (see the top of this file).`);
 
 const BUDDY = BRANDS.buddy;

@@ -4,7 +4,8 @@
 //   COMMUNITY_DB_URL=postgres://postgres:test@localhost:54329/postgres
 //   ADMIN_NPUBS=<ADMIN_NPUB below> NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on
 //   NEXT_PUBLIC_COMMUNITY_FEED_ORIGIN=http://localhost:3123 npm run dev -- -p 3123
-// and the schema applied (`npm run community:schema`). APP_URL overrides the server.
+// and the schema applied (`npm run community:schema`). APP_URL overrides the server,
+// on this machine only, like --feeds' COMMUNITY_DB_URL (scripts/local-target.mjs).
 // It signs NIP-98 headers the way the browser will, so it needs only nostr-tools.
 // Prints `ok`/`FAIL` lines; exits non-zero on any FAIL. It deletes what it makes.
 // It sends a new x-real-ip every 5 requests (the rate limiter reads that header first on a
@@ -19,8 +20,10 @@ import { randomBytes } from 'node:crypto';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { getToken } from 'nostr-tools/nip98';
 import { npubEncode, nsecEncode } from 'nostr-tools/nip19';
+import { localAppUrl, localDbUrl } from './local-target.mjs';
 
-const APP = (process.env.APP_URL || 'http://localhost:3123').replace(/\/$/, '');
+const APP = localAppUrl('http://localhost:3123');
+const DB_URL = localDbUrl();
 const PLAYLISTS = '/api/community-playlists';
 
 // TEST-ONLY admin key: it is public, has no value, and is not an account anyone uses.
@@ -103,8 +106,8 @@ if (process.argv.includes('--off')) {
 // the feature off, so the row goes straight into the store, and is deleted at the end.
 if (process.argv.includes('--feeds')) {
   const { default: pg } = await import('pg');
-  if (!process.env.COMMUNITY_DB_URL) { console.log('FAIL --feeds needs COMMUNITY_DB_URL (the server\'s)'); process.exit(1); }
-  const db = new pg.Client({ connectionString: process.env.COMMUNITY_DB_URL });
+  if (!DB_URL) { console.log('FAIL --feeds needs COMMUNITY_DB_URL (the server\'s)'); process.exit(1); }
+  const db = new pg.Client({ connectionString: DB_URL });
   await db.connect();
   const src = await call('GET', `/api/playlist?url=${encodeURIComponent(SONG_SOURCE)}&limit=40`);
   const real = (src.body?.episodes ?? []).filter((e) => !e.unresolved && e.guid && e.podcastGuid).slice(0, 12)
