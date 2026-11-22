@@ -5,7 +5,8 @@ The design is [`superpowers/specs/2026-11-21-irc-live-chat-design.md`](superpowe
 
 A listener on a live show from the opt-in list (`lib/irc/shows.ts`) types a nick
 and talks in the show's ZeroNode channel, in a panel that looks like the Nostr
-live chat. No account, and nothing kept: not by this app, not by the gateway.
+live chat. No account, and nothing kept: not by this app, and by Chad's box only
+for the 5 minutes it holds a dropped connection (below).
 
 ## Why a gateway, and what it may never do
 
@@ -28,6 +29,65 @@ connection to `irc.zeronode.net:6697`.
 - **The switch is ours.** `NEXT_PUBLIC_IRC_GATEWAY_URL` unset or invalid means
   no chat anywhere (`ircGatewayOk`); every deploy ran that way until the gateway
   existed. A ZeroNode WebSocket would change only that address.
+
+## Holding a dropped connection
+
+Chad, 2026-11-21: a listener whose phone or wifi drops "for a minute or two"
+comes back to the same session with nothing missed, and the channel does not see
+them quit and join again ("you'll see someone's name just keep disconnecting and
+reconnecting"). IRC cannot do that by itself: the connection IS the session. So
+a **hold service** on Chad's box (repo **thelounge-candr**) stands between Caddy
+and `webircgateway` at the same address, and keeps each listener's IRC
+connection open for **300 s** after their browser drops (Chad's choice). It is
+not a backlog: a listener sees only what was said since they joined.
+
+**The wire contract.** One IRC line per text frame, both ways, as before. A line
+that starts `HOLD ` belongs to the service: it never reaches ZeroNode, and the
+page never hands it to the reducer. `seq` counts every other line the service
+sent toward the page in this session, from 1.
+
+| Direction | Line | When |
+| --- | --- | --- |
+| service → page | `HOLD TOKEN <token> <seconds>` | The first frame of a new session. `<token>` is at least 128 random bits, base64url; `<seconds>` is the hold (300). |
+| page → service | `HOLD RESUME <token> <seq>` | The first frame of a socket that resumes. `<seq>` is the last line the page received. |
+| service → page | `HOLD RESUMED <nick> <channel> <missed>` | The session is held. Then every kept line after `<seq>`, in order, then live lines. `<channel>` is `*` when the nick is in none (kicked); `<missed>` counts the lines after `<seq>` the service no longer has. |
+| service → page | `HOLD GONE :<reason>` | The token is unknown or expired, or the session's IRC connection ended. Then the service closes the socket. |
+
+**What the service does.**
+- **It holds on every close of the browser socket except after a `QUIT`.** A
+  `QUIT` from the page ends the session at once, as `send_quit_on_client_close`
+  does today.
+- **While held it answers `PING` with `PONG`** — the page is not there to — and
+  keeps every other line.
+- **It keeps lines while the page is attached too**, in a ring per session
+  numbered by `seq`: a phone that changes network leaves a socket the server
+  still thinks is open, and whatever is written into it is lost. The page asks
+  for those lines back by `seq`. The ring is bounded (lines and bytes); what
+  falls out is counted in `<missed>`. Each kept line is tagged `@time=<ISO 8601
+  UTC>` when it arrives, unless it carries a time tag already: the reducer reads
+  it (`timeOf`), so a replayed line shows when it was said.
+- **A resume takes over.** An older socket still attached to the session is
+  closed with code `4001` (`resumed elsewhere`).
+- **After 300 s with no resume it sends `QUIT` upstream** and forgets the
+  session. If ZeroNode closes first, the session ends there, and a resume gets
+  `HOLD GONE`.
+- **The rules of the gateway stay.** `Origin` is checked against the same list
+  on every socket, resumes included; the visitor address comes only from Caddy;
+  no token and no line's text is logged; tokens compare in constant time; the
+  number of held sessions is bounded.
+
+**What the page does** (`lib/irc/client.ts`).
+- **It resumes only after a `HOLD TOKEN`**, so against a gateway with no hold
+  service it behaves as before, and either side can deploy first.
+- **On a drop it tries to resume** — after 1 s, 2 s and 4 s, then every 15 s,
+  and at once on `online` and when the tab becomes visible — until the hold runs
+  out. A resume never registers on IRC: it sends `HOLD RESUME` and nothing
+  else. So the page still cannot spend a ZeroNode slot by itself; after `HOLD
+  GONE` or the deadline it shows JOIN AGAIN, as before.
+- **The rows stay on screen while it reconnects**, and the composer waits.
+- **The token lives in memory only.** A reload or a closed tab sends `QUIT`
+  (`pagehide`) and ends the session at once. A tab that iOS discards with no
+  `pagehide` leaves its nick held until the hold runs out.
 
 ## The codec: one typed message is one command
 
@@ -62,7 +122,9 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   stored (`storage.ircNick`, per npub like `bmb:sender_name`); the rows live in
   component state and go with it. **At most 17 characters** (`MAX_NICK_LENGTH`):
   ZeroNode's `005` says `NICKLEN=17` (seen live by the gateway agent), and a
-  longer nick comes back as 432, which the panel would show as "taken".
+  longer nick comes back as 432, which the panel would show as "taken". **At
+  least 2** (`MIN_NICK_LENGTH`, ours: IRC allows one). The listener always types
+  a name; the panel makes up no guest names (Chad, 2026-11-21).
 - **One connection, never reopened by itself.** A drop or an `ERROR` shows JOIN
   again; a refused JOIN (banned, invite only) closes the connection at once, so
   it does not hold a slot — the first JOIN and a JOIN AGAIN after a kick alike.
