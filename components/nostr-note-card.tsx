@@ -19,7 +19,7 @@ import { DefaultAmountControl, MIN_BOOST_SATS, readAmountDefault } from './boost
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
-import { episodeLinkInNote, landingLinksInNote, getErrorMessage, noteNamesClient } from '@/lib/util';
+import { episodeLinkInNote, landingLinksInNote, getErrorMessage, noteNamesClient, withoutSiteDomainLine } from '@/lib/util';
 import { BRANDS } from '@/lib/brand';
 import { extractImages, removeUrl, renderNostrText, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
@@ -40,6 +40,12 @@ type ActionState = 'idle' | 'busy' | 'done' | 'error';
  */
 const OUR_CLIENTS = new Set(Object.values(BRANDS).map((b) => b.wireName));
 const OUR_ORIGINS = new Set(Object.values(BRANDS).map((b) => b.origin));
+/**
+ * Our hosts, the way a boost note's body names our site (`withoutSiteDomainLine`):
+ * the builder writes the origin's host (`www.…`), and the bare domain is here
+ * too so the card does not depend on which of the two it chose.
+ */
+const OUR_DOMAINS = Object.values(BRANDS).flatMap((b) => [new URL(b.origin).host, b.domain]);
 
 /**
  * Is this URL one of our own boost banners?
@@ -215,9 +221,11 @@ function NoteCardImpl({
   const cardHref = podcast ? episodeLink : null;
   // The card restates the destination, so leaving the raw link under it prints
   // the same fact twice, once as a wall of magenta. For our own notes that is
-  // both landing links, which the note names in its own `r` tags.
-  const contentBody = (ourNote ? landingLinksInNote(note.rawEvent?.tags ?? [], rawBody) : [])
+  // both landing links, which the note names in its own `r` tags — or, since
+  // 2026-11-22, the one line naming this site by its host.
+  const withoutLinks = (ourNote ? landingLinksInNote(note.rawEvent?.tags ?? [], rawBody) : [])
     .reduce((text, url) => removeUrl(text, url), cardHref ? removeUrl(rawBody, cardHref) : rawBody);
+  const contentBody = ourNote ? withoutSiteDomainLine(withoutLinks, OUR_DOMAINS) : withoutLinks;
   /**
    * The boost banner goes when the card is showing, and ONLY then.
    *

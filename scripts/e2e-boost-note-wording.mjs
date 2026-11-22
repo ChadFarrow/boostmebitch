@@ -247,6 +247,21 @@ const iTags = (e) => (e?.tags ?? []).filter((x) => x[0] === 'i').map((x) => x[1]
 const sentenceOf = (e) => (e?.content ?? '').split('\n').find((l) => / boosted \d+ sats/.test(l)) ?? '';
 /** ` via <the app the note's client tag names>` — what every sentence ends with. */
 const via = (e) => ` via ${(e?.tags ?? []).find((x) => x[0] === 'client')?.[1] ?? '(no client tag)'}`;
+// The note's ONE link since 2026-11-22: this site's host with no scheme, under
+// the sentence — no listen link, no deep link in the body (docs/nostr.md,
+// "ONE link in the body, with no scheme"). The `client` tag names the brand
+// the note wears; its host is the one the line must name.
+const HOSTS = { BoostMeBitch: 'www.boostmebitch.com', BoostMeBuddy: 'www.boostmebuddy.com' };
+const linkShape = (e) => {
+  const lines = (e?.content ?? '').split('\n');
+  const host = HOSTS[(e?.tags ?? []).find((x) => x[0] === 'client')?.[1]];
+  return {
+    hostLine: lines.filter((l) => l === host).length,
+    otherLinks: lines.filter((l) => /https?:\/\//.test(l) && !/\/api\/og\/boost\.png\?/.test(l)),
+    rTags: (e?.tags ?? []).filter((x) => x[0] === 'r').length,
+  };
+};
+const ONE_LINK = { hostLine: 1, otherLinks: [], rTags: 1 };
 
 const titled = (title) => `[...document.querySelectorAll('ul.divide-y > li')].filter((r) => r.innerText.includes(${JSON.stringify(title)})).map((r) => JSON.stringify(r.innerText.slice(0, 120))).join(' | ') || ('no row holds it; rows: ' + [...document.querySelectorAll('ul.divide-y > li')].map((r) => r.innerText.split('\\n').filter((l) => l.trim() && l.trim() !== '▶')[0]).join(' / '))`;
 
@@ -264,6 +279,7 @@ if (section(1, 'A playlist row names the track, its artist, then the playlist'))
     sentenceOf(note).endsWith('boosted 100 sats to Sing For You by The Doerfels from ITDV music playlist' + via(note)), sentenceOf(note));
   t.equal('the row\'s own feed is the first show tag', iTags(note)[0], `podcast:guid:${ALBUM}`);
   t.equal('then the item, then the playlist', iTags(note), [`podcast:guid:${ALBUM}`, 'podcast:item:guid:12711f57-2d41-4794-8cb9-154ecebb7cf7', `podcast:guid:${ITDV}`]);
+  t.equal('one link: the site\'s host, no other URL but the banner, one r tag', linkShape(note), ONE_LINK);
   t.ok('the modal closes on its own', await until(`!${DIALOG}`, 8000));
 }
 
@@ -315,6 +331,7 @@ if (section(4, 'A podcast episode: the episode, then the show, never "by"')) {
   t.ok('the note reaches the relay', !!note, note ? '' : await why());
   t.ok('...says "to Open Range from Two For Tunestr", with no "by"',
     sentenceOf(note).endsWith('boosted 100 sats to Open Range from Two For Tunestr' + via(note)), sentenceOf(note));
+  t.equal('one link: the site\'s host, no episode page or listen link, one r tag', linkShape(note), ONE_LINK);
 }
 
 // ---------------------------------------------------------------------------

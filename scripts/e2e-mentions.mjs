@@ -399,14 +399,16 @@ console.log('\n--- 5. The relay really holds them (read back over NIP-01) ---');
 }
 
 // ===========================================================================
-console.log('\n--- 5a. A link the APP writes keeps its /@handle beside a mention of that name ---');
+console.log('\n--- 5a. An episode page with an /@handle in it stays out of the body ---');
 // ===========================================================================
-// The body carries the episode's own page, from RSS <link>. On a Castopod show
-// that page is https://host/@<handle>/episodes/<slug>, so a sender who
-// @mentioned someone named "<handle>" broke a link they never typed: the
-// mention step replaced the name everywhere in the body. e2e:mentionlinks
-// covers a link the SENDER typed, through the real picker; this is the one
-// buildBoostNoteTemplate writes itself. After section 5 on purpose, so its
+// The body USED to carry the episode's own page, from RSS <link>. On a
+// Castopod show that page is https://host/@<handle>/episodes/<slug>, so a
+// sender who @mentioned someone named "<handle>" broke a link they never
+// typed: the mention step replaced the name everywhere in the body. Since
+// 2026-11-22 the body carries no listen link at all (the site's host is
+// its one link), so the page cannot be broken in it — this pins that it stays
+// out, and that the mention still lands. e2e:mentionlinks covers a link the
+// SENDER typed, through the real picker. After section 5 on purpose, so its
 // count of boost notes is not moved.
 {
   const castopod = 'https://castopod.example/@handle/episodes/ep-1';
@@ -417,8 +419,9 @@ console.log('\n--- 5a. A link the APP writes keeps its /@handle beside a mention
   await wait(400);
   const e = received.find((x) => x.id === note.id);
   check('the Castopod note reached the relay', !!e, true);
-  check('the episode link reaches the body whole', e?.content.includes(castopod), true);
-  check('...with no URI written into it', e?.content.includes('/nostr:'), false);
+  check('the episode page is not in the body', e?.content.includes('castopod.example'), false);
+  check('...nor in an r tag', e?.tags.some((t) => t[0] === 'r' && t[1].includes('castopod.example')), false);
+  check('...and no URI was written into a link', e?.content.includes('/nostr:'), false);
   check('the typed @handle became the URI', e?.content.includes(`thanks nostr:${mentionA.npub}`), true);
 }
 
@@ -572,8 +575,12 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   const sentenceOf = (e) => (e?.content.split('\n') ?? []).find((l) => / boosted \d+ sats/.test(l)) ?? '';
   const neventIn = (e) => /nostr:nevent1/.test(e?.content ?? '');
   console.log(`  (the largest real note: ${largest?.content.length} characters)`);
-  check('the fixture is at the maximum: both links are 512 characters',
-    (largest?.content.split('\n') ?? []).filter((l) => /^https?:\/\/\S+$/.test(l) && l.length === 512).length, 2);
+  // The body prints no link but the site's host since 2026-11-22; the
+  // deep link at its 512 is the `r` tag, and the tags have their own cap.
+  check('the fixture is at the maximum: the site link is 512 characters',
+    largest?.tags.filter((t) => t[0] === 'r').map((t) => t[1].length), [512]);
+  check('...and the body prints no link line but the site\'s host',
+    (largest?.content.split('\n') ?? []).filter((l) => /^https?:\/\//.test(l) && !/\/api\/og\/boost\.png/.test(l)), []);
   check('the largest real note fits the limit', largest?.content.length <= LIMIT, true);
   check('...with nothing given way: the song and its artist', sentenceOf(largest).includes(` by ${'R'.repeat(119)}…`), true);
   check('...the banner', !!bannerOf(largest), true);
@@ -622,17 +629,19 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('...after the banner, the song and the "by"', [!!bannerOf(hugeReceipt), / by R/.test(sentenceOf(hugeReceipt))], [false, false]);
   check('...and its q tag stays', hugeReceipt?.tags.filter((t) => t[0] === 'q').map((t) => t[1]), ['a'.repeat(64)]);
 
-  // A link longer than the route takes in an `r` tag is left out — of the tag
-  // AND the body, never cut — and the next landing page stands in for it.
-  const longLink = await capture({ ...base, episode: { ...episode, link: fill(600, 'link') } });
-  check('a landing link over 512 characters is in no r tag', longLink?.tags.some((t) => t[0] === 'r' && t[1].length > 512), false);
-  check('...and not in the body', longLink?.content.includes(fill(600, 'link')), false);
-  // The order is podcastLandingUrl's: the episode's page, then its guid when
-  // that is a URL (this fixture's is), then the show's pages.
-  check('...the next landing page stands in', longLink?.content.split('\n').includes(episode.guid), true);
+  // No listen link since 2026-11-22: not the episode's page, not its URL guid,
+  // not pod.link, Podcast Index or the feed — in the body or in an `r` tag.
+  const withPage = await capture({ ...base, episode: { ...episode, link: 'https://example.com/episode-page' } });
+  check('the episode\'s page is in no r tag', withPage?.tags.some((t) => t[0] === 'r' && t[1].includes('episode-page')), false);
+  check('...and not in the body', withPage?.content.includes('episode-page'), false);
+  check('...nor its URL guid', withPage?.content.split('\n').includes(episode.guid), false);
+  const listed = await capture({ ...base, podcast: { ...podcast, itunesId: 1234 }, episode: { ...episode, guid: 'plain-guid' } });
+  check('pod.link, Podcast Index and the feed are in neither',
+    [listed?.content, ...(listed?.tags.map((t) => t.join(' ')) ?? [])].some((x) => /pod\.link|podcastindex\.org\/podcast|example\.com\/feed\.xml/.test(x ?? '')), false);
+  // This site's deep link over 512 characters is left out of its `r` tag, never cut.
   const longSite = await capture({ ...base, episode: { ...episode, guid: `https://example.com/?${'a=b&'.repeat(70)}` } });
   check('a site link over 512 characters is left out too', longSite?.tags.some((t) => t[0] === 'r' && t[1].length > 512), false);
-  check('...of the body as well', /podcast=[^\s]*&episode=/.test(longSite?.content ?? ''), false);
+  check('...and the body never prints the deep link', /podcast=[^\s]*&episode=/.test(longSite?.content ?? ''), false);
 
   const worstAlbum = await capture({
     podcast: { ...podcast, medium: 'music', author: 'A'.repeat(300), nostrNpubs: many.slice(0, 4) }, episode: longEp,
@@ -748,6 +757,42 @@ console.log('\n--- 5c. A PLAYLIST ROW names its own feed — sentence, tags and 
   check('...carries both', [at(/nostr:npub1/) >= 0, at(/nostr:nevent1/) >= 0], [true, true]);
   check('rule 12: the mentions come before the quoted receipt', at(/nostr:npub1/) < at(/nostr:nevent1/), true);
   check('...so the receipt is the last line', /^nostr:nevent1\S+$/.test((q?.content ?? '').split('\n').at(-1)), true);
+}
+
+// ===========================================================================
+console.log('\n--- 5d. ONE link, to this site, with no scheme ---');
+// ===========================================================================
+// Chad, 2026-11-22, on a note in jumble.social: the show's art three times — a
+// card for the listen link (podcastindex.org), a card for this site's deep
+// link, and the banner. Every client read that day draws a card for an
+// `https://` URL and none for a host with no scheme (docs/nostr.md, "ONE link
+// in the body, with no scheme"). So the body names this site as `www.boostmebitch.com`,
+// between the sentence and the banner (the shared format's block order), and
+// carries no other link; the deep link stays in the one `r` tag and the hints.
+{
+  const SITE_LINE = new URL(BRAND.origin).host;
+  const deep = siteLandingUrl(podcast.podcastGuid, episode.guid);
+  const note = await publishBoostNote({
+    podcast: { ...podcast, itunesId: 1234 }, episode: { ...episode, link: 'https://example.com/episode-page' },
+    boostagram: boostagram('one link'), results: [], relays: [RELAY],
+  });
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  const lines = e?.content.split('\n') ?? [];
+  const at = (want) => lines.findIndex((l) => want(l));
+  check('the one-link note reached the relay', !!e, true);
+  check('the body names this site by its host, with no scheme', lines.filter((l) => l === SITE_LINE).length, 1);
+  check('...the www host, which every link to this site uses', SITE_LINE.startsWith('www.'), true);
+  check('...after the sentence, before the banner',
+    [at((l) => / boosted \d+ sats/.test(l)) < at((l) => l === SITE_LINE),
+      at((l) => l === SITE_LINE) < at((l) => /\/api\/og\/boost\.png/.test(l))], [true, true]);
+  check('no other link line: the banner is the only https:// in the body',
+    lines.filter((l) => /https?:\/\//.test(l)).map((l) => /\/api\/og\/boost\.png/.test(l)), [true]);
+  check('one r tag: the deep link', e?.tags.filter((t) => t[0] === 'r').map((t) => t[1]), [deep]);
+  check('...which the item\'s i hint names too',
+    e?.tags.find((t) => t[0] === 'i' && t[1] === `podcast:item:guid:${episode.guid}`)?.[2], deep);
+  check('the banner keeps its imeta', e?.tags.some((t) => t[0] === 'imeta'), true);
+  check('the feed npub keeps its p tag', pTags(e ?? { tags: [] }).includes(feedA.pubkey), true);
 }
 
 // ===========================================================================
