@@ -8,21 +8,23 @@
  * just want to do it similar to how the Nostr chat is"): the same label row,
  * list, row shape and composer.
  *
- * NOTHING IS KEPT. The rows live in this component's state and go when it
- * unmounts or the tab closes; only the nick is stored (`storage.ircNick`), so
- * the box is filled next time. IRC has no history either: a listener sees what
- * is said after they join, and the panel says so.
+ * LITTLE IS KEPT. The nick is stored (`storage.ircNick`), so the box is filled
+ * next time. The rows live in this component and, for a refresh, in this tab
+ * only (`storage.ircHold`, with the hold token): a refresh is a drop (Chad,
+ * 2026-11-22), so the next page resumes the held session and shows the rows
+ * again. IRC has no history: a listener sees what is said after they join.
  *
- * ONE CONNECTION, AND IT IS NEVER REOPENED BY ITSELF. Each connection is a slot
- * in ZeroNode's limit of 3 per address at the gateway, so a drop shows JOIN
- * again and waits for a press (`lib/irc/client.ts`).
+ * ONE IRC CONNECTION, NEVER REGISTERED TWICE BY ITSELF. Each is a slot in
+ * ZeroNode's limit of 3 per address at the gateway. A drop or a refresh
+ * reopens only the SOCKET, to the session the hold service holds
+ * (`lib/irc/client.ts`); without a hold service a drop shows JOIN again.
  *
  * No report, no hide, no word filter (Chad: "all of these chats have
  * moderators in them that can kick people. So it's up to the podcaster").
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { openIrcSession, IRC_GATEWAY_URL, type IrcSession } from '@/lib/irc/client';
-import { isValidNick, nickColor, MAX_NICK_LENGTH, MIN_NICK_LENGTH, type IrcEvent } from '@/lib/irc/protocol';
+import { openIrcSession, IRC_GATEWAY_URL, type IrcHold, type IrcSession } from '@/lib/irc/client';
+import { isValidNick, nickColor, MAX_NICK_LENGTH, MIN_NICK_LENGTH, type IrcEvent, type IrcSavedRow } from '@/lib/irc/protocol';
 import { looksLikeSecretKey, textHoldsSecret } from '@/lib/nostr/npub-input';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
@@ -50,15 +52,9 @@ const NICK_TAKEN = 'That nick is taken. Try another.';
 
 type Phase = 'idle' | 'connecting' | 'joined' | 'kicked' | 'closed';
 
-interface Row {
+/** `notice` is the panel's own line (joined, kicked); it has no nick. */
+interface Row extends IrcSavedRow {
   id: number;
-  /** `notice` is the panel's own line (joined, kicked); it has no nick. */
-  kind: 'message' | 'notice';
-  from?: string;
-  text: string;
-  action?: boolean;
-  self?: boolean;
-  time: number;
 }
 
 /** The refusal for text that must not leave the device, or null when it may. */
@@ -75,8 +71,8 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
   const [draft, setDraft] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  /** The hold service holds the session while its socket is away (docs/irc.md). */
-  const [away, setAway] = useState(false);
+  /** The hold service holds the session while its socket is away (docs/irc.md): after a drop, or after a refresh. */
+  const [away, setAway] = useState<null | 'lost' | 'refresh'>(null);
 
   const sessionRef = useRef<IrcSession | null>(null);
   const nextId = useRef(0);
@@ -88,6 +84,10 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
   npubRef.current = npub;
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
+  /** The rows as of the last IRC line: set at once, so a save matches the client's `seq`. */
+  const rowsRef = useRef<Row[]>([]);
+  /** The nick the session joined with (or was renamed to). */
+  const nickRef = useRef('');
 
   // The stored nick, read after mount: storage is not there on the server.
   useEffect(() => {
@@ -96,21 +96,35 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
 
   const addRows = useCallback((add: Omit<Row, 'id'>[]) => {
     if (!add.length) return;
-    setRows((prev) => {
-      const next = [...prev, ...add.map((r) => ({ ...r, id: nextId.current++ }))];
-      return next.length > MAX_ROWS ? next.slice(next.length - MAX_ROWS) : next;
-    });
+    const next = [...rowsRef.current, ...add.map((r) => ({ ...r, id: nextId.current++ }))];
+    rowsRef.current = next.length > MAX_ROWS ? next.slice(next.length - MAX_ROWS) : next;
+    setRows(rowsRef.current);
   }, []);
   const notice = useCallback(
     (text: string) => addRows([{ kind: 'notice', text, time: Math.floor(Date.now() / 1000) }]),
     [addRows],
   );
 
+  // Leaving on purpose ends the held session too, so its saved copy goes. A
+  // session still being resumed is not dropped from storage: React's
+  // development double mount quits it at once, and the second mount resumes.
   const quit = useCallback(() => {
     const s = sessionRef.current;
     sessionRef.current = null;
+    if (s?.hold()) storage.ircHold.clear();
     s?.quit();
   }, []);
+
+  /** Save the held session for a refresh in this tab; nothing without a hold service. */
+  const save = useCallback(() => {
+    const h = sessionRef.current?.hold();
+    const p = phaseRef.current;
+    if (!h || (p !== 'joined' && p !== 'kicked')) return;
+    storage.ircHold.set({
+      channel, nick: nickRef.current, token: h.token, holdS: h.holdS, seq: h.seq, at: Date.now(), phase: p,
+      rows: rowsRef.current.map(({ id: _id, ...r }) => r),
+    });
+  }, [channel]);
 
   const onEvent = useCallback((e: IrcEvent) => {
     switch (e.type) {
@@ -119,6 +133,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         setNickTaken(false);
         setErr(null);
         setNickDraft(e.nick);
+        nickRef.current = e.nick;
         storage.ircNick.set(npubRef.current, e.nick);
         notice(`You joined ${e.channel}. IRC keeps no history, so messages show from here on.`);
         onJoinedRef.current?.();
@@ -134,6 +149,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         // Only a nick the listener asked for is theirs to keep. Services
         // rename a guest on a registered nick (`Guest4821`); storing that would
         // fill the box with it next time, so say what happened instead.
+        nickRef.current = e.to;
         if (e.requested) {
           setNickDraft(e.to);
           storage.ircNick.set(npubRef.current, e.to);
@@ -160,16 +176,74 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
   }, [addRows, notice, channel, quit]);
 
   // Leave the channel when the panel goes (another show, the show ended and
-  // was never joined) and when the tab closes. A page kept in the back/forward
-  // cache (`persisted`) is not leaving.
+  // was never joined). When the PAGE goes, a held session is saved and kept,
+  // not quit: the page cannot tell a refresh from a closed tab, and a refresh
+  // is a drop (Chad, 2026-11-22). A closed tab's session ends when the hold
+  // runs out. Without a hold service the page quits, as before. A page kept in
+  // the back/forward cache (`persisted`) is not leaving. A hidden tab saves
+  // too: a phone may discard it, and its reload is a refresh.
   useEffect(() => {
-    const onHide = (ev: PageTransitionEvent) => { if (!ev.persisted) quit(); };
+    const onHide = (ev: PageTransitionEvent) => {
+      save();
+      if (!ev.persisted && !sessionRef.current?.hold()) quit();
+    };
+    const onVisibility = () => { if (document.visibilityState === 'hidden') save(); };
     window.addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onVisibility);
       quit();
     };
-  }, [quit]);
+  }, [quit, save]);
+
+  const open = useCallback((nick: string, resume?: IrcHold) => {
+    const session = openIrcSession({
+      url: IRC_GATEWAY_URL,
+      nick,
+      channel,
+      onEvent,
+      resume,
+      onLink: (l) => {
+        if (sessionRef.current !== session) return;
+        setAway(l.kind === 'lost' ? 'lost' : null);
+        if (l.kind === 'back') {
+          notice(l.missed > 0
+            ? `Reconnected. ${l.missed} line${l.missed === 1 ? '' : 's'} from while you were away could not be kept.`
+            : 'Reconnected; nothing was missed.');
+        }
+      },
+      onClose: (reason) => {
+        if (sessionRef.current !== session) return;
+        sessionRef.current = null;
+        storage.ircHold.clear();
+        setAway(null);
+        setPhase('closed');
+        setNickTaken(false);
+        // A reason that is already a sentence is shown as it is.
+        setErr((prev) => prev ?? (/[.]$/.test(reason) ? reason : `Disconnected (${reason}).`));
+      },
+    });
+    sessionRef.current = session;
+  }, [channel, onEvent, notice]);
+
+  // A refresh: this tab saved a held session for this channel, so show its
+  // rows and resume it, with no JOIN (docs/irc.md, "A refresh is a drop").
+  useEffect(() => {
+    const saved = storage.ircHold.get();
+    if (!saved || saved.channel.toLowerCase() !== channel.toLowerCase() || sessionRef.current) return;
+    if (Date.now() > saved.at + saved.holdS * 1000) { storage.ircHold.clear(); return; }
+    rowsRef.current = saved.rows.map((r, i) => ({ ...r, id: i }));
+    nextId.current = rowsRef.current.length;
+    setRows(rowsRef.current);
+    nickRef.current = saved.nick;
+    setNickDraft(saved.nick);
+    setPhase(saved.phase);
+    phaseRef.current = saved.phase;
+    setAway('refresh');
+    onJoinedRef.current?.();
+    open(saved.nick, { token: saved.token, seq: saved.seq, holdS: saved.holdS });
+  }, [channel, open]);
 
   function join() {
     const nick = nickDraft.trim();
@@ -182,33 +256,10 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
       return;
     }
     quit();
+    storage.ircHold.clear();
     setPhase('connecting');
     setNickTaken(false);
-    const session = openIrcSession({
-      url: IRC_GATEWAY_URL,
-      nick,
-      channel,
-      onEvent,
-      onLink: (l) => {
-        if (sessionRef.current !== session) return;
-        setAway(l.kind === 'lost');
-        if (l.kind === 'back') {
-          notice(l.missed > 0
-            ? `Reconnected. ${l.missed} line${l.missed === 1 ? '' : 's'} from while you were away could not be kept.`
-            : 'Reconnected; nothing was missed.');
-        }
-      },
-      onClose: (reason) => {
-        if (sessionRef.current !== session) return;
-        sessionRef.current = null;
-        setAway(false);
-        setPhase('closed');
-        setNickTaken(false);
-        // A reason that is already a sentence is shown as it is.
-        setErr((prev) => prev ?? (/[.]$/.test(reason) ? reason : `Disconnected (${reason}).`));
-      },
-    });
-    sessionRef.current = session;
+    open(nick);
   }
 
   function send() {
@@ -330,7 +381,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
           <>
           {away && (
             <p data-irc-away role="status" className="text-[11px] text-bolt">
-              Connection lost. Reconnecting…
+              {away === 'refresh' ? 'Reconnecting to the chat…' : 'Connection lost. Reconnecting…'}
             </p>
           )}
           <div className="flex gap-2 items-end">
@@ -341,7 +392,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
               className="input flex-1 min-w-0 resize-none"
               rows={1}
               value={draft}
-              disabled={away}
+              disabled={!!away}
               maxLength={CHAT_MAX}
               placeholder="Send a message…"
               onChange={(e) => setDraft(e.target.value)}
@@ -356,7 +407,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
               type="button"
               data-irc-send
               onClick={send}
-              disabled={away || !draft.trim()}
+              disabled={!!away || !draft.trim()}
               className="btn-bolt text-xs disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Send

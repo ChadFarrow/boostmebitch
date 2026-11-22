@@ -217,6 +217,40 @@ async function holdHalf() {
     c.equal('…then none, and no new IRC session', [fake.resumes.length - tries, fake.sessionsCreated], [triesMade, createdDown]);
     fake.refuseResume = false;
 
+    // A refresh is a drop (Chad, 2026-11-22): the old page saved hold(), and
+    // the new page starts with `resume`. Here the old client stays alive, so
+    // the takeover (4001) is what ends it — as the dead page's socket would.
+    const old = session(fake, 'refresher', QUICK);
+    await until(() => old.joins() === 1);
+    fake.say('dude', '#candr', 'seen before the refresh');
+    await until(() => old.events.some((e) => e.text === 'seen before the refresh'));
+    const snap = old.s.hold();
+    c.ok('hold() gives the token, the seq and the hold', !!snap && /^[A-Za-z0-9_-]{22,}$/.test(snap.token) && snap.seq > 0 && snap.holdS === 2, JSON.stringify(snap && { ...snap, token: '<token>' }));
+    fake.say('dude', '#candr', 'said during the refresh');
+    await until(() => old.events.some((e) => e.text === 'said during the refresh'));
+    const regsBefore = fake.received.filter((l) => /^(NICK|USER) /.test(l)).length;
+    const createdBefore = fake.sessionsCreated;
+    const backLinks = [];
+    const fresh = session(fake, 'refresher', { ...QUICK, resume: snap, onLink: (l) => backLinks.push(l) });
+    c.ok('a new page resumes the held session', await until(() => backLinks.some((l) => l.kind === 'back')), JSON.stringify(backLinks));
+    c.ok('…gets the line said during the refresh', await until(() => fresh.events.some((e) => e.text === 'said during the refresh')), JSON.stringify(fresh.events.map((e) => e.text ?? e.type)));
+    c.ok('…and not the line it already had', !fresh.events.some((e) => e.text === 'seen before the refresh'));
+    c.equal('…registers nothing (no NICK, no USER, no joined event)', [fake.received.filter((l) => /^(NICK|USER) /.test(l)).length, fresh.joins()], [regsBefore, 0]);
+    c.equal('…on the same IRC session, with no QUIT', [fake.sessionsCreated, fake.quits.includes('refresher')], [createdBefore, false]);
+    fresh.s.send('after the refresh');
+    c.ok('…and it can talk', await until(() => fake.received.includes('PRIVMSG #candr :after the refresh')));
+    c.ok('the old page is told it went on in another window', await until(() => old.closes.length === 1) && /another window/i.test(old.closes[0]), JSON.stringify(old.closes));
+    c.ok('the new page can save it again, further on', fresh.s.hold()?.token === snap.token && fresh.s.hold().seq > snap.seq);
+    fresh.s.quit();
+    await until(() => fresh.closes.length === 1);
+
+    const createdGhost = fake.sessionsCreated;
+    const regsGhost = fake.received.filter((l) => /^(NICK|USER) /.test(l)).length;
+    const ghost = session(fake, 'ghost', { ...QUICK, resume: { token: 'A'.repeat(22), seq: 5, holdS: 2 } });
+    c.ok('a saved hold the service no longer has ends with GONE', await until(() => ghost.closes.length === 1), JSON.stringify(ghost.closes));
+    c.ok('…saying the chat ended while it was away', /ended while you were away/i.test(ghost.closes[0] ?? ''), JSON.stringify(ghost.closes));
+    c.equal('…and registers nothing', [fake.sessionsCreated, fake.received.filter((l) => /^(NICK|USER) /.test(l)).length], [createdGhost, regsGhost]);
+
     // LEAVE ends the session at once: no hold, no resume.
     const leaver = session(fake, 'leaver', QUICK);
     await until(() => leaver.joins() === 1);
@@ -598,13 +632,51 @@ async function browserHalf(APP) {
       await until(`!!${q('[data-irc-join]')}`, 8000) && await chatHas('The chat connection ended while you were away.'));
     c.ok('…without "Disconnected (…)" around it', !(await chatHas('Disconnected (The chat', 300)));
 
-    // Leaving the page is a QUIT, not a drop: without it the hold keeps the
-    // nick in the channel for 5 minutes after the listener has gone.
+    // A refresh is a drop (Chad, 2026-11-22: "if you refresh the page, you
+    // should come back with your nick and chat"). The page saves the held
+    // session in this tab; the reloaded page shows the rows and resumes it.
+    const regs = () => fake.received.filter((l) => /^(NICK|USER) /.test(l)).length;
+    const reopen = async () => {
+      await until(`document.body.innerText.includes('E2E Chad Show')`, 30000);
+      await playCard('E2E Chad Show');
+      await openPlayer('E2E Chad Show live now');
+    };
+    await click('[data-irc-join]');
+    await until(`!!${q('[data-irc-input]')}`, 8000);
+    fake.say('dude', '#candr', 'before the refresh');
+    await chatHas('before the refresh');
+    const atRefresh = [fake.sessionsCreated, regs(), fake.quits.length];
+    await send('Page.reload');
+    fake.say('dude', '#candr', 'said during the refresh');
+    await reopen();
+    c.ok('a refresh shows the rows again', await chatHas('before the refresh', 8000));
+    c.ok('…resumes by itself, with what was said during the refresh', await chatHas('said during the refresh', 8000));
+    c.ok('…says so', await chatHas('Reconnected; nothing was missed.'));
+    c.ok('…offers no JOIN, and the composer works', await until(`${q('[data-irc-input]')}?.disabled === false && !${q('[data-irc-join]')}`, 5000));
+    c.equal('…on the same IRC session: no NICK or USER, no QUIT', [fake.sessionsCreated, regs(), fake.quits.length], atRefresh);
+    await type('[data-irc-input]', 'after the refresh');
+    await click('[data-irc-send]');
+    c.ok('…and what you type goes out on it', await fakeGot(() => fake.received.includes('PRIVMSG #candr :after the refresh')));
+    c.equal('the saved session is in this tab only (sessionStorage), never in localStorage',
+      await js(`[!!sessionStorage.getItem('bmb:irc_hold'), Object.keys(localStorage).some((k) => k.includes('irc_hold'))].join()`), 'true,false');
+
+    // Leaving on purpose (another show) still quits, and forgets the session.
+    await closePlayer();
+    await playCard('E2E Other Show');
+    c.ok('another show still quits the channel', await fakeGot(() => fake.quits.includes('e2efan')), JSON.stringify(fake.quits));
+    c.ok('…and forgets the saved session', await until(`!sessionStorage.getItem('bmb:irc_hold')`, 3000));
+    await send('Page.reload');
+    await reopen();
+    c.ok('so a refresh after it offers JOIN, not a resume', await until(`!!${q('[data-irc-join]')}`, 8000) && !(await js(`!!${q('[data-irc-away]')}`)));
+
+    // Leaving the page is a drop too: the page cannot tell a refresh from a
+    // closed tab, so the session stays held until the hold runs out.
     await click('[data-irc-join]');
     await until(`!!${q('[data-irc-input]')}`, 8000);
     const quitsBeforeLeave = fake.quits.length;
     await send('Page.navigate', { url: 'about:blank' });
-    c.ok('leaving the page sends QUIT, so the hold keeps no session', await fakeGot(() => fake.quits.length > quitsBeforeLeave, 5000), JSON.stringify(fake.quits));
+    await wait(1500);
+    c.equal('leaving the page sends no QUIT: the hold keeps the session until it runs out', [fake.quits.length, fake.sessions], [quitsBeforeLeave, 1]);
   } finally {
     await fake.close();
   }

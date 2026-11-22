@@ -23,11 +23,12 @@
 
 import {
   parseLine, stripFormatting, ctcpAction, cleanOutgoing, splitText, buildPrivmsg, buildAction, isValidNick, MAX_NICK_LENGTH,
-  nickColor, NICK_COLORS,
+  nickColor, NICK_COLORS, readHoldSnapshot, MAX_SAVED_ROWS,
   ircStart, ircStep, ircSend, ircNick, ircRejoin,
 } from '../lib/irc/protocol.ts';
 import { IRC_CHAT_SHOWS, ircChannelFor, ircGatewayOk } from '../lib/irc/shows.ts';
 import { replayVectors } from './replay-vectors.mjs';
+import { isDeepStrictEqual } from 'node:util';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
@@ -220,6 +221,50 @@ console.log('\nThe nick color:');
   else ok(`200 nicks use every color, none above 40 (${counts.join(' ')})`);
   if (!inRange(nickColor(''))) fail('an empty nick is out of range');
   else ok('an empty nick still gets a color in range');
+}
+
+console.log('\nThe saved hold (a refresh is a drop):');
+{
+  // Chad, 2026-11-22: "if you lose connection or if you refresh the page, you
+  // should come back with your nick and chat." The tab saves its held session
+  // in sessionStorage (`bmb:irc_hold`) and the next page reads it back. What
+  // comes back from storage is input, not ours: the page sends the token to the
+  // gateway and renders the rows, so it is read field by field.
+  // `naiveRead` is the obvious reader, `JSON.parse` and trust.
+  const naiveRead = (raw) => (raw && typeof raw === 'object' ? raw : null);
+  const TOKEN = 'k3Jx9QwErTyUiOpAsDfGhJ';
+  const row = (text, extra = {}) => ({ kind: 'message', from: 'dude', text, time: 1700000000, ...extra });
+  const good = { channel: '#VoidZero', nick: 'notChadF', token: TOKEN, holdS: 300, seq: 41, at: 1700000000000, phase: 'joined',
+    rows: [{ kind: 'notice', text: 'You joined #VoidZero.', time: 1700000000 }, row('toast', { self: true, from: 'notChadF' }), row('waves', { action: true })] };
+  const wire = (v) => JSON.parse(JSON.stringify(v));
+  const cases = [
+    ['a saved hold comes back whole', wire(good), good],
+    ['a short token is refused', wire({ ...good, token: 'abc' }), null],
+    ['a token with URL characters is refused', wire({ ...good, token: TOKEN + '/../x' }), null],
+    ['a hold of 0 s is refused', wire({ ...good, holdS: 0 }), null],
+    ['a hold over an hour is refused', wire({ ...good, holdS: 99999 }), null],
+    ['a negative seq is refused', wire({ ...good, seq: -1 }), null],
+    ['a channel without # is refused', wire({ ...good, channel: 'VoidZero' }), null],
+    ['a bad nick is refused', wire({ ...good, nick: '9 lives' }), null],
+    ['a phase other than joined or kicked is refused', wire({ ...good, phase: 'connecting' }), null],
+    ['an array is refused', wire([good]), null],
+    ['a row of the wrong shape is dropped, the others kept', wire({ ...good, rows: [row('a'), { kind: 'message', from: 'x', text: 5, time: 1 }, row('b')] }), { ...good, rows: [row('a'), row('b')] }],
+    ['a field the panel does not know is not carried', wire({ ...good, rows: [{ ...row('a'), html: '<img src=x onerror=alert(1)>' }] }), { ...good, rows: [row('a')] }],
+  ];
+  for (const [label, raw, want] of cases) {
+    const got = readHoldSnapshot(raw);
+    if (!isDeepStrictEqual(got, want)) fail(`${label}: got ${JSON.stringify(got)?.slice(0, 160)}`);
+    else if (want === null && naiveRead(raw) === null) fail(`${label}: naiveRead agrees, so the vector cannot fail`);
+    else ok(label);
+  }
+  const many = wire({ ...good, rows: Array.from({ length: 250 }, (_, i) => row(`line ${i}`)) });
+  const kept = readHoldSnapshot(many)?.rows ?? [];
+  if (kept.length !== MAX_SAVED_ROWS || kept[0].text !== 'line 50') fail(`250 rows keep ${kept.length}, first ${kept[0]?.text}; expected the newest ${MAX_SAVED_ROWS}`);
+  else ok(`250 saved rows come back as the newest ${MAX_SAVED_ROWS}`);
+  for (const raw of [null, undefined, 'x', 7]) {
+    if (readHoldSnapshot(raw) !== null) fail(`${JSON.stringify(raw)} is not refused`);
+  }
+  ok('null, undefined, a string and a number are refused');
 }
 
 // ── The session: what the panel does with each server line ──────────────────

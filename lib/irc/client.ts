@@ -16,7 +16,7 @@
  * frame, and only until the hold runs out. Against a gateway with no hold
  * service there is no token, and a drop calls `onClose` once, as before.
  */
-import { ircStart, ircStep, ircSend, ircNick, ircRejoin, type IrcEvent, type IrcState, type IrcStepResult } from './protocol';
+import { ircStart, ircStep, ircSend, ircNick, ircRejoin, HOLD_TOKEN_RE, MAX_HOLD_S, type IrcEvent, type IrcState, type IrcStepResult } from './protocol';
 
 export { IRC_GATEWAY_URL } from './shows';
 
@@ -25,6 +25,16 @@ export interface IrcSession {
   nick(n: string): void;
   rejoin(): void;
   quit(): void;
+  /** What a page saves to resume this session after a refresh, or null when nothing holds it. */
+  hold(): IrcHold | null;
+}
+
+/** A held session, as `HOLD RESUME` needs it. */
+export interface IrcHold {
+  token: string;
+  /** The last IRC line received. */
+  seq: number;
+  holdS: number;
 }
 
 /** The socket to the hold service went down, or came back with `missed` lines it no longer had. */
@@ -49,6 +59,12 @@ export interface IrcSessionOptions {
   resumeDelaysMs?: number[];
   /** A resume socket that has not answered `HOLD RESUMED` in this long is closed and tried again. */
   resumeTimeoutMs?: number;
+  /**
+   * Start by resuming a session an earlier page held (a refresh, docs/irc.md
+   * "A refresh is a drop") instead of registering: `HOLD RESUME` first, never
+   * NICK/USER. The panel starts as "away" and gets `onLink({ kind: 'back' })`.
+   */
+  resume?: IrcHold;
 }
 
 /** The default for `registerTimeoutMs`. */
@@ -60,10 +76,6 @@ export const IRC_RESUME_TIMEOUT_MS = 10_000;
 
 /** The close code of a socket whose session another socket resumed. */
 const TAKEOVER = 4001;
-/** A token the page will send back: base64url, at least 128 bits. */
-const TOKEN_RE = /^[A-Za-z0-9_-]{22,128}$/;
-/** The longest hold the page believes, whatever a gateway says. */
-const MAX_HOLD_S = 3600;
 
 const REASON_GONE = 'The chat connection ended while you were away.';
 const REASON_ELSEWHERE = 'The chat went on in another window.';
@@ -72,7 +84,8 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 
 export function openIrcSession(o: IrcSessionOptions): IrcSession {
   const start = ircStart(o.nick, o.channel);
-  let state: IrcState = start.state;
+  // A resumed session is past registration; HOLD RESUMED names its nick.
+  let state: IrcState = o.resume ? { phase: 'joined', nick: o.nick, channel: o.channel, pendingNick: null } : start.state;
   let ws: WebSocket | null = null;
   /** The socket in `ws` carries IRC: open for a new session, or past `HOLD RESUMED`. */
   let attached = false;
@@ -80,6 +93,8 @@ export function openIrcSession(o: IrcSessionOptions): IrcSession {
   let quitting = false;
   let token: string | null = null;
   let holdMs = 0;
+  /** Waiting for the first `HOLD RESUMED` of a session an earlier page held. */
+  let adopting = false;
   /** IRC lines received in this session: what `HOLD RESUME` asks to continue after. */
   let seq = 0;
   /** While a held session is away: when its hold runs out. 0 while attached. */
@@ -124,7 +139,7 @@ export function openIrcSession(o: IrcSessionOptions): IrcSession {
     const [, kind, a, b, c] = line.split(' ');
     if (kind === 'TOKEN' && !resuming && !token) {
       const s = Number(b);
-      if (a && TOKEN_RE.test(a) && Number.isFinite(s) && s > 0) {
+      if (a && HOLD_TOKEN_RE.test(a) && Number.isFinite(s) && s > 0) {
         token = a;
         holdMs = Math.min(s, MAX_HOLD_S) * 1000;
       }
@@ -133,6 +148,11 @@ export function openIrcSession(o: IrcSessionOptions): IrcSession {
       attached = true;
       deadline = 0;
       tries = 0;
+      if (adopting) {
+        // `<channel>` is `*` when the nick is in none (kicked while away).
+        adopting = false;
+        state = { phase: b === '*' ? 'parted' : 'joined', nick: a && a !== '*' ? a : state.nick, channel: o.channel, pendingNick: null };
+      }
       const missed = Number(c);
       o.onLink?.({ kind: 'back', missed: Number.isFinite(missed) && missed > 0 ? missed : 0 });
     } else if (kind === 'GONE') {
@@ -227,19 +247,30 @@ export function openIrcSession(o: IrcSessionOptions): IrcSession {
     document.removeEventListener('visibilitychange', nudge);
   }
 
-  registerTimer = setTimeout(() => {
-    // `finish` first, so the reason the listener reads is this one and not
-    // the close that `quit` causes.
-    finish('no answer from the chat server');
-    quit();
-  }, o.registerTimeoutMs ?? IRC_REGISTER_TIMEOUT_MS);
-
-  connect(false);
+  if (o.resume && HOLD_TOKEN_RE.test(o.resume.token)) {
+    token = o.resume.token;
+    holdMs = Math.min(Math.max(o.resume.holdS, 1), MAX_HOLD_S) * 1000;
+    seq = o.resume.seq;
+    // Counted from now, not from the drop: the service's own clock decides,
+    // and it answers HOLD GONE when the hold already ran out.
+    deadline = Date.now() + holdMs;
+    adopting = true;
+    resume();
+  } else {
+    registerTimer = setTimeout(() => {
+      // `finish` first, so the reason the listener reads is this one and not
+      // the close that `quit` causes.
+      finish('no answer from the chat server');
+      quit();
+    }, o.registerTimeoutMs ?? IRC_REGISTER_TIMEOUT_MS);
+    connect(false);
+  }
 
   return {
     send: (text) => applyOwn(ircSend(state, text, nowSec())),
     nick: (n) => applyOwn(ircNick(state, n)),
     rejoin: () => applyOwn(ircRejoin(state)),
     quit,
+    hold: () => (token && !closed && !adopting ? { token, seq, holdS: holdMs / 1000 } : null),
   };
 }

@@ -85,9 +85,25 @@ sent toward the page in this session, from 1.
   else. So the page still cannot spend a ZeroNode slot by itself; after `HOLD
   GONE` or the deadline it shows JOIN AGAIN, as before.
 - **The rows stay on screen while it reconnects**, and the composer waits.
-- **The token lives in memory only.** A reload or a closed tab sends `QUIT`
-  (`pagehide`) and ends the session at once. A tab that iOS discards with no
-  `pagehide` leaves its nick held until the hold runs out.
+- **A refresh is a drop** (Chad, 2026-11-22: "if you lose connection or if you
+  refresh the page, you should come back with your nick and chat"). When the
+  page hides (`pagehide`, and `visibilitychange` to hidden, because a phone may
+  discard a hidden tab), the panel saves the token, the last line's `seq`, the
+  nick and the last 200 rows in THIS TAB's sessionStorage (`bmb:irc_hold`,
+  `storage.ircHold`). The next page in the tab shows the rows and starts with
+  `HOLD RESUME` (`openIrcSession`'s `resume`): no NICK, no USER, no new ZeroNode
+  slot, and the lines said during the reload arrive by `seq`. The rows are saved
+  and the seq read in the same handler, so they agree.
+- **The cost: a closed tab keeps the nick in the channel until the hold runs
+  out** (5 minutes). The page cannot tell a refresh from a closed tab, so it
+  sends no `QUIT` on `pagehide` while a hold token exists (Chad accepted this,
+  2026-11-22). Without a hold service it still quits on `pagehide`.
+- **The saved hold is read back field by field** (`readHoldSnapshot`,
+  `check:irc`): the token goes to the gateway and the rows to the screen, so a
+  field of the wrong shape refuses the hold and a row of the wrong shape is
+  dropped. It is sessionStorage, never localStorage, so it dies with the tab
+  and no other tab resumes it. Never put the token in a URL: the gateway logs
+  URLs.
 
 ## The codec: one typed message is one command
 
@@ -160,8 +176,8 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   is 465px tall at 1280 x 800 (405px before). Nothing moved; the phone layout
   is unchanged.
 - **It leaves when it goes**: `QUIT :bye` on unmount (the player's SHOW
-  changed, or the show ended and was never joined) and on a `pagehide` that is
-  not `persisted`. The panel is keyed by channel, so a new live episode of the
+  changed, or the show ended and was never joined), and LEAVE, and both forget
+  the saved hold. The page going away is a drop, not a leave (above). The panel is keyed by channel, so a new live episode of the
   same show keeps the session. Switching to PLAYED or ABOUT does not unmount it,
   and another show opens on CHAT whatever tab was left open.
 - **A secret is refused before it leaves**, in the nick box and the composer:

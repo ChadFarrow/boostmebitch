@@ -33,6 +33,7 @@ import {
 import { coerceProfileMetadata } from './nostr/profile-metadata';
 import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 import { createObservable } from './pubsub';
+import { readHoldSnapshot, type IrcHoldSnapshot } from './irc/protocol';
 
 // Rail-pref changes need to reach live UI (account-menu summary, balance
 // chip, open wallet modal) no matter who wrote them — recordLastRail after
@@ -145,6 +146,7 @@ const KEYS = {
   piDead: 'bmb:pi:dead',              // '1' while the Podcast Index breaker is tripped. Survives a reload (an outage doesn't end because someone refreshed), not the tab.
   launcher: 'bmb:launcher',           // the `android-app://<package>/` package that opened this tab at `/`, per lib/launcher.ts. A package NAME and nothing else; tab-scoped because the referrer belongs to the first document.
   launcherDismissed: 'bmb:launcher_dismissed', // '1' once the unofficial-app notice was dismissed in this tab.
+  ircHold: 'bmb:irc_hold',            // the IRC chat's held session in this tab: the hold token, the last line number, the nick and the last 200 rows, so a refresh resumes it (docs/irc.md "A refresh is a drop"). Tab-scoped: a closed tab's session runs out at the hold service.
   // Streaming rate and streaming on/off are SEPARATE keys, at both scopes, so
   // switching streaming off doesn't destroy the number the user typed. Also the
   // prefixes for the per-show overrides `…:<podcastGuid|feedId>`.
@@ -1384,8 +1386,8 @@ export const storage = {
    * The nick last used in the IRC chat beside a live stream (docs/irc.md),
    * per-npub (`:guest` signed out) for the `senderName` reason above: a nick
    * typed under one identity must not pre-fill the box under another, where it
-   * would tie the two together in a public channel. Only the nick — no chat
-   * line is ever stored.
+   * would tie the two together in a public channel. Only the nick: the chat
+   * lines are kept for one tab only, in `ircHold` below.
    */
   ircNick: {
     get: (npub: string | null | undefined) => safeGet(identityKey(KEYS.ircNickPrefix, npub)),
@@ -2593,6 +2595,35 @@ export const storage = {
    * coming back on the next sign-in, and it was one character away from no
    * longer matching the writer, with nothing to catch the mismatch.
    */
+  /**
+   * The IRC chat's held session in THIS TAB (docs/irc.md, "A refresh is a
+   * drop"): the panel saves it when the page hides, and the next page in the
+   * tab resumes it with `HOLD RESUME` instead of registering again (Chad,
+   * 2026-11-22: "if you refresh the page, you should come back with your nick
+   * and chat"). sessionStorage, so it dies with the tab; the hold service
+   * ends a closed tab's session when its hold runs out. It holds the hold
+   * token, which resumes the listener's IRC session: never put it in a URL
+   * (the gateway logs URLs). Read back through `readHoldSnapshot`, field by
+   * field, because the token goes to the gateway and the rows to the screen.
+   */
+  ircHold: {
+    get: (): IrcHoldSnapshot | null => {
+      if (!isBrowser()) return null;
+      try {
+        const raw = sessionStorage.getItem(KEYS.ircHold);
+        return raw ? readHoldSnapshot(JSON.parse(raw)) : null;
+      } catch { return null; }
+    },
+    set: (v: IrcHoldSnapshot) => {
+      if (!isBrowser()) return;
+      try { sessionStorage.setItem(KEYS.ircHold, JSON.stringify(v)); } catch { /* blocked or full: a refresh then joins again */ }
+    },
+    clear: () => {
+      if (!isBrowser()) return;
+      try { sessionStorage.removeItem(KEYS.ircHold); } catch { /* blocked */ }
+    },
+  },
+
   nwcSessionUri: {
     get: (npub: string | null | undefined): string | null => {
       if (!isBrowser()) return null;

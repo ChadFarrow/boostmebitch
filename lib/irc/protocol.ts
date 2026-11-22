@@ -195,6 +195,82 @@ export function nickColor(nick: string): number {
   return (h >>> 0) % NICK_COLORS;
 }
 
+/** A hold token as the service sends it: base64url, at least 128 bits. */
+export const HOLD_TOKEN_RE = /^[A-Za-z0-9_-]{22,128}$/;
+/** The longest hold the page believes, whatever a gateway says. */
+export const MAX_HOLD_S = 3600;
+/** The rows a tab saves with its held session: the panel's own limit. */
+export const MAX_SAVED_ROWS = 200;
+const MAX_SAVED_TEXT = 4000;
+
+/** A row of the panel, as a tab saves it with its held session. */
+export interface IrcSavedRow {
+  kind: 'message' | 'notice';
+  from?: string;
+  text: string;
+  action?: boolean;
+  self?: boolean;
+  time: number;
+}
+
+/**
+ * What a tab keeps of its held session across a refresh, in sessionStorage
+ * (`bmb:irc_hold`, docs/irc.md "A refresh is a drop"): enough to send
+ * `HOLD RESUME <token> <seq>` and to show the rows again while it does.
+ */
+export interface IrcHoldSnapshot {
+  channel: string;
+  nick: string;
+  token: string;
+  holdS: number;
+  /** The last IRC line the saved rows include. */
+  seq: number;
+  /** When it was saved (ms). The hold ran out by `at + holdS * 1000` at the latest. */
+  at: number;
+  phase: 'joined' | 'kicked';
+  rows: IrcSavedRow[];
+}
+
+const isInt = (v: unknown, min: number, max: number): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
+
+function readSavedRow(raw: unknown): IrcSavedRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (r.kind !== 'message' && r.kind !== 'notice') return null;
+  if (typeof r.text !== 'string' || r.text.length > MAX_SAVED_TEXT) return null;
+  if (typeof r.time !== 'number' || !Number.isFinite(r.time)) return null;
+  if (r.from !== undefined && (typeof r.from !== 'string' || r.from.length > 64)) return null;
+  if (r.action !== undefined && typeof r.action !== 'boolean') return null;
+  if (r.self !== undefined && typeof r.self !== 'boolean') return null;
+  const row: IrcSavedRow = { kind: r.kind, text: r.text, time: r.time };
+  if (r.from !== undefined) row.from = r.from as string;
+  if (r.action !== undefined) row.action = r.action as boolean;
+  if (r.self !== undefined) row.self = r.self as boolean;
+  return row;
+}
+
+/**
+ * A saved hold read back, field by field, or null. The token goes to the
+ * gateway and the rows to the screen, so nothing is trusted because it was
+ * ours once: a field of the wrong shape refuses the hold, a row of the wrong
+ * shape is dropped, and a field the panel does not know is not carried.
+ */
+export function readHoldSnapshot(raw: unknown): IrcHoldSnapshot | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const v = raw as Record<string, unknown>;
+  if (typeof v.channel !== 'string' || !/^#[^\s,\x07]{1,49}$/.test(v.channel)) return null;
+  if (typeof v.nick !== 'string' || !isValidNick(v.nick)) return null;
+  if (typeof v.token !== 'string' || !HOLD_TOKEN_RE.test(v.token)) return null;
+  if (!isInt(v.holdS, 1, MAX_HOLD_S)) return null;
+  if (!isInt(v.seq, 0, Number.MAX_SAFE_INTEGER)) return null;
+  if (typeof v.at !== 'number' || !Number.isFinite(v.at) || v.at <= 0) return null;
+  if (v.phase !== 'joined' && v.phase !== 'kicked') return null;
+  if (!Array.isArray(v.rows)) return null;
+  const rows = v.rows.map(readSavedRow).filter((r): r is IrcSavedRow => r !== null).slice(-MAX_SAVED_ROWS);
+  return { channel: v.channel, nick: v.nick, token: v.token, holdS: v.holdS, seq: v.seq, at: v.at, phase: v.phase, rows };
+}
+
 // ── The session ──────────────────────────────────────────────────────────────
 //
 // A PURE REDUCER, so `check:irc` can pin the whole conversation with the server
