@@ -13,7 +13,10 @@ import {
   blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
   foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
   podpingEndpoint, podpingRequestUrl, PODPING_MEDIUM, PODPING_REASON,
+  piNoticeAllowed, piSecondNotifyMs, piFeedIdFrom, PI_NOTICE_THROTTLE_MS, PI_NOTICE_OWNER_DAILY,
+  PI_NOTICE_GLOBAL_DAILY, PI_SECOND_NOTIFY_MS, PI_ADD_FORM, MIN_SONGS,
 } from '../lib/community/rules.ts';
+import { readFileSync } from 'node:fs';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
 import { cleanText } from '../lib/community/clean-text.ts';
 import {
@@ -814,6 +817,84 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const naiveUrl = (e, f) => `${e}?url=${f}&reason=update&medium=musicL`;
   check('podping request: a hand-built string breaks on a feed URL with a query (can fail)',
     new URL(naiveUrl(PUSHER + '/', feed + '?a=1&b=2')).searchParams.get('url') !== feed + '?a=1&b=2');
+}
+
+// piNoticeAllowed — may a publish or SAVE announce its feed (lib/community/pi-notify.ts)?
+// The notice needs no key and can add the feed to Podcast Index for good (no delete),
+// and the podping is written to Hive, so: not banned, MIN_SONGS songs, one per feed per
+// 10 minutes, and a FIRST notice counts against 5 per owner and 30 over all a day.
+// The obvious wrong version is the code before #666's plan: a notice on every save.
+{
+  const NOW = Date.parse('2026-11-23T18:00:00Z');
+  const f = (o) => ({
+    banned: false, songCount: MIN_SONGS, inIndex: false, notifiedBefore: false, lastNotifiedAt: null,
+    ownerFirstToday: 0, allFirstToday: 0, now: NOW, ...o,
+  });
+  const ago = (ms) => NOW - ms;
+  const SEND_FIRST = 'send first';
+  const SEND = 'send';
+  const vectors = [
+    { kind: 'a new playlist, nothing sent today: a first notice', args: [f({})], want: SEND_FIRST, alsoNaive: true },
+    { kind: 'a SAVE 11 minutes after the last notice: a notice, not a first', args: [f({ notifiedBefore: true, lastNotifiedAt: ago(11 * 60_000) })], want: SEND, alsoNaive: true },
+    { kind: 'exactly the window after: a notice', args: [f({ notifiedBefore: true, lastNotifiedAt: ago(PI_NOTICE_THROTTLE_MS) })], want: SEND, alsoNaive: true },
+    { kind: 'a banned owner: none', args: [f({ banned: true })], want: 'banned' },
+    { kind: 'nine songs: none', args: [f({ songCount: MIN_SONGS - 1 })], want: 'too-few-songs' },
+    { kind: 'a SAVE 2 minutes after the last notice: none', args: [f({ notifiedBefore: true, lastNotifiedAt: ago(2 * 60_000) })], want: 'throttled' },
+    { kind: 'one ms inside the window: none', args: [f({ notifiedBefore: true, lastNotifiedAt: ago(PI_NOTICE_THROTTLE_MS - 1) })], want: 'throttled' },
+    { kind: 'a last notice in the future (a clock ahead): none', args: [f({ notifiedBefore: true, lastNotifiedAt: NOW + 60_000 })], want: 'throttled' },
+    { kind: 'the owner\'s sixth new playlist today: none', args: [f({ ownerFirstToday: PI_NOTICE_OWNER_DAILY, allFirstToday: 5 })], want: 'owner-cap' },
+    { kind: 'the owner\'s fifth new playlist today: a first notice', args: [f({ ownerFirstToday: PI_NOTICE_OWNER_DAILY - 1, allFirstToday: 9 })], want: SEND_FIRST, alsoNaive: true },
+    { kind: 'the 31st new playlist today over all makers: none', args: [f({ ownerFirstToday: 0, allFirstToday: PI_NOTICE_GLOBAL_DAILY })], want: 'global-cap' },
+    { kind: 'a guest key\'s playlist under the caps: a first notice (guests follow the same rules)', args: [f({ ownerFirstToday: 0, allFirstToday: PI_NOTICE_GLOBAL_DAILY - 1 })], want: SEND_FIRST, alsoNaive: true },
+    { kind: 'an owner at the cap SAVEs a feed told before: a notice (the cap counts new feeds)', args: [f({ notifiedBefore: true, lastNotifiedAt: ago(60 * 60_000), ownerFirstToday: 9, allFirstToday: 99 })], want: SEND, alsoNaive: true },
+    { kind: 'a feed already in the index, never told, at both caps: a notice, not a first', args: [f({ inIndex: true, ownerFirstToday: 9, allFirstToday: 99 })], want: SEND },
+    { kind: 'a banned owner beats everything else', args: [f({ banned: true, notifiedBefore: true, lastNotifiedAt: ago(60 * 60_000) })], want: 'banned' },
+    { kind: 'a count that is not a number: none', args: [f({ allFirstToday: NaN })], want: 'unknown' },
+    { kind: 'a last time that is not a number: none', args: [f({ lastNotifiedAt: 'yesterday' })], want: 'unknown' },
+    { kind: 'banned unknown (undefined): none', args: [f({ banned: undefined })], want: 'unknown' },
+  ];
+  const show = (v) => (v.send ? (v.first ? SEND_FIRST : SEND) : v.reason);
+  // naive: a notice on every save, the first when nothing was sent before.
+  const naive = (x) => (x.notifiedBefore ? SEND : SEND_FIRST);
+  for (const v of vectors) {
+    const got = show(piNoticeAllowed(...v.args));
+    check('pi notice: ' + v.kind + ` (${got})`, got === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('pi notice: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('pi notice: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+  check('pi notice: the window is 10 minutes and the caps are 5 and 30',
+    PI_NOTICE_THROTTLE_MS === 600_000 && PI_NOTICE_OWNER_DAILY === 5 && PI_NOTICE_GLOBAL_DAILY === 30);
+
+  // piSecondNotifyMs: a test may shorten the wait only toward a loopback stub.
+  check('second pubnotify: the real API ignores the variable', piSecondNotifyMs('0', false) === PI_SECOND_NOTIFY_MS);
+  check('second pubnotify: a stub with no variable waits the real time', piSecondNotifyMs(undefined, true) === PI_SECOND_NOTIFY_MS);
+  check('second pubnotify: a stub takes the test value', piSecondNotifyMs('1000', true) === 1000 && piSecondNotifyMs('0', true) === 0);
+  check('second pubnotify: never longer than the real wait', piSecondNotifyMs('999999', true) === PI_SECOND_NOTIFY_MS);
+  check('second pubnotify: junk is the real wait', piSecondNotifyMs('-5', true) === PI_SECOND_NOTIFY_MS && piSecondNotifyMs('1e3', true) === PI_SECOND_NOTIFY_MS);
+
+  // piFeedIdFrom: PI's lookup answers, recorded from the wire (byguid holds an object,
+  // a miss is `feed: []`; byfeedurl's miss is a 400 with no feed).
+  const idVectors = [
+    { kind: 'byguid, listed', body: { status: 'true', feed: { id: 8125553, podcastGuid: 'x', medium: 'musicL' }, description: 'Found matching feed.' }, want: 8125553 },
+    { kind: 'an array feed', body: { status: 'true', feed: [{ id: 7536878 }] }, want: 7536878 },
+    { kind: 'byguid, not listed (feed: [])', body: { status: 'true', feed: [], description: 'No feeds match this guid.' }, want: null },
+    { kind: 'byfeedurl, not listed (400 body)', body: { status: 'false', description: 'Feed url not found.' }, want: null },
+    { kind: 'id 0', body: { status: 'true', feed: { id: 0 } }, want: null },
+    { kind: 'an id as a string', body: { status: 'true', feed: { id: '8125553' } }, want: null },
+    { kind: 'a negative id (our RSS fallbacks mint those)', body: { feed: { id: -5 } }, want: null },
+    { kind: 'not an object', body: 'Feed url not found.', want: null },
+    { kind: 'null', body: null, want: null },
+  ];
+  for (const v of idVectors) check('pi feed id: ' + v.kind, piFeedIdFrom(v.body) === v.want);
+  check('pi feed id: the add form is PI\'s own page', PI_ADD_FORM === 'https://podcastindex.org/add');
+
+  // The source: no add/byfeedurl call, and the pubnotify carries no key headers.
+  const src = readFileSync(new URL('../lib/community/pi-notify.ts', import.meta.url), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  check('pi-notify: no add/byfeedurl request in the code', !/add\/byfeedurl/.test(code));
+  const body = /async function pubnotify\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(code)?.[1] ?? '';
+  check('pi-notify: pubnotify sends a User-Agent and no key headers', body.includes("'User-Agent'") && !/authHeaders|X-Auth|Authorization/i.test(body));
 }
 
 // localTarget — the app server and the database an e2e script that WRITES playlists

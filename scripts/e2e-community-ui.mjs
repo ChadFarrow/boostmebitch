@@ -552,14 +552,15 @@ const id = /feeds\/playlists\/([0-9a-f-]{36})\.xml$/.exec(feedUrl)?.[1];
 t.ok('the feed address is the playlist feed', !!id, feedUrl);
 t.equal('the feed answers 200', (await fetch(feedUrl)).status, 200);
 t.equal('the saved draft is gone', await stored(), null);
-// The site's Podcast Index key is read-only, so the maker is offered PI's own add form.
-// A localhost feed is never in the index: this is the REAL lookup answering "not listed".
-t.ok('published: Podcast Index says not listed (the real lookup)', await waitFor(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi === 'not-listed'`, 20000),
-  await js(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi ?? 'no section'`));
-t.equal('published: the add link opens PI\'s form in a new tab',
-  await js(`(() => { const a = document.querySelector('[data-testid=pi-listing] a'); return a && [a.href, a.target, a.rel, a.innerText.trim()]; })()`),
-  ['https://podcastindex.org/add', '_blank', 'noopener noreferrer', 'ADD IT TO PODCAST INDEX →']);
-t.ok('published: it says how, and that PI keeps the feed', await js(`(() => { const x = document.querySelector('[data-testid=pi-listing]').innerText; return x.includes('paste the feed address above') && x.includes('Podcast Index cannot remove a feed'); })()`));
+// The server announces the feed to Podcast Index at PUBLISH (lib/community/pi-notify.ts);
+// the maker sees one status line and no button. A localhost feed is never in the index:
+// this is the REAL lookup answering "not listed", so the line says waiting.
+t.ok('published: the Podcast Index line says waiting (the real lookup)', await waitFor(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi === 'waiting'`, 20000),
+  await js(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi ?? 'no line'`));
+t.equal('published: one line of text, no link and no button',
+  await js(`(() => { const x = document.querySelector('[data-testid=pi-listing]'); return [x.innerText.trim(), x.querySelectorAll('a, button').length]; })()`),
+  ['Podcast Index: waiting. A new playlist can take some minutes to show there.', 0]);
+t.ok('published: no add form anywhere on the page', await js(`![...document.querySelectorAll('a')].some((a) => a.href.startsWith('https://podcastindex.org/add'))`));
 t.ok('published: no horizontal overflow', await overflowFree());
 t.equal('published: controls at least 24 x 24', await tooSmall('main button, main a, main input', 24, 24), []);
 
@@ -827,9 +828,10 @@ await piMode('listed');
 await click(byText('SAVE'));
 t.ok('a second SAVE works', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('e2e community playlist v3')`, 30000));
 t.ok('a listed feed: Podcast Index says listed', await waitFor(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi === 'listed'`, 10000));
-t.equal('a listed feed: the link opens its PI page, and no add link',
+t.equal('a listed feed: "In Podcast Index", and the one link opens its PI page',
   await js(`[...document.querySelectorAll('[data-testid=pi-listing] a')].map((a) => [a.href, a.innerText.trim()])`),
   [['https://podcastindex.org/podcast/920666', 'OPEN IN PODCAST INDEX →']]);
+t.ok('a listed feed: the line starts "In Podcast Index."', await js(`document.querySelector('[data-testid=pi-listing]').innerText.startsWith('In Podcast Index.')`));
 t.equal('a listed feed: controls at least 24 x 24', await tooSmall('main button, main a, main input', 24, 24), []);
 
 await click(byText('EDIT'));
@@ -845,8 +847,8 @@ await wait(500);
 await piMode('429');
 await click(byText('SAVE'));
 t.ok('the next SAVE succeeds', await waitFor(`document.querySelector('[data-testid=published]')?.innerText.includes('my edit')`, 30000));
-t.ok('no answer from the lookup (429): the add form is offered', await waitFor(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi === 'not-listed'`, 10000)
-  && await js(`document.querySelector('[data-testid=pi-listing] a')?.href === 'https://podcastindex.org/add'`));
+t.ok('no answer from the lookup (429): the line says waiting, no error, no link', await waitFor(`document.querySelector('[data-testid=pi-listing]')?.dataset.pi === 'waiting'`, 10000)
+  && await js(`document.querySelectorAll('[data-testid=pi-listing] a').length === 0 && !/error|fail/i.test(document.querySelector('[data-testid=pi-listing]').innerText)`));
 await piMode(null);
 t.equal('the server has the user edit', (await serverVersion()).title, 'my edit');
 
@@ -943,6 +945,15 @@ await go('/admin');
 t.ok('the admin sees the rows', await waitFor(`document.querySelectorAll('[data-admin-playlist]').length >= 3`, 30000));
 const ids = await adminIds();
 t.ok('rows are newest first (B1, A2, A1 in that order)', ids.indexOf(pb1.id) < ids.indexOf(pa2.id) && ids.indexOf(pa2.id) < ids.indexOf(pa1.id), ids.join(','));
+// The fallback list: Podcast Index does not list a localhost feed, so A1 is in it, with
+// its feed address, COPY and PI's own form (Chad adds it by hand; the form has a captcha).
+t.ok('admin: "Not in Podcast Index" lists a playlist PI does not list', await waitFor(`!!document.querySelector('[data-admin-unlisted="${pa1.id}"]')`, 10000),
+  await js(`document.querySelector('[data-testid=admin-pi-unknown]')?.innerText ?? 'no unknown note'`));
+t.equal('admin: an unlisted row: its feed address, COPY, and the PI form in a new tab',
+  await js(`(() => { const li = document.querySelector('[data-admin-unlisted="${pa1.id}"]'); const a = li.querySelector('a');
+    return [li.innerText.includes(${JSON.stringify(communityFeed(pa1.id))}), [...li.querySelectorAll('button')].some((b) => b.textContent.trim() === 'COPY'),
+      a && [a.href, a.target, a.rel, a.textContent.trim()], li.innerText.includes('not told yet')]; })()`),
+  [true, true, ['https://podcastindex.org/add', '_blank', 'noopener noreferrer', 'OPEN PI FORM →'], true]);
 const rowText = await js(`document.querySelector('[data-admin-playlist="${pa1.id}"]').innerText`);
 t.ok('a row: title, 12 songs, a short npub', rowText.includes(A1) && rowText.includes('12 songs') && rowText.includes('npub1'), rowText);
 t.ok('a row: DELETE and BAN MAKER', await js(`!!${rowBtn(pa1.id, 'DELETE')} && !!${rowBtn(pa1.id, 'BAN MAKER')}`));

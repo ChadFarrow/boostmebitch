@@ -12,7 +12,9 @@ import { fetchProfilesFor } from '@/lib/nostr';
 import { shortNpub } from '@/lib/nostr/profile-metadata';
 import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
 import { NoSignerError, SignTimeoutError, signedFetch } from '@/lib/community/client';
-import type { CommunityPlaylistSummary } from '@/lib/community/rules';
+import { CopyLinkButton } from '@/components/copy-link-button';
+import { PI_ADD_FORM, type CommunityPlaylistSummary } from '@/lib/community/rules';
+import type { AdminPiState } from '@/lib/community/pi-notify';
 
 const ADMIN_PATH = '/api/community-playlists/admin';
 
@@ -21,7 +23,8 @@ type Load =
   | { s: 'loading' }
   | { s: 'forbidden' }
   | { s: 'error' }
-  | { s: 'ok'; playlists: CommunityPlaylistSummary[]; bans: Ban[] };
+  /** `pi: null`: the server has no Podcast Index state (docs/feeds.md, "Podcast Index"). */
+  | { s: 'ok'; playlists: CommunityPlaylistSummary[]; bans: Ban[]; pi: AdminPiState[] | null };
 type Confirm =
   | { kind: 'delete'; playlist: CommunityPlaylistSummary }
   | { kind: 'ban'; pubkey: string; who: string };
@@ -60,9 +63,9 @@ export function AdminPlaylists() {
       const r = await signedFetch(ADMIN_PATH, 'GET');
       if (r.status === 403) return { s: 'forbidden' };
       if (!r.ok) return { s: 'error' };
-      const j = (await r.json()) as { playlists?: CommunityPlaylistSummary[]; bans?: Ban[] };
+      const j = (await r.json()) as { playlists?: CommunityPlaylistSummary[]; bans?: Ban[]; pi?: AdminPiState[] | null };
       if (!Array.isArray(j.playlists) || !Array.isArray(j.bans)) return { s: 'error' };
-      return { s: 'ok', playlists: j.playlists, bans: j.bans };
+      return { s: 'ok', playlists: j.playlists, bans: j.bans, pi: Array.isArray(j.pi) ? j.pi : null };
     } catch {
       return { s: 'error' };
     }
@@ -154,9 +157,13 @@ export function AdminPlaylists() {
     );
   }
 
-  const { playlists, bans } = load;
+  const { playlists, bans, pi } = load;
   const makerName = (pk: string) => names.get(pk) ?? shortNpub(npubOf(pk));
   const sorted = [...playlists].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // The fallback while Podcast Index does not list an announced feed by itself:
+  // Chad adds it by hand with PI's form (it has a captcha, so nothing here sends it).
+  const piOf = new Map((pi ?? []).map((x) => [x.id, x]));
+  const unlisted = pi ? sorted.filter((p) => !piOf.get(p.id)?.piFeedId) : [];
 
   return (
     <section>
@@ -194,6 +201,43 @@ export function AdminPlaylists() {
             </li>
           ))}
         </ul>
+      )}
+
+      <h2 className="mt-8 font-display text-xl">Not in Podcast Index</h2>
+      {pi === null ? (
+        <p className="mt-2 text-sm text-muted" data-testid="admin-pi-unknown">
+          The Podcast Index state is not available. The database may need <code>npm run community:schema</code>.
+        </p>
+      ) : unlisted.length === 0 ? (
+        <p className="mt-2 text-sm text-muted" data-testid="admin-pi-none">Podcast Index lists every playlist.</p>
+      ) : (
+        <>
+          <p className="mt-2 max-w-xl text-sm leading-relaxed text-bone/80">
+            The site tells Podcast Index about each playlist by itself, but Podcast Index does not list these yet.
+            To add one by hand: COPY its feed address, open the form, paste the address and send it.
+          </p>
+          <ul className="mt-3 divide-y divide-bone/15 border-y border-bone/15" data-testid="admin-not-in-pi">
+            {unlisted.map((p) => {
+              const st = piOf.get(p.id);
+              return (
+                <li key={p.id} className="flex flex-col gap-2 py-3" data-admin-unlisted={p.id}>
+                  <p className="font-display text-lg break-words">{p.title}</p>
+                  <p className="text-xs font-mono text-muted break-all">{p.feedUrl}</p>
+                  <p className="text-xs font-mono text-muted">
+                    {st?.piNotifiedAt ? `told ${timeAgo(Math.floor(Date.parse(st.piNotifiedAt) / 1000))}` : 'not told yet'}
+                    {st?.asked ? '' : ' · not checked on this load'}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <CopyLinkButton url={p.feedUrl} word="COPY" title="Copy the feed address" className="btn-ghost btn-compact" />
+                    <a href={PI_ADD_FORM} target="_blank" rel="noopener noreferrer" className="btn-ghost btn-compact inline-flex">
+                      OPEN PI FORM →
+                    </a>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
 
       <h2 className="mt-8 font-display text-xl">Banned</h2>

@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server';
 import { nip19 } from 'nostr-tools';
 import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
-import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
+import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
+import { adminPiStates, notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
 import { requestPlaylistArchiveAfter } from '@/lib/community/archive-notify';
 import { adminPubkeys } from '@/lib/community/auth';
 import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, UUID_RE } from '@/lib/community/http';
@@ -13,6 +13,8 @@ import {
 } from '@/lib/community/store';
 
 export const runtime = 'nodejs';
+// GET looks up the unlisted playlists in Podcast Index (6 s budget, `adminPiStates`).
+export const maxDuration = 30;
 
 const unavailable = NOT_CONFIGURED;
 const forbidden = () => NextResponse.json({ error: 'forbidden' }, { status: 403 });
@@ -38,8 +40,18 @@ export async function GET(req: Request) {
     const auth = await authenticate(req, null);
     if (!auth.ok) return auth.response;
     if (!adminPubkeys().has(auth.pubkey)) return forbidden();
-    const [rows, bans] = await Promise.all([listPlaylists({ limit: 200 }), listBans()]);
-    return NextResponse.json({ playlists: rows.map(summaryOf), bans }, { headers: NO_STORE });
+    const [rows, bans, pi] = await Promise.all([
+      listPlaylists({ limit: 200 }),
+      listBans(),
+      // The Podcast Index half fails ALONE: without it the page still moderates.
+      adminPiStates(200).catch((e) => {
+        console.warn('[community-pi] admin state failed:', e instanceof Error ? e.message : String(e));
+        return null;
+      }),
+    ]);
+    // `pi: null`: no Podcast Index state (the pi_* columns are missing, or the read
+    // failed). Otherwise one entry per live playlist; docs/feeds.md, "Podcast Index".
+    return NextResponse.json({ playlists: rows.map(summaryOf), bans, pi }, { headers: NO_STORE });
   }, 'could not read the admin list');
 }
 
@@ -69,7 +81,7 @@ export async function POST(req: Request) {
       await banPubkey(pubkey, auth.pubkey);
       const deletedIds = b.deleteAll === true ? await deletePlaylistsByOwner(pubkey, auth.pubkey) : [];
       if (deletedIds.length > 0) {
-        notifyPodcastIndexAfter(deletedIds.map((id) => communityFeedUrl(id)), 'gone');
+        notifyPodcastIndexAfter(deletedIds, 'gone');
         requestPlaylistArchiveAfter();
       }
       return NextResponse.json({ ok: true, deleted: deletedIds.length }, { headers: NO_STORE });
@@ -80,7 +92,7 @@ export async function POST(req: Request) {
       }
       const done = await deletePlaylist(b.id, auth.pubkey);
       if (done) {
-        notifyPodcastIndexAfter(communityFeedUrl(b.id), 'gone');
+        notifyPodcastIndexAfter(b.id, 'gone');
         requestPlaylistArchiveAfter();
       }
       return NextResponse.json({ ok: true, deleted: done ? 1 : 0 }, { headers: NO_STORE });

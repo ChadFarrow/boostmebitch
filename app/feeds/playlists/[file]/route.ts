@@ -44,6 +44,13 @@ export async function GET(req: Request, ctx: { params: Promise<{ file: string }>
   if (!communityStoreConfigured()) return text(404);
   return withErrorHandling(async () => {
     const p = await getPlaylist(id);
+    // One line per FEED read, with the reader's User-Agent and nothing else (no
+    // address, no other header): the only way to see whether Podcast Index's crawler
+    // came after a notice (docs/feeds.md, "Podcast Index"). Covers are not logged.
+    if (ext === 'xml') {
+      const ua = (req.headers.get('user-agent') ?? '(none)').replace(/[^\x20-\x7e]/g, '?').slice(0, 160);
+      console.log('[community-feed] read', p === null ? 404 : p === 'gone' ? 410 : 200, id, 'ua:', ua);
+    }
     if (p === null) return text(404);
     if (p === 'gone') return text(410);
     if (ext === 'xml') {

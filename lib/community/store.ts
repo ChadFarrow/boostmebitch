@@ -221,3 +221,112 @@ export async function listBans(): Promise<{ pubkey: string; bannedAt: string; ba
   );
   return rows.map((r) => ({ pubkey: r.pubkey, bannedAt: r.banned_at.toISOString(), bannedBy: r.banned_by }));
 }
+
+// ── Podcast Index notice state (lib/community/pi-notify.ts) ──────────────────
+// Three columns that only these functions read (scripts/community-schema.sql). They
+// are NOT in COLS on purpose: the public feeds and lists never select them, so a
+// deploy that reaches a database without them keeps every feed working, and only the
+// notices stop (fail closed) until `npm run community:schema` runs.
+
+/** Postgres "undefined_column": the schema with the pi_* columns was not applied. */
+export function isMissingColumn(e: unknown): boolean {
+  return !!e && typeof e === 'object' && (e as { code?: unknown }).code === '42703';
+}
+
+/** What the notice rules read for one live playlist (`piNoticeAllowed` in rules.ts). */
+export interface PiNoticeRow {
+  podcastGuid: string;
+  songCount: number;
+  banned: boolean;
+  piFeedId: number | null;
+  /** Read back as written (whole milliseconds), so `claimPiNotice` can compare it. */
+  piNotifiedAt: Date | null;
+  piFirstNotifiedAt: Date | null;
+  ownerFirstToday: number;
+  allFirstToday: number;
+}
+
+/**
+ * The notice state of one LIVE playlist, or null when it is gone or unknown. The two
+ * counts are first notices since `now - dayMs`, deleted playlists included: a feed
+ * that was announced was announced.
+ */
+export async function readPiNoticeRow(id: string, now: Date, dayMs: number): Promise<PiNoticeRow | null> {
+  const { rows } = await readQuery<{
+    podcast_guid: string; song_count: number; banned: boolean; pi_feed_id: string | null;
+    pi_notified_at: Date | null; pi_first_notified_at: Date | null; owner_first_today: number; all_first_today: number;
+  }>(
+    `select p.podcast_guid,
+            jsonb_array_length(p.songs) as song_count,
+            exists (select 1 from community_bans b where b.pubkey = p.owner_pubkey) as banned,
+            p.pi_feed_id, p.pi_notified_at, p.pi_first_notified_at,
+            (select count(*) from community_playlists o
+              where o.owner_pubkey = p.owner_pubkey
+                and o.pi_first_notified_at > $2::timestamptz - interval '1 millisecond' * $3::float8)::int as owner_first_today,
+            (select count(*) from community_playlists a
+              where a.pi_first_notified_at > $2::timestamptz - interval '1 millisecond' * $3::float8)::int as all_first_today
+       from community_playlists p
+      where p.id = $1 and p.deleted_at is null`,
+    [id, now, dayMs],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  // bigint comes back as a string; a PI feed id fits a double.
+  const pi = r.pi_feed_id === null ? null : Number(r.pi_feed_id);
+  return {
+    podcastGuid: r.podcast_guid,
+    songCount: r.song_count,
+    banned: r.banned,
+    piFeedId: pi !== null && Number.isSafeInteger(pi) && pi > 0 ? pi : null,
+    piNotifiedAt: r.pi_notified_at,
+    piFirstNotifiedAt: r.pi_first_notified_at,
+    ownerFirstToday: r.owner_first_today,
+    allFirstToday: r.all_first_today,
+  };
+}
+
+/**
+ * Take the notice slot of one playlist: set `pi_notified_at` to `at` (and the first
+ * notice time, once), but only if it still holds `prev`, the value the rules were
+ * given. Two SAVEs at once read the same `prev`; one of them updates the row and the
+ * other gets false, so one notice goes, not two. A write, so it is never retried.
+ */
+export async function claimPiNotice(id: string, prev: Date | null, at: Date): Promise<boolean> {
+  const { rowCount } = await db().query(
+    `update community_playlists
+        set pi_notified_at = $3::timestamptz,
+            pi_first_notified_at = coalesce(pi_first_notified_at, $3::timestamptz)
+      where id = $1 and deleted_at is null and pi_notified_at is not distinct from $2::timestamptz`,
+    [id, prev, at],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Store the Podcast Index feed id a lookup found. */
+export async function setPiFeedId(id: string, piFeedId: number): Promise<void> {
+  await db().query(
+    'update community_playlists set pi_feed_id = $2 where id = $1 and pi_feed_id is distinct from $2',
+    [id, piFeedId],
+  );
+}
+
+/** The notice state of the live playlists, for /admin. */
+export interface PiState { id: string; podcastGuid: string; piFeedId: number | null; piNotifiedAt: string | null }
+
+export async function listPiStates(limit: number): Promise<PiState[]> {
+  const n = Math.max(1, Math.min(200, Math.floor(limit)));
+  const { rows } = await readQuery<{ id: string; podcast_guid: string; pi_feed_id: string | null; pi_notified_at: Date | null }>(
+    `select id, podcast_guid, pi_feed_id, pi_notified_at from community_playlists
+      where deleted_at is null order by created_at desc, id limit $1`,
+    [n],
+  );
+  return rows.map((r) => {
+    const pi = r.pi_feed_id === null ? null : Number(r.pi_feed_id);
+    return {
+      id: r.id,
+      podcastGuid: r.podcast_guid,
+      piFeedId: pi !== null && Number.isSafeInteger(pi) && pi > 0 ? pi : null,
+      piNotifiedAt: r.pi_notified_at ? r.pi_notified_at.toISOString() : null,
+    };
+  });
+}
