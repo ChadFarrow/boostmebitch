@@ -14,6 +14,9 @@ import { requestPlaylistArchiveAfter } from '@/lib/community/archive-notify';
 import { communityStoreConfigured, createPlaylist, isBanned, listPlaylists } from '@/lib/community/store';
 
 export const runtime = 'nodejs';
+// The Podcast Index notice runs in `after()` and waits for its second pubnotify
+// (lib/community/pi-notify.ts): the whole path is sized to finish inside this.
+export const maxDuration = 60;
 
 type Problem =
   | DraftProblem
@@ -90,7 +93,7 @@ export async function POST(req: Request) {
     });
     // A ban that landed after the isBanned read above is caught inside the INSERT.
     if (row === 'banned') return BANNED();
-    notifyPodcastIndexAfter(communityFeedUrl(row.id), 'publish');
+    notifyPodcastIndexAfter(row.id, 'publish');
     requestPlaylistArchiveAfter();
     return NextResponse.json({ id: row.id, feedUrl: communityFeedUrl(row.id) }, { status: 201, headers: NO_STORE });
   }, 'could not publish the playlist');

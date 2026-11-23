@@ -8,7 +8,7 @@
 //
 // WHY IT EXISTS. Since 2026-11-22 beta runs with COMMUNITY_PI_NOTIFY=on and the
 // two PODPING_* values, so every playlist beta publishes, saves or deletes goes to
-// Podcast Index (add/byfeedurl + hub/pubnotify) and to Hive (a podping). Both are
+// Podcast Index (hub/pubnotify) and to Hive (a podping). Both are
 // public and permanent: Podcast Index has no delete. The SERVER decides that
 // (`piNotifyBase`, `podpingEndpoint` in lib/community/rules.ts), and a laptop's dev
 // server never sends, so a playlist a test makes LOCALLY stays on the machine. But
