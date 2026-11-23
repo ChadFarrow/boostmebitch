@@ -1,5 +1,14 @@
 # Spark SDK Swap: Breez → Spark Labs
 
+> **Correction (2026-11-22): the account number is 1 on mainnet, not 0.** The plan
+> below says `accountNumber: 0`. That was the first-cut bug: Primal and BlitzWallet
+> use the SDK's per-network default, which is **1 on mainnet and 0 on regtest**, and
+> a seed opened at account 0 on mainnet is a different, empty wallet. The code has
+> passed 1 since then (`sparkAccountNumber` in `lib/v4v/spark-derive.ts`,
+> docs/wallets.md "Spark rail" item 2), and the SDK's own changelog says the same
+> (0.12.0: "the account number defaults to 0 on REGTEST and 1 elsewhere"). Read the
+> plan as history; read **"SDK updates"** at the end before you bump the SDK.
+
 ## Why
 
 boostmebitch currently uses `@breeztech/breez-sdk-spark`, which derives wallet keys at
@@ -321,3 +330,78 @@ note in release comms if you have users with existing boostmebitch Spark wallets
 **`@scure/bip39` stays.** It's still used by `lib/nostr/` internals as a transitive dep
 of nostr-tools, so removing Breez won't orphan it. You can still use it for mnemonic
 validation in the paste form if you want.
+
+---
+
+## SDK updates
+
+**Before any bump of `@buildonspark/spark-sdk`:** run `npm run check:spark` (it runs
+the installed SDK's signer at `sparkAccountNumber('mainnet')` against identity keys
+0.8.1 derived) and `npm run e2e:spark` (the browser bundle, against the real
+operators: new wallet, balance 0, an invoice, and the pinned identity key sent for
+a pasted seed). Then read the changelog for the four things below, and get one
+real-wallet test from the owner before the merge. **A caret on `0.x` pins the
+minor** (`^0.16.0` is `<0.17.0`), so a minor bump never arrives on its own.
+
+### 0.8.1 → 0.16.0 (2026-11-22)
+
+**The seed opens the same wallet.** `DefaultSparkKeysGenerator.deriveKeysFromSeed`
+derives at `m/8797555'/<account>'/0'…4'` in both, and `resolveSeedAndMnemonic` (the
+account default, the mnemonic → seed step with no passphrase) is byte-identical.
+Both versions were run on four seeds (the three `check:spark` mnemonics and the
+BIP-39 test vector) at mainnet account 1, regtest account 0 and mainnet account 0:
+identity, deposit, static-deposit and leaf keys and the Spark address were the
+same in all twelve. Only FROST signing gained an optional `adaptorV2` argument.
+
+**The calls this app makes did not change shape:** `SparkWallet.initialize`,
+`payLightningInvoice({ invoice, maxFeeSats })`, `createLightningInvoice({ amountSats,
+memo })`, `getBalance().satsBalance.available`, `cleanup`, and the four events. The
+breaking changes in the range touch nothing here: `idempotencyKey` left
+`payLightningInvoice` (0.10; never passed — each call gets a fresh `transferId`),
+`ReceiveQuoteAmountBasis` (0.15), token v2 (0.13–0.14), and the fee-quote paths.
+
+**What the update brings:**
+
+- **0.12.1 — `getBalance` could read 0 sats with no error.** When the
+  non-coordinator operators' session tokens expired, every leaf looked
+  inconsistent across operators and was excluded. A connected wallet stuck at 0
+  had a second cause besides the account number; this removes it.
+- **0.12.0 — deadlines on operator authentication and balance queries**, so a
+  missing answer fails rather than hangs (`SPARK_INIT_TIMEOUT_MS` still caps our
+  wait for init).
+- **0.15.0** — incoming transfers from another network are ignored, and an invoice
+  for another network is refused before anything moves.
+- **0.16.0 — `SparkSendOutcomeUnknownError`** for a Spark-transfer send whose start
+  failed. It reaches only a `preferSpark: true` payment (the invoice's Spark
+  fallback). `sparkPayInvoice` never sets it, so a leg pays over Lightning (the
+  preimage swap) under a fresh `transferId`, as before. **If `preferSpark` is ever
+  added, that error is the `?` arm of boost invariant 11** — never ✗, never a
+  retry on another rail — and the SDK's `resolveSendOutcome(transferId)` is how
+  it settles.
+- Dependencies: `ts-proto` and `ua-parser-js` dropped, `@bufbuild/protobuf` 2.12 →
+  2.17. The SDK chunk is 612 KB (153 KB gzip) and loads only on a wallet open.
+
+**Not changed: the operator set** (Lightspark as coordinator, Breez, flashnet), and
+`Authorization` still goes to all three, so #304 (flashnet's
+`access-control-allow-headers: *`) is not fixed by the update.
+
+**The balance read stays `getBalance()`, not the tolerant `getLeaves(true)`** (#304
+option 3). In 0.16 the balance-check path asks only the coordinator and tolerates
+a non-coordinator that fails, but:
+
+1. **It does not fix #304.** Init (`createClients`, one authentication per
+   operator under `Promise.all`) and every payment still need all three operators,
+   so a browser that blocks flashnet still cannot connect or pay; it would save a
+   balance figure only for a wallet that somehow connected.
+2. **It shows sats a payment can refuse.** It skips the cross-operator consistency
+   check `getBalance` makes, and it does not subtract leaves held by a send whose
+   outcome is unknown (0.16), which `refreshSpendableLeaves` does. Advertising
+   sats the wallet will refuse is the failure `check:nwcbudget` pins on the NWC
+   rail.
+3. **It is not a read.** `getLeaves` in both modes recovers and renews leaves
+   (`recoverLeaves`, `decrementRefundTxn`, `checkRenewLeaves` sign and send to the
+   operators); on the balance-check path it does so for leaves only the
+   coordinator confirmed. A UI poll should not drive that.
+4. **It bypasses the SDK's leaf cache**, which `getBalance` refreshes and the next
+   payment's leaf selection reads.
+

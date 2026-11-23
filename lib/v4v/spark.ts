@@ -3,6 +3,7 @@
 import { createObservable } from '../pubsub';
 import { BRAND } from '../brand';
 import { isNativeIos } from '../native/platform';
+import { sparkAccountNumber } from './spark-derive';
 
 // Spark rail — Spark Labs SDK adapter (@buildonspark/spark-sdk). Self-custodial
 // wallet whose mnemonic is bootstrapped from a NIP-44-encrypted backup on Nostr
@@ -182,14 +183,16 @@ async function doInitFromMnemonic(args: {
   // Dynamic import keeps the heavy SDK out of the initial bundle.
   const { SparkWallet } = await import('@buildonspark/spark-sdk');
 
+  const network = args.network ?? 'mainnet';
   const { wallet } = await SparkWallet.initialize({
     mnemonicOrSeed: args.mnemonic,
     // Spark's per-network DEFAULT account number is 1 on mainnet, 0 on regtest.
     // Primal and BlitzWallet both use that default, so we mirror it explicitly
     // to derive the SAME account (and therefore share the balance) for a given
     // seed. Hardcoding 0 on mainnet derives a different, empty account.
-    accountNumber: args.network === 'regtest' ? 0 : 1,
-    options: { network: args.network === 'regtest' ? 'REGTEST' : 'MAINNET' },
+    // Pinned with the installed SDK by `npm run check:spark`.
+    accountNumber: sparkAccountNumber(network),
+    options: { network: network === 'regtest' ? 'REGTEST' : 'MAINNET' },
   });
 
   sdk = wallet as unknown as SparkSdk;
