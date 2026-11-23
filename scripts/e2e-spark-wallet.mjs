@@ -37,6 +37,13 @@ import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04 } from 'nostr-tools';
 
 const APP = process.env.BMB_APP ?? 'http://localhost:3000';
+// The seed backups go to a ws:// relay on this machine, and an https page may
+// not open ws:// (mixed content): against a deployment the backup fails before
+// Spark starts. Measured on a Vercel preview, 2026-11-22.
+if (APP.startsWith('https:')) {
+  console.error(`e2e:spark needs an http:// app (a local \`npm run dev\` or \`npm start\`): an https page cannot reach the local ws:// relay. Got ${APP}`);
+  process.exit(2);
+}
 await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
 (and \`rm -rf .next\` first if you have just run a production build)`);
 
