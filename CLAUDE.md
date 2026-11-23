@@ -115,7 +115,7 @@ npm run dev / build / start / lint
 | `check:opml` | `parseOpml`, `planOpmlImport` (what leaves the device) | a paid feed's key sent to Podcast Index |
 | `check:moved` | `moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked | a copycat feed collects boosts |
 | `check:demu` | `isDemuFeed` | Wavlake passes as DeMu |
-| `check:trackorder` | `listedTrackGuids`, `onlyListedTracks`, `rssCatchUpAfter`, `compareEpisodeOrder` | an album plays a track its artist removed first, or loses one |
+| `check:trackorder` | `listedTrackGuids`, `onlyListedEpisodes`, `rssCatchUpAfter`, `compareEpisodeOrder`, `piCeilingCutList` | a show lists a deleted episode, or hides a real one |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** No `check:*` sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused: all three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 

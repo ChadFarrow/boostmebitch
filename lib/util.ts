@@ -3424,9 +3424,9 @@ export function listedTrackGuids(
  * 154 music feeds surveyed carried such rows. The album's own feed is the
  * authority for which tracks exist, as it already is for who gets paid.
  *
- * Music only, because a podcast's RSS often keeps just its newest items while
- * Podcast Index keeps the archive. `listed` is `listedTrackGuids`' answer; `null`
- * keeps every row. A row with no guid cannot be judged and stays.
+ * This is the MUSIC half; `/api/feed` calls `onlyListedEpisodes`, which adds the
+ * podcast half with two more guards. `listed` is `listedTrackGuids`' answer;
+ * `null` keeps every row. A row with no guid cannot be judged and stays.
  *
  * Pinned by `check:trackorder`.
  */
@@ -3440,6 +3440,90 @@ export function onlyListedTracks<T extends { guid?: string | null }>(
 }
 
 /**
+ * A show's Podcast Index rows, less the rows its own feed no longer lists —
+ * the album rule (`onlyListedTracks`) for music, and for every other feed the
+ * same rule under two more guards.
+ *
+ * Podcast Index keeps an episode after the publisher deletes it. Reported by
+ * Chad on 2026-11-23: "The OnlyBoosts Social Hour" (PI 8125803) showed
+ * "OB-000 Practice Run (Draft, Do Not Publish)" a day after Podhome removed it,
+ * beside the one episode the feed lists; a pubnotify did not clear it. A survey
+ * the same day of 77 podcast feeds whose read vouches for its list found 38
+ * with such rows: 169 inside the feed's own date range (deleted trailers,
+ * drafts such as "tmpgggoyo", episodes re-published under a new guid) and 40
+ * older than the oldest listed item. Those 40 are the archive a feed trimmed to
+ * its newest N, and they go too, as Chad asked and as podcastindex.org's own
+ * page does (it asks for `max=episodeCount`, the feed's item count). Podcast
+ * Index keeps little such archive in any case: No Agenda's feed lists 250 and
+ * PI holds 250. The outlier, NPR News Now (PI 55810, 1000 rows for a feed of 4
+ * hourly items), keeps every row: PI lags that feed by hours, so none of its
+ * rows is listed and the second guard below applies.
+ *
+ * The two podcast guards are each a way the rule would hide a real episode:
+ *
+ *   - **A row NEWER than the newest row the read lists stays.** The read can be
+ *     60 s old (10 min when the publisher is down: `fetchFeedXml`), and Podcast
+ *     Index can crawl an episode inside that window. A podcast's catch-up is
+ *     date-bounded (`rssCatchUpAfter`), so nothing would put it back. Only a
+ *     deletion of the newest episode waits for the next one.
+ *   - **A read that shares no guid with Podcast Index hides nothing** — it falls
+ *     out of the first guard, since there is no newest listed row. A host that
+ *     re-issued every guid, or a "this show moved" placeholder answering 200,
+ *     would otherwise empty the page.
+ *
+ * A row with no `datePublished` cannot be placed against the read and stays.
+ *
+ * Pinned by `check:trackorder`.
+ */
+export function onlyListedEpisodes<T extends { guid?: string | null; datePublished?: number }>(
+  rows: T[],
+  listed: ReadonlySet<string> | null,
+  isMusic: boolean,
+): T[] {
+  if (!listed) return rows;
+  if (isMusic) return onlyListedTracks(rows, listed, true);
+  let newestListed = -Infinity;
+  for (const r of rows) {
+    if (r.guid && listed.has(r.guid) && typeof r.datePublished === 'number') {
+      newestListed = Math.max(newestListed, r.datePublished);
+    }
+  }
+  return rows.filter((r) => !r.guid
+    || listed.has(r.guid)
+    || typeof r.datePublished !== 'number'
+    || r.datePublished > newestListed);
+}
+
+/**
+ * Whether Podcast Index's per-feed ceiling cut the list `/api/feed` serves —
+ * half of its `truncated` flag, the half the client words as "Older episodes
+ * exist, but this feed is longer than the app can load in one go".
+ *
+ * Hitting the ceiling used to be enough, read as truncation on purpose (a feed
+ * of exactly `PI_EPISODE_MAX` items over-reports by a sentence). Once
+ * `onlyListedEpisodes` hides what the feed no longer lists, that sentence can
+ * be false: NPR News Now's Podcast Index copy holds 1000 rows for a feed of 4,
+ * and in an hour when PI has crawled one of the 4, the rest go and the page
+ * lists the feed's 4 items under "Older episodes exist". So when the read
+ * vouches for the whole list (`listed` non-null) and every guid it lists was
+ * served, nothing the feed holds is missing and the ceiling cut nothing. An
+ * unread feed (`null`) keeps the old answer.
+ *
+ * Pinned by `check:trackorder`.
+ */
+export function piCeilingCutList(
+  piRowCount: number,
+  ceiling: number,
+  listed: ReadonlySet<string> | null,
+  served: ReadonlySet<string>,
+): boolean {
+  if (piRowCount < ceiling) return false;
+  if (!listed) return true;
+  for (const g of listed) if (!served.has(g)) return true;
+  return false;
+}
+
+/**
  * The `datePublished` after which `/api/feed` appends RSS items Podcast Index
  * did not return (`getRssEpisodesNewerThan`).
  *
@@ -3450,7 +3534,9 @@ export function onlyListedTracks<T extends { guid?: string | null }>(
  * every unlisted row: a track replaced under a new guid that Podcast Index has
  * not crawled would otherwise vanish, where it used to show as the old copy. An
  * album's rows are ordered by track number, so appending an older item reorders
- * nothing the way it would an archive show.
+ * nothing the way it would an archive show. A podcast keeps the date bound even
+ * though `onlyListedEpisodes` drops its unlisted rows too: that is why its
+ * guard keeps every row newer than the newest one the read lists.
  *
  * Pinned by `check:trackorder`.
  */
