@@ -44,6 +44,7 @@
     "e2e:communityui": "node scripts/e2e-community-ui.mjs",
     "e2e:guestplaylist": "node scripts/e2e-guest-playlist.mjs",
     "e2e:iosapp": "node scripts/e2e-ios-app.mjs",
+    "e2e:spark": "node scripts/e2e-spark-wallet.mjs",
     "e2e:pairing": "node scripts/e2e-pairing-relays.mjs",
     "e2e:playlistpings": "node scripts/e2e-playlist-pings.mjs",
     "e2e:playlistarchive": "node scripts/e2e-playlist-archive.mjs",
@@ -158,7 +159,7 @@
     "e2e:newmusic": "node scripts/e2e-new-music.mjs"
   },
   "dependencies": {
-    "@buildonspark/spark-sdk": "^0.8.1",
+    "@buildonspark/spark-sdk": "^0.16.0",
     "@getalby/sdk": "^5.1.0",
     "@noble/hashes": "^2.0.1",
     "@scure/bip39": "^2.0.1",
