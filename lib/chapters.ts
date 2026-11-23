@@ -86,10 +86,13 @@ function chapterIndexAt(chapters: ChapterEntry[] | null | undefined, positionSec
   return chapters.reduce((acc, c, i) => (positionSec >= c.startTime ? i : acc), -1);
 }
 
+/** How far into a chapter ⏮ restarts it rather than stepping back. */
+const RESTART_AFTER_SEC = 3;
+
 /** Seconds to seek to for "previous chapter": restart the current chapter when
  *  we're >3s into it (standard player behavior), else jump to the previous one. */
 function chapterPrevTarget(chapters: ChapterEntry[], idx: number, positionSec: number): number {
-  if (idx >= 0 && positionSec > chapters[idx].startTime + 3) return chapters[idx].startTime;
+  if (idx >= 0 && positionSec > chapters[idx].startTime + RESTART_AFTER_SEC) return chapters[idx].startTime;
   if (idx > 0) return chapters[idx - 1].startTime;
   return 0;
 }
@@ -133,7 +136,15 @@ export function buildChapterNav(
   return {
     prev: {
       onClick: () => seek(chapterPrevTarget(chapters, activeIdx, positionSec)),
-      disabled: activeIdx <= 0 && positionSec <= 1,
+      // SPENT in the first 3 s of the first chapter (or of the stretch before
+      // it): a press there would only seek the start again, which is all ⏮
+      // did, press after press (#534: "I expected pushing back twice in a row
+      // to go to the previous episode"). `<TransportControls>` hands a spent
+      // ⏮ to the default step — the previous episode or track — and draws it
+      // disabled only when there is none. This is the restart rule above,
+      // carried one step further: the chapter before the first is the
+      // previous item.
+      disabled: activeIdx <= 0 && positionSec <= RESTART_AFTER_SEC,
       label: 'Previous chapter',
     },
     next: {

@@ -151,16 +151,27 @@ export function TransportControls({
   // `episodeQueue` there lit ⏭ over a press that did nothing — reached by
   // queueing episode 5 of an open show with nothing playing, where
   // `revealQueue` leaves that show's list in `episodeQueue`.
+  //
+  // **⏮ is the exception: a SPENT ⏮ is no override at all**, so it falls
+  // through to the WHOLE default — the shuffle, the listen queue, then
+  // `episodeQueue` — exactly as on an episode with no chapters. `buildChapterNav`
+  // spends it in the first 3 s of the first chapter, where a press could only
+  // seek the start again: on Boost Me Buddy every ⏮ press after a ⏭ re-seeked
+  // 0:00 of the new episode and none ever went back (#534). Leaving FORWARD
+  // skips what is left of the episode; leaving BACKWARD from its first
+  // seconds skips nothing, and it is the second press of the restart rule
+  // every player has. So `prevOv` is what the default sees in place of `prev`.
   const inQueue = qIdx >= 0;
-  const queueTakesPrev = qPrev >= 0 && !(prev && !prev.disabled);
+  const prevOv = prev && !prev.disabled ? prev : undefined;
+  const queueTakesPrev = qPrev >= 0 && !prevOv;
   const queueTakesNext = qNext >= 0 && !(next && !next.disabled);
-  const onPrev = queueTakesPrev ? (() => playPrev()) : (prev?.onClick ?? (() => playPrev()));
-  const prevDisabled = queueTakesPrev
+  const onPrev = queueTakesPrev ? (() => playPrev()) : (prevOv?.onClick ?? (() => playPrev()));
+  const prevDisabled = queueTakesPrev || prevOv
     ? false
-    : prev ? prev.disabled : inQueue || nextPlayableIndexBy(episodeQueue, idx, -1, asRow, passEp) < 0;
+    : inQueue || nextPlayableIndexBy(episodeQueue, idx, -1, asRow, passEp) < 0;
   const prevLabel = queueTakesPrev
     ? (inShuffle ? 'Previous in shuffle' : 'Previous in queue')
-    : (prev?.label ?? 'Previous track');
+    : (prevOv?.label ?? 'Previous track');
   const onNext = queueTakesNext ? (() => playNext()) : (next?.onClick ?? (() => playNext()));
   const nextDisabled = queueTakesNext
     ? false
