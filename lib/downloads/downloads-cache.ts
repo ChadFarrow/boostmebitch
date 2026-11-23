@@ -1,4 +1,4 @@
-import { MAX_DOWNLOAD_BYTES, roomVerdict, downloadFailureMessage, proxiedAudioUrl } from './download-rules';
+import { MAX_DOWNLOAD_BYTES, roomVerdict, downloadFailureMessage, proxiedAudioUrl, statedDownloadBytes, endedShort } from './download-rules';
 
 /**
  * Did the host answer AT ALL — any status, including one it refuses to let us
@@ -261,8 +261,10 @@ export async function downloadBytes(
   if (!res.ok) throw new Error(`${hostOf(sourceUrl)} answered ${res.status}.`);
   if (!res.body) throw new Error('This host sent no audio.');
 
-  const declared = Number(res.headers.get('content-length'));
-  const totalBytes = Number.isFinite(declared) && declared > 0 ? declared : null;
+  // Through `/api/audio` the length is on `X-Expected-Length`, because Next
+  // 15.5.29+ drops a route's `Content-Length` — read only `content-length` here
+  // and every proxied download loses its progress bar and its room check.
+  const totalBytes = statedDownloadBytes(res.headers, proxied);
 
   // The size is often only knowable now. Check again rather than trusting the
   // feed's `enclosureLength`, which is routinely wrong or absent.
@@ -307,6 +309,13 @@ export async function downloadBytes(
     // the socket open until the tab is closed.
     reader.cancel().catch(() => {});
     throw e;
+  }
+
+  // A clean end with bytes missing is a TRUNCATED file, not a whole one. While
+  // `Content-Length` reached the browser it refused a short body itself; the
+  // route can no longer send it, so the count is ours (`endedShort`).
+  if (endedShort(proxied, receivedBytes, totalBytes)) {
+    throw new Error('The download stopped before the end of the episode. Retry it.');
   }
 
   // `/api/audio` answers `application/octet-stream` ON PURPOSE, so a hostile

@@ -216,6 +216,110 @@ export function proxiedAudioUrl(sourceUrl: string): string {
 }
 
 /**
+ * The header `/api/audio` states its body's length on — and it is NOT
+ * `Content-Length`, because the route can no longer send that one.
+ *
+ * **Next 15.5.29 drops `content-length`, `content-encoding` and
+ * `transfer-encoding` from EVERY route handler's response** (`FORBIDDEN_HEADERS`
+ * in `next/dist/server/send-response.js`, its fix for GHSA-pc58-hwjq-p385), and
+ * 16.4.5, 16.4.6 and the 16.5 canary drop them too, so this is where Next is
+ * going, not a regression to wait out. Production answered `/api/audio` with no
+ * length from #662 (2026-11-22): the progress bar lost its denominator, the
+ * second room check stopped running, and nothing on the wire said how many
+ * bytes a whole file is. A header Next does not know passes untouched, and the
+ * route is same-origin, so the client reads it with no
+ * `Access-Control-Expose-Headers`. `check:audiowire` drives Next's REAL
+ * `sendResponse` and fails the day this length stops reaching the client.
+ */
+export const PROXY_LENGTH_HEADER = 'X-Expected-Length';
+
+/** A header value that is a whole, positive byte count — anything else is no claim. */
+function byteCount(raw: string | null): number | null {
+  if (raw === null || !/^\d+$/.test(raw.trim())) return null;
+  const n = Number(raw.trim());
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * The length `/api/audio` may promise for the body it is about to stream, read
+ * from the HOST's headers: `null` when it can promise none.
+ *
+ * Only when the bytes arrive as the host sent them. `fetch` DECODES a
+ * `Content-Encoding`, so the declared length is then the COMPRESSED size: a
+ * browser enforcing it would stop short and keep a truncated file as complete,
+ * and {@link endedShort} would call a whole file truncated. Any encoding at all,
+ * `identity` included, promises nothing — the safe direction to be wrong in,
+ * since the cost is a progress bar without a denominator.
+ */
+export function proxyBodyLength(upstream: { get(name: string): string | null }): number | null {
+  if (upstream.get('content-encoding')?.trim()) return null;
+  return byteCount(upstream.get('content-length'));
+}
+
+/**
+ * Every header `/api/audio` answers a streamed body with. One builder, so
+ * `check:audiowire` sends exactly the headers the route sends.
+ *
+ * - **`application/octet-stream`, never the host's `Content-Type`**: `audio/*`
+ *   verbatim would let a hostile host pick our type. The client only ever makes
+ *   a Blob of it, and `nosniff` stops the browser inferring anything else.
+ * - **The length on {@link PROXY_LENGTH_HEADER}**, and on `Content-Length` as
+ *   well. Next 15.5.29+ drops the second on the way out; it is kept for a server
+ *   that passes it, because there the browser itself refuses a short body.
+ * - **`no-store`**: the URL carries a third party's address and the body is
+ *   someone's episode.
+ */
+export function audioProxyHeaders(upstream: { get(name: string): string | null }): Headers {
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/octet-stream');
+  headers.set('X-Content-Type-Options', 'nosniff');
+  const length = proxyBodyLength(upstream);
+  if (length !== null) {
+    headers.set(PROXY_LENGTH_HEADER, String(length));
+    headers.set('Content-Length', String(length));
+  }
+  headers.set('Cache-Control', 'no-store');
+  return headers;
+}
+
+/**
+ * How many bytes a download response says it will deliver, or `null` when it
+ * says nothing usable. It is the progress bar's denominator and the second room
+ * check's number.
+ *
+ * Through `/api/audio` it is {@link PROXY_LENGTH_HEADER} first, then
+ * `Content-Length` for a server that still sends one. Straight from a host it
+ * is `Content-Length` ONLY: our header means "the route promised this", and a
+ * host that happened to send one promised nothing.
+ */
+export function statedDownloadBytes(
+  headers: { get(name: string): string | null },
+  proxied: boolean,
+): number | null {
+  return (proxied ? byteCount(headers.get(PROXY_LENGTH_HEADER)) : null) ?? byteCount(headers.get('content-length'));
+}
+
+/**
+ * Whether a download through `/api/audio` ENDED SHORT of the length it stated.
+ *
+ * While `Content-Length` was on the wire, the browser refused a short body by
+ * itself. Nothing on the wire states a length now, so the client counts. Next on
+ * Node still destroys the socket when the body errors mid-stream (measured
+ * 2026-11-22: the read rejects with `UND_ERR_SOCKET` on 15.5.28 and 15.5.29), but
+ * a stream that ends CLEANLY with bytes missing — anything between the function
+ * and the browser closing it early — would otherwise read as a whole file and
+ * get a green tick.
+ *
+ * **Proxied responses only.** The route states a length only for bytes passed
+ * through as sent ({@link proxyBodyLength}). A host's own `Content-Length` may
+ * be the compressed size of a body `fetch` decoded, and gzip makes an mp3
+ * LARGER, so the decoded file can be shorter than the header and still whole.
+ */
+export function endedShort(proxied: boolean, receivedBytes: number, statedBytes: number | null): boolean {
+  return proxied && statedBytes !== null && receivedBytes < statedBytes;
+}
+
+/**
  * What to say when the enclosure fetch threw.
  *
  * **A blocked host and a dead network are the SAME `TypeError`**, and saying

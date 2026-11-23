@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
 import { getErrorMessage, httpUrl } from '@/lib/util';
-import { MAX_DOWNLOAD_BYTES } from '@/lib/downloads/download-rules';
+import { MAX_DOWNLOAD_BYTES, audioProxyHeaders } from '@/lib/downloads/download-rules';
 
 /**
  * The enclosure proxy, and it exists ONLY because some hosts refuse the browser.
@@ -123,22 +123,12 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'audio fetch failed' }, { status: 502 });
     }
 
-    const headers = new Headers();
-    // `audio/*` verbatim would let a hostile host pick our Content-Type. The
-    // client only ever turns this into a Blob, so an opaque octet-stream is
-    // enough and nosniff stops the browser inferring anything else.
-    headers.set('Content-Type', 'application/octet-stream');
-    headers.set('X-Content-Type-Options', 'nosniff');
-    // Only when the body arrives as the host sent it: fetch DECODES a
-    // `Content-Encoding`, so the declared length is the compressed size and the
-    // client would stop short and keep a truncated file as complete.
-    const encoded = !!upstream.headers.get('content-encoding');
-    if (!encoded && Number.isFinite(declared) && declared > 0) {
-      // Carried so the progress bar has a denominator — the one upstream header
-      // worth reflecting.
-      headers.set('Content-Length', String(declared));
-    }
-    headers.set('Cache-Control', 'no-store');
+    // The type, `nosniff`, `no-store` and the length all come from ONE builder
+    // in the import-free leaf, so `check:audiowire` sends these exact headers
+    // through Next's real `sendResponse`. The length goes on
+    // `X-Expected-Length`: Next 15.5.29+ drops a route's `Content-Length`, and
+    // it is the progress bar's denominator and the client's truncation count.
+    const headers = audioProxyHeaders(upstream.headers);
 
     return new NextResponse(upstream.body.pipeThrough(capBytes(MAX_DOWNLOAD_BYTES)), {
       status: 200,
