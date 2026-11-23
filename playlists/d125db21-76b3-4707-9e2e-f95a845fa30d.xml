@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Dope Ah Tracks</title>
+    <description>Songs that are dope af</description>
+    <link>https://www.boostmebuddy.com/feeds/playlists/d125db21-76b3-4707-9e2e-f95a845fa30d.xml</link>
+    <language>en</language>
+    <pubDate>Mon, 23 Nov 2026 14:36:10 GMT</pubDate>
+    <lastBuildDate>Mon, 23 Nov 2026 14:36:10 GMT</lastBuildDate>
+    <generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>
+    <podcast:guid>64ad1609-db1f-5613-a856-0d28cd233f07</podcast:guid>
+    <podcast:publisher>
+      <podcast:remoteItem medium="publisher" rel="curator" feedGuid="5bd38b45-9cf1-5cad-b08f-4fe234c8cc25" feedUrl="https://www.boostmebuddy.com/feeds/publishers/npub1lf5gsadtuvrdgp3rp0vk4scs9g6s0vyx3yesrkh9kagctfyc57usssjyfy.xml"/>
+    </podcast:publisher>
+    <podcast:medium>musicL</podcast:medium>
+    <podcast:txt purpose="npub">npub1lf5gsadtuvrdgp3rp0vk4scs9g6s0vyx3yesrkh9kagctfyc57usssjyfy</podcast:txt>
+    <itunes:author>Watusi</itunes:author>
+    <itunes:image href="https://upload.wikimedia.org/wikipedia/en/e/e4/Watusi_%28dance%29.jpg?utm_source=en.wikipedia.org&amp;utm_campaign=imageinfo&amp;utm_content=thumbnail_unscaled"/>
+    <image>
+      <url>https://upload.wikimedia.org/wikipedia/en/e/e4/Watusi_%28dance%29.jpg?utm_source=en.wikipedia.org&amp;utm_campaign=imageinfo&amp;utm_content=thumbnail_unscaled</url>
+      <title>Dope Ah Tracks</title>
+      <link>https://www.boostmebuddy.com/feeds/playlists/d125db21-76b3-4707-9e2e-f95a845fa30d.xml</link>
+    </image>
+    <podcast:remoteItem feedGuid="ebb90441-e3d8-5ba4-9598-067623bcedcc" itemGuid="950bc169-3f4f-4874-998a-007089b86d60" feedUrl="https://wavlake.com/feed/music/13978d4c-9ad9-4d1d-a1ea-eac88dceb2d1" medium="music"/>
+    <podcast:remoteItem feedGuid="de0d2bf3-26be-5fe9-8ab4-198186061498" itemGuid="11bc0e1e-afc1-4a82-aaa8-ed009257cc65" feedUrl="https://wavlake.com/feed/music/9b936903-2294-4511-ade5-e09c5d405cfe" medium="music"/>
+    <podcast:remoteItem feedGuid="de0d2bf3-26be-5fe9-8ab4-198186061498" itemGuid="67ea8295-6452-420f-9b0d-5f894148d6dc" feedUrl="https://wavlake.com/feed/music/9b936903-2294-4511-ade5-e09c5d405cfe" medium="music"/>
+    <podcast:remoteItem feedGuid="b2a87a4c-86f0-5194-9eb3-dcba42ce0695" itemGuid="3298db5c-2753-4d45-8d8f-e4dc3878d748" feedUrl="https://www.doerfelverse.com/feeds/disco-swag-album.xml" medium="music"/>
+    <podcast:remoteItem feedGuid="bf88f9f1-d4c7-5a6d-b338-b94b9969f060" itemGuid="bfc9e214-f8bb-4d2e-9470-47998723e26f" feedUrl="https://wavlake.com/feed/music/2455e6d0-b933-4791-8a64-4e1398e338c9" medium="music"/>
+    <podcast:remoteItem feedGuid="012c46e0-f94a-57e4-b722-e5448c4ca96f" itemGuid="3054ae67-bb12-43f1-aa0e-450792846b10" feedUrl="https://wavlake.com/feed/music/380783eb-f05d-43d1-8972-21ceee3c403f" medium="music"/>
+    <podcast:remoteItem feedGuid="e53c524b-af86-5d8e-acd1-a07c78f0dec8" itemGuid="41544c9d-2a1e-419b-a18b-fc2bb8a4970d" feedUrl="https://wavlake.com/feed/music/ea422afd-585b-4810-aec1-701e0e6069fe" medium="music"/>
+    <podcast:remoteItem feedGuid="b36a8ae8-3bd9-5316-b63c-79de4572642b" itemGuid="a232997d-de35-4543-9159-7e11a7b36f92" feedUrl="https://wavlake.com/feed/music/bb39fb3b-b79b-45fc-8cd1-4a4d917a61c2" medium="music"/>
+    <podcast:remoteItem feedGuid="f5fce6d5-5eac-511d-804b-a30921ef48e2" itemGuid="436a63a2-6cf0-43f3-b22f-4e614d8d1979" feedUrl="https://wavlake.com/feed/music/7326df39-883c-4a7d-8fa7-e02d735a9f16" medium="music"/>
+    <podcast:remoteItem feedGuid="f5fce6d5-5eac-511d-804b-a30921ef48e2" itemGuid="61bdbd98-ef3e-47d9-b2c8-24bfd144a2f0" feedUrl="https://wavlake.com/feed/music/7326df39-883c-4a7d-8fa7-e02d735a9f16" medium="music"/>
+  </channel>
+</rss>

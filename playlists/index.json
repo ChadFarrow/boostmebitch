@@ -1,7 +1,16 @@
 {
   "origin": "https://www.boostmebuddy.com",
-  "count": 3,
+  "count": 4,
   "playlists": [
+    {
+      "id": "d125db21-76b3-4707-9e2e-f95a845fa30d",
+      "title": "Dope Ah Tracks",
+      "podcastGuid": "64ad1609-db1f-5613-a856-0d28cd233f07",
+      "feedUrl": "https://www.boostmebuddy.com/feeds/playlists/d125db21-76b3-4707-9e2e-f95a845fa30d.xml",
+      "file": "d125db21-76b3-4707-9e2e-f95a845fa30d.xml",
+      "songs": 10,
+      "updated": "2026-11-23T14:36:10.000Z"
+    },
     {
       "id": "a4aa16f4-976a-4b72-a111-b9ed274a27da",
       "title": "Test playlist from my phone.",
