@@ -847,7 +847,7 @@ the feed and the engine are real; the enclosure requests are paused by CDP
 `Fetch` and answered with 4 KB after 400 ms, so a run costs 52 KB instead of
 38 MB and a parallel queue would show as more than one request in flight (13
 tracks since 2026-11-22; the 14th was a replaced copy that Podcast Index keeps,
-see feeds.md, "A music album lists what its feed lists"). It
+see feeds.md, "A show lists what its feed lists"). It
 checks: a 90 MB quota refuses the album before one request (every track fits
 alone, the album does not — so only the album-wide check can refuse there); the
 first press spends nothing; STOP keeps the finished tracks and requests nothing

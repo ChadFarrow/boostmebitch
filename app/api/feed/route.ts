@@ -4,7 +4,7 @@ import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLi
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { isMusicMedium, compareEpisodeOrder, onlyListedTracks, rssCatchUpAfter, feedItemValue, feedEnclosure, feedLiveItems } from '@/lib/util';
+import { isMusicMedium, compareEpisodeOrder, onlyListedEpisodes, piCeilingCutList, rssCatchUpAfter, feedItemValue, feedEnclosure, feedLiveItems } from '@/lib/util';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -149,14 +149,16 @@ export async function GET(req: Request) {
     // Music album feeds (medium=music) sort by disc (podcast:season) then track
     // (podcast:episode) instead of by date, and list only what their feed lists.
     const isMusic = isMusicMedium(podcast) || feedMedium === 'music';
-    // A MUSIC album lists the tracks its feed lists — Podcast Index keeps a row
-    // after the artist removes or replaces the track, and with no track number
-    // that row sorts FIRST ("Tinderbox", PI 6422170). `null` (podcast, unread
-    // feed, an item with no guid, a capped scan) keeps every row. Both rules,
-    // and why the catch-up below then reaches back to the start, are pinned by
+    // A show lists the episodes its feed lists — Podcast Index keeps a row after
+    // the publisher deletes or replaces the item. On an album that row sorts
+    // FIRST ("Tinderbox", PI 6422170); on a show it is a deleted draft still on
+    // the page ("OB-000 Practice Run", PI 8125803). `null` (unread feed, an item
+    // with no guid, a capped scan) keeps every row, and a podcast keeps every
+    // row newer than the newest one the read lists. The rules, and why the
+    // catch-up below reaches back to the start on an album only, are pinned by
     // check:trackorder (lib/util.ts).
     const listed = listedGuids ?? null;
-    const piRows = onlyListedTracks(episodes, listed, isMusic);
+    const piRows = onlyListedEpisodes(episodes, listed, isMusic);
     // Episodes the feed published since PI last crawled it. PI crawls on its
     // own schedule, so a new episode could stay off this page for a day while
     // every app that reads the RSS itself already listed it. Only items newer
@@ -322,8 +324,13 @@ export async function GET(req: Request) {
     // indistinguishable from a show that ended. Hitting the ceiling exactly is
     // read as truncation on purpose: a feed of exactly PI_EPISODE_MAX items
     // over-reports, which costs a sentence, while under-reporting costs the
-    // reader the answer.
-    const truncated = episodes.length >= PI_EPISODE_MAX || fitted.length < merged.length;
+    // reader the answer. EXCEPT when the read vouches for the whole list and
+    // every item it lists is on the page: then the ceiling cut only rows the
+    // feed no longer lists (NPR News Now's PI copy: 1000 rows for a feed of 4),
+    // and the sentence would be false. `piCeilingCutList` (lib/util.ts).
+    const served = new Set(merged.map((e) => e.guid).filter((g): g is string => !!g));
+    const truncated = piCeilingCutList(episodes.length, PI_EPISODE_MAX, listed, served)
+      || fitted.length < merged.length;
     return NextResponse.json(
       { podcast, episodes: fitted, truncated },
       { headers: { 'Cache-Control': FEED_CACHE_CONTROL } },

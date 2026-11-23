@@ -1,5 +1,5 @@
 {
- "_about": "Recorded 2026-11-22. feedItems: each <item>'s <guid> in document order, null for an item with no <guid> (from the feed URL). apiRows: the rows https://www.boostmebitch.com/api/feed?id=<id> served, in its order, cut to the four fields the track order reads. Do not edit to make a check pass.",
+ "_about": "Recorded 2026-11-22 (the five music albums) and 2026-11-23T22:50Z (8125803 and 7840429, two podcasts). feedItems: each <item>'s <guid> in document order, null for an item with no <guid> (from the feed URL). apiRows: the rows https://www.boostmebitch.com/api/feed?id=<id> served, in its order, cut to the four fields the track order reads, plus datePublished on the podcasts, which onlyListedEpisodes reads. Do not edit to make a check pass.",
  "feeds": [
   {
    "id": 6422170,
@@ -550,6 +550,179 @@
      "title": "Bloodshot Lies",
      "season": 1,
      "episode": 36
+    }
+   ]
+  },
+  {
+   "id": 8125803,
+   "title": "The OnlyBoosts Social Hour",
+   "author": "Reed",
+   "url": "https://serve.podhome.fm/rss/de0bcde8-964b-4d71-9280-85d0ca2682c8",
+   "medium": "podcast",
+   "feedItems": [
+    "8bcebfb8-015e-473c-b641-94d13a017ddf"
+   ],
+   "apiRows": [
+    {
+     "guid": "8bcebfb8-015e-473c-b641-94d13a017ddf",
+     "title": "Introduction & The OnlyBoosts Top 10 Songs of the Week | Ep. 001",
+     "season": null,
+     "episode": 1,
+     "datePublished": 1795456365
+    },
+    {
+     "guid": "ec173b97-3e1f-4323-bc7a-130bc5d94050",
+     "title": "OB-000 Practice Run (Draft, Do Not Publish)",
+     "season": null,
+     "episode": 1,
+     "datePublished": 1795379255
+    }
+   ]
+  },
+  {
+   "id": 7840429,
+   "title": "DKNET",
+   "author": "DKNET",
+   "url": "https://dalkora.com/feed/podcast/dknet/",
+   "medium": "podcast",
+   "feedItems": [
+    "42d64c95-9a20-543a-be7c-77da06d134fe",
+    "29026707-812d-546b-94bc-8c90f22e877e",
+    "f92ddc65-30d9-5d93-8b36-c31f80c45500",
+    "1e8c9c66-2507-5abc-ab40-f5c35b285301",
+    "dfdeaebd-db79-5295-a942-9da3518d4a76",
+    "245a7ae3-2136-5227-931c-b1334926504d",
+    "bca53912-89bd-58f7-819f-9b9eab096675",
+    "fac677f8-bc6d-5aa1-9c84-5e90985ee251",
+    "https://dalkora.com/?post_type=podcast&p=50012",
+    "c36f9714-fd8b-52a9-9273-67aef66ddd81"
+   ],
+   "apiRows": [
+    {
+     "guid": "42d64c95-9a20-543a-be7c-77da06d134fe",
+     "title": "2026.11.23 김명기, 이태용의 싱글벙글쇼",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795471143
+    },
+    {
+     "guid": "29026707-812d-546b-94bc-8c90f22e877e",
+     "title": "2026.11.23 김주현의 행복 스케치",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795471103
+    },
+    {
+     "guid": "f92ddc65-30d9-5d93-8b36-c31f80c45500",
+     "title": "2026.11.23 이브닝 뉴스",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795471063
+    },
+    {
+     "guid": "1e8c9c66-2507-5abc-ab40-f5c35b285301",
+     "title": "2026.11.23 최현준의 뉴스 따라잡기",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795471029
+    },
+    {
+     "guid": "dfdeaebd-db79-5295-a942-9da3518d4a76",
+     "title": "2026.11.23 라디오 세상",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795470993
+    },
+    {
+     "guid": "245a7ae3-2136-5227-931c-b1334926504d",
+     "title": "2026.11.23 뉴스의 광장",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795470952
+    },
+    {
+     "guid": "bca53912-89bd-58f7-819f-9b9eab096675",
+     "title": "2026.11.23 굿모닝 어메리카",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795470802
+    },
+    {
+     "guid": "fac677f8-bc6d-5aa1-9c84-5e90985ee251",
+     "title": "2026.11.22 백하영의 가장 좋은 노래",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211772
+    },
+    {
+     "guid": "https://dalkora.com/?post_type=podcast&p=50012",
+     "title": "2026.11.22 이영숙 박사의 좋은 성품",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211733
+    },
+    {
+     "guid": "c36f9714-fd8b-52a9-9273-67aef66ddd81",
+     "title": "2026.11.21 자스민의 기분 좋은날",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211678
+    },
+    {
+     "guid": "52462e8e-4532-5958-a381-6210ddb57e05",
+     "title": "2026.11.20 김명기, 이태용의 싱글벙글쇼",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211641
+    },
+    {
+     "guid": "5bb9176a-ce5a-5a17-af7f-53f6030360bf",
+     "title": "2026.11.20 김주현의 행복 스케치",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211600
+    },
+    {
+     "guid": "731284da-048e-5ff3-ad96-c74b9be881e9",
+     "title": "2026.11.20 이브닝 뉴스",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211563
+    },
+    {
+     "guid": "a5eeaabe-4249-5a21-83ff-90ec9ff74829",
+     "title": "2026.11.20 최현준의 뉴스 따라잡기",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211526
+    },
+    {
+     "guid": "https://dalkora.com/?post_type=podcast&p=50006",
+     "title": "2026.11.20 라디오 세상",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211488
+    },
+    {
+     "guid": "62c7736e-ce13-589e-bb04-f634de497bd0",
+     "title": "2026.11.20 뉴스의 광장",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211450
+    },
+    {
+     "guid": "90c8b615-1fe9-5b42-a912-237d455e6b4c",
+     "title": "2026.11.20 굿모닝 어메리카",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795211409
+    },
+    {
+     "guid": "https://dalkora.com/?post_type=podcast&p=49953",
+     "title": "2026.11.19 김명기, 이태용의 싱글벙글쇼",
+     "season": null,
+     "episode": null,
+     "datePublished": 1795126237
     }
    ]
   }
