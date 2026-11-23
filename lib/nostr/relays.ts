@@ -87,11 +87,25 @@ export function sanitizeRelays(urls: string[]): string[] {
 // NIP-65 relay list (kind:10002). We only consume the write side — we never
 // read events from arbitrary relays based on someone's read list, so the
 // parser drops it.
+//
+// The default set is DEFAULT_RELAYS ∪ PROFILE_RELAYS, as the PROFILE_RELAYS
+// comment above has always promised for every kind:10002 lookup. This one, the
+// signed-in user's own list, queried DEFAULT_RELAYS alone, and on a device or
+// origin with no `bmb:wrelays:<npub>` yet this answer IS the write set: the
+// backup reads (`backupReadRelays`), the favorites and mutes hydrations and the
+// publish set all fall back to the defaults without it. Measured 2026-11-23
+// with this exact filter: relay.damus.io failed to connect 7 times in 8,
+// nos.lol hung past 6 s every time, relay.primal.net and relay.fountain.fm did
+// not hold the owner's list, and purplepag.es held it (and two others) with an
+// EOSE in 624–713 ms, a miss included. So the owner's Spark backup, which lives
+// on two of his write relays only, read as "No backup found on your write
+// relays." on a new Vercel preview origin. purplepag.es answers, so it adds no
+// wait: `querySync` already waits for the slowest default.
 export async function fetchRelayList(
   pubkey: string,
   queryRelays?: string[],
 ): Promise<{ write: string[] } | null> {
-  const useRelays = queryRelays ?? DEFAULT_RELAYS;
+  const useRelays = queryRelays ?? Array.from(new Set([...DEFAULT_RELAYS, ...PROFILE_RELAYS]));
   return withPool(useRelays, async (pool) => {
     try {
       const events = await pool.querySync(useRelays, {
