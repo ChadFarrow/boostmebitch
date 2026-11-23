@@ -122,7 +122,7 @@ are `ID3` rather than an error page, and it becomes a `blob:` URL.
 **Re-measure before you conclude a host is broken.** `curl -sIL -H 'Origin: …'` on
 the enclosure answers this in one command.
 
-### Three rules for `/api/audio`
+### Four rules for `/api/audio`
 
 - **The catch LOGS the message and returns a constant.** `assertSafeFetchUrl` names
   the host it rejected, so reflecting it would turn the route into an oracle
@@ -139,6 +139,22 @@ the enclosure answers this in one command.
   corrupt file rather than as a timeout. 90 MB at 300 KB/s is 300 s. If that ceiling
   is ever hit in practice, the fix is range-chunked requests from the client, not a
   bigger number.
+- **The length travels on `X-Expected-Length`, never on `Content-Length` alone.**
+  Next 15.5.29 drops `content-length`, `content-encoding` and `transfer-encoding`
+  from every route handler's response (`FORBIDDEN_HEADERS` in
+  `next/dist/server/send-response.js`, its fix for GHSA-pc58-hwjq-p385), and
+  16.4.5, 16.4.6 and the 16.5 canary do too — so pinning 15.5.28 only waits for
+  the next security release. From #662 (2026-11-22) production answered this route
+  with no length: no progress bar, no second room check. Measured on a local
+  `next build && next start` that day: 15.5.28 sent `content-length: 8945229`,
+  15.5.29 sent `Transfer-Encoding: chunked` and nothing else, and every other route
+  answered the same on both. `audioProxyHeaders` (`download-rules.ts`) sets both
+  headers; `statedDownloadBytes` reads ours first. **The client also COUNTS**
+  (`endedShort`): with `Content-Length` on the wire the browser refused a body
+  that ended short by itself, and with chunked framing a clean early end is a whole
+  body to it. A body that ERRORS mid-stream still fails at the socket (Next
+  destroys it, measured on both versions). `check:audiowire` drives Next's real
+  `sendResponse` over a socket and fails when the length stops reaching the client.
 
 ---
 
@@ -249,7 +265,8 @@ Both sources lie in the same two ways: the attribute is routinely absent or
 `"0"`, and PI mirrors the zero. `numOrUndef` (`lib/pi.ts`) and `fmtBytes`
 (`lib/format.tsx`) both answer *nothing* rather than a number in that case —
 "0 MB" beside a 160 MB file is worse than silence. It is a **hint**, never a
-fact: the response `Content-Length` is what the second room check uses.
+fact: the length the response states (`statedDownloadBytes`: `X-Expected-Length`
+through `/api/audio`, `Content-Length` from a host) is what the second room check uses.
 
 The visible size shares ONE FIXED-WIDTH SLOT with the download percentage, and
 that is a layout rule rather than a space saving. `<FavHeart>` documents why: this
