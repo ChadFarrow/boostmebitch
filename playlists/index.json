@@ -1,7 +1,16 @@
 {
   "origin": "https://www.boostmebuddy.com",
-  "count": 4,
+  "count": 5,
   "playlists": [
+    {
+      "id": "836ced9e-6f6b-415a-80a0-8c698b68069b",
+      "title": "Brunch",
+      "podcastGuid": "886e4c54-bf01-5c73-8d46-a33762bfdd92",
+      "feedUrl": "https://www.boostmebuddy.com/feeds/playlists/836ced9e-6f6b-415a-80a0-8c698b68069b.xml",
+      "file": "836ced9e-6f6b-415a-80a0-8c698b68069b.xml",
+      "songs": 10,
+      "updated": "2026-11-24T04:23:37.000Z"
+    },
     {
       "id": "d125db21-76b3-4707-9e2e-f95a845fa30d",
       "title": "Dope Ah Tracks",

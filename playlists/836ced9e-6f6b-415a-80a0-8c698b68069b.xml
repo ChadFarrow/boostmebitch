@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Brunch</title>
+    <description>4-5 Songs I would have shared during pleb chain radio&apos;s Sunday Brunch. 
+
+And some vibe coding songs to make the playlist long enough.</description>
+    <link>https://www.boostmebuddy.com/feeds/playlists/836ced9e-6f6b-415a-80a0-8c698b68069b.xml</link>
+    <language>en</language>
+    <pubDate>Tue, 24 Nov 2026 04:23:37 GMT</pubDate>
+    <lastBuildDate>Tue, 24 Nov 2026 04:23:37 GMT</lastBuildDate>
+    <generator>Boost Me Buddy (https://www.boostmebuddy.com)</generator>
+    <podcast:guid>886e4c54-bf01-5c73-8d46-a33762bfdd92</podcast:guid>
+    <podcast:publisher>
+      <podcast:remoteItem medium="publisher" rel="curator" feedGuid="ece8ae37-45ce-5221-b113-34904aa02b58" feedUrl="https://www.boostmebuddy.com/feeds/publishers/npub15rp8pt5u4r8m5yavdceuzsr8zcah0jtwwpfu2nmp22ss3yjawn3qhtdruw.xml"/>
+    </podcast:publisher>
+    <podcast:medium>musicL</podcast:medium>
+    <podcast:txt purpose="npub">npub15rp8pt5u4r8m5yavdceuzsr8zcah0jtwwpfu2nmp22ss3yjawn3qhtdruw</podcast:txt>
+    <itunes:author>Pyrohawk</itunes:author>
+    <itunes:image href="https://www.boostmebuddy.com/feeds/playlists/836ced9e-6f6b-415a-80a0-8c698b68069b.jpg?v=1795494217"/>
+    <image>
+      <url>https://www.boostmebuddy.com/feeds/playlists/836ced9e-6f6b-415a-80a0-8c698b68069b.jpg?v=1795494217</url>
+      <title>Brunch</title>
+      <link>https://www.boostmebuddy.com/feeds/playlists/836ced9e-6f6b-415a-80a0-8c698b68069b.xml</link>
+    </image>
+    <podcast:remoteItem feedGuid="0b758f0d-e0d2-5628-a0dc-1ad55fa9c35e" itemGuid="0874367f-eee5-4bda-aadc-89660382639d" feedUrl="https://wavlake.com/feed/music/d0e3f7e3-ba8d-4cad-9b9f-5b18e7229f0c" medium="music"/>
+    <podcast:remoteItem feedGuid="b06eeb2f-e689-5422-99d5-80c4dd6629d2" itemGuid="00b2a2a3-b263-4363-ba6f-1877c9336412" feedUrl="https://wavlake.com/feed/music/551abcd5-82d4-40cf-ab46-098deebed668" medium="music"/>
+    <podcast:remoteItem feedGuid="3ba5e1a9-a341-5117-9926-fc9a52a076e4" itemGuid="e7880d64-68c6-42a2-a2ec-c3b196362bac" feedUrl="https://wavlake.com/feed/music/ed9fac17-2ac9-487a-bac5-1d8ebfa82a50" medium="music"/>
+    <podcast:remoteItem feedGuid="9a0f96b8-a08f-570f-9dd6-76df22cacb92" itemGuid="a60f38a7-153c-44dd-86b2-aeaaa600c881" feedUrl="https://wavlake.com/feed/music/123d6207-2f1d-4763-aeb4-715a3231791a" medium="music"/>
+    <podcast:remoteItem feedGuid="a9b631e5-2088-5eaf-9770-b9f893b29ec2" itemGuid="ab09a4f0-8e42-4762-86ee-b4606f8b3f5d" feedUrl="https://wavlake.com/feed/music/27b93a4c-4315-4cb5-a2b7-88c8797aca9e" medium="music"/>
+    <podcast:remoteItem feedGuid="9b3dd026-fb7d-504d-b4f5-d015690817a1" itemGuid="aa1c45ff-a956-41e6-ad97-2b22e59ef206" feedUrl="https://wavlake.com/feed/music/b48011ef-fdc4-4600-ac6a-77f70d3d4a23" medium="music"/>
+    <podcast:remoteItem feedGuid="71d0057e-0586-590c-bee7-56a08792902b" itemGuid="9ae4fd67-9726-4bdf-be5b-8e177030171f" feedUrl="https://wavlake.com/feed/music/94eb61a2-7193-41b9-b5ca-0403ada4ba55" medium="music"/>
+    <podcast:remoteItem feedGuid="770479d6-23fc-5877-aef3-4ae0096f2b5c" itemGuid="deebbe78-7c8d-4ce3-a1f9-a04f831de001" feedUrl="https://wavlake.com/feed/music/0873ae1e-46ea-452c-83b9-8bc27cd11589" medium="music"/>
+    <podcast:remoteItem feedGuid="71d0057e-0586-590c-bee7-56a08792902b" itemGuid="3fead214-2de9-43d6-b78a-c6f62aab5478" feedUrl="https://wavlake.com/feed/music/94eb61a2-7193-41b9-b5ca-0403ada4ba55" medium="music"/>
+    <podcast:remoteItem feedGuid="4d7a8657-5bca-5911-907b-5604a8ab1d0d" itemGuid="472fa2af-f35d-4f8c-b20c-be90d58b1818" feedUrl="https://wavlake.com/feed/music/2160843d-6960-48c2-8c6d-20dcad100cd9" medium="music"/>
+  </channel>
+</rss>
