@@ -338,7 +338,12 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // sub-bullets, which are money rules and were cut least. A second pass is also
 // worth doing once #538, #540, #576 and #612 merge: this one left the lines they
 // edit (and their neighbours) alone so the PRs do not conflict.
-const BUDGET = 12400
+//
+// 12,440 since #646 (the IRC chat, 2026-11-24): main stood at 12,399, and
+// #646 adds a docs/ file and a check script, whose two rows this script itself
+// requires (36 words with its two nick tokens, cut to the minimum first). The
+// rows are the reason, not new rules; a trim pass can win the 40 back.
+const BUDGET = 12440
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')

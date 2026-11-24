@@ -31,7 +31,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, **`app/api/audio/`**, and `<Player>`'s local-source branch — the worker is network-first, which is NOT precaching |
 | [`docs/spark-sdk-swap.md`](docs/spark-sdk-swap.md) | `lib/v4v/spark.ts`, `spark-derive.ts`, **any bump of `@buildonspark/spark-sdk`** — the account the wallet derives at (1 on mainnet, what BlitzWallet and Primal use) and what each SDK update was checked for |
 | [`docs/pc20-favorites.md`](docs/pc20-favorites.md) | `lib/nostr/favorites-*.ts` — only a pointer to the kind:10333 spec in PC20-Nostr; a wire-format change is a PR there first |
-| [`docs/irc.md`](docs/irc.md) | `lib/irc/`, `components/irc-chat.tsx` and the player's IRC tabs — ZeroNode is reached through Chad's gateway (thelounge-candr), never directly |
+| [`docs/irc.md`](docs/irc.md) | `lib/irc/`, `components/irc-chat.tsx`, the player's IRC tabs and phone pager — ZeroNode only through Chad's gateway |
 
 ## Names
 
@@ -116,7 +116,7 @@ npm run dev / build / start / lint
 | `check:opml` | `parseOpml`, `planOpmlImport` (what leaves the device) | a paid feed's key sent to Podcast Index |
 | `check:moved` | `moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked | a copycat feed collects boosts |
 | `check:demu` | `isDemuFeed` | Wavlake passes as DeMu |
-| `check:irc` | `lib/irc/protocol.ts` (the line codec, the session) and `lib/irc/shows.ts` | typed text becomes a second IRC command |
+| `check:irc` | `lib/irc/protocol.ts`, `lib/irc/shows.ts` | typed text becomes a second IRC command |
 | `check:trackorder` | `listedTrackGuids`, `onlyListedEpisodes`, `rssCatchUpAfter`, `compareEpisodeOrder`, `piCeilingCutList` | a show lists a deleted episode, or hides a real one |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** No `check:*` sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused: all three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
@@ -341,7 +341,7 @@ Everything else lives in `localStorage` and is never sent server-side.
 
 ## Styling tokens
 
-Custom palette in `tailwind.config.ts` — don't introduce new colors without adding them here: `ink` (page bg), `bone` (primary fg), `bolt` (Lightning yellow), `nostr` (magenta), `muted` (secondary), `line` (borders), `nick-0`…`nick-9` (the IRC chat's per-person name colors, picked by `nickColor`). Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono).
+Custom palette in `tailwind.config.ts` — don't introduce new colors without adding them here: `ink` (page bg), `bone` (primary fg), `bolt` (Lightning yellow), `nostr` (magenta), `muted` (secondary), `line` (borders), `nick-0`…`nick-9` (IRC names, `nickColor`). Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono).
 
 **Fonts are loaded by `next/font` in `app/layout.tsx` and reached through `var(--font-display)` / `var(--font-mono)` — never name the family literally, and NEVER add an `@import` to `app/globals.css`**: an `@import` serializes the critical path four hops across three origins, and a literal family name bypasses the size-adjusted fallback that stops `display: swap` shifting layout. Three places move together: the two `next/font` calls in `app/layout.tsx`, `fontFamily` in `tailwind.config.ts`, and the two raw declarations in `globals.css`.
 
