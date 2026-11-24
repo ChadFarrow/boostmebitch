@@ -58,7 +58,7 @@ async function handlePost(req: Request) {
     // never — and this route is UNAUTHENTICATED at 30 requests a minute per
     // IP, which makes it the one with the least standing between a caller and
     // the instance's heap. The bound is far above any real template: the
-    // validator already refuses content over 5500 characters and total
+    // validator already refuses content over 4800 characters and total
     // tag bytes over 4096.
     const read = await readCappedRequestJson(req, MAX_REQUEST_BYTES);
     if (!read.ok) return read.response;

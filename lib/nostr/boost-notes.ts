@@ -149,21 +149,27 @@ const SITE_SIGN_TAGS_TOTAL_LEN = 4096;
  * the limit is what bounds the free text a stranger can have the site sign —
  * not far above, then. The parts of the body and their maximums: the modal's
  * 250-character message, 120 characters a name (`noteTrackText`), eight
- * mentions, links within 512 (`noteLink`, this site's own link included),
- * banner titles within 120, BOOST ALL's list within `BOOST_ALL_LISTED_MAX`
- * tracks. The receipt's relay hints are the user's own write relays and have
- * no maximum; three long real ones (filter.nostr.wine puts the npub in the
- * URL) add ~390 characters. Measured with all of them at once and a song
- * inside an episode: about 5,030 (`e2e:mentions` prints it and fails if the
- * limit drifts 1,000 above it). Past that the body gives way part by part
- * (`SHEDS`). One body still has no maximum: a message that repeats one
+ * mentions, the site's host as the one link (`siteLine`), banner titles within
+ * 120, BOOST ALL's list within `BOOST_ALL_LISTED_MAX` tracks. The receipt's
+ * relay hints are the user's own write relays and have no maximum; three long
+ * real ones (filter.nostr.wine puts the npub in the URL) add ~390 characters.
+ * Measured with all of them at once and a song inside an episode: about 4,025;
+ * BOOST ALL at its maximum, about 4,280 (`e2e:mentions` prints both, and fails
+ * if the limit drifts 1,000 above the first). Past that the body gives way part
+ * by part (`SHEDS`). One body still has no maximum: a message that repeats one
  * @mention dozens of times, since each becomes a 69-character `nostr:npub`.
+ *
+ * It was 5500 until 2026-11-22, when the body still printed two links of up
+ * to 512 characters each (a listen link and this site's deep link) and the
+ * largest real note measured about 5,030. Without them it is about 1,000
+ * shorter, so the limit came down by the same amount.
  */
-const SITE_SIGN_MAX_CONTENT = 5500;
+const SITE_SIGN_MAX_CONTENT = 4800;
 
 /**
- * The longest link the note carries, in its body or its `r` tags or as an `i`
- * tag's hint: the site-sign route's MAX_TAG_ITEM_LEN, which refuses the whole
+ * The longest link the note carries, in its `r` tag or as an `i` tag's hint
+ * (the body names only the site's host, `siteLine`, and the banner): the
+ * site-sign route's MAX_TAG_ITEM_LEN, which refuses the whole
  * template past it. A longer link is LEFT OUT, never cut — a cut URL is a dead
  * link in a note nobody can edit.
  */
@@ -174,45 +180,18 @@ const tagsLen = (tags: string[][]) =>
   tags.reduce((n, t) => n + t.reduce((m, x) => m + x.length, 0), 0);
 
 /**
- * Best public listen-link for what was boosted, in preference order:
- *  1. the EPISODE's own web page (RSS `<link>`, via PI's `link` or the RSS
- *     pass) when boosting an episode — a boost note should land the reader on
- *     that episode, not the show's front door.
- *  2. the item guid when it's an http(s) URL. RSS defines `<guid>` as a
- *     permalink unless `isPermaLink="false"` says otherwise, and plenty of
- *     feeds (Bowl After Bowl among them) use the episode page URL verbatim.
- *     We don't parse that attribute, so this is a heuristic — but it only runs
- *     when the feed published no `<link>` at all, where the alternative is
- *     dropping the reader on the show, and the `?p=123`-style guids that set
- *     isPermaLink="false" still redirect to the post.
- *  3. pod.link smart-link by Apple iTunes ID — auto-routes the visitor to
- *     their preferred podcast app on click
- *  4. Podcast Index page — human-readable feed metadata
- *  5. raw RSS feed URL
- *
- * Both episode sources are feed-supplied, so both are http(s)-validated before
- * going in a public note. Levels 3–5 are show-level: neither pod.link nor PI
- * has an episode URL constructible from a guid (pod.link's episode paths key
- * on an id of their own), so a feed with neither a `<link>` nor a URL guid
- * falls back to the show here. The BMB link below stays episode-specific
- * either way.
- */
-function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
-  // Each candidate within `noteLink`'s length, or the next one stands in.
-  const episodePage = noteLink(httpUrl(episode?.link)) ?? noteLink(httpUrl(episode?.guid));
-  if (episodePage) return episodePage;
-  if (podcast.itunesId) return `https://pod.link/${podcast.itunesId}`;
-  if (podcast.id) return `https://podcastindex.org/podcast/${podcast.id}`;
-  return noteLink(podcast.url);
-}
-
-/**
  * BoostMeBitch in-app deep link. Episode-specific when boosting an episode:
  * `?podcast=<guid>&episode=<guid>` is a restorable view per the URL contract
  * (components/home-page.tsx hydrates it), and app/page.tsx emits episode-level
- * Open Graph tags for it, so the unfurl shows the episode's own title and art.
- * Emitted alongside the listen-link (not as a replacement) so readers get both
- * affordances: listen elsewhere, or boost back here.
+ * Open Graph tags for it, so a card drawn for it shows the episode's own title
+ * and art.
+ *
+ * It is the note's `r` tag and its `i` hints, and NOT a line of the body since
+ * 2026-11-22: the body names this site by its host with no scheme, which no
+ * client draws a card for (`formatContent`). Notes before that printed it,
+ * beside a listen link (the episode's page, pod.link, Podcast Index or the
+ * feed), and clients drew both as cards above the banner — the show's art
+ * three times.
  *
  * Both guids are encodeURIComponent'd. The episode guid is an arbitrary
  * feed-chosen string and is routinely a URL. The podcast guid is MEANT to be a
@@ -506,7 +485,9 @@ interface Shed { heard: boolean; banner: boolean; song: boolean; by: boolean; re
  * maximum (its cover URLs), and the song's name is worth more than a picture of
  * it. Then the song, then the "by <artist>", then the receipt's `nostr:nevent`
  * line LAST — its `q` tag stays, so Fountain still lists the note and only its
- * ⚡ figure is lost.
+ * ⚡ figure is lost. The site's host line never gives way: it is the note's one
+ * link, and about 20 characters (`siteLine`). Since 2026-11-22 there is no
+ * listen link or deep link in the body to give way (`formatContent`).
  */
 const SHEDS: readonly Shed[] = [
   { heard: false, banner: false, song: false, by: false, receipt: false },
@@ -529,9 +510,6 @@ function noteHeardOn(nc: NoteContext): string[] {
 
 function formatContent(args: PublishArgs, nc: NoteContext, shed: Shed, heard: string[]): string {
   const { podcast, episode, boostagram } = args;
-  // The song's OWN feed for a playlist song (the container rule): both landing
-  // links name the album. The sentence's `from` stays the playlist (`podcast`).
-  const { show } = nc;
   const totalSats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
 
   const lines: string[] = ['⚡ Boost ⚡', ''];
@@ -568,11 +546,35 @@ function formatContent(args: PublishArgs, nc: NoteContext, shed: Shed, heard: st
   // format puts one blank line between blocks, and a client otherwise runs the
   // two into one paragraph (Chad, on a beta note, 2026-11-19).
   if (heard.length) lines.push('', ...heard);
-  const link = podcastLandingUrl(show, episode);
-  if (link) lines.push('', link);
-  const bmbLink = bmbLandingUrl(show, episode, nc.brand.origin);
-  if (bmbLink && bmbLink !== link) lines.push(bmbLink);
+  // ONE link, to this site, written with NO SCHEME: `www.boostmebitch.com`.
+  // Chad, 2026-11-22, on a note in jumble.social that showed the show's art
+  // three times: a card for the listen link (podcastindex.org), a card for the
+  // deep link, and the banner. "I just want the 100 sat … art that Boost Me
+  // Bitch has, and then a link to Boost Me Bitch."
+  //
+  // Read in seven clients' source that day: every one draws a preview card for
+  // an `https://` URL, and none draws one for a host with no scheme. Jumble,
+  // Amethyst and Nostur link it, Damus links it in a thread; Coracle,
+  // noStrudel, YakiHonne and Damus's timeline print it as text (`docs/nostr.md`,
+  // "ONE link in the body, with no scheme"). The `www.` form because Nostur
+  // links only that one everywhere, and it is the origin's own host, so a tap
+  // is not redirected.
+  //
+  // The host, never the deep link: a `?podcast=…&episode=…` reads as noise
+  // where it is not linked, and the deep link is still on the note, in its `r`
+  // tag and its `i` hints. No listen link either: the banner already shows what
+  // was boosted, and an app reads the show and the item from the `i` tags,
+  // never from a URL in the text.
+  lines.push('', siteLine(nc.brand));
   return lines.join('\n');
+}
+
+/**
+ * The body's one link: the note brand's host, with no scheme
+ * (`www.boostmebitch.com`). See `formatContent`.
+ */
+function siteLine(brand: Brand): string {
+  return new URL(brand.origin).host;
 }
 
 // The unsigned kind:1 boost-note template — shared by the user-signed path
@@ -665,10 +667,14 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     }
     return out;
   };
-  const linkUrl = podcastLandingUrl(show, episode);
-  if (linkUrl) tags.push(['r', linkUrl]);
+  // ONE `r` tag: this site's deep link. The body prints only the site's host
+  // (`formatContent`), so this tag is where the episode's own page on this
+  // site is kept, beside the `i` hints. None of the seven clients read on
+  // 2026-11-22 draws a kind:1's `r` tag (for Amethyst, only its text renderer
+  // was read), so it adds no card. Notes before that carry a second one, the
+  // listen link.
   const bmbUrl = bmbLandingUrl(show, episode, brand.origin);
-  if (bmbUrl && bmbUrl !== linkUrl) tags.push(['r', bmbUrl]);
+  if (bmbUrl) tags.push(['r', bmbUrl]);
   // <podcast:txt purpose="nostr"> — tag the show/track artist so the boost
   // lands in their mentions instead of being a post about them they never see.
   //

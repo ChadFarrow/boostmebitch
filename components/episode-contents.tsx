@@ -3,7 +3,7 @@ import { useMemo } from 'react';
 import { fmt } from '@/lib/format';
 import { mergeEpisodeContents, splitAtPosition, type EpisodeContentRow } from '@/lib/util';
 import type { ChapterEntry, ValueTimeSplit } from '@/lib/types';
-import { RowThumb } from './chapter-ui';
+import { ChapterUrlLink, RowThumb } from './chapter-ui';
 import { FavTrackHeart } from './fav-heart';
 import { CopyLinkButton } from './copy-link-button';
 
@@ -30,9 +30,9 @@ import { CopyLinkButton } from './copy-link-button';
  * because the windows overlap. `check:vts` pins it against the real wire.
  *
  * **The heart is a sibling of the seek button, not a child of it.** Same reason
- * a chapter row hangs its `↗` link outside: a button inside a button is invalid
- * HTML and browsers reparent it, which drops the row's click target on the
- * floor. `<FavTrackHeart>` stops propagation of its own accord anyway.
+ * a chapter's link mark sits outside it: a button or a link inside a button is
+ * invalid HTML and browsers reparent it, which drops the row's click target on
+ * the floor. `<FavTrackHeart>` stops propagation of its own accord anyway.
  *
  * **Exactly one row highlights, and a track row wins.** The two lists this
  * replaces each had their own rule and merging them naively lights two rows at
@@ -119,6 +119,7 @@ export function EpisodeContents({
     <ul className={`text-xs ${className}`}>
       {rows.map((row, i) => {
         const on = i === activeIdx;
+        const title = rowTitle(row, chapters, i);
         return (
           <li
             key={
@@ -126,60 +127,83 @@ export function EpisodeContents({
                 ? `t-${row.startTime}-${row.split.remoteItem?.itemGuid ?? i}`
                 : `c-${row.startTime}-${row.chapter.title ?? i}`
             }
-            className={`flex items-center gap-1 rounded -mx-2 transition ${on ? 'bg-bolt/10' : ''}`}
+            // `relative` is the containing block the seek button's `after:`
+            // overlay stretches over — see the note on the button.
+            className={`relative flex items-center gap-1 rounded -mx-2 transition ${
+              on ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+            }`}
           >
-            <button
-              type="button"
-              onClick={() => onSeek(row.startTime)}
-              title={`Jump to ${fmt(row.startTime)}`}
-              className={`flex-1 min-w-0 flex gap-3 items-center text-left rounded transition py-1.5 px-2 ${
-                on ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
-              }`}
-            >
-              {/* Both row kinds go through <RowThumb> — it owns the
-                  two-URL-then-hide chain and the onError that terminates on a
-                  marker rather than a string compare. */}
-              <RowThumb
-                src={row.kind === 'track' ? row.split.image : row.chapter.img}
-                fallback={fallbackImg}
-                className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
-              />
-              <span className={`tabular-nums w-12 flex-shrink-0 ${on ? 'text-bolt' : 'text-muted'}`}>
-                {fmt(row.startTime)}
-              </span>
-              <RowTitle row={row} chapters={chapters} index={i} />
-            </button>
-            {/* A chapter's external link, outside the button — see the note
-                above on nested buttons. */}
-            {row.kind === 'chapter' && row.chapter.url && (
-              <a
-                href={row.chapter.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Open chapter link"
-                aria-label="Open chapter link"
-                className="flex-shrink-0 px-2 py-1.5 text-muted hover:text-bolt transition"
+            <div className="flex-1 min-w-0 flex gap-3 items-center py-1.5 px-2">
+              {/* **The seek button covers the WHOLE row through its `after:`
+                  overlay, and holds only the thumbnail and the time.** The
+                  chapter's link mark has to follow the title's last word, so
+                  the title and the mark share one line of text — and an anchor
+                  may not sit inside a button (browsers reparent it, which drops
+                  the row's click target on the floor). So the title is a
+                  sibling, and the overlay (positioned, painted above the
+                  unpositioned title) still makes a tap anywhere on the row
+                  seek. Everything else that takes a tap here is `relative`, so
+                  it paints above the overlay: the mark, share, the heart.
+                  The visible title is `aria-hidden` and the button carries an
+                  `sr-only` copy, so the button's accessible name is still
+                  "time title", as it was when the title was inside it. The
+                  focus ring is drawn on the overlay, around the whole row. */}
+              <button
+                type="button"
+                onClick={() => onSeek(row.startTime)}
+                title={`Jump to ${fmt(row.startTime)}`}
+                className="flex-shrink-0 flex gap-3 items-center text-left focus-visible:outline-none after:absolute after:inset-0 after:rounded after:content-[''] focus-visible:after:outline focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-bolt"
               >
-                ↗
-              </a>
-            )}
-            {/* A link to this exact moment. Same sibling-of-the-seek-button
-                rule as the anchor above, and the same padding so the two read
-                as one size. Icon-only (`word=""`) because the row is the
-                tightest horizontal space in the app; `title` doubles as the
-                accessible name, so nothing is lost by dropping the word. */}
+                {/* Both row kinds go through <RowThumb> — it owns the
+                    two-URL-then-hide chain and the onError that terminates on a
+                    marker rather than a string compare. */}
+                <RowThumb
+                  src={row.kind === 'track' ? row.split.image : row.chapter.img}
+                  fallback={fallbackImg}
+                  className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
+                />
+                <span className={`tabular-nums w-12 flex-shrink-0 ${on ? 'text-bolt' : 'text-muted'}`}>
+                  {fmt(row.startTime)}
+                </span>
+                <span className="sr-only">{title.text}</span>
+              </button>
+              <span className="flex-1 min-w-0 break-words">
+                <span aria-hidden className={title.placeholder ? 'text-muted italic' : ''}>
+                  {title.text}
+                </span>
+                {/* A chapter's external link, right after its title. The
+                    no-break space keeps the mark on the line of the title's
+                    last word when the title wraps. */}
+                {row.kind === 'chapter' && row.chapter.url && (
+                  <>
+                    {'\u00a0'}
+                    <ChapterUrlLink
+                      href={row.chapter.url}
+                      label={`Open chapter link: ${title.text}`}
+                      className="relative -ml-1"
+                    />
+                  </>
+                )}
+              </span>
+            </div>
+            {/* A link to this exact moment. A sibling of the seek button, by
+                the same nested-button rule as the heart below, and `relative`
+                so it paints above the button's row overlay. Icon-only
+                (`word=""`) because the row is the tightest horizontal space in
+                the app; `title` doubles as the accessible name, so nothing is
+                lost by dropping the word. */}
             {shareUrlFor && (
               <CopyLinkButton
                 url={shareUrlFor(row.startTime)}
                 title={`Copy link to this ${row.kind === 'chapter' ? 'chapter' : 'track'} at ${fmt(row.startTime)}`}
                 word=""
-                className="flex-shrink-0 px-2 py-1.5 text-muted hover:text-bolt transition text-[10px] uppercase tracking-wider"
+                className="relative flex-shrink-0 px-2 py-1.5 text-muted hover:text-bolt transition text-[10px] uppercase tracking-wider"
               />
             )}
             {/* Only a track row can offer this, and <FavTrackHeart> still
                 declines when the window carries no usable identifiers. */}
             {row.kind === 'track' && (
-              <div className="flex-shrink-0 pr-1">
+              <div className="relative flex-shrink-0 pr-1">
                 <FavTrackHeart split={row.split} />
               </div>
             )}
@@ -206,30 +230,18 @@ export function EpisodeContents({
  * `remoteItem`, which no part of this touches. `mergeEpisodeContents` only sets
  * `absorbedTitle` when the pairing was unambiguous.
  */
-function RowTitle({
-  row,
-  chapters,
-  index,
-}: {
-  row: EpisodeContentRow;
-  chapters: ChapterEntry[] | null;
-  index: number;
-}) {
+function rowTitle(
+  row: EpisodeContentRow,
+  chapters: ChapterEntry[] | null,
+  index: number,
+): { text: string; placeholder: boolean } {
   if (row.kind === 'track') {
     const title = row.split.title ?? row.absorbedTitle;
-    return (
-      <span className={`break-words min-w-0 ${title ? '' : 'text-muted italic'}`}>
-        {title ?? 'Track not yet indexed'}
-      </span>
-    );
+    return title ? { text: title, placeholder: false } : { text: 'Track not yet indexed', placeholder: true };
   }
   // An untitled chapter is numbered by its position in the FEED's chapter list,
   // not by its position in the merged one — the merged index counts tracks too,
   // so it would number the chapters wrong the moment a show has both.
   const nth = chapters ? chapters.indexOf(row.chapter) : -1;
-  return (
-    <span className="break-words min-w-0">
-      {row.chapter.title ?? `Chapter ${(nth >= 0 ? nth : index) + 1}`}
-    </span>
-  );
+  return { text: row.chapter.title ?? `Chapter ${(nth >= 0 ? nth : index) + 1}`, placeholder: false };
 }

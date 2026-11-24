@@ -340,8 +340,8 @@ export class DownloadManager {
       enclosureType: episode.enclosureType,
       // The feed's own `<enclosure length>`, which is a HINT: absent or plainly
       // wrong on plenty of feeds. It buys a room check BEFORE the request goes
-      // out; `downloadBytes` re-runs it against the real `Content-Length` when
-      // the headers arrive, which is still ahead of any of the body.
+      // out; `downloadBytes` re-runs it against the length the response states
+      // (`statedDownloadBytes`) when the headers arrive, still ahead of the body.
       expectedBytes: episode.enclosureLength ?? null,
       signal,
       onProgress: (p) => this.setState(key, { status: 'downloading', fraction: p.fraction }),

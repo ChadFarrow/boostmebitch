@@ -234,7 +234,9 @@ const shots = [
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
 const { chromium } = await loadPlaywright();
-const browser = await chromium.launch({ headless: !manual });
+// --mute-audio: the shots drive the live player, and a test Chrome never makes
+// a sound on the owner's speakers (one did on 2026-11-22).
+const browser = await chromium.launch({ headless: !manual, args: ['--mute-audio'] });
 const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: SCALE });
 const page = await context.newPage();
 const rl = manual ? createInterface({ input: process.stdin, output: process.stdout }) : null;

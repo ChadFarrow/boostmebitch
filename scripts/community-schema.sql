@@ -31,3 +31,14 @@ create table if not exists community_bans (
   banned_at timestamptz not null default now(),
   banned_by text not null
 );
+
+-- Podcast Index notices (lib/community/pi-notify.ts, docs/feeds.md "Podcast Index").
+-- Read only by the notice code and /admin, never by a feed: a deploy without them keeps
+-- every feed working and sends no notice until this runs.
+-- pi_feed_id: the feed's Podcast Index id, once a lookup found it.
+-- pi_notified_at: the last notice (throttle). pi_first_notified_at: the first (the daily caps).
+alter table community_playlists add column if not exists pi_feed_id bigint;
+alter table community_playlists add column if not exists pi_notified_at timestamptz;
+alter table community_playlists add column if not exists pi_first_notified_at timestamptz;
+create index if not exists community_playlists_pi_first_idx
+  on community_playlists (pi_first_notified_at) where pi_first_notified_at is not null;

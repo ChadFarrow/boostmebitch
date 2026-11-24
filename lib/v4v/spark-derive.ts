@@ -62,3 +62,20 @@ export async function sparkMnemonicFromKey(skHex: string): Promise<string> {
   // 16 bytes -> 12 words, matching what the wallet UI shows users to write down.
   return entropyToMnemonic(full.slice(0, 16), wordlist);
 }
+
+/**
+ * The account number `SparkWallet.initialize` is given — the SECOND half of the
+ * seed → wallet contract. The SDK derives every key at
+ * `m/8797555'/<account>'/…`, so a seed opened at another account is a
+ * different, empty wallet, with no error.
+ *
+ * It is the SDK's own per-network default (1 on mainnet, 0 on regtest), which
+ * Primal and BlitzWallet use, so one seed shows one balance in all three.
+ * Hardcoding 0 on mainnet was the first-cut bug (docs/wallets.md). It lives
+ * here, not in spark.ts, so `check:spark` can run it through the installed SDK
+ * and compare the identity key with the one 0.8.1 derived: an SDK update that
+ * moves the default or the path fails that check before it ships.
+ */
+export function sparkAccountNumber(network: 'mainnet' | 'regtest'): number {
+  return network === 'regtest' ? 0 : 1;
+}

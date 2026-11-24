@@ -9,29 +9,40 @@ import { artCandidates } from '@/lib/util';
 import { communityPlaylistToPodcast } from '@/lib/util';
 import type { CommunityPlaylistSummary } from '@/lib/community/rules';
 
-/** PI's add form. The site cannot add a feed itself: its key is read-only (docs/feeds.md, "Podcast Index"). */
-export const PI_ADD_FORM = 'https://podcastindex.org/add';
+/** When the status line asks Podcast Index again after the first answer, in ms from mount. */
+const PI_RECHECK_AT = [10_000, 30_000, 90_000];
 
 /**
- * Is this feed in Podcast Index? `undefined` while asking; a PI feed id when it is
- * listed; `null` when it is not, or when no answer came (a 429, a 5xx, offline). The
- * add form is the safe offer for both: PI answers a feed it already holds with that
- * feed, and adds nothing.
+ * Is this feed in Podcast Index? `undefined` while the first answer is out; a PI
+ * feed id when it is listed; `null` when it is not, or when no answer came (a 429,
+ * a 5xx, offline). The server announced the feed at PUBLISH (lib/community/
+ * pi-notify.ts) and PI takes some minutes to list a new one, so a miss is asked
+ * again at 10 s, 30 s and 90 s, then the line stays as it is. Never an error: the
+ * playlist works without PI.
  */
 function usePiFeedId(feedUrl: string): number | null | undefined {
   const [id, setId] = useState<number | null | undefined>(undefined);
   useEffect(() => {
     let live = true;
+    let found = false;
     setId(undefined);
-    fetch(`/api/by-guid?url=${encodeURIComponent(feedUrl)}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j: { podcast?: { id?: unknown } } | null) => {
-        const n = j?.podcast?.id;
-        // A positive id is PI's; the RSS fallbacks elsewhere mint negative ones.
-        if (live) setId(typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : null);
-      })
-      .catch(() => { if (live) setId(null); });
-    return () => { live = false; };
+    const ask = () => {
+      if (!live || found) return;
+      fetch(`/api/by-guid?url=${encodeURIComponent(feedUrl)}`, { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j: { podcast?: { id?: unknown } } | null) => {
+          const n = j?.podcast?.id;
+          // A positive id is PI's; the RSS fallbacks elsewhere mint negative ones.
+          const pi = typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : null;
+          if (pi) found = true;
+          // A later miss never hides an id an earlier answer gave.
+          if (live) setId((cur) => pi ?? (typeof cur === 'number' ? cur : null));
+        })
+        .catch(() => { if (live) setId((cur) => (typeof cur === 'number' ? cur : null)); });
+    };
+    ask();
+    const timers = PI_RECHECK_AT.map((ms) => setTimeout(ask, ms));
+    return () => { live = false; timers.forEach(clearTimeout); };
   }, [feedUrl]);
   return id;
 }
@@ -126,19 +137,17 @@ export function PlaylistPublished({
         </p>
       </div>
 
-      <div
-        className="mt-6"
+      <p
+        className="mt-6 max-w-xl text-xs leading-relaxed text-muted"
         data-testid="pi-listing"
-        data-pi={piFeedId === undefined ? 'checking' : piFeedId ? 'listed' : 'not-listed'}
+        data-pi={piFeedId === undefined ? 'checking' : piFeedId ? 'listed' : 'waiting'}
+        role="status"
       >
-        <h2 className="text-xs font-mono uppercase tracking-wider text-muted">Podcast Index</h2>
         {piFeedId === undefined ? (
-          <p className="mt-1 text-xs text-muted">Checking Podcast Index…</p>
+          'Checking Podcast Index…'
         ) : piFeedId ? (
           <>
-            <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted">
-              This playlist is in Podcast Index, so people can find it in Podcasting 2.0 apps.
-            </p>
+            In Podcast Index.{' '}
             <a
               href={`https://podcastindex.org/podcast/${piFeedId}`}
               target="_blank"
@@ -149,19 +158,9 @@ export function PlaylistPublished({
             </a>
           </>
         ) : (
-          <>
-            <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted">
-              Not in Podcast Index yet. To let people find it in Podcasting 2.0 apps, open the
-              Podcast Index form, paste the feed address above, and send it. Podcast Index cannot
-              remove a feed: if you delete the playlist later, it stays listed there until Podcast
-              Index marks it dead.
-            </p>
-            <a href={PI_ADD_FORM} target="_blank" rel="noopener noreferrer" className="btn-ghost btn-compact mt-2 inline-flex">
-              ADD IT TO PODCAST INDEX →
-            </a>
-          </>
+          'Podcast Index: waiting. A new playlist can take some minutes to show there.'
         )}
-      </div>
+      </p>
     </section>
   );
 }

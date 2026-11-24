@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
+import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
 import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
 import { requestPlaylistArchiveAfter } from '@/lib/community/archive-notify';
 import {
@@ -17,6 +17,9 @@ import {
 } from '@/lib/community/store';
 
 export const runtime = 'nodejs';
+// The Podcast Index notice runs in `after()` and waits for its second pubnotify
+// (lib/community/pi-notify.ts): the whole path is sized to finish inside this.
+export const maxDuration = 60;
 
 type Ctx = { params: Promise<{ id: string }> };
 type Problem =
@@ -110,9 +113,9 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (out === 'gone') return gone();
     if (out === 'banned') return BANNED();
     if (out === 'stale') return NextResponse.json({ error: 'changed elsewhere' }, { status: 409 });
-    // `publish`, not a bare ping: the add is idempotent, so a SAVE also submits a
-    // playlist whose first add was refused or came before the switch.
-    notifyPodcastIndexAfter(communityFeedUrl(id), 'publish');
+    // `publish`: a SAVE announces the feed again, at most once in 10 minutes
+    // (`piNoticeAllowed`), so a playlist made before the switch is announced too.
+    notifyPodcastIndexAfter(id, 'publish');
     requestPlaylistArchiveAfter();
     return NextResponse.json({ playlist: out }, { headers: NO_STORE });
   }, 'could not save the playlist');
@@ -134,7 +137,7 @@ export async function DELETE(req: Request, ctx: Ctx) {
     const isOwner = cur.ownerPubkey === auth.pubkey;
     if (!isOwner && !adminPubkeys().has(auth.pubkey)) return forbidden();
     await deletePlaylist(id, isOwner ? 'owner' : auth.pubkey);
-    notifyPodcastIndexAfter(communityFeedUrl(id), 'gone');
+    notifyPodcastIndexAfter(id, 'gone');
     requestPlaylistArchiveAfter();
     return NextResponse.json({ deleted: true }, { headers: NO_STORE });
   }, 'could not delete the playlist');

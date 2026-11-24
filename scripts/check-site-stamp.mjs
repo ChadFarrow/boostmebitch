@@ -323,7 +323,7 @@ eq('a note with no readable amount is refused',
 {
   // The site-stamp route has no login, so the claim scan must stay LINEAR: a
   // pattern whose digit group and trailing \s* can share the same spaces takes
-  // the square of a run of whitespace. The route caps a body at 5,500
+  // the square of a run of whitespace. The route caps a body at 4,800
   // characters; 50,000 makes the growth plain (the quadratic one took 1.2 s).
   for (const [label, run] of [['spaces', ' '], ['newlines', '\n']]) {
     const t = { content: `⚡ Boost ⚡\n\nboosted 1${run.repeat(50_000)}`, tags: [['amount', '100000']] };

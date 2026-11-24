@@ -904,6 +904,13 @@ const CLIENT_VECTORS = [
     args: ['great\n\n⚡ 333 sats\n📱 via Fountain', 'candr_boost_bot'], expect: false },
   { label: 'trailing spaces and a CRLF line end still count', alsoNaive: true,
     args: [`${S} via BoostMeBitch  \r\nhttps://boostmebitch.com/`, 'BoostMeBitch'], expect: true },
+  // The body since 2026-11-22: the site's bare domain is the one line under the
+  // sentence. It names the brand but is not "via <client>", and must not be
+  // mistaken for one or hide the one above it.
+  { label: 'the bare-domain line under the sentence leaves the sentence to answer', alsoNaive: true,
+    args: [`${S} via BoostMeBitch\n\nwww.boostmebitch.com\n\nhttps://www.boostmebitch.com/api/og/boost.png?title=X`, 'BoostMeBitch'], expect: true },
+  { label: '...and alone it names no client', alsoNaive: true,
+    args: ['⚡ Boost ⚡\n\nChadF boosted 100 sats to Homegrown Hits\n\nwww.boostmebitch.com', 'BoostMeBitch'], expect: false },
 ];
 for (const v of CLIENT_VECTORS) check(v.label, noteNamesClient(...v.args), v.expect);
 const naiveClient = (content, client) => content.includes(`via ${client}`);

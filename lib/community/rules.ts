@@ -441,3 +441,104 @@ export function podpingRequestUrl(endpoint: string, feedUrl: string): string | n
   return u.href;
 }
 
+
+// ── Podcast Index notices (lib/community/pi-notify.ts) ───────────────────────
+
+/**
+ * PI's own add form. A person adds a feed there by hand; it has a captcha, so no
+ * server, script or agent sends it. /admin links it for each playlist Podcast Index
+ * does not list yet (docs/feeds.md, "Podcast Index").
+ */
+export const PI_ADD_FORM = 'https://podcastindex.org/add';
+
+/** One notice (keyless `hub/pubnotify` + podping) per feed in this window. */
+export const PI_NOTICE_THROTTLE_MS = 10 * 60_000;
+/** At most this many of ONE owner's playlists get their FIRST notice in a day. */
+export const PI_NOTICE_OWNER_DAILY = 5;
+/** At most this many playlists, over all makers, get their FIRST notice in a day. */
+export const PI_NOTICE_GLOBAL_DAILY = 30;
+/** The day the two caps count over. */
+export const PI_NOTICE_DAY_MS = 24 * 60 * 60_000;
+/** The wait before the second `hub/pubnotify` (MSP sends a second one too; our feed is `no-cache`). */
+export const PI_SECOND_NOTIFY_MS = 15_000;
+
+/** What `piNoticeAllowed` reads about one playlist; the server reads it from the store. */
+export interface PiNoticeFacts {
+  /** The owner is in `community_bans` now. */
+  banned: boolean;
+  /** Songs stored (each was checked against Podcast Index when it was saved). */
+  songCount: number;
+  /** The store holds this feed's Podcast Index id (`pi_feed_id`). */
+  inIndex: boolean;
+  /** A notice was sent for this playlist before (`pi_first_notified_at`). */
+  notifiedBefore: boolean;
+  /** When the last notice went (`pi_notified_at`, ms), or null for never. */
+  lastNotifiedAt: number | null;
+  /** This owner's playlists whose FIRST notice went in the last `PI_NOTICE_DAY_MS`. */
+  ownerFirstToday: number;
+  /** All playlists whose FIRST notice went in the last `PI_NOTICE_DAY_MS`. */
+  allFirstToday: number;
+  now: number;
+}
+
+export type PiNoticeRefusal = 'unknown' | 'banned' | 'too-few-songs' | 'throttled' | 'owner-cap' | 'global-cap';
+export type PiNoticeVerdict = { send: true; first: boolean } | { send: false; reason: PiNoticeRefusal };
+
+/**
+ * May a publish or SAVE send its notice (one keyless `hub/pubnotify`, its second
+ * one, and one podping)? A notice can add the feed to Podcast Index for good (PI has
+ * no delete) and writes a public podping to Hive, and it needs no key, so a maker
+ * could otherwise use this site to put junk feeds there. So:
+ *
+ * - not when the owner is banned, nor with fewer than `MIN_SONGS` songs;
+ * - one per feed per `PI_NOTICE_THROTTLE_MS` (a timestamp in the future counts as
+ *   recent: the safe direction for a clock that is ahead);
+ * - a FIRST notice (never notified, and not known to be in the index) counts
+ *   against two caps a day: `PI_NOTICE_OWNER_DAILY` for the owner and
+ *   `PI_NOTICE_GLOBAL_DAILY` over all makers. A later notice for the same feed does
+ *   not count: it is a feed PI was already told about.
+ *
+ * Anything that is not a finite number or a boolean answers `unknown`: no notice.
+ * Guests (a browser key) follow the same rules: the global cap is the real guard,
+ * because a guest key costs nothing to make.
+ */
+export function piNoticeAllowed(f: PiNoticeFacts): PiNoticeVerdict {
+  const num = (x: unknown) => typeof x === 'number' && Number.isFinite(x);
+  if (!num(f.now) || !num(f.songCount) || !num(f.ownerFirstToday) || !num(f.allFirstToday)
+    || (f.lastNotifiedAt !== null && !num(f.lastNotifiedAt))
+    || typeof f.banned !== 'boolean' || typeof f.inIndex !== 'boolean' || typeof f.notifiedBefore !== 'boolean') {
+    return { send: false, reason: 'unknown' };
+  }
+  if (f.banned) return { send: false, reason: 'banned' };
+  if (f.songCount < MIN_SONGS) return { send: false, reason: 'too-few-songs' };
+  if (f.lastNotifiedAt !== null && f.now - f.lastNotifiedAt < PI_NOTICE_THROTTLE_MS) {
+    return { send: false, reason: 'throttled' };
+  }
+  const first = !f.notifiedBefore && !f.inIndex;
+  if (first && f.ownerFirstToday >= PI_NOTICE_OWNER_DAILY) return { send: false, reason: 'owner-cap' };
+  if (first && f.allFirstToday >= PI_NOTICE_GLOBAL_DAILY) return { send: false, reason: 'global-cap' };
+  return { send: true, first };
+}
+
+/**
+ * The wait before the second `hub/pubnotify`: `PI_SECOND_NOTIFY_MS`, or a test's
+ * `PI_NOTIFY_SETTLE_MS` (whole ms, 0 to `PI_SECOND_NOTIFY_MS`) when the notices go
+ * to a loopback stub. On the real API the variable is ignored.
+ */
+export function piSecondNotifyMs(raw: string | undefined, toStub: boolean): number {
+  if (!toStub || raw === undefined || !/^\d{1,6}$/.test(raw)) return PI_SECOND_NOTIFY_MS;
+  return Math.min(Number(raw), PI_SECOND_NOTIFY_MS);
+}
+
+/**
+ * The feed id in a Podcast Index lookup answer (`podcasts/byguid`, `podcasts/byfeedurl`),
+ * or null. PI answers a guid it does not hold with `feed: []`, a URL with a 400, and
+ * either may carry `feed` as an object or an array. Only a positive whole number is an id.
+ */
+export function piFeedIdFrom(body: unknown): number | null {
+  if (!body || typeof body !== 'object') return null;
+  const feed = (body as { feed?: unknown }).feed;
+  const one = Array.isArray(feed) ? feed[0] : feed;
+  const id = one && typeof one === 'object' ? (one as { id?: unknown }).id : undefined;
+  return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null;
+}

@@ -29,7 +29,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/testing.md`](docs/testing.md) | Running `build` and `dev` against one `.next`, any session that tests favorites, mutes, follows or the profile, and any `scripts/e2e-*` or `scripts/cdp.mjs` |
 | [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, **both** `android/twa-manifest*.json` and `zapstore*.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest*.json` |
 | [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, **`app/api/audio/`**, and `<Player>`'s local-source branch — the worker is network-first, which is NOT precaching |
-| [`docs/spark-sdk-swap.md`](docs/spark-sdk-swap.md) | `lib/v4v/spark.ts`, `spark-derive.ts` — why the wallet derives at account 0, the path BlitzWallet and Primal use |
+| [`docs/spark-sdk-swap.md`](docs/spark-sdk-swap.md) | `lib/v4v/spark.ts`, `spark-derive.ts`, **any bump of `@buildonspark/spark-sdk`** — the account the wallet derives at (1 on mainnet, what BlitzWallet and Primal use) and what each SDK update was checked for |
 | [`docs/pc20-favorites.md`](docs/pc20-favorites.md) | `lib/nostr/favorites-*.ts` — only a pointer to the kind:10333 spec in PC20-Nostr; a wire-format change is a PR there first |
 | [`docs/irc.md`](docs/irc.md) | `lib/irc/`, `components/irc-chat.tsx` and the player's IRC tabs — ZeroNode is reached through Chad's gateway (thelounge-candr), never directly |
 
@@ -61,7 +61,7 @@ npm run dev / build / start / lint
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
-| `check:spark` | `sparkMnemonicFromKey`, `deriveBackupKey` | every derived wallet moves; every backup unreadable |
+| `check:spark` | `sparkMnemonicFromKey`, `deriveBackupKey`, `sparkAccountNumber` through the INSTALLED Spark SDK | every derived wallet moves; every backup unreadable; an SDK bump opens an empty wallet for every seed |
 | `check:sanitizer` | `safeUrlAttr` — the show-notes URL allowlist | a feed runs JS in the wallet-bearing origin |
 | `check:ssrf` | `assertSafeFetchUrl` | feed data aims the server at cloud metadata |
 | `check:liveblock` | `parseLiveBlock` — Split Kit live-value → value block | a live show pays the wrong node, or drops an artist |
@@ -105,6 +105,7 @@ npm run dev / build / start / lint
 | `check:cappedbody` | `capped-body.ts` — the capped readers, server AND browser | one feed fills the heap |
 | `check:brand` | `BRANDS`, `clientTag` — **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy |
 | `check:downloads` | `downloadKey`, `roomVerdict`, `albumPlan` | a download nothing finds |
+| `check:audiowire` | `/api/audio`'s length through Next's real `sendResponse` | no progress bar; a truncated file kept |
 | `check:queue` | `epKey`, `trimForQueue`, `listenStep`, `shuffle*`, `advanceBeforeEnd`, `coverStartSeeks` | the queue removes the wrong episode; history claims unsettled sats; a cover ▶ goes on mid-song instead of starting over |
 | `check:favnew` | `selectNewEpisodes`, `advanceMarks` | a new episode nobody sees, or a year of back catalogue |
 | `check:likes` | `tallyLikes`, `likeTags`, `unlikeTags` | a like Fountain cannot count |
@@ -116,7 +117,7 @@ npm run dev / build / start / lint
 | `check:moved` | `moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked | a copycat feed collects boosts |
 | `check:demu` | `isDemuFeed` | Wavlake passes as DeMu |
 | `check:irc` | `lib/irc/protocol.ts` (the line codec, the session) and `lib/irc/shows.ts` | typed text becomes a second IRC command |
-| `check:trackorder` | `listedTrackGuids`, `onlyListedTracks`, `rssCatchUpAfter`, `compareEpisodeOrder` | an album plays a track its artist removed first, or loses one |
+| `check:trackorder` | `listedTrackGuids`, `onlyListedEpisodes`, `rssCatchUpAfter`, `compareEpisodeOrder`, `piCeilingCutList` | a show lists a deleted episode, or hides a real one |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** No `check:*` sees a cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused: all three shipped on one branch and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
@@ -170,7 +171,7 @@ Each of these has cost something real, and you can break it from a file that loo
 - **A feed-supplied URL rendered as an `href` goes through `httpUrl` at the PARSE boundary — `safeUrlAttr` guards show-notes HTML and nothing else.** React does not block a `javascript:` href, it only warns in dev, and this origin holds the NWC credential and the nsec — so `<podcast:funding url>` put a live script link under the SUPPORT button. Three sources arrived unguarded: funding (from RSS *and* from PI, which mirrors the author's string verbatim), a chapters JSON `url`, and BoostBox's `url`, which is also persisted into `StoredBoost.legs` — so **disk is a second parse site** (`coerceStoredBoost`): an entry stored before the guard outlives it. Guard at the parse site so a fourth surface inherits it. → [`docs/security.md`](docs/security.md)
 - **Read a REQUEST body with `readCappedRequestJson`/`readCappedRequestText` (`lib/api-handler.ts`), never `req.json()`/`req.text()`** — those buffer first and measure after, and `/api/nostr/site-sign` is unauthenticated at 30/min. They return `null` rather than throwing, so the route answers its own 400. → [`docs/security.md`](docs/security.md)
 - **A route's unhandled 500 returns its `fallback`, never `e.message`** (`lib/api-handler.ts`): `PiHttpError` carries PI's raw body and `assertSafeFetchUrl` names the host it rejected, so reflecting the message turns the SSRF guard into an oracle. → [`docs/security.md`](docs/security.md)
-- **The bug report files a PUBLIC issue under the owner's name from an unauthenticated POST.** Its snapshot is an ALLOWLIST (`APP_INFO_KEYS`) and `secretInReport` refuses an nsec or NWC string, in the modal AND the route; never add a field carrying an npub, key, connection string, balance or URL query, and never interpolate issue text into `user-report-notify.yml`. → [`docs/ui.md`](docs/ui.md)
+- **The bug report files a PUBLIC issue under the owner's name from an unauthenticated POST.** Its snapshot is an ALLOWLIST (`APP_INFO_KEYS`) and `secretInReport` refuses an nsec or NWC string, in the modal AND the route; never add a field carrying an npub, key, connection string, balance or URL query, and never interpolate issue text into `user-report-notify.yml`. **A report Chad sends while an agent debugs that problem with him is closed when the fix merges, with a comment naming the PR and the build that has it.** → [`docs/ui.md`](docs/ui.md)
 - **`/api/og/boost.png`'s path, parameter names and `.png` suffix are a PERMANENT PUBLIC CONTRACT — never rename or repurpose one.** Every boost note writes that URL into a signed kind:1 that cannot be edited, so a rename blanks the picture on all of them. Add parameters; never change one's meaning. → [`docs/nostr.md`](docs/nostr.md)
 - **The Digital Asset Links statement delegates this ORIGIN to an Android package — never publish a fingerprint or package id you did not build** (a verified TWA gets the profile that holds the NWC credential and the nsec). An unset or malformed value yields an **empty statement list, never a guess**; `force-dynamic`, `Cache-Control: no-store` and the release workflow's live-statement check are not removable. **`public/manifest.json` is read by Bubblewrap too**: editing `name`/`scope`/`start_url`/`orientation`/`icons` changes the next Android build. → [`docs/android.md`](docs/android.md)
 

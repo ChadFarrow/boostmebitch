@@ -54,6 +54,27 @@ export function ShareIcon({ className = 'w-4 h-4' }: { className?: string }) {
   );
 }
 
+// Two chain links on a diagonal — the "this goes somewhere else" mark most sites
+// use, and the one Chad asked for on a chapter that published a `url`. It
+// replaced a `↗` there that nobody noticed. `currentColor`, like the rest.
+export function LinkIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </svg>
+  );
+}
+
 // Thumbs-up for the episode LIKE tile. Not the 👍 emoji: that is a colour glyph,
 // yellow in BOTH states on every platform, so it was the one coloured icon in a
 // monochrome row and could not show whether you had liked anything. This one
