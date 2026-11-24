@@ -167,7 +167,12 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
 - **It reads as a chat window before anyone has joined** (Chad, 2026-11-21: an
   empty panel "is kind of hard to tell that it's an actual chat"): a frame from
   `sm:` up, and a line in the empty list saying what it is and how to join. No
-  frame on a phone, where it is the screen's lower half, as `<LiveChat>` is.
+  frame on a phone, where it is a page of its own.
+- **On a phone the chat is a page you flick to** (Chad, 2026-11-24: the tabs
+  gave it "only basically two lines" — 74px on his iPhone, 469px now). PLAYER ·
+  CHAT · PLAYED · ABOUT, opening on CHAT, with ▶/❚❚, the LIVE state and BOOST
+  pinned under every page. Layout and the reasons in [`ui.md`](ui.md), "With
+  the IRC chat on a phone: a pager".
 - **One color per person** (Chad, 2026-11-22: "each user has like their own
   color to their name … it helps make following the chat better"). Names are
   14px and bold. `nickColor` (`lib/irc/protocol.ts`) picks one of ten
@@ -183,7 +188,10 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   changed, or the show ended and was never joined), and LEAVE, and both forget
   the saved hold. The page going away is a drop, not a leave (above). The panel is keyed by channel, so a new live episode of the
   same show keeps the session. Switching to PLAYED or ABOUT does not unmount it,
-  and another show opens on CHAT whatever tab was left open.
+  and another show opens on CHAT whatever tab was left open. Neither does a
+  flick between the phone's pages, nor a turn of the phone across 640px: the
+  panel is rendered once into a reverse portal (`ircNode` in
+  `<FullscreenPlayer>`), and each layout shows that one copy.
 - **A secret is refused before it leaves**, in the nick box and the composer:
   `textHoldsSecret` (every run of letters and digits, and NWC strings). IRC
   is public and logged; a key typed there is burnt.
@@ -201,4 +209,8 @@ gateway switch. `npm run e2e:irc` drives the real client against
 `scripts/irc-fake-server.mjs`; `-- --browser` drives the panel too, against a
 dev server started with `NEXT_PUBLIC_IRC_GATEWAY_URL=ws://127.0.0.1:6790/`
 (the fake listens there). Neither reaches ZeroNode: the real gateway and the
-real network are tested on the deploy, with Chad.
+real network are tested on the deploy, with Chad. Its section "Chad's iPhone"
+is the phone check that counts: 393 x 852 with the safe areas set, MMO's
+two-line title and a value block (the 390 x 844 section above it spends no
+safe areas, and passed while the phone showed two rows). `--shots <dir>` saves
+the pager's four screens as PNGs.

@@ -17,7 +17,9 @@
 // Usage: npm run e2e:irc                                   (Node half)
 //        NEXT_PUBLIC_IRC_GATEWAY_URL=ws://127.0.0.1:6790/ npx next dev -p 3047
 //        npm run e2e:irc -- --browser [http://127.0.0.1:3047]
+//        … --shots <dir>   also saves PNGs of the phone pager on Chad's screen
 import { register } from 'node:module';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { checker, wait, exit, launchChrome, requireApp, MINI_BAR } from './cdp.mjs';
 import { createIrcFake } from './irc-fake-server.mjs';
 
@@ -270,6 +272,8 @@ async function holdHalf() {
 const GATEWAY_PORT = 6790;
 const CANDR_GUID = '7c6f7875-2b73-491e-b32c-e2c8d6e91d53';
 const OTHER_GUID = 'b0a40000-0000-4000-8000-0000000000aa';
+const MMO_GUID = '31740861-81e8-5dda-8801-a2abb2634271';
+const MMO_TITLE = 'MMO Live Every Tuesday Night @ 5pm';
 const NSEC = `nsec1${'q'.repeat(58)}`;
 const PRIVACY = 'IRC is public: the channel can keep a log of what you write, and ZeroNode sees your IP address.';
 const HISTORY = 'You joined #candr. IRC keeps no history, so messages show from here on.';
@@ -298,7 +302,14 @@ async function browserHalf(APP) {
     liveStartTime: now - 600, value: null, feedId, feedTitle, feedUrl: `https://feeds.example.invalid/${feedId}.xml`,
     podcastGuid, verified: true,
   });
-  const LIVE = [show(900801, CANDR_GUID, 'E2E Chad Show'), show(900802, OTHER_GUID, 'E2E Other Show')];
+  // Chad's screen on 2026-11-24 (docs/superpowers/specs/2026-11-24-irc-phone-pager-design.md):
+  // MMO's own two-line title and a three-recipient value block, which is the
+  // splits row under BOOST. The addresses are made up; nothing here pays.
+  const mmo = {
+    ...show(900803, MMO_GUID, 'Millennial Media Offensive'), title: MMO_TITLE,
+    value: { type: 'lightning', method: 'keysend', recipients: ['02', '03', '02'].map((p, i) => ({ name: `Host ${i + 1}`, type: 'node', address: p + String(i + 1).repeat(64), split: [50, 40, 10][i] })) },
+  };
+  const LIVE = [show(900801, CANDR_GUID, 'E2E Chad Show'), show(900802, OTHER_GUID, 'E2E Other Show'), mmo];
 
   let fake = await createIrcFake({ port: GATEWAY_PORT, taken: ['takenfan'] });
   fake.banned.add('bannedfan');
@@ -598,6 +609,117 @@ async function browserHalf(APP) {
     c.equal('no frame on a phone, as <LiveChat>', m.border, '0px');
     c.ok('Send is at least 24 x 24', m.send[0] >= 24 && m.send[1] >= 24, JSON.stringify(m.send));
     c.ok('every tab is at least 24 x 24', m.tabs.length >= 2 && m.tabs.every(([w, h]) => w >= 24 && h >= 24), JSON.stringify(m.tabs));
+
+    console.log("\nBrowser: Chad's iPhone — 393 x 852 with its safe areas, MMO, a two-line title, a value block");
+    // Emulation spends no safe areas by itself, which is how the 390 x 844
+    // section above read 244px while Chad's phone showed two messages
+    // (docs/ui.md, "The 93px you cannot see").
+    await send('Emulation.setDeviceMetricsOverride', { width: 393, height: 852, deviceScaleFactor: 3, mobile: true });
+    await send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, left: 0, bottom: 34, right: 0 } });
+    await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    await send('Page.navigate', { url: `${APP}/live` });
+    await until(`document.body.innerText.includes(${JSON.stringify(MMO_TITLE)})`, 30000);
+    c.ok('PLAY on MMO', await playCard(MMO_TITLE));
+    await openPlayer(MMO_TITLE);
+    const mmoQuits0 = fake.received.filter((l) => l === 'QUIT :bye').length;
+    await until(`!!${q('[data-irc-join]')}`, 5000);
+    await click('[data-irc-join]');
+    c.ok('JOIN #MMO', await until(`!!${q('[data-irc-input]')}`, 8000) && await fakeGot((r) => r.includes('JOIN #MMO')));
+    for (let i = 0; i < 30; i++) fake.say(`regular${i % 5}`, '#MMO', `line ${i} of the show chat`);
+    await until(`document.querySelectorAll('[data-irc-list] [data-irc-row]').length >= 30`, 5000);
+    const chadScreen = () => js(`JSON.stringify((() => {
+      const box = (el) => { if (!el || !el.offsetParent) return null; const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; };
+      const list = ${q('[data-irc-list]')}.getBoundingClientRect();
+      const input = ${q('[data-irc-input]')}?.getBoundingClientRect();
+      return {
+        list: Math.round(list.height),
+        rowsSeen: [...document.querySelectorAll('[data-irc-list] [data-irc-row]')].filter((r) => { const b = r.getBoundingClientRect(); return b.height && b.top >= list.top - 1 && b.bottom <= list.bottom + 1; }).length,
+        sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
+        pager: !!${q('[data-live-pager]')},
+        bar: box(${q('[data-live-bar]')}),
+        barBottom: ${q('[data-live-bar]')}?.offsetParent ? Math.round(${q('[data-live-bar]')}.getBoundingClientRect().bottom) : null,
+        barButtons: [...document.querySelectorAll('[data-live-bar] button')].filter((b) => b.offsetParent).map((b) => [b.getAttribute('aria-label') || b.textContent.trim(), ...box(b)]),
+        tabs: [...document.querySelectorAll('[data-live-tabs] [role=tab]')].map((t) => [t.textContent.trim().toLowerCase(), t.getAttribute('aria-selected'), ...box(t)]),
+        inputOnScreen: !!input && input.left >= 0 && input.right <= innerWidth && input.bottom <= innerHeight,
+      };
+    })())`).then(JSON.parse);
+    const si = process.argv.indexOf('--shots');
+    const shotDir = si !== -1 ? process.argv[si + 1] : null;
+    if (shotDir) mkdirSync(shotDir, { recursive: true });
+    const shot = async (name) => {
+      if (!shotDir) return;
+      const { data } = (await send('Page.captureScreenshot', { format: 'png' })).result;
+      writeFileSync(`${shotDir}/${name}.png`, Buffer.from(data, 'base64'));
+    };
+    const chad = await chadScreen();
+    await shot('1-chat');
+    console.log('   measured:', JSON.stringify(chad));
+    c.ok(`the message list is at least 400px tall on Chad's screen (${chad.list}px, ${chad.rowsSeen} rows in view)`, chad.list >= 400, JSON.stringify(chad));
+    c.equal('no sideways overflow', chad.sw, chad.cw);
+    c.ok('the pager is the layout', chad.pager);
+    c.equal('the strip: PLAYER, CHAT (open), ABOUT', chad.tabs.map(([t, s]) => [t, s]), [['player', 'false'], ['chat', 'true'], ['about', 'false']]);
+    c.ok('every tab is at least 24 x 24', chad.tabs.length === 3 && chad.tabs.every(([, , w, h]) => w >= 24 && h >= 24), JSON.stringify(chad.tabs));
+    c.ok('the pinned bar has play/pause and BOOST, each at least 24 x 24',
+      chad.barButtons.some(([l]) => /pause|play/i.test(l)) && chad.barButtons.some(([l]) => /boost/i.test(l)) && chad.barButtons.every(([, w, h]) => w >= 24 && h >= 24), JSON.stringify(chad.barButtons));
+    c.ok('…and sits above the home indicator (852 - 34)', chad.barBottom !== null && chad.barBottom <= 852 - 34, String(chad.barBottom));
+    c.ok('the composer is on screen', chad.inputOnScreen);
+
+    // Flick and tap. Nothing may reload the audio or touch the IRC session.
+    await js(`(() => { window.__loadstarts = 0; for (const m of document.querySelectorAll('audio,video')) m.addEventListener('loadstart', () => { window.__loadstarts++; }); })()`);
+    const playingNow = () => js(`[...document.querySelectorAll('audio,video')].filter((m) => !m.paused).length`);
+    const playing0 = await playingNow();
+    const activeTab = () => js(`(document.querySelector('[data-live-tabs] [role=tab][aria-selected=true]')?.textContent ?? '').trim().toLowerCase()`);
+    const flick = async (dx) => {
+      await send('Input.synthesizeScrollGesture', { x: 200, y: 420, xDistance: dx, yDistance: 0, gestureSourceType: 'touch', speed: 1600 });
+      await wait(700);
+    };
+    await flick(-260);
+    c.equal('a flick to the left shows ABOUT', await activeTab(), 'about');
+    await shot('3-about');
+    await flick(260);
+    c.equal('a flick to the right comes back to CHAT', await activeTab(), 'chat');
+    await flick(260);
+    c.equal('another flick to the right shows PLAYER', await activeTab(), 'player');
+    await shot('2-player');
+    c.ok('…with the cover and the title on screen', await js(`(() => {
+      const h = [...document.querySelectorAll('h1')].find((x) => x.textContent.includes(${JSON.stringify(MMO_TITLE)}));
+      const r = h?.getBoundingClientRect();
+      return !!r && r.left >= 0 && r.right <= innerWidth + 1 && r.width > 0;
+    })()`));
+    await click('[data-live-tabs] [role=tab]:nth-child(2)');
+    await wait(900);
+    c.equal('a tap on CHAT goes back to the chat', await activeTab(), 'chat');
+    c.ok('…and its composer is on screen again', (await chadScreen()).inputOnScreen);
+    c.equal('no QUIT and no second JOIN across the flicks', [fake.received.filter((l) => l === 'QUIT :bye').length - mmoQuits0, fake.received.filter((l) => l === 'JOIN #MMO').length], [0, 1]);
+    c.equal('the audio did not reload (no loadstart) and still plays', [await js('window.__loadstarts'), await playingNow()], [0, playing0]);
+    c.equal('one media element plays', playing0, 1);
+
+    // The bar steps aside while the composer has focus, so the composer sits
+    // where it sat before: at the overlay's bottom edge, over the keyboard.
+    // The focus events are dispatched by hand as well: headless Chromium sends
+    // none to a page that is not the focused page (e2e-keyboard.mjs says why).
+    // They still prove the point — the composer is in a reverse portal, so only
+    // a listener on the DOM tree hears them; React's onFocus never did.
+    await js(`(() => { const el = ${q('[data-irc-input]')}; el.focus(); el.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); })()`);
+    await wait(200);
+    c.ok('the bar hides while typing', !(await js(`!!${q('[data-live-bar]')}?.offsetParent`)));
+    await shot('4-typing');
+    c.ok('…and the composer sits at the overlay\'s bottom edge (852 - 34)', await js(`(() => { const r = ${q('[data-irc-input]')}.getBoundingClientRect(); return r.bottom <= 818 && r.bottom > 760; })()`));
+    await js(`(() => { const el = ${q('[data-irc-input]')}; el.blur(); el.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); })()`);
+    await wait(400);
+    c.ok('…and comes back after', await js(`!!${q('[data-live-bar]')}?.offsetParent`));
+
+    // A turn to landscape crosses 640px into the two-pane layout and back. The
+    // chat lives in a reverse portal, so neither tree's mount may leave.
+    await send('Emulation.setDeviceMetricsOverride', { width: 852, height: 393, deviceScaleFactor: 3, mobile: true });
+    await wait(800);
+    c.ok('landscape: the two-pane layout, chat still joined', !(await js(`!!${q('[data-live-pager]')}`)) && await js(`!!${q('[data-irc-input]')}`));
+    await send('Emulation.setDeviceMetricsOverride', { width: 393, height: 852, deviceScaleFactor: 3, mobile: true });
+    await wait(800);
+    c.ok('portrait again: the pager on CHAT, chat still joined', await js(`!!${q('[data-live-pager]')}`) && (await activeTab()) === 'chat' && await js(`!!${q('[data-irc-input]')}`));
+    c.equal('…and still no QUIT, no second JOIN', [fake.received.filter((l) => l === 'QUIT :bye').length - mmoQuits0, fake.received.filter((l) => l === 'JOIN #MMO').length], [0, 1]);
+    await send('Emulation.setSafeAreaInsetsOverride', { insets: {} });
+    await send('Emulation.setTouchEmulationEnabled', { enabled: false });
 
     console.log('\nBrowser: a 1280 x 800 desktop');
     await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });

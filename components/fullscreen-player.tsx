@@ -4,7 +4,7 @@ import { CopyLinkButton } from './copy-link-button';
 import { createPortal } from 'react-dom';
 import { useAnchoredMenu } from './use-anchored-menu';
 import { cloneElement, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
-import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
+import { InPortal, OutPortal, createHtmlPortalNode, type HtmlPortalNode } from 'react-reverse-portal';
 import { isMusicItem, useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { fmt } from '@/lib/format';
@@ -218,6 +218,7 @@ import { NowPlayingAccountMenu } from './nostr-auth/now-playing-account-menu';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 import { LiveEdge } from './player/live-edge';
+import { LiveChatPager, type LivePagerPage } from './player/live-chat-pager';
 import { useFollowActiveRow } from './player/use-follow-active-row';
 import { IRC_GATEWAY_URL, ircChannelFor, ircGatewayOk } from '@/lib/irc/shows';
 import { livePlayedSnapshot, subscribeLivePlayed } from '@/lib/live-played';
@@ -251,6 +252,14 @@ type LiveTab = 'chat' | 'played' | 'about';
  * that one keeps <LiveChat>. Whether the panel SHOWS also needs the item to be
  * live, or joined on (`showIrc`).
  */
+/** `sm:`. Below it a live show with the IRC chat is the phone pager. */
+const WIDE_QUERY = '(min-width: 640px)';
+function subscribeWide(cb: () => void): () => void {
+  const mq = window.matchMedia(WIDE_QUERY);
+  mq.addEventListener('change', cb);
+  return () => mq.removeEventListener('change', cb);
+}
+
 function ircChannelOf(episode: Episode, podcast: Podcast): string | null {
   if (!ircGatewayOk(IRC_GATEWAY_URL)) return null;
   if (isHlsUrl(episode.enclosureUrl) && isLiveStreamId(episode.guid)) return null;
@@ -590,6 +599,15 @@ export function FullscreenPlayer({
   const ircChannel = current ? ircChannelOf(current.episode, current.podcast) : null;
   const showIrc = !!ircChannel && !!current
     && (current.episode.liveStatus === 'live' || ircJoinedKey === epKey(current.episode));
+  // THE PHONE PAGER (docs/ui.md, "With the IRC chat on a phone: a pager"). A
+  // media query, not a class: the two layouts are two trees. `<IrcChat>` is
+  // rendered once into `ircNode` and shown through an <OutPortal> in whichever
+  // tree is up, because an unmount sends QUIT — a turn of the phone across
+  // 640px must move the chat, never end it.
+  const wide = useSyncExternalStore(subscribeWide, () => window.matchMedia(WIDE_QUERY).matches, () => true);
+  const [ircNode] = useState(() => (typeof window === 'undefined'
+    ? null
+    : createHtmlPortalNode({ attributes: { class: 'h-full min-h-0 flex flex-col' } })));
   // Another show opens on CHAT (Chad: CHAT first), whatever tab was left open
   // on the last one. Set during render, React's pattern for state that follows
   // a value, so no frame paints the old tab.
@@ -766,8 +784,9 @@ export function FullscreenPlayer({
     const row = scrollRowRef.current;
     if (!box || !controls || !row) return;
     const apply = () => {
-      // With the IRC chat the cover keeps its 12.5rem class cap: the room
-      // under the controls belongs to the chat list, not to the cover.
+      // With the IRC chat the cover keeps its class cap: the room under
+      // the controls belongs to the chat list (tabs layout), and in the
+      // phone pager the cover has a page of its own.
       if (window.matchMedia('(min-width: 640px)').matches || showIrc) {
         box.style.maxWidth = '';
         return;
@@ -851,6 +870,9 @@ export function FullscreenPlayer({
   // no medium, so only the download record can say.
   const musicItem = isMusicItem(current);
   const isLive = episode.liveStatus === 'live';
+  // Live only: the pager's bar has no seek bar, so an item the listener joined
+  // on that has since ended keeps the tabs layout.
+  const pagerLayout = showIrc && isLive && !wide;
   const resumeTo =
     savedPos && !isLive && savedPos.t - positionSec > RESUME_GAP_SEC ? savedPos.t : null;
   // A Nostr live stream's NIP-33 id is `<64-hex pubkey>:<dTag>`, carried as the
@@ -996,6 +1018,330 @@ export function FullscreenPlayer({
   ];
   const activeLiveTab: LiveTab = liveTabs.some((t) => t.id === liveTab) ? liveTab : 'chat';
 
+  // THE PIECES THE TWO LAYOUTS SHARE, built once: the ordinary tree below and,
+  // below sm: with the IRC chat, the phone pager (<LiveChatPager>). One copy of
+  // each, so the two cannot drift apart.
+  //
+  // The cover or the live video, and the video toggle under it.
+  const mediaBody = (
+    <>
+      {isVideo ? (
+        // The width cap is bounded by the AVAILABLE HEIGHT, not by a max-h:
+        // the box is aspect-video, so height derives from width, and clamping
+        // the height while w-full held the width would break the 16:9 frame.
+        // 13rem is what the screen spends around it — the header (63px,
+        // ~4rem, from lg: — BAR_CHIP_LG), lg:p-10 top+bottom, the gap-4, and the
+        // AUDIO/VIDEO pill — rounded UP deliberately: this column has no
+        // overflow of its own, so anything it can't fit becomes a scrollbar
+        // on the row. `video-stage` sheds all of this in the browser's top
+        // layer (see app/globals.css).
+        <div
+          key="video-stage"
+          ref={stageRef}
+          className="video-stage relative w-full max-w-md sm:max-w-lg lg:max-w-[min(64rem,calc((100dvh-13rem)*16/9))] aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black"
+        >
+          {open && videoNode && <OutPortal node={videoNode} />}
+          {/* Play/pause lives on the video itself (tap anywhere to toggle).
+              The glyph is prominent while paused and fades out while playing
+              — reappearing on tap — so it doesn't cover the stream. */}
+          <button
+            type="button"
+            onClick={() => togglePlay()}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+            className="group absolute inset-0 flex items-center justify-center"
+          >
+            <span
+              className={`flex items-center justify-center w-16 h-16 rounded-full bg-ink/55 text-bone text-2xl backdrop-blur-sm transition-opacity duration-200 ${
+                isPlaying ? 'opacity-0 group-hover:opacity-100 group-active:opacity-100' : 'opacity-100'
+              }`}
+            >
+              {isPlaying ? '❚❚' : '▶'}
+            </span>
+          </button>
+          {/* Playback error banner — sits over the (black) video so the
+              failure is readable right where the stream should be.
+              pointer-events-none keeps the tap-to-play surface intact. */}
+          {audioErr && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-ink/85 backdrop-blur-sm px-3 py-2 text-center text-xs text-nostr break-words">
+              ⚠ {audioErr}
+            </div>
+          )}
+          {/* Our own video controls. Chrome and Firefox paint their own PiP
+              control on hover in this same corner, which is why `pipAvailable`
+              is the stage-specific test (see pipNeedsOwnButton) rather than
+              plain PiP support. */}
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
+            {pipAvailable && (
+              <button
+                type="button"
+                onClick={onPip}
+                aria-label="Picture-in-Picture"
+                title="Picture-in-Picture"
+                className="flex items-center justify-center w-9 h-9 rounded-lg bg-ink/55 text-bone backdrop-blur-sm hover:bg-ink/75 transition-colors"
+              >
+                <PipIcon className="w-5 h-5" />
+              </button>
+            )}
+            {fsOk && (
+              <button
+                type="button"
+                onClick={() => void toggleFullscreen(stageRef.current, videoRef.current)}
+                aria-label={fsOn ? 'Exit full screen' : 'Full screen'}
+                title={fsOn ? 'Exit full screen' : 'Full screen'}
+                className="flex items-center justify-center w-9 h-9 rounded-lg bg-ink/55 text-bone backdrop-blur-sm hover:bg-ink/75 transition-colors"
+              >
+                {fsOn ? <ExitFullscreenIcon className="w-5 h-5" /> : <FullscreenIcon className="w-5 h-5" />}
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        // THE WIDTH CAP IS BOUNDED BY THE AVAILABLE HEIGHT below sm:,
+        // exactly as the video stage above is and for the same reason: the
+        // box is `aspect-square`, so its height derives from its width. A
+        // `max-h` would leave `w-full` holding the width and break the
+        // square, and the square is what keeps everything below from
+        // moving when the art changes shape mid-episode.
+        //
+        // WHY IT NEEDS ONE AT ALL. This pane is `flex-shrink-0`, so a
+        // full-width square has no relationship to the space left under
+        // it, and the action tiles — ♡ SHOW / ♡ EPISODE / SHARE / SHARE /
+        // ≋ STREAM — fell off the bottom of the screen. The installed app
+        // is `viewport-fit: cover`, so `100dvh` spans the safe areas and
+        // the overlay pads them back off; that is 93px on a notched
+        // iPhone (59 top, 34 bottom) which a desktop browser never
+        // spends, so this is invisible unless you emulate the insets.
+        // Measured under CDP with them: at 390x844 the tile row's bottom
+        // landed at 847 against a visible bottom of 810, and at 402x874 at
+        // 859 against 840. Only the WORD line of each tile was cut, which
+        // reads as a broken layout rather than as something to scroll to.
+        //
+        // 30rem is what the screen spends around the art below sm:: the
+        // player's own header (59px), both panes' padding, and the title,
+        // seek bar or ● LIVE stamp, transport, BOOST and the tile row
+        // beneath it. Rounded UP, so the tiles clear the edge instead of
+        // sitting on it.
+        //
+        // IT WAS 28rem, AND AN ORDINARY EPISODE STILL DID NOT FIT — 46px
+        // of the tile row was under the fold at 393x852, while the live
+        // item it was measured against cleared by 10px. The two are not
+        // 4px apart: `isLive` replaces the seek bar, its times row AND the
+        // active-chapter label with one stamp, which is 52px on a show
+        // that publishes chapters. Measure the EPISODE, not the live item
+        // — it is the taller of the two, and it is the one that was
+        // reported.
+        //
+        // THE 42px THAT PAID FOR PART OF THIS CAME OFF THE PADDING AND THE
+        // GAPS, not off the reserve: both panes' `p-4` and the cluster's
+        // `gap-5` are phone-only now (see the note above that cluster), so
+        // the same controls need 42px less room. Without them this would
+        // be 32.5rem and the cover 42px smaller again. Re-measure the
+        // number when you add a control under BOOST — CSS cannot measure a
+        // sibling, so nothing will tell you the reserve went stale except
+        // the tile row on a phone.
+        //
+        // Measured with the reserve at 30rem, ordinary episode / live item,
+        // clearance under the tile row: 375x667 -60 / -4 (the floor below
+        // wins there and nothing fits), 390x844 +22 / +78, 393x852 +22 /
+        // +78, 402x874 +22 / +78, 430x932 +52 / +78.
+        //
+        // `min(28rem,…)` because 28rem is also the `max-w-md` this
+        // replaces, and two `max-w-*` classes on one element resolve by
+        // stylesheet order rather than by which is smaller. `max(11rem,…)`
+        // is a floor for a short screen, where nothing makes everything
+        // fit and a vanishing cover helps no one. From sm: up
+        // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
+        // info column, so its height is not the constraint.
+        // WITH THE IRC CHAT, below sm: only. In the phone pager the cover
+        // has the PLAYER page to itself, under the strip and over the pinned
+        // bar: the reserve is 22rem (header 51px, strip 44, marks and bar
+        // ~80, a two-line title, the splits row and the gaps), and the page
+        // scrolls past that. An item joined on and since ended keeps the
+        // tabs layout, where the cover is 12.5rem — the Nostr stream's video
+        // height at 390px — so the chat list keeps room under it
+        // (docs/irc.md). From sm: up the chat is the right-hand pane and the
+        // cover is unchanged.
+        <div key="cover" ref={coverBoxRef} className={`w-full ${pagerLayout ? 'max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_22rem)))]' : showIrc ? 'max-w-[12.5rem]' : 'max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))]'} sm:max-w-lg lg:max-w-xl aspect-square`}>
+          {/* Whatever is playing at this second, via `nowPlayingArt`: the
+              LIVE BLOCK's art first — on a Split Kit show that's the cover
+              of the record actually playing, and it's the one thing on
+              screen that makes a redirected payment self-evident — then the
+              track a <podcast:valueTimeSplit> redirects to (the same thing,
+              one episode later: BOOST pressed here pays that artist), then
+              the active chapter's artwork (Podcasting 2.0 chapters `img`).
+              PodcastCover falls back image→artwork→initial-tile, so a
+              broken/missing image degrades to the episode/podcast art. */}
+          {/* lowPriority is not cosmetic here. This pane is ALWAYS MOUNTED —
+              the fullscreen player is translated off-screen when collapsed,
+              not unmounted — so without lazy loading a collapsed player
+              downloads the art for every chapter the listener passes, at
+              20–36 MB apiece on a real music feed, over the same connection
+              the audio is streaming on. See PodcastCover's own note. */}
+          <PodcastCover
+            image={
+              nowPlayingArt({
+                liveBlockImage,
+                splitImage: splitArt,
+                chapterImage: activeChapter?.img,
+                artOk,
+              }) || episode.image || podcast.image
+            }
+            artwork={podcast.artwork}
+            // The downloaded cover, and it is the LAST rung — see
+            // <PodcastCover>'s `localSrc` and `nowPlayingCover` in the
+            // store. Chapter and track art still win whenever the network
+            // answers; this is what stops an offline launch painting a
+            // coloured initial tile over an episode whose cover is sitting
+            // on the device.
+            localSrc={nowPlayingCover}
+            title={podcast.title}
+            seed={podcast.id?.toString()}
+            lowPriority
+            // The one surface that paints a cover large. Every other
+            // caller takes the 320 default, which is a list tile at 2x.
+            w={640}
+            // ANIMATION, and the two conditions are both load-bearing.
+            //
+            // `/api/art` takes frame one — a chapter whose `img` is an
+            // animated GIF is still under it — so the picture moved in the
+            // 48px now-playing tile, which used to render the raw URL, and
+            // stood still here where it is 400px across. Reported from an
+            // iPhone: *"This is a GIF but it only plays in the now playing
+            // bar at the bottom."*
+            //
+            // `open`: this pane is always mounted, merely translated
+            // off-screen, so without it a collapsed player downloads the
+            // original of every chapter it passes. Measured on Mutton, Mead
+            // & Music: 4,472,805 bytes against 5,502 proxied at w=160, on
+            // the connection the audio is streaming over, 9 chapters deep.
+            //
+            // `artOk`: the same verdict every other art decision here
+            // takes. It is not belt-and-braces — `nowPlayingArt` only
+            // suppresses CHAPTER and TRACK art when the gate shuts, so
+            // without this an episode cover that is itself a huge GIF would
+            // still be fetched whole while the buffer is in trouble.
+            preferOriginal={open && artOk}
+            // The cover changes IN PLACE — per track, per chapter, and twice
+            // more per track as the art gate shuts and reopens — so it holds
+            // the painted picture until the next one has loaded. Without it
+            // every change is an empty box until the file arrives: the
+            // "flashes just once" reported from beta (e2e:coverhold).
+            hold
+            // The whole picture, letterboxed — never a crop. Episode art
+            // is not reliably square: a show that reuses its video
+            // thumbnail publishes 16:9, and `object-cover` in a square box
+            // took a 16:9 episode cover's title off both edges. Cropping
+            // is right for a tile, where the row's geometry matters more
+            // than the edges of the art; here the picture IS the content.
+            // The box stays square so nothing below it moves when the art
+            // changes shape mid-episode (chapter art, a live block's
+            // cover, a valueTimeSplit's track), and `bg-bone/5` makes the
+            // letterbox read as a canvas rather than a gap in the layout.
+            fit="contain"
+            className="w-full h-full rounded-xl border border-bone/10 bg-bone/5 shadow-2xl text-5xl"
+          />
+        </div>
+      )}
+      {/* Audio/Video picker sits directly UNDER the art/video (centered), so
+          it never covers the media. Only present when there's a video
+          rendition (the component returns null otherwise). */}
+      <VideoToggle className="inline-flex" />
+    </>
+  );
+  // The title, the show, the author line and a playback error.
+  const titleBlock = (
+    <div>
+      <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
+      <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
+      {authorLine(podcast.title, podcast.author) && (
+        <p className="text-xs text-muted/70 mt-0.5">{authorLine(podcast.title, podcast.author)}</p>
+      )}
+      {audioErr && (
+        <p className="text-xs text-nostr mt-2 break-words">⚠ {audioErr}</p>
+      )}
+    </div>
+  );
+  // STREAM's dialog, the stream meter and the splits row (or its placeholder).
+  const valueBlock = (
+    <>
+      {/* STREAM's dialog. Portalled by <ModalShell>, so this spot is not
+          where it appears — and it is rendered BARE: the old inline panel
+          sat here under BOOST, off the bottom of a phone, while its
+          button was in the ⋯ menu at the top. */}
+      {streamDialog}
+
+      {/* Sits with the value split, which is what streaming pays into.
+          Renders nothing unless streaming is actually running (or has
+          failed), so it costs a signed-out / rate-off user no space. */}
+      <StreamMeter className="-mt-1" />
+
+      {/* Same hairline disclosure row as the episode page — one control
+          for one question, drawn the same way wherever it is asked. */}
+      {hasValue && value && (
+        <div className="-mt-1 border-t border-bone/10">
+          <button
+            type="button"
+            onClick={() => setValueOpen((v) => !v)}
+            className="flex w-full items-center gap-2 h-11 text-xs text-muted hover:text-bone transition"
+            aria-expanded={valueOpen}
+          >
+            <BoltIcon className="w-3.5 h-3.5 text-bolt" />
+            <span>Splits to {value.recipients.length} recipient{value.recipients.length === 1 ? '' : 's'}</span>
+            <span aria-hidden className={`ml-auto transition-transform ${valueOpen ? 'rotate-180' : ''}`}>▾</span>
+          </button>
+          {valueOpen && (
+            <ValueSplitRows value={value} className="space-y-2 pb-3" />
+          )}
+        </div>
+      )}
+      {/* WHILE THE BLOCK IS UNREAD THE ROW HOLDS ITS PLACE. A favorites
+          shuffle track (and a playlist row) starts with no value block
+          and asks `/api/item-value` as it plays, so on every ⏭ the row
+          above unmounted and came back, and the list under it jumped
+          61px up and down (Chad, beta, 2026-11-13). Same box, same
+          height; no count, because the last track's would be wrong.
+          Pinned by `e2e:shuffle` section 8. */}
+      {!hasValue && boost.reason === 'pending' && (
+        <div className="-mt-1 border-t border-bone/10" data-splits-pending>
+          <p className="flex w-full items-center gap-2 h-11 text-xs text-muted" aria-busy="true">
+            <BoltIcon className="w-3.5 h-3.5 text-bolt/40" />
+            <span>Checking splits…</span>
+          </p>
+        </div>
+      )}
+    </>
+  );
+  // BOOST. `layout` is the flex sizing the row it sits in needs.
+  const boostButton = (layout: string) => (
+    <button
+      onClick={onBoost}
+      disabled={!hasValue}
+      className={`btn-bolt ${layout} disabled:opacity-40 disabled:cursor-not-allowed`}
+      title={boostButtonTitle(boost, 'Episode')}
+    >
+      <BoltIcon /> BOOST
+    </button>
+  );
+  // The phone pager's pages. The chat page is the portal's second home; a page
+  // with nothing in it is left out, as the tabs leave theirs out.
+  const pagerPages: LivePagerPage[] = pagerLayout && ircChannel ? [
+    {
+      id: 'player', label: 'Player', scroll: true,
+      body: (
+        <div className="my-auto flex flex-col gap-4 px-4 py-3">
+          <div className="flex flex-col items-center gap-4">{mediaBody}</div>
+          <div className="flex flex-col gap-3.5">{titleBlock}{valueBlock}</div>
+        </div>
+      ),
+    },
+    {
+      id: 'chat', label: 'Chat', scroll: false,
+      body: <div className="flex-1 min-h-0 flex flex-col px-4 pt-3 pb-1">{ircNode && <OutPortal node={ircNode} />}</div>,
+    },
+    ...(livePlayedCount > 0 ? [{ id: 'played', label: 'Played', scroll: true, body: <div className="px-4 pb-4">{playedBody}</div> }] : []),
+    ...(aboutHasContent ? [{ id: 'about', label: 'About', scroll: true, body: <div className="px-4 py-4">{aboutBody}</div> }] : []),
+  ] : [];
+
   return (
     <div
       // Height is the *dynamic* viewport (100dvh), not inset-0 / 100vh: on iOS
@@ -1034,6 +1380,16 @@ export function FullscreenPlayer({
           across a close/reopen. The slide transition still works because the
           container itself is always mounted — only its contents are gated. */}
       {everOpened && (<>
+      {/* THE IRC CHAT, MOUNTED ONCE. Each layout shows it through an
+          <OutPortal node={ircNode}>; see `ircNode`. Keyed by channel: another
+          show is another session. */}
+      {showIrc && ircChannel && ircNode && (
+        <InPortal node={ircNode}>
+          <Pane key={ircChannel} id={ircChannel} label="IrcChat">
+            <IrcChat channel={ircChannel} onJoined={() => setIrcJoinedKey(epKey(episode))} />
+          </Pane>
+        </InPortal>
+      )}
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
         <div className="flex items-center gap-3">
           <button onClick={onClose} className={`btn-ghost px-2 py-1 text-xs lg:text-sm flex-shrink-0 ${BAR_CHIP_LG}`} aria-label="Back">
@@ -1188,6 +1544,26 @@ export function FullscreenPlayer({
         document.body,
       )}
 
+      {/* BELOW sm:, A LIVE SHOW WITH THE IRC CHAT IS PAGES YOU FLICK — PLAYER ·
+          CHAT · PLAYED · ABOUT — with ▶/❚❚, the LIVE state and BOOST pinned
+          under them on every page (Chad, 2026-11-24: the chat was "only
+          basically two lines"; docs/ui.md, "With the IRC chat on a phone: a
+          pager"). It opens on CHAT. Everything else is the tree below. */}
+      {pagerLayout && ircChannel && (
+        <LiveChatPager
+          resetKey={ircChannel}
+          initial="chat"
+          pages={pagerPages}
+          bar={
+            <div className="flex items-center gap-3">
+              <TransportControls size="lg" playOnly />
+              <LiveEdge variant="mini" className="flex-1 min-w-0" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
+              {boostButton('flex-none')}
+            </div>
+          }
+        />
+      )}
+      {!pagerLayout && (
       <div ref={scrollRowRef} className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId || showIrc ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
         {/* Artwork (or live video) — centered in the left half; sticky so it
             stays put as the page scrolls. For HLS streams the shared <video>
@@ -1202,222 +1578,7 @@ export function FullscreenPlayer({
             scrollbar down the whole page. `h-full` resolves against the row's own
             definite height, so the panes fit exactly whatever the header does. */}
         <div className={`flex flex-col items-center justify-center gap-4 px-4 pt-2 pb-2 sm:p-6 lg:p-10 flex-shrink-0 ${mediaPane} sm:sticky sm:top-0 sm:self-start sm:h-full`}>
-          {isVideo ? (
-            // The width cap is bounded by the AVAILABLE HEIGHT, not by a max-h:
-            // the box is aspect-video, so height derives from width, and clamping
-            // the height while w-full held the width would break the 16:9 frame.
-            // 13rem is what the screen spends around it — the header (63px,
-            // ~4rem, from lg: — BAR_CHIP_LG), lg:p-10 top+bottom, the gap-4, and the
-            // AUDIO/VIDEO pill — rounded UP deliberately: this column has no
-            // overflow of its own, so anything it can't fit becomes a scrollbar
-            // on the row. `video-stage` sheds all of this in the browser's top
-            // layer (see app/globals.css).
-            <div
-              key="video-stage"
-              ref={stageRef}
-              className="video-stage relative w-full max-w-md sm:max-w-lg lg:max-w-[min(64rem,calc((100dvh-13rem)*16/9))] aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black"
-            >
-              {open && videoNode && <OutPortal node={videoNode} />}
-              {/* Play/pause lives on the video itself (tap anywhere to toggle).
-                  The glyph is prominent while paused and fades out while playing
-                  — reappearing on tap — so it doesn't cover the stream. */}
-              <button
-                type="button"
-                onClick={() => togglePlay()}
-                aria-label={isPlaying ? 'Pause' : 'Play'}
-                className="group absolute inset-0 flex items-center justify-center"
-              >
-                <span
-                  className={`flex items-center justify-center w-16 h-16 rounded-full bg-ink/55 text-bone text-2xl backdrop-blur-sm transition-opacity duration-200 ${
-                    isPlaying ? 'opacity-0 group-hover:opacity-100 group-active:opacity-100' : 'opacity-100'
-                  }`}
-                >
-                  {isPlaying ? '❚❚' : '▶'}
-                </span>
-              </button>
-              {/* Playback error banner — sits over the (black) video so the
-                  failure is readable right where the stream should be.
-                  pointer-events-none keeps the tap-to-play surface intact. */}
-              {audioErr && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-ink/85 backdrop-blur-sm px-3 py-2 text-center text-xs text-nostr break-words">
-                  ⚠ {audioErr}
-                </div>
-              )}
-              {/* Our own video controls. Chrome and Firefox paint their own PiP
-                  control on hover in this same corner, which is why `pipAvailable`
-                  is the stage-specific test (see pipNeedsOwnButton) rather than
-                  plain PiP support. */}
-              <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
-                {pipAvailable && (
-                  <button
-                    type="button"
-                    onClick={onPip}
-                    aria-label="Picture-in-Picture"
-                    title="Picture-in-Picture"
-                    className="flex items-center justify-center w-9 h-9 rounded-lg bg-ink/55 text-bone backdrop-blur-sm hover:bg-ink/75 transition-colors"
-                  >
-                    <PipIcon className="w-5 h-5" />
-                  </button>
-                )}
-                {fsOk && (
-                  <button
-                    type="button"
-                    onClick={() => void toggleFullscreen(stageRef.current, videoRef.current)}
-                    aria-label={fsOn ? 'Exit full screen' : 'Full screen'}
-                    title={fsOn ? 'Exit full screen' : 'Full screen'}
-                    className="flex items-center justify-center w-9 h-9 rounded-lg bg-ink/55 text-bone backdrop-blur-sm hover:bg-ink/75 transition-colors"
-                  >
-                    {fsOn ? <ExitFullscreenIcon className="w-5 h-5" /> : <FullscreenIcon className="w-5 h-5" />}
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            // THE WIDTH CAP IS BOUNDED BY THE AVAILABLE HEIGHT below sm:,
-            // exactly as the video stage above is and for the same reason: the
-            // box is `aspect-square`, so its height derives from its width. A
-            // `max-h` would leave `w-full` holding the width and break the
-            // square, and the square is what keeps everything below from
-            // moving when the art changes shape mid-episode.
-            //
-            // WHY IT NEEDS ONE AT ALL. This pane is `flex-shrink-0`, so a
-            // full-width square has no relationship to the space left under
-            // it, and the action tiles — ♡ SHOW / ♡ EPISODE / SHARE / SHARE /
-            // ≋ STREAM — fell off the bottom of the screen. The installed app
-            // is `viewport-fit: cover`, so `100dvh` spans the safe areas and
-            // the overlay pads them back off; that is 93px on a notched
-            // iPhone (59 top, 34 bottom) which a desktop browser never
-            // spends, so this is invisible unless you emulate the insets.
-            // Measured under CDP with them: at 390x844 the tile row's bottom
-            // landed at 847 against a visible bottom of 810, and at 402x874 at
-            // 859 against 840. Only the WORD line of each tile was cut, which
-            // reads as a broken layout rather than as something to scroll to.
-            //
-            // 30rem is what the screen spends around the art below sm:: the
-            // player's own header (59px), both panes' padding, and the title,
-            // seek bar or ● LIVE stamp, transport, BOOST and the tile row
-            // beneath it. Rounded UP, so the tiles clear the edge instead of
-            // sitting on it.
-            //
-            // IT WAS 28rem, AND AN ORDINARY EPISODE STILL DID NOT FIT — 46px
-            // of the tile row was under the fold at 393x852, while the live
-            // item it was measured against cleared by 10px. The two are not
-            // 4px apart: `isLive` replaces the seek bar, its times row AND the
-            // active-chapter label with one stamp, which is 52px on a show
-            // that publishes chapters. Measure the EPISODE, not the live item
-            // — it is the taller of the two, and it is the one that was
-            // reported.
-            //
-            // THE 42px THAT PAID FOR PART OF THIS CAME OFF THE PADDING AND THE
-            // GAPS, not off the reserve: both panes' `p-4` and the cluster's
-            // `gap-5` are phone-only now (see the note above that cluster), so
-            // the same controls need 42px less room. Without them this would
-            // be 32.5rem and the cover 42px smaller again. Re-measure the
-            // number when you add a control under BOOST — CSS cannot measure a
-            // sibling, so nothing will tell you the reserve went stale except
-            // the tile row on a phone.
-            //
-            // Measured with the reserve at 30rem, ordinary episode / live item,
-            // clearance under the tile row: 375x667 -60 / -4 (the floor below
-            // wins there and nothing fits), 390x844 +22 / +78, 393x852 +22 /
-            // +78, 402x874 +22 / +78, 430x932 +52 / +78.
-            //
-            // `min(28rem,…)` because 28rem is also the `max-w-md` this
-            // replaces, and two `max-w-*` classes on one element resolve by
-            // stylesheet order rather than by which is smaller. `max(11rem,…)`
-            // is a floor for a short screen, where nothing makes everything
-            // fit and a vanishing cover helps no one. From sm: up
-            // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
-            // info column, so its height is not the constraint.
-            // WITH THE IRC CHAT, below sm: only, the cover is 12.5rem — the
-            // Nostr stream's video height at 390px — so the chat list keeps
-            // room under the header (docs/irc.md). From sm: up the chat is the
-            // right-hand pane and the cover is unchanged.
-            <div key="cover" ref={coverBoxRef} className={`w-full ${showIrc ? 'max-w-[12.5rem]' : 'max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))]'} sm:max-w-lg lg:max-w-xl aspect-square`}>
-              {/* Whatever is playing at this second, via `nowPlayingArt`: the
-                  LIVE BLOCK's art first — on a Split Kit show that's the cover
-                  of the record actually playing, and it's the one thing on
-                  screen that makes a redirected payment self-evident — then the
-                  track a <podcast:valueTimeSplit> redirects to (the same thing,
-                  one episode later: BOOST pressed here pays that artist), then
-                  the active chapter's artwork (Podcasting 2.0 chapters `img`).
-                  PodcastCover falls back image→artwork→initial-tile, so a
-                  broken/missing image degrades to the episode/podcast art. */}
-              {/* lowPriority is not cosmetic here. This pane is ALWAYS MOUNTED —
-                  the fullscreen player is translated off-screen when collapsed,
-                  not unmounted — so without lazy loading a collapsed player
-                  downloads the art for every chapter the listener passes, at
-                  20–36 MB apiece on a real music feed, over the same connection
-                  the audio is streaming on. See PodcastCover's own note. */}
-              <PodcastCover
-                image={
-                  nowPlayingArt({
-                    liveBlockImage,
-                    splitImage: splitArt,
-                    chapterImage: activeChapter?.img,
-                    artOk,
-                  }) || episode.image || podcast.image
-                }
-                artwork={podcast.artwork}
-                // The downloaded cover, and it is the LAST rung — see
-                // <PodcastCover>'s `localSrc` and `nowPlayingCover` in the
-                // store. Chapter and track art still win whenever the network
-                // answers; this is what stops an offline launch painting a
-                // coloured initial tile over an episode whose cover is sitting
-                // on the device.
-                localSrc={nowPlayingCover}
-                title={podcast.title}
-                seed={podcast.id?.toString()}
-                lowPriority
-                // The one surface that paints a cover large. Every other
-                // caller takes the 320 default, which is a list tile at 2x.
-                w={640}
-                // ANIMATION, and the two conditions are both load-bearing.
-                //
-                // `/api/art` takes frame one — a chapter whose `img` is an
-                // animated GIF is still under it — so the picture moved in the
-                // 48px now-playing tile, which used to render the raw URL, and
-                // stood still here where it is 400px across. Reported from an
-                // iPhone: *"This is a GIF but it only plays in the now playing
-                // bar at the bottom."*
-                //
-                // `open`: this pane is always mounted, merely translated
-                // off-screen, so without it a collapsed player downloads the
-                // original of every chapter it passes. Measured on Mutton, Mead
-                // & Music: 4,472,805 bytes against 5,502 proxied at w=160, on
-                // the connection the audio is streaming over, 9 chapters deep.
-                //
-                // `artOk`: the same verdict every other art decision here
-                // takes. It is not belt-and-braces — `nowPlayingArt` only
-                // suppresses CHAPTER and TRACK art when the gate shuts, so
-                // without this an episode cover that is itself a huge GIF would
-                // still be fetched whole while the buffer is in trouble.
-                preferOriginal={open && artOk}
-                // The cover changes IN PLACE — per track, per chapter, and twice
-                // more per track as the art gate shuts and reopens — so it holds
-                // the painted picture until the next one has loaded. Without it
-                // every change is an empty box until the file arrives: the
-                // "flashes just once" reported from beta (e2e:coverhold).
-                hold
-                // The whole picture, letterboxed — never a crop. Episode art
-                // is not reliably square: a show that reuses its video
-                // thumbnail publishes 16:9, and `object-cover` in a square box
-                // took a 16:9 episode cover's title off both edges. Cropping
-                // is right for a tile, where the row's geometry matters more
-                // than the edges of the art; here the picture IS the content.
-                // The box stays square so nothing below it moves when the art
-                // changes shape mid-episode (chapter art, a live block's
-                // cover, a valueTimeSplit's track), and `bg-bone/5` makes the
-                // letterbox read as a canvas rather than a gap in the layout.
-                fit="contain"
-                className="w-full h-full rounded-xl border border-bone/10 bg-bone/5 shadow-2xl text-5xl"
-              />
-            </div>
-          )}
-          {/* Audio/Video picker sits directly UNDER the art/video (centered), so
-              it never covers the media. Only present when there's a video
-              rendition (the component returns null otherwise). */}
-          <VideoToggle className="inline-flex" />
+          {mediaBody}
         </div>
 
         {/* Right pane: kind:1311 live chat for Nostr streams, else episode info */}
@@ -1478,16 +1639,7 @@ export function FullscreenPlayer({
               panes sit side by side with their own heights, the cover competes
               with nothing, and the open layout is what the width is for. */}
           <div className={`flex-shrink-0 flex flex-col gap-3.5 ${showIrc ? 'sm:gap-3' : 'sm:gap-5'}`}>
-            <div>
-              <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
-              <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
-              {authorLine(podcast.title, podcast.author) && (
-                <p className="text-xs text-muted/70 mt-0.5">{authorLine(podcast.title, podcast.author)}</p>
-              )}
-              {audioErr && (
-                <p className="text-xs text-nostr mt-2 break-words">⚠ {audioErr}</p>
-              )}
-            </div>
+            {titleBlock}
 
             {isLive ? (
               <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
@@ -1584,64 +1736,14 @@ export function FullscreenPlayer({
                   // replaced by a ● LIVE stamp for the same reason.
                   onSkip={isLive ? undefined : onSkip}
                 />
-                <button
-                  onClick={onBoost}
-                  disabled={!hasValue}
-                  // With the IRC chat a live item has no skip buttons, so
-                  // BOOST shares the transport's line and the chat keeps it.
-                  className={`btn-bolt ${showIrc ? 'flex-1' : 'basis-full sm:basis-auto sm:flex-1'} disabled:opacity-40 disabled:cursor-not-allowed`}
-                  title={boostButtonTitle(boost, 'Episode')}
-                >
-                  <BoltIcon /> BOOST
-                </button>
+                {/* With the IRC chat a live item has no skip buttons, so
+                    BOOST shares the transport's line and the chat keeps it. */}
+                {boostButton(showIrc ? 'flex-1' : 'basis-full sm:basis-auto sm:flex-1')}
               </div>
             </div>
 
-            {/* STREAM's dialog. Portalled by <ModalShell>, so this spot is not
-                where it appears — and it is rendered BARE: the old inline panel
-                sat here under BOOST, off the bottom of a phone, while its
-                button was in the ⋯ menu at the top. */}
-            {streamDialog}
+            {valueBlock}
 
-            {/* Sits with the value split, which is what streaming pays into.
-                Renders nothing unless streaming is actually running (or has
-                failed), so it costs a signed-out / rate-off user no space. */}
-            <StreamMeter className="-mt-1" />
-
-            {/* Same hairline disclosure row as the episode page — one control
-                for one question, drawn the same way wherever it is asked. */}
-            {hasValue && value && (
-              <div className="-mt-1 border-t border-bone/10">
-                <button
-                  type="button"
-                  onClick={() => setValueOpen((v) => !v)}
-                  className="flex w-full items-center gap-2 h-11 text-xs text-muted hover:text-bone transition"
-                  aria-expanded={valueOpen}
-                >
-                  <BoltIcon className="w-3.5 h-3.5 text-bolt" />
-                  <span>Splits to {value.recipients.length} recipient{value.recipients.length === 1 ? '' : 's'}</span>
-                  <span aria-hidden className={`ml-auto transition-transform ${valueOpen ? 'rotate-180' : ''}`}>▾</span>
-                </button>
-                {valueOpen && (
-                  <ValueSplitRows value={value} className="space-y-2 pb-3" />
-                )}
-              </div>
-            )}
-            {/* WHILE THE BLOCK IS UNREAD THE ROW HOLDS ITS PLACE. A favorites
-                shuffle track (and a playlist row) starts with no value block
-                and asks `/api/item-value` as it plays, so on every ⏭ the row
-                above unmounted and came back, and the list under it jumped
-                61px up and down (Chad, beta, 2026-11-13). Same box, same
-                height; no count, because the last track's would be wrong.
-                Pinned by `e2e:shuffle` section 8. */}
-            {!hasValue && boost.reason === 'pending' && (
-              <div className="-mt-1 border-t border-bone/10" data-splits-pending>
-                <p className="flex w-full items-center gap-2 h-11 text-xs text-muted" aria-busy="true">
-                  <BoltIcon className="w-3.5 h-3.5 text-bolt/40" />
-                  <span>Checking splits…</span>
-                </p>
-              </div>
-            )}
 
             {/* THE SHUFFLE replaces the album panel while it owns the track.
                 `episodeQueue` is the list of whatever show was opened last,
@@ -1761,10 +1863,8 @@ export function FullscreenPlayer({
                 </div>
               )}
               <div {...tabPanelProps(liveTabsId, activeLiveTab)} className="flex-1 min-h-0 flex flex-col">
-                <div key={ircChannel} className={activeLiveTab === 'chat' ? 'flex-1 min-h-0' : 'hidden'}>
-                  <Pane id={ircChannel} label="IrcChat">
-                    <IrcChat channel={ircChannel} onJoined={() => setIrcJoinedKey(epKey(episode))} />
-                  </Pane>
+                <div className={activeLiveTab === 'chat' ? 'flex-1 min-h-0' : 'hidden'}>
+                  {ircNode && <OutPortal node={ircNode} />}
                 </div>
                 {activeLiveTab !== 'chat' && (
                   <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
@@ -1783,6 +1883,7 @@ export function FullscreenPlayer({
         </div>
         )}
       </div>
+      )}
       </>)}
     </div>
   );

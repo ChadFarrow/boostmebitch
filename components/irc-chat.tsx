@@ -299,9 +299,13 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         ref={scrollRef}
         onScroll={onScroll}
         data-irc-list
-        // `overscroll-contain` for `<LiveChat>`'s reason: below sm: the
+        // `overscroll-y-contain` for `<LiveChat>`'s reason: below sm: the
         // player's row is `overflow-hidden`, so this is the outermost scroller.
-        className="flex-1 min-h-0 overflow-y-auto overscroll-contain space-y-3 pr-1"
+        // The VERTICAL axis only: on a phone the list sits in a page of
+        // `<LiveChatPager>`, and a sideways flick that starts on the messages
+        // must reach the pager. `overscroll-contain` set both axes, and
+        // Chromium then ended the scroll chain here, so the flick did nothing.
+        className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain space-y-3 pr-1"
       >
         {rows.length === 0 && (
           // IRC keeps no history, so before JOIN there is nothing to show; say
