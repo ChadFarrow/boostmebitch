@@ -1922,6 +1922,72 @@ export function planLiveRosterReads<T extends { id: number }>(
 }
 
 /**
+ * How long a feed stays on the known-live list (`live_feeds`, lib/live-feeds.ts)
+ * after the last read that found any `<podcast:liveItem>` in it. A weekly show
+ * that skips a month keeps its place; a feed that dropped live items leaves.
+ */
+export const LIVE_FEED_EXPIRY_MS = 60 * 24 * 60 * 60 * 1000;
+
+/**
+ * What one read of a feed says about its live items — the three flags the
+ * known-live list keeps per feed.
+ *
+ * `items` are `parseRssLiveItems`' answer, so an item that is over
+ * (`liveBroadcastIsOver`) is already gone and `ended` was never there. A feed
+ * whose live item spans a day or more is a station (`liveItemIsAlwaysOn`), the
+ * same test `/api/live-shows` files rows under 📻 24/7 with.
+ */
+export function liveFeedVerdict(
+  items: readonly { status: 'pending' | 'live'; startTime?: number; endTime?: number }[],
+): { hasLive: boolean; hasPending: boolean; alwaysOn: boolean } {
+  return {
+    hasLive: items.some((i) => i.status === 'live'),
+    hasPending: items.some((i) => i.status === 'pending'),
+    alwaysOn: items.some((i) =>
+      liveItemIsAlwaysOn({ liveStatus: i.status, liveStartTime: i.startTime, liveEndTime: i.endTime })),
+  };
+}
+
+/**
+ * Whether a feed leaves the known-live list: no read has found a
+ * `<podcast:liveItem>` of any status in it for `LIVE_FEED_EXPIRY_MS`.
+ *
+ * Measured from the last read that FOUND one, never from the last read: a feed
+ * that could not be read is not a feed without live items, so a dead host
+ * cannot expire a show early. A feed on the hand list never expires, and a row
+ * no read has confirmed yet counts from when it was added.
+ */
+export function liveFeedExpired(
+  row: { hand: boolean; lastItemAt: number | null; firstSeen: number },
+  nowMs: number,
+): boolean {
+  if (row.hand) return false;
+  return nowMs - (row.lastItemAt ?? row.firstSeen) > LIVE_FEED_EXPIRY_MS;
+}
+
+/**
+ * Which known-live feeds `/api/live-shows` reads on top of its other sources.
+ *
+ * The list is what the 15-minute check (lib/live-feeds.ts) found carrying a
+ * live or pending item. It names feeds, never rows: each one is read from its
+ * own RSS like every other source, so a payee and an on-air flag always come
+ * from the publisher's feed of this minute, not a stored copy. Stations are not
+ * read here — they go to `planLiveRosterReads`' allowance, and only while
+ * Podcast Index lists them. A feed another source already reads is skipped.
+ * Feeds on air come first, so a cap drops a schedule before a broadcast.
+ */
+export function planKnownLiveReads<T extends { id: number; alwaysOn: boolean; hasLive: boolean; hasPending: boolean }>(
+  known: readonly T[],
+  alreadyRead: ReadonlySet<number>,
+  max: number,
+): T[] {
+  return known
+    .filter((f) => !f.alwaysOn && (f.hasLive || f.hasPending) && !alreadyRead.has(f.id))
+    .sort((a, b) => Number(b.hasLive) - Number(a.hasLive))
+    .slice(0, Math.max(0, max));
+}
+
+/**
  * `/live`'s Upcoming list after one more poll: the rows it held, with every
  * feed this answer DESCRIBES replaced by what the answer says.
  *

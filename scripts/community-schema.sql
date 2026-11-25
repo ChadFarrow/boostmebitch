@@ -42,3 +42,28 @@ alter table community_playlists add column if not exists pi_notified_at timestam
 alter table community_playlists add column if not exists pi_first_notified_at timestamptz;
 create index if not exists community_playlists_pi_first_idx
   on community_playlists (pi_first_notified_at) where pi_first_notified_at is not null;
+
+-- The known-live list (lib/live-feeds.ts, docs/feeds.md "Known live shows").
+-- The first 15-minute check run makes these itself (LIVE_FEEDS_SCHEMA, the same
+-- text); this copy is for a manual run. The page reads no row until they exist.
+create table if not exists live_feeds (
+  feed_id bigint primary key,
+  url text not null,
+  podcast_guid text,
+  title text,
+  image text,
+  source text not null,
+  always_on boolean not null default false,
+  has_live boolean not null default false,
+  has_pending boolean not null default false,
+  etag text,
+  last_modified text,
+  checked_at timestamptz,
+  last_item_at timestamptz,
+  first_seen timestamptz not null default now()
+);
+create table if not exists live_feeds_runs (
+  id int primary key,
+  last_run timestamptz not null
+);
+insert into live_feeds_runs (id, last_run) values (1, 'epoch') on conflict (id) do nothing;

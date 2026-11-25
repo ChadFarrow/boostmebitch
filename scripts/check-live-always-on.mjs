@@ -281,6 +281,123 @@ for (const v of PLAN_VECTORS) {
   }
 }
 
+// ── The known-live list (lib/live-feeds.ts): what the 15-minute check keeps ──
+//
+// Chad, 2026-11-25: "can we check for known rss live shows on a schedule?" — so
+// a show Podcast Index stops listing still reaches every visitor's Upcoming.
+// The list names FEEDS; the route still reads each one from its own RSS.
+{
+  const { liveFeedVerdict, liveFeedExpired, planKnownLiveReads, LIVE_FEED_EXPIRY_MS } = util;
+  for (const [name, fn] of [['liveFeedVerdict', liveFeedVerdict], ['liveFeedExpired', liveFeedExpired], ['planKnownLiveReads', planKnownLiveReads]]) {
+    if (typeof fn !== 'function') fail(`lib/util.ts does not export ${name}`);
+  }
+  const DAYMS = DAY * 1000;
+  const NOWMS = MIDNIGHT * 1000;
+  const known = (id, o = {}) => ({ id, url: `https://ex.test/${id}.xml`, alwaysOn: false, hasLive: false, hasPending: false, ...o });
+  // Wrong versions: the obvious one-liners each would be.
+  const naive = {
+    liveFeedVerdict: (items) => ({ hasLive: items.length > 0, hasPending: false, alwaysOn: false }),
+    liveFeedExpired: (row, now) => now - (row.lastItemAt ?? row.firstSeen) > LIVE_FEED_EXPIRY_MS,
+    planKnownLiveReads: (list, _seen, max) => list.slice(0, max),
+  };
+  const KNOWN_VECTORS = [
+    {
+      fn: 'liveFeedVerdict',
+      name: 'Chad and Reeds on 2026-11-25: one pending item, nothing on air, not a station',
+      args: [[{ status: 'pending', startTime: 1_796_261_400, endTime: 1_796_268_600 }]],
+      expect: (r) => r.hasPending && !r.hasLive && !r.alwaysOn,
+    },
+    {
+      fn: 'liveFeedVerdict',
+      name: 'a Stupid Potato channel is a station, so the route plans it into the 24/7 allowance',
+      args: [[{ status: 'live', startTime: MIDNIGHT, endTime: MIDNIGHT + DAY }]],
+      expect: (r) => r.alwaysOn && r.hasLive,
+    },
+    {
+      fn: 'liveFeedVerdict',
+      name: 'RevDoc\'s Revival on 2026-11-25: on air AND a pending date — both flags',
+      args: [[{ status: 'live', startTime: MIDNIGHT, endTime: MIDNIGHT + 3600 }, { status: 'pending', startTime: MIDNIGHT + 5 * DAY }]],
+      expect: (r) => r.hasLive && r.hasPending && !r.alwaysOn,
+    },
+    {
+      fn: 'liveFeedVerdict',
+      name: 'no live items: no flags',
+      args: [[]],
+      expect: (r) => !r.hasLive && !r.hasPending && !r.alwaysOn,
+      alsoNaive: true,
+    },
+    {
+      fn: 'liveFeedExpired',
+      name: 'a hand-listed show never expires, however long it is quiet',
+      args: [{ hand: true, lastItemAt: NOWMS - 400 * DAYMS, firstSeen: NOWMS - 500 * DAYMS }, NOWMS],
+      expect: (r) => r === false,
+    },
+    {
+      fn: 'liveFeedExpired',
+      name: 'a weekly show that skipped a month keeps its place',
+      args: [{ hand: false, lastItemAt: NOWMS - 30 * DAYMS, firstSeen: NOWMS - 300 * DAYMS }, NOWMS],
+      expect: (r) => r === false,
+      alsoNaive: true,
+    },
+    {
+      fn: 'liveFeedExpired',
+      name: 'a feed with no live item for 61 days leaves',
+      args: [{ hand: false, lastItemAt: NOWMS - 61 * DAYMS, firstSeen: NOWMS - 300 * DAYMS }, NOWMS],
+      expect: (r) => r === true,
+      alsoNaive: true,
+    },
+    {
+      fn: 'planKnownLiveReads',
+      name: 'THE ONE THAT MATTERS: a known show Podcast Index does not list is read for its pending item',
+      args: [[known(8, { alwaysOn: true, hasLive: true }), known(7968805, { hasPending: true })], new Set([946122]), 24],
+      expect: (r) => r.map((f) => f.id).join(',') === '7968805',
+    },
+    {
+      fn: 'planKnownLiveReads',
+      name: 'a feed another source already reads is not read twice',
+      args: [[known(946122, { hasPending: true }), known(7968805, { hasPending: true })], new Set([946122]), 24],
+      expect: (r) => r.map((f) => f.id).join(',') === '7968805',
+    },
+    {
+      fn: 'planKnownLiveReads',
+      name: 'a known feed with nothing live or pending costs no read',
+      args: [[known(1), known(2, { hasPending: true })], new Set(), 24],
+      expect: (r) => r.map((f) => f.id).join(',') === '2',
+    },
+    {
+      fn: 'planKnownLiveReads',
+      name: 'past the cap, a schedule is dropped before a broadcast',
+      args: [[known(1, { hasPending: true }), known(2, { hasPending: true }), known(3, { hasLive: true })], new Set(), 2],
+      expect: (r) => r.map((f) => f.id).join(',') === '3,1',
+    },
+  ];
+  for (const v of KNOWN_VECTORS) {
+    let real;
+    try { real = util[v.fn](...v.args.map(clone)); }
+    catch (e) { fail(`${v.fn}: ${v.name} — threw: ${e.message}`); continue; }
+    if (!v.expect(real)) { fail(`${v.fn}: ${v.name} — wrong answer: ${JSON.stringify(real)}`); continue; }
+    let naiveAgrees;
+    try { naiveAgrees = v.expect(naive[v.fn](...v.args.map(clone))); } catch { naiveAgrees = false; }
+    if (naiveAgrees && !v.alsoNaive) fail(`${v.fn}: ${v.name} — the naive version passes it too, so it proves nothing`);
+    else if (!naiveAgrees && v.alsoNaive) fail(`${v.fn}: ${v.name} — marked alsoNaive but the naive version FAILS it`);
+    else ok(`${v.fn}: ${v.name}` + (v.alsoNaive ? '  (must-still-work)' : '  (the naive version fails it)'));
+  }
+}
+
+// The first cron run makes the tables from LIVE_FEEDS_SCHEMA (lib/live-feeds.ts);
+// scripts/community-schema.sql carries the same text for a manual run. Two
+// copies of a schema drift, so they must be equal.
+{
+  const { readFileSync } = await import('node:fs');
+  const norm = (t) => t.replace(/\s+/g, ' ').trim();
+  const src = readFileSync(new URL('../lib/live-feeds.ts', import.meta.url), 'utf8');
+  const m = src.match(/export const LIVE_FEEDS_SCHEMA = `([\s\S]*?)`;/);
+  const sql = readFileSync(new URL('./community-schema.sql', import.meta.url), 'utf8');
+  if (!m) fail('lib/live-feeds.ts has no LIVE_FEEDS_SCHEMA literal');
+  else if (!norm(sql).includes(norm(m[1]))) fail('scripts/community-schema.sql does not carry LIVE_FEEDS_SCHEMA word for word');
+  else ok('LIVE_FEEDS_SCHEMA and scripts/community-schema.sql are the same text');
+}
+
 // Nothing may be mutated: the route reads the remembered list again.
 {
   const roster = [1, 2, 3];
@@ -324,6 +441,7 @@ const read = (await import('node:fs/promises')).readFile;
 
 function clone(v) {
   // JSON drops `undefined` and turns Infinity into null; keep both, they are vectors.
+  if (v instanceof Set) return new Set([...v].map(clone));
   if (Array.isArray(v)) return v.map(clone);
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clone(x)]));
   return v;
