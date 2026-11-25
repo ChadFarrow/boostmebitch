@@ -139,6 +139,31 @@ export function validatePlaylistDraft(
   return { ok: true, draft: { title, description, ownerName, artUrl, songs } };
 }
 
+/** What `addSong` did. `'full'` is MAX_SONGS reached; `'already'` the same pair is in it. */
+export type AddSongResult = 'added' | 'already' | 'full';
+
+/**
+ * Add one song to the END of a playlist's song list: the "+ PLAYLIST" control
+ * beside the player's hearts, which collects into a draft on this device
+ * (nothing is sent until the maker's PUBLISH or SAVE). A song is the PAIR
+ * `feedGuid` + `itemGuid`, the key `validatePlaylistDraft` refuses a duplicate
+ * on, so a song already in the list is never added twice and a draft never
+ * grows past MAX_SONGS: either would make the next SAVE fail on a problem the
+ * user did not cause in the maker. Returns a new array and never changes the one
+ * passed in. Only the two guids are copied: a stored `feedUrl` is the index's,
+ * never the client's (`withIndexFeedUrls`).
+ */
+export function addSong(
+  songs: readonly PlaylistSong[],
+  song: PlaylistSong,
+): { songs: PlaylistSong[]; result: AddSongResult } {
+  if (songs.some((s) => s.feedGuid === song.feedGuid && s.itemGuid === song.itemGuid)) {
+    return { songs: [...songs], result: 'already' };
+  }
+  if (songs.length >= MAX_SONGS) return { songs: [...songs], result: 'full' };
+  return { songs: [...songs, { feedGuid: song.feedGuid, itemGuid: song.itemGuid }], result: 'added' };
+}
+
 /**
  * The songs as they are STORED and published. A song's `feedUrl` is the one
  * `urlFor` answers — what Podcast Index holds for its feed (`verifySongs`), or for

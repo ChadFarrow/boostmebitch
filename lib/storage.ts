@@ -69,7 +69,19 @@ export interface PlaylistDraftCache {
   expectedUpdatedAt: string | null;
   /** Keyed by `itemGuid`, so a reload repaints titles without a fetch. */
   labels: Record<string, { title: string; artist?: string; image?: string }>;
+  /** When the draft was started (ms), to list drafts newest first. Absent on an older draft. */
+  createdAt?: number;
 }
+
+/**
+ * A playlist draft slot under one identity (`storage.playlistDraft.list`):
+ * `'default'` is the maker's new-playlist slot, `new-<id>` a further named draft
+ * started from "+ PLAYLIST", and anything else the id of a PUBLISHED playlist
+ * being edited (its unsaved changes).
+ */
+export type PlaylistDraftSlot = 'default' | `new-${string}` | (string & {});
+/** The prefix of an extra unpublished draft's slot id; a server id is a UUID, so it never starts so. */
+export const NEW_DRAFT_PREFIX = 'new-';
 
 // A default boost amount changed. It is shown in two places that can be open
 // AT ONCE — the wallet modal's Default amounts section opens on top of a boost
@@ -91,7 +103,7 @@ const KEYS = {
   streamSummaries: 'bmb:stream_summaries', // '1' when the listener also opted into kind:33369 running totals. Absent = OFF. Requires streamReceipts — a summary is derived FROM receipts.
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED section keys: <FeedSection>'s 'npub:sent' / 'npub:recv', and <NpubPlaylists>' 'npub:playlists'. Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
-  playlistDraftPrefix: 'bmb:playlist_draft', // + ':<npub>' (new playlist), ':<npub>:<id>' (editing that playlist) and ':guest' (a new playlist made signed out, MOVED to the account at sign-in) — the community-playlist maker's unsent draft, with the song labels. A user's unsent WORK, so a setting: deliberately absent from EVICTABLE_PREFIXES.
+  playlistDraftPrefix: 'bmb:playlist_draft', // + ':<npub>' (new playlist), ':<npub>:<id>' (editing that playlist), ':<npub>:new-<id>' (a further unpublished draft, started from the player's "+ PLAYLIST") and ':guest' (a new playlist made signed out, MOVED to the account at sign-in) — the community-playlist maker's unsent draft, with the song labels. A user's unsent WORK, so a setting: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
   newMarksPrefix: 'bmb:newmarks',     // + ':<npub>' — `{ checkedAt, marks: { [podcastGuid]: datePublished }, rows, uncovered, failed }`: the "new episodes" list on /favorites AND what this device has already shown you of it. The rows are the persisted thing and the marks describe them — holding the rows in React state alone made the CHECK consume the list rather than the reader. Seconds, because that is the unit Podcast Index's `since` takes back. A user-facing READ MARKER, not a cache — nothing on any wire records what this device showed somebody — so deliberately absent from EVICTABLE_PREFIXES, same class as bmb:listen_queue and bmb:ep_order. Evicting it does not cost a refetch, it re-announces a week of episodes as new. Pruned to the current favorites on every write (lib/util.ts `pruneMarks`).
   artistFollowsPrefix: 'bmb:artists', // + ':<npub>' — `{ [feedGuid]: { feedGuid, feedUrl, title, addedAt } }`: artists followed with ♡ ARTIST on an album page, for NEW MUSIC. ON THIS DEVICE ONLY and on purpose: never on the shared kind:10333 list until cross-app artist favorites are decided (owner, 2026-11-15) — see `ArtistFollow` in lib/new-music.ts. A user DECISION, not a cache, so deliberately absent from EVICTABLE_PREFIXES.
@@ -523,12 +535,59 @@ const isMemoryOnly = (key: string) => memoryMirror.has(key);
 // signed-in users get one bucket per npub. Centralized so the convention
 // lives in exactly one place.
 /**
- * Two slots per account: the new-playlist draft, and one per playlist being edited.
- * Signed out (`null`) there is one, `:guest` — a stored playlist is edited only by its owner.
+ * Slots per account: the new-playlist draft, one per playlist being edited
+ * (`:<id>`), and one per further unpublished draft started from "+ PLAYLIST"
+ * (`:new-<id>`). Signed out (`null`) the base is `:guest`.
  */
 function draftKey(npub: string | null, editId?: string) {
   const base = identityKey(KEYS.playlistDraftPrefix, npub);
   return editId ? `${base}:${editId}` : base;
+}
+
+/** A stored playlist draft, or null: a bad shape reads as no draft. */
+function parsePlaylistDraft(raw: string | null): PlaylistDraftCache | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    const d = v?.draft;
+    if (!d || typeof d !== 'object' || !Array.isArray(d.songs)) return null;
+    const songs: PlaylistSong[] = [];
+    for (const s of d.songs) {
+      if (typeof s?.feedGuid !== 'string' || typeof s?.itemGuid !== 'string') continue;
+      songs.push(typeof s.feedUrl === 'string'
+        ? { feedGuid: s.feedGuid, itemGuid: s.itemGuid, feedUrl: s.feedUrl }
+        : { feedGuid: s.feedGuid, itemGuid: s.itemGuid });
+    }
+    const labels: PlaylistDraftCache['labels'] = {};
+    if (v.labels && typeof v.labels === 'object') {
+      for (const [k, l] of Object.entries(v.labels as Record<string, unknown>)) {
+        const t = (l as { title?: unknown })?.title;
+        if (typeof t !== 'string') continue;
+        const o = l as { artist?: unknown; image?: unknown };
+        labels[k] = {
+          title: t,
+          ...(typeof o.artist === 'string' ? { artist: o.artist } : {}),
+          ...(typeof o.image === 'string' ? { image: o.image } : {}),
+        };
+      }
+    }
+    return {
+      draft: {
+        title: typeof d.title === 'string' ? d.title : '',
+        description: typeof d.description === 'string' ? d.description : '',
+        // A draft saved before the NAME box existed has none.
+        ownerName: typeof d.ownerName === 'string' ? d.ownerName : '',
+        artUrl: typeof d.artUrl === 'string' ? d.artUrl : null,
+        songs,
+      },
+      editingId: typeof v.editingId === 'string' ? v.editingId : null,
+      expectedUpdatedAt: typeof v.expectedUpdatedAt === 'string' ? v.expectedUpdatedAt : null,
+      labels,
+      ...(typeof v.createdAt === 'number' && Number.isFinite(v.createdAt) ? { createdAt: v.createdAt } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function identityKey(prefix: string, npub: string | null | undefined) {
@@ -1288,49 +1347,27 @@ export const storage = {
    * The read keeps only what the page can use: a bad shape reads as no draft.
    */
   playlistDraft: {
-    get: (npub: string | null, editId?: string): PlaylistDraftCache | null => {
-      const raw = safeGet(draftKey(npub, editId));
-      if (!raw) return null;
-      try {
-        const v = JSON.parse(raw);
-        const d = v?.draft;
-        if (!d || typeof d !== 'object' || !Array.isArray(d.songs)) return null;
-        const songs: PlaylistSong[] = [];
-        for (const s of d.songs) {
-          if (typeof s?.feedGuid !== 'string' || typeof s?.itemGuid !== 'string') continue;
-          songs.push(typeof s.feedUrl === 'string'
-            ? { feedGuid: s.feedGuid, itemGuid: s.itemGuid, feedUrl: s.feedUrl }
-            : { feedGuid: s.feedGuid, itemGuid: s.itemGuid });
-        }
-        const labels: PlaylistDraftCache['labels'] = {};
-        if (v.labels && typeof v.labels === 'object') {
-          for (const [k, l] of Object.entries(v.labels as Record<string, unknown>)) {
-            const t = (l as { title?: unknown })?.title;
-            if (typeof t !== 'string') continue;
-            const o = l as { artist?: unknown; image?: unknown };
-            labels[k] = {
-              title: t,
-              ...(typeof o.artist === 'string' ? { artist: o.artist } : {}),
-              ...(typeof o.image === 'string' ? { image: o.image } : {}),
-            };
-          }
-        }
-        return {
-          draft: {
-            title: typeof d.title === 'string' ? d.title : '',
-            description: typeof d.description === 'string' ? d.description : '',
-            // A draft saved before the NAME box existed has none.
-            ownerName: typeof d.ownerName === 'string' ? d.ownerName : '',
-            artUrl: typeof d.artUrl === 'string' ? d.artUrl : null,
-            songs,
-          },
-          editingId: typeof v.editingId === 'string' ? v.editingId : null,
-          expectedUpdatedAt: typeof v.expectedUpdatedAt === 'string' ? v.expectedUpdatedAt : null,
-          labels,
-        };
-      } catch {
-        return null;
+    get: (npub: string | null, editId?: string): PlaylistDraftCache | null =>
+      parsePlaylistDraft(safeGet(draftKey(npub, editId))),
+    /**
+     * Every draft slot this identity holds, newest first: the default slot, each
+     * `new-<id>` draft and each published playlist's unsaved edit. The ONE place
+     * the prefix is enumerated. A slot that does not parse is left out.
+     */
+    list: (npub: string | null): Array<{ slot: PlaylistDraftSlot; cache: PlaylistDraftCache }> => {
+      const base = draftKey(npub);
+      const out: Array<{ slot: PlaylistDraftSlot; cache: PlaylistDraftCache }> = [];
+      for (const k of safeKeys()) {
+        let slot: string;
+        if (k === base) slot = 'default';
+        else if (k.startsWith(base + ':')) slot = k.slice(base.length + 1);
+        else continue;
+        // One level only: `:<npub>:<id>`, never a longer key that shares the prefix.
+        if (!slot || slot.includes(':')) continue;
+        const cache = parsePlaylistDraft(safeGet(k));
+        if (cache) out.push({ slot, cache });
       }
+      return out.sort((a, b) => (b.cache.createdAt ?? 0) - (a.cache.createdAt ?? 0));
     },
     /** Returns whether the value reached DISK. */
     set: (npub: string | null, v: PlaylistDraftCache, editId?: string): boolean =>

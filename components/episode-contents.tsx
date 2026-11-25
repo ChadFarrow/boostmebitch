@@ -5,6 +5,7 @@ import { mergeEpisodeContents, splitAtPosition, type EpisodeContentRow } from '@
 import type { ChapterEntry, ValueTimeSplit } from '@/lib/types';
 import { ChapterUrlLink, RowThumb } from './chapter-ui';
 import { FavTrackHeart } from './fav-heart';
+import { SaveToPlaylistButton, targetFromSplit } from './community/save-to-playlist';
 import { CopyLinkButton } from './copy-link-button';
 
 /**
@@ -203,7 +204,10 @@ export function EpisodeContents({
             {/* Only a track row can offer this, and <FavTrackHeart> still
                 declines when the window carries no usable identifiers. */}
             {row.kind === 'track' && (
-              <div className="relative flex-shrink-0 pr-1">
+              <div className="relative flex-shrink-0 pr-1 flex items-center gap-1">
+                {/* "+ PLAYLIST" to the heart's LEFT: the heart stays the last
+                    item of the row (docs/ui.md). Nothing while the maker is off. */}
+                <SaveToPlaylistButton target={targetFromSplit(row.split)} />
                 <FavTrackHeart split={row.split} />
               </div>
             )}

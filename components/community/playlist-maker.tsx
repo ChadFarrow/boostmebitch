@@ -20,6 +20,7 @@ import {
 } from '@/lib/community/client';
 import { ensureGuestKey, guestSigner, loadGuestKey, type GuestKeyInfo } from '@/lib/community/guest-key';
 import { useGuestKey } from '@/lib/community/use-guest-key';
+import { isNewDraftSlot, moveGuestNewDrafts } from '@/lib/community/local-drafts';
 import { ArtUploadError, fetchBlossomServers, uploadPlaylistArt, type ArtUploadFailure } from '@/lib/community/blossom';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import { textHoldsSecret } from '@/lib/nostr/npub-input';
@@ -149,6 +150,12 @@ export function PlaylistMaker() {
   const [songs, setSongs] = useState<PlaylistSong[]>([]);
   const [labels, setLabels] = useState<Labels>({});
   const [editingId, setEditingId] = useState<string | null>(null);
+  // `?draft=new-<id>`: a further unpublished draft started from the player's
+  // "+ PLAYLIST" (`lib/community/local-drafts.ts`). Its own slot; null is the default one.
+  const [localDraft, setLocalDraft] = useState<`new-${string}` | null>(null);
+  // When the draft on screen was started, kept on every write so the drafts list in
+  // "+ PLAYLIST" stays in order.
+  const createdAt = useRef<number | null>(null);
   const [expectedUpdatedAt, setExpectedUpdatedAt] = useState<string | null>(null);
   // Set by a user change, never by a load: only then is a draft written.
   const [dirty, setDirty] = useState(false);
@@ -235,16 +242,29 @@ export function PlaylistMaker() {
     // An account switch: nothing of the last account's form survives.
     setSignAs('account'); setGuestSlot(null); setGuestKept(null);
     setFormOwner(null); setTitle(''); setDescription(''); setOwnerName(''); setArtUrl(''); setSongs([]); setLabels({});
-    setEditingId(null); setExpectedUpdatedAt(null); setDirty(false); setUnsaved(false); setRefusals([]);
+    setEditingId(null); setLocalDraft(null); createdAt.current = null; setExpectedUpdatedAt(null); setDirty(false); setUnsaved(false); setRefusals([]);
     setNote(null); setLoadError(null); setDeleted(null); setPublished(null); setConfirmDelete(false);
     setUploadNote(null); setUploading(false); formGen.current += 1;
     setCheckOpen(false); setEditNeedsSignIn(false); setCarryNote(null);
     known.current = {}; checked.current = new Set(); setDead({}); setCheckReady(false);
-    const id = new URLSearchParams(window.location.search).get('id');
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
+    const wanted = params.get('draft');
+    const local = !id && isNewDraftSlot(wanted) ? wanted : null;
     const apply = (c: PlaylistDraftCache) => {
+      createdAt.current = c.createdAt ?? null;
       setTitle(c.draft.title); setDescription(c.draft.description); setOwnerName(c.draft.ownerName); setArtUrl(c.draft.artUrl ?? '');
       setSongs(c.draft.songs); setLabels(c.labels); setEditingId(c.editingId); setExpectedUpdatedAt(c.expectedUpdatedAt);
     };
+    if (local) {
+      // A named draft from "+ PLAYLIST". Signed in, any made signed out move first.
+      if (npub) moveGuestNewDrafts(npub);
+      const cached = storage.playlistDraft.get(npub, local);
+      if (cached) apply({ ...cached, editingId: null, expectedUpdatedAt: null });
+      setLocalDraft(local);
+      setFormOwner(npub ?? GUEST);
+      return;
+    }
     if (!npub && !id) {
       // Signed out the form works on the `:guest` slot, so a visitor can build the
       // playlist first, and publish with no account (the guest key) or sign in and
@@ -257,6 +277,7 @@ export function PlaylistMaker() {
     let live = true;
     (async () => {
       if (!id && npub) {
+        moveGuestNewDrafts(npub);
         // The draft made signed out MOVES to this account, as the listen queue's
         // `:guest` copy does: left under `:guest`, the next account to sign in on
         // this device would take it again. Cleared only once the account's copy
@@ -310,7 +331,9 @@ export function PlaylistMaker() {
         setSongs(p.songs); setEditingId(p.id); setExpectedUpdatedAt(p.updatedAt);
       }
       setFormOwner(owner);
-      if (cached && Object.keys(cached.labels).length) { setCheckReady(true); return; }
+      // Unsaved changes started by "+ PLAYLIST" carry labels for the songs it added
+      // only, so the rows are resolved unless EVERY song has its label.
+      if (cached && cached.draft.songs.every((s) => cached.labels[s.itemGuid])) { setCheckReady(true); return; }
       // Titles for the rows: the app's own resolver, one page of RESOLVE_PAGE at a time.
       const l: Labels = {};
       try {
@@ -333,7 +356,7 @@ export function PlaylistMaker() {
           offset = typeof j.nextOffset === 'number' ? j.nextOffset : null;
         }
       } catch { /* rows keep a plain name */ }
-      if (live) { setLabels(l); setCheckReady(true); }
+      if (live) { setLabels((held) => ({ ...l, ...held })); setCheckReady(true); }
     })();
     return () => { live = false; };
     // `guest` is read once at mount, so this runs again only when that read lands.
@@ -346,11 +369,12 @@ export function PlaylistMaker() {
     const cache: PlaylistDraftCache = {
       draft: { title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
       editingId, expectedUpdatedAt, labels,
+      createdAt: createdAt.current ?? (createdAt.current = Date.now()),
     };
-    if (!slot) guestWork.current = cache;
-    const ok = storage.playlistDraft.set(slot, cache, editingId ?? undefined);
+    if (!slot && !localDraft) guestWork.current = cache;
+    const ok = storage.playlistDraft.set(slot, cache, editingId ?? localDraft ?? undefined);
     setUnsaved(!ok);
-  }, [slot, ready, dirty, published, deleted, loadError, title, description, ownerName, artUrl, songs, labels, editingId, expectedUpdatedAt]);
+  }, [slot, ready, dirty, published, deleted, loadError, title, description, ownerName, artUrl, songs, labels, editingId, localDraft, expectedUpdatedAt]);
 
   const draft: PlaylistDraft = useMemo(
     () => ({ title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
@@ -486,7 +510,8 @@ export function PlaylistMaker() {
       if (res.ok) {
         const id = body?.id ?? body?.playlist?.id ?? editingId;
         if (!id) { setNote('Something went wrong. Try again.'); return; }
-        storage.playlistDraft.clear(slot, editingId ?? undefined);
+        storage.playlistDraft.clear(slot, editingId ?? localDraft ?? undefined);
+        setLocalDraft(null);
         setDirty(false); setUnsaved(false);
         if (kept) { setSignAs('guest'); setGuestSlot(kept.npub); setGuestKept(kept.persisted); }
         const list = await fetchCommunityPlaylists(ownerPubkey);
@@ -517,7 +542,7 @@ export function PlaylistMaker() {
     } finally {
       setBusy(false);
     }
-  }, [draft, identity, pubkey, slot, signAs, editingId, expectedUpdatedAt, failure, makeGuestKey]);
+  }, [draft, identity, pubkey, slot, signAs, editingId, localDraft, expectedUpdatedAt, failure, makeGuestKey]);
 
   // PUBLISH is never disabled for what is missing: a disabled button answers a
   // press with nothing (Chad, 2026-11-15). A press opens the list of what is

@@ -14,7 +14,7 @@ import {
   foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
   podpingEndpoint, podpingRequestUrl, PODPING_MEDIUM, PODPING_REASON,
   piNoticeAllowed, piSecondNotifyMs, piFeedIdFrom, PI_NOTICE_THROTTLE_MS, PI_NOTICE_OWNER_DAILY,
-  PI_NOTICE_GLOBAL_DAILY, PI_SECOND_NOTIFY_MS, PI_ADD_FORM, MIN_SONGS,
+  PI_NOTICE_GLOBAL_DAILY, PI_SECOND_NOTIFY_MS, PI_ADD_FORM, MIN_SONGS, addSong,
 } from '../lib/community/rules.ts';
 import { readFileSync } from 'node:fs';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
@@ -936,6 +936,35 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
     const n = naive(...v.args);
     if (v.alsoNaive) check('local target: ' + v.kind + ' (naive agrees)', n === v.want);
     else check('local target: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+}
+
+// addSong: the player's "+ PLAYLIST" collects into a local draft. A duplicate pair or a
+// 501st song would make the maker's next SAVE fail on a problem the user did not cause
+// there, so both are refused here. Replayed against naive(), which appends blindly.
+{
+  console.log('\naddSong');
+  const naive = (list, s) => ({ songs: [...list, s], result: 'added' });
+  const same = (a, b) => a.result === b.result && JSON.stringify(a.songs) === JSON.stringify(b.songs);
+  const s1 = { feedGuid: 'F1', itemGuid: 'I1' };
+  const vectors = [
+    { name: 'adds to the end', args: [[{ feedGuid: 'F0', itemGuid: 'I0' }], s1],
+      want: { result: 'added', songs: [{ feedGuid: 'F0', itemGuid: 'I0' }, s1] }, alsoNaive: true },
+    { name: 'the same pair is not added twice', args: [[s1], { ...s1 }], want: { result: 'already', songs: [s1] } },
+    { name: 'same item guid under ANOTHER feed is a different song', args: [[s1], { feedGuid: 'F2', itemGuid: 'I1' }],
+      want: { result: 'added', songs: [s1, { feedGuid: 'F2', itemGuid: 'I1' }] }, alsoNaive: true },
+    { name: 'no 501st song', args: [songs(MAX_SONGS), s1], want: { result: 'full', songs: songs(MAX_SONGS) } },
+    { name: 'a client feedUrl is not copied', args: [[], { ...s1, feedUrl: 'https://evil.example/feed' }],
+      want: { result: 'added', songs: [s1] } },
+  ];
+  for (const v of vectors) {
+    const input = JSON.parse(JSON.stringify(v.args[0]));
+    const got = addSong(...v.args);
+    check(`addSong: ${v.name}`, same(got, v.want));
+    check(`addSong: ${v.name} — input unchanged`, JSON.stringify(v.args[0]) === JSON.stringify(input));
+    const n = naive(...v.args);
+    const naiveAgrees = same(n, v.want);
+    check(`addSong: ${v.name} — ${v.alsoNaive ? 'naive() still agrees' : 'fails against naive()'}`, naiveAgrees === !!v.alsoNaive);
   }
 }
 

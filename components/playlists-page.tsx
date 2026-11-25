@@ -14,6 +14,7 @@ import {
 } from '@/lib/playlist-collection';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { useGuestKey } from '@/lib/community/use-guest-key';
+import { LocalDraftsList } from '@/components/community/local-drafts-list';
 import { isPlaylistMedium } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -321,6 +322,9 @@ export function PlaylistsPage() {
         Curated Podcasting 2.0 playlists. Every track lives in its own artist&apos;s feed, so a
         boost pays the artist, not the list.
       </p>
+
+      {/* The drafts "+ PLAYLIST" and the maker hold on this device. Nothing while the maker is off. */}
+      {COMMUNITY_PLAYLISTS_ON && <LocalDraftsList />}
 
       {SECTIONS.map((section, i) => {
         const state = sections[i];
