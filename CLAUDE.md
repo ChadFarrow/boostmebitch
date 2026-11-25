@@ -99,7 +99,7 @@ npm run dev / build / start / lint
 | `check:guestkey` | `community/guest-key.ts` — the browser key a playlist with no Nostr account is signed by | the key in a string, log or request; a read error overwrites it |
 | `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show |
 | `check:liveover` | `liveBroadcastIsOver` — stale `live` flags | a badge over silence, or none |
-| `check:liveroster`, `check:livealwayson`, `check:liveupcoming` | `liveRosterFeedOrder`, `mergeUpcomingSeen` — which feeds the live cap keeps | a show on air trimmed |
+| `check:liveroster`, `check:livealwayson`, `check:liveupcoming` | `liveRosterFeedOrder`, `mergeUpcomingSeen`, `favoritesFirst` — which feeds the live cap keeps | a show on air trimmed |
 | `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser uses | 1 MB of `<!--` pins a lambda for a minute |
 | `check:cappedbody` | `capped-body.ts` — the capped readers, server AND browser | one feed fills the heap |
 | `check:brand` | `BRANDS`, `clientTag` — **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy |
