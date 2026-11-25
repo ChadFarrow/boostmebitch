@@ -289,7 +289,10 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
           type="button"
           className="btn-mini min-w-[4.5rem] shrink-0"
           onClick={() => add(r)}
-          disabled={st === 'busy' || st === 'added'}
+          // aria-disabled, never `disabled`: a button that becomes disabled drops
+          // focus to <body>, outside the sheet, and Escape stops closing it.
+          // `add` ignores a press while busy or once added.
+          aria-disabled={st === 'busy' || st === 'added'}
           aria-label={`Add to ${r.title}`}
         >
           {st === 'added' ? '✓' : '+ ADD'}
