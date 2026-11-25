@@ -1894,6 +1894,18 @@ export function liveItemIsAlwaysOn(
  *    as it does today — the plan never drops a feed.
  *  - `truncated` counts the roster feeds the cap cut, which is what the page's
  *    "more shows than this page checks" line is about.
+ *
+ * **The allowance a plan does not spend on known stations goes to the roster.**
+ * The memory is per server instance, and Vercel runs several, so which instance
+ * answered used to decide what a visitor saw. Measured on production 2026-11-25:
+ * Podcast Index listed 37 feeds, 22 of them stations ranked first; an instance
+ * with no memory read the first 24 — 22 stations and two shows — and answered
+ * two Upcoming rows, while a warm instance read all 37 and answered nine (Chad
+ * and Reeds, index 32, among them). Both read at most `maxRoster + maxAlwaysOn`
+ * feeds, so a cold plan now reads as many as a warm one: the same feeds whenever
+ * the roster fits, and never more than the two allowances together. A warm
+ * instance still reads its stations through their remembered URLs, which skips
+ * the Podcast Index stage — that, not the count, is what the memory saves.
  */
 export function planLiveRosterReads<T extends { id: number }>(
   rosterIds: readonly number[],
@@ -1905,7 +1917,7 @@ export function planLiveRosterReads<T extends { id: number }>(
   const fromAlwaysOn = alwaysOn.filter((f) => listed.has(f.id)).slice(0, maxAlwaysOn);
   const moved = new Set(fromAlwaysOn.map((f) => f.id));
   const regular = rosterIds.filter((id) => !moved.has(id));
-  const fromRoster = regular.slice(0, maxRoster);
+  const fromRoster = regular.slice(0, maxRoster + (maxAlwaysOn - fromAlwaysOn.length));
   return { fromRoster, fromAlwaysOn, truncated: regular.length > fromRoster.length };
 }
 

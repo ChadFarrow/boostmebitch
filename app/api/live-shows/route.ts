@@ -80,6 +80,10 @@ const PERSONAL_CACHE = { 'Cache-Control': 'private, max-age=30' };
  * return up to 1000 rows, and a capped COUNT is not a capped FAN-OUT, so both
  * bounds are here: this slice, and `mapLimit` on each stage.
  *
+ * It is the roster's OWN share. A plan that knows fewer stations than
+ * `MAX_ALWAYS_ON_FEEDS` gives the rest of that allowance to the roster too (see
+ * there), so a cold instance reads up to 48 roster feeds.
+ *
  * Going over is reported as `truncated` rather than hidden — and WHICH feeds go
  * over is `liveRosterFeedOrder`'s job, not the order PI answered in. A cap over
  * an unranked list is how a show that is genuinely on air gets trimmed in
@@ -102,6 +106,15 @@ const MAX_LIVE_FEEDS = 24;
  * skips the Podcast Index stage and costs one RSS read, bounded by `mapLimit`
  * like every other read. Worst case it adds `ceil(24 / FEED_FANOUT)` = three
  * RSS rounds; a station's feed is small and cached for `LIVE_XML_MAX_AGE_MS`.
+ *
+ * **What this allowance does not spend on remembered stations goes to the
+ * roster** (`planLiveRosterReads`). The memory is per instance and Vercel runs
+ * several, so on 2026-11-25 a cold instance read 22 stations and two shows and
+ * answered two Upcoming rows while a warm one answered nine. A cold plan now
+ * reads up to 48 roster feeds — the same count a warm one reads, but each
+ * through the Podcast Index stage: at worst `ceil(48 / PI_FANOUT)` = eight PI
+ * rounds instead of four. Fluid compute's default ceiling is 300 s; a real run
+ * is a few seconds.
  */
 const MAX_ALWAYS_ON_FEEDS = 24;
 
