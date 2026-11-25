@@ -10,7 +10,7 @@
 // here that the boost orchestrator doesn't already do is the LNURL ↔ zap
 // request handshake.
 
-import { bech32 } from '@scure/base';
+import { decodeLnurl, encodeLnurl } from './lnurl-bech32';
 import type { EventTemplate } from 'nostr-tools';
 import { buildLnurlComment, lnurlCallbackRefused, lnurlCommentRetry, lnurlErrorReason } from '../util';
 import { sparkPayInvoice } from './spark';
@@ -61,9 +61,10 @@ interface PreparedZap {
   rail: Rail;
 }
 
+// Both directions have NO length limit: see `encodeLnurl` (a Lightning address
+// on getalby.com or Wallet of Satoshi encodes past bech32's 90-character default).
 function lud06ToUrl(lud06: string): string {
-  const { bytes } = bech32.decodeToBytes(lud06.toLowerCase());
-  return new TextDecoder().decode(bytes);
+  return decodeLnurl(lud06);
 }
 
 function lnAddressToUrl(addr: string): string {
@@ -89,7 +90,7 @@ async function fetchPayMetadata(url: string): Promise<LnurlPayMetadata> {
 }
 
 function lnurlBech32(rawUrl: string): string {
-  return bech32.encodeFromBytes('lnurl', new TextEncoder().encode(rawUrl));
+  return encodeLnurl(rawUrl);
 }
 
 export async function sendZap(args: {
