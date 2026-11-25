@@ -164,6 +164,12 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
   const [newTitle, setNewTitle] = useState('');
   const [newNote, setNewNote] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  // The rows a press is working on or has added to, read SYNCHRONOUSLY: `states`
+  // is the render's copy, so a second tap before the re-render saw nothing, added
+  // again, got "already", and showed "Already in it" over a real add.
+  const claimed = useRef<Set<string>>(new Set());
+  // The same for CREATE: two presses before the re-render made two drafts.
+  const creating = useRef(false);
   // Where focus goes after CREATE: the name form unmounts with the focused CREATE
   // in it, and focus left on <body> is outside the sheet, so Escape and Tab stopped working.
   const newBtnRef = useRef<HTMLButtonElement>(null);
@@ -228,13 +234,16 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
 
   async function add(r: Row) {
     const key = keyOf(r);
-    if (states[key] === 'busy' || states[key] === 'added') return;
+    if (claimed.current.has(key)) return;
+    claimed.current.add(key);
     setStates((s) => ({ ...s, [key]: 'busy' }));
     const why = await playable();
-    if (why) { setStates((s) => ({ ...s, [key]: { refused: why } })); return; }
+    if (why) { claimed.current.delete(key); setStates((s) => ({ ...s, [key]: { refused: why } })); return; }
     const out = r.kind === 'local'
       ? addToLocalDraft(r.npub, r.slot, song, target.label)
       : await addToPublished(r.slotNpub, r.id, song, target.label);
+    // An added row stays claimed (its button reads ✓); any other answer may be pressed again.
+    if (out !== 'added') claimed.current.delete(key);
     setStates((s) => ({ ...s, [key]: out }));
     if (out === 'added') {
       if (r.kind === 'local') setLocal((rows) => rows.map((x) => (keyOf(x) === key && x.kind === 'local' ? { ...x, count: x.count + 1 } : x)));
@@ -248,14 +257,21 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
     if (title.length > MAX_TITLE_LEN) { setNewNote(`The name can be up to ${MAX_TITLE_LEN} characters.`); return; }
     // The title is published later: a pasted key must not go into it.
     if (textHoldsSecret(title)) { setNewNote('That looks like a secret key. Do not put it in a playlist name.'); return; }
-    setNewNote('Checking the song…');
-    const why = await playable();
-    if (why) { setNewNote(`This song cannot go in a playlist: ${why}`); return; }
-    const slot = startDraftWith(npub, title, song, target.label);
-    if (!slot) { setNewNote('Not saved: this browser refused to store it.'); return; }
-    setNaming(false); setNewTitle(''); setNewNote(null); setRefocus(true);
-    setStates((s) => ({ ...s, [`l:${slot}`]: 'added' }));
-    setReload((n) => n + 1);
+    if (creating.current) return;
+    creating.current = true;
+    try {
+      setNewNote('Checking the song…');
+      const why = await playable();
+      if (why) { setNewNote(`This song cannot go in a playlist: ${why}`); return; }
+      const slot = startDraftWith(npub, title, song, target.label);
+      if (!slot) { setNewNote('Not saved: this browser refused to store it.'); return; }
+      claimed.current.add(`l:${slot}`);
+      setNaming(false); setNewTitle(''); setNewNote(null); setRefocus(true);
+      setStates((s) => ({ ...s, [`l:${slot}`]: 'added' }));
+      setReload((n) => n + 1);
+    } finally {
+      creating.current = false;
+    }
   }
 
   function status(r: Row) {

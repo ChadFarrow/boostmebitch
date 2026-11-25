@@ -165,6 +165,43 @@ export function addSong(
 }
 
 /**
+ * The songs ANOTHER writer added to a draft slot the maker has open: the player's
+ * "+ PLAYLIST" in this tab or in another one (`lib/community/local-drafts.ts`).
+ * The maker holds the draft in React state and writes ALL of it after every
+ * change, so a song added to the slot behind it is lost at its next write unless
+ * it is taken in first (PR #673's review).
+ *
+ * `seen` is the slot's song list as the maker last LOADED or WROTE it, replaced
+ * each time and never accumulated; `onDisk` is the slot now; `current` is what
+ * the maker shows. A song counts only when it is on disk and in NEITHER list:
+ * - not in `seen`, so a song the maker removed that is still on a stale disk
+ *   (another tab, a write that did not land) does not come back;
+ * - not in `current`, so a song is never doubled.
+ * A song removed in the maker, written, and then added again by the sheet IS new:
+ * `seen` was replaced by the write that removed it. Disk order, each pair once,
+ * the two guids and a stored `feedUrl` copied as they are. Removals made
+ * elsewhere are not followed: this only ever ADDS, so nothing on screen goes.
+ */
+export function songsAddedElsewhere(
+  seen: readonly PlaylistSong[],
+  onDisk: readonly PlaylistSong[],
+  current: readonly PlaylistSong[],
+): PlaylistSong[] {
+  const key = (s: PlaylistSong) => `${s.feedGuid}\u0000${s.itemGuid}`;
+  const known = new Set([...seen.map(key), ...current.map(key)]);
+  const out: PlaylistSong[] = [];
+  for (const s of onDisk) {
+    const k = key(s);
+    if (known.has(k)) continue;
+    known.add(k);
+    out.push(typeof s.feedUrl === 'string'
+      ? { feedGuid: s.feedGuid, itemGuid: s.itemGuid, feedUrl: s.feedUrl }
+      : { feedGuid: s.feedGuid, itemGuid: s.itemGuid });
+  }
+  return out;
+}
+
+/**
  * The songs as they are STORED and published. A song's `feedUrl` is the one
  * `urlFor` answers — what Podcast Index holds for its feed (`verifySongs`), or for
  * a song an edit kept, what was stored when it was checked — never the client's:

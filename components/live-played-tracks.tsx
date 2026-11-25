@@ -7,6 +7,7 @@ import { liveTargetSnapshot, subscribeLiveTarget } from '@/lib/v4v/live-value';
 import { splitTargetLabel } from './live-now-playing';
 import { FavTrackHeart } from './fav-heart';
 import { SaveToPlaylistButton, targetFromSplit } from './community/save-to-playlist';
+import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
 import { PodcastCover } from './podcast-cover';
 import { fmtClock } from '@/lib/format';
 
@@ -154,7 +155,7 @@ export function LivePlayedTracks({
               {/* Waits for the parent-feed verdict on a socket block, then
                   declines on its own for a block that names no track — a host
                   segment, or a song whose parent feed can never resolve. */}
-              <div className="flex-shrink-0 pr-1 flex items-center gap-1">
+              <div className={`flex-shrink-0 pr-1${COMMUNITY_PLAYLISTS_ON ? ' flex items-center gap-1' : ''}`}>
                 {p.parentResolved && <SaveToPlaylistButton target={targetFromSplit(p.split)} />}
                 {p.parentResolved && <FavTrackHeart split={p.split} />}
               </div>

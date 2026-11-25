@@ -90,6 +90,9 @@ export const NEW_DRAFT_PREFIX = 'new-';
 const amountDefaultObservable = createObservable();
 export const subscribeAmountDefaults = amountDefaultObservable.subscribe;
 
+// A playlist draft slot was written or cleared in THIS tab (`playlistDraft.watch`).
+const playlistDraftChanged = createObservable();
+
 const KEYS = {
   npub: 'bmb:npub',
   signer: 'bmb:signer',               // 'amber' | 'bunker' | 'local' when a polyfill signer is active; absent = NIP-07 extension or none
@@ -1369,11 +1372,33 @@ export const storage = {
       }
       return out.sort((a, b) => (b.cache.createdAt ?? 0) - (a.cache.createdAt ?? 0));
     },
-    /** Returns whether the value reached DISK. */
-    set: (npub: string | null, v: PlaylistDraftCache, editId?: string): boolean =>
-      safeSet(draftKey(npub, editId), JSON.stringify(v)),
-    /** A REMOVAL, for `listenQueue.clear`'s reason. */
-    clear: (npub: string | null, editId?: string) => safeRemove(draftKey(npub, editId)),
+    /** Returns whether the value reached DISK. Notifies `watch`. */
+    set: (npub: string | null, v: PlaylistDraftCache, editId?: string): boolean => {
+      const ok = safeSet(draftKey(npub, editId), JSON.stringify(v));
+      playlistDraftChanged.notify();
+      return ok;
+    },
+    /** A REMOVAL, for `listenQueue.clear`'s reason. Notifies `watch`. */
+    clear: (npub: string | null, editId?: string) => {
+      safeRemove(draftKey(npub, editId));
+      playlistDraftChanged.notify();
+    },
+    /**
+     * Run `fn` when ONE slot may have changed, whoever wrote it: this tab (any
+     * `set`/`clear` here; `fn` re-reads its slot) or another tab (the `storage`
+     * event, which never fires in the writer). Both, because the player's
+     * "+ PLAYLIST" sheet writes into the slot the maker may have open in the SAME
+     * document, where no `storage` event fires — and the maker, which writes its
+     * whole draft on every change, lost that song at its next edit (PR #673).
+     */
+    watch: (npub: string | null, editId: string | undefined, fn: () => void): (() => void) => {
+      if (typeof window === 'undefined') return () => {};
+      const key = draftKey(npub, editId);
+      const off = playlistDraftChanged.subscribe(fn);
+      const onStorage = (e: StorageEvent) => { if (e.key === key || e.key === null) fn(); };
+      window.addEventListener('storage', onStorage);
+      return () => { off(); window.removeEventListener('storage', onStorage); };
+    },
   },
 
   /** User's publish-relay override (manual, rare). null = no override set. */

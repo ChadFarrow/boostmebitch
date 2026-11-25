@@ -11,7 +11,7 @@ import { whyNotPlayable, type SongKnown } from './song-check';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import { cleanText } from '@/lib/community/clean-text';
 import {
-  ART_MIN_PX, MAX_TITLE_LEN, MAX_OWNER_NAME_LEN, artUploadServers, MIN_SONGS, validatePlaylistDraft,
+  ART_MIN_PX, MAX_TITLE_LEN, MAX_OWNER_NAME_LEN, artUploadServers, MIN_SONGS, songsAddedElsewhere, validatePlaylistDraft,
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
@@ -159,6 +159,13 @@ export function PlaylistMaker() {
   const [expectedUpdatedAt, setExpectedUpdatedAt] = useState<string | null>(null);
   // Set by a user change, never by a load: only then is a draft written.
   const [dirty, setDirty] = useState(false);
+  // The slot's songs as this page last LOADED or WROTE them, replaced each time.
+  // The player's "+ PLAYLIST" adds to the same slot behind this page (this tab or
+  // another), and this form writes its WHOLE draft on every change: what is on
+  // disk and in neither this list nor the form is such an add, and is taken in
+  // (`songsAddedElsewhere`) — before a write, and when the slot changes. Without
+  // it the next edit wrote the older list over the add (PR #673's review).
+  const seen = useRef<PlaylistSong[]>([]);
   const [unsaved, setUnsaved] = useState(false);
   // Opens <AddSongsSheet>.
   const [addOpen, setAddOpen] = useState(false);
@@ -199,6 +206,9 @@ export function PlaylistMaker() {
   const [editNeedsSignIn, setEditNeedsSignIn] = useState(false);
   // Said once, when the draft made signed out replaced an older unsent one of this account.
   const [carryNote, setCarryNote] = useState<string | null>(null);
+  // Songs added to the slot while a PUBLISH or SAVE was out, so not in it: kept as
+  // the playlist's unsaved changes, and said on the published screen.
+  const [lateAdds, setLateAdds] = useState(0);
   // The signed-out form as last written, for the sign-in that follows. The `:guest`
   // slot on disk covers a sign-in that leaves the page (Amber); this copy covers a
   // write the disk refused, which the slot alone would lose.
@@ -245,14 +255,16 @@ export function PlaylistMaker() {
     setEditingId(null); setLocalDraft(null); createdAt.current = null; setExpectedUpdatedAt(null); setDirty(false); setUnsaved(false); setRefusals([]);
     setNote(null); setLoadError(null); setDeleted(null); setPublished(null); setConfirmDelete(false);
     setUploadNote(null); setUploading(false); formGen.current += 1;
-    setCheckOpen(false); setEditNeedsSignIn(false); setCarryNote(null);
+    setCheckOpen(false); setEditNeedsSignIn(false); setCarryNote(null); setLateAdds(0);
     known.current = {}; checked.current = new Set(); setDead({}); setCheckReady(false);
+    seen.current = [];
     const params = new URLSearchParams(window.location.search);
     const id = params.get('id');
     const wanted = params.get('draft');
     const local = !id && isNewDraftSlot(wanted) ? wanted : null;
     const apply = (c: PlaylistDraftCache) => {
       createdAt.current = c.createdAt ?? null;
+      seen.current = c.draft.songs;
       setTitle(c.draft.title); setDescription(c.draft.description); setOwnerName(c.draft.ownerName); setArtUrl(c.draft.artUrl ?? '');
       setSongs(c.draft.songs); setLabels(c.labels); setEditingId(c.editingId); setExpectedUpdatedAt(c.expectedUpdatedAt);
     };
@@ -329,6 +341,7 @@ export function PlaylistMaker() {
       else {
         setTitle(p.title); setDescription(p.description); setOwnerName(p.ownerName ?? ''); setArtUrl(p.artUrl ?? '');
         setSongs(p.songs); setEditingId(p.id); setExpectedUpdatedAt(p.updatedAt);
+        seen.current = p.songs;
       }
       setFormOwner(owner);
       // Unsaved changes started by "+ PLAYLIST" carry labels for the songs it added
@@ -363,18 +376,64 @@ export function PlaylistMaker() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [npub, pubkey, guest]);
 
+  // The slot this form writes: the edit's `:<id>`, a `new-<id>` draft, or (undefined) the default one.
+  const draftId = editingId ?? localDraft ?? undefined;
+
+  // Take in the songs "+ PLAYLIST" added to this slot behind the form (see `seen`).
+  // Songs and their labels ONLY: the title and the rest are the form's, and never
+  // `expectedUpdatedAt` — the sheet may seed an edit slot from a NEWER server copy,
+  // and taking its version would turn the 409 "changed elsewhere" into an overwrite.
+  // True when there was something to take in.
+  const takeInAdds = useCallback((onDisk: PlaylistDraftCache | null, current: PlaylistSong[]): boolean => {
+    if (!onDisk) return false;
+    const add = songsAddedElsewhere(seen.current, onDisk.draft.songs, current);
+    if (!add.length) return false;
+    setSongs((cur) => {
+      const more = songsAddedElsewhere([], add, cur);
+      return more.length ? [...cur, ...more] : cur;
+    });
+    setLabels((cur) => {
+      const got = add.filter((a) => !cur[a.itemGuid] && onDisk.labels[a.itemGuid]);
+      if (!got.length) return cur;
+      const next = { ...cur };
+      for (const a of got) next[a.itemGuid] = onDisk.labels[a.itemGuid];
+      return next;
+    });
+    // So the form writes the merged list back (with any change of its own).
+    setDirty(true);
+    return true;
+  }, []);
+
+  // ---- follow the slot: an add from the player, in this tab or another -------
+  const songsNow = useRef(songs);
+  songsNow.current = songs;
+  useEffect(() => {
+    if (!ready || deleted || loadError) return;
+    const pull = () => { takeInAdds(storage.playlistDraft.get(slot, draftId), songsNow.current); };
+    // An add between the load and this subscription.
+    pull();
+    return storage.playlistDraft.watch(slot, draftId, pull);
+  }, [slot, draftId, ready, deleted, loadError, takeInAdds]);
+
   // ---- save the draft after a user change ----------------------------------
   useEffect(() => {
     if (!ready || !dirty || published || deleted || loadError) return;
+    // Merge at the WRITE, not only in the watcher: another tab's `storage` event is
+    // asynchronous, so an edit right after its add can run first. Something to take
+    // in repaints now, and the run that follows writes the merged list.
+    if (takeInAdds(storage.playlistDraft.get(slot, draftId), songs)) return;
     const cache: PlaylistDraftCache = {
       draft: { title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl, songs },
       editingId, expectedUpdatedAt, labels,
       createdAt: createdAt.current ?? (createdAt.current = Date.now()),
     };
     if (!slot && !localDraft) guestWork.current = cache;
-    const ok = storage.playlistDraft.set(slot, cache, editingId ?? localDraft ?? undefined);
+    // Before the write: `set` notifies the watcher above at once, and this page's
+    // own write must not read as an add from elsewhere.
+    seen.current = songs;
+    const ok = storage.playlistDraft.set(slot, cache, draftId);
     setUnsaved(!ok);
-  }, [slot, ready, dirty, published, deleted, loadError, title, description, ownerName, artUrl, songs, labels, editingId, localDraft, expectedUpdatedAt]);
+  }, [slot, ready, dirty, published, deleted, loadError, title, description, ownerName, artUrl, songs, labels, editingId, localDraft, draftId, expectedUpdatedAt, takeInAdds]);
 
   const draft: PlaylistDraft = useMemo(
     () => ({ title, description, ownerName, artUrl: artUrl.trim() === '' ? null : artUrl.trim(), songs }),
@@ -476,7 +535,7 @@ export function PlaylistMaker() {
   const submit = useCallback(async () => {
     const v = validatePlaylistDraft(draft, textHoldsSecret);
     if (!v.ok) return;
-    setBusy(true); setNote(null); setRefusals([]);
+    setBusy(true); setNote(null); setRefusals([]); setLateAdds(0);
     try {
       // Who signs: the playlist's owner when editing; a NEW playlist goes out under
       // the account, or under the guest key (made here, on first use) when signed out.
@@ -510,14 +569,35 @@ export function PlaylistMaker() {
       if (res.ok) {
         const id = body?.id ?? body?.playlist?.id ?? editingId;
         if (!id) { setNote('Something went wrong. Try again.'); return; }
-        storage.playlistDraft.clear(slot, editingId ?? localDraft ?? undefined);
+        const sentFrom = editingId ?? localDraft ?? undefined;
+        // Songs added to the slot while this request was out ("+ PLAYLIST" in this
+        // tab or another; a signer prompt can take a minute) are in neither the body
+        // just sent nor, after the clear below, the disk. They become this
+        // playlist's unsaved changes instead, and the next screen says so.
+        const held = storage.playlistDraft.get(slot, sentFrom);
+        const late = held ? songsAddedElsewhere(v.draft.songs, held.draft.songs, v.draft.songs) : [];
+        storage.playlistDraft.clear(slot, sentFrom);
         setLocalDraft(null);
         setDirty(false); setUnsaved(false);
         if (kept) { setSignAs('guest'); setGuestSlot(kept.npub); setGuestKept(kept.persisted); }
         const list = await fetchCommunityPlaylists(ownerPubkey);
         const summary = list?.find((p) => p.id === id) ?? null;
+        const updatedAt = summary?.updatedAt ?? body?.playlist?.updatedAt ?? null;
         setEditingId(id);
-        setExpectedUpdatedAt(summary?.updatedAt ?? body?.playlist?.updatedAt ?? null);
+        setExpectedUpdatedAt(updatedAt);
+        seen.current = v.draft.songs;
+        if (late.length && held) {
+          const next = [...v.draft.songs, ...late];
+          const keptLabels = { ...held.labels, ...labels };
+          // The edit slot of what was just sent, at the version just read: a SAVE
+          // of these songs then meets the 409 if the playlist changes meanwhile.
+          const landed = storage.playlistDraft.set(kept ? kept.npub : slot, {
+            draft: { ...draft, songs: next }, editingId: id, expectedUpdatedAt: updatedAt, labels: keptLabels, createdAt: Date.now(),
+          }, id);
+          seen.current = next;
+          setSongs(next); setLabels(keptLabels); setUnsaved(!landed);
+          setLateAdds(late.length);
+        }
         setPublished({ id, feedUrl: body?.feedUrl ?? communityFeedUrl(id), title: cleanText(v.draft.title), tracks: v.draft.songs.length, summary });
         return;
       }
@@ -542,7 +622,7 @@ export function PlaylistMaker() {
     } finally {
       setBusy(false);
     }
-  }, [draft, identity, pubkey, slot, signAs, editingId, localDraft, expectedUpdatedAt, failure, makeGuestKey]);
+  }, [draft, labels, identity, pubkey, slot, signAs, editingId, localDraft, expectedUpdatedAt, failure, makeGuestKey]);
 
   // PUBLISH is never disabled for what is missing: a disabled button answers a
   // press with nothing (Chad, 2026-11-15). A press opens the list of what is
@@ -616,6 +696,13 @@ export function PlaylistMaker() {
 
   if (published) {
     return (
+      <>
+      {lateAdds > 0 && (
+        <p role="status" className="mb-4 max-w-xl text-sm leading-relaxed text-bone/80" data-testid="late-adds">
+          {lateAdds === 1 ? '1 song' : `${lateAdds} songs`} added while this was being sent {lateAdds === 1 ? 'is' : 'are'} not in it yet.
+          {' '}{lateAdds === 1 ? 'It is' : 'They are'} kept on this device: press EDIT, then SAVE.
+        </p>
+      )}
       <PlaylistPublished
         feedUrl={published.feedUrl}
         title={published.title}
@@ -628,6 +715,7 @@ export function PlaylistMaker() {
           window.history.replaceState(null, '', `/playlists/make?id=${published.id}`);
         }}
       />
+      </>
     );
   }
 

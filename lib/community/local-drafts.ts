@@ -84,7 +84,10 @@ export async function addToPublished(
   if (!cur) {
     const p = await fetchPlaylist(id);
     if (!p) return 'not-loaded';
-    cur = {
+    // Read the slot AGAIN after the fetch: the maker, open on this playlist, may
+    // have written its changes meanwhile, and a seed built from the server would
+    // overwrite them.
+    cur = storage.playlistDraft.get(slotNpub, id) ?? {
       draft: {
         title: p.title, description: p.description, ownerName: p.ownerName ?? '',
         artUrl: p.artUrl ?? null, songs: p.songs.map((s) => ({ feedGuid: s.feedGuid, itemGuid: s.itemGuid })),
