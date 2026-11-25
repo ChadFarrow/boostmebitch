@@ -51,6 +51,8 @@ export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0
   let sessionsCreated = 0;
   /** While true, a `HOLD RESUME` gets its socket cut with no answer (a network still down). */
   let refuseResume = false;
+  /** Ms between a complete NICK + USER and the 001, as irc-hold's nick take-back adds (~7 s). Mutable. */
+  let welcomeDelayMs = 0;
 
   const wss = new WebSocketServer({ host: '127.0.0.1', port });
   await new Promise((resolve, reject) => {
@@ -106,7 +108,9 @@ export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0
     const welcome = () => {
       if (s.registered || !s.nick || !s.user || stallNicks.has(s.nick.toLowerCase())) return;
       s.registered = true;
-      send(s, `:${SERVER} 001 ${s.nick} :Welcome to the fake IRC network ${s.nick}`);
+      const say001 = () => { if (sessions.has(s)) send(s, `:${SERVER} 001 ${s.nick} :Welcome to the fake IRC network ${s.nick}`); };
+      if (welcomeDelayMs > 0) setTimeout(say001, welcomeDelayMs);
+      else say001();
     };
     switch (cmd.toUpperCase()) {
       case 'NICK': {
@@ -231,6 +235,7 @@ export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0
     /** Sessions alive right now, held ones included. */
     get sessions() { return sessions.size; },
     set refuseResume(v) { refuseResume = v; },
+    set welcomeDelayMs(v) { welcomeDelayMs = v; },
     banned,
     /** A channel message from another user, to everyone in the channel. */
     say(from, channel, text) {

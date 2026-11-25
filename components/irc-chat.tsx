@@ -77,6 +77,9 @@ interface Row extends IrcSavedRow {
  * `Intl`; re-rendering every row per line took ~1 s a line at 2,000 rows on an
  * emulated phone under `next dev` (`e2e:irc --perf`).
  */
+/** How long "Joining…" shows before it says why it may be slow. */
+const SLOW_JOIN_MS = 5_000;
+
 const IrcRow = memo(function IrcRow({ row: r }: { row: Row }) {
   if (r.kind === 'notice') return <p data-irc-row className="text-xs text-muted">{r.text}</p>;
   return (
@@ -111,6 +114,8 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
   const npub = useApp((s) => s.identity?.npub);
   const [phase, setPhase] = useState<Phase>('idle');
   const [nickTaken, setNickTaken] = useState(false);
+  /** "Joining…" has shown for SLOW_JOIN_MS with no welcome yet. */
+  const [slowJoin, setSlowJoin] = useState(false);
   const [nickDraft, setNickDraft] = useState('');
   const [draft, setDraft] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
@@ -363,6 +368,16 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
   };
 
   const askNick = phase === 'idle' || phase === 'closed' || (phase === 'connecting' && nickTaken);
+  // A join that takes back the listener's own held nick (irc-hold image 5)
+  // gets its welcome up to ~7 s later than usual: irc-hold ends the held chat
+  // first. Inside IRC_REGISTER_TIMEOUT_MS (20 s), but a still line that long
+  // reads as stuck on a phone, so it says why after SLOW_JOIN_MS.
+  const joining = phase === 'connecting' && !nickTaken;
+  useEffect(() => {
+    if (!joining) return;
+    const t = setTimeout(() => setSlowJoin(true), SLOW_JOIN_MS);
+    return () => { clearTimeout(t); setSlowJoin(false); };
+  }, [joining]);
 
   return (
     // A frame from sm: up, so the panel reads as a chat window beside the cover
@@ -430,7 +445,9 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
           <p data-irc-privacy className="text-[11px] text-muted">{PRIVACY}</p>
           </>
         ) : phase === 'connecting' ? (
-          <p className="text-xs text-muted">Joining {channel}…</p>
+          <p data-irc-joining className="text-xs text-muted">
+            Joining {channel}…{slowJoin && ' Still joining. A nick that was in use a moment ago can take a few more seconds.'}
+          </p>
         ) : phase === 'kicked' ? (
           <button
             type="button"

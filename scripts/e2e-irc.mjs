@@ -1164,10 +1164,18 @@ async function browserHalf(APP) {
     await reopen();
     c.ok('so a refresh after it offers JOIN, not a resume', await until(`!!${q('[data-irc-join]')}`, 8000) && !(await js(`!!${q('[data-irc-away]')}`)));
 
+    // irc-hold image 5's nick take-back welcomes up to ~7 s late (t4r,
+    // 2026-11-25). The 20 s register timeout covers it, and the line says why.
+    fake.welcomeDelayMs = 7000;
+    const joinAt = Date.now();
+    await click('[data-irc-join]');
+    c.ok('a slow welcome shows "Joining…"', await until(`(${q('[data-irc-joining]')}?.innerText ?? '').startsWith('Joining #candr')`, 3000));
+    c.ok('…and after 5 s says why it may be slow', await until(`(${q('[data-irc-joining]')}?.innerText ?? '').includes('Still joining. A nick that was in use a moment ago can take a few more seconds.')`, 7000));
+    c.ok('…and joins when the 001 comes 7 s late, with no error', await until(`!!${q('[data-irc-input]')}`, 12000) && !(await js(`!!${q('[data-irc-join]')}`)), String(Date.now() - joinAt));
+    fake.welcomeDelayMs = 0;
+
     // Leaving the page is a drop too: the page cannot tell a refresh from a
     // closed tab, so the session stays held until the hold runs out.
-    await click('[data-irc-join]');
-    await until(`!!${q('[data-irc-input]')}`, 8000);
     const quitsBeforeLeave = fake.quits.length;
     await send('Page.navigate', { url: 'about:blank' });
     await wait(1500);

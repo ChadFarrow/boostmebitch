@@ -208,7 +208,11 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   A taken nick is fixed on the SAME connection (`ircNick`), and a KICK keeps the
   connection for JOIN AGAIN. A gateway that takes the socket and never
   welcomes is given up after 20 s (`IRC_REGISTER_TIMEOUT_MS`), so "Joining…" is
-  never a screen with no way out.
+  never a screen with no way out. irc-hold's nick take-back (image 5) welcomes
+  up to ~7 s later than usual, because it ends the held chat first: inside the
+  20 s, but a still line that long reads as stuck on a phone, so after 5 s
+  (`SLOW_JOIN_MS`) it adds "Still joining. A nick that was in use a moment ago
+  can take a few more seconds." (`e2e:irc` delays the fake's 001 by 7 s).
 - **A taken nick on JOIN says why it may be** (Chad, 2026-11-24): "That nick is
   in use. If it was yours a moment ago, your last chat may still hold it. Try
   another nick, or wait a few minutes." With the saved hold the page resumes
