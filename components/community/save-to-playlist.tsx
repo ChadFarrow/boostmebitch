@@ -292,6 +292,16 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
   }
 
   return (
+    // A React event from inside a portal still bubbles up the COMPONENT tree, and
+    // this sheet is mounted inside list rows whose own press plays the track: a
+    // CREATE or ADD here started playback behind the sheet. Nothing pressed in
+    // the sheet may reach the row. `contents` keeps the span out of the layout.
+    <span
+      className="contents"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
     <ModalShell onClose={onClose} label="Save to playlist" className="w-full max-w-md" closeButton clearsPlayer={false}>
       <div className="px-4 pt-4 pb-5">
         <h2 className="font-display text-xl">Save to playlist</h2>
@@ -354,5 +364,6 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
         )}
       </div>
     </ModalShell>
+    </span>
   );
 }
