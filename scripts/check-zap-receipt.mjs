@@ -39,6 +39,8 @@ import {
   zapRequestTags, nip73Tags, validateSummaryRequest, summaryReceiptTemplate,
   summaryRequestTemplateFromSpec, SUMMARY_MAX_MSAT,
 } from '../lib/nostr/zap-request.ts';
+import { encodeLnurl, decodeLnurl } from '../lib/v4v/lnurl-bech32.ts';
+import { bech32 } from '@scure/base';
 import { importFreeProblems } from './import-free.mjs';
 import { readFileSync } from 'node:fs';
 
@@ -363,6 +365,60 @@ if (naiveOracle([['p', STRANGER], ['P', STRANGER], ['amount', '999999999999']]).
   ok('rejected: a template oracle would sign a receipt naming any sender for any amount');
 } else {
   fail('the naive comparison is broken');
+}
+
+// ── The `lnurl` of a kind:9734: LUD-01 bech32 with NO length limit ──────────
+// `sendZap` writes the recipient's LNURL-pay URL as bech32 into the request's
+// `lnurl` tag and the callback's `lnurl` parameter. `bech32.encodeFromBytes`
+// keeps BIP-173's 90-character cap, which a URL past 47 bytes overruns, so EVERY
+// zap to these two real addresses threw "Length 100 exceeds limit 90" on beta
+// (Chad, 2026-11-25) before it asked for an invoice. The URLs are what
+// `lnAddressToUrl` builds for `sirtjthewrathful@getalby.com` (a playlist maker,
+// the beta report) and `fancyturtle3@primal.net` (another); the LUD-01 vector is
+// the spec's own example LNURL.
+console.log('\nencodeLnurl / decodeLnurl — the lnurl of a zap request');
+const naiveLnurl = (url) => bech32.encodeFromBytes('lnurl', new TextEncoder().encode(url));
+const LONG_URLS = [
+  ['getalby.com, the beta report', 'https://getalby.com/.well-known/lnurlp/sirtjthewrathful', 100],
+  ['primal.net', 'https://primal.net/.well-known/lnurlp/fancyturtle3', 92],
+];
+for (const [name, url, len] of LONG_URLS) {
+  let enc = '';
+  try { enc = encodeLnurl(url); } catch (e) { fail(`${name}: encodeLnurl threw: ${e.message}`); continue; }
+  if (enc.length !== len) fail(`${name}: ${enc.length} characters, expected ${len}`);
+  else if (!enc.startsWith('lnurl1') || enc !== enc.toLowerCase()) fail(`${name}: not a lowercase lnurl1…: ${enc}`);
+  else if (decodeLnurl(enc) !== url || decodeLnurl(enc.toUpperCase()) !== url) fail(`${name}: does not decode back to ${url}`);
+  else ok(`${name}: ${len} characters, round-trips in both cases`);
+  // The vector must FAIL the old encoder, or it guards nothing.
+  let naiveThrew = false;
+  try { naiveLnurl(url); } catch { naiveThrew = true; }
+  if (!naiveThrew) fail(`${name}: the 90-character encoder no longer throws, so this vector catches nothing`);
+  else ok(`${name}: the 90-character encoder throws on it (the beta bug)`);
+}
+// Must still work: a short URL encodes exactly as it always did.
+const SHORT = 'https://zap-stub.test/.well-known/lnurlp/maker';
+if (encodeLnurl(SHORT) !== naiveLnurl(SHORT)) fail('a short URL no longer encodes as before');
+else ok('a short URL (86 characters) encodes exactly as before');
+const LUD01 = 'LNURL1DP68GURN8GHJ7UM9WFMXJCM99E3K7MF0V9CXJ0M385EKVCENXC6R2C35XVUKXEFCV5MKVV34X5EKZD3EV56NYD3HXQURZEPEXEJXXEPNXSCRVWFNV9NXZCN9XQ6XYEFHVGCXXCMYXYMNSERXFQ5FNS';
+const LUD01_URL = 'https://service.com/api?q=3fc3645b439ce8e7f2553a69e5267081d96dcd340693afabe04be7b0ccd178df';
+let lud01 = '';
+try { lud01 = decodeLnurl(LUD01); } catch (e) { fail(`LUD-01 example: decodeLnurl threw: ${e.message}`); }
+if (lud01 && lud01 !== LUD01_URL) fail(`LUD-01 example decodes to ${lud01}`);
+else if (lud01) ok('the LUD-01 example (156 characters, upper case) decodes to its URL');
+if (encodeLnurl(LUD01_URL) !== LUD01.toLowerCase()) fail('the LUD-01 URL does not encode to the LUD-01 example');
+else ok('the LUD-01 URL encodes to the LUD-01 example');
+// A bech32 string that is not an LNURL is refused, never fetched as a URL.
+// A VALID bech32 npub (checksum correct), so the prefix test is what refuses it.
+const NPUB = bech32.encode('npub', bech32.toWords(new Uint8Array(32)));
+let npubWhy = '';
+try { decodeLnurl(NPUB); } catch (e) { npubWhy = e.message; }
+if (!npubWhy.includes('prefix "npub"')) fail(`decodeLnurl did not refuse an npub by its prefix (${npubWhy || 'accepted'})`);
+else ok('decodeLnurl refuses a valid npub by its prefix');
+{
+  const leaf = 'lib/v4v/lnurl-bech32.ts';
+  const problems = importFreeProblems(leaf, { allowBare: true });
+  if (problems.length) fail(`${leaf} imports more than bare npm packages:\n          ` + problems.join('\n          '));
+  else ok(`${leaf} imports bare npm packages only`);
 }
 
 // The module must stay loadable by this script under plain Node, or the next

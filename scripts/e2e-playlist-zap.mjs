@@ -34,6 +34,10 @@ const noZaps = key();    // lud16 on a provider without allowsNostr
 const noAddr = key();    // a kind:0 with no Lightning address
 const noProfile = key(); // no kind:0 at all: what a guest key looks like
 const STUB = 'zap-stub.test';
+// LONG on purpose: its LNURL is past bech32's 90-character default, like every
+// real address (`sirtjthewrathful@getalby.com` is 100). A short stub address hid
+// "Length 100 exceeds limit 90" until Chad hit it on beta (2026-11-25).
+const MAKER_LN = 'a-playlist-maker-with-a-long-lightning-name';
 const MAKER_NAME = 'E2E Maker';
 
 const relay = createRelay({ port: 0, log: null });
@@ -45,7 +49,7 @@ const profile = (k, content) => {
   const e = finalizeEvent({ kind: 0, created_at: now - 60, tags: [], content: JSON.stringify(content) }, k.sk);
   relay.events.set(e.id, e);
 };
-profile(maker, { name: 'e2emaker', display_name: MAKER_NAME, lud16: `maker@${STUB}` });
+profile(maker, { name: 'e2emaker', display_name: MAKER_NAME, lud16: `${MAKER_LN}@${STUB}` });
 profile(noZaps, { name: 'nozaps', lud16: `nozap@${STUB}` });
 profile(noAddr, { name: 'noaddr', about: 'no lightning here' });
 
@@ -102,7 +106,7 @@ page.on(async (m) => {
   let status = 200;
   let body;
   if (u.hostname === STUB) {
-    if (u.pathname === '/.well-known/lnurlp/maker') body = payRequest('maker', true);
+    if (u.pathname === `/.well-known/lnurlp/${MAKER_LN}`) body = payRequest('maker', true);
     else if (u.pathname === '/.well-known/lnurlp/nozap') body = payRequest('nozap', false);
     else if (u.pathname.startsWith('/cb/')) {
       callbacks.push(request.url);
@@ -246,7 +250,7 @@ await shot('1-header');
 t.ok('a press opens the zap dialog', (await clickTile()) && await waitFor(zapDialog, 8000));
 t.equal('the dialog names the maker from the kind:0', await js(`${DIALOG_NAMES}.find((n) => n.startsWith('Zap '))`), `Zap ${MAKER_NAME}`);
 const sub = await js(`${zapDialog}.innerText`);
-t.ok('it says which playlist and which address', sub.includes('For the playlist “Zap Test Brunch”, to maker@zap-stub.test.'), sub);
+t.ok('it says which playlist and which address', sub.includes(`For the playlist “Zap Test Brunch”, to ${MAKER_LN}@zap-stub.test.`), sub);
 t.equal('the amount opens at 100 (no saved default)', await js(`${zapDialog}.querySelector('input[type=number]').value`), '100');
 t.ok('the dialog fits at 390 px', await overflowFree());
 await shot('2-dialog');
@@ -265,7 +269,8 @@ t.equal('the zap request is a kind:9734', zr.kind, 9734);
 t.ok('signed by the VIEWER, and the signature verifies', zr.pubkey === viewer.pk && verifyEvent(zr), zr.pubkey);
 t.equal('exactly one p tag: the maker', tag('p').map((x) => x[1]), [maker.pk]);
 t.equal('the amount tag', tag('amount').map((x) => x[1]), ['100000']);
-const lnurl = bech32.encodeFromBytes('lnurl', new TextEncoder().encode(`https://${STUB}/.well-known/lnurlp/maker`));
+const lnurl = bech32.encode('lnurl', bech32.toWords(new TextEncoder().encode(`https://${STUB}/.well-known/lnurlp/${MAKER_LN}`)), false);
+t.ok('the maker\'s LNURL is past 90 characters (the beta bug)', lnurl.length > 90, String(lnurl.length));
 t.equal('the lnurl tag is the maker\'s address', tag('lnurl').map((x) => x[1]), [lnurl]);
 t.equal('the lnurl query parameter agrees', cb.searchParams.get('lnurl'), lnurl);
 t.equal('the content is the typed message', zr.content, 'thanks for the brunch');
@@ -362,6 +367,7 @@ const ntag = (n) => (nz.tags ?? []).filter((x) => x[0] === n);
 t.equal('the e tag is the note', ntag('e').map((x) => x[1]), [note.id]);
 t.equal('the p tag is its author', ntag('p').map((x) => x[1]), [maker.pk]);
 t.equal('no NIP-73 refs on a note zap', [...ntag('k'), ...ntag('i')].length, 0);
+t.equal('the note zap carries the same long lnurl (shared encoder)', ntag('lnurl').map((x) => x[1]), [lnurl]);
 t.ok('signed by the viewer', nz.pubkey === viewer.pk && verifyEvent(nz));
 t.equal('the stub wallet paid it', await js(`window.__paid`), ['lnbc1000n1pe2estubinvoice']);
 t.equal('the server LNURL fallback was never used', lnurlProxyHits.length, 0);
