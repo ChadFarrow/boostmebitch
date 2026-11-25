@@ -43,8 +43,12 @@ import {
   liveStampSecs,
 } from '../lib/util.ts';
 
-/** Kept in step with `MAX_LIVE_FEEDS` in app/api/live-shows/route.ts. */
-const MAX_LIVE_FEEDS = 24;
+/** Kept in step with `MAX_LIVE_FEEDS` and `MAX_ALWAYS_ON_FEEDS` in
+ *  app/api/live-shows/route.ts. An instance that remembers no station gives the
+ *  unspent station allowance to the roster (`planLiveRosterReads`), so a cold
+ *  plan reads up to their SUM; a warm one first moves the stations it knows out
+ *  of the ranking, which only moves a show up. */
+const MAX_LIVE_FEEDS = 24 + 24;
 
 // JOINED, not `find`. An unquoted `-- Planet Rage` arrives as two arguments,
 // and taking the first silently searches for "Planet" — a wrong answer that

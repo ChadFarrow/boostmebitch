@@ -162,6 +162,19 @@ const STATIONS = range(8_000_000, 20);
 const SHOWS = range(5_000_000, 20);
 const MEASURED = [...STATIONS, ...SHOWS];
 
+// The roster production ranked on 2026-11-25 (`/episodes/live`, 40 rows, 37
+// feeds), in `liveRosterFeedOrder` order, and the nine feeds whose own RSS
+// carried a FUTURE `status="pending"` item that morning.
+const MEASURED_2026_11_25 = [
+  8106047, 8109818, 8113770, 8125249, 946122, 8101763, 8110391, 8120226, 8101550, 8107364,
+  8063077, 8063078, 8063079, 8063080, 8063081, 8080084, 8080977, 8113147, 8114925, 8120311,
+  7920227, 5350892, 8109888, 8108020, 8044056, 4831193, 7443578, 7111253, 5461087, 6754125,
+  7156165, 8127839, 7968805, 7963427, 5904093, 7359152, 6611624,
+];
+const PENDING_2026_11_25 = [
+  946122, 5350892, 4831193, 7443578, 5461087, 7968805, 7963427, 5904093, 6611624,
+];
+
 const PLAN_VECTORS = [
   {
     name: 'THE ONE THAT MATTERS: 20 known stations no longer push regular feeds past the 24-feed cap',
@@ -200,16 +213,44 @@ const PLAN_VECTORS = [
     args: [[7, 100, 3, 101, 9], [station(100), station(101)], 24, 24],
     expect: (r) => r.fromRoster.join(',') === '7,3,9',
   },
+  // REPLACED 2026-11-25. Two vectors here pinned the COLD slice — "no
+  // remembered stations: the plan is today's slice, unchanged" (30 feeds, no
+  // memory, read 24, truncated) and "more regular feeds than the cap is still
+  // reported as truncated" (26 + one known station, read 24, truncated). That
+  // slice WAS the bug: Vercel runs several instances, each with its own memory,
+  // so the instance that answered decided what a new visitor saw. Measured on
+  // production that day, a cold instance answered 2 Upcoming rows and a warm
+  // one 9, for the same roster. The intent of the second — truncation is still
+  // reported past the bound — is kept below, against the new bound.
   {
-    name: 'no remembered stations: the plan is today\'s slice, unchanged',
-    args: [range(1, 30), [], 24, 24],
-    expect: (r) => r.fromRoster.join(',') === range(1, 24).join(',') && r.truncated && r.fromAlwaysOn.length === 0,
-    alsoNaive: true,
+    name: 'THE ONE THAT MATTERS NOW: the measured roster of 2026-11-25 with an EMPTY memory reads every feed',
+    // Podcast Index's 37 feeds, in `liveRosterFeedOrder` order exactly as
+    // production ranked them: 22 stations republished that morning sort first.
+    // The cold slice read 24 — Bowl After Bowl, Hyper SpaceOut and 22 stations
+    // — and cut the other 13, among them Chad and Reeds (index 32) and seven
+    // more shows with a pending item.
+    args: [MEASURED_2026_11_25, [], 24, 24],
+    expect: (r) => PENDING_2026_11_25.every((id) => r.fromRoster.includes(id)) && !r.truncated,
   },
   {
-    name: 'more regular feeds than the cap is still reported as truncated',
-    args: [[...range(1, 26), 500], [station(500)], 24, 24],
-    expect: (r) => r.truncated && r.fromRoster.length === 24,
+    name: 'a cold plan reads as many feeds as a warm one — the unspent station allowance goes to the roster',
+    args: [range(1, 30), [], 24, 24],
+    expect: (r) => r.fromRoster.join(',') === range(1, 30).join(',') && !r.truncated && r.fromAlwaysOn.length === 0,
+  },
+  {
+    name: 'more regular feeds than BOTH allowances is still reported as truncated',
+    args: [range(1, 60), [], 24, 24],
+    expect: (r) => r.truncated && r.fromRoster.join(',') === range(1, 48).join(','),
+  },
+  {
+    name: 'a full station allowance leaves the roster its own cap, and truncation past it is reported',
+    args: [[...range(1, 26), ...range(500, 24)], range(500, 24).map(station), 24, 24],
+    expect: (r) => r.truncated && r.fromRoster.length === 24 && r.fromAlwaysOn.length === 24,
+  },
+  {
+    name: 'one plan never reads more than the two allowances together',
+    args: [range(1, 100), range(3, 5).map(station), 24, 24],
+    expect: (r) => r.fromRoster.length + r.fromAlwaysOn.length <= 48,
     alsoNaive: true,
   },
   {
