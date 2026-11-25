@@ -1956,6 +1956,32 @@ export function mergeUpcomingSeen(
   return next;
 }
 
+/**
+ * `/live`'s rows with the visitor's own favorites moved to the top — Chad,
+ * 2026-11-25: "show all current and upcoming lives if we can and show the users
+ * favorites first".
+ *
+ * **It only REORDERS.** Every visitor gets the same rows from the route; a
+ * favorite never hides or adds one. Both halves keep the order they arrived in
+ * (`compareLiveShows`, soonest-first for Upcoming), so a favorite starting next
+ * week still follows a favorite starting tonight.
+ *
+ * A row matches by `podcastGuid` — the key `favorites` is stored under, compared
+ * without case — or by feed id, for a row whose feed carried no guid. A feed id
+ * of 0 is an unresolved favorite, not a feed, so it matches nothing.
+ */
+export function favoritesFirst<T extends { podcastGuid?: string; feedId?: number }>(
+  shows: readonly T[],
+  favGuids: ReadonlySet<string>,
+  favIds: ReadonlySet<number>,
+): T[] {
+  const guids = new Set([...favGuids].map((g) => g.toLowerCase()));
+  const isFav = (s: T) =>
+    (!!s.podcastGuid && guids.has(s.podcastGuid.toLowerCase()))
+    || (typeof s.feedId === 'number' && s.feedId > 0 && favIds.has(s.feedId));
+  return [...shows.filter(isFav), ...shows.filter((s) => !isFav(s))];
+}
+
 export function compareLiveShows(a: LiveShow, b: LiveShow): number {
   const rank = (s: LiveShow) => (s.liveStatus === 'live' ? 0 : 1);
   if (rank(a) !== rank(b)) return rank(a) - rank(b);
