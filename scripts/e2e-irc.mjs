@@ -407,6 +407,21 @@ async function browserHalf(APP) {
       return false;
     };
     const tabs = () => js(`JSON.stringify([...document.querySelectorAll('[data-live-tabs] [role=tab]')].map((t) => [t.textContent.trim().toLowerCase(), t.getAttribute('aria-selected')]))`).then(JSON.parse);
+    // A control in the phone pager's pinned bar: its size, and clear of ▶/❚❚
+    // and BOOST, inside the screen, with no sideways scroll.
+    const barFit = (sel) => js(`(() => {
+      const bar = document.querySelector('[data-live-bar]');
+      const b = bar?.querySelector(${JSON.stringify(sel)});
+      const play = bar?.querySelector('[aria-label="Play"],[aria-label="Pause"]');
+      const boost = [...(bar?.querySelectorAll('button') ?? [])].find((x) => /BOOST/.test(x.textContent));
+      if (!b || !play || !boost) return null;
+      const r = b.getBoundingClientRect(), p = play.getBoundingClientRect(), o = boost.getBoundingClientRect();
+      const hit = (a, z) => a.right > z.left && a.left < z.right && a.bottom > z.top && a.top < z.bottom;
+      const de = document.documentElement;
+      return { w: Math.round(r.width), h: Math.round(r.height), clear: !hit(r, p) && !hit(r, o),
+        inView: r.left >= 0 && r.right <= innerWidth && o.right <= innerWidth, noScroll: de.scrollWidth <= de.clientWidth };
+    })()`);
+    const fits = (f) => !!f && f.w >= 24 && f.h >= 24 && f.clear && f.inView && f.noScroll;
     const rows = () => js(`document.querySelectorAll('[data-irc-list] [data-irc-row]').length`);
 
     await send('Page.navigate', { url: `${APP}/live` });
@@ -708,6 +723,17 @@ async function browserHalf(APP) {
     await js(`(() => { const el = ${q('[data-irc-input]')}; el.blur(); el.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); })()`);
     await wait(400);
     c.ok('…and comes back after', await js(`!!${q('[data-live-bar]')}?.offsetParent`));
+    // A tap from the composer to SEND on Android moves focus to SEND, and SEND
+    // turns `disabled` after the send: no event says focus left a field. The
+    // bar must come back anyway (it once stayed away until the next blur).
+    await js(`(() => { const el = ${q('[data-irc-input]')}; el.focus(); el.dispatchEvent(new FocusEvent('focusin', { bubbles: true })); })()`);
+    await wait(200);
+    c.ok('typing again: the bar is away', !(await js(`!!${q('[data-live-bar]')}?.offsetParent`)));
+    await type('[data-irc-input]', 'hello from the pager');
+    await js(`(() => { const b = ${q('[data-irc-send]')}; b.focus(); b.click(); })()`);
+    c.ok('SEND sends', await fakeGot((r) => r.includes('PRIVMSG #MMO :hello from the pager')));
+    c.ok('…and the bar comes back with focus on a disabled SEND, though no focusout fired', await until(`!!${q('[data-live-bar]')}?.offsetParent`, 2000));
+
 
     // A turn to landscape crosses 640px into the two-pane layout and back. The
     // chat lives in a reverse portal, so neither tree's mount may leave.
@@ -823,6 +849,17 @@ async function browserHalf(APP) {
     c.ok('…and says TAP TO RESUME', await until(`(document.querySelector('[data-live-resume]')?.innerText ?? '').includes('TAP TO RESUME')`, 10000));
     c.equal('…over silence, with ▶ on the transport', [await playingCount(), await js(`!!document.querySelector('[aria-label="Play"]')`)], [0, true]);
     c.ok('…while the chat resumed anyway', await chatHas('Reconnected; nothing was missed.', 8000));
+    // On a phone the full-screen player is the pager, and its bar says it too.
+    // TAP TO RESUME is the widest thing that slot holds (GO LIVE is ~85px of its
+    // 129px; e2e:livecatchup makes the lag GO LIVE needs), so it is the one to
+    // fit beside ▶ and BOOST on Chad's screen, without growing the bar.
+    const barH = () => js(`Math.round(document.querySelector('[data-live-bar]')?.getBoundingClientRect().height ?? 0)`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 393, height: 852, deviceScaleFactor: 3, mobile: true });
+    await send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, left: 0, bottom: 34, right: 0 } });
+    const resumeFit = await until(`!!document.querySelector('[data-live-bar] [data-live-resume]')`, 5000) ? await barFit('[data-live-resume]') : null;
+    c.ok('…in the phone pager\'s bar at 393 px: at least 24 x 24, clear of ▶ and BOOST, on screen', fits(resumeFit), JSON.stringify(resumeFit));
+    c.equal('…and the bar is as tall as it is with "streaming now" (77px)', await barH(), 77);
+    await send('Emulation.setSafeAreaInsetsOverride', { insets: {} });
     // The mini-bar says it too, and on a 390 px phone the longer label must
     // fit beside ▶ without growing the bar (GO LIVE once ran under ▶ there).
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });

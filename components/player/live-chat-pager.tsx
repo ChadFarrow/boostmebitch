@@ -22,6 +22,10 @@ import { UnderlineTabs, tabPanelProps } from '../underline-tabs';
  *   then sits at the overlay's bottom edge, where it was before this layout,
  *   which is the geometry iOS already handles with the keyboard up. It comes
  *   back a moment after the blur, so a tap on SEND lands before anything moves.
+ *   "Has focus" is READ from `document.activeElement`, never kept from events:
+ *   a focused button that turns `disabled` (SEND after a send) or a focused
+ *   field that unmounts (the nick box on JOIN) fires no `focusout`, and a flag
+ *   kept from events would hide play/pause and BOOST until the next blur.
  */
 export type LivePagerPage = {
   id: string;
@@ -37,9 +41,22 @@ function reducedMotion(): boolean {
   return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
+/** Fields that raise a keyboard. Not a range: the seek bar is on the PLAYER page. */
+const TEXT_INPUTS = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number']);
 function isField(t: EventTarget | null): boolean {
-  return t instanceof HTMLElement && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && (t as HTMLInputElement).type !== 'button'));
+  if (!(t instanceof HTMLElement)) return false;
+  if (t.tagName === 'TEXTAREA') return true;
+  return t.tagName === 'INPUT' && TEXT_INPUTS.has((t as HTMLInputElement).type);
 }
+
+/** A field on one of the pager's pages has focus now. */
+function fieldFocusedIn(root: HTMLElement | null): boolean {
+  const a = typeof document === 'undefined' ? null : document.activeElement;
+  return !!root && isField(a) && !(a as HTMLInputElement).disabled && root.contains(a);
+}
+
+/** While the bar is away, how often to look whether focus left by a path that fires nothing. */
+const TYPING_POLL_MS = 500;
 
 export function LiveChatPager({
   pages,
@@ -107,31 +124,53 @@ export function LiveChatPager({
   // TYPING, FROM THE DOM. Native `focusin`/`focusout`, never React's
   // `onFocus`: `<IrcChat>` is rendered through a reverse portal, and React
   // sends its events up the REACT tree, where the composer's parent is
-  // `<FullscreenPlayer>`, not this pager. The DOM tree is where it sits.
+  // `<FullscreenPlayer>`, not this pager. The DOM tree is where it sits. The
+  // events only say WHEN to look; `fieldFocusedIn` says what is true.
+  //
+  // NOTHING MOVES UNDER A FINGER. The bar's return shrinks the pages and lifts
+  // the composer about 90px, so while a pointer is down on the pages the bar
+  // stays away, and the look waits `BAR_BACK_MS` after the finger lifts: a tap
+  // from the composer to SEND lands on SEND.
+  const downRef = useRef(false);
   useEffect(() => {
     const el = pagerRef.current;
     if (!el) return;
-    const onIn = (e: FocusEvent) => {
-      if (!isField(e.target)) return;
+    const look = () => {
+      if (barTimer.current) clearTimeout(barTimer.current);
+      barTimer.current = setTimeout(() => {
+        if (!downRef.current) setTyping(fieldFocusedIn(el));
+      }, BAR_BACK_MS);
+    };
+    const onIn = () => {
+      if (!fieldFocusedIn(el)) return;
       if (barTimer.current) clearTimeout(barTimer.current);
       setTyping(true);
     };
-    const onOut = (e: FocusEvent) => {
-      if (!isField(e.target)) return;
-      // Focus that moves to the composer's own SEND keeps the bar away.
-      const next = e.relatedTarget;
-      if (next instanceof Node && (e.target as HTMLElement).parentElement?.contains(next)) return;
-      if (barTimer.current) clearTimeout(barTimer.current);
-      barTimer.current = setTimeout(() => setTyping(false), BAR_BACK_MS);
-    };
+    const onDown = () => { downRef.current = true; };
+    const onUp = () => { downRef.current = false; look(); };
     el.addEventListener('focusin', onIn);
-    el.addEventListener('focusout', onOut);
+    el.addEventListener('focusout', look);
+    el.addEventListener('pointerdown', onDown, true);
+    el.addEventListener('pointerup', onUp, true);
+    el.addEventListener('pointercancel', onUp, true);
     return () => {
       el.removeEventListener('focusin', onIn);
-      el.removeEventListener('focusout', onOut);
+      el.removeEventListener('focusout', look);
+      el.removeEventListener('pointerdown', onDown, true);
+      el.removeEventListener('pointerup', onUp, true);
+      el.removeEventListener('pointercancel', onUp, true);
       if (barTimer.current) clearTimeout(barTimer.current);
     };
   }, []);
+  // The paths that fire no event: a focused SEND turned `disabled`, a focused
+  // nick box unmounted by JOIN. Only while the bar is away.
+  useEffect(() => {
+    if (!typing) return;
+    const t = setInterval(() => {
+      if (!downRef.current && !fieldFocusedIn(pagerRef.current)) setTyping(false);
+    }, TYPING_POLL_MS);
+    return () => clearInterval(t);
+  }, [typing]);
 
   const onScroll = () => {
     const el = pagerRef.current;

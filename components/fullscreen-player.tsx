@@ -784,9 +784,8 @@ export function FullscreenPlayer({
     const row = scrollRowRef.current;
     if (!box || !controls || !row) return;
     const apply = () => {
-      // With the IRC chat the cover keeps its class cap: the room under
-      // the controls belongs to the chat list (tabs layout), and in the
-      // phone pager the cover has a page of its own.
+      // With the IRC chat the cover keeps its class cap: in the phone
+      // pager it has a page of its own (`pagerLayout`).
       if (window.matchMedia('(min-width: 640px)').matches || showIrc) {
         box.style.maxWidth = '';
         return;
@@ -870,9 +869,10 @@ export function FullscreenPlayer({
   // no medium, so only the download record can say.
   const musicItem = isMusicItem(current);
   const isLive = episode.liveStatus === 'live';
-  // Live only: the pager's bar has no seek bar, so an item the listener joined
-  // on that has since ended keeps the tabs layout.
-  const pagerLayout = showIrc && isLive && !wide;
+  // Also after the show ends, for a listener who joined: the after-show chat
+  // is the busy part, and a swap back to the tabs would hand the messages 74px
+  // again. The PLAYER page then carries the seek bar (`seekBlock`).
+  const pagerLayout = showIrc && !wide;
   const resumeTo =
     savedPos && !isLive && savedPos.t - positionSec > RESUME_GAP_SEC ? savedPos.t : null;
   // A Nostr live stream's NIP-33 id is `<64-hex pubkey>:<dTag>`, carried as the
@@ -1152,16 +1152,13 @@ export function FullscreenPlayer({
         // fit and a vanishing cover helps no one. From sm: up
         // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
         // info column, so its height is not the constraint.
-        // WITH THE IRC CHAT, below sm: only. In the phone pager the cover
-        // has the PLAYER page to itself, under the strip and over the pinned
-        // bar: the reserve is 22rem (header 51px, strip 44, marks and bar
-        // ~80, a two-line title, the splits row and the gaps), and the page
-        // scrolls past that. An item joined on and since ended keeps the
-        // tabs layout, where the cover is 12.5rem — the Nostr stream's video
-        // height at 390px — so the chat list keeps room under it
-        // (docs/irc.md). From sm: up the chat is the right-hand pane and the
-        // cover is unchanged.
-        <div key="cover" ref={coverBoxRef} className={`w-full ${pagerLayout ? 'max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_22rem)))]' : showIrc ? 'max-w-[12.5rem]' : 'max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))]'} sm:max-w-lg lg:max-w-xl aspect-square`}>
+        // WITH THE IRC CHAT, below sm: (`pagerLayout`), the cover has the
+        // phone pager's PLAYER page to itself, under the strip and over the
+        // pinned bar: the reserve is 22rem (header 51px, strip 44, marks and
+        // bar ~80, a two-line title, the splits row and the gaps), and the
+        // page scrolls past that. From sm: up the chat is the right-hand
+        // pane and the cover is unchanged (docs/irc.md).
+        <div key="cover" ref={coverBoxRef} className={`w-full ${pagerLayout ? 'max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_22rem)))]' : 'max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))]'} sm:max-w-lg lg:max-w-xl aspect-square`}>
           {/* Whatever is playing at this second, via `nowPlayingArt`: the
               LIVE BLOCK's art first — on a Split Kit show that's the cover
               of the record actually playing, and it's the one thing on
@@ -1248,15 +1245,40 @@ export function FullscreenPlayer({
       <VideoToggle className="inline-flex" />
     </>
   );
-  // The title, the show, the author line and a playback error.
-  const titleBlock = (
+  // The seek bar, its times and the chapter label: everything but a live item.
+  const seekBlock = (
+    <div className="flex flex-col gap-1.5">
+      <div className="relative flex items-center">
+        <ChapterTicks chapters={chapters} duration={duration} />
+        <ChapterHoverTip chapters={chapters} duration={duration} />
+        <input
+          type="range"
+          className="seek block w-full relative"
+          min={0}
+          max={duration || 0}
+          value={positionSec}
+          onChange={(e) => seekTo(Number(e.target.value))}
+          aria-label="Seek"
+          aria-valuetext={fmt(positionSec)}
+        />
+      </div>
+      <div className="flex justify-between text-[11px] text-muted tabular-nums">
+        <span>{fmt(positionSec)}</span>
+        <span>{fmt(duration)}</span>
+      </div>
+      <ChapterLabel chapter={activeChapter} end={activeChapterEnd} className="text-xs" />
+    </div>
+  );
+  // The title, the show, the author line and, unless the caller shows it
+  // elsewhere (the phone pager's bar), a playback error.
+  const titleBlock = (withErr = true) => (
     <div>
       <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
       <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
       {authorLine(podcast.title, podcast.author) && (
         <p className="text-xs text-muted/70 mt-0.5">{authorLine(podcast.title, podcast.author)}</p>
       )}
-      {audioErr && (
+      {withErr && audioErr && (
         <p className="text-xs text-nostr mt-2 break-words">⚠ {audioErr}</p>
       )}
     </div>
@@ -1330,7 +1352,7 @@ export function FullscreenPlayer({
       body: (
         <div className="my-auto flex flex-col gap-4 px-4 py-3">
           <div className="flex flex-col items-center gap-4">{mediaBody}</div>
-          <div className="flex flex-col gap-3.5">{titleBlock}{valueBlock}</div>
+          <div className="flex flex-col gap-3.5">{titleBlock(false)}{!isLive && seekBlock}{valueBlock}</div>
         </div>
       ),
     },
@@ -1555,10 +1577,21 @@ export function FullscreenPlayer({
           initial="chat"
           pages={pagerPages}
           bar={
-            <div className="flex items-center gap-3">
-              <TransportControls size="lg" playOnly />
-              <LiveEdge variant="mini" className="flex-1 min-w-0" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
-              {boostButton('flex-none')}
+            <div className="flex flex-col gap-2">
+              {/* Here, not on the PLAYER page: the pager opens on CHAT, and a
+                  stream that died must say so on the page the listener is on. */}
+              {audioErr && <p className="text-xs text-nostr break-words">⚠ {audioErr}</p>}
+              <div className="flex items-center gap-3">
+                <TransportControls size="lg" playOnly />
+                {/* `flex-wrap`: ▶ TAP TO RESUME (129px) does not fit beside
+                    the LIVE badge between ▶ and BOOST at 393px, and two lines
+                    of it (~44px) still sit inside ▶'s 56px, so the bar keeps
+                    its height. */}
+                {isLive
+                  ? <LiveEdge variant="mini" className="flex-1 min-w-0 flex-wrap gap-y-1" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
+                  : <div className="flex-1" />}
+                {boostButton('flex-none')}
+              </div>
             </div>
           }
         />
@@ -1639,33 +1672,11 @@ export function FullscreenPlayer({
               panes sit side by side with their own heights, the cover competes
               with nothing, and the open layout is what the width is for. */}
           <div className={`flex-shrink-0 flex flex-col gap-3.5 ${showIrc ? 'sm:gap-3' : 'sm:gap-5'}`}>
-            {titleBlock}
+            {titleBlock()}
 
             {isLive ? (
               <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
-            ) : (
-              <div className="flex flex-col gap-1.5">
-                <div className="relative flex items-center">
-                  <ChapterTicks chapters={chapters} duration={duration} />
-                  <ChapterHoverTip chapters={chapters} duration={duration} />
-                  <input
-                    type="range"
-                    className="seek block w-full relative"
-                    min={0}
-                    max={duration || 0}
-                    value={positionSec}
-                    onChange={(e) => seekTo(Number(e.target.value))}
-                    aria-label="Seek"
-                    aria-valuetext={fmt(positionSec)}
-                  />
-                </div>
-                <div className="flex justify-between text-[11px] text-muted tabular-nums">
-                  <span>{fmt(positionSec)}</span>
-                  <span>{fmt(duration)}</span>
-                </div>
-                <ChapterLabel chapter={activeChapter} end={activeChapterEnd} className="text-xs" />
-              </div>
-            )}
+            ) : seekBlock}
 
             <div className="flex flex-col gap-2">
               {/* `flex-wrap` + `basis-full sm:basis-auto` on BOOST, because the

@@ -43,7 +43,7 @@ flick … while still playing."
 
 ## Design
 
-- **Only below `sm:` and only with the IRC chat** (`showIrc`). A media query
+- **Only below `sm:` and only with the IRC chat** (`showIrc`: live, or joined and since ended). A media query
   (`(min-width: 640px)`) picks the tree; from `sm:` up the existing tree
   renders, unchanged.
 - **`<IrcChat>` lives in a reverse portal** (`react-reverse-portal`, already
