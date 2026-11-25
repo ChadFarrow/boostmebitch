@@ -192,6 +192,16 @@ It shows beside an RSS live item from the opt-in list, while the item is live
 or after the listener joined on it (`showIrc` in `<FullscreenPlayer>`; layout
 in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
 
+**Not on a 24/7 replay stream.** Its live item never ends and nobody is on air,
+so the panel would offer a chat with nobody to talk to, all day, every day.
+Chad, 2026-11-25: "thats a 24/7 replay stream so dont show a chat there".
+Lightning Thrashes (`#SirLibre`) left the list that day; it has 11 shows. The
+gateway's own lists (thelounge-candr) drop a channel only AFTER the page change
+is on beta: a gateway that goes first leaves a beta page offering a chat that
+its lock refuses (477). A hold a device saved for the channel is never read,
+because only a mounted panel reads `bmb:irc_hold:<channel>`, and `prune` drops
+it after 6 h (`e2e:irc` seeds one and checks that no socket opens).
+
 - **Type a nick and you are in.** No account. The nick is the only thing
   stored (`storage.ircNick`, per npub like `bmb:sender_name`); the rows live in
   component state and go with it. **At most 17 characters** (`MAX_NICK_LENGTH`):

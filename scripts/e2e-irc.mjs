@@ -382,7 +382,10 @@ async function holdLiveHalf() {
 // ── 2. The panel in the browser ─────────────────────────────────────────────
 const GATEWAY_PORT = 6790;
 const CANDR_GUID = '7c6f7875-2b73-491e-b32c-e2c8d6e91d53';
-const OTHER_GUID = 'b0a40000-0000-4000-8000-0000000000aa';
+// The show that is not on the list is Lightning Thrashes, by its real guid. It
+// was on the list until 2026-11-25, when Chad took it off: "thats a 24/7 replay
+// stream so dont show a chat there" (lib/irc/shows.ts).
+const OTHER_GUID = 'd5e73072-64a2-56a3-9dcd-4a00bfe561d5';
 const MMO_GUID = '31740861-81e8-5dda-8801-a2abb2634271';
 const MMO_TITLE = 'MMO Live Every Tuesday Night @ 5pm';
 const NSEC = `nsec1${'q'.repeat(58)}`;
@@ -587,9 +590,21 @@ async function browserHalf(APP) {
     await send('Page.navigate', { url: `${APP}/live` });
     await until(`document.body.innerText.includes('E2E Other Show')`, 30000);
 
-    c.ok('PLAY on a show that is not on the list', await playCard('E2E Other Show'));
+    // A hold saved for #SirLibre while Lightning Thrashes was on the list. Its
+    // live item never ends, so nothing on the page would ever clear it: the
+    // panel must not mount, so the key is never read and opens no socket.
+    const sirlibreHold = { channel: '#SirLibre', nick: 'e2eold', token: 'e2e-sirlibre-hold-token-0001', holdS: 300, seq: 0, at: Date.now(), phase: 'joined', rows: [] };
+    await js(`localStorage.setItem('bmb:irc_hold:#sirlibre', ${JSON.stringify(JSON.stringify(sirlibreHold))})`);
+    const connsBefore = fake.connections;
+    const resumesBefore = fake.resumes.length;
+    c.ok('PLAY on a show that is not on the list (Lightning Thrashes, a 24/7 replay)', await playCard('E2E Other Show'));
     await openPlayer('E2E Other Show live now');
+    c.ok('…its player is open, the title on screen', await js(`[...document.querySelectorAll('h1')].some((h) => h.textContent.includes('E2E Other Show live now') && h.getBoundingClientRect().width > 0)`));
+    await wait(1500);
     c.ok('…its player has no IRC chat', !(await js(`!!${q('[data-irc-chat]')}`)));
+    c.equal('…a hold saved for #SirLibre opens no socket and sends no HOLD RESUME',
+      [fake.connections - connsBefore, fake.resumes.length - resumesBefore], [0, 0]);
+    await js(`localStorage.removeItem('bmb:irc_hold:#sirlibre')`);
     await closePlayer();
 
     c.ok('PLAY on Chad and Reeds (on the list)', await playCard('E2E Chad Show'));
@@ -758,6 +773,21 @@ async function browserHalf(APP) {
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
     await send('Page.navigate', { url: `${APP}/live` });
     await until(`document.body.innerText.includes('E2E Chad Show')`, 30000);
+    // Lightning Thrashes on a phone: the plain player, no pager and no CHAT page.
+    await playCard('E2E Other Show');
+    await openPlayer('E2E Other Show live now');
+    await wait(1000);
+    const lt390 = await js(`JSON.stringify({
+      title: [...document.querySelectorAll('h1')].some((h) => h.textContent.includes('E2E Other Show live now') && h.getBoundingClientRect().width > 0),
+      pager: !!${q('[data-live-pager]')},
+      chat: !!${q('[data-irc-chat]')},
+      chatTab: [...document.querySelectorAll('[role=tab]')].some((t) => t.textContent.trim().toLowerCase() === 'chat'),
+      sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
+    })`).then(JSON.parse);
+    c.ok('Lightning Thrashes at 390: the player is open, the title on screen', lt390.title, JSON.stringify(lt390));
+    c.equal('…no phone pager, no CHAT page, no IRC chat', [lt390.pager, lt390.chatTab, lt390.chat], [false, false, false]);
+    c.equal('…no sideways overflow', lt390.sw, lt390.cw);
+    await closePlayer();
     await playCard('E2E Chad Show');
     await openPlayer('E2E Chad Show live now');
     c.equal('the phone pager opens on PLAYER, the art first', await pagerPage(), 'player');

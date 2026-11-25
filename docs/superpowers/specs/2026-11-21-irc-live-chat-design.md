@@ -83,6 +83,10 @@ they leave.
    and `#bowlafterbowl` and `+A` on `#voidzero`: none is `+R`, `+M`, `+m`, `+i` or
    `+k`, so a guest with no account can join and talk in all 12. A ban aimed at
    webchat hosts would not show there; the manual test catches it.
+
+   **2026-11-25:** Lightning Thrashes (`#SirLibre`) is off the list, so it has 11
+   shows. It is a 24/7 replay stream (Chad: *"thats a 24/7 replay stream so dont
+   show a chat there"*). `lib/irc/shows.ts` is the current list (docs/irc.md).
 4. **Only beside a `<podcast:liveItem>` stream that is live** (*"this is meant to be
    a live chat. So if they don't use the lit tag, then we don't know when they're
    live"*). So Nick the Rat Radio (`#SewerChat`, no live item) is not on the list,

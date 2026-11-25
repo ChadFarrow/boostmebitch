@@ -12,6 +12,10 @@
  * the show is live ("this is meant to be a live chat"). That is why Nick the
  * Rat Radio (`#SewerChat`) is not here.
  *
+ * And not a 24/7 replay stream, whose live item never ends: there is nobody on
+ * air to chat with. Chad, 2026-11-25: "thats a 24/7 replay stream so dont show
+ * a chat there". That is why Lightning Thrashes (`#SirLibre`) left the list.
+ *
  * Keyed by the feed's `podcastGuid`, lower case. Every channel is on
  * `irc.zeronode.net`; a ZeroNode LIST showed each one on 2026-11-21, and none
  * needs an account to join or talk. A new show is one line here.
@@ -24,7 +28,6 @@ export const IRC_CHAT_SHOWS: Readonly<Record<string, { title: string; channel: s
   'e0ac9365-689c-5043-8804-15b9dfcc545a': { title: 'Behind the SchƎmƎs', channel: '#greenroom' },
   '31740861-81e8-5dda-8801-a2abb2634271': { title: 'MMO', channel: '#MMO' },
   '7c6f7875-2b73-491e-b32c-e2c8d6e91d53': { title: 'Chad and Reeds', channel: '#candr' },
-  'd5e73072-64a2-56a3-9dcd-4a00bfe561d5': { title: 'Lightning Thrashes', channel: '#SirLibre' },
   'c1959795-28f1-502d-ad3e-70abf5a034a9': { title: 'the v4vmusic Show', channel: '#v4vmusicShow' },
   '45b899bb-cbef-57b5-ab14-04aaf49e3ac3': { title: "RevDoc's Revival", channel: '#VoidZero' },
   'c42a0900-c20e-59a2-a13b-c23b5c04e11f': { title: 'Hyper SpaceOut', channel: '#HyperSpaceOut' },
