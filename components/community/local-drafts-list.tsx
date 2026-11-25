@@ -1,6 +1,6 @@
 'use client';
 
-// "On this device" on /playlists: the playlists the player's "+ PLAYLIST" (and
+// "On this device", inside "Your playlists" on /playlists (`your-playlists.tsx`): the playlists the player's "+ PLAYLIST" (and
 // the maker) hold here and have not sent. Without it a draft started from the
 // player could be found again only by adding another song to it. Each row opens
 // the maker on that draft, where PUBLISH or SAVE sends it.
@@ -28,7 +28,8 @@ function hrefFor(r: DraftRow): string {
   return r.slot === 'default' ? '/playlists/make' : `/playlists/make?draft=${encodeURIComponent(r.slot)}`;
 }
 
-export function LocalDraftsList() {
+/** `onRows`: how many drafts are listed, so the section can tell "nothing yet". */
+export function LocalDraftsList({ onRows }: { onRows?: (n: number) => void } = {}) {
   const identity = useApp((s) => s.identity);
   const npub = identity?.npub ?? null;
   const guest = useGuestKey();
@@ -53,20 +54,20 @@ export function LocalDraftsList() {
       }
     }
     setRows(out);
-  }, [npub, guest, reload]);
+    onRows?.(out.length);
+  }, [npub, guest, reload, onRows]);
 
   if (!rows.length) return null;
 
   const keyOf = (r: DraftRow) => `${r.npub ?? ':guest'}:${r.slot}`;
 
   return (
-    <section className="mt-8" data-local-drafts>
-      <h2 className="font-display text-lg">On this device</h2>
-      <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted">
-        Playlists you started, and changes you have not saved. Only this device has them until you
-        open one and press PUBLISH or SAVE.
+    <div className="mt-6" data-local-drafts>
+      <h3 className="text-[11px] uppercase tracking-widest text-muted px-1">On this device</h3>
+      <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted px-1">
+        Not published yet. Only this device has these until you open one and press PUBLISH or SAVE.
       </p>
-      <ul className="mt-3 divide-y divide-bone/10">
+      <ul className="mt-2 divide-y divide-bone/10">
         {rows.map((r) => {
           const key = keyOf(r);
           return (
@@ -109,6 +110,6 @@ export function LocalDraftsList() {
           );
         })}
       </ul>
-    </section>
+    </div>
   );
 }
