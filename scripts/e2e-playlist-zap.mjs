@@ -166,7 +166,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       return play.apply(el, a);
     };
     HTMLMediaElement.prototype.pause = function (...a) { this.__justPlayed = false; return pause.apply(this, a); };
-    new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) { if (n.nodeName === 'CANVAS') window.__confetti++; if (n.nodeType === 1 && n.hasAttribute('data-zap-bolt')) window.__bolts++; } })
+    new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) { if (n.nodeName === 'CANVAS') window.__confetti++; if (n.nodeType === 1 && n.hasAttribute('data-zap-bolt')) { window.__bolts++; window.__boltMoves = (n.firstElementChild?.getAnimations?.() ?? []).some((a) => a.effect.getKeyframes().some((k) => k.transform)); } } })
       .observe(document, { childList: true, subtree: true });
     // The stub wallet. It pays nothing: it records the invoice and hands back a preimage.
     window.__paid = [];
@@ -255,6 +255,8 @@ if (OFF) {
 
 // ---- 1. signed in, the maker has a zap-capable address -----------------------
 console.log('--- 1. signed in: the tile, the dialog, and one stubbed zap (390 x 844) ---');
+// The bolt's motion depends on this, so pin it rather than inherit the Mac's setting.
+await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
 await setup({ as: viewer });
 t.ok('the hosted playlist opens', await open(A));
 // No reflow: the ZAP slot is in the row the moment SHARE is (Chad, 2026-11-25:
@@ -296,6 +298,7 @@ t.ok('Send names the amount', await js(`[...${zapDialog}.querySelectorAll('butto
 await js(`[...${zapDialog}.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Send 100 sats').click()`);
 t.ok('the dialog says it zapped', await waitFor(`/zapped 100 sats/i.test(${zapDialog}?.innerText ?? '')`, 15000), await js(`${zapDialog}?.innerText`));
 t.ok('...and the lightning bolt strikes', await waitFor(`window.__bolts === 1`, 5000), String(await js(`window.__bolts`)));
+t.equal('...and moves (no reduced motion here)', await js(`window.__boltMoves`), true);
 const boltStyle = await js(`(() => { const b = document.querySelector('[data-zap-bolt]'); if (!b) return null; const cs = getComputedStyle(b); return { pe: cs.pointerEvents, z: Number(cs.zIndex), w: Math.round(b.firstElementChild.getBoundingClientRect().width) }; })()`);
 t.ok('...it blocks no tap and stays under the status-bar strip (z 70)', boltStyle && boltStyle.pe === 'none' && boltStyle.z < 70, JSON.stringify(boltStyle));
 await wait(250); await shot('1-bolt');
@@ -406,6 +409,9 @@ callbacks.length = 0;
 const note = finalizeEvent({ kind: 1, created_at: now - 30, tags: [['t', 'boostagram'], ['amount', '100000']], content: 'e2e boost note for the note-card zap' }, maker.sk);
 relay.events.set(note.id, note);
 await setup({ as: viewer });
+// Under iOS Reduce Motion the bolt once never showed (Chad, 2026-11-25). This
+// zap runs with it on: the bolt must still show, standing still.
+await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
 await send('Page.navigate', { url: `${APP}/npub/${maker.npub}` });
 const ZAP_ACTION = `document.querySelector('article button[aria-label=Zap]')`;
 t.ok('the maker\'s boost note shows, with ⚡ zap', await waitFor(ZAP_ACTION, 45000));
@@ -416,8 +422,14 @@ t.ok('no playlist line on a note zap', !noteDialog.includes('For the playlist'),
 t.ok('the note zap\'s placeholder is unchanged', await js(`${zapDialog}.querySelector('input[type=text]').placeholder === 'great post'`));
 await js(`[...${zapDialog}.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Send 100 sats').click()`);
 t.ok('the note zap says it zapped', await waitFor(`/zapped 100 sats/i.test(${zapDialog}?.innerText ?? '')`, 15000), await js(`${zapDialog}?.innerText`));
-t.ok('...with the bolt', await waitFor(`window.__bolts === 1`, 5000));
+t.ok('...with the bolt, under reduced motion too', await waitFor(`window.__bolts === 1`, 5000));
+t.equal('...by opacity alone: no scale, no turn', await js(`window.__boltMoves`), false);
+await wait(450); // past the 0.3 s fade-in
+await shot('6-still-bolt');
+await wait(350);
+t.ok('...still on screen at 1 s, with the dialog open and its ✓', await js(`!!document.querySelector('[data-zap-bolt]') && !!document.querySelector('[data-zap-done]')`));
 t.equal('...and one ping', await js(`window.__pings`), 1);
+await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
 t.ok('the note zap closes', await waitFor(`!${zapDialog}`, 8000), await js(`${zapDialog}?.innerText`));
 t.equal('one invoice request', callbacks.length, 1);
 const nz = JSON.parse(new URL(callbacks[0] ?? `https://${STUB}/none`).searchParams.get('nostr') ?? '{}');

@@ -295,25 +295,46 @@ export function fireConfetti(): void {
  * `pointer-events: none`, so it blocks nothing. z-index 65: above
  * `<ModalShell>`'s 60, below the iOS status-bar strip's 70, the app's ceiling.
  * The path is `<BoltIcon>`'s (`components/icons.tsx`), copied because `lib/`
- * does not import from `components/`. Skipped under reduced motion, as the
- * confetti is: the dialog's "zapped" and the ping already say the zap went.
+ * does not import from `components/`.
+ *
+ * **Under reduced motion it is STILL shown, by opacity alone** — no scale, no
+ * flicker, no movement: it fades in over 0.3 s, holds 1.5 s, fades out over
+ * 0.4 s (Chad, 2026-11-25: "I can't have Reduced motion off on my phone").
+ * Returns how long it stays on screen, so the dialog stays open under it. Skipping it as the
+ * confetti is skipped meant an iPhone with Reduce Motion on saw no confirmation
+ * at all (Chad, 2026-11-25: "I didn't see the Lightning bolt animation", then
+ * saw it once he turned the setting off). The confetti is decoration over a
+ * boost's ✓; the bolt is the zap's confirmation, so it changes form, not stays
+ * away.
  */
-export function fireZapBolt(): void {
-  if (typeof document === 'undefined' || prefersReducedMotion()) return;
+export function fireZapBolt(): number {
+  if (typeof document === 'undefined') return 0;
+  const still = prefersReducedMotion();
   const wrap = document.createElement('div');
   wrap.setAttribute('aria-hidden', 'true');
   wrap.setAttribute('data-zap-bolt', '');
   wrap.style.cssText =
-    'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:65';
+    // `padding-bottom` lifts it above the dialog's button, so the bolt never
+    // covers "✓ zapped" (it hid the D at 390 x 844).
+    'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding-bottom:24vh;pointer-events:none;z-index:65';
   wrap.innerHTML =
     '<svg viewBox="0 0 24 24" style="width:min(55vw,240px);height:min(55vw,240px);fill:rgb(var(--bolt));' +
     'filter:drop-shadow(0 0 16px rgb(var(--bolt) / .9)) drop-shadow(0 0 48px rgb(var(--bolt) / .55))">' +
     '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg>';
   document.body.appendChild(wrap);
   const remove = () => wrap.remove();
-  setTimeout(remove, 2000);
+  setTimeout(remove, 3000);
   const svg = wrap.firstElementChild;
-  if (!svg || typeof (svg as Element).animate !== 'function') return;
+  if (!svg || typeof (svg as Element).animate !== 'function') return 2000;
+  if (still) {
+    // Opacity only: a fade is not motion.
+    const fade = (svg as Element).animate(
+      [{ opacity: 0 }, { opacity: 1, offset: 300 / 2200 }, { opacity: 1, offset: 1800 / 2200 }, { opacity: 0 }],
+      { duration: 2200, easing: 'linear' },
+    );
+    fade.onfinish = remove;
+    return 2200;
+  }
   const strike = (svg as Element).animate(
     [
       { transform: 'scale(0.3) rotate(-10deg)', opacity: 0 },
@@ -326,6 +347,7 @@ export function fireZapBolt(): void {
     { duration: 1100, easing: 'ease-out' },
   );
   strike.onfinish = remove;
+  return 1100;
 }
 
 let boostAudio: HTMLAudioElement | null = null;

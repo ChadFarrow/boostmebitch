@@ -106,11 +106,13 @@ export function ZapDialog({
       // Never on a failure, and never on an unanswered wallet: a chime over a
       // payment that may not have happened is the same false claim as a ✗ on
       // one that may have.
-      fireZapBolt();
+      const shown = fireZapBolt();
       playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
       setState('done');
-      // As long as a boost's: the bolt and "zapped" need a moment to register.
-      setTimeout(onClose, 1500);
+      // Open while the bolt is on screen, and never shorter than a boost's
+      // 1.5 s: under reduced motion the bolt fades for 2.2 s, so the dialog
+      // and its "✓ zapped" outlast it.
+      setTimeout(onClose, Math.max(1500, shown + 400));
     } catch (e) {
       // `sendZap` keeps a reply timeout as `NwcIndeterminateError`: the request
       // was published and the wallet may have paid. A plain failure re-enables
@@ -189,8 +191,9 @@ export function ZapDialog({
               onClick={onZap}
               disabled={state === 'busy' || state === 'done' || unanswered || amount < MIN_BOOST_SATS}
               className="btn-bolt w-full"
+              data-zap-done={state === 'done' ? '' : undefined}
             >
-              {state === 'busy' ? 'paying…' : state === 'done' ? `zapped ${amount} sats ⚡` : unanswered ? 'check your wallet' : `Send ${amount} sats`}
+              {state === 'busy' ? 'paying…' : state === 'done' ? `✓ zapped ${amount} sats ⚡` : unanswered ? 'check your wallet' : `Send ${amount} sats`}
             </button>
             {err && <p className="text-xs text-red-400 mt-2">{err}</p>}
             {unanswered && (
