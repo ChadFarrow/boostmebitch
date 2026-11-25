@@ -5,7 +5,7 @@ import { COMMUNITY_PLAYLISTS_ON } from '@/lib/curated-playlists';
 import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
 import { requestPlaylistArchiveAfter } from '@/lib/community/archive-notify';
 import {
-  validatePlaylistDraft, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, type DraftProblem, type ArtRefusal, type PlaylistSong,
+  cleanMakerLn, validatePlaylistDraft, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, type DraftProblem, type ArtRefusal, type PlaylistSong,
 } from '@/lib/community/rules';
 import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { cleanText } from '@/lib/community/clean-text';
@@ -13,7 +13,7 @@ import { checkArt, verifySongs } from '@/lib/community/checks';
 import { adminPubkeys } from '@/lib/community/auth';
 import { authenticate, NOT_FOUND, NOT_CONFIGURED, BANNED, UUID_RE } from '@/lib/community/http';
 import {
-  communityStoreConfigured, deletePlaylist, getPlaylist, isBanned, updatePlaylist,
+  communityStoreConfigured, deletePlaylist, getPlaylist, isBanned, setMakerLn, updatePlaylist,
 } from '@/lib/community/store';
 
 export const runtime = 'nodejs';
@@ -113,6 +113,9 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (out === 'gone') return gone();
     if (out === 'banned') return BANNED();
     if (out === 'stale') return NextResponse.json({ error: 'changed elsewhere' }, { status: 409 });
+    // The ZAP tile's hint (rules.ts, `cleanMakerLn`): absent leaves it as it was.
+    const makerLn = cleanMakerLn((raw as { makerLn?: unknown }).makerLn, textHoldsSecret);
+    if (makerLn !== undefined) await setMakerLn(id, makerLn);
     // `publish`: a SAVE announces the feed again, at most once in 10 minutes
     // (`piNoticeAllowed`), so a playlist made before the switch is announced too.
     notifyPodcastIndexAfter(id, 'publish');

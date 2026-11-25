@@ -46,6 +46,9 @@ create index if not exists community_playlists_pi_first_idx
 -- The known-live list (lib/live-feeds.ts, docs/feeds.md "Known live shows").
 -- The first 15-minute check run makes these itself (LIVE_FEEDS_SCHEMA, the same
 -- text); this copy is for a manual run. The page reads no row until they exist.
+-- The maker's Lightning address, the playlist ZAP tile's hint (lib/community/store.ts,
+-- setMakerLn). Not in COLS: without it every feed and SAVE still works.
+alter table community_playlists add column if not exists maker_ln text;
 create table if not exists live_feeds (
   feed_id bigint primary key,
   url text not null,

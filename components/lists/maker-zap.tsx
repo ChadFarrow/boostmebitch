@@ -86,13 +86,26 @@ export function MakerZap({ podcast, maker }: { podcast: Podcast; maker: FeedNpub
     let live = true;
     const cached = hintOf(storage.profile.get(maker.pubkey));
     setHint(cached ? { pubkey: maker.pubkey, h: cached } : null);
+    // The hint stored with the playlist on PUBLISH or SAVE (`maker_ln`), for a
+    // first visit, before any relay answers. Only for the SAME owner the feed
+    // names, and only "zappable": the payee is still the settled read's.
+    const guid = podcast.podcastGuid;
+    if (guid) {
+      void fetch(`/api/community-playlists/maker-hint?guid=${encodeURIComponent(guid)}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((b: { owner?: unknown; zappable?: unknown } | null) => {
+          if (!live || !b || b.owner !== maker.pubkey || b.zappable !== true) return;
+          setHint((prev) => (prev?.pubkey === maker.pubkey && prev.h.zappable ? prev : { pubkey: maker.pubkey, h: { zappable: true } }));
+        })
+        .catch(() => { /* a hint only */ });
+    }
     void readMaker(maker.pubkey, (h) => {
       // A cached "zappable" is not taken back by a first answer: the settled
       // read decides that. Only a hint that lights the tile is kept early.
       if (live && h.zappable) setHint({ pubkey: maker.pubkey, h });
     }).then((r) => { if (live) setRead({ pubkey: maker.pubkey, r }); });
     return () => { live = false; };
-  }, [maker.pubkey]);
+  }, [maker.pubkey, podcast.podcastGuid]);
 
   const cur: MakerRead = read?.pubkey === maker.pubkey ? read.r : { state: 'reading' };
 

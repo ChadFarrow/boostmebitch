@@ -238,6 +238,49 @@ export async function listBans(): Promise<{ pubkey: string; bannedAt: string; ba
 // deploy that reaches a database without them keeps every feed working, and only the
 // notices stop (fail closed) until `npm run community:schema` runs.
 
+// `maker_ln`: the maker's Lightning address, the playlist ZAP tile's HINT (rules.ts,
+// `cleanMakerLn`). NOT in COLS either, for the same reason as the pi_* columns: a
+// deploy that reaches a database without it keeps every feed, list and SAVE working,
+// and only the hint is missing until `npm run community:schema` runs.
+
+/** Store (a string) or clear (null) the maker's Lightning address. False: no column. */
+export async function setMakerLn(id: string, makerLn: string | null): Promise<boolean> {
+  try {
+    await db().query(
+      'update community_playlists set maker_ln = $2 where id = $1 and maker_ln is distinct from $2',
+      [id, makerLn],
+    );
+    return true;
+  } catch (e) {
+    if (isMissingColumn(e)) {
+      console.warn('[community] no maker_ln column: run `npm run community:schema`; the ZAP hint is not stored');
+      return false;
+    }
+    throw e;
+  }
+}
+
+/**
+ * Who owns the live playlist with this guid, and whether a Lightning address is stored
+ * for them. `null`: no such live playlist. `zappable: null`: no column (unknown).
+ */
+export async function readMakerHint(
+  podcastGuid: string,
+): Promise<{ owner: string; zappable: boolean | null } | null> {
+  try {
+    const r = await readQuery<{ owner_pubkey: string; maker_ln: string | null }>(
+      'select owner_pubkey, maker_ln from community_playlists where podcast_guid = $1 and deleted_at is null',
+      [podcastGuid],
+    );
+    const row = r.rows[0];
+    return row ? { owner: row.owner_pubkey, zappable: !!row.maker_ln } : null;
+  } catch (e) {
+    if (!isMissingColumn(e)) throw e;
+    const found = await findPlaylistByGuid(podcastGuid);
+    return found ? { owner: found.ownerPubkey, zappable: null } : null;
+  }
+}
+
 /** Postgres "undefined_column": the schema with the pi_* columns was not applied. */
 export function isMissingColumn(e: unknown): boolean {
   return !!e && typeof e === 'object' && (e as { code?: unknown }).code === '42703';

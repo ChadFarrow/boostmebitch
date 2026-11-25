@@ -86,6 +86,8 @@ const UNREAD = stubPlaylist(hosted(), 'Relays Down', [maker]);
 // ---- stub LNURL ----------------------------------------------------------------
 const callbacks = []; // every invoice request the page made
 const lnurlProxyHits = [];
+/** guid -> what /api/community-playlists/maker-hint answers (absent: 404). */
+const makerHints = new Map();
 const PAYEE_ZAPPER = getPublicKey(generateSecretKey());
 const payRequest = (name, allowsNostr) => ({
   tag: 'payRequest', callback: `https://${STUB}/cb/${name}`, minSendable: 1000, maxSendable: 100_000_000_000,
@@ -103,6 +105,8 @@ await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, devi
 await send('Fetch.enable', { patterns: [
   { urlPattern: '*/api/playlist?*', requestStage: 'Request' },
   { urlPattern: '*/api/lnurl*', requestStage: 'Request' },
+  // The stored hint has no database here: each test sets what the route answers.
+  { urlPattern: '*/api/community-playlists/maker-hint*', requestStage: 'Request' },
   { urlPattern: `https://${STUB}/*`, requestStage: 'Request' },
 ] });
 page.on(async (m) => {
@@ -119,6 +123,9 @@ page.on(async (m) => {
       const sats = Number(u.searchParams.get('amount')) / 1000;
       body = { pr: `lnbc${sats * 10}n1pe2estubinvoice`, routes: [] };
     } else { status = 404; body = { status: 'ERROR', reason: 'no such stub' }; }
+  } else if (u.pathname === '/api/community-playlists/maker-hint') {
+    const h = makerHints.get(u.searchParams.get('guid'));
+    if (h) body = h; else { status = 404; body = { error: 'not found' }; }
   } else if (u.pathname.startsWith('/api/lnurl')) {
     lnurlProxyHits.push(request.url);
     status = 502; body = { error: 'blocked by e2e' };
@@ -476,6 +483,28 @@ t.ok('...it zaps', await waitFor(`/zapped 100 sats/i.test(${zapDialog}?.innerTex
 const hz = JSON.parse(new URL(callbacks[0] ?? `https://${STUB}/none`).searchParams.get('nostr') ?? '{}');
 t.equal('...to the address the RELAYS hold, never the cached one', (hz.tags ?? []).filter((x) => x[0] === 'lnurl').map((x) => x[1]), [lnurl]);
 await waitFor(`!${zapDialog}`, 8000);
+
+// The hint STORED with the playlist (maker_ln), for a first visit: no cache, and
+// relays that never answer, so only the stored hint can light the tile.
+callbacks.length = 0;
+makerHints.set(A.guid, { owner: maker.pk, zappable: true });
+await setup({ as: viewer, relayTarget: SILENT });
+t.ok('a stored hint, no cache, silent relays: the playlist opens', await open(A));
+const opened2 = Date.now();
+t.ok('...the stored hint lights ZAP before any relay answers', await waitFor(TILE, 3000) && Date.now() - opened2 < 3000, `${Date.now() - opened2} ms`);
+t.ok('...a press shows "reading", no Send', (await clickTile()) && await waitFor(`!!${zapDialog}?.querySelector('[data-zap-payee-pending]')`, 5000)
+  && await js(`![...${zapDialog}.querySelectorAll('button')].some((b) => /^Send /.test(b.textContent.trim()))`));
+await closeDialog();
+t.equal('...and requests no invoice', callbacks.length, 0);
+makerHints.set(A.guid, { owner: noAddr.pk, zappable: true });
+await setup({ as: viewer, relayTarget: SILENT });
+t.ok('a stored hint for ANOTHER owner: the playlist opens', await open(A));
+t.ok('...and lights nothing early (the held place stays)', (await wait(2000), await js(`!${TILE} && !!${PENDING}`)));
+makerHints.set(A.guid, { owner: maker.pk, zappable: null });
+await setup({ as: viewer, relayTarget: SILENT });
+t.ok('a database with no maker_ln column (zappable: null): opens', await open(A));
+t.ok('...and lights nothing early', (await wait(2000), await js(`!${TILE} && !!${PENDING}`)));
+makerHints.delete(A.guid);
 
 await setup({ as: viewer });
 await cacheProfile(noAddr, { name: 'noaddr', lud16: `old@${STUB}` });

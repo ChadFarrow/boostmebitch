@@ -11,7 +11,7 @@ import { whyNotPlayable, type SongKnown } from './song-check';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
 import { cleanText } from '@/lib/community/clean-text';
 import {
-  ART_MIN_PX, MAX_TITLE_LEN, MAX_OWNER_NAME_LEN, artUploadServers, MIN_SONGS, validatePlaylistDraft,
+  ART_MIN_PX, MAX_TITLE_LEN, MAX_OWNER_NAME_LEN, artUploadServers, makerLnOf, MIN_SONGS, validatePlaylistDraft,
   type ArtRefusal, type CommunityPlaylistSummary, type DraftProblem, type PlaylistDraft, type PlaylistSong,
 } from '@/lib/community/rules';
 import {
@@ -468,6 +468,9 @@ export function PlaylistMaker() {
       const so = kept ? { signer: guestSigner satisfies CommunitySigner } : undefined;
       const ownerPubkey = kept?.pubkey ?? pubkey;
       if (!ownerPubkey) return;
+      // The ZAP tile's hint: this account's own Lightning address, from the profile
+      // already loaded. A guest key has no profile, so it says nothing.
+      const makerLn = kept ? undefined : makerLnOf(identity?.profile);
       let res: Response;
       if (editingId) {
         // An edit never POSTs. A missing `expectedUpdatedAt` is read from the server first.
@@ -477,9 +480,9 @@ export function PlaylistMaker() {
           if (!expected) { setNote('We could not read the playlist. Try again.'); return; }
           setExpectedUpdatedAt(expected);
         }
-        res = await savePlaylist(editingId, v.draft, expected, so);
+        res = await savePlaylist(editingId, v.draft, expected, so, makerLn);
       } else {
-        res = await publishPlaylist(v.draft, so);
+        res = await publishPlaylist(v.draft, so, makerLn);
       }
       const body = await res.json().catch(() => null) as
         { id?: string; feedUrl?: string; error?: string; problems?: Refusal[]; playlist?: { id: string; updatedAt: string } } | null;

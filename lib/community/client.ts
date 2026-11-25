@@ -111,11 +111,15 @@ export async function signedFetch(
   });
 }
 
-export const publishPlaylist = (d: PlaylistDraft, o?: SignOptions) =>
-  signedFetch(PLAYLISTS_PATH, 'POST', { draft: d }, o);
+// `makerLn`: the maker's own Lightning address (`makerLnOf`), stored as the ZAP
+// tile's hint. `undefined` is left out of the body, so the server keeps what it has.
+export const publishPlaylist = (d: PlaylistDraft, o?: SignOptions, makerLn?: string | null) =>
+  signedFetch(PLAYLISTS_PATH, 'POST', { draft: d, ...(makerLn === undefined ? {} : { makerLn }) }, o);
 
-export const savePlaylist = (id: string, d: PlaylistDraft, expectedUpdatedAt: string, o?: SignOptions) =>
-  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'PUT', { draft: d, expectedUpdatedAt }, o);
+export const savePlaylist = (
+  id: string, d: PlaylistDraft, expectedUpdatedAt: string, o?: SignOptions, makerLn?: string | null,
+) =>
+  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'PUT', { draft: d, expectedUpdatedAt, ...(makerLn === undefined ? {} : { makerLn }) }, o);
 
 export const deleteOwnPlaylist = (id: string, o?: SignOptions) =>
   signedFetch(`${PLAYLISTS_PATH}/${id}`, 'DELETE', undefined, o);
