@@ -13,13 +13,19 @@
 import dynamic from 'next/dynamic';
 import type { FeedNpub, Podcast } from '@/lib/types';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
+import { ZapTilePending } from './zap-tile-pending';
 
 // DEFERRED in BYTES: this file is in `/`'s first load (the show header), and
 // only a playlist this site hosts needs the tile's hooks, the guest-key read
 // and the profile read. Measured on a production build with the switch on:
 // `/` first-load JS 348 kB on main, 350 kB with `MakerZap` imported here
 // statically, 348 kB deferred.
-const MakerZap = dynamic(() => import('./maker-zap').then((m) => m.MakerZap), { ssr: false });
+// While its chunk loads, the tile's place is held (`<ZapTilePending>`), so the
+// row paints four tiles at once instead of reflowing when ZAP arrives.
+const MakerZap = dynamic(() => import('./maker-zap').then((m) => m.MakerZap), {
+  ssr: false,
+  loading: () => <ZapTilePending />,
+});
 
 /**
  * The maker of a playlist THIS SITE HOSTS, or null.

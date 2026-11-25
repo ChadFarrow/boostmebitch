@@ -13,6 +13,7 @@ import { noteBrandFor } from '@/lib/brand';
 import { COMMUNITY_FEED_ORIGIN } from '@/lib/curated-playlists';
 import { useGuestKey } from '@/lib/community/use-guest-key';
 import { BoltIcon } from '../icons';
+import { ZapTilePending } from './zap-tile-pending';
 
 // DEFERRED, as `<BoostModal>` is in episode-list.tsx: most readers never open
 // it, and it pulls in the payment rails.
@@ -64,6 +65,10 @@ export function MakerZap({ podcast, maker }: { podcast: Podcast; maker: FeedNpub
   // being read, so the tile waits rather than flashing on the maker's own page.
   const self = identity?.pubkey === maker.pubkey || (guest != null && guest.pubkey === maker.pubkey);
   const showTile = !self && guest !== undefined && (cur.state === 'found' || cur.state === 'unread');
+  // Until the reads answer, the tile's place is held (`<ZapTilePending>`), so
+  // the row does not reflow from three tiles to four under the reader's thumb.
+  // A signed-in maker is known at once and holds nothing.
+  const pending = !self && !showTile && (guest === undefined || cur.state === 'reading');
 
   async function onPress() {
     // A zap request is signed by the viewer's key. Signed out there is none, so
@@ -92,6 +97,7 @@ export function MakerZap({ podcast, maker }: { podcast: Podcast; maker: FeedNpub
 
   return (
     <>
+      {pending && <ZapTilePending />}
       {showTile && (
         <button
           type="button"

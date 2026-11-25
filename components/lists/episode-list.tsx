@@ -28,7 +28,7 @@ const BoostModal = dynamic(
   () => import('../boost-modal').then((m) => m.BoostModal),
   { ssr: false },
 );
-import { BoltIcon, CoinIcon } from '../icons';
+import { BoltIcon, CoinIcon, RssIcon } from '../icons';
 import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
@@ -133,6 +133,9 @@ function CopyRssButton({ podcast }: { podcast: Podcast }) {
       title="Copy this playlist's RSS feed URL"
       word="RSS"
       className="tile"
+      // The RSS mark, not the share mark: with the share mark this tile and
+      // SHARE beside it read as two SHARE buttons (Chad, 2026-11-25).
+      icon={<RssIcon className="w-4 h-4" />}
     />
   );
 }

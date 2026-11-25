@@ -199,6 +199,7 @@ const waitFor = async (expr, ms = 20000) => {
   return false;
 };
 const TILE = `document.querySelector('[data-playlist-zap]')`;
+const PENDING = `document.querySelector('[data-playlist-zap-pending]')`;
 const HEADER_READY = `[...document.querySelectorAll('main button, main a')].some((b) => b.classList.contains('tile') && /SHARE/.test(b.textContent))`;
 const DIALOG_NAMES = `[...document.querySelectorAll('[role=dialog]')].map((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent ?? '')`;
 const zapDialog = `[...document.querySelectorAll('[role=dialog]')].find((d) => (document.getElementById(d.getAttribute('aria-labelledby'))?.textContent ?? '').startsWith('Zap '))`;
@@ -229,7 +230,10 @@ const open = async (pl) => {
   return waitFor(HEADER_READY, 45000);
 };
 // "No tile" is only a claim once the read has had its time.
-const noTileAfterRead = async () => { await wait(6000); return js(`!${TILE}`); };
+// The pending tile goes too: a place held for a zap that cannot happen is a lie.
+const noTileAfterRead = async () => { await wait(6000); return js(`!${TILE} && !${PENDING}`); };
+// Where SHARE sits, to prove the row did not reflow when ZAP arrived.
+const shareRect = () => js(`(() => { const b = [...document.querySelectorAll('main .tile')].find((x) => /SHARE/.test(x.textContent)); if (!b) return null; const r = b.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width)]; })()`);
 const clickTile = () => js(`(() => { const b = ${TILE}; if (b) b.click(); return !!b; })()`);
 const setValue = (sel, v) => js(`(() => { const el = ${sel};
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(v)});
@@ -253,7 +257,19 @@ if (OFF) {
 console.log('--- 1. signed in: the tile, the dialog, and one stubbed zap (390 x 844) ---');
 await setup({ as: viewer });
 t.ok('the hosted playlist opens', await open(A));
+// No reflow: the ZAP slot is in the row the moment SHARE is (Chad, 2026-11-25:
+// the row painted three tiles and jumped to four "after a bit").
+t.ok('the ZAP slot is in the row as soon as SHARE paints', await js(`!!(${TILE} || ${PENDING})`));
+const shareFirst = await shareRect();
 t.ok('the ZAP tile appears once the maker\'s kind:0 is read', await waitFor(TILE, 20000));
+t.ok('...the held place is gone', await js(`!${PENDING}`));
+t.equal('...and SHARE did not move when it arrived', await shareRect(), shareFirst);
+// Two different marks: with one, SHARE and RSS read as two SHARE buttons.
+t.ok('the RSS tile has its own mark, not the share mark', await js(`(() => {
+  const tiles = [...document.querySelectorAll('main .tile')];
+  const share = tiles.find((x) => /SHARE/.test(x.textContent))?.querySelector('svg')?.innerHTML;
+  const rss = document.querySelector(${JSON.stringify(RSS_TILE)})?.querySelector('svg')?.innerHTML;
+  return !!share && !!rss && share !== rss; })()`));
 t.equal('the tile says ZAP', await js(`${TILE}.innerText.trim()`), 'ZAP');
 const row = await js(`(() => { const z = ${TILE}; const cells = [...z.parentElement.children].filter((c) => c.getBoundingClientRect().width > 0);
   return { labels: cells.map((c) => c.innerText.trim()), tops: [...new Set(cells.map((c) => Math.round(c.getBoundingClientRect().top)))], w: Math.round(z.getBoundingClientRect().width), h: Math.round(z.getBoundingClientRect().height) }; })()`);
@@ -368,7 +384,11 @@ console.log('--- 5. a degraded read: the tile stays, and the dialog does not cla
 callbacks.length = 0;
 await setup({ as: viewer, relayTarget: DEAD });
 t.ok('the playlist opens with every relay down', await open(UNREAD));
+// The slow read is where the held place shows: dimmed, disabled, in the row.
+t.ok('while the relays say nothing, the ZAP place is held, disabled', await js(`!!${PENDING} && ${PENDING}.disabled && !${TILE}`));
+const shareSlow = await shareRect();
 t.ok('the tile shows (an unread profile is not "no address")', await waitFor(TILE, 30000));
+t.equal('...and SHARE did not move when it arrived', await shareRect(), shareSlow);
 t.ok('a press reads again and opens the dialog', (await clickTile()) && await waitFor(zapDialog, 30000));
 const unreadText = await js(`${zapDialog}.innerText`);
 t.ok('the dialog says it could not read the profile', /Could not read the maker's Nostr profile/.test(unreadText), unreadText);
