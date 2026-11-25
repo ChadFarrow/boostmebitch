@@ -53,7 +53,7 @@ export {
 } from './clave';
 export { primalConnectUrl, PRIMAL_PLAY_URL } from './primal';
 
-export { fetchProfile, fetchRawProfile, publishProfile } from './profile';
+export { fetchProfile, fetchProfileDetailed, fetchRawProfile, publishProfile } from './profile';
 
 export {
   DEFAULT_RELAYS,

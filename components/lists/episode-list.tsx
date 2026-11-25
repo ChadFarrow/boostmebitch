@@ -21,6 +21,7 @@ import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
 import { FeedAddress } from './feed-address';
+import { PlaylistZapButton } from './playlist-zap';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
 // download match that condition. `.then((m) => m.BoostModal)` because it is a
@@ -783,6 +784,10 @@ export function EpisodeList({
             <FavHeart podcast={data.podcast} size="tile" />
             <ShareButton podcast={data.podcast} />
             <CopyRssButton podcast={data.podcast} />
+            {/* ⚡ ZAP the maker of a playlist this site hosts; nothing on any
+                other show (`playlistMaker`). Such a playlist has no value
+                block, so no BOOST above and no STREAM here: four tiles. */}
+            <PlaylistZapButton podcast={data.podcast} />
             <SupportButton podcast={data.podcast} />
             {/* `cloneElement` to restyle rather than a prop on
                 `useStreamPanel`: the hook lives in streaming-settings.tsx, a

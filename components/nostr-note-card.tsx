@@ -1,7 +1,6 @@
 'use client';
-import { memo, useContext, useEffect, useId, useMemo, useState } from 'react';
+import { memo, useContext, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { ModalShell } from './modal-shell';
 import { useConfirm } from './confirm-dialog';
 import {
   isPodcastComment,
@@ -14,8 +13,7 @@ import {
 import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/interactions';
 import { MessageInput } from './message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
-import { sendZap, NwcIndeterminateError } from '@/lib/v4v/zap';
-import { DefaultAmountControl, MIN_BOOST_SATS, readAmountDefault } from './boost-modal/amount-input';
+import { ZapDialog } from './zap-dialog';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
@@ -723,7 +721,14 @@ function NoteCardImpl({
 
         {zapOpen && identity && (
           <ZapDialog
-            note={note}
+            recipient={{
+              pubkey: note.pubkey,
+              npub: note.npub,
+              name: note.author?.display_name || note.author?.name,
+              lud16: note.author?.lud16,
+              lud06: note.author?.lud06,
+            }}
+            eventId={note.id}
             identity={identity}
             onClose={() => setZapOpen(false)}
           />
@@ -750,139 +755,3 @@ function NoteCardImpl({
  * mutated in place (see useViewerReposts), or memoized cards won't update.
  */
 export const NoteCard = memo(NoteCardImpl);
-
-function ZapDialog({
-  note,
-  identity,
-  onClose,
-}: {
-  note: DiscoveredNote;
-  identity: NonNullable<ReturnType<typeof useApp.getState>['identity']>;
-  onClose: () => void;
-}) {
-  // The zap dialog's OWN saved default (SET AS DEFAULT, below the field),
-  // never a boost surface's. docs/money-boosts.md, "Default amounts".
-  const [amount, setAmount] = useState(() => readAmountDefault('zap') ?? 100);
-  const [comment, setComment] = useState('');
-  const [state, setState] = useState<ActionState>('idle');
-  const [err, setErr] = useState<string | null>(null);
-  // The wallet was asked and never answered: the zap MAY have been paid. Send
-  // stays disabled, because pressing it again is how the same sats go out twice.
-  const [unanswered, setUnanswered] = useState(false);
-  // NoteCard renders inside feeds, which sit in the layout's `relative z-0`
-  // content wrapper, so this dialog's z-index couldn't rise above the
-  // body-level mini-player (z-30) without escaping it. <ModalShell> owns the
-  // portal that does the escaping.
-
-  const lud = note.author?.lud16 || note.author?.lud06;
-  const canZap = !!lud;
-
-  async function onZap() {
-    if (!canZap || amount < MIN_BOOST_SATS) return;
-    setState('busy');
-    setErr(null);
-    try {
-      await sendZap({
-        recipientPubkey: note.pubkey,
-        recipientLud16: note.author?.lud16,
-        recipientLud06: note.author?.lud06,
-        amountSats: amount,
-        comment: comment.trim() || undefined,
-        eventId: note.id,
-        relays: resolvePublishRelays(identity),
-      });
-      setState('done');
-      setTimeout(onClose, 800);
-    } catch (e) {
-      // `sendZap` keeps a reply timeout as `NwcIndeterminateError`: the request
-      // was published and the wallet may have paid. A plain failure re-enables
-      // Send; this one must not (boost invariant 11, docs/money-boosts.md).
-      if (e instanceof NwcIndeterminateError) setUnanswered(true);
-      setErr(getErrorMessage(e, 'zap failed'));
-      setState('error');
-    }
-  }
-
-  const zapTarget = note.author?.display_name || note.author?.name || shortNpub(note.npub, 6);
-  // htmlFor/id — both fields were bare siblings, so neither had an accessible
-  // name, on the dialog that sends the zap.
-  const amountId = useId();
-  const commentId = useId();
-
-  return (
-    // Not dismissable while paying — this is a real Lightning send.
-    <ModalShell
-      onClose={onClose}
-      label={`Zap ${zapTarget}`}
-      className="p-4 max-w-sm w-full"
-      dismissable={state !== 'busy'}
-      closeButton
-    >
-        {/* `pr-8` keeps the title clear of the shell's × in the corner. */}
-        <header className="mb-3 pr-8">
-          <h3 className="font-display text-lg">⚡ Zap {zapTarget}</h3>
-        </header>
-        {!canZap && (
-          <p className="text-sm text-red-400">
-            This author has no Lightning address on their Nostr profile, so they can&apos;t receive zaps.
-          </p>
-        )}
-        {canZap && (
-          <>
-            <label htmlFor={amountId} className="block text-[11px] uppercase tracking-widest text-muted mb-1">amount (sats)</label>
-            <input
-              id={amountId}
-              type="number"
-              min={MIN_BOOST_SATS}
-              step={1}
-              value={amount}
-              // Math.round: the field accepts decimals, and a fractional sat is
-              // not a thing that can be sent. No clamp to the minimum here — that
-              // would rewrite the field mid-keystroke; the send button gates it.
-              onChange={(e) => setAmount(Math.max(0, Math.round(Number(e.target.value) || 0)))}
-              className="input w-full mb-2"
-            />
-            <div className="flex justify-end mb-3">
-              <DefaultAmountControl kind="zap" typed={amount} disabled={state === 'busy'} />
-            </div>
-            <div className="flex gap-2 mb-3">
-              {[100, 500, 1000, 5000].map((n) => (
-                <button
-                  key={n}
-                  onClick={() => setAmount(n)}
-                  className="btn-ghost text-xs flex-1"
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
-            <label htmlFor={commentId} className="block text-[11px] uppercase tracking-widest text-muted mb-1">comment (optional)</label>
-            <input
-              id={commentId}
-              type="text"
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="great post"
-              className="input w-full mb-3"
-            />
-            {amount < MIN_BOOST_SATS && (
-              <p className="text-[11px] text-muted mb-2">minimum {MIN_BOOST_SATS} sats</p>
-            )}
-            <button
-              onClick={onZap}
-              disabled={state === 'busy' || state === 'done' || unanswered || amount < MIN_BOOST_SATS}
-              className="btn-bolt w-full"
-            >
-              {state === 'busy' ? 'paying…' : state === 'done' ? 'zapped ⚡' : unanswered ? 'check your wallet' : `Send ${amount} sats`}
-            </button>
-            {err && <p className="text-xs text-red-400 mt-2">{err}</p>}
-            {unanswered && (
-              <p className="text-xs text-muted mt-2">
-                Your wallet did not answer, so this zap may have been paid. Check your wallet before you zap again.
-              </p>
-            )}
-          </>
-        )}
-    </ModalShell>
-  );
-}
