@@ -3,7 +3,8 @@
 import { getToken } from 'nostr-tools/nip98';
 import type { Event, EventTemplate } from 'nostr-tools/pure';
 import { activeNostr } from '@/lib/nostr/signer';
-import type { CommunityPlaylistSummary, PlaylistDraft, StoredPlaylist } from './rules';
+import { makerLnOf, type CommunityPlaylistSummary, type PlaylistDraft, type StoredPlaylist } from './rules';
+import { useApp } from '@/lib/store';
 
 export const PLAYLISTS_PATH = '/api/community-playlists';
 
@@ -111,15 +112,24 @@ export async function signedFetch(
   });
 }
 
-// `makerLn`: the maker's own Lightning address (`makerLnOf`), stored as the ZAP
-// tile's hint. `undefined` is left out of the body, so the server keeps what it has.
-export const publishPlaylist = (d: PlaylistDraft, o?: SignOptions, makerLn?: string | null) =>
-  signedFetch(PLAYLISTS_PATH, 'POST', { draft: d, ...(makerLn === undefined ? {} : { makerLn }) }, o);
+/**
+ * `makerLn`: the signing account's own Lightning address (`makerLnOf` of the profile
+ * already loaded), stored as the playlist ZAP tile's hint. A guest key (`o.signer`)
+ * has no profile, so it says nothing; `undefined` is left out of the body, and the
+ * server keeps what it has. Here, not in the maker page, so every PUBLISH and SAVE
+ * sends it.
+ */
+function makerLnBody(o?: SignOptions): { makerLn?: string | null } {
+  if (o?.signer) return {};
+  const makerLn = makerLnOf(useApp.getState().identity?.profile);
+  return makerLn === undefined ? {} : { makerLn };
+}
 
-export const savePlaylist = (
-  id: string, d: PlaylistDraft, expectedUpdatedAt: string, o?: SignOptions, makerLn?: string | null,
-) =>
-  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'PUT', { draft: d, expectedUpdatedAt, ...(makerLn === undefined ? {} : { makerLn }) }, o);
+export const publishPlaylist = (d: PlaylistDraft, o?: SignOptions) =>
+  signedFetch(PLAYLISTS_PATH, 'POST', { draft: d, ...makerLnBody(o) }, o);
+
+export const savePlaylist = (id: string, d: PlaylistDraft, expectedUpdatedAt: string, o?: SignOptions) =>
+  signedFetch(`${PLAYLISTS_PATH}/${id}`, 'PUT', { draft: d, expectedUpdatedAt, ...makerLnBody(o) }, o);
 
 export const deleteOwnPlaylist = (id: string, o?: SignOptions) =>
   signedFetch(`${PLAYLISTS_PATH}/${id}`, 'DELETE', undefined, o);
