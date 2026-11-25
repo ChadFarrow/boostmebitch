@@ -23,7 +23,7 @@ import type { Nip73Refs } from '@/lib/nostr/zap-request';
 import { sendZap, NwcIndeterminateError } from '@/lib/v4v/zap';
 import { DefaultAmountControl, MIN_BOOST_SATS, readAmountDefault } from './boost-modal/amount-input';
 import { useApp } from '@/lib/store';
-import { fireZapBolt, playBoostSound, primeBoostSound } from '@/lib/format';
+import { fireZapBolt, playBoostSound, preloadZapBolt, primeBoostSound } from '@/lib/format';
 import { getErrorMessage } from '@/lib/util';
 
 type ZapState = 'idle' | 'busy' | 'done' | 'error';
@@ -93,6 +93,7 @@ export function ZapDialog({
     // later (docs/money-boosts.md, "Success celebration"). `appIsPlaying` is
     // read live, never captured at render.
     primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
+    preloadZapBolt();
     setState('busy');
     setErr(null);
     try {

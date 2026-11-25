@@ -294,8 +294,12 @@ export function fireConfetti(): void {
  * animation ends, with a timer as a backstop (a hidden tab may never finish it).
  * `pointer-events: none`, so it blocks nothing. z-index 65: above
  * `<ModalShell>`'s 60, below the iOS status-bar strip's 70, the app's ceiling.
- * The path is `<BoltIcon>`'s (`components/icons.tsx`), copied because `lib/`
- * does not import from `components/`.
+ * The bolt is the LOGO's — the face bolt of this deploy's app icon, with its
+ * brows and smirk (bmb) or smile (Buddy), from `${BRAND.iconDir}/zap-bolt.svg`
+ * (`brand/src/*-zap.svg`; Chad, 2026-11-25: "could we use those lightning
+ * bolts?"). An `<img>`, so the file's own inked-edge filter renders as in the
+ * icon; `preloadZapBolt` fetches it when Send is pressed, so it is in the cache
+ * by the time a payment settles.
  *
  * **Under reduced motion it is STILL shown, by opacity alone** — no scale, no
  * flicker, no movement: it fades in over 0.3 s, holds 1.5 s, fades out over
@@ -307,6 +311,14 @@ export function fireConfetti(): void {
  * boost's ✓; the bolt is the zap's confirmation, so it changes form, not stays
  * away.
  */
+const ZAP_BOLT_SRC = `${BRAND.iconDir}/zap-bolt.svg`;
+
+/** Fetch the zap bolt's file ahead of a payment, so it shows the moment one settles. */
+export function preloadZapBolt(): void {
+  if (typeof Image === 'undefined') return;
+  try { new Image().src = ZAP_BOLT_SRC; } catch { /* decoration only */ }
+}
+
 export function fireZapBolt(): number {
   if (typeof document === 'undefined') return 0;
   const still = prefersReducedMotion();
@@ -317,25 +329,29 @@ export function fireZapBolt(): number {
     // `padding-bottom` lifts it above the dialog's button, so the bolt never
     // covers "✓ zapped" (it hid the D at 390 x 844).
     'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding-bottom:24vh;pointer-events:none;z-index:65';
-  wrap.innerHTML =
-    '<svg viewBox="0 0 24 24" style="width:min(55vw,240px);height:min(55vw,240px);fill:rgb(var(--bolt));' +
-    'filter:drop-shadow(0 0 16px rgb(var(--bolt) / .9)) drop-shadow(0 0 48px rgb(var(--bolt) / .55))">' +
-    '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg>';
+  const img = document.createElement('img');
+  img.src = ZAP_BOLT_SRC;
+  img.alt = '';
+  img.draggable = false;
+  // 336 x 424 viewBox: the height follows the width.
+  img.style.cssText =
+    'width:min(52vw,220px);height:auto;' +
+    'filter:drop-shadow(0 0 16px rgb(250 229 0 / .8)) drop-shadow(0 0 48px rgb(250 229 0 / .45))';
+  wrap.appendChild(img);
   document.body.appendChild(wrap);
   const remove = () => wrap.remove();
   setTimeout(remove, 3000);
-  const svg = wrap.firstElementChild;
-  if (!svg || typeof (svg as Element).animate !== 'function') return 2000;
+  if (typeof img.animate !== 'function') return 2000;
   if (still) {
     // Opacity only: a fade is not motion.
-    const fade = (svg as Element).animate(
+    const fade = img.animate(
       [{ opacity: 0 }, { opacity: 1, offset: 300 / 2200 }, { opacity: 1, offset: 1800 / 2200 }, { opacity: 0 }],
       { duration: 2200, easing: 'linear' },
     );
     fade.onfinish = remove;
     return 2200;
   }
-  const strike = (svg as Element).animate(
+  const strike = img.animate(
     [
       { transform: 'scale(0.3) rotate(-10deg)', opacity: 0 },
       { transform: 'scale(1.15) rotate(0deg)', opacity: 1, offset: 0.16 },

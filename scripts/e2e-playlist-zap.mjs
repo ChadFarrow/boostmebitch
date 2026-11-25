@@ -305,6 +305,7 @@ await js(`[...${zapDialog}.querySelectorAll('button')].find((b) => b.textContent
 t.ok('the dialog says it zapped', await waitFor(`/zapped 100 sats/i.test(${zapDialog}?.innerText ?? '')`, 15000), await js(`${zapDialog}?.innerText`));
 t.ok('...and the lightning bolt strikes', await waitFor(`window.__bolts === 1`, 5000), String(await js(`window.__bolts`)));
 t.equal('...and moves (no reduced motion here)', await js(`window.__boltMoves`), true);
+t.ok('...and it is the logo bolt, loaded', await js(`(() => { const i = document.querySelector('[data-zap-bolt] img'); return !!i && i.getAttribute('src') === '/icons/bmb/zap-bolt.svg' && i.complete && i.naturalWidth > 0; })()`), await js(`document.querySelector('[data-zap-bolt] img')?.getAttribute('src')`));
 const boltStyle = await js(`(() => { const b = document.querySelector('[data-zap-bolt]'); if (!b) return null; const cs = getComputedStyle(b); return { pe: cs.pointerEvents, z: Number(cs.zIndex), w: Math.round(b.firstElementChild.getBoundingClientRect().width) }; })()`);
 t.ok('...it blocks no tap and stays under the status-bar strip (z 70)', boltStyle && boltStyle.pe === 'none' && boltStyle.z < 70, JSON.stringify(boltStyle));
 await wait(250); await shot('1-bolt');
