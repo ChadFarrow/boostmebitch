@@ -37,9 +37,10 @@ flick … while still playing."
 
 - The computer layout (`sm:` and up) does not change.
 - Normal episodes, music and Nostr live streams do not change.
-- No change to the IRC session, the hold, or what the chat keeps (Chad's
-  second ask — stay in the channel while another show plays — waits for his
-  yes).
+- No change to the IRC session, the hold, or what the chat keeps. Chad's
+  second ask — stay in the channel while another show plays — he answered
+  no (2026-11-24): another show leaves the channel, and a JOIN on the way
+  back shows only new messages.
 
 ## Design
 
