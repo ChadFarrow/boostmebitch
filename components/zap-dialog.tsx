@@ -23,6 +23,7 @@ import type { Nip73Refs } from '@/lib/nostr/zap-request';
 import { sendZap, NwcIndeterminateError } from '@/lib/v4v/zap';
 import { DefaultAmountControl, MIN_BOOST_SATS, readAmountDefault } from './boost-modal/amount-input';
 import { useApp } from '@/lib/store';
+import { fireZapBolt, playBoostSound, primeBoostSound } from '@/lib/format';
 import { getErrorMessage } from '@/lib/util';
 
 type ZapState = 'idle' | 'busy' | 'done' | 'error';
@@ -80,6 +81,11 @@ export function ZapDialog({
 
   async function onZap() {
     if (!canZap || amount < MIN_BOOST_SATS) return;
+    // Before the first await, inside the tap: iOS plays the success ping only
+    // from an element unlocked during the gesture, and the ping comes seconds
+    // later (docs/money-boosts.md, "Success celebration"). `appIsPlaying` is
+    // read live, never captured at render.
+    primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
     setState('busy');
     setErr(null);
     try {
@@ -93,8 +99,18 @@ export function ZapDialog({
         refs,
         relays: resolvePublishRelays(identity),
       });
+      // `sendZap` resolved, so the wallet returned a preimage: the zap is paid.
+      // Celebrate ONCE and only here: a lightning bolt and the boost's ping
+      // (Chad, 2026-11-25: "some kinda confirmation would be nice", then "Let's
+      // just do like a Lightning bolt" — a bolt, not a boost's confetti).
+      // Never on a failure, and never on an unanswered wallet: a chime over a
+      // payment that may not have happened is the same false claim as a ✗ on
+      // one that may have.
+      fireZapBolt();
+      playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
       setState('done');
-      setTimeout(onClose, 800);
+      // As long as a boost's: the bolt and "zapped" need a moment to register.
+      setTimeout(onClose, 1500);
     } catch (e) {
       // `sendZap` keeps a reply timeout as `NwcIndeterminateError`: the request
       // was published and the wallet may have paid. A plain failure re-enables
@@ -174,7 +190,7 @@ export function ZapDialog({
               disabled={state === 'busy' || state === 'done' || unanswered || amount < MIN_BOOST_SATS}
               className="btn-bolt w-full"
             >
-              {state === 'busy' ? 'paying…' : state === 'done' ? 'zapped ⚡' : unanswered ? 'check your wallet' : `Send ${amount} sats`}
+              {state === 'busy' ? 'paying…' : state === 'done' ? `zapped ${amount} sats ⚡` : unanswered ? 'check your wallet' : `Send ${amount} sats`}
             </button>
             {err && <p className="text-xs text-red-400 mt-2">{err}</p>}
             {unanswered && (

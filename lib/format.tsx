@@ -283,6 +283,51 @@ export function fireConfetti(): void {
   }).catch(() => {}); // a missing/blocked confetti module is a silent no-op
 }
 
+/**
+ * The ZAP celebration: one big ⚡ strikes the middle of the screen, flickers and
+ * fades in about a second (Chad, 2026-11-25: "Let's just do like a Lightning
+ * bolt", in place of the confetti a boost throws). `<ZapDialog>` fires it ONCE,
+ * when `sendZap` returns a preimage, with `playBoostSound`.
+ *
+ * Plain DOM and the Web Animations API: no component, no state, no CSS file, and
+ * it outlives the dialog, which closes under it. It removes itself when the
+ * animation ends, with a timer as a backstop (a hidden tab may never finish it).
+ * `pointer-events: none`, so it blocks nothing. z-index 65: above
+ * `<ModalShell>`'s 60, below the iOS status-bar strip's 70, the app's ceiling.
+ * The path is `<BoltIcon>`'s (`components/icons.tsx`), copied because `lib/`
+ * does not import from `components/`. Skipped under reduced motion, as the
+ * confetti is: the dialog's "zapped" and the ping already say the zap went.
+ */
+export function fireZapBolt(): void {
+  if (typeof document === 'undefined' || prefersReducedMotion()) return;
+  const wrap = document.createElement('div');
+  wrap.setAttribute('aria-hidden', 'true');
+  wrap.setAttribute('data-zap-bolt', '');
+  wrap.style.cssText =
+    'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:65';
+  wrap.innerHTML =
+    '<svg viewBox="0 0 24 24" style="width:min(55vw,240px);height:min(55vw,240px);fill:rgb(var(--bolt));' +
+    'filter:drop-shadow(0 0 16px rgb(var(--bolt) / .9)) drop-shadow(0 0 48px rgb(var(--bolt) / .55))">' +
+    '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg>';
+  document.body.appendChild(wrap);
+  const remove = () => wrap.remove();
+  setTimeout(remove, 2000);
+  const svg = wrap.firstElementChild;
+  if (!svg || typeof (svg as Element).animate !== 'function') return;
+  const strike = (svg as Element).animate(
+    [
+      { transform: 'scale(0.3) rotate(-10deg)', opacity: 0 },
+      { transform: 'scale(1.15) rotate(0deg)', opacity: 1, offset: 0.16 },
+      { transform: 'scale(1)', opacity: 0.3, offset: 0.26 },
+      { transform: 'scale(1.06)', opacity: 1, offset: 0.36 },
+      { transform: 'scale(1)', opacity: 1, offset: 0.7 },
+      { transform: 'scale(1.4)', opacity: 0 },
+    ],
+    { duration: 1100, easing: 'ease-out' },
+  );
+  strike.onfinish = remove;
+}
+
 let boostAudio: HTMLAudioElement | null = null;
 let boostAudioPrimed = false;
 

@@ -151,6 +151,23 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       window.bmbSigner(JSON.stringify({ rid, fn, args }));
     });
     window.nostr = { getPublicKey: () => call('getPublicKey'), signEvent: (e) => call('signEvent', e) };
+    // The celebration, recorded rather than watched. A ping is a play() of
+    // boost.mp3 that is NOT paused in the same turn (the prime pauses at once,
+    // docs/money-boosts.md, "Success celebration"); recorded whether or not the
+    // muted, gesture-less play() is then allowed. Confetti is a canvas added to
+    // the page, the zap's bolt a [data-zap-bolt] node; each removes itself when
+    // it ends, so they are counted as they arrive.
+    window.__pings = 0; window.__confetti = 0; window.__bolts = 0;
+    const play = HTMLMediaElement.prototype.play, pause = HTMLMediaElement.prototype.pause;
+    HTMLMediaElement.prototype.play = function (...a) {
+      const el = this, src = el.currentSrc || el.src || '';
+      el.__justPlayed = true;
+      queueMicrotask(() => { if (el.__justPlayed && /boost\.mp3/.test(src)) window.__pings++; el.__justPlayed = false; });
+      return play.apply(el, a);
+    };
+    HTMLMediaElement.prototype.pause = function (...a) { this.__justPlayed = false; return pause.apply(this, a); };
+    new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) { if (n.nodeName === 'CANVAS') window.__confetti++; if (n.nodeType === 1 && n.hasAttribute('data-zap-bolt')) window.__bolts++; } })
+      .observe(document, { childList: true, subtree: true });
     // The stub wallet. It pays nothing: it records the invoice and hands back a preimage.
     window.__paid = [];
     window.webln = {
@@ -186,11 +203,12 @@ const HEADER_READY = `[...document.querySelectorAll('main button, main a')].some
 const DIALOG_NAMES = `[...document.querySelectorAll('[role=dialog]')].map((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent ?? '')`;
 const zapDialog = `[...document.querySelectorAll('[role=dialog]')].find((d) => (document.getElementById(d.getAttribute('aria-labelledby'))?.textContent ?? '').startsWith('Zap '))`;
 const overflowFree = () => js(`document.documentElement.scrollWidth <= document.documentElement.clientWidth`);
-// SHOTS=<dir> saves the header and the dialog as PNGs, for a look by eye.
+// SHOTS=<dir> saves the header, the dialog and the zap's bolt as PNGs, for a look by eye.
 const shot = async (name) => {
   if (!process.env.SHOTS) return;
   const { result } = await send('Page.captureScreenshot', { format: 'png' });
-  const { writeFileSync } = await import('node:fs');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(process.env.SHOTS, { recursive: true });
   writeFileSync(`${process.env.SHOTS}/${name}.png`, Buffer.from(result.data, 'base64'));
 };
 
@@ -260,7 +278,15 @@ await shot('2-dialog');
 await setValue(`${zapDialog}.querySelector('input[type=text]')`, 'thanks for the brunch');
 t.ok('Send names the amount', await js(`[...${zapDialog}.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Send 100 sats')`));
 await js(`[...${zapDialog}.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Send 100 sats').click()`);
-t.ok('the dialog reports the zap and closes', await waitFor(`!${zapDialog}`, 15000), await js(`${zapDialog}?.innerText`));
+t.ok('the dialog says it zapped', await waitFor(`/zapped 100 sats/i.test(${zapDialog}?.innerText ?? '')`, 15000), await js(`${zapDialog}?.innerText`));
+t.ok('...and the lightning bolt strikes', await waitFor(`window.__bolts === 1`, 5000), String(await js(`window.__bolts`)));
+const boltStyle = await js(`(() => { const b = document.querySelector('[data-zap-bolt]'); if (!b) return null; const cs = getComputedStyle(b); return { pe: cs.pointerEvents, z: Number(cs.zIndex), w: Math.round(b.firstElementChild.getBoundingClientRect().width) }; })()`);
+t.ok('...it blocks no tap and stays under the status-bar strip (z 70)', boltStyle && boltStyle.pe === 'none' && boltStyle.z < 70, JSON.stringify(boltStyle));
+await wait(250); await shot('1-bolt');
+t.equal('...no confetti: a zap is a bolt, a boost is confetti', await js(`window.__confetti`), 0);
+t.equal('...and the boost ping plays once', await js(`window.__pings`), 1);
+t.ok('the bolt removes itself', await waitFor(`!document.querySelector('[data-zap-bolt]')`, 4000));
+t.ok('the dialog then closes', await waitFor(`!${zapDialog}`, 8000), await js(`${zapDialog}?.innerText`));
 
 t.equal('ONE invoice request reached the maker\'s LNURL callback', callbacks.length, 1);
 const cb = new URL(callbacks[0] ?? `https://${STUB}/none`);
@@ -301,6 +327,8 @@ await js(`[...${zapDialog}.querySelectorAll('button')].find((b) => /^Send /.test
 t.ok('the dialog says the provider does not support zaps', await waitFor(`/does not support Nostr zaps/.test(${zapDialog}?.innerText ?? '')`, 10000), await js(`${zapDialog}?.innerText`));
 t.equal('no invoice was requested', callbacks.length, 0);
 t.equal('the wallet was not asked', await js(`window.__paid.length`), 0);
+t.equal('no bolt on a refusal', await js(`window.__bolts`), 0);
+t.equal('no ping on a refusal (the prime is not a ping)', await js(`window.__pings`), 0);
 t.ok('Send is on again (nothing was attempted)', await js(`![...${zapDialog}.querySelectorAll('button')].find((b) => /^Send /.test(b.textContent.trim()))?.disabled`));
 await closeDialog();
 
@@ -367,7 +395,10 @@ const noteDialog = await js(`${zapDialog}.innerText`);
 t.ok('no playlist line on a note zap', !noteDialog.includes('For the playlist'), noteDialog);
 t.ok('the note zap\'s placeholder is unchanged', await js(`${zapDialog}.querySelector('input[type=text]').placeholder === 'great post'`));
 await js(`[...${zapDialog}.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Send 100 sats').click()`);
-t.ok('the note zap completes and closes', await waitFor(`!${zapDialog}`, 15000), await js(`${zapDialog}?.innerText`));
+t.ok('the note zap says it zapped', await waitFor(`/zapped 100 sats/i.test(${zapDialog}?.innerText ?? '')`, 15000), await js(`${zapDialog}?.innerText`));
+t.ok('...with the bolt', await waitFor(`window.__bolts === 1`, 5000));
+t.equal('...and one ping', await js(`window.__pings`), 1);
+t.ok('the note zap closes', await waitFor(`!${zapDialog}`, 8000), await js(`${zapDialog}?.innerText`));
 t.equal('one invoice request', callbacks.length, 1);
 const nz = JSON.parse(new URL(callbacks[0] ?? `https://${STUB}/none`).searchParams.get('nostr') ?? '{}');
 const ntag = (n) => (nz.tags ?? []).filter((x) => x[0] === n);
