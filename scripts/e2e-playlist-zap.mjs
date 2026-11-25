@@ -233,12 +233,11 @@ t.ok('the ZAP tile appears once the maker\'s kind:0 is read', await waitFor(TILE
 t.equal('the tile says ZAP', await js(`${TILE}.innerText.trim()`), 'ZAP');
 const row = await js(`(() => { const z = ${TILE}; const cells = [...z.parentElement.children].filter((c) => c.getBoundingClientRect().width > 0);
   return { labels: cells.map((c) => c.innerText.trim()), tops: [...new Set(cells.map((c) => Math.round(c.getBoundingClientRect().top)))], w: Math.round(z.getBoundingClientRect().width), h: Math.round(z.getBoundingClientRect().height) }; })()`);
-// RSS is a beta-only tile (`IS_BETA`, NEXT_PUBLIC_BETA=1); beta is where Chad sees this.
+// No RSS tile, on beta or off it (Chad, 2026-11-25): the RSS line under the
+// title copies the feed. Run against a NEXT_PUBLIC_BETA=1 server to prove it.
 const words = (row?.labels ?? []).map((l) => l.split(/\s+/).pop());
-t.ok('the row is FAV / SHARE / (RSS on beta) / ZAP',
-  JSON.stringify(words) === JSON.stringify(['FAV', 'SHARE', 'RSS', 'ZAP']) || JSON.stringify(words) === JSON.stringify(['FAV', 'SHARE', 'ZAP']),
-  JSON.stringify(words));
-t.equal('all four tiles on ONE row at 390 px', row?.tops.length, 1);
+t.equal('the row is FAV / SHARE / ZAP, no RSS tile', words, ['FAV', 'SHARE', 'ZAP']);
+t.equal('all three tiles on ONE row at 390 px', row?.tops.length, 1);
 t.ok('the tile is at least 24 x 24', row && row.w >= 24 && row.h >= 24, JSON.stringify(row));
 t.ok('no horizontal overflow at 390 px', await overflowFree());
 console.log(`      row: ${JSON.stringify(row)}`);

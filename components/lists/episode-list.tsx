@@ -14,8 +14,6 @@ import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
 import { valueNotRead, authorLine, coverStartSeeks, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
-import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
-import { IS_BETA } from '@/lib/beta';
 import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
@@ -116,24 +114,6 @@ function ShareButton({ podcast }: { podcast: Podcast }) {
     <CopyLinkButton
       url={showShareUrl(podcast)}
       title="Copy link to this show"
-      className="tile"
-    />
-  );
-}
-
-// Copies a COMMUNITY playlist's own RSS URL, so the feed can be pasted into
-// another podcast app to see how it handles a musicL playlist. A testing aid,
-// so it is BETA ONLY (`IS_BETA`), and it stays that way when the playlist
-// feature itself launches on the main site — `COMMUNITY_PLAYLISTS_ON` alone
-// would put it there at launch. It renders only for a feed URL that is exactly
-// one of ours — never a third-party feed.
-function CopyRssButton({ podcast }: { podcast: Podcast }) {
-  if (!IS_BETA || !COMMUNITY_PLAYLISTS_ON || !communityIdFromFeedUrl(podcast.url)) return null;
-  return (
-    <CopyLinkButton
-      url={podcast.url ?? null}
-      title="Copy this playlist's RSS feed URL"
-      word="RSS"
       className="tile"
     />
   );
@@ -783,12 +763,12 @@ export function EpisodeList({
           <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
             <FavHeart podcast={data.podcast} size="tile" />
             <ShareButton podcast={data.podcast} />
-            <CopyRssButton podcast={data.podcast} />
             {/* ⚡ ZAP the maker of a playlist this site hosts; nothing on any
                 other show (`playlistMaker`). Its feed has no value block
                 and no funding (`buildPlaylistFeedXml`), so no BOOST above and
-                no SUPPORT or STREAM here: four tiles on beta, measured at 390px
-                by `npm run e2e:playlistzap`. */}
+                no SUPPORT or STREAM here: three tiles, measured at 390px by
+                `npm run e2e:playlistzap`. The beta-only RSS tile is gone (Chad,
+                2026-11-25): the RSS line under the title already copies the feed. */}
             <PlaylistZapButton podcast={data.podcast} />
             <SupportButton podcast={data.podcast} />
             {/* `cloneElement` to restyle rather than a prop on
