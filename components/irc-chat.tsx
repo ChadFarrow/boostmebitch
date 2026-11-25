@@ -9,10 +9,12 @@
  * list, row shape and composer.
  *
  * LITTLE IS KEPT. The nick is stored (`storage.ircNick`), so the box is filled
- * next time. The rows live in this component and, for a refresh, in this tab
- * only (`storage.ircHold`, with the hold token): a refresh is a drop (Chad,
- * 2026-11-22), so the next page resumes the held session and shows the rows
- * again. IRC has no history: a listener sees what is said after they join.
+ * next time. The rows live in this component and, while the hold service
+ * holds the session, on this device (`storage.ircHold`, per channel, with the
+ * hold token): a refresh, a lock or a closed app is a drop (Chad, 2026-11-22
+ * and 2026-11-24), so the next page on that show resumes the held session,
+ * with the same nick and the lines said while it was away. IRC has no
+ * history: a listener sees what is said after they join.
  *
  * ONE IRC CONNECTION, NEVER REGISTERED TWICE BY ITSELF. Each is a slot in
  * ZeroNode's limit of 3 per address at the gateway. A drop or a refresh
@@ -22,17 +24,22 @@
  * No report, no hide, no word filter (Chad: "all of these chats have
  * moderators in them that can kick people. So it's up to the podcaster").
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { openIrcSession, IRC_GATEWAY_URL, type IrcHold, type IrcSession } from '@/lib/irc/client';
-import { isValidNick, nickColor, MAX_NICK_LENGTH, MIN_NICK_LENGTH, type IrcEvent, type IrcSavedRow } from '@/lib/irc/protocol';
+import { isValidNick, nickColor, MAX_NICK_LENGTH, MIN_NICK_LENGTH, MAX_SAVED_ROWS, type IrcEvent, type IrcSavedRow } from '@/lib/irc/protocol';
 import { looksLikeSecretKey, textHoldsSecret } from '@/lib/nostr/npub-input';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
 import { fmtClock } from '@/lib/format';
 import { LinkedText } from './linked-text';
 
-/** The rows kept on screen; older ones are dropped. */
-const MAX_ROWS = 200;
+/**
+ * The rows kept on screen; older ones are dropped. 2,000, because a resume
+ * after a long hold can bring ~1,500 lines (one MMO show was ~1,350 lines, the
+ * busiest hour 556; Chad's logs since 2026-10-25). Only the newest
+ * `MAX_SAVED_ROWS` go to storage: the resume brings the rest by `seq`.
+ */
+const MAX_ROWS = 2000;
 /** The composer's limit, as `<LiveChat>`'s. Longer text is cut into several lines anyway. */
 const CHAT_MAX = 500;
 
@@ -48,6 +55,13 @@ const NICK_CLASSES = [
 ];
 /** One color per person; your own name stays in the text color, so you find it. */
 const nameColor = (from: string | undefined, self: boolean | undefined) => (self ? 'text-bone' : NICK_CLASSES[nickColor(from ?? '')]);
+/**
+ * A 433 on a new chat, which the page did not resume. Chad asked for more than
+ * "taken" (2026-11-24): the nick is most often the listener's own, held by
+ * their last chat (another device, or one with no saved hold).
+ */
+const NICK_IN_USE = 'That nick is in use. If it was yours a moment ago, your last chat may still hold it. Try another nick, or wait a few minutes.';
+/** A 433 on a typed `/nick`, in a chat that is running. */
 const NICK_TAKEN = 'That nick is taken. Try another.';
 
 type Phase = 'idle' | 'connecting' | 'joined' | 'kicked' | 'closed';
@@ -56,6 +70,36 @@ type Phase = 'idle' | 'connecting' | 'joined' | 'kicked' | 'closed';
 interface Row extends IrcSavedRow {
   id: number;
 }
+
+/**
+ * One row, MEMOIZED: a row object never changes once added, so a new line
+ * renders one row and not 2,000. Each row formats its time twice through
+ * `Intl`; re-rendering every row per line took ~1 s a line at 2,000 rows on an
+ * emulated phone under `next dev` (`e2e:irc --perf`).
+ */
+const IrcRow = memo(function IrcRow({ row: r }: { row: Row }) {
+  if (r.kind === 'notice') return <p data-irc-row className="text-xs text-muted">{r.text}</p>;
+  return (
+    <div data-irc-row className="text-sm min-w-0">
+      {r.action ? (
+        <span className="text-bone/90 break-words whitespace-pre-wrap italic">
+          <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(r.time * 1000).toLocaleString()}>
+            {fmtClock(r.time)}
+          </span>
+          * <span className={`font-display font-bold not-italic ${nameColor(r.from, false)}`}>{r.from}</span> <LinkedText text={r.text} />
+        </span>
+      ) : (
+        <>
+          <span data-irc-from className={`text-sm font-display font-bold mr-1.5 ${nameColor(r.from, r.self)}`}>{r.from}</span>
+          <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(r.time * 1000).toLocaleString()}>
+            {fmtClock(r.time)}
+          </span>
+          <span className="text-bone/90 break-words whitespace-pre-wrap"><LinkedText text={r.text} /></span>
+        </>
+      )}
+    </div>
+  );
+});
 
 /** The refusal for text that must not leave the device, or null when it may. */
 function secretRefusal(text: string): string | null {
@@ -94,35 +138,49 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
     setNickDraft((d) => d || storage.ircNick.get(npub) || '');
   }, [npub]);
 
+  /** The frame that will paint the rows added since the last one. */
+  const paintRef = useRef(0);
+  // `rowsRef` moves at once (a save must match the client's `seq`); the
+  // screen once per frame, however many lines came: a resume replays ~1,500.
   const addRows = useCallback((add: Omit<Row, 'id'>[]) => {
     if (!add.length) return;
     const next = [...rowsRef.current, ...add.map((r) => ({ ...r, id: nextId.current++ }))];
     rowsRef.current = next.length > MAX_ROWS ? next.slice(next.length - MAX_ROWS) : next;
-    setRows(rowsRef.current);
+    if (paintRef.current) return;
+    paintRef.current = requestAnimationFrame(() => {
+      paintRef.current = 0;
+      setRows(rowsRef.current);
+    });
+  }, []);
+  useEffect(() => () => {
+    // Zeroed too, or a cancelled frame would block every later paint.
+    if (paintRef.current) cancelAnimationFrame(paintRef.current);
+    paintRef.current = 0;
   }, []);
   const notice = useCallback(
     (text: string) => addRows([{ kind: 'notice', text, time: Math.floor(Date.now() / 1000) }]),
     [addRows],
   );
 
-  // Leaving on purpose ends the held session too, so its saved copy goes. A
-  // session still being resumed is not dropped from storage: React's
+  // Leaving on purpose ends the held session too (QUIT), so its saved copy
+  // goes. A session still being resumed is not dropped from storage: React's
   // development double mount quits it at once, and the second mount resumes.
   const quit = useCallback(() => {
     const s = sessionRef.current;
     sessionRef.current = null;
-    if (s?.hold()) storage.ircHold.clear();
+    const h = s?.hold();
+    if (h) storage.ircHold.clear(channel, h.token);
     s?.quit();
-  }, []);
+  }, [channel]);
 
-  /** Save the held session for a refresh in this tab; nothing without a hold service. */
+  /** Save the held session for the next page on this show; nothing without a hold service. */
   const save = useCallback(() => {
     const h = sessionRef.current?.hold();
     const p = phaseRef.current;
     if (!h || (p !== 'joined' && p !== 'kicked')) return;
     storage.ircHold.set({
       channel, nick: nickRef.current, token: h.token, holdS: h.holdS, seq: h.seq, at: Date.now(), phase: p,
-      rows: rowsRef.current.map(({ id: _id, ...r }) => r),
+      rows: rowsRef.current.slice(-MAX_SAVED_ROWS).map(({ id: _id, ...r }) => r),
     });
   }, [channel]);
 
@@ -143,7 +201,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         break;
       case 'nickInUse':
         setNickTaken(true);
-        setErr(NICK_TAKEN);
+        setErr(phaseRef.current === 'connecting' ? NICK_IN_USE : NICK_TAKEN);
         break;
       case 'nickChanged':
         // Only a nick the listener asked for is theirs to keep. Services
@@ -175,13 +233,14 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
     }
   }, [addRows, notice, channel, quit]);
 
-  // Leave the channel when the panel goes (another show, the show ended and
-  // was never joined). When the PAGE goes, a held session is saved and kept,
-  // not quit: the page cannot tell a refresh from a closed tab, and a refresh
-  // is a drop (Chad, 2026-11-22). A closed tab's session ends when the hold
-  // runs out. Without a hold service the page quits, as before. A page kept in
-  // the back/forward cache (`persisted`) is not leaving. A hidden tab saves
-  // too: a phone may discard it, and its reload is a refresh.
+  // Leave the channel when the panel goes (the player closed, another show or
+  // episode, the show ended and was never joined). When the PAGE goes, a held
+  // session is saved and kept, not quit: the page cannot tell a refresh from a
+  // closed app, and both are a drop (Chad, 2026-11-22 and 2026-11-24). A
+  // closed app's session ends when the service's hold does. Without a hold
+  // service the page quits, as before. A page kept in the back/forward cache
+  // (`persisted`) is not leaving. A hidden page saves too: a phone may discard
+  // it, or the listener may close the app from the app switcher.
   useEffect(() => {
     const onHide = (ev: PageTransitionEvent) => {
       save();
@@ -213,10 +272,12 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
             : 'Reconnected; nothing was missed.');
         }
       },
-      onClose: (reason) => {
+      onClose: (reason, end) => {
         if (sessionRef.current !== session) return;
         sessionRef.current = null;
-        storage.ircHold.clear();
+        // Not after a takeover: the window that resumed the session saves it
+        // under the same key now.
+        if (!end.elsewhere && end.token) storage.ircHold.clear(channel, end.token);
         setAway(null);
         setPhase('closed');
         setNickTaken(false);
@@ -227,12 +288,16 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
     sessionRef.current = session;
   }, [channel, onEvent, notice]);
 
-  // A refresh: this tab saved a held session for this channel, so show its
-  // rows and resume it, with no JOIN (docs/irc.md, "A refresh is a drop").
+  // A refresh or a reopened app: a page on this device saved a held session
+  // for this channel, so show its rows and resume it, with no JOIN and no
+  // NICK (docs/irc.md, "A refresh is a drop"). The service says HOLD GONE when
+  // the hold is over; the page stops believing its copy after 6 hours.
   useEffect(() => {
-    const saved = storage.ircHold.get();
-    if (!saved || saved.channel.toLowerCase() !== channel.toLowerCase() || sessionRef.current) return;
-    if (Date.now() > saved.at + saved.holdS * 1000) { storage.ircHold.clear(); return; }
+    // Every channel's stale copy goes first (6 h): a show never opened again
+    // would otherwise keep its token on the device.
+    storage.ircHold.prune(Date.now());
+    const saved = storage.ircHold.get(channel);
+    if (!saved || sessionRef.current) return;
     rowsRef.current = saved.rows.map((r, i) => ({ ...r, id: i }));
     nextId.current = rowsRef.current.length;
     setRows(rowsRef.current);
@@ -245,6 +310,13 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
     open(saved.nick, { token: saved.token, seq: saved.seq, holdS: saved.holdS });
   }, [channel, open]);
 
+  // Saved as soon as the chat is joined or back, not only when the page
+  // hides: an app the system ends with no hide event still leaves its token,
+  // so the next page resumes instead of meeting its own nick as "in use".
+  useEffect(() => {
+    if (phase === 'joined' && !away) save();
+  }, [phase, away, save]);
+
   function join() {
     const nick = nickDraft.trim();
     const refusal = secretRefusal(nick);
@@ -255,8 +327,10 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
       sessionRef.current.nick(nick);
       return;
     }
+    // No `storage.ircHold.clear` here: a hold saved for this channel is either
+    // gone already (its session closed) or another window's (a takeover), and
+    // that window still uses it.
     quit();
-    storage.ircHold.clear();
     setPhase('connecting');
     setNickTaken(false);
     open(nick);
@@ -273,8 +347,12 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
     setDraft('');
   }
 
-  // Follow new rows only when the listener is already at the bottom.
-  useEffect(() => {
+  // Follow new rows only when the listener is already at the bottom. A LAYOUT
+  // effect, before the browser draws the new rows: in a passive one a frame
+  // came first, its scroll event measured the bottom past all the new rows,
+  // and after a burst (a resume, or a full list dropping its first rows) the
+  // list stopped following (`e2e:irc --perf`).
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && nearBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [rows]);
@@ -305,7 +383,11 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
         // `<LiveChatPager>`, and a sideways flick that starts on the messages
         // must reach the pager. `overscroll-contain` set both axes, and
         // Chromium then ended the scroll chain here, so the flick did nothing.
-        className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain space-y-3 pr-1"
+        // The gap is `* + *`, not `space-y-3`, as a precaution: Tailwind 3
+        // writes that as `> :not([hidden]) ~ :not([hidden])`, and at 2,000
+        // rows each line drops the first row, which can restyle every row
+        // after it. Not measured on its own.
+        className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain [&>*+*]:mt-3 pr-1"
       >
         {rows.length === 0 && (
           // IRC keeps no history, so before JOIN there is nothing to show; say
@@ -316,30 +398,7 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
             </p>
           </div>
         )}
-        {rows.map((r) =>
-          r.kind === 'notice' ? (
-            <p key={r.id} data-irc-row className="text-xs text-muted">{r.text}</p>
-          ) : (
-            <div key={r.id} data-irc-row className="text-sm min-w-0">
-              {r.action ? (
-                <span className="text-bone/90 break-words whitespace-pre-wrap italic">
-                  <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(r.time * 1000).toLocaleString()}>
-                    {fmtClock(r.time)}
-                  </span>
-                  * <span className={`font-display font-bold not-italic ${nameColor(r.from, false)}`}>{r.from}</span> <LinkedText text={r.text} />
-                </span>
-              ) : (
-                <>
-                  <span data-irc-from className={`text-sm font-display font-bold mr-1.5 ${nameColor(r.from, r.self)}`}>{r.from}</span>
-                  <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(r.time * 1000).toLocaleString()}>
-                    {fmtClock(r.time)}
-                  </span>
-                  <span className="text-bone/90 break-words whitespace-pre-wrap"><LinkedText text={r.text} /></span>
-                </>
-              )}
-            </div>
-          ),
-        )}
+        {rows.map((r) => <IrcRow key={r.id} row={r} />)}
       </div>
 
       <div className="flex-shrink-0 pt-3 mt-2 border-t border-bone/10 flex flex-col gap-1.5">

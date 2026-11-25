@@ -24,6 +24,7 @@
 import {
   parseLine, stripFormatting, ctcpAction, cleanOutgoing, splitText, buildPrivmsg, buildAction, isValidNick, MAX_NICK_LENGTH,
   nickColor, NICK_COLORS, readHoldSnapshot, MAX_SAVED_ROWS,
+  resumeWaitMs, holdSnapshotFresh, HOLD_MAX_AWAY_S, MAX_HOLD_S,
   ircStart, ircStep, ircSend, ircNick, ircRejoin,
 } from '../lib/irc/protocol.ts';
 import { IRC_CHAT_SHOWS, ircChannelFor, ircGatewayOk } from '../lib/irc/shows.ts';
@@ -227,7 +228,7 @@ console.log('\nThe saved hold (a refresh is a drop):');
 {
   // Chad, 2026-11-22: "if you lose connection or if you refresh the page, you
   // should come back with your nick and chat." The tab saves its held session
-  // in sessionStorage (`bmb:irc_hold`) and the next page reads it back. What
+  // in localStorage (`bmb:irc_hold:<channel>`) and the next page reads it back. What
   // comes back from storage is input, not ours: the page sends the token to the
   // gateway and renders the rows, so it is read field by field.
   // `naiveRead` is the obvious reader, `JSON.parse` and trust.
@@ -265,6 +266,64 @@ console.log('\nThe saved hold (a refresh is a drop):');
     if (readHoldSnapshot(raw) !== null) fail(`${JSON.stringify(raw)} is not refused`);
   }
   ok('null, undefined, a string and a number are refused');
+}
+
+console.log('\nHold while live: how long the page tries, and keeps its copy:');
+{
+  // The hold plan (Chad, 2026-11-24): "you can do other things on your phone
+  // or just lock your phone without being disconnected from the chat." With
+  // `HOLD LIVE` the service holds a live show's chat past the token's
+  // `<seconds>` (300), until 10 minutes after the show, at most 6 hours. So
+  // the page must not stop at `<seconds>`: it tries until HOLD GONE, and keeps
+  // its saved copy 6 hours. `naive*` is the page before the plan: a deadline
+  // of `<seconds>` after the drop, and a copy stale at `at + holdS`.
+  const HOLD_S = 300;
+  const naiveWait = (tries, awayMs) => {
+    const left = HOLD_S * 1000 - awayMs;
+    if (left <= 0) return null;
+    return Math.min([1000, 2000, 4000, 15000][Math.min(tries, 3)], left);
+  };
+  const naiveFresh = (saved, now) => now <= saved.at + HOLD_S * 1000;
+  const MIN = 60_000;
+  const H6 = HOLD_MAX_AWAY_S * 1000;
+  const waits = [
+    // [label, tries, awayMs, want, alsoNaive]
+    ['the first try comes after 1 s', 0, 0, 1000, true],
+    ['then 2 s, then 4 s', 2, 3000, 4000, true],
+    ['then every 15 s', 9, 2 * MIN, 15000, true],
+    ['301 s away it still tries (the old page gave up at <seconds>)', 30, 301_000, 60_000, false],
+    ['after 5 minutes, every minute', 40, 30 * MIN, 60_000, false],
+    ['the last try is AT 6 hours, never past it', 400, H6 - 10_000, 10_000, false],
+    ['6 hours away it stops', 400, H6, null, true],
+    ['past 6 hours it stops', 400, H6 + 1, null, true],
+  ];
+  for (const [label, tries, away, want, alsoNaive] of waits) {
+    const got = resumeWaitMs(tries, away);
+    if (got !== want) fail(`${label}: resumeWaitMs(${tries}, ${away}) is ${got}, expected ${want}`);
+    else if (!alsoNaive && naiveWait(tries, away) === want) fail(`${label}: naive agrees, so the vector cannot fail`);
+    else ok(label);
+  }
+  const quick = { delaysMs: [50, 100], slowAfterMs: 1000, slowEveryMs: 300, giveUpMs: 5000 };
+  const knobs = [[0, 0, 50], [5, 500, 100], [5, 1000, 300], [5, 4900, 100], [5, 5000, null]];
+  if (knobs.every(([t, a, w]) => resumeWaitMs(t, a, quick) === w)) ok('the test knobs shorten every step (e2e uses them)');
+  else fail(`the knobs: ${JSON.stringify(knobs.map(([t, a]) => resumeWaitMs(t, a, quick)))}`);
+
+  const now = 1_764_000_000_000;
+  const fresh = [
+    ['a copy saved a minute ago is fresh', now - MIN, true, true],
+    ['a copy saved 10 minutes ago is fresh (the old page threw it away at 5)', now - 10 * MIN, true, false],
+    ['a copy saved 5 hours 59 minutes ago is fresh', now - H6 + MIN, true, false],
+    ['a copy saved over 6 hours ago is stale', now - H6 - 1, false, true],
+    ['a copy dated a day ahead is stale (a wrong clock, or written by hand)', now + 24 * 60 * MIN, false, false],
+  ];
+  for (const [label, at, want, alsoNaive] of fresh) {
+    const got = holdSnapshotFresh({ at }, now);
+    if (got !== want) fail(`${label}: got ${got}`);
+    else if (!alsoNaive && naiveFresh({ at }, now) === want) fail(`${label}: naive agrees, so the vector cannot fail`);
+    else ok(label);
+  }
+  if (MAX_HOLD_S < HOLD_S) fail(`MAX_HOLD_S ${MAX_HOLD_S} refuses the service's own HOLD TOKEN of ${HOLD_S}`);
+  else ok(`MAX_HOLD_S still takes HOLD TOKEN <token> ${HOLD_S}`);
 }
 
 // ── The session: what the panel does with each server line ──────────────────

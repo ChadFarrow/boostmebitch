@@ -197,9 +197,65 @@ export function nickColor(nick: string): number {
 
 /** A hold token as the service sends it: base64url, at least 128 bits. */
 export const HOLD_TOKEN_RE = /^[A-Za-z0-9_-]{22,128}$/;
-/** The longest hold the page believes, whatever a gateway says. */
+/**
+ * The largest `<seconds>` a `HOLD TOKEN` line may name. It only checks that
+ * line: `<seconds>` is the SHORTEST hold (300), and the page tries to come back
+ * until `HOLD GONE`, not until `<seconds>` (`HOLD LIVE`, docs/irc.md).
+ */
 export const MAX_HOLD_S = 3600;
-/** The rows a tab saves with its held session: the panel's own limit. */
+/**
+ * How long a page tries to come back to a held session, and keeps it saved:
+ * 6 hours, irc-hold's own limit for a hold that `HOLD LIVE` asked for (the
+ * hold plan Chad approved on 2026-11-24). `HOLD GONE` ends it sooner: the
+ * service alone knows when the hold is over.
+ */
+export const HOLD_MAX_AWAY_S = 6 * 3600;
+/** The first waits between resume tries: 1 s, 2 s, 4 s, then every 15 s… */
+export const RESUME_DELAYS_MS = [1_000, 2_000, 4_000, 15_000];
+/** …until the page has been away this long… */
+export const RESUME_SLOW_AFTER_MS = 5 * 60_000;
+/** …and then every minute, until `HOLD GONE` or `HOLD_MAX_AWAY_S`. */
+export const RESUME_SLOW_EVERY_MS = 60_000;
+
+/** The knobs of `resumeWaitMs`; the defaults are the constants above. Tests shorten them. */
+export interface ResumeSchedule {
+  delaysMs?: number[];
+  slowAfterMs?: number;
+  slowEveryMs?: number;
+  giveUpMs?: number;
+}
+
+/**
+ * The wait before resume try `tries` (from 0) when the socket went `awayMs`
+ * ago, or null to give up. A held session is tried until the service says
+ * `HOLD GONE`, so the only end here is `HOLD_MAX_AWAY_S`; the last try is AT
+ * that end, never past it. Not `<seconds>`: with `HOLD LIVE` the service holds
+ * a live show's chat past it (Chad's 2026-11-24 goal: "come and go in the chat
+ * while the show's live without missing anything").
+ */
+export function resumeWaitMs(tries: number, awayMs: number, s: ResumeSchedule = {}): number | null {
+  const left = (s.giveUpMs ?? HOLD_MAX_AWAY_S * 1000) - awayMs;
+  if (!(left > 0)) return null;
+  const delays = s.delaysMs?.length ? s.delaysMs : RESUME_DELAYS_MS;
+  const step = awayMs >= (s.slowAfterMs ?? RESUME_SLOW_AFTER_MS)
+    ? s.slowEveryMs ?? RESUME_SLOW_EVERY_MS
+    : delays[Math.min(Math.max(tries, 0), delays.length - 1)];
+  return Math.min(step, left);
+}
+
+/** A saved hold with an `at` this far in the future came from a wrong clock, or was written by hand. */
+const SAVED_SKEW_MS = 5 * 60_000;
+
+/**
+ * Whether a saved hold is still worth a resume at `nowMs`: saved less than
+ * `HOLD_MAX_AWAY_S` ago. Not `at + holdS`: the service may hold it past
+ * `<seconds>`, and it answers `HOLD GONE` when it does not.
+ */
+export function holdSnapshotFresh(saved: { at: number }, nowMs: number): boolean {
+  return saved.at <= nowMs + SAVED_SKEW_MS && nowMs - saved.at <= HOLD_MAX_AWAY_S * 1000;
+}
+
+/** The rows a page saves with its held session. The panel shows more (2,000); the resume brings the rest by `seq`. */
 export const MAX_SAVED_ROWS = 200;
 const MAX_SAVED_TEXT = 4000;
 
@@ -214,18 +270,20 @@ export interface IrcSavedRow {
 }
 
 /**
- * What a tab keeps of its held session across a refresh, in sessionStorage
- * (`bmb:irc_hold`, docs/irc.md "A refresh is a drop"): enough to send
- * `HOLD RESUME <token> <seq>` and to show the rows again while it does.
+ * What a page keeps of its held session across a refresh or a closed app, in
+ * localStorage (`bmb:irc_hold:<channel>`, docs/irc.md "A refresh is a drop"):
+ * enough to send `HOLD RESUME <token> <seq>` and to show the rows again while
+ * it does.
  */
 export interface IrcHoldSnapshot {
   channel: string;
   nick: string;
   token: string;
+  /** The `<seconds>` of the `HOLD TOKEN` line: the shortest hold. */
   holdS: number;
   /** The last IRC line the saved rows include. */
   seq: number;
-  /** When it was saved (ms). The hold ran out by `at + holdS * 1000` at the latest. */
+  /** When it was saved (ms). Worth a resume until `holdSnapshotFresh` says no (6 h). */
   at: number;
   phase: 'joined' | 'kicked';
   rows: IrcSavedRow[];

@@ -40,13 +40,14 @@ async function until(cond, ms = 3000) {
 function session(fake, nick, extra = {}) {
   const events = [];
   const closes = [];
+  const ends = [];
   const s = openIrcSession({
     ...extra,
     url: fake.url, nick, channel: '#candr',
     onEvent: (e) => events.push(e),
-    onClose: (r) => closes.push(r),
+    onClose: (r, end) => { closes.push(r); ends.push(end); },
   });
-  return { s, events, closes, joins: () => events.filter((e) => e.type === 'joined').length };
+  return { s, events, closes, ends, joins: () => events.filter((e) => e.type === 'joined').length };
 }
 
 async function nodeHalf() {
@@ -58,6 +59,7 @@ async function nodeHalf() {
     c.equal('it registered, then joined: NICK, USER, JOIN', fake.received.slice(0, 3),
       ['NICK bmbfan', 'USER webchat 0 * :webchat', 'JOIN #candr']);
     c.equal('one connection so far', fake.connections, 1);
+    c.equal('with no hold service the page sends no HOLD LIVE', fake.holdLives, 0);
 
     fake.say('dude', '#candr', 'yo');
     c.ok('a channel message arrives as a message event',
@@ -66,6 +68,11 @@ async function nodeHalf() {
 
     fake.sayRaw('PING :fake.irc');
     c.ok('a server PING is answered', await until(() => fake.received.includes('PONG :fake.irc')));
+    // The socket test on a page that comes back needs a hold service: without
+    // one, a slow answer would end the chat.
+    a.s.wake();
+    await wait(200);
+    c.ok('with no hold service, wake() tests nothing (no PING)', !fake.received.some((l) => l.startsWith('PING ')));
 
     const before = fake.received.length;
     a.s.send('hi\nJOIN #x');
@@ -136,6 +143,12 @@ async function holdHalf() {
     const links = [];
     const a = session(fake, 'holder', { ...QUICK, onLink: (l) => links.push(l) });
     c.ok('a held session joins', await until(() => a.joins() === 1), JSON.stringify(a.events));
+    // HOLD LIVE (the hold plan, 2026-11-24): once after HOLD TOKEN, never a
+    // socket's first frame — irc-hold reads a first HOLD frame as a resume.
+    const liveAt = fake.received.indexOf('HOLD LIVE');
+    c.ok('the page sends HOLD LIVE once, after HOLD TOKEN, behind its NICK and USER',
+      fake.holdLives === 1 && liveAt > fake.received.indexOf('NICK holder') && liveAt > fake.received.indexOf('USER webchat 0 * :webchat'),
+      JSON.stringify(fake.received.slice(0, 5)));
     fake.say('dude', '#candr', 'before');
     await until(() => a.events.some((e) => e.text === 'before'));
     const regs = fake.received.filter((l) => /^(NICK|USER) /.test(l)).length;
@@ -157,6 +170,7 @@ async function holdHalf() {
     c.equal('…and registered nothing again (no NICK, no USER)', fake.received.filter((l) => /^(NICK|USER) /.test(l)).length, regs);
     c.equal('…on the same IRC session', fake.sessionsCreated, created);
     c.equal('…so the channel saw no QUIT', fake.quits, []);
+    c.equal('…and a resume sends no second HOLD LIVE (it is once per HOLD TOKEN)', fake.holdLives, 1);
     a.s.send('back again');
     c.ok('it can talk after the resume', await until(() => fake.received.includes('PRIVMSG #candr :back again')));
 
@@ -177,6 +191,8 @@ async function holdHalf() {
     fake.closeWith('holder', 4001, 'resumed elsewhere');
     c.ok('a takeover closes the session', await until(() => a.closes.length === 1), JSON.stringify(a.closes));
     c.ok('…saying it went on in another window', /another window/i.test(a.closes[0] ?? ''), JSON.stringify(a.closes));
+    c.ok('…and marks it, with the token, so the page keeps the hold the other window now uses',
+      a.ends[0]?.elsewhere === true && /^[A-Za-z0-9_-]{22,}$/.test(a.ends[0]?.token ?? ''), JSON.stringify(a.ends[0] && { ...a.ends[0], token: '<token>' }));
     await wait(500);
     c.equal('…and it never tries to resume', fake.resumes.length, resumesBefore);
 
@@ -204,14 +220,15 @@ async function holdHalf() {
     await wait(400);
     c.equal('…and it never tries to resume', fake.resumes.length, r0);
 
-    // A network that stays down: it tries until the hold runs out, then stops.
-    const down = session(fake, 'tunnel', QUICK);
+    // A network that stays down: it tries until it gives up (6 h; 1.5 s
+    // here), then stops. Not at the token's `<seconds>`: HOLD GONE is the end.
+    const down = session(fake, 'tunnel', { ...QUICK, resumeGiveUpMs: 1500 });
     await until(() => down.joins() === 1);
     const createdDown = fake.sessionsCreated;
     const tries = fake.resumes.length;
     fake.refuseResume = true;
     fake.drop('tunnel');
-    c.ok('with the network down it gives up when the hold runs out', await until(() => down.closes.length === 1, 4000), JSON.stringify(down.closes));
+    c.ok('with the network down it gives up at the give-up time', await until(() => down.closes.length === 1, 4000), JSON.stringify(down.closes));
     c.ok('…as a lost connection', /connection lost/i.test(down.closes[0] ?? ''), JSON.stringify(down.closes));
     const triesMade = fake.resumes.length - tries;
     c.ok('…after several tries, each a HOLD RESUME', triesMade >= 3, String(triesMade));
@@ -268,6 +285,100 @@ async function holdHalf() {
   }
 }
 
+// ── 1c. Hold while live: past `<seconds>`, and a socket that died quietly ──
+// The hold plan (Chad, 2026-11-24): "you can do other things on your phone or
+// just lock your phone without being disconnected from the chat." The page
+// says HOLD LIVE and tries until HOLD GONE; the NEW irc-hold then holds a live
+// show's chat past `<seconds>`, and TODAY's answers HOLD GONE at `<seconds>`.
+// Either may be deployed when the page is, so both are run.
+async function holdLiveHalf() {
+  console.log('Node: hold while live, against the new irc-hold and today\'s');
+  const QUICK = { resumeDelaysMs: [50, 100, 200], resumeSlowEveryMs: 100 };
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  // The token says 1 s; a page that sent HOLD LIVE is held 30 s by the new one.
+  const fresh = await createIrcFake({ hold: 1, liveHold: 30 });
+  const today = await createIrcFake({ hold: 1 });
+  try {
+    // ── A resume after more than 300 s (and more than `<seconds>`) ──
+    const links = [];
+    const a = session(fresh, 'lockedphone', { ...QUICK, onLink: (l) => links.push(l) });
+    c.ok('a session on the new irc-hold joins and says HOLD LIVE', await until(() => a.joins() === 1) && await until(() => fresh.holdLives === 1));
+    const regs = fresh.received.filter((l) => /^(NICK|USER) /.test(l)).length;
+    fresh.refuseResume = true;
+    fresh.drop('lockedphone');
+    await until(() => links.some((l) => l.kind === 'lost'));
+    fresh.say('dude', '#candr', 'said while the phone was locked');
+    // Real time past the token's 1 s, and the page's own clock past 300 s:
+    // the old page stopped at `<seconds>`; this one goes on until HOLD GONE.
+    await wait(1500);
+    skew = 301_000;
+    const triesAt301 = fresh.resumes.length;
+    await wait(400);
+    c.ok('301 s away by its own clock, the page still tries (every minute after 5 minutes; 100 ms here)', fresh.resumes.length > triesAt301 && a.closes.length === 0,
+      JSON.stringify({ tries: fresh.resumes.length - triesAt301, closes: a.closes }));
+    fresh.refuseResume = false;
+    c.ok('…and comes back to the held chat, past the token\'s <seconds>', await until(() => links.some((l) => l.kind === 'back'), 3000), JSON.stringify({ links, closes: a.closes }));
+    c.ok('…with what was said while it was away', await until(() => a.events.some((e) => e.text === 'said while the phone was locked')));
+    c.equal('…on the same IRC session, with no NICK or USER and no QUIT', [fresh.sessionsCreated, fresh.received.filter((l) => /^(NICK|USER) /.test(l)).length, fresh.quits], [1, regs, []]);
+    skew = 0;
+
+    // ── The same away time against today's irc-hold: HOLD GONE, cleanly ──
+    const t = session(today, 'oldgateway', QUICK);
+    c.ok('a session on today\'s irc-hold joins; it sends HOLD LIVE, which that one drops', await until(() => t.joins() === 1) && await until(() => today.holdLives === 1));
+    today.refuseResume = true;
+    today.drop('oldgateway');
+    await wait(1500);
+    today.refuseResume = false;
+    c.ok('…away past <seconds>, its next try is told GONE and the chat closes', await until(() => t.closes.length === 1, 3000), JSON.stringify(t.closes));
+    c.ok('…saying the chat ended while it was away', /ended while you were away/i.test(t.closes[0] ?? ''), JSON.stringify(t.closes));
+    await wait(300);
+    c.equal('…with no new IRC session and no NICK', [today.sessionsCreated, today.received.filter((l) => l === 'NICK oldgateway').length], [1, 1]);
+
+    // ── The socket test when the page comes back (item 5) ──
+    const sleepLinks = [];
+    const z = session(fresh, 'sleeper', { ...QUICK, probeTimeoutMs: 400, onLink: (l) => sleepLinks.push(l) });
+    await until(() => z.joins() === 1);
+    const pings = () => fresh.received.filter((l) => l === 'PING :bmb-check').length;
+    const resumesHealthy = fresh.resumes.length;
+    z.s.wake();
+    c.ok('wake() on a live socket sends one IRC PING', await until(() => pings() === 1));
+    await wait(700);
+    c.equal('…which is answered, so nothing reconnects', [fresh.resumes.length - resumesHealthy, sleepLinks.length, z.closes.length], [0, 0, 0]);
+    // The socket dies with no close event (a phone that slept or changed
+    // network): the server keeps writing into it, and nothing arrives.
+    fresh.blackhole('sleeper');
+    fresh.say('dude', '#candr', 'said while it slept');
+    await wait(100);
+    c.ok('a line written into the dead socket has not arrived', !z.events.some((e) => e.text === 'said while it slept'));
+    const seqBefore = z.s.hold()?.seq ?? 0;
+    z.s.wake();
+    c.ok('wake() on a dead socket: no PONG in time, so it is dropped and resumed', await until(() => sleepLinks.some((l) => l.kind === 'back'), 3000), JSON.stringify(sleepLinks));
+    c.ok('…and the line said while it slept arrives, once', await until(() => z.events.filter((e) => e.text === 'said while it slept').length === 1)
+      && (await wait(200), z.events.filter((e) => e.text === 'said while it slept').length === 1), JSON.stringify(z.events.map((e) => e.text ?? e.type)));
+    c.ok('…the PONG it missed counts in seq too, so the next resume asks for the right line', (z.s.hold()?.seq ?? 0) >= seqBefore + 2, `${seqBefore} → ${z.s.hold()?.seq}`);
+    c.equal('…on the same IRC session, and the session never closed', [fresh.sessionsCreated, z.closes.length], [2, 0]);
+
+    // ── A leave while the socket is away still says QUIT (item 7) ──
+    const walkerLinks = [];
+    const w = session(fresh, 'walker', { ...QUICK, onLink: (l) => walkerLinks.push(l) });
+    await until(() => w.joins() === 1);
+    fresh.refuseResume = true;
+    fresh.drop('walker');
+    await wait(300);
+    fresh.refuseResume = false;
+    w.s.quit();
+    c.ok('a leave on purpose while away goes back only to QUIT, so the nick does not stay held', await until(() => fresh.quits.includes('walker'), 3000), JSON.stringify(fresh.quits));
+    c.ok('…and the session closes once', await until(() => w.closes.length === 1) && (await wait(300), w.closes.length === 1), JSON.stringify(w.closes));
+    c.equal('…and never says it came back (it went back only to leave)', walkerLinks.map((l) => l.kind), ['lost']);
+  } finally {
+    Date.now = realNow;
+    await fresh.close();
+    await today.close();
+  }
+}
+
 // ── 2. The panel in the browser ─────────────────────────────────────────────
 const GATEWAY_PORT = 6790;
 const CANDR_GUID = '7c6f7875-2b73-491e-b32c-e2c8d6e91d53';
@@ -313,8 +424,10 @@ async function browserHalf(APP) {
 
   let fake = await createIrcFake({ port: GATEWAY_PORT, taken: ['takenfan'] });
   fake.banned.add('bannedfan');
-  const { page } = await launchChrome({ name: 'irc', autoplay: true, args: ['--disable-gpu'] });
-  const { send, js, until } = page;
+  const browser = await launchChrome({ name: 'irc', autoplay: true, args: ['--disable-gpu'] });
+  const { page } = browser;
+  // `let`: the "closed app" section moves every helper below to a new tab.
+  let { send, js, until } = page;
   try {
     const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
     // The item a refresh reads again (`loadEpisodeFromFeed`). `feedLive` false
@@ -334,42 +447,46 @@ async function browserHalf(APP) {
       if (u.pathname === '/api/live-status') return { ok: true, items: [] };
       return {};
     };
-    await send('Network.enable');
-    // No public relay: the /live page's Nostr half would otherwise reach the internet.
-    await send('Network.setBlockedURLs', { urls: ['wss://*'] });
-    await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Request' }] });
-    page.on(async (m) => {
-      if (m.method !== 'Fetch.requestPaused') return;
-      const { requestId, request } = m.params;
-      const u = new URL(request.url);
-      try {
-        if (u.pathname === '/api/e2e-audio.wav') {
-          const range = Object.entries(request.headers).find(([k]) => k.toLowerCase() === 'range')?.[1];
-          const mm = range && /bytes=(\d+)-(\d*)/.exec(range);
-          const start = mm ? Number(mm[1]) : 0;
-          const end = mm && mm[2] ? Math.min(Number(mm[2]), AUDIO.length - 1) : AUDIO.length - 1;
-          const body = AUDIO.subarray(start, end + 1);
-          await send('Fetch.fulfillRequest', {
-            requestId, responseCode: mm ? 206 : 200,
-            responseHeaders: [
-              { name: 'content-type', value: 'audio/wav' },
-              { name: 'accept-ranges', value: 'bytes' },
-              { name: 'content-length', value: String(body.length) },
-              ...(mm ? [{ name: 'content-range', value: `bytes ${start}-${end}/${AUDIO.length}` }] : []),
-            ],
-            body: body.toString('base64'),
+    // The fixtures, per tab: a new tab (the "closed app" section) needs them too.
+    const setupTab = async (tab) => {
+      await tab.send('Network.enable');
+      // No public relay: the /live page's Nostr half would otherwise reach the internet.
+      await tab.send('Network.setBlockedURLs', { urls: ['wss://*'] });
+      await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Request' }] });
+      tab.on(async (m) => {
+        if (m.method !== 'Fetch.requestPaused') return;
+        const { requestId, request } = m.params;
+        const u = new URL(request.url);
+        try {
+          if (u.pathname === '/api/e2e-audio.wav') {
+            const range = Object.entries(request.headers).find(([k]) => k.toLowerCase() === 'range')?.[1];
+            const mm = range && /bytes=(\d+)-(\d*)/.exec(range);
+            const start = mm ? Number(mm[1]) : 0;
+            const end = mm && mm[2] ? Math.min(Number(mm[2]), AUDIO.length - 1) : AUDIO.length - 1;
+            const body = AUDIO.subarray(start, end + 1);
+            await tab.send('Fetch.fulfillRequest', {
+              requestId, responseCode: mm ? 206 : 200,
+              responseHeaders: [
+                { name: 'content-type', value: 'audio/wav' },
+                { name: 'accept-ranges', value: 'bytes' },
+                { name: 'content-length', value: String(body.length) },
+                ...(mm ? [{ name: 'content-range', value: `bytes ${start}-${end}/${AUDIO.length}` }] : []),
+              ],
+              body: body.toString('base64'),
+            });
+            return;
+          }
+          await tab.send('Fetch.fulfillRequest', {
+            requestId, responseCode: 200,
+            responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+            body: b64(answer(u)),
           });
-          return;
-        }
-        await send('Fetch.fulfillRequest', {
-          requestId, responseCode: 200,
-          responseHeaders: [{ name: 'content-type', value: 'application/json' }],
-          body: b64(answer(u)),
-        });
-      } catch { /* the page navigated away under a paused request */ }
-    });
-    await send('Page.enable');
-    await send('Runtime.enable');
+        } catch { /* the page navigated away under a paused request */ }
+      });
+      await tab.send('Page.enable');
+      await tab.send('Runtime.enable');
+    };
+    await setupTab(page);
 
     const q = (sel) => `document.querySelector(${JSON.stringify(sel)})`;
     const text = (sel) => js(`(${q(sel)}?.innerText ?? '')`);
@@ -514,7 +631,9 @@ async function browserHalf(APP) {
     // A taken nick is fixed on the SAME connection, from the panel.
     await type('[data-irc-nick]', 'takenfan');
     await click('[data-irc-join]');
-    c.ok('a taken nick says so and offers TRY', await until(`(${q('[data-irc-chat]')}?.innerText ?? '').includes('That nick is taken') && ${q('[data-irc-join]')}?.textContent.trim() === 'TRY'`, 8000));
+    // Chad, 2026-11-24 (hold plan item 8): more than "taken" — the nick is
+    // most often the listener's own, held by their last chat.
+    c.ok('a taken nick says so, says why it may be, and offers TRY', await until(`(${q('[data-irc-chat]')}?.innerText ?? '').includes('That nick is in use. If it was yours a moment ago, your last chat may still hold it. Try another nick, or wait a few minutes.') && ${q('[data-irc-join]')}?.textContent.trim() === 'TRY'`, 8000));
     await type('[data-irc-nick]', 'e2efan');
     await click('[data-irc-join]');
     c.ok('JOIN reaches the server as JOIN #candr', await fakeGot((r) => r.includes('JOIN #candr')));
@@ -523,6 +642,7 @@ async function browserHalf(APP) {
     c.equal('the gateway sees the app\'s own origin', fake.origins[0], new URL(APP).origin);
     c.ok('the history line shows', await until(`(${q('[data-irc-chat]')}?.innerText ?? '').includes(${JSON.stringify(HISTORY)})`, 5000));
     c.ok('…and the empty line is gone', !(await js(`!!${q('[data-irc-empty]')}`)));
+    c.equal('with no hold service the panel sends no HOLD LIVE', fake.holdLives, 0);
 
     fake.say('dude', '#candr', 'hello from irc');
     c.ok('a channel message shows with its nick', await until(`[...document.querySelectorAll('[data-irc-row]')].some((r) => r.innerText.includes('dude') && r.innerText.includes('hello from irc'))`, 5000));
@@ -566,10 +686,12 @@ async function browserHalf(APP) {
     fake.sayRaw(':fake.irc 404 e2efan #candr :Cannot send to channel (+m)');
     c.ok('a refused message (404) is shown, not dropped', await chatHas('Cannot send to channel (+m)'));
 
-    for (let i = 0; i < 250; i++) fake.say('flood', '#candr', `line ${i}`);
-    c.ok('250 lines arrive', await until(`[...document.querySelectorAll('[data-irc-row]')].some((r) => r.innerText.includes('line 249'))`, 10000));
-    c.equal('…and the panel keeps 200 rows', await rows(), 200);
-    c.ok('…the newest ones', (await js(`document.querySelector('[data-irc-list] [data-irc-row]').innerText`)).includes('line 50'));
+    // 2,000 rows (hold plan item 6): a resume after a long hold can bring
+    // ~1,500 lines. The speed on a phone is measured in `--perf`.
+    for (let i = 0; i < 2100; i++) fake.say('flood', '#candr', `line ${i}`);
+    c.ok('2,100 lines arrive', await until(`[...document.querySelectorAll('[data-irc-row]')].some((r) => r.innerText.includes('line 2099'))`, 30000));
+    c.equal('…and the panel keeps 2,000 rows', await rows(), 2000);
+    c.ok('…the newest ones', /line 100\s*$/.test(await js(`document.querySelector('[data-irc-list] [data-irc-row]').innerText`)));
 
     const quitsAtAbout = fake.received.filter((l) => l === 'QUIT :bye').length;
     await js(`[...document.querySelectorAll('[data-live-tabs] [role=tab]')].find((t) => /about/i.test(t.textContent)).click()`);
@@ -578,7 +700,7 @@ async function browserHalf(APP) {
     await js(`[...document.querySelectorAll('[data-live-tabs] [role=tab]')].find((t) => /chat/i.test(t.textContent)).click()`);
     await wait(300);
     c.equal('back on CHAT: no QUIT was sent', fake.received.filter((l) => l === 'QUIT :bye').length, quitsAtAbout);
-    c.equal('…and the rows are kept', await rows(), 200);
+    c.equal('…and the rows are kept', await rows(), 2000);
 
     await js(`window.dispatchEvent(new Event('focus'))`);
     await wait(1500);
@@ -859,6 +981,31 @@ async function browserHalf(APP) {
     c.ok('…says so, and that nothing was missed', await chatHas('Reconnected; nothing was missed.'));
     c.ok('…and the composer works again', await until(`${q('[data-irc-input]')}?.disabled === false && !${q('[data-irc-away]')}`, 3000));
     c.equal('…on the same IRC session, with no QUIT in the channel', [fake.sessionsCreated, fake.quits], [1, []]);
+    // This fake is TODAY's irc-hold: it drops HOLD LIVE, as the real one does,
+    // so the page works against it before the new one deploys.
+    c.equal('the panel sent HOLD LIVE once, after the HOLD TOKEN (none on the resume)', fake.holdLives, 1);
+    c.ok('the held session is saved as soon as it is joined, on this device (localStorage), one key per channel',
+      await until(`!!localStorage.getItem('bmb:irc_hold:#candr') && !sessionStorage.getItem('bmb:irc_hold')`, 3000));
+
+    // The socket test when the page comes back (hold plan item 5): a phone
+    // that slept or changed network keeps a socket with no close event, and
+    // the chat shows nothing new. On `pageshow` and on visible the page sends
+    // an IRC PING; no answer in 5 s and it drops the socket and resumes.
+    const pings = () => fake.received.filter((l) => l === 'PING :bmb-check').length;
+    const reconnects = () => js(`[...document.querySelectorAll('[data-irc-row]')].filter((r) => r.innerText.startsWith('Reconnected')).length`);
+    const healthy = [await reconnects(), fake.resumes.length];
+    await js(`window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))`);
+    c.ok('a page shown again tests its socket with one IRC PING', await fakeGot(() => pings() === 1, 3000));
+    await wait(6000);
+    c.equal('…which is answered, so nothing reconnects', [await reconnects(), fake.resumes.length], healthy);
+    fake.blackhole('e2efan');
+    fake.say('dude', '#candr', 'said while the phone slept');
+    await wait(300);
+    c.ok('a line written into a socket that died quietly does not show', !(await chatHas('said while the phone slept', 100)));
+    await js(`document.dispatchEvent(new Event('visibilitychange'))`);
+    c.ok('the page becomes visible: PING, no PONG in 5 s, so it resumes', await fakeGot(() => pings() === 2, 3000) && await until(`${await reconnects()} < [...document.querySelectorAll('[data-irc-row]')].filter((r) => r.innerText.startsWith('Reconnected')).length`, 10000));
+    c.ok('…and shows what was said while it slept', await chatHas('said while the phone slept', 3000));
+    c.equal('…on the same IRC session, with no QUIT and no NICK', [fake.sessionsCreated, fake.quits, fake.received.filter((l) => /^NICK /.test(l)).length], [1, [], 1]);
 
     fake.drop('e2efan');
     fake.endSession('e2efan');
@@ -905,8 +1052,8 @@ async function browserHalf(APP) {
     await type('[data-irc-input]', 'after the refresh');
     await click('[data-irc-send]');
     c.ok('…and what you type goes out on it', await fakeGot(() => fake.received.includes('PRIVMSG #candr :after the refresh')));
-    c.equal('the saved session and live item are in this tab only (sessionStorage), never in localStorage',
-      await js(`[!!sessionStorage.getItem('bmb:irc_hold'), Object.keys(localStorage).some((k) => /irc_hold|live_refresh/.test(k))].join()`), 'true,false');
+    c.equal('the saved session is on this device (localStorage, per channel); the live item stays in this tab (sessionStorage)',
+      await js(`[!!localStorage.getItem('bmb:irc_hold:#candr'), !!sessionStorage.getItem('bmb:live_refresh'), Object.keys(sessionStorage).some((k) => /irc_hold/.test(k)), Object.keys(localStorage).some((k) => /live_refresh/.test(k))].join()`), 'true,true,false,false');
 
     // A browser that refuses sound with no click after a reload (Firefox and
     // Safari by default): play() rejects with NotAllowedError until a click,
@@ -993,11 +1140,19 @@ async function browserHalf(APP) {
     c.ok('…with the full-screen player still closed', await fullOff());
     await openPlayer('E2E Chad Show live now');
 
-    // Leaving on purpose (another show) still quits, and forgets the session.
+    // Closing the full-screen player is not leaving: the show plays on in the
+    // mini-bar, and Chad's goal is to "do other things" without losing the
+    // chat. There is no "stop" that empties the player.
+    const quitsOf = () => fake.quits.filter((n) => n === 'e2efan').length;
+    const quitsAtClose = quitsOf();
     await closePlayer();
+    await wait(1000);
+    c.ok('closing the full-screen player keeps the chat: no QUIT, the hold still saved',
+      quitsOf() === quitsAtClose && await js(`!!localStorage.getItem('bmb:irc_hold:#candr')`), JSON.stringify(fake.quits));
+    // Leaving on purpose (another show) still quits, and forgets the session.
     await playCard('E2E Other Show');
-    c.ok('another show still quits the channel', await fakeGot(() => fake.quits.includes('e2efan')), JSON.stringify(fake.quits));
-    c.ok('…and forgets the saved session', await until(`!sessionStorage.getItem('bmb:irc_hold')`, 3000));
+    c.ok('another show still quits the channel', await fakeGot(() => quitsOf() > quitsAtClose), JSON.stringify(fake.quits));
+    c.ok('…and forgets the saved session', await until(`!localStorage.getItem('bmb:irc_hold:#candr')`, 3000));
     // The other show is live and playing, but its feed now says it ended.
     feedLive = false;
     await send('Page.reload');
@@ -1017,6 +1172,97 @@ async function browserHalf(APP) {
     await send('Page.navigate', { url: 'about:blank' });
     await wait(1500);
     c.equal('leaving the page sends no QUIT: the hold keeps the session until it runs out', [fake.quits.length, fake.sessions], [quitsBeforeLeave, 1]);
+
+    // A closed app (hold plan item 1). Chad, 7:32 PM on 2026-11-24: he joined
+    // #MMO as BMB, closed the app, opened it, typed BMB, and got "That nick is
+    // taken" — his own held chat had it, and the copy that could resume it
+    // was in the closed app's sessionStorage. A new tab has none of the old
+    // tab's sessionStorage, as a reopened app has none; the hold must come
+    // back from localStorage, with no NICK.
+    const atClose = [fake.sessionsCreated, regs(), fake.quits.length];
+    fake.say('dude', '#candr', 'said while the app was closed');
+    const tab2 = await browser.openTab();
+    await setupTab(tab2);
+    await page.close();
+    ({ send, js, until } = tab2);
+    await send('Page.navigate', { url: `${APP}/live` });
+    c.ok('a new tab (a reopened app) starts with no sessionStorage of the old one',
+      await until(`document.readyState !== 'loading' && !sessionStorage.getItem('bmb:live_refresh')`, 15000));
+    await reopen();
+    c.ok('on that show the chat resumes the held session by itself', await chatHas('said while the app was closed', 10000));
+    c.ok('…shows the rows from before the close', await chatHas(HISTORY, 1000));
+    c.ok('…offers no JOIN, and the composer works', await until(`${q('[data-irc-input]')}?.disabled === false && !${q('[data-irc-join]')}`, 5000));
+    c.equal('…with no NICK or USER, no new IRC session and no QUIT: the nick was never "taken"', [fake.sessionsCreated, regs(), fake.quits.length], atClose);
+    await type('[data-irc-input]', 'back after closing the app');
+    await click('[data-irc-send]');
+    c.ok('…and what you type goes out on the same session', await fakeGot(() => fake.received.includes('PRIVMSG #candr :back after closing the app')));
+
+    if (process.argv.includes('--perf')) {
+      // 2,000 rows on a phone (hold plan item 6): a resume after a long hold
+      // brings ~1,500 lines at once, and the list then holds 2,000. An iPhone
+      // 11's screen, with the CPU 4x slower than this Mac (DevTools' mobile
+      // setting): the A13 is slower than the Mac, so the numbers lean high.
+      // Run it against `next build && next start` for the numbers that count:
+      // `next dev` renders everything twice (Strict Mode) and checks more.
+      console.log('\nBrowser: 2,000 rows on an emulated iPhone 11 (414 x 896, CPU 4x slower)');
+      await send('Emulation.setDeviceMetricsOverride', { width: 414, height: 896, deviceScaleFactor: 2, mobile: true });
+      await send('Emulation.setCPUThrottlingRate', { rate: 4 });
+      await wait(500);
+      await pagerTo('chat');
+      // In the page: when each frame arrived (a socket made from now on), and
+      // when each marked row was painted (two frames after React put it in).
+      await js(`(() => {
+        const W = window.WebSocket;
+        window.__msgAt = [];
+        window.WebSocket = class extends W {
+          constructor(...a) { super(...a); this.addEventListener('message', () => window.__msgAt.push(performance.now())); }
+        };
+        window.__rowAt = new Map();
+        new MutationObserver((ms) => {
+          const marks = [];
+          for (const m of ms) for (const n of m.addedNodes) {
+            const k = /(burst|tick) \\d+/.exec(n.textContent ?? '');
+            if (k) marks.push(k[0]);
+          }
+          if (marks.length) requestAnimationFrame(() => requestAnimationFrame(() => { const t = performance.now(); for (const k of marks) window.__rowAt.set(k, t); }));
+        }).observe(document.querySelector('[data-irc-list]'), { childList: true });
+        window.__long = 0;
+        new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__long += e.duration; }).observe({ type: 'longtask' });
+        return true;
+      })()`);
+      // The burst: 1,500 lines said while the socket was away, replayed by seq.
+      fake.refuseResume = true;
+      fake.drop('e2efan');
+      await until(`!!document.querySelector('[data-irc-away]')`, 5000);
+      for (let i = 0; i < 1500; i++) fake.say('flood', '#candr', `burst ${i}`);
+      await js(`window.__msgAt = []; window.__long = 0; true`);
+      fake.refuseResume = false;
+      await js(`document.dispatchEvent(new Event('visibilitychange'))`);
+      c.ok('a resume that brings 1,500 lines shows them all', await until(`window.__rowAt.has('burst 1499')`, 120000, 50));
+      const burst = await js(`JSON.stringify({ ms: Math.round(window.__rowAt.get('burst 1499') - window.__msgAt[0]), frames: window.__msgAt.length, longTaskMs: Math.round(window.__long) })`).then(JSON.parse);
+      console.log('   1,500-line resume:', JSON.stringify(burst));
+      c.ok(`…painted ${burst.ms} ms after the first frame arrived (at most 3,000)`, burst.ms <= 3000, JSON.stringify(burst));
+      // Fill to 2,000, then time single lines, as a busy chat sends them.
+      for (let i = 0; i < 600; i++) fake.say('flood', '#candr', `fill ${i}`);
+      await until(`document.querySelectorAll('[data-irc-list] [data-irc-row]').length === 2000 && (document.querySelector('[data-irc-list]').lastElementChild?.textContent ?? '').includes('fill 599')`, 60000, 100);
+      c.equal('the list holds 2,000 rows', await rows(), 2000);
+      const ticks = [];
+      for (let i = 0; i < 20; i++) {
+        await js(`window.__msgAt = []; true`);
+        fake.say('dude', '#candr', `tick ${i}`);
+        if (!(await until(`window.__rowAt.has('tick ${i}')`, 10000, 20))) { ticks.push(Infinity); continue; }
+        ticks.push(await js(`Math.round(window.__rowAt.get('tick ${i}') - window.__msgAt[0])`));
+        await wait(150);
+      }
+      const sorted = [...ticks].sort((x, y) => x - y);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      console.log('   one line at 2,000 rows (ms, arrival to paint):', JSON.stringify(ticks));
+      c.ok(`…one new line is painted in ${median} ms (median; at most 100), the slowest ${sorted.at(-1)} ms (at most 250)`, median <= 100 && sorted.at(-1) <= 250);
+      const sticks = await js(`(() => { const el = document.querySelector('[data-irc-list]'); return el.scrollHeight - el.scrollTop - el.clientHeight < 80; })()`);
+      c.ok('…and the list still follows the newest line', sticks);
+      await send('Emulation.setCPUThrottlingRate', { rate: 1 });
+      await send('Emulation.clearDeviceMetricsOverride');
+    }
   } finally {
     await fake.close();
   }
@@ -1024,6 +1270,7 @@ async function browserHalf(APP) {
 
 await nodeHalf();
 await holdHalf();
+await holdLiveHalf();
 const bi = process.argv.indexOf('--browser');
 if (bi !== -1) {
   const next = process.argv[bi + 1];

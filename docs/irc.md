@@ -5,8 +5,9 @@ The design is [`superpowers/specs/2026-11-21-irc-live-chat-design.md`](superpowe
 
 A listener on a live show from the opt-in list (`lib/irc/shows.ts`) types a nick
 and talks in the show's ZeroNode channel, in a panel that looks like the Nostr
-live chat. No account, and nothing kept: not by this app, and by Chad's box only
-for the 5 minutes it holds a dropped connection (below).
+live chat. No account, and little kept: Chad's box holds a dropped connection
+(5 minutes, or while the show is live, below), and this device keeps the held
+session's token and last 200 rows until the hold ends.
 
 ## Why a gateway, and what it may never do
 
@@ -36,10 +37,22 @@ Chad, 2026-11-21: a listener whose phone or wifi drops "for a minute or two"
 comes back to the same session with nothing missed, and the channel does not see
 them quit and join again ("you'll see someone's name just keep disconnecting and
 reconnecting"). IRC cannot do that by itself: the connection IS the session. So
-a **hold service** on Chad's box (repo **thelounge-candr**) stands between Caddy
-and `webircgateway` at the same address, and keeps each listener's IRC
-connection open for **300 s** after their browser drops (Chad's choice). It is
-not a backlog: a listener sees only what was said since they joined.
+a **hold service** on Chad's box (repo **thelounge-candr**, `irc-hold`) stands
+between Caddy and `webircgateway` at the same address, and keeps each
+listener's IRC connection open after their browser drops. It is not a backlog:
+a listener sees only what was said since they joined.
+
+**Hold while live** (Chad, 2026-11-24, during MMO: "If you're listening live in
+the app, you can do other things on your phone or just lock your phone without
+being disconnected from the chat. The idea is to be able to come and go in the
+chat while the show's live without missing anything." He approved the plan in
+`agent-dispatcher/handoffs/irc-hold-live-plan.md`). The page says `HOLD LIVE`;
+the service then holds the chat until **10 minutes after BMB stops showing the
+show LIVE**, at most **6 hours** after the drop, and never less than the
+`<seconds>` of the token (300 s, Chad's first choice). The service alone
+decides whether the show is live: it asks `/api/live-status`, so it uses the
+same LIVE badge the page shows. An irc-hold without it drops `HOLD LIVE` like
+every other HOLD line and holds 300 s, so either side can deploy first.
 
 **The wire contract.** One IRC line per text frame, both ways, as before. A line
 that starts `HOLD ` belongs to the service: it never reaches ZeroNode, and the
@@ -48,29 +61,35 @@ sent toward the page in this session, from 1.
 
 | Direction | Line | When |
 | --- | --- | --- |
-| service → page | `HOLD TOKEN <token> <seconds>` | The first frame the service sends in a new session, as soon as the page's first frame shows it is not a resume, and before any IRC line. `<token>` is at least 128 random bits, base64url; `<seconds>` is the hold (300). |
+| service → page | `HOLD TOKEN <token> <seconds>` | The first frame the service sends in a new session, as soon as the page's first frame shows it is not a resume, and before any IRC line. `<token>` is at least 128 random bits, base64url; `<seconds>` is the SHORTEST hold (300). |
+| page → service | `HOLD LIVE` | Once after each `HOLD TOKEN`, on every show, never as a socket's first frame (the service reads a first HOLD frame as a resume). It means "this page tries to come back until `HOLD GONE`"; it does not say the show is live. Not sent again on a resume: the service keeps it with the session. |
 | page → service | `HOLD RESUME <token> <seq>` | The first frame of a socket that resumes. `<seq>` is the last line the page received. |
 | service → page | `HOLD RESUMED <nick> <channel> <missed>` | The session is held. Then every kept line after `<seq>`, in order, then live lines. `<channel>` is `*` when the nick is in none (kicked); `<missed>` counts the lines after `<seq>` the service no longer has. |
-| service → page | `HOLD GONE :<reason>` | The token is unknown or expired, or the session's IRC connection ended. Then the service closes the socket. |
+| service → page | `HOLD GONE :<reason>` | The token is unknown or expired, or the session's IRC connection ended. Then the service closes the socket. The page's only sign that a hold is over. |
 
 **What the service does.**
 - **It holds on every close of the browser socket except after a `QUIT`.** A
   `QUIT` from the page ends the session at once, as `send_quit_on_client_close`
   does today.
 - **While held it answers `PING` with `PONG`** — the page is not there to — and
-  keeps every other line.
+  keeps every other line. A hold past its first 5 minutes marks the nick
+  `AWAY`; the page never sees the `305`/`306` replies.
 - **It keeps lines while the page is attached too**, in a ring per session
   numbered by `seq`: a phone that changes network leaves a socket the server
   still thinks is open, and whatever is written into it is lost. The page asks
-  for those lines back by `seq`. The ring is bounded (lines and bytes); what
-  falls out is counted in `<missed>`. Each kept line is tagged `@time=<ISO 8601
-  UTC>` when it arrives, unless it carries a time tag already: the reducer reads
-  it (`timeOf`), so a replayed line shows when it was said.
+  for those lines back by `seq`. The ring is bounded (2,000 lines and 384 KiB
+  a chat with the new irc-hold, 500 and 128 KiB before); what falls out is
+  counted in `<missed>`. Each kept line is tagged `@time=<ISO 8601 UTC>` when it
+  arrives, unless it carries a time tag already: the reducer reads it
+  (`timeOf`), so a replayed line shows when it was said.
 - **A resume takes over.** An older socket still attached to the session is
   closed with code `4001` (`resumed elsewhere`).
-- **After 300 s with no resume it sends `QUIT` upstream** and forgets the
-  session. If ZeroNode closes first, the session ends there, and a resume gets
-  `HOLD GONE`.
+- **When the hold ends it sends `QUIT` upstream** and forgets the session. If
+  ZeroNode closes first, the session ends there, and a resume gets `HOLD GONE`.
+- **A new chat from the same address that asks for a HELD chat's nick ends
+  that held chat and gets the nick** (the new irc-hold). It covers the copies
+  that do not share storage (the iOS app, Safari and the Home Screen app) on
+  one network; never a chat a page is attached to.
 - **The rules of the gateway stay.** `Origin` is checked against the same list
   on every socket, resumes included; the visitor address comes only from Caddy;
   no token and no line's text is logged; tokens compare in constant time; the
@@ -78,36 +97,71 @@ sent toward the page in this session, from 1.
 
 **What the page does** (`lib/irc/client.ts`).
 - **It resumes only after a `HOLD TOKEN`**, so against a gateway with no hold
-  service it behaves as before, and either side can deploy first.
-- **On a drop it tries to resume** — after 1 s, 2 s and 4 s, then every 15 s,
-  and at once on `online` and when the tab becomes visible — until the hold runs
-  out. A resume never registers on IRC: it sends `HOLD RESUME` and nothing
-  else. So the page still cannot spend a ZeroNode slot by itself; after `HOLD
-  GONE` or the deadline it shows JOIN AGAIN, as before.
+  service it behaves as before, and either side can deploy first. It says
+  `HOLD LIVE` right after the token (above).
+- **On a drop it tries to resume until `HOLD GONE`**, not until `<seconds>`:
+  after 1 s, 2 s and 4 s, then every 15 s, then every 60 s once it has been
+  away 5 minutes, and at once on `online`, on `pageshow` and when the page
+  becomes visible (`resumeWaitMs`, `check:irc`). With no answer at all it stops
+  after 6 hours (`HOLD_MAX_AWAY_S`). `MAX_HOLD_S` only checks the `<seconds>`
+  of the token line. A resume never registers on IRC: it sends `HOLD RESUME`
+  and nothing else. So the page still cannot spend a ZeroNode slot by itself;
+  after `HOLD GONE` it shows JOIN AGAIN, as before.
+- **A socket that looks attached is tested when the page comes back.** A phone
+  that slept or changed network keeps a socket with no close event, and the
+  chat then shows nothing new. On `pageshow`, `online` and visible the page
+  sends an IRC `PING`; when no frame comes back in 5 s it drops that socket at
+  once (a dead network may deliver its close much later) and resumes. Only with
+  a hold token: without a hold service, dropping the socket ends the chat, so a
+  slow answer must not. The `PONG` is an IRC line like any other: it counts in
+  `seq`.
 - **The rows stay on screen while it reconnects**, and the composer waits.
-- **A refresh is a drop** (Chad, 2026-11-22: "if you lose connection or if you
-  refresh the page, you should come back with your nick and chat"). When the
-  page hides (`pagehide`, and `visibilitychange` to hidden, because a phone may
-  discard a hidden tab), the panel saves the token, the last line's `seq`, the
-  nick and the last 200 rows in THIS TAB's sessionStorage (`bmb:irc_hold`,
-  `storage.ircHold`). The next page in the tab shows the rows and starts with
+- **A refresh, a lock or a closed app is a drop** (Chad, 2026-11-22: "if you
+  lose connection or if you refresh the page, you should come back with your
+  nick and chat"). The panel saves the token, the last line's `seq`, the nick,
+  the channel and the last 200 rows (`storage.ircHold`, `bmb:irc_hold:<channel>`)
+  as soon as the chat is joined or back, and again when the page hides
+  (`pagehide`, and `visibilitychange` to hidden, because a phone may discard a
+  hidden page). The next page on that show shows the rows and starts with
   `HOLD RESUME` (`openIrcSession`'s `resume`): no NICK, no USER, no new ZeroNode
-  slot, and the lines said during the reload arrive by `seq`. The rows are saved
-  and the seq read in the same handler, so they agree. The panel mounts again
-  because the player comes back on its own: the live item, its full-screen
-  player and its playing state are saved beside it (`bmb:live_refresh`,
-  docs/ui.md "A refresh picks a live stream back up"), so a refresh needs no
-  press to return to the chat.
-- **The cost: a closed tab keeps the nick in the channel until the hold runs
-  out** (5 minutes). The page cannot tell a refresh from a closed tab, so it
-  sends no `QUIT` on `pagehide` while a hold token exists (Chad accepted this,
-  2026-11-22). Without a hold service it still quits on `pagehide`.
+  slot, and the lines said while it was away arrive by `seq`. The rows are
+  saved and the seq read in the same handler, so they agree. After a refresh
+  the panel mounts again because the player comes back on its own: the live
+  item, its full-screen player and its playing state are saved beside it
+  (`bmb:live_refresh`, docs/ui.md "A refresh picks a live stream back up"), so
+  a refresh needs no press to return to the chat. A reopened app starts with
+  no player: the chat resumes when the listener opens that show again.
+- **The saved hold is in localStorage, one per channel**; it was
+  sessionStorage until 2026-11-24. Chad's test at 7:32 PM that day: he joined
+  #MMO as BMB, closed the app, opened it again, typed BMB, and got "That nick
+  is taken". His own held chat had the nick, and the tab-scoped copy that could
+  resume it had died with the app. It is cleared on `HOLD GONE`, on `QUIT` and
+  when the listener leaves on purpose, never by a window that lost the session
+  to a takeover (`clear` matches the token: the window that resumed it saves
+  under the same key), and the page stops believing it after 6 hours
+  (`holdSnapshotFresh`). A second window that resumes takes the session over
+  (close `4001`), as before. **The cost, accepted in the plan:** on a shared
+  computer, the next person to open that show's chat in the same browser while
+  the hold lasts goes into this chat.
+- **The cost of a hold: a closed app keeps the nick in the channel until the
+  hold ends**: with `HOLD LIVE`, 10 minutes after the show (marked away), at
+  most 6 hours; with an irc-hold that does not know it, 5 minutes. The page
+  cannot tell a refresh from a closed app, so it sends no `QUIT` on `pagehide`
+  while a hold token exists (Chad accepted this, 2026-11-22, and again in the
+  plan). Without a hold service it still quits on `pagehide`.
+- **Leaving on purpose says `QUIT`, also while away.** Another show or episode
+  unmounts the panel, and it quits. When the socket is away at that moment,
+  the session goes back only to say `QUIT` (a resume, then `QUIT`), or the
+  service would keep the nick for the rest of the show. Two gaps: a leave
+  during the FIRST resume of a saved hold sends nothing and keeps the saved
+  copy (React's development double mount quits that resume at once, and the
+  second mount must find it), and a leave with the network down cannot reach
+  the service at all. Closing the full-screen player is not leaving: the show
+  plays on in the mini-bar, and BMB has no "stop" that empties the player.
 - **The saved hold is read back field by field** (`readHoldSnapshot`,
   `check:irc`): the token goes to the gateway and the rows to the screen, so a
   field of the wrong shape refuses the hold and a row of the wrong shape is
-  dropped. It is sessionStorage, never localStorage, so it dies with the tab
-  and no other tab resumes it. Never put the token in a URL: the gateway logs
-  URLs.
+  dropped. Never put the token in a URL: the gateway logs URLs.
 
 ## The codec: one typed message is one command
 
@@ -155,6 +209,12 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   connection for JOIN AGAIN. A gateway that takes the socket and never
   welcomes is given up after 20 s (`IRC_REGISTER_TIMEOUT_MS`), so "Joining…" is
   never a screen with no way out.
+- **A taken nick on JOIN says why it may be** (Chad, 2026-11-24): "That nick is
+  in use. If it was yours a moment ago, your last chat may still hold it. Try
+  another nick, or wait a few minutes." With the saved hold the page resumes
+  instead of meeting its own nick, so this is the case it cannot cover: another
+  device, on another network. A `/nick` refused in a running chat keeps the
+  short text, "That nick is taken. Try another.", as before.
 - **A refused MESSAGE is shown, never dropped.** 404 (quieted, banned without a
   kick, `+m`) and 492 come back as the server's text under the composer: the
   listener's own row is otherwise the only copy, and they would talk to nobody.
@@ -184,9 +244,10 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   with the chat has less padding and smaller gaps above the tabs, so the chat
   is 465px tall at 1280 x 800 (405px before). Nothing moved; the phone layout
   is unchanged.
-- **It leaves when it goes**: `QUIT :bye` on unmount (the player's SHOW
-  changed, or the show ended and was never joined), and LEAVE, and both forget
-  the saved hold. The page going away is a drop, not a leave (above). The panel is keyed by channel, so a new live episode of the
+- **It leaves when it goes**: `QUIT :bye` on unmount (another show or episode,
+  or the show ended and was never joined), also while the socket is away
+  (above), and it forgets the saved hold. The page going away is a drop, not a
+  leave (above). The panel is keyed by channel, so a new live episode of the
   same show keeps the session. Switching to PLAYED or ABOUT does not unmount it,
   and another show opens on CHAT whatever tab was left open. Neither does a
   flick between the phone's pages, nor a turn of the phone across 640px: the
@@ -197,8 +258,22 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   is public and logged; a key typed there is burnt.
 - **Only `/me` and `/nick` work.** Any other `/command` is answered on screen
   and never sent: a typed `/join` or `/msg NickServ` would act as the listener.
-- **200 rows, 500 characters.** The list keeps the newest 200; a long message
-  is cut into ≤ 350-byte lines by the codec.
+- **2,000 rows, 500 characters.** The list keeps the newest 2,000 (it was 200
+  until the hold while live): a resume after a long hold can bring ~1,500
+  lines, and one MMO show was ~1,350. Only the newest 200 are saved; the resume
+  brings the rest by `seq`. A long message is cut into ≤ 350-byte lines by the
+  codec. **Each row is memoized and the rows paint once per frame**: re-rendering
+  every row per line took ~1 s a line at 2,000 rows under `next dev` (each row
+  formats its time twice through `Intl`; the memo took it to ~190 ms there),
+  and a resume replays ~1,500 lines in one burst. The gap between rows is
+  `[&>*+*]:mt-3`, not `space-y-3`, as a precaution: Tailwind 3 writes that as a
+  `~` selector, which can restyle every row when a full list drops its first
+  one. It was not measured on its own (dev went 190 to 188 ms). **The follow to the
+  newest line is a layout effect**: a passive one let a frame's scroll event
+  measure the bottom past a burst of new rows, and the list stopped following.
+  Measured with `npm run e2e:irc -- --browser <url> --perf` against `next build
+  && next start`, iPhone 11 screen, CPU 4x slower: a 1,500-line resume paints in
+  ~310 ms, and one new line at 2,000 rows in ~55 ms.
 - **No report, no hide, no word filter.** Chad: the channels have moderators who
   can kick, "so it's up to the podcaster for that. I'm just showing it."
 
@@ -213,4 +288,13 @@ real network are tested on the deploy, with Chad. Its section "Chad's iPhone"
 is the phone check that counts: 393 x 852 with the safe areas set, MMO's
 two-line title and a value block (the 390 x 844 section above it spends no
 safe areas, and passed while the phone showed two rows). `--shots <dir>` saves
-the pager's four screens as PNGs.
+the pager's four screens as PNGs. `--perf` adds the 2,000-row speed test
+(above); run it against a production build, because `next dev` renders twice.
+
+The hold while live is tested against TWO fakes, because either side may deploy
+first: `scripts/irc-fake-server.mjs` with `liveHold` is the new irc-hold (a page
+that said `HOLD LIVE` is held past `<seconds>`), and without it today's (`HOLD
+LIVE` dropped, the hold `<seconds>`, then `HOLD GONE`). The Node half moves the
+page's clock past 300 s for the resume after more than 300 s; the browser half
+drives the socket test with a dispatched `pageshow` and `visibilitychange`, and
+the closed app with a new tab, which has none of the old tab's sessionStorage.

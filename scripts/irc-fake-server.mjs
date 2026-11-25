@@ -12,6 +12,12 @@
 // lines of the contract. Without `hold` a session ends with its socket, as
 // webircgateway alone does.
 //
+// Two irc-holds, because either side may deploy first (the hold plan,
+// 2026-11-24). With `liveHold` it is the NEW one: a session whose page sent
+// `HOLD LIVE` outlives its socket for `liveHold` seconds instead (irc-hold
+// holds a live show's chat until it ends). Without it, TODAY's: `HOLD LIVE`
+// is dropped like every other HOLD line, and the hold stays `hold`.
+//
 // It never listens beyond 127.0.0.1.
 import { randomBytes } from 'node:crypto';
 import { WebSocketServer } from 'ws';
@@ -19,13 +25,16 @@ import { WebSocketServer } from 'ws';
 const SERVER = 'fake.irc';
 
 /**
- * @param {{ port?: number, taken?: string[], stall?: string[], hold?: number }} [opts]
+ * @param {{ port?: number, taken?: string[], stall?: string[], hold?: number, liveHold?: number }} [opts]
  *   `taken`: nicks the server answers with 433, as if someone held them.
  *   `stall`: nicks it never welcomes, as a gateway that accepted the socket
  *   and then lost its upstream would.
- *   `hold`: seconds a session outlives a dropped socket (the hold service).
+ *   `hold`: seconds a session outlives a dropped socket (the hold service),
+ *   and the `<seconds>` of its `HOLD TOKEN`.
+ *   `liveHold`: seconds a session whose page sent `HOLD LIVE` outlives it (the
+ *   new irc-hold). 0: `HOLD LIVE` changes nothing (today's irc-hold).
  */
-export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0 } = {}) {
+export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0, liveHold = 0 } = {}) {
   const takenNicks = new Set(taken.map((n) => n.toLowerCase()));
   const stallNicks = new Set(stall.map((n) => n.toLowerCase()));
   /** Nicks whose JOIN is refused with 474, as a channel ban would. Mutable. */
@@ -59,7 +68,9 @@ export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0
     if (hold) {
       s.seq++;
       s.ring.push({ seq: s.seq, line: line.startsWith('@') ? line : `@time=${new Date().toISOString()} ${line}` });
-      if (s.ring.length > 1000) s.ring.shift();
+      // irc-hold keeps 2,000 lines per chat (the hold plan); a little more
+      // here, so a test of the panel's 2,000 rows is not cut by the fake.
+      if (s.ring.length > 2500) s.ring.shift();
     }
     if (s.ws && !s.blackhole && s.ws.readyState === s.ws.OPEN) s.ws.send(line);
   };
@@ -75,7 +86,7 @@ export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0
 
   const newSession = () => {
     sessionsCreated++;
-    const s = { ws: null, nick: null, user: false, registered: false, channels: new Set(), seq: 0, ring: [], token: null, holdTimer: null, blackhole: false, ended: false };
+    const s = { ws: null, nick: null, user: false, registered: false, channels: new Set(), seq: 0, ring: [], token: null, holdTimer: null, blackhole: false, ended: false, live: false };
     if (hold) s.token = randomBytes(16).toString('base64url');
     sessions.add(s);
     return s;
@@ -184,7 +195,11 @@ export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0
           attach(s, ws);
           if (hold) ws.send(`HOLD TOKEN ${s.token} ${hold}`);
         }
-        if (line.startsWith('HOLD ')) { received.push(line); continue; }
+        if (line.startsWith('HOLD ')) {
+          received.push(line);
+          if (line === 'HOLD LIVE' && liveHold) s.live = true;
+          continue;
+        }
         ircLine(s, line);
       }
     });
@@ -194,7 +209,7 @@ export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0
       s.ws = null;
       if (s.ended) return;
       if (!hold) { end(s, 'Web chat closed'); return; }
-      s.holdTimer = setTimeout(() => end(s, 'Web chat closed'), hold * 1000);
+      s.holdTimer = setTimeout(() => end(s, 'Web chat closed'), (s.live ? liveHold : hold) * 1000);
     });
   });
 
@@ -205,6 +220,8 @@ export async function createIrcFake({ port = 0, taken = [], stall = [], hold = 0
     origins,
     resumes,
     quits,
+    /** How many `HOLD LIVE` lines pages sent, whatever the fake did with them. */
+    get holdLives() { return received.filter((l) => l === 'HOLD LIVE').length; },
     /** Sockets ever opened. */
     get connections() { return connections; },
     /** IRC sessions ever started: what ZeroNode would count. */
