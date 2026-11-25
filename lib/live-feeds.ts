@@ -64,7 +64,18 @@ export const HAND_LIVE_FEEDS: readonly { id: number; url: string }[] = [
 /**
  * The two tables, made by the first check run on a database that lacks them
  * (Chad, 2026-11-25: the app makes them, so nobody runs a command). The same
- * text is in scripts/community-schema.sql for a manual run. Idempotent.
+ * text is in scripts/community-schema.sql for a manual run. Idempotent — and
+ * `create table if not exists` never changes a table that exists, so a column
+ * added later needs an `alter table … add column if not exists` in BOTH copies.
+ *
+ * Per feed, beyond the name and the flags the page plans with:
+ *  - `any_item`: the last full read found a `<podcast:liveItem>` of any status,
+ *    so a `304` can renew `last_item_at` without a body.
+ *  - `read_failures`: consecutive failed reads. The page skips a feed at
+ *    `MAX_READ_FAILURES`, so a hung host does not cost every request a read.
+ *  - `read_at`: the last `200`. Past `FULL_READ_EVERY` the check reads without
+ *    validators, because the flags depend on the clock too: a pending item whose
+ *    time passed is over (`liveBroadcastIsOver`) in a feed that never changed.
  *
  * `live_feeds_runs` holds one row: the time of the last run, for the claim.
  */
@@ -79,9 +90,12 @@ create table if not exists live_feeds (
   always_on boolean not null default false,
   has_live boolean not null default false,
   has_pending boolean not null default false,
+  any_item boolean not null default false,
+  read_failures int not null default 0,
   etag text,
   last_modified text,
   checked_at timestamptz,
+  read_at timestamptz,
   last_item_at timestamptz,
   first_seen timestamptz not null default now()
 );
@@ -118,27 +132,46 @@ async function ensureLiveFeedsSchema(pool: Pool): Promise<void> {
 /** Postgres "relation does not exist": the schema has not been run yet. */
 const MISSING_TABLE = '42P01';
 
-/** How long one route read of the list may wait before it answers without it. */
-const READ_TIMEOUT_MS = 2_000;
+/** A failure to CONNECT: the query never ran (the same test as lib/community/store.ts). */
+const CONNECT_FAILED = /connection timeout|Connection terminated unexpectedly|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i;
+
+/**
+ * How long one route request WAITS for the list before it answers without it.
+ * Only the wait: the read itself goes on and fills the cache for the requests
+ * after it, because a new instance's first TLS connect can take seconds
+ * (lib/community/store.ts measured one fail at 3 s), and a read thrown away at
+ * the deadline would make every cold instance pay that again.
+ */
+const READ_WAIT_MS = 2_000;
 
 /** How long an instance reuses the list it read. The check writes every 15 min. */
 const READ_CACHE_MS = 60_000;
 
 /**
- * After a failed read, how long an instance answers `failed` without asking.
- * A database that hangs rather than refuses would otherwise cost every request
- * `READ_TIMEOUT_MS`, and pile connection attempts onto a pool of three.
+ * After a read that FAILED (an error, never the route's own wait), how long an
+ * instance answers `failed` without asking, so an unhealthy database is not
+ * asked by every request.
  */
 const FAIL_BACKOFF_MS = 30_000;
 let lastFailAt = 0;
 
-/** Ceilings on one check run, sized under the cron route's `maxDuration` (60 s). */
-const NEW_PER_RUN = 40;
-const CHECK_PER_RUN = 80;
+/** The page skips a feed after this many failed reads in a row. */
+const MAX_READ_FAILURES = 2;
+
+/**
+ * Ceilings on one check run, sized under the cron route's `maxDuration` (120 s):
+ * at most ceil(24/6)×8 s of Podcast Index lookups plus ceil((24+48)/8)×8 s of
+ * feed reads, each capped at 8 s. A run is normally ~10 s. Each row is written
+ * as its read lands, so a run cut short keeps what it did.
+ */
+const NEW_PER_RUN = 24;
+const CHECK_PER_RUN = 48;
 /** The most feeds the list holds. A public chain can name any feed. */
 const MAX_ROWS = 400;
 /** A station has no schedule to find, so it is re-checked only this often. */
 const STATION_RECHECK = '6 hours';
+/** A feed is read whole, without validators, at least this often. See the schema. */
+const FULL_READ_EVERY = '6 hours';
 /** Two runs this close together are one run (both projects fire; a stranger may GET). */
 const RUN_GAP = '10 minutes';
 
@@ -146,83 +179,107 @@ function pgCode(e: unknown): string | undefined {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : undefined;
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+/** Resolves `timeout` at `ms`; never rejects for the deadline itself. */
+function waitAtMost<T>(p: Promise<T>, ms: number): Promise<T | 'timeout'> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => resolve('timeout'), ms);
     p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
   });
 }
 
-const readCache = createBoundedCache<KnownLiveFeed[] | 'no-table'>({
-  maxAgeMs: READ_CACHE_MS,
-  maxEntries: 1,
-});
+type ListAnswer = KnownLiveFeed[] | 'no-table';
+
+const readCache = createBoundedCache<ListAnswer>({ maxAgeMs: READ_CACHE_MS, maxEntries: 1 });
+
+/** One read in flight per instance; every request that arrives meanwhile shares it. */
+let inflight: Promise<ListAnswer> | null = null;
+
+async function queryList(pool: Pool): Promise<ListAnswer> {
+  type R = {
+    feed_id: string; url: string; podcast_guid: string | null; title: string | null; image: string | null;
+    always_on: boolean; has_live: boolean; has_pending: boolean;
+  };
+  const sql = `select feed_id, url, podcast_guid, title, image, always_on, has_live, has_pending
+                 from live_feeds
+                where (always_on or has_live or has_pending) and read_failures < ${MAX_READ_FAILURES}
+                order by feed_id
+                limit ${MAX_ROWS}`;
+  let res;
+  try {
+    res = await pool.query<R>(sql);
+  } catch (e) {
+    if (pgCode(e) === MISSING_TABLE) return 'no-table';
+    // Once more on a failed CONNECT, as `readQuery` does: a read changes nothing.
+    if (!(e instanceof Error) || !CONNECT_FAILED.test(e.message)) throw e;
+    res = await pool.query<R>(sql);
+  }
+  const feeds: KnownLiveFeed[] = [];
+  for (const r of res.rows) {
+    const id = Number(r.feed_id);
+    const url = httpUrl(r.url);
+    if (!Number.isInteger(id) || id <= 0 || !url) continue;
+    feeds.push({
+      id,
+      url,
+      podcastGuid: r.podcast_guid ?? undefined,
+      title: r.title ?? undefined,
+      image: r.image ?? undefined,
+      alwaysOn: r.always_on,
+      hasLive: r.has_live,
+      hasPending: r.has_pending,
+    });
+  }
+  return feeds;
+}
 
 /**
  * The feeds on the list that the route may read: stations, and feeds whose last
- * check found a live or pending item.
+ * check found a live or pending item, less those that failed their last reads.
  *
  * `off` is "there is no list here" — no database configured, or the table not
- * made yet — and is cached like an answer. `failed` is "the list did not
- * answer": the route answers without it and does not cache that answer.
+ * made yet — and is cached like an answer. `failed` is "the list did not answer
+ * in time": the route answers without it, exactly as before the list existed.
  */
 export async function readKnownLiveFeeds(
   now = Date.now(),
 ): Promise<{ status: 'ok' | 'off' | 'failed'; feeds: KnownLiveFeed[] }> {
   const pool = communityPool();
   if (!pool) return { status: 'off', feeds: [] };
+  const answer = (v: ListAnswer) =>
+    v === 'no-table' ? { status: 'off' as const, feeds: [] } : { status: 'ok' as const, feeds: v };
   const hit = readCache.get('known', now);
-  if (hit) return hit.value === 'no-table' ? { status: 'off', feeds: [] } : { status: 'ok', feeds: hit.value };
-  if (now - lastFailAt < FAIL_BACKOFF_MS) return { status: 'failed', feeds: [] };
+  if (hit) return answer(hit.value);
+  if (!inflight && now - lastFailAt < FAIL_BACKOFF_MS) return { status: 'failed', feeds: [] };
+  if (!inflight) {
+    inflight = queryList(pool)
+      .then(
+        (v) => { readCache.set('known', v, Date.now()); return v; },
+        (e) => {
+          lastFailAt = Date.now();
+          console.warn('[live-feeds] list read failed:', e instanceof Error ? e.message : 'error');
+          throw e;
+        },
+      )
+      .finally(() => { inflight = null; });
+    // The read outlives this request's wait; its failure is logged above.
+    inflight.catch(() => {});
+  }
   try {
-    const res = await withTimeout(
-      pool.query<{
-        feed_id: string; url: string; podcast_guid: string | null; title: string | null; image: string | null;
-        always_on: boolean; has_live: boolean; has_pending: boolean;
-      }>(
-        `select feed_id, url, podcast_guid, title, image, always_on, has_live, has_pending
-           from live_feeds
-          where always_on or has_live or has_pending
-          order by feed_id
-          limit ${MAX_ROWS}`,
-      ),
-      READ_TIMEOUT_MS,
-    );
-    const feeds: KnownLiveFeed[] = [];
-    for (const r of res.rows) {
-      const id = Number(r.feed_id);
-      const url = httpUrl(r.url);
-      if (!Number.isInteger(id) || id <= 0 || !url) continue;
-      feeds.push({
-        id,
-        url,
-        podcastGuid: r.podcast_guid ?? undefined,
-        title: r.title ?? undefined,
-        image: r.image ?? undefined,
-        alwaysOn: r.always_on,
-        hasLive: r.has_live,
-        hasPending: r.has_pending,
-      });
-    }
-    readCache.set('known', feeds, now);
-    return { status: 'ok', feeds };
-  } catch (e) {
-    if (pgCode(e) === MISSING_TABLE) {
-      readCache.set('known', 'no-table', now);
-      return { status: 'off', feeds: [] };
-    }
-    lastFailAt = now;
-    console.warn('[live-feeds] list read failed:', e instanceof Error ? e.message : 'error');
+    const v = await waitAtMost(inflight, READ_WAIT_MS);
+    return v === 'timeout' ? { status: 'failed', feeds: [] } : answer(v);
+  } catch {
     return { status: 'failed', feeds: [] };
   }
 }
 
 export interface LiveFeedsRun {
   status: 'ran' | 'too-soon' | 'off';
-  /** Feeds on the list after this run. */
+  /** Feeds on the list after this run, and how many the page may read. */
   known?: number;
+  readable?: number;
   /** New feeds a public source named and this run read. */
   candidates?: number;
+  /** Of those, how many carried a `<podcast:liveItem>`. */
   added?: number;
   checked?: number;
   notModified?: number;
@@ -237,7 +294,7 @@ interface Row {
   source: string;
   etag: string | null;
   last_modified: string | null;
-  checked_at: Date | null;
+  read_at: Date | null;
   last_item_at: Date | null;
   first_seen: Date;
 }
@@ -248,12 +305,15 @@ interface Row {
  *  1. CLAIM the run with one atomic UPDATE, so the two Vercel projects firing
  *     in the same minute, or a stranger's GET, make one run per `RUN_GAP`.
  *  2. Put the hand list on the list.
- *  3. Read every feed a public source names that the list does not hold yet;
- *     keep the ones carrying a `<podcast:liveItem>`.
- *  4. Re-read the oldest-checked feeds conditionally: a `304` costs no body.
- *     A failed read changes nothing but `checked_at`, so it neither clears a
- *     flag nor counts toward expiry.
- *  5. Remove feeds `liveFeedExpired` says have left.
+ *  3. Read every feed a public source names that the list does not hold yet.
+ *     One carrying a `<podcast:liveItem>` joins with its flags. One from Podcast
+ *     Index's roster without one joins with NO flags — the page never reads
+ *     it, and the next run re-reads it with validators instead of downloading
+ *     it again as a new candidate. A podping-only feed without one is not kept.
+ *  4. Name the feeds that have no title yet.
+ *  5. Re-read the oldest-checked feeds conditionally: a `304` costs no body. A
+ *     failed read changes no flag and does not renew `last_item_at`.
+ *  6. Remove feeds `liveFeedExpired` says have left.
  */
 export async function runLiveFeedsCheck(now = Date.now()): Promise<LiveFeedsRun> {
   const pool = communityPool();
@@ -281,19 +341,17 @@ export async function runLiveFeedsCheck(now = Date.now()): Promise<LiveFeedsRun>
     );
   }
 
-  const rows = (await pool.query<Row>(
-    `select feed_id, url, source, etag, last_modified, checked_at, last_item_at, first_seen from live_feeds`,
-  )).rows;
-  const held = new Set(rows.map((r) => Number(r.feed_id)));
+  const held = (await pool.query<{ feed_id: string }>(`select feed_id from live_feeds`)).rows
+    .map((r) => Number(r.feed_id));
 
-  const added = await addNewFeeds(pool, held, rows.length);
+  const added = await addNewFeeds(pool, new Set(held), held.length);
   await fillMissingNames(pool);
   const checks = await recheckFeeds(pool, new Date(now));
 
   // Judged on the rows as the recheck left them: a feed whose read just now
-  // found a live item must not be expired on the snapshot taken before it.
+  // found a live item must not be expired on a snapshot taken before it.
   const after = (await pool.query<Row>(
-    `select feed_id, url, source, etag, last_modified, checked_at, last_item_at, first_seen from live_feeds`,
+    `select feed_id, url, source, etag, last_modified, read_at, last_item_at, first_seen from live_feeds`,
   )).rows;
   let expired = 0;
   for (const r of after) {
@@ -310,8 +368,19 @@ export async function runLiveFeedsCheck(now = Date.now()): Promise<LiveFeedsRun>
     expired += del.rowCount ?? 0;
   }
 
-  const count = await pool.query<{ n: string }>(`select count(*) as n from live_feeds`);
-  return { status: 'ran', known: Number(count.rows[0]?.n ?? 0), ...added, ...checks, expired };
+  const count = await pool.query<{ n: string; readable: string }>(
+    `select count(*) as n,
+            count(*) filter (where (always_on or has_live or has_pending) and read_failures < ${MAX_READ_FAILURES}) as readable
+       from live_feeds`,
+  );
+  return {
+    status: 'ran',
+    known: Number(count.rows[0]?.n ?? 0),
+    readable: Number(count.rows[0]?.readable ?? 0),
+    ...added,
+    ...checks,
+    expired,
+  };
 }
 
 /** Step 3: feeds Podcast Index's live list or a live podping names that the list lacks. */
@@ -325,50 +394,51 @@ async function addNewFeeds(
     getGlobalLiveItemsDetailed().catch(() => null),
     fetchPodpingLiveFeeds(),
   ]);
+  const onRoster = new Set((roster?.items ?? []).map((e) => Number(e.feedId)));
   const podpingUrl = new Map((podping ?? []).map((f) => [f.feedId, f.url]));
   const ids: number[] = [];
-  for (const id of [...(roster?.items ?? []).map((e) => Number(e.feedId)), ...podpingUrl.keys()]) {
+  for (const id of [...onRoster, ...podpingUrl.keys()]) {
     if (!Number.isInteger(id) || id <= 0 || held.has(id) || ids.includes(id)) continue;
     ids.push(id);
     if (ids.length >= NEW_PER_RUN) break;
   }
-  const room = Math.max(0, MAX_ROWS - rowCount);
-  const take = ids.slice(0, room);
+  const take = ids.slice(0, Math.max(0, MAX_ROWS - rowCount));
   if (!take.length) return { candidates: 0, added: 0 };
 
   const pods = await mapLimit(take, PI_FANOUT, (id) => getPodcast(id).catch(() => null));
-  const found = take.map((id, i) => ({
-    id,
-    url: httpUrl(pods[i]?.url) ?? httpUrl(podpingUrl.get(id)),
-    podcastGuid: pods[i]?.podcastGuid,
-    title: pods[i]?.title,
-    image: pods[i]?.image ?? pods[i]?.artwork,
-    source: roster?.items.some((e) => Number(e.feedId) === id) ? 'pi' : 'podping',
-  }));
-  const readable = found.filter((f): f is typeof f & { url: string } => !!f.url);
-  const reads = await mapLimit(readable, FEED_FANOUT, (f) => checkLiveFeed(f.url, {}));
+  const found = take
+    .map((id, i) => ({
+      id,
+      url: httpUrl(pods[i]?.url) ?? httpUrl(podpingUrl.get(id)),
+      podcastGuid: pods[i]?.podcastGuid,
+      title: pods[i]?.title,
+      image: pods[i]?.image ?? pods[i]?.artwork,
+      source: onRoster.has(id) ? 'pi' : 'podping',
+    }))
+    .filter((f): f is typeof f & { url: string } => !!f.url);
   let added = 0;
-  for (let i = 0; i < readable.length; i++) {
-    const f = readable[i];
-    const r = reads[i];
-    if (r.kind !== 'read' || !r.anyLiveItem) continue;
-    const v = liveFeedVerdict(r.items);
+  await mapLimit(found, FEED_FANOUT, async (f) => {
+    const r = await checkLiveFeed(f.url, {});
+    if (r.kind !== 'read') return;
+    if (!r.anyLiveItem && f.source !== 'pi') return;
+    const v = r.anyLiveItem ? liveFeedVerdict(r.items) : { alwaysOn: false, hasLive: false, hasPending: false };
     const ins = await pool.query(
       `insert into live_feeds
-         (feed_id, url, podcast_guid, title, image, source, always_on, has_live, has_pending,
-          etag, last_modified, checked_at, last_item_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now())
+         (feed_id, url, podcast_guid, title, image, source, always_on, has_live, has_pending, any_item,
+          etag, last_modified, checked_at, read_at, last_item_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), now(),
+               case when $10 then now() else null end)
        on conflict (feed_id) do nothing`,
       [f.id, f.url, f.podcastGuid ?? null, f.title ?? null, f.image ?? null, f.source,
-        v.alwaysOn, v.hasLive, v.hasPending, r.etag ?? null, r.lastModified ?? null],
+        v.alwaysOn, v.hasLive, v.hasPending, r.anyLiveItem, r.etag ?? null, r.lastModified ?? null],
     );
-    added += ins.rowCount ?? 0;
-  }
+    if (r.anyLiveItem) added += ins.rowCount ?? 0;
+  });
   return { candidates: take.length, added };
 }
 
 /**
- * A feed on the list with no title yet (a hand-listed one, or one only a
+ * Step 4: a feed on the list with no title yet (a hand-listed one, or one only a
  * podping named) gets Podcast Index's name, art and guid. The route skips the
  * Podcast Index stage for a listed feed, so without this its row would show no
  * show name. A few per run; a feed Podcast Index does not know stays nameless
@@ -390,14 +460,16 @@ async function fillMissingNames(pool: Pool): Promise<void> {
   }
 }
 
-/** Step 4: the oldest-checked feeds, read with the validators the last read kept. */
+/** Step 5: the oldest-checked feeds, read with the validators the last read kept. */
 async function recheckFeeds(
   pool: Pool,
   runStart: Date,
 ): Promise<{ checked: number; notModified: number; modified: number; failed: number }> {
   // `checked_at < runStart`: a feed added a moment ago in step 3 was just read.
-  const due = (await pool.query<Row>(
-    `select feed_id, url, source, etag, last_modified, checked_at, last_item_at, first_seen
+  // `stale`: no full read for FULL_READ_EVERY, so this one goes without validators.
+  const due = (await pool.query<Row & { stale: boolean }>(
+    `select feed_id, url, source, etag, last_modified, read_at, last_item_at, first_seen,
+            (read_at is null or read_at < now() - interval '${FULL_READ_EVERY}') as stale
        from live_feeds
       where (checked_at is null or checked_at < $1)
         and (not always_on or checked_at is null or checked_at < now() - interval '${STATION_RECHECK}')
@@ -405,34 +477,43 @@ async function recheckFeeds(
       limit ${CHECK_PER_RUN}`,
     [runStart],
   )).rows;
-  const results = await mapLimit(due, FEED_FANOUT, (r) => {
-    const url = httpUrl(r.url);
-    return url
-      ? checkLiveFeed(url, { etag: r.etag, lastModified: r.last_modified })
-      : Promise.resolve({ kind: 'failed' as const });
-  });
   let notModified = 0;
   let modified = 0;
   let failed = 0;
-  for (let i = 0; i < due.length; i++) {
-    const r = results[i];
-    const id = due[i].feed_id;
+  await mapLimit(due, FEED_FANOUT, async (row) => {
+    const url = httpUrl(row.url);
+    const r = url
+      ? await checkLiveFeed(url, row.stale ? {} : { etag: row.etag, lastModified: row.last_modified })
+      : { kind: 'failed' as const };
     if (r.kind === 'read') {
       modified += 1;
       const v = liveFeedVerdict(r.items);
       await pool.query(
         `update live_feeds
-            set checked_at = now(), etag = $2, last_modified = $3,
-                always_on = $4, has_live = $5, has_pending = $6,
+            set checked_at = now(), read_at = now(), read_failures = 0,
+                etag = $2, last_modified = $3,
+                always_on = $4, has_live = $5, has_pending = $6, any_item = $7,
                 last_item_at = case when $7 then now() else last_item_at end
           where feed_id = $1`,
-        [id, r.etag ?? null, r.lastModified ?? null, v.alwaysOn, v.hasLive, v.hasPending, r.anyLiveItem],
+        [row.feed_id, r.etag ?? null, r.lastModified ?? null, v.alwaysOn, v.hasLive, v.hasPending, r.anyLiveItem],
+      );
+    } else if (r.kind === 'not-modified') {
+      notModified += 1;
+      // The body the last full read saw is unchanged, so what it found still holds.
+      await pool.query(
+        `update live_feeds
+            set checked_at = now(), read_failures = 0,
+                last_item_at = case when any_item then now() else last_item_at end
+          where feed_id = $1`,
+        [row.feed_id],
       );
     } else {
-      if (r.kind === 'not-modified') notModified += 1;
-      else failed += 1;
-      await pool.query(`update live_feeds set checked_at = now() where feed_id = $1`, [id]);
+      failed += 1;
+      await pool.query(
+        `update live_feeds set checked_at = now(), read_failures = read_failures + 1 where feed_id = $1`,
+        [row.feed_id],
+      );
     }
-  }
+  });
   return { checked: due.length, notModified, modified, failed };
 }

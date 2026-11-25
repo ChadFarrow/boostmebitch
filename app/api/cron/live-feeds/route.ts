@@ -13,9 +13,9 @@ import { runLiveFeedsCheck } from '@/lib/live-feeds';
 // nothing else may run the check.
 
 export const dynamic = 'force-dynamic';
-// One run reads at most NEW_PER_RUN + CHECK_PER_RUN feeds, FEED_FANOUT at a
-// time, each capped at 8 s.
-export const maxDuration = 60;
+// One run reads at most NEW_PER_RUN + CHECK_PER_RUN feeds (lib/live-feeds.ts,
+// sized under this), FEED_FANOUT at a time, each capped at 8 s.
+export const maxDuration = 120;
 
 export async function GET(req: Request) {
   const limited = rateLimit(req, 'cron-live-feeds', 6);

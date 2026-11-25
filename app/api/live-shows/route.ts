@@ -272,8 +272,9 @@ export async function GET(req: Request) {
       knownList,
     ] = await Promise.all([getGlobalLiveItemsDetailed(), fetchPodpingLiveFeeds(), readKnownLiveFeeds()]);
     // The known-live list never throws either. 'off' is no list on this deploy
-    // (no database, or the table not made yet): the answer is exactly what it
-    // was before the list existed. 'failed' is like a podping failure.
+    // (no database, or the table not made yet), 'failed' is a list that did not
+    // answer in 2 s: either way the answer is exactly what it was before the
+    // list existed.
     const known = knownList.status;
     const podping: 'ok' | 'off' | 'failed' = podpingLive
       ? 'ok'
@@ -445,7 +446,7 @@ export async function GET(req: Request) {
       // every branch where we could not ask.
       return NextResponse.json(
         { items: [], unverifiedFeeds: 0, truncated: false, rosterRows, rosterStatus, rosterKept: roster.length, rosterFeeds: 0, podping, podpingFeeds: 0, known, knownFeeds: 0 },
-        { headers: podping === 'failed' || known === 'failed' ? NO_STORE : LIVE_SHOWS_CACHE },
+        { headers: podping === 'failed' ? NO_STORE : LIVE_SHOWS_CACHE },
       );
     }
 
@@ -583,8 +584,10 @@ export async function GET(req: Request) {
       },
       // A podping list that was configured and did not answer is a thinner
       // answer than the next request may get — never cached, like a PI 429.
-      // The same for a known-live list that did not answer.
-      { headers: couldNotAskPi || podping === 'failed' || known === 'failed' ? NO_STORE : personal ? PERSONAL_CACHE : LIVE_SHOWS_CACHE },
+      // A known-live list that did not answer is NOT: it is an accelerator, and
+      // turning the CDN off during a database outage would make every poll pay
+      // the whole fan-out.
+      { headers: couldNotAskPi || podping === 'failed' ? NO_STORE : personal ? PERSONAL_CACHE : LIVE_SHOWS_CACHE },
     );
   }, 'live-shows fetch failed');
 }

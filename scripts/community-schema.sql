@@ -56,9 +56,12 @@ create table if not exists live_feeds (
   always_on boolean not null default false,
   has_live boolean not null default false,
   has_pending boolean not null default false,
+  any_item boolean not null default false,
+  read_failures int not null default 0,
   etag text,
   last_modified text,
   checked_at timestamptz,
+  read_at timestamptz,
   last_item_at timestamptz,
   first_seen timestamptz not null default now()
 );
