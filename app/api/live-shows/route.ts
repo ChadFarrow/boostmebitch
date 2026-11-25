@@ -113,8 +113,9 @@ const MAX_LIVE_FEEDS = 24;
  * answered two Upcoming rows while a warm one answered nine. A cold plan now
  * reads up to 48 roster feeds — the same count a warm one reads, but each
  * through the Podcast Index stage: at worst `ceil(48 / PI_FANOUT)` = eight PI
- * rounds instead of four. Fluid compute's default ceiling is 300 s; a real run
- * is a few seconds.
+ * rounds instead of four. Measured on the PR preview 2026-11-25: 2.8 s for the
+ * first request, 3.1 s with a 20-feed `?feeds=`, no PI 429. The project's
+ * function time limit was not measured.
  */
 const MAX_ALWAYS_ON_FEEDS = 24;
 
