@@ -12,13 +12,12 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { valueNotRead, authorLine, coverStartSeeks, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { valueNotRead, authorLine, coverStartSeeks, firstPlayableTrack, hasValueRecipients, httpUrl, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
-import { FeedAddress } from './feed-address';
 import { PlaylistZapButton } from './playlist-zap';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
@@ -114,6 +113,25 @@ function ShareButton({ podcast }: { podcast: Podcast }) {
     <CopyLinkButton
       url={showShareUrl(podcast)}
       title="Copy link to this show"
+      className="tile"
+    />
+  );
+}
+
+// Copies a PLAYLIST's own RSS address, as a tile beside SHARE (Chad,
+// 2026-11-18: "i need to show the rss link for the v4vmusic music playlist";
+// 2026-11-25: this tile, in place of the address written out under the title).
+// Every playlist medium, on any host, in Podcast Index or not, on every deploy:
+// a listener takes the address to another app, and a v4vmusic or kolomona
+// playlist has no SHARE link and no heart here, so this tile is the only way to
+// its feed. Through `httpUrl`, because a `?playlist=` link supplies this string.
+function CopyRssButton({ podcast }: { podcast: Podcast }) {
+  if (!isPlaylistMedium(podcast)) return null;
+  return (
+    <CopyLinkButton
+      url={httpUrl(podcast.url)}
+      title="Copy this playlist's RSS feed URL"
+      word="RSS"
       className="tile"
     />
   );
@@ -721,7 +739,6 @@ export function EpisodeList({
               )}
             </div>
           )}
-          {isPlaylist && <FeedAddress podcast={data.podcast} />}
         </div>
         {/* A `basis-full` SIBLING of the text column, not a child of it. DOM
             nesting can't be responsive, and nested under the author line this
@@ -763,12 +780,12 @@ export function EpisodeList({
           <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
             <FavHeart podcast={data.podcast} size="tile" />
             <ShareButton podcast={data.podcast} />
+            <CopyRssButton podcast={data.podcast} />
             {/* ⚡ ZAP the maker of a playlist this site hosts; nothing on any
                 other show (`playlistMaker`). Its feed has no value block
                 and no funding (`buildPlaylistFeedXml`), so no BOOST above and
-                no SUPPORT or STREAM here: three tiles, measured at 390px by
-                `npm run e2e:playlistzap`. The beta-only RSS tile is gone (Chad,
-                2026-11-25): the RSS line under the title already copies the feed. */}
+                no SUPPORT or STREAM here: FAV / SHARE / RSS / ZAP, four
+                tiles on one row, measured at 390px by `npm run e2e:playlistzap`. */}
             <PlaylistZapButton podcast={data.podcast} />
             <SupportButton podcast={data.podcast} />
             {/* `cloneElement` to restyle rather than a prop on

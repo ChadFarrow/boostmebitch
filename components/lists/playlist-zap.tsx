@@ -5,7 +5,7 @@
 // playlist need nostr to make them can we add a zap button at the top to zap
 // the maker of the playlist").
 //
-// A tile in the show header's row of peers (FAV / SHARE / ZAP). It is a
+// A tile in the show header's row of peers (FAV / SHARE / RSS / ZAP). It is a
 // zap to a PERSON, like ⚡ zap on a Nostr note, never a boost: no boostagram,
 // no value block, no keysend (boost invariant 12). docs/money-boosts.md,
 // "A playlist maker's ZAP", holds the reasoning for each rule below.

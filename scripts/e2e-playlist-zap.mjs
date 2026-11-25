@@ -216,6 +216,7 @@ const clickTile = () => js(`(() => { const b = ${TILE}; if (b) b.click(); return
 const setValue = (sel, v) => js(`(() => { const el = ${sel};
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(v)});
   el.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
+const RSS_TILE = `button[title="Copy this playlist's RSS feed URL"]`;
 const closeDialog = () => js(`(() => { const d = ${zapDialog}; d?.querySelector('button[aria-label=Close]')?.click(); return !!d; })()`);
 
 if (OFF) {
@@ -223,6 +224,7 @@ if (OFF) {
   await setup({ as: viewer });
   t.ok('the hosted playlist opens', await open(A));
   t.ok('no ZAP tile with the switch off', await noTileAfterRead());
+  t.ok('the RSS tile is there with the switch off (every deploy)', await js(`!!document.querySelector(${JSON.stringify(RSS_TILE)})`));
   t.equal('no LNURL request', callbacks.length, 0);
   console.log(`\n${t.count - t.fails}/${t.count} passed`);
   relay.close();
@@ -237,11 +239,12 @@ t.ok('the ZAP tile appears once the maker\'s kind:0 is read', await waitFor(TILE
 t.equal('the tile says ZAP', await js(`${TILE}.innerText.trim()`), 'ZAP');
 const row = await js(`(() => { const z = ${TILE}; const cells = [...z.parentElement.children].filter((c) => c.getBoundingClientRect().width > 0);
   return { labels: cells.map((c) => c.innerText.trim()), tops: [...new Set(cells.map((c) => Math.round(c.getBoundingClientRect().top)))], w: Math.round(z.getBoundingClientRect().width), h: Math.round(z.getBoundingClientRect().height) }; })()`);
-// No RSS tile, on beta or off it (Chad, 2026-11-25): the RSS line under the
-// title copies the feed. Run against a NEXT_PUBLIC_BETA=1 server to prove it.
+// The RSS tile is on every playlist, on beta and off it, and the address is not
+// written out under the title (Chad, 2026-11-25: one control, beside SHARE).
 const words = (row?.labels ?? []).map((l) => l.split(/\s+/).pop());
-t.equal('the row is FAV / SHARE / ZAP, no RSS tile', words, ['FAV', 'SHARE', 'ZAP']);
-t.equal('all three tiles on ONE row at 390 px', row?.tops.length, 1);
+t.equal('the row is FAV / SHARE / RSS / ZAP', words, ['FAV', 'SHARE', 'RSS', 'ZAP']);
+t.equal('all four tiles on ONE row at 390 px', row?.tops.length, 1);
+t.ok('no RSS address written out under the title', await js(`!document.querySelector('[data-feed-address]')`));
 t.ok('the tile is at least 24 x 24', row && row.w >= 24 && row.h >= 24, JSON.stringify(row));
 t.ok('no horizontal overflow at 390 px', await overflowFree());
 console.log(`      row: ${JSON.stringify(row)}`);
@@ -315,6 +318,10 @@ t.ok('...and sees no tile', await noTileAfterRead());
 await setup({ as: viewer });
 t.ok('a third-party feed naming the same npub: opens', await open(THIRD));
 t.ok('...and shows no tile (the payee guard)', await noTileAfterRead());
+// Must still work: a playlist this site does NOT host (a v4vmusic feed, say) keeps
+// the RSS tile, which is now its only way to its feed address.
+t.ok('...but keeps the RSS tile', await js(`!!document.querySelector(${JSON.stringify(RSS_TILE)})`));
+t.ok('...and writes no RSS address under the title', await js(`!document.querySelector('[data-feed-address]')`));
 await setup({ as: viewer });
 t.ok('a hosted playlist naming TWO keys: opens', await open(TWO));
 t.ok('...and shows no tile', await noTileAfterRead());
