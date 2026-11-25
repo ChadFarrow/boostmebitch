@@ -19,11 +19,18 @@
 //      when the sheet seeded the slot from a NEWER copy — or SAVE would overwrite a
 //      change made elsewhere instead of meeting the 409.
 //   5. TWO FAST TAPS on + ADD: "✓ ADDED", never "Already in it" over a real add.
+//   6. PUBLISH with an add landing while the request is out. The POST is HELD by the
+//      stub (answered as the route answers a create; it never leaves the machine) until
+//      a second tab's + ADD lands. The add must end in the new playlist's unsaved
+//      changes, said on the published screen, and the guest key's DEFAULT draft must be
+//      untouched: between the success's two renders the maker's slot is the default one,
+//      and a watcher pull there once merged that draft and wrote the published form over it.
 // Each maker case ends with one character typed in the maker, then a read of the slot.
 //
 // AN ADD SENDS NOTHING: every non-GET request of the run is recorded and must be
-// zero. Signed out; section 4 makes this browser's guest key with I DON'T HAVE NOSTR
-// (made and kept in this profile only). PUBLISH and SAVE are never pressed.
+// zero, except section 6's one PUBLISH, which the stub answers. Signed out; section 4
+// makes this browser's guest key with I DON'T HAVE NOSTR (made and kept in this
+// profile only).
 //
 //   NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on npm run dev -- -p 3173
 //   APP_URL=http://localhost:3173 node scripts/e2e-save-to-playlist.mjs   (--headed to watch)
@@ -50,11 +57,12 @@ const seedDraft = (title) => JSON.stringify({
 // ---- the stubbed store (section 4) ------------------------------------------
 const STUB_ID = 'e2e00000-0000-4000-8000-0000000000a1';
 const STUB_TITLE = 'Stub published';
-const stub = { owner: null, updatedAt: '2026-11-20T00:00:00.000Z', served: [] };
+const stub = { owner: null, updatedAt: '2026-11-20T00:00:00.000Z', served: [], created: null, heldPost: null };
+const feedUrlOf = (id) => `https://www.boostmebuddy.com/feeds/playlists/${id}.xml`;
 const stubSongs = Array.from({ length: 10 }, (_, i) => ({ feedGuid: `stub-feed-${i}`, itemGuid: `stub-item-${i}` }));
 const json = (v) => Buffer.from(JSON.stringify(v)).toString('base64');
 const summary = () => ({
-  id: STUB_ID, title: STUB_TITLE, description: '', feedUrl: `https://www.boostmebuddy.com/feeds/playlists/${STUB_ID}.xml`,
+  id: STUB_ID, title: STUB_TITLE, description: '', feedUrl: feedUrlOf(STUB_ID),
   podcastGuid: 'e2e00000-0000-4000-8000-0000000000b2', ownerPubkey: stub.owner, ownerNpub: 'npub1stub', ownerName: null,
   coverUrl: '', songCount: stubSongs.length, createdAt: '2026-11-19T00:00:00.000Z', updatedAt: stub.updatedAt,
 });
@@ -86,13 +94,30 @@ async function setup(tab, { stubStore = false } = {}) {
     if (request.method === 'GET' && u.pathname === '/api/community-playlists' && u.searchParams.get('owner')) {
       // The owner asked about is this browser's guest key: the stub is "theirs".
       stub.owner = u.searchParams.get('owner');
-      return void reply({ playlists: [summary()] });
+      return void reply({ playlists: [summary(), ...(stub.created ? [stub.created] : [])] });
+    }
+    // A PUBLISH: held until the script answers it (section 6). It never reaches the server.
+    if (request.method === 'POST' && u.pathname === '/api/community-playlists') {
+      stub.heldPost = { tab, requestId };
+      return;
     }
     if (request.method === 'GET' && u.pathname === `/api/community-playlists/${STUB_ID}` && stub.owner) {
       stub.served.push(stub.updatedAt);
       return void reply({ playlist: stored() });
     }
     void tab.send('Fetch.continueRequest', { requestId }).catch(() => {});
+  });
+}
+
+/** Answer the held PUBLISH as the route answers a create (201 `{ id, feedUrl }`). */
+async function answerHeldPost(id, title, songCount) {
+  const { tab, requestId } = stub.heldPost;
+  stub.heldPost = null;
+  stub.created = { ...summary(), id, title, feedUrl: feedUrlOf(id), songCount, updatedAt: '2026-11-25T00:00:00.000Z' };
+  await tab.send('Fetch.fulfillRequest', {
+    requestId, responseCode: 201,
+    responseHeaders: [{ name: 'Content-Type', value: 'application/json' }, { name: 'Cache-Control', value: 'no-store' }],
+    body: json({ id, feedUrl: feedUrlOf(id) }),
   });
 }
 
@@ -136,6 +161,8 @@ async function escape(tab) {
 }
 /** Close every dialog (<StartChoice>, the sheet, the fullscreen player). */
 async function closeDialogs(tab) {
+  // Keys go to the FRONT tab; a background tab's Escape can be lost.
+  await tab.send('Page.bringToFront');
   for (let i = 0; i < 6 && await tab.js(`!!document.querySelector('[role="dialog"]')`); i++) await escape(tab);
 }
 
@@ -149,6 +176,7 @@ async function typeIn(tab, selector, text) {
 
 /** Open the fullscreen player's "+ PLAYLIST" sheet. */
 async function openSheet(tab) {
+  await tab.send('Page.bringToFront');
   await tab.js(`document.querySelector(${JSON.stringify(MINI_BAR)}).click()`);
   // ⋯ toggles its menu, which may still be open from the last visit.
   const more = 'button[aria-label="More actions for this episode"]';
@@ -167,9 +195,16 @@ async function addInSheet(tab, title) {
 }
 const rowText = (tab, title) => tab.js(`document.querySelector(${JSON.stringify(addBtn(title))})?.closest('li')?.textContent ?? null`);
 
+/** Controls under `root` smaller than WCAG 2.5.8's 24 x 24 CSS px (a link inside a sentence is exempt). */
+const smallTargets = (tab, root) => tab.js(`[...document.querySelectorAll(${JSON.stringify(`${root} a[href], ${root} button`)})]
+  .filter((el) => !el.closest('p') || !el.classList.contains('btn-inline'))
+  .map((el) => { const r = el.getBoundingClientRect(); return { what: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 40), w: Math.round(r.width), h: Math.round(r.height) }; })
+  .filter((x) => x.w > 0 && (x.w < 24 || x.h < 24))`);
+
 const readSlot = async (tab, slot, owner) => JSON.parse(await tab.js(`localStorage.getItem(${JSON.stringify(slotKey(slot, owner))}) || 'null'`));
 const guids = (s) => (s?.draft?.songs ?? []).map((x) => x.itemGuid);
 
+let guestNpub = null; // section 4 makes the key; section 6 uses its slots
 try {
   // ---- 1. SAME TAB ---------------------------------------------------------
   console.log('\n1. same tab: the maker open, + PLAYLIST from the fullscreen player');
@@ -276,15 +311,19 @@ try {
     t.ok('it lists the published playlist with its track count', page.stub && page.tracks, JSON.stringify(page));
     t.ok('and this device\'s drafts under it, with no "No playlists yet"', page.drafts && !page.empty, JSON.stringify(page));
     t.equal('/playlists at 390 px: no sideways overflow', await C.js(`document.documentElement.scrollWidth - document.documentElement.clientWidth`), 0);
+    t.equal('every control in Your playlists is at least 24 x 24', await smallTargets(C, '[data-your-playlists]'), []);
 
     // The sheet adds to the PUBLISHED playlist's unsaved changes.
     await playAlbumTrack(C, 0);
     await openSheet(C);
     if (!await C.until(`!!document.querySelector(${JSON.stringify(addBtn(STUB_TITLE))})`, 20000)) throw new Error('the sheet never listed the published playlist');
     t.ok('the sheet lists it as published', (await rowText(C, STUB_TITLE))?.includes('10 songs · published'), await rowText(C, STUB_TITLE));
+    t.equal('every control in the sheet is at least 24 x 24', await smallTargets(C, '[role="dialog"]:has([data-new-playlist])'), []);
+    t.equal('the sheet at 390 px: no sideways overflow', await C.js(`document.documentElement.scrollWidth - document.documentElement.clientWidth`), 0);
     t.ok('+ ADD: ✓ ADDED', await addInSheet(C, STUB_TITLE));
     t.ok('the row now says +1 not saved', (await rowText(C, STUB_TITLE))?.includes('+1 not saved'), await rowText(C, STUB_TITLE));
     const owner = await C.js(`Object.keys(localStorage).find((k) => k.endsWith(':${STUB_ID}'))?.split(':')[2] ?? null`);
+    guestNpub = owner;
     t.ok("the edit slot is under the guest key's npub", !!owner && owner.startsWith('npub1'), String(owner));
     const s0 = await readSlot(C, STUB_ID, owner);
     t.equal('it holds the 10 stored songs and the new one', guids(s0).length, 11);
@@ -318,10 +357,16 @@ try {
     await closeDialogs(C);
     t.equal('reopened with no unsaved changes: 10 songs', await makerSongs(C), '10 songs');
     stub.updatedAt = '2026-11-24T00:00:00.000Z';
-    await closeDialogs(D);
-    await openSheet(D);
+    // A NEW tab, so a fresh sheet: D's still shows ✓ on that row, and a press there is
+    // (rightly) ignored. Escape in a background tab did not always close it.
+    await D.close();
+    const D2 = await b.openTab();
+    await setup(D2, { stubStore: true });
+    await playAlbumTrack(D2, 1);
+    await openSheet(D2);
+    if (!await D2.until(`!!document.querySelector(${JSON.stringify(addBtn(STUB_TITLE))})`, 20000)) throw new Error('tab D2: no published row');
     const servedBefore = stub.served.length;
-    t.ok('tab D: + ADD again', await addInSheet(D, STUB_TITLE));
+    t.ok('tab D2: + ADD the same track again (the slot was dropped)', await addInSheet(D2, STUB_TITLE));
     // With no edit slot held, the sheet seeded it from the store, which now answers the
     // NEWER copy. (The slot itself is not read here: the maker writes its own version
     // back as soon as it takes the add in, which is the rule under test.)
@@ -331,7 +376,7 @@ try {
     const s2 = await readSlot(C, STUB_ID, owner);
     t.equal('the maker took the add in: 11 songs', guids(s2).length, 11);
     t.equal('and KEPT the version it loaded, so SAVE still meets the 409', s2?.expectedUpdatedAt, '2026-11-20T00:00:00.000Z');
-    await D.close();
+    await D2.close();
     await C.close();
   }
 
@@ -356,8 +401,62 @@ try {
     await E.close();
   }
 
+  // ---- 6. PUBLISH, with an add landing while it is out ------------------------
+  console.log('\n6. PUBLISH with an add landing while the request is out (the POST held and answered by the stub)');
+  {
+    if (!guestNpub) throw new Error('section 4 made no guest key');
+    const NEW_ID = 'e2e00000-0000-4000-8000-0000000000c3';
+    const six = Array.from({ length: 10 }, (_, i) => ({ feedGuid: `six-feed-${i}`, itemGuid: `six-item-${i}` }));
+    const sixDraft = JSON.stringify({
+      draft: { title: 'Repro six', description: '', ownerName: '', artUrl: null, songs: six },
+      editingId: null, expectedUpdatedAt: null,
+      labels: Object.fromEntries(six.map((x, i) => [x.itemGuid, { title: `Six ${i}` }])), createdAt: Date.now(),
+    });
+    const defaultKey = `bmb:playlist_draft:${guestNpub}`;
+    const keep = JSON.stringify({
+      draft: { title: 'Default keep', description: '', ownerName: '', artUrl: null, songs: [{ feedGuid: 'keep-feed', itemGuid: 'keep-item' }] },
+      editingId: null, expectedUpdatedAt: null, labels: { 'keep-item': { title: 'Keep song' } }, createdAt: 1,
+    });
+    const F = await b.openTab();
+    await setup(F, { stubStore: true });
+    await F.send('Page.navigate', { url: `${APP}/` });
+    await F.until(`document.readyState === 'complete'`, 30000);
+    await F.js(`localStorage.setItem(${JSON.stringify(slotKey('new-reprosix'))}, ${JSON.stringify(sixDraft)}); localStorage.setItem(${JSON.stringify(defaultKey)}, ${JSON.stringify(keep)})`);
+    await F.send('Page.navigate', { url: `${APP}/playlists/make?draft=new-reprosix` });
+    if (!await F.until(`!!document.querySelector('[data-songs-panel]')`, 30000)) throw new Error('the maker never opened');
+    await closeDialogs(F);
+    t.equal('the maker shows the 10 songs', await makerSongs(F), '10 songs');
+    await press(F, '[data-publish]');
+    for (let i = 0; i < 80 && !stub.heldPost; i++) await wait(250);
+    if (!stub.heldPost) throw new Error('PUBLISH sent no POST');
+    t.pass('PUBLISH is out (held by the stub)');
+    const G = await b.openTab();
+    await setup(G, { stubStore: true });
+    await playAlbumTrack(G, 2);
+    await openSheet(G);
+    t.ok('tab G: + ADD to "Repro six" while the PUBLISH is out: ✓ ADDED', await addInSheet(G, 'Repro six'));
+    await G.close();
+    await answerHeldPost(NEW_ID, 'Repro six', 10);
+    if (!await F.until(`!!document.querySelector('[data-testid="late-adds"]')`, 20000)) t.fail('the published screen says a song is not in it', await F.js(`document.querySelector('main')?.textContent?.slice(0, 300)`));
+    else t.ok('the published screen says so', (await F.js(`document.querySelector('[data-testid="late-adds"]').textContent`)).includes('1 song added while this was being sent is not in it yet'));
+    const held = JSON.parse(await F.js(`localStorage.getItem(${JSON.stringify(`${defaultKey}:${NEW_ID}`)}) || 'null'`));
+    t.equal("the new playlist's unsaved changes hold the 10 sent and the late one", guids(held).length, 11);
+    t.equal('at the version just read', held?.expectedUpdatedAt, '2026-11-25T00:00:00.000Z');
+    t.equal('the sent draft is cleared', await F.js(`localStorage.getItem(${JSON.stringify(slotKey('new-reprosix'))})`), null);
+    t.equal("the guest key's DEFAULT draft is untouched", await F.js(`localStorage.getItem(${JSON.stringify(defaultKey)})`), keep);
+    const edit = await F.js(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'EDIT'); if (!b) return false; b.click(); return true; })()`);
+    t.ok('EDIT is on the published screen', edit);
+    await F.until(`!!document.querySelector('[data-songs-panel]')`, 15000);
+    t.equal('EDIT: the maker shows 11 songs, the late one included', await makerSongs(F), '11 songs');
+    await wait(500);
+    t.equal("and the DEFAULT draft is still untouched", await F.js(`localStorage.getItem(${JSON.stringify(defaultKey)})`), keep);
+    await F.close();
+  }
+
   console.log('\nan add sends nothing');
-  t.equal('no POST, PUT or DELETE left any tab in the whole run', writes, []);
+  const publishPost = `POST ${APP}/api/community-playlists`;
+  t.equal('no POST, PUT or DELETE left any tab, but the one PUBLISH', writes.filter((w) => w !== publishPost), []);
+  t.equal('and that PUBLISH was the stubbed one, once', writes.filter((w) => w === publishPost).length, 1);
 } catch (e) {
   t.fail('run', e?.stack || String(e));
 }

@@ -408,12 +408,17 @@ export function PlaylistMaker() {
   const songsNow = useRef(songs);
   songsNow.current = songs;
   useEffect(() => {
-    if (!ready || deleted || loadError) return;
+    // Not while a PUBLISH or SAVE is out: its success moves the form from one slot to
+    // another in two renders, and in between `draftId` names the DEFAULT slot — a pull
+    // there merged the account's other draft into the form, and the next write put
+    // the published form over it. Adds that land meanwhile are not lost: a success
+    // reads them from the slot (`late`), and after a failure this runs again.
+    if (!ready || busy || deleted || loadError) return;
     const pull = () => { takeInAdds(storage.playlistDraft.get(slot, draftId), songsNow.current); };
-    // An add between the load and this subscription.
+    // An add between the load (or the request) and this subscription.
     pull();
     return storage.playlistDraft.watch(slot, draftId, pull);
-  }, [slot, draftId, ready, deleted, loadError, takeInAdds]);
+  }, [slot, draftId, ready, busy, deleted, loadError, takeInAdds]);
 
   // ---- save the draft after a user change ----------------------------------
   useEffect(() => {
