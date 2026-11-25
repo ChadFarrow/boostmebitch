@@ -10,7 +10,7 @@
 // changes of a published one. The maker's PUBLISH or SAVE then signs once and
 // sends one podping, however many songs were added (docs/feeds.md).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApp, isMusicItem } from '@/lib/store';
 import { storage, type PlaylistDraftSlot } from '@/lib/storage';
 import { ModalShell } from '@/components/modal-shell';
@@ -164,6 +164,13 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
   const [newTitle, setNewTitle] = useState('');
   const [newNote, setNewNote] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  // Where focus goes after CREATE: the name form unmounts with the focused CREATE
+  // in it, and focus left on <body> is outside the sheet, so Escape and Tab stopped working.
+  const newBtnRef = useRef<HTMLButtonElement>(null);
+  const [refocus, setRefocus] = useState(false);
+  useEffect(() => {
+    if (refocus && !naming) { newBtnRef.current?.focus(); setRefocus(false); }
+  }, [refocus, naming]);
 
   // The unpublished drafts on this device.
   useEffect(() => {
@@ -246,7 +253,7 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
     if (why) { setNewNote(`This song cannot go in a playlist: ${why}`); return; }
     const slot = startDraftWith(npub, title, song, target.label);
     if (!slot) { setNewNote('Not saved: this browser refused to store it.'); return; }
-    setNaming(false); setNewTitle(''); setNewNote(null);
+    setNaming(false); setNewTitle(''); setNewNote(null); setRefocus(true);
     setStates((s) => ({ ...s, [`l:${slot}`]: 'added' }));
     setReload((n) => n + 1);
   }
@@ -332,7 +339,7 @@ export function SaveToPlaylistSheet({ target, onClose }: { target: SaveTarget; o
               {newNote && <p className="w-full text-xs text-muted">{newNote}</p>}
             </form>
           ) : (
-            <button type="button" className="btn-mini" onClick={() => setNaming(true)} data-new-playlist>
+            <button ref={newBtnRef} type="button" className="btn-mini" onClick={() => setNaming(true)} data-new-playlist>
               + NEW PLAYLIST
             </button>
           )}
