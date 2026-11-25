@@ -63,13 +63,16 @@ export function LiveChatPager({
   initial,
   resetKey,
   bar,
+  onPageChange,
 }: {
   pages: LivePagerPage[];
   /** The page it opens on, and goes back to when `resetKey` changes. */
   initial: string;
-  /** Another show: open on `initial` again (Chad, 2026-11-21: CHAT first). */
+  /** Another show: open on `initial` again. */
   resetKey: string;
   bar: ReactNode;
+  /** The page now shown, so the owner can open on it again after a remount. */
+  onPageChange?: (id: string) => void;
 }) {
   const idBase = useId();
   const pagerRef = useRef<HTMLDivElement | null>(null);
@@ -203,6 +206,9 @@ export function LiveChatPager({
   };
 
   const activeId = ids.includes(active) ? active : ids[0]!;
+  const onPageRef = useRef(onPageChange);
+  onPageRef.current = onPageChange;
+  useEffect(() => { onPageRef.current?.(activeId); }, [activeId]);
 
   return (
     <div data-live-pager className="flex-1 min-h-0 flex flex-col">

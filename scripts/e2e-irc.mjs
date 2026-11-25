@@ -422,6 +422,20 @@ async function browserHalf(APP) {
         inView: r.left >= 0 && r.right <= innerWidth && o.right <= innerWidth, noScroll: de.scrollWidth <= de.clientWidth };
     })()`);
     const fits = (f) => !!f && f.w >= 24 && f.h >= 24 && f.clear && f.inView && f.noScroll;
+    // The phone pager: the page on screen, and a tap on the strip to another.
+    const pagerPage = () => js(`[...document.querySelectorAll('[data-live-page]')].find((p) => Math.abs(p.getBoundingClientRect().left) < 2)?.dataset.livePage ?? null`);
+    const pagerTo = async (id) => {
+      await js(`[...document.querySelectorAll('[data-live-pager] [data-live-tabs] [role=tab]')].find((t) => t.textContent.trim().toLowerCase() === ${JSON.stringify(id)})?.click()`);
+      return until(`(() => { const r = document.querySelector('[data-live-page=${JSON.stringify(id)}]')?.getBoundingClientRect(); return !!r && Math.abs(r.left) < 2; })()`, 3000);
+    };
+    // PLAYER first (Chad, 2026-11-24: "I want the [art] to be the first thing
+    // people see"): the cover whole on screen, above the pinned bar.
+    const artFirst = () => js(`JSON.stringify((() => {
+      const cover = document.querySelector('[data-live-page="player"] .aspect-square')?.getBoundingClientRect();
+      const bar = document.querySelector('[data-live-bar]')?.getBoundingClientRect();
+      return { cover: cover && [Math.round(cover.left), Math.round(cover.top), Math.round(cover.width), Math.round(cover.bottom)], barTop: bar && Math.round(bar.top) };
+    })())`).then(JSON.parse);
+    const artOk = (a) => !!a.cover && a.cover[0] >= 0 && a.cover[1] >= 0 && a.cover[2] >= 300 && a.barTop != null && a.cover[3] <= a.barTop;
     const rows = () => js(`document.querySelectorAll('[data-irc-list] [data-irc-row]').length`);
 
     await send('Page.navigate', { url: `${APP}/live` });
@@ -595,6 +609,10 @@ async function browserHalf(APP) {
     await until(`document.body.innerText.includes('E2E Chad Show')`, 30000);
     await playCard('E2E Chad Show');
     await openPlayer('E2E Chad Show live now');
+    c.equal('the phone pager opens on PLAYER, the art first', await pagerPage(), 'player');
+    const art390 = await artFirst();
+    c.ok('…the cover at least 300px wide, whole, above the pinned bar', artOk(art390), JSON.stringify(art390));
+    c.ok('a tap on CHAT shows the chat', await pagerTo('chat'));
     joins = fake.received.filter((l) => l === 'JOIN #candr').length;
     const joinBox = await js(`JSON.stringify((() => { const r = ${q('[data-irc-join]')}.getBoundingClientRect(); return [r.width, r.height]; })())`).then(JSON.parse);
     c.ok('JOIN is at least 24 x 24', joinBox[0] >= 24 && joinBox[1] >= 24, JSON.stringify(joinBox));
@@ -634,8 +652,23 @@ async function browserHalf(APP) {
     await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
     await send('Page.navigate', { url: `${APP}/live` });
     await until(`document.body.innerText.includes(${JSON.stringify(MMO_TITLE)})`, 30000);
+    const si = process.argv.indexOf('--shots');
+    const shotDir = si !== -1 ? process.argv[si + 1] : null;
+    if (shotDir) mkdirSync(shotDir, { recursive: true });
+    const shot = async (name) => {
+      if (!shotDir) return;
+      const { data } = (await send('Page.captureScreenshot', { format: 'png' })).result;
+      writeFileSync(`${shotDir}/${name}.png`, Buffer.from(data, 'base64'));
+    };
     c.ok('PLAY on MMO', await playCard(MMO_TITLE));
     await openPlayer(MMO_TITLE);
+    await wait(300);
+    c.equal('it opens on PLAYER, the art first', await pagerPage(), 'player');
+    const artMmo = await artFirst();
+    c.ok('…the cover at least 300px wide, whole, above the pinned bar', artOk(artMmo), JSON.stringify(artMmo));
+    c.ok('…with ▶/❚❚ and BOOST under it', await js(`!!document.querySelector('[data-live-bar] [aria-label="Pause"],[data-live-bar] [aria-label="Play"]') && /BOOST/.test(document.querySelector('[data-live-bar]')?.textContent ?? '')`));
+    await shot('0-open');
+    c.ok('a tap on CHAT shows the chat', await pagerTo('chat'));
     const mmoQuits0 = fake.received.filter((l) => l === 'QUIT :bye').length;
     await until(`!!${q('[data-irc-join]')}`, 5000);
     await click('[data-irc-join]');
@@ -658,14 +691,6 @@ async function browserHalf(APP) {
         inputOnScreen: !!input && input.left >= 0 && input.right <= innerWidth && input.bottom <= innerHeight,
       };
     })())`).then(JSON.parse);
-    const si = process.argv.indexOf('--shots');
-    const shotDir = si !== -1 ? process.argv[si + 1] : null;
-    if (shotDir) mkdirSync(shotDir, { recursive: true });
-    const shot = async (name) => {
-      if (!shotDir) return;
-      const { data } = (await send('Page.captureScreenshot', { format: 'png' })).result;
-      writeFileSync(`${shotDir}/${name}.png`, Buffer.from(data, 'base64'));
-    };
     const chad = await chadScreen();
     await shot('1-chat');
     console.log('   measured:', JSON.stringify(chad));
@@ -742,7 +767,9 @@ async function browserHalf(APP) {
     c.ok('landscape: the two-pane layout, chat still joined', !(await js(`!!${q('[data-live-pager]')}`)) && await js(`!!${q('[data-irc-input]')}`));
     await send('Emulation.setDeviceMetricsOverride', { width: 393, height: 852, deviceScaleFactor: 3, mobile: true });
     await wait(800);
-    c.ok('portrait again: the pager on CHAT, chat still joined', await js(`!!${q('[data-live-pager]')}`) && (await activeTab()) === 'chat' && await js(`!!${q('[data-irc-input]')}`));
+    // The turn remounts the pager; it comes back on the page it was left on,
+    // not on PLAYER, which is only where a show STARTS.
+    c.ok('portrait again: the pager back on CHAT, where it was left, chat still joined', await js(`!!${q('[data-live-pager]')}`) && (await activeTab()) === 'chat' && await js(`!!${q('[data-irc-input]')}`));
     c.equal('…and still no QUIT, no second JOIN', [fake.received.filter((l) => l === 'QUIT :bye').length - mmoQuits0, fake.received.filter((l) => l === 'JOIN #MMO').length], [0, 1]);
     await send('Emulation.setSafeAreaInsetsOverride', { insets: {} });
     await send('Emulation.setTouchEmulationEnabled', { enabled: false });

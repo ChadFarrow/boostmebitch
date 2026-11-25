@@ -584,6 +584,8 @@ export function FullscreenPlayer({
   // live, so a chat that is going on is not cut off by a status flag.
   // `liveTab` is the strip that replaces the scroll body while the chat shows.
   const [ircJoinedKey, setIrcJoinedKey] = useState<string | null>(null);
+  // The phone pager's page for this channel; see `pagerStart`.
+  const pagerPageRef = useRef<{ channel: string; page: string } | null>(null);
   const [liveTab, setLiveTab] = useState<LiveTab>('chat');
   const [liveTabChannel, setLiveTabChannel] = useState<string | null>(null);
   const liveTabsId = useId();
@@ -1344,6 +1346,12 @@ export function FullscreenPlayer({
       <BoltIcon /> BOOST
     </button>
   );
+  // THE PAGE THE PAGER OPENS ON: PLAYER, the art first (Chad, 2026-11-24: "I
+  // want the [art] to be the first thing people see … then they can swipe over
+  // to the chat"). The pager remounts on a turn of the phone across 640px, so
+  // the page this show was left on is kept here, and a turn or a reopen lands
+  // where the listener was. Another show starts on PLAYER again.
+  const pagerStart = ircChannel && pagerPageRef.current?.channel === ircChannel ? pagerPageRef.current.page : 'player';
   // The phone pager's pages. The chat page is the portal's second home; a page
   // with nothing in it is left out, as the tabs leave theirs out.
   const pagerPages: LivePagerPage[] = pagerLayout && ircChannel ? [
@@ -1570,16 +1578,19 @@ export function FullscreenPlayer({
           CHAT · PLAYED · ABOUT — with ▶/❚❚, the LIVE state and BOOST pinned
           under them on every page (Chad, 2026-11-24: the chat was "only
           basically two lines"; docs/ui.md, "With the IRC chat on a phone: a
-          pager"). It opens on CHAT. Everything else is the tree below. */}
+          pager"). It opens on PLAYER, the art first, like any live page, and
+          the listener flicks to CHAT (Chad, 2026-11-24). Everything else is
+          the tree below. */}
       {pagerLayout && ircChannel && (
         <LiveChatPager
           resetKey={ircChannel}
-          initial="chat"
+          initial={pagerStart}
+          onPageChange={(page) => { pagerPageRef.current = { channel: ircChannel, page }; }}
           pages={pagerPages}
           bar={
             <div className="flex flex-col gap-2">
-              {/* Here, not on the PLAYER page: the pager opens on CHAT, and a
-                  stream that died must say so on the page the listener is on. */}
+              {/* Here, not on the PLAYER page: a stream that died must say so
+                  on whichever page the listener is on — CHAT, most of a show. */}
               {audioErr && <p className="text-xs text-nostr break-words">⚠ {audioErr}</p>}
               <div className="flex items-center gap-3">
                 <TransportControls size="lg" playOnly />

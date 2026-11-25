@@ -170,7 +170,7 @@ in [`ui.md`](ui.md), "With the IRC chat"). A Nostr stream keeps `<LiveChat>`.
   frame on a phone, where it is a page of its own.
 - **On a phone the chat is a page you flick to** (Chad, 2026-11-24: the tabs
   gave it "only basically two lines" — 74px on his iPhone, 469px now). PLAYER ·
-  CHAT · PLAYED · ABOUT, opening on CHAT, with ▶/❚❚, the LIVE state and BOOST
+  CHAT · PLAYED · ABOUT, opening on PLAYER (the art first), with ▶/❚❚, the LIVE state and BOOST
   pinned under every page. Layout and the reasons in [`ui.md`](ui.md), "With
   the IRC chat on a phone: a pager".
 - **One color per person** (Chad, 2026-11-22: "each user has like their own

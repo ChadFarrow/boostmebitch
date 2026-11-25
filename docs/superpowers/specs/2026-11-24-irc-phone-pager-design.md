@@ -55,8 +55,10 @@ flick … while still playing."
   `<UnderlineTabs>`: a tap scrolls to the page, a scroll moves the underline.
   Pages: PLAYER (cover or video, title, splits), CHAT, PLAYED (only with
   rows), ABOUT (only with content). Off-screen pages are `inert`.
-- **It opens on CHAT**, as the tabs do (Chad, 2026-11-21), and another show
-  opens on CHAT again.
+- **It opens on PLAYER**, the art first, like a normal live page; the listener
+  flicks to CHAT (Chad, 2026-11-24, after the first build opened on CHAT: "I
+  want the [art] to be the first thing people see"). A turn of the phone keeps
+  the page; another show opens on PLAYER again. The `sm:` tabs keep CHAT first.
 - **The pinned bar** is `<TransportControls size="lg" playOnly>`,
   `<LiveEdge variant="mini">` and BOOST. It hides while the composer has
   focus, so the composer sits at the overlay's bottom edge as it does today
