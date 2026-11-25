@@ -422,6 +422,35 @@ async function browserHalf(APP) {
         inView: r.left >= 0 && r.right <= innerWidth && o.right <= innerWidth, noScroll: de.scrollWidth <= de.clientWidth };
     })()`);
     const fits = (f) => !!f && f.w >= 24 && f.h >= 24 && f.clear && f.inView && f.noScroll;
+    // ▶/❚❚ ON THE BAR'S CENTRE LINE (Chad, 2026-11-24, on CHAT during MMO:
+    // "Move the play button to the middle on the bottom"), the LIVE group to
+    // its left and BOOST to its right, nothing touching ▶ or each other, all on
+    // screen. `off` is how far ▶'s centre is from the screen's, in CSS px.
+    const barLayout = () => js(`JSON.stringify((() => {
+      const bar = document.querySelector('[data-live-bar]');
+      if (!bar?.offsetParent) return null;
+      const play = bar.querySelector('[aria-label="Play"],[aria-label="Pause"]');
+      const boost = [...bar.querySelectorAll('button')].find((x) => /BOOST/.test(x.textContent));
+      if (!play || !boost) return null;
+      const R = (el) => el.getBoundingClientRect();
+      const p = R(play), o = R(boost), b = R(bar);
+      const hit = (a, z) => a.right > z.left && a.left < z.right && a.bottom > z.top && a.top < z.bottom;
+      const live = [...bar.querySelectorAll('[data-live-edge] > *')].filter((x) => x.offsetParent || x.getClientRects().length).map(R);
+      const de = document.documentElement;
+      return {
+        off: Math.round(Math.abs((p.left + p.right) / 2 - innerWidth / 2) * 10) / 10,
+        barMid: Math.round(Math.abs((b.left + b.right) / 2 - innerWidth / 2) * 10) / 10,
+        play: [Math.round(p.width), Math.round(p.height)], boost: [Math.round(o.width), Math.round(o.height)],
+        liveW: live.length ? Math.round(Math.max(...live.map((r) => r.right)) - Math.min(...live.map((r) => r.left))) : 0,
+        order: live.every((r) => r.right <= p.left) && o.left >= p.right,
+        clear: !hit(o, p) && live.every((r) => !hit(r, p) && !hit(r, o)),
+        inView: [p, o, ...live].every((r) => r.left >= 0 && r.right <= innerWidth),
+        noScroll: de.scrollWidth <= de.clientWidth,
+        h: Math.round(b.height),
+      };
+    })())`).then(JSON.parse);
+    const centred = (l) => !!l && l.off <= 1 && l.barMid <= 1 && l.order && l.clear && l.inView && l.noScroll
+      && l.play[0] >= 24 && l.play[1] >= 24 && l.boost[0] >= 24 && l.boost[1] >= 24;
     // The phone pager: the page on screen, and a tap on the strip to another.
     const pagerPage = () => js(`[...document.querySelectorAll('[data-live-page]')].find((p) => Math.abs(p.getBoundingClientRect().left) < 2)?.dataset.livePage ?? null`);
     const pagerTo = async (id) => {
@@ -703,6 +732,23 @@ async function browserHalf(APP) {
       chad.barButtons.some(([l]) => /pause|play/i.test(l)) && chad.barButtons.some(([l]) => /boost/i.test(l)) && chad.barButtons.every(([, w, h]) => w >= 24 && h >= 24), JSON.stringify(chad.barButtons));
     c.ok('…and sits above the home indicator (852 - 34)', chad.barBottom !== null && chad.barBottom <= 852 - 34, String(chad.barBottom));
     c.ok('the composer is on screen', chad.inputOnScreen);
+    const lay393 = await barLayout();
+    console.log('   bar:', JSON.stringify(lay393));
+    c.ok('▶/❚❚ is in the middle of the bar, ● LIVE to its left, BOOST to its right, none touching', centred(lay393), JSON.stringify(lay393));
+    c.equal('…and the bar is still 77px', lay393?.h, 77);
+    // The narrowest phone a site still meets: a side of the bar is ~108px.
+    await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 568, deviceScaleFactor: 2, mobile: true });
+    await send('Emulation.setSafeAreaInsetsOverride', { insets: {} });
+    await wait(400);
+    const lay320 = await barLayout();
+    console.log('   bar at 320:', JSON.stringify(lay320));
+    await shot('1b-chat-320');
+    c.ok('…and at 320 px: ▶/❚❚ in the middle, LIVE and BOOST clear of it, on screen, no sideways scroll', centred(lay320), JSON.stringify(lay320));
+    c.ok('…the bar no taller than 77px', !!lay320 && lay320.h <= 77, String(lay320?.h));
+    await send('Emulation.setDeviceMetricsOverride', { width: 393, height: 852, deviceScaleFactor: 3, mobile: true });
+    await send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, left: 0, bottom: 34, right: 0 } });
+    await wait(400);
+    c.equal('back at 393: still on CHAT', await pagerPage(), 'chat');
 
     // Flick and tap. Nothing may reload the audio or touch the IRC session.
     await js(`(() => { window.__loadstarts = 0; for (const m of document.querySelectorAll('audio,video')) m.addEventListener('loadstart', () => { window.__loadstarts++; }); })()`);
@@ -886,7 +932,20 @@ async function browserHalf(APP) {
     const resumeFit = await until(`!!document.querySelector('[data-live-bar] [data-live-resume]')`, 5000) ? await barFit('[data-live-resume]') : null;
     c.ok('…in the phone pager\'s bar at 393 px: at least 24 x 24, clear of ▶ and BOOST, on screen', fits(resumeFit), JSON.stringify(resumeFit));
     c.equal('…and the bar is as tall as it is with "streaming now" (77px)', await barH(), 77);
+    const resume393 = await barLayout();
+    c.ok('…with ▶ still in the middle of the bar', centred(resume393), JSON.stringify(resume393));
+    await shot('5-resume');
     await send('Emulation.setSafeAreaInsetsOverride', { insets: {} });
+    // At 320 the label takes two lines (`wrapResume`): one line is 129px and a
+    // side of the bar is ~108px.
+    await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 568, deviceScaleFactor: 2, mobile: true });
+    await wait(400);
+    const resume320 = await barLayout();
+    const resumeFit320 = await barFit('[data-live-resume]');
+    console.log('   bar at 320 with TAP TO RESUME:', JSON.stringify(resume320), JSON.stringify(resumeFit320));
+    await shot('5b-resume-320');
+    c.ok('…at 320 px: TAP TO RESUME at least 24 x 24, clear of ▶ and BOOST, on screen', fits(resumeFit320), JSON.stringify(resumeFit320));
+    c.ok('…with ▶ in the middle, and the bar no taller than 77px', centred(resume320) && resume320.h <= 77, JSON.stringify(resume320));
     // The mini-bar says it too, and on a 390 px phone the longer label must
     // fit beside ▶ without growing the bar (GO LIVE once ran under ▶ there).
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });

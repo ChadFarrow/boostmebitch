@@ -1592,16 +1592,21 @@ export function FullscreenPlayer({
               {/* Here, not on the PLAYER page: a stream that died must say so
                   on whichever page the listener is on — CHAT, most of a show. */}
               {audioErr && <p className="text-xs text-nostr break-words">⚠ {audioErr}</p>}
-              <div className="flex items-center gap-3">
-                <TransportControls size="lg" playOnly />
-                {/* `flex-wrap`: ▶ TAP TO RESUME (129px) does not fit beside
-                    the LIVE badge between ▶ and BOOST at 393px, and two lines
-                    of it (~44px) still sit inside ▶'s 56px, so the bar keeps
-                    its height. */}
+              {/* ▶/❚❚ IN THE MIDDLE, the LIVE state at the left, BOOST at the
+                  right (Chad, 2026-11-24, on CHAT during MMO: "Move the play
+                  button to the middle on the bottom"). Two `minmax(0,1fr)`
+                  sides keep ▶ on the centre line whatever either side holds;
+                  a plain `1fr` grows to its content and pushes ▶ over. After
+                  the show the left cell stays, empty, for the same reason.
+                  The LIVE group wraps under its badge, and at 320px TAP TO
+                  RESUME wraps its own words (`wrapResume`): a side is ~108px
+                  there and the label is 129px on one line. */}
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-2">
                 {isLive
-                  ? <LiveEdge variant="mini" className="flex-1 min-w-0 flex-wrap gap-y-1" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
-                  : <div className="flex-1" />}
-                {boostButton('flex-none')}
+                  ? <LiveEdge variant="mini" wrapResume className="justify-self-start min-w-0 flex-wrap gap-y-1" behindSec={liveBehindSec} onGoLive={onGoLive} onResume={onResume} />
+                  : <div />}
+                <TransportControls size="lg" playOnly />
+                {boostButton('justify-self-end')}
               </div>
             </div>
           }
