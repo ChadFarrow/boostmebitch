@@ -70,12 +70,19 @@ export interface DetailedRead {
  * about 19 ms.
  *
  * Pass `expect` to reject non-matching events at intake; see `acceptsEvent`.
+ *
+ * `onAccepted` sees each accepted event AS IT ARRIVES, before the read settles:
+ * a HINT for a surface that may show something early (the playlist ZAP tile
+ * lights on the first kind:0). It changes nothing about the read — not the
+ * winner, not the counting, not `trustworthy` — and an event it sees may not
+ * be the newest, so it must never decide anything the settled read decides.
  */
 export async function fetchLatestEventDetailed(
   relays: string[],
   filter: Filter,
   maxWait = QUERY_MAX_WAIT_MS,
   expect?: ReadExpectation,
+  onAccepted?: (e: Event) => void,
 ): Promise<DetailedRead> {
   return withPool(relays, async (pool) => {
     let best: Event | null = null;
@@ -91,6 +98,8 @@ export async function fetchLatestEventDetailed(
         // the genuine event with it.
         if (expect && !acceptsEvent(expect, e)) return false;
         if (!best || e.created_at > best.created_at) best = e;
+        // A throwing hint must not break the read.
+        try { onAccepted?.(e); } catch { /* ignore */ }
         return true;
       },
     );

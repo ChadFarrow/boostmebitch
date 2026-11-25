@@ -47,6 +47,7 @@ export function ZapDialog({
   subtitle,
   noAddressText = "This author has no Lightning address on their Nostr profile, so they can't receive zaps.",
   commentPlaceholder = 'great post',
+  payeePending = false,
 }: {
   recipient: ZapRecipient;
   identity: NonNullable<ReturnType<typeof useApp.getState>['identity']>;
@@ -59,6 +60,12 @@ export function ZapDialog({
   subtitle?: string;
   /** Shown instead of the form when `recipient` has no lud16/lud06. */
   noAddressText?: string;
+  /**
+   * The payee is still being read (the playlist ZAP opens on a hint). The
+   * dialog says so, in place of `noAddressText`, and offers no Send until the
+   * caller passes the address the settled read found.
+   */
+  payeePending?: boolean;
   commentPlaceholder?: string;
 }) {
   // The zap dialog's OWN saved default (SET AS DEFAULT, below the field),
@@ -143,7 +150,12 @@ export function ZapDialog({
           <h3 className="font-display text-lg">⚡ Zap {zapTarget}</h3>
           {subtitle && <p className="text-xs text-muted mt-1 break-words">{subtitle}</p>}
         </header>
-        {!canZap && (
+        {!canZap && payeePending && (
+          <p className="text-sm text-muted" role="status" data-zap-payee-pending>
+            Reading the maker&apos;s Lightning address from their Nostr profile…
+          </p>
+        )}
+        {!canZap && !payeePending && (
           <p className="text-sm text-red-400">{noAddressText}</p>
         )}
         {canZap && (

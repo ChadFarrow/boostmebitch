@@ -12,6 +12,8 @@ import { fetchProfileDetailed, receiptRefUrls } from '@/lib/nostr';
 import { noteBrandFor } from '@/lib/brand';
 import { COMMUNITY_FEED_ORIGIN } from '@/lib/curated-playlists';
 import { useGuestKey } from '@/lib/community/use-guest-key';
+import { storage } from '@/lib/storage';
+import type { ProfileMetadata } from '@/lib/nostr/profile-metadata';
 import { BoltIcon } from '../icons';
 import { ZapTilePending } from './zap-tile-pending';
 
@@ -28,11 +30,34 @@ type MakerRead =
   /** Nothing to believe: no profile in hand and the read was degraded. */
   | { state: 'unread' };
 
-async function readMaker(pubkey: string): Promise<MakerRead> {
+/**
+ * A HINT that the maker can be zapped: the name and whether a Lightning address
+ * is there. It LIGHTS the tile and nothing more — it never names the payee. The
+ * device's cached kind:0 gives one at once; else the first kind:0 a relay sends.
+ * Measured on beta 2026-11-25: purplepag.es answered at 1.0 s and 2.9 s, while
+ * the settled read waited on relays that never connected (damus, nos.lol) or
+ * never answered (primal) until 2.6 s and 4.5 s — on a desktop line; a phone
+ * waits longer (Chad: "It just takes a minute to light up").
+ */
+type MakerHint = { name?: string; zappable: boolean };
+
+function hintOf(p: ProfileMetadata | null | undefined): MakerHint | null {
+  if (!p) return null;
+  return {
+    name: p.display_name?.trim() || p.name?.trim() || undefined,
+    zappable: !!(p.lud16?.trim() || p.lud06?.trim()),
+  };
+}
+
+async function readMaker(pubkey: string, onHint?: (h: MakerHint) => void): Promise<MakerRead> {
   try {
     // `fetchProfileDetailed`, never `fetchProfile`: "this maker has no address"
     // is a claim on screen, and a bare null is also what a dead relay set gives.
-    const { profile, trustworthy } = await fetchProfileDetailed(pubkey);
+    const { profile, trustworthy } = await fetchProfileDetailed(
+      pubkey,
+      undefined,
+      onHint ? (p) => { const h = hintOf(p); if (h) onHint(h); } : undefined,
+    );
     const name = profile?.display_name?.trim() || profile?.name?.trim() || undefined;
     const lud16 = profile?.lud16?.trim() || undefined;
     const lud06 = profile?.lud06?.trim() || undefined;
@@ -49,12 +74,23 @@ export function MakerZap({ podcast, maker }: { podcast: Podcast; maker: FeedNpub
   const guest = useGuestKey();
   // Keyed by pubkey, so a read for the previous playlist never paints this one.
   const [read, setRead] = useState<{ pubkey: string; r: MakerRead } | null>(null);
+  // The hint, keyed by pubkey like the read. Seeded from the device's cache.
+  const [hint, setHint] = useState<{ pubkey: string; h: MakerHint } | null>(() => {
+    const h = hintOf(storage.profile.get(maker.pubkey));
+    return h ? { pubkey: maker.pubkey, h } : null;
+  });
   const [open, setOpen] = useState(false);
   const [rereading, setRereading] = useState(false);
 
   useEffect(() => {
     let live = true;
-    void readMaker(maker.pubkey).then((r) => { if (live) setRead({ pubkey: maker.pubkey, r }); });
+    const cached = hintOf(storage.profile.get(maker.pubkey));
+    setHint(cached ? { pubkey: maker.pubkey, h: cached } : null);
+    void readMaker(maker.pubkey, (h) => {
+      // A cached "zappable" is not taken back by a first answer: the settled
+      // read decides that. Only a hint that lights the tile is kept early.
+      if (live && h.zappable) setHint({ pubkey: maker.pubkey, h });
+    }).then((r) => { if (live) setRead({ pubkey: maker.pubkey, r }); });
     return () => { live = false; };
   }, [maker.pubkey]);
 
@@ -64,7 +100,15 @@ export function MakerZap({ podcast, maker }: { podcast: Podcast; maker: FeedNpub
   // (a guest-made playlist). Nothing to zap. `undefined` is the guest key still
   // being read, so the tile waits rather than flashing on the maker's own page.
   const self = identity?.pubkey === maker.pubkey || (guest != null && guest.pubkey === maker.pubkey);
-  const showTile = !self && guest !== undefined && (cur.state === 'found' || cur.state === 'unread');
+  const curHint = hint?.pubkey === maker.pubkey ? hint.h : null;
+  // Lit by the settled read, or EARLY by a hint while that read is still out.
+  // A hint never outlives the read: once it lands, its answer alone decides.
+  const lit = cur.state === 'found' || cur.state === 'unread' || (cur.state === 'reading' && !!curHint?.zappable);
+  const showTile = !self && guest !== undefined && lit;
+  // The payee is named ONLY by the settled read. A hint can be stale (a cache
+  // up to seven days old, a first answer that is not the newest), so until the
+  // read lands the dialog says so and offers no Send.
+  const payeePending = cur.state === 'reading';
   // Until the reads answer, the tile's place is held (`<ZapTilePending>`), so
   // the row does not reflow from three tiles to four under the reader's thumb.
   // A signed-in maker is known at once and holds nothing.
@@ -86,6 +130,7 @@ export function MakerZap({ podcast, maker }: { podcast: Podcast; maker: FeedNpub
   }
 
   const makerName = (cur.state === 'found' || cur.state === 'none' ? cur.name : undefined)
+    || (cur.state === 'reading' ? curHint?.name : undefined)
     || podcast.author?.trim()
     || undefined;
   const lud16 = cur.state === 'found' ? cur.lud16 : undefined;
@@ -129,6 +174,7 @@ export function MakerZap({ podcast, maker }: { podcast: Podcast; maker: FeedNpub
           }}
           subtitle={subtitle}
           noAddressText={noAddressText}
+          payeePending={payeePending}
           commentPlaceholder="great playlist"
         />
       )}

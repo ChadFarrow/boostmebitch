@@ -21,6 +21,7 @@ import { localAppUrl } from './local-target.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, verifyEvent } from 'nostr-tools';
 import { bech32 } from '@scure/base';
 import { randomUUID } from 'node:crypto';
+import { WebSocketServer } from 'ws';
 
 const OFF = process.argv.includes('--off');
 const APP = localAppUrl('http://localhost:3125');
@@ -44,6 +45,11 @@ const relay = createRelay({ port: 0, log: null });
 const PORT = await relay.ready;
 const LIVE = `ws://127.0.0.1:${PORT}`;
 const DEAD = 'ws://127.0.0.1:9'; // discard port: refused at once, so the read is degraded
+// A relay that accepts and then never answers: the read waits its full 4 s, as
+// it does on a phone behind a slow relay, and then settles degraded.
+const silent = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+await new Promise((r) => silent.on('listening', r));
+const SILENT = `ws://127.0.0.1:${silent.address().port}`;
 const now = Math.floor(Date.now() / 1000);
 const profile = (k, content) => {
   const e = finalizeEvent({ kind: 0, created_at: now - 60, tags: [], content: JSON.stringify(content) }, k.sk);
@@ -442,6 +448,40 @@ t.ok('signed by the viewer', nz.pubkey === viewer.pk && verifyEvent(nz));
 t.equal('the stub wallet paid it', await js(`window.__paid`), ['lnbc1000n1pe2estubinvoice']);
 t.equal('the server LNURL fallback was never used', lnurlProxyHits.length, 0);
 
+// ---- 7. a hint lights the tile; only the settled read names the payee ---------
+console.log('--- 7. the cached kind:0 lights ZAP at once; Send waits for the settled read ---');
+// The device's profile cache, as `storage.profile.set` writes it.
+const cacheProfile = (k, v) => js(`(() => { localStorage.setItem('bmb:profile4:${k.pk}', ${JSON.stringify(JSON.stringify({ t: Date.now(), v }))}); return 1; })()`);
+callbacks.length = 0;
+await setup({ as: viewer, relayTarget: SILENT });
+await cacheProfile(maker, { name: 'e2emaker', display_name: MAKER_NAME, lud16: `stale-name@${STUB}` });
+t.ok('the playlist opens while every relay is silent', await open(A));
+const opened = Date.now();
+t.ok('the cached profile lights ZAP well before the read can settle', await waitFor(TILE, 3000) && Date.now() - opened < 3000, `${Date.now() - opened} ms`);
+t.ok('...the press opens the dialog', (await clickTile()) && await waitFor(zapDialog, 5000));
+t.ok('...which says it is reading the address', await js(`!!${zapDialog}.querySelector('[data-zap-payee-pending]')`), await js(`${zapDialog}?.innerText`));
+t.ok('...and offers no Send while it reads', await js(`![...${zapDialog}.querySelectorAll('button')].some((b) => /^Send /.test(b.textContent.trim()))`));
+t.ok('when the silent read settles: "could not read", still no Send', await waitFor(`/Could not read the maker's Nostr profile/.test(${zapDialog}?.innerText ?? '')`, 15000), await js(`${zapDialog}?.innerText`));
+t.ok('...and no Send', await js(`![...${zapDialog}.querySelectorAll('button')].some((b) => /^Send /.test(b.textContent.trim()))`));
+await closeDialog();
+t.equal('no invoice was requested on a hint alone', callbacks.length, 0);
+
+await setup({ as: viewer });
+await cacheProfile(maker, { name: 'e2emaker', display_name: MAKER_NAME, lud16: `stale-name@${STUB}` });
+t.ok('a stale cached address, live relays: the playlist opens', await open(A));
+t.ok('...ZAP opens the form once the read lands', (await waitFor(TILE, 3000)) && (await clickTile()) && await waitFor(`[...(${zapDialog}?.querySelectorAll('button') ?? [])].some((b) => /^Send /.test(b.textContent.trim()))`, 15000));
+await js(`[...${zapDialog}.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Send 100 sats').click()`);
+t.ok('...it zaps', await waitFor(`/zapped 100 sats/i.test(${zapDialog}?.innerText ?? '')`, 15000), await js(`${zapDialog}?.innerText`));
+const hz = JSON.parse(new URL(callbacks[0] ?? `https://${STUB}/none`).searchParams.get('nostr') ?? '{}');
+t.equal('...to the address the RELAYS hold, never the cached one', (hz.tags ?? []).filter((x) => x[0] === 'lnurl').map((x) => x[1]), [lnurl]);
+await waitFor(`!${zapDialog}`, 8000);
+
+await setup({ as: viewer });
+await cacheProfile(noAddr, { name: 'noaddr', lud16: `old@${STUB}` });
+t.ok('a cached address for a maker who has since removed it: opens', await open(NOADDR));
+t.ok('...the settled read takes the tile away', await noTileAfterRead());
+
 console.log(`\n${t.count - t.fails}/${t.count} passed`);
+silent.close();
 relay.close();
 await exit(t.fails ? 1 : 0);
