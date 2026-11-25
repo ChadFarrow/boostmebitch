@@ -17,8 +17,14 @@
 // Two shapes on one loop: `readCappedBytes` THROWS past the cap (a half-read
 // feed is not a feed) and `readBytesUpTo` STOPS at it and says so (a prefix is
 // exactly what /api/og/boost.png wants from a 19 MB animated cover).
+// `readPrefixThenScan` keeps a prefix and reads past it WITHOUT keeping it, to
+// prove a named tag is absent from the rest (a live read of a feed past 8 MB).
 
-/** 8 MB. Larger than any real RSS feed, chapters file or transcript. */
+/**
+ * 8 MB. Larger than almost every real RSS feed, chapters file or transcript —
+ * NOT every one: a Podhome feed with 2,400 episodes measured 11.9 MB on
+ * 2026-11-25. A live read goes past it with `readPrefixThenScan`.
+ */
 export const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 /**
@@ -167,6 +173,153 @@ export async function readCappedBytes(
     at += c.byteLength;
   }
   return joined;
+}
+
+/**
+ * Keep the first `keepBytes` of a body, read the REST without keeping it, and
+ * say whether `needle` appears anywhere past what was kept.
+ *
+ * The fourth shape, for a document that can outgrow every cap we will hold in
+ * memory while the caller needs only a part of it that it can NAME. A live read
+ * (`lib/pi.ts`) wants only the `<podcast:liveItem>` blocks of a feed. Measured
+ * 2026-11-25: one Podhome feed with 2,400 episodes was 11.9 MB, past
+ * `MAX_BODY_BYTES`, so every live read of it threw and `/live` showed Podcast
+ * Index's two stale rows for that show as LIVE, UNCHECKED — one of them a
+ * broadcast scheduled for the next day.
+ *
+ * A prefix alone proves PRESENCE, never ABSENCE: a live item past the cut is
+ * missed, and a live read that answers `ok` deletes every item it omits
+ * (`mergeLiveOverPi`). So the rest is scanned, and `needleAfterKept: false` is
+ * the proof that nothing past the cut mentions the needle. The scan is ASCII
+ * case-insensitive and carries `needle.length - 1` bytes across every seam —
+ * the kept prefix's own included — so a tag split across two chunks, or across
+ * the cut, is still found. A match stops the read at once: the answer is known.
+ * A match inside CDATA is a false alarm, and a false alarm only costs the read
+ * (the caller reports it as unreadable, which is what it was before this).
+ *
+ * Still CAPPED: past `maxBytes` in all it THROWS, like `readCappedBytes`, because
+ * an unbounded drain is an unbounded download even when nothing is kept. Memory
+ * is `keepBytes` plus one chunk. `truncated` says whether the body went past
+ * `keepBytes` at all; when it did not, `bytes` is the whole body and the scan
+ * never ran.
+ */
+export async function readPrefixThenScan(
+  res: CappableBody,
+  keepBytes: number,
+  maxBytes: number,
+  needle: string,
+): Promise<{ bytes: Uint8Array; truncated: boolean; needleAfterKept: boolean }> {
+  const pat = asciiLowerBytes(needle);
+  if (!pat.length) throw new Error('readPrefixThenScan: empty needle');
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new Error(`response too large (${declared} bytes, max ${maxBytes})`);
+  }
+
+  const kept: Uint8Array[] = [];
+  let keptLen = 0;
+  let total = 0;
+  let truncated = false;
+  let found = false;
+  // The last `pat.length - 1` bytes seen, so a match across a seam is whole.
+  // `null` until the first byte past the cut, when it is seeded from the kept
+  // prefix's tail.
+  let carry: Uint8Array | null = null;
+
+  /** Feed one chunk in. Returns true once the answer is known (a match). */
+  const take = (value: Uint8Array): boolean => {
+    total += value.byteLength;
+    if (total > maxBytes) throw new Error(`response too large (exceeded ${maxBytes} bytes)`);
+    const room = keepBytes - keptLen;
+    let rest = value;
+    if (room > 0) {
+      const head = value.byteLength > room ? value.subarray(0, room) : value;
+      kept.push(head);
+      keptLen += head.byteLength;
+      rest = value.subarray(head.byteLength);
+    }
+    if (!rest.byteLength) return false;
+    truncated = true;
+    if (carry === null) carry = tailOf(kept, pat.length - 1);
+    const window = joinBytes([carry, rest]);
+    if (indexOfAsciiCi(window, pat) !== -1) {
+      found = true;
+      return true;
+    }
+    carry = window.slice(Math.max(0, window.byteLength - (pat.length - 1)));
+    return false;
+  };
+
+  if (!res.body) {
+    // Same as `readCappedBytes`' bodyless branch: already buffered, so it can
+    // only be measured after — but it is still measured and still refused.
+    const all = new Uint8Array(await res.arrayBuffer());
+    if (all.byteLength > maxBytes) {
+      throw new Error(`response too large (${all.byteLength} bytes, max ${maxBytes})`);
+    }
+    take(all);
+  } else {
+    const reader = res.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (take(value)) break;
+      }
+    } finally {
+      // Stops the transfer on a match and on the throw alike.
+      await reader.cancel().catch(() => {});
+    }
+  }
+  return { bytes: joinBytes(kept), truncated, needleAfterKept: found };
+}
+
+function asciiLowerBytes(s: string): Uint8Array {
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c > 0x7f) throw new Error('readPrefixThenScan: the needle must be ASCII');
+    out[i] = c >= 0x41 && c <= 0x5a ? c + 0x20 : c;
+  }
+  return out;
+}
+
+/** First index of `pat` (already lower-case) in `hay`, ASCII case-insensitive. */
+function indexOfAsciiCi(hay: Uint8Array, pat: Uint8Array): number {
+  const last = hay.byteLength - pat.byteLength;
+  outer: for (let i = 0; i <= last; i++) {
+    for (let j = 0; j < pat.byteLength; j++) {
+      const b = hay[i + j];
+      if ((b >= 0x41 && b <= 0x5a ? b + 0x20 : b) !== pat[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+function tailOf(chunks: Uint8Array[], n: number): Uint8Array {
+  if (n <= 0) return new Uint8Array(0);
+  const parts: Uint8Array[] = [];
+  let need = n;
+  for (let i = chunks.length - 1; i >= 0 && need > 0; i--) {
+    const c = chunks[i];
+    const piece = c.byteLength > need ? c.subarray(c.byteLength - need) : c;
+    parts.unshift(piece);
+    need -= piece.byteLength;
+  }
+  return joinBytes(parts);
+}
+
+function joinBytes(parts: Uint8Array[]): Uint8Array {
+  let len = 0;
+  for (const p of parts) len += p.byteLength;
+  const out = new Uint8Array(len);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.byteLength;
+  }
+  return out;
 }
 
 /** {@link readCappedText}, then `JSON.parse`. */

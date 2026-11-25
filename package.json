@@ -138,6 +138,7 @@
     "check:cache": "node --experimental-strip-types scripts/check-bounded-cache.mjs",
     "check:relaysocket": "node --experimental-strip-types scripts/check-relay-socket.mjs",
     "check:livemerge": "node --experimental-strip-types scripts/check-live-merge.mjs",
+    "check:livescan": "node --experimental-strip-types scripts/check-live-scan.mjs",
     "check:liveover": "node --experimental-strip-types scripts/check-live-over.mjs",
     "check:liveroster": "node --experimental-strip-types scripts/check-live-roster.mjs",
     "check:livealwayson": "node --experimental-strip-types scripts/check-live-always-on.mjs",
