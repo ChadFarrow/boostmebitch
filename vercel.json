@@ -4,5 +4,11 @@
     "deploymentEnabled": {
       "playlists": false
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/live-feeds",
+      "schedule": "*/15 * * * *"
+    }
+  ]
 }

@@ -1320,6 +1320,68 @@ export async function getLiveItemsFromRss(
   return items;
 }
 
+/**
+ * One CONDITIONAL read of a feed for the known-live-feeds check (lib/live-feeds.ts),
+ * which runs every 15 minutes over every feed on the list.
+ *
+ * It sends the validators the last read recorded (`If-None-Match`,
+ * `If-Modified-Since`), so a feed that has not changed answers `304` and costs
+ * no body — `not-modified`, and the caller keeps what it recorded. A `200` is
+ * read capped, like every feed read, and answers which live items the feed
+ * carries now plus whether it carries a `<podcast:liveItem>` of ANY status
+ * (`anyLiveItem`: an `ended` item still makes a show a live show).
+ *
+ * `failed` is every other outcome, and it is not "no live items": the caller
+ * must keep what it had. The validators come from a feed host, so they are
+ * capped in length, and a value `fetch` refuses as a header is a failed read,
+ * never a throw. A successful body also refreshes the shared XML cache, so the
+ * request path that reads the same feed a moment later is a hit.
+ */
+export async function checkLiveFeed(
+  rssUrl: string,
+  validators: { etag?: string | null; lastModified?: string | null },
+): Promise<
+  | { kind: 'not-modified' }
+  | { kind: 'failed' }
+  | {
+      kind: 'read';
+      etag?: string;
+      lastModified?: string;
+      anyLiveItem: boolean;
+      items: { status: 'pending' | 'live'; startTime?: number; endTime?: number }[];
+    }
+> {
+  const headers: Record<string, string> = { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent };
+  const short = (v: string | null | undefined) => (v && v.length <= 256 ? v : undefined);
+  const etag = short(validators.etag);
+  const lastModified = short(validators.lastModified);
+  if (etag) headers['If-None-Match'] = etag;
+  if (lastModified) headers['If-Modified-Since'] = lastModified;
+  try {
+    const res = await safeFetch(rssUrl, { headers, signal: AbortSignal.timeout(8000) });
+    if (res.status === 304) {
+      await res.body?.cancel().catch(() => {});
+      return { kind: 'not-modified' };
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { kind: 'failed' };
+    }
+    const xml = await readCappedText(res);
+    rssXmlCache.set(rssUrl, xml, Date.now());
+    const anyLiveItem = findBlocks(xml, 'podcast:liveItem', { max: 1 }).length > 0;
+    return {
+      kind: 'read',
+      etag: short(res.headers.get('etag')),
+      lastModified: short(res.headers.get('last-modified')),
+      anyLiveItem,
+      items: parseRssLiveItems(xml).map((r) => ({ status: r.status, startTime: r.startTime, endTime: r.endTime })),
+    };
+  } catch {
+    return { kind: 'failed' };
+  }
+}
+
 interface RawLiveItem {
   status: 'pending' | 'live';
   startTime?: number;
