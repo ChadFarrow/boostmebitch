@@ -365,7 +365,7 @@ The endpoint's routing pair **wins** over the feed's (a feed-side `customKey` on
 
 **Before the summary receipt, the amount Fountain rendered was the LEG, not the boost.** On a 44.6/44.6/9.9 split, the largest per-leg receipt said 89 of 200 sats, because a receipt's amount is the invoice that payee's own server issued. The summary receipt (#408) attests the settled TOTAL instead, so the figure is the boost's. Our `amount` tag still keeps `value_msat_total` (invariant 7), and `buildNote` only adopts a quoted receipt's amount when the wrapper carries none, so our own explorer is unchanged.
 
-### A playlist maker's ZAP (`components/lists/playlist-zap.tsx`)
+### A playlist maker's ZAP (`components/lists/playlist-zap.tsx`, `maker-zap.tsx`)
 
 **⚡ ZAP on a community playlist is a NIP-57 zap to the playlist's MAKER, paid to the Lightning address on the maker's kind:0** (Chad, 2026-11-25: "since playlist need nostr to make them can we add a zap button at the top to zap the maker of the playlist"). It is a tip to a PERSON, the same payment as ⚡ zap on a Nostr note, and it is not a boost: no boostagram, no value block, no keysend, and `payOne` never reaches it. The two surfaces share `<ZapDialog>` (`components/zap-dialog.tsx`), so the amount field, the presets, SET AS DEFAULT (`bmb:zap_default`) and the unanswered-wallet rule (Send stays off, "check your wallet") are one copy. It pays through `sendZap`, which picks the rail with `pickRail()`. A zap to a provider without `allowsNostr` is refused before any invoice (`ZapNotAttemptedError`), and nothing falls back to a plain LNURL-pay: that would give the maker sats with no receipt.
 
@@ -376,7 +376,7 @@ The endpoint's routing pair **wins** over the feed's (a feed-side `customKey` on
 - **Signed out, the press opens the sign-in sheet.** The kind:9734 is signed by the viewer's key; there is no anonymous zap. `sendZap` would otherwise sign with whatever `window.nostr` a browser extension offers, the account or not — the note card gates on `identity` for the same reason.
 - **The kind:9734 names the playlist**: `refs` (`podcastGuid` the playlist's stored guid, the hint its `showShareUrl`) become the NIP-73 `k`/`i` pair through the pinned `zapRequestTags`. The recipient's server mirrors them onto the receipt, which is the only place a receipt says what it paid for. `p` is the maker; no `e`, no `client` tag. The comment rides in the 9734 `content` and the LUD-21 comment, as on a note zap.
 - **Receipt relays are the viewer's publish set** (`resolvePublishRelays`, eight at most), as for a note zap.
-- Pinned in a real browser by `npm run e2e:playlistzap`: stubbed playlist, local relay for the maker's kind:0, stubbed LNURL endpoints and a stub WebLN wallet, so no sats move and no event reaches a public relay.
+- Pinned in a real browser by `npm run e2e:playlistzap` (its section 6 drives a note card's ⚡ zap through the same dialog): stubbed playlist, local relay for the kind:0s, stubbed LNURL endpoints and a stub WebLN wallet, so no sats move and no event reaches a public relay. `--off` runs the switch-off half against a server started without `NEXT_PUBLIC_COMMUNITY_PLAYLISTS`.
 
 ### The reply address (Helipad's Reply button)
 

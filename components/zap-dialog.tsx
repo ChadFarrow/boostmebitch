@@ -5,7 +5,7 @@
 // Shared by two surfaces that zap a PERSON, never a value block:
 //   - ⚡ zap on a Nostr note (`components/nostr-note-card.tsx`), which zaps the
 //     note's author and names the note (`eventId`);
-//   - ⚡ ZAP on a community playlist (`components/lists/playlist-zap.tsx`),
+//   - ⚡ ZAP on a community playlist (`components/lists/maker-zap.tsx`),
 //     which zaps the playlist's maker and names the playlist (`refs`).
 // It moved here out of the note card on 2026-11-25 so the second surface did
 // not grow a second copy of the indeterminate-wallet handling below. The note

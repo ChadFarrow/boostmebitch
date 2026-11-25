@@ -339,6 +339,32 @@ t.ok('relays back: a press reads again and opens the form', (await clickTile()) 
 await closeDialog();
 t.equal('no invoice was requested in this section', callbacks.length, 0);
 
+// ---- 6. the note card's zap, now through the same dialog ---------------------
+console.log('--- 6. ⚡ zap on a Nostr note: the shared dialog, unchanged for the note card ---');
+callbacks.length = 0;
+const note = finalizeEvent({ kind: 1, created_at: now - 30, tags: [['t', 'boostagram'], ['amount', '100000']], content: 'e2e boost note for the note-card zap' }, maker.sk);
+relay.events.set(note.id, note);
+await setup({ as: viewer });
+await send('Page.navigate', { url: `${APP}/npub/${maker.npub}` });
+const ZAP_ACTION = `document.querySelector('article button[aria-label=Zap]')`;
+t.ok('the maker\'s boost note shows, with ⚡ zap', await waitFor(ZAP_ACTION, 45000));
+t.ok('⚡ zap opens the dialog', (await js(`(() => { ${ZAP_ACTION}.click(); return 1; })()`)) && await waitFor(zapDialog, 8000));
+t.equal('it names the note\'s author', await js(`${DIALOG_NAMES}.find((n) => n.startsWith('Zap '))`), `Zap ${MAKER_NAME}`);
+const noteDialog = await js(`${zapDialog}.innerText`);
+t.ok('no playlist line on a note zap', !noteDialog.includes('For the playlist'), noteDialog);
+t.ok('the note zap\'s placeholder is unchanged', await js(`${zapDialog}.querySelector('input[type=text]').placeholder === 'great post'`));
+await js(`[...${zapDialog}.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Send 100 sats').click()`);
+t.ok('the note zap completes and closes', await waitFor(`!${zapDialog}`, 15000), await js(`${zapDialog}?.innerText`));
+t.equal('one invoice request', callbacks.length, 1);
+const nz = JSON.parse(new URL(callbacks[0] ?? `https://${STUB}/none`).searchParams.get('nostr') ?? '{}');
+const ntag = (n) => (nz.tags ?? []).filter((x) => x[0] === n);
+t.equal('the e tag is the note', ntag('e').map((x) => x[1]), [note.id]);
+t.equal('the p tag is its author', ntag('p').map((x) => x[1]), [maker.pk]);
+t.equal('no NIP-73 refs on a note zap', [...ntag('k'), ...ntag('i')].length, 0);
+t.ok('signed by the viewer', nz.pubkey === viewer.pk && verifyEvent(nz));
+t.equal('the stub wallet paid it', await js(`window.__paid`), ['lnbc1000n1pe2estubinvoice']);
+t.equal('the server LNURL fallback was never used', lnurlProxyHits.length, 0);
+
 console.log(`\n${t.count - t.fails}/${t.count} passed`);
 relay.close();
 await exit(t.fails ? 1 : 0);
