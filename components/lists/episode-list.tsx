@@ -785,8 +785,10 @@ export function EpisodeList({
             <ShareButton podcast={data.podcast} />
             <CopyRssButton podcast={data.podcast} />
             {/* ⚡ ZAP the maker of a playlist this site hosts; nothing on any
-                other show (`playlistMaker`). Such a playlist has no value
-                block, so no BOOST above and no STREAM here: four tiles. */}
+                other show (`playlistMaker`). Its feed has no value block
+                and no funding (`buildPlaylistFeedXml`), so no BOOST above and
+                no SUPPORT or STREAM here: four tiles on beta, measured at 390px
+                by `npm run e2e:playlistzap`. */}
             <PlaylistZapButton podcast={data.podcast} />
             <SupportButton podcast={data.podcast} />
             {/* `cloneElement` to restyle rather than a prop on

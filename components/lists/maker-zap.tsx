@@ -8,9 +8,10 @@ import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import type { FeedNpub, Podcast } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { fetchProfileDetailed } from '@/lib/nostr';
+import { fetchProfileDetailed, receiptRefUrls } from '@/lib/nostr';
+import { noteBrandFor } from '@/lib/brand';
+import { COMMUNITY_FEED_ORIGIN } from '@/lib/curated-playlists';
 import { useGuestKey } from '@/lib/community/use-guest-key';
-import { showShareUrl } from '@/lib/util';
 import { BoltIcon } from '../icons';
 
 // DEFERRED, as `<BoostModal>` is in episode-list.tsx: most readers never open
@@ -112,7 +113,14 @@ export function MakerZap({ podcast, maker }: { podcast: Podcast; maker: FeedNpub
           onClose={() => setOpen(false)}
           // The receipt names the playlist: the recipient's server mirrors the
           // NIP-73 pairs onto it, and that is the only place it says what for.
-          refs={{ podcastGuid: podcast.podcastGuid, podcastUrl: showShareUrl(podcast) ?? undefined }}
+          // The hint is the one a boost's summary receipt signs for a song from
+          // this playlist (`receiptRefUrls`): `?podcast=<guid>`, on the Buddy
+          // origin from either deploy (`noteBrandFor`), because a receipt is
+          // never edited and must not carry beta's or a dev server's address.
+          refs={{
+            podcastGuid: podcast.podcastGuid,
+            podcastUrl: receiptRefUrls(noteBrandFor(true, COMMUNITY_FEED_ORIGIN), podcast.podcastGuid).podcastUrl,
+          }}
           subtitle={subtitle}
           noAddressText={noAddressText}
           commentPlaceholder="great playlist"

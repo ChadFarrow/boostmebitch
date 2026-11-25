@@ -275,7 +275,9 @@ t.equal('no client tag', tag('client').length, 0);
 t.equal('the k tag names a podcast guid', tag('k').map((x) => x[1]), ['podcast:guid']);
 const iTag = tag('i')[0] ?? [];
 t.equal('the i tag names the PLAYLIST', iTag[1], `podcast:guid:${A.guid}`);
-t.ok('...with an http(s) hint to this site', typeof iTag[2] === 'string' && iTag[2].startsWith(APP), String(iTag[2]));
+// The boost summary receipt's hint (`receiptRefUrls`): `?podcast=`, on the Buddy
+// origin from any deploy (`noteBrandFor`), never this dev server's address.
+t.equal('...with the Buddy ?podcast= link as its hint', iTag[2], `${ORIGIN}/?podcast=${A.guid}`);
 t.ok('relays tag: 1 to 8 relays', tag('relays').length === 1 && tag('relays')[0].length >= 2 && tag('relays')[0].length <= 9);
 t.equal('the stub wallet paid exactly that invoice, once', await js(`window.__paid`), ['lnbc1000n1pe2estubinvoice']);
 t.equal('the server LNURL fallback was never used', lnurlProxyHits.length, 0);
