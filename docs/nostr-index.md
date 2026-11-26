@@ -192,6 +192,47 @@ the index answers nothing for that long on the first deploy. It reads `events`
 and writes only the new table, so ingest by the previous process is not blocked.
 Its indexes are on a table the file creates, so nothing has to be built by hand.
 
+## Old kind:30311 versions are deleted, by a loop and never by a migration
+
+**Every kind:30311 version older than `LIVE_RETENTION_SECS` (the live window plus
+one day) is deleted once an hour, except a `live_heads` row's version, a version
+another event names in an `e` or `q` tag, and a tombstoned one**
+(`src/retention.ts`). Nothing else in this service deletes rows. On 2026-11-26
+the 5 GB volume was 80% full and growing 41-59 MB a day, about 85% of it from
+this kind: 624,102 versions, 514,281 of them older than eight days and read by
+nothing (`liveStreams` reads `live_heads` inside the window, the promotion looks
+back the window, the live subscription asks for nothing older). A note that
+quotes a pruned version later gets no copy from here; the client reads it from
+the relays. `INDEX_LIVE_PRUNE=off` stops it.
+
+- **Not a migration.** `migrate.ts` runs a file in one transaction before the
+  API listens: half a million deletes there is one giant write on a nearly full
+  disk, with the service down for all of it.
+- **`deleted_at is null` is in the batch query for the plan, not only for the
+  rule.** `events_kind_created_idx` is partial; without the predicate the batch
+  read the whole heap and sorted on disk (18.4 s, 45 MB of temp files, on
+  production), with it 0.38 s cold. So the 166 tombstoned old versions stay.
+- **WAL, not rows, is what fills a nearly full disk first.** `data_checksums`
+  and `full_page_writes` are on and `wal_compression` is off, so the first
+  change to a page after a checkpoint writes the whole page. Measured on a
+  quarter-scale copy (production widths, checksums on): the delete writes
+  5.1-5.6 kB of WAL per version, up to 4 MB per 500-row batch, so each batch
+  first reads `pg_control_checkpoint()` and waits while more than 64 MB was
+  written since the last checkpoint. That bounds the loop. It does not bound the
+  **autovacuum that follows**: it starts at 20% dead rows (about 204,000
+  `events` rows, 733,000 `event_tags` rows on production) and writes about
+  2.6 kB per dead version for `events` and 3.8 kB for `event_tags`, so
+  **0.5-0.7 GB of WAL in under a minute, per table, about every two weeks**.
+  `max_wal_size` is 1 GB. Keep well over 1.5 GB free on the volume, or that
+  vacuum can fill it, and a Postgres that cannot write WAL stops.
+- **Deleting does not lower the volume meter.** The space goes back to Postgres
+  for new rows and the files keep their size, so Railway's usage stays where it
+  was and stops growing. `VACUUM FULL` would shrink the files, but it locks the
+  tables and needs room for a full copy; do not run it here.
+- **A batch takes `pg_try_advisory_xact_lock`** (two processes overlap during a
+  deploy) and `skip locked` on its rows, so a kind:5 and the prune never wait on
+  each other. `check-retention.mjs` pins all of it against the old live query.
+
 ## Everything a caller can name has to be bounded
 
 - **`until` is CLAMPED, never refused.** node-postgres serializes a parameter
