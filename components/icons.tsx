@@ -135,6 +135,40 @@ export function PipIcon({ className = 'w-4 h-4' }: { className?: string }) {
   );
 }
 
+// A filled disc with a down arrow cut out of it — "this plays from the file
+// saved on THIS device" (`<PlaySource>`, #669). The disc is the finished state,
+// the way a saved episode is a FILLED download control. Not a bare `↓`: in this
+// app that arrow means a download is still RUNNING (`<DownloadMark>`'s "↓ 47%").
+export function SavedIcon({ className = 'w-3 h-3' }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={`fill-current flex-shrink-0 ${className}`}>
+      <path
+        fillRule="evenodd"
+        d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM11 6h2v7.17l2.59-2.58L17 12l-5 5-5-5 1.41-1.41L11 13.17V6Z"
+      />
+    </svg>
+  );
+}
+
+// A cloud — "this plays over the network" (`<PlaySource>`, #669). Not `≋`:
+// that glyph is the streaming-SATS meter, on the same line of the mini-bar.
+export function CloudIcon({ className = 'w-3 h-3' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
+    </svg>
+  );
+}
+
 // Corner brackets pointing outward — enter fullscreen.
 export function FullscreenIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (

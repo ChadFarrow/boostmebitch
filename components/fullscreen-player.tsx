@@ -204,6 +204,7 @@ import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
+import { PlaySource, type PlaySourceKind } from './player/play-source';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
 import { SpeedButton, FastSpeedButton, SpeedSlider } from './player/speed-button';
@@ -463,6 +464,7 @@ export function FullscreenPlayer({
   videoRef,
   isVideo,
   audioErr,
+  playSource,
   liveBehindSec,
   onGoLive,
   artOk,
@@ -498,6 +500,10 @@ export function FullscreenPlayer({
       or a failing live stream reads as a silent black box (the mini-bar's tiny
       error line is hidden behind this overlay). */
   audioErr: string | null;
+  /** Where the playing bytes come from (#669), as <Player> attached them;
+   *  `null` while a download's local read is in flight. A live item has no
+   *  seek row, and so no mark. */
+  playSource: PlaySourceKind | null;
   /** Whole seconds a playing live item is behind a fresh connect, 0 when on
    *  time or paused — <Player>'s measure, so both rows show one number. */
   liveBehindSec: number;
@@ -1380,9 +1386,15 @@ export function FullscreenPlayer({
                     aria-valuetext={fmt(positionSec)}
                   />
                 </div>
-                <div className="flex justify-between text-[11px] text-muted tabular-nums">
+                {/* `1fr auto 1fr`, not `justify-between`: the clocks stay on
+                    the row's edges and the source mark (#669) stays centred
+                    while either clock changes width. On this row, not a line
+                    of its own — every pixel below the cover is the cover's
+                    size on a phone (see "The cover is capped…" in docs/ui.md). */}
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[11px] text-muted tabular-nums">
                   <span>{fmt(positionSec)}</span>
-                  <span>{fmt(duration)}</span>
+                  <PlaySource kind={playSource} variant="full" />
+                  <span className="text-right">{fmt(duration)}</span>
                 </div>
                 <ChapterLabel chapter={activeChapter} end={activeChapterEnd} className="text-xs" />
               </div>

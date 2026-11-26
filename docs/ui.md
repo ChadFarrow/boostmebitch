@@ -722,6 +722,18 @@ proved instead against the shipping module under `node --experimental-strip-type
 (8 cases, including the reported one and the two normalisation forms), and on the real
 show page: the `<h2>` reads "Our Big Dumb Mouth" and no paragraph under it repeats it.
 
+### Where the playing file comes from (`<PlaySource>`, #669)
+
+Asked for from the installed Android app on boostmebuddy.com (#669, 2026-11-24): *"A little icon showing that you're playing a downloaded file or streaming would be sweet."* `components/player/play-source.tsx` is a MARK, not a control: a filled disc with a cut-out arrow (`SavedIcon`, bone) when the bytes are the download on this device, a cloud (`CloudIcon`, muted) when they come over the network. The mini-bar shows the icon at the START of its secondary line; the fullscreen player shows icon + word (`DOWNLOADED` / `ONLINE`) centred in the clock row under the seek bar. Both carry `role="img"` and an `aria-label`; the word is there because a phone has no hover for the `title`.
+
+- **The answer is what the source effect ATTACHED, never the download record.** `<Player>` sets `playSource` inside `attach` (the same `blob:` test as the `src` log line) and in the `<video>` branch. `downloadManager` says a file EXISTS, which differs in three ordinary cases: a download that finishes while the item streams (nothing re-sources it, so it keeps streaming), a record whose bytes were evicted (`attach` falls back to the enclosure), and the video rendition, which is never downloaded. **`playSource` is state, and must never become a dependency of the source effect** — that effect writes it.
+- **It is keyed to the item it was given for** (`playSourceKey`: id + enclosure URL, the effect's own deps), and it is cleared while a download's local read is in flight. So the next item never shows the last one's answer; the mini-bar HOLDS a 12px slot instead, and the title does not move when the answer lands.
+- **A live item has no mark.** ● LIVE already says it comes over the network, and `isDownloadable` refuses every liveItem.
+- **No new line, anywhere.** On the mini-bar it shares the secondary line; in the fullscreen player it takes the middle cell of the clock row, which is a `grid-cols-[1fr_auto_1fr]` so the clocks stay on the edges while either one changes width. A line of its own below `sm:` would come out of the cover's height (see "The cover is capped…" below).
+- **Not `≋` and not the word "STREAMING"**: that is the streaming-SATS meter, on the same mini-bar line (`<StreamPulse>`) and in the same fullscreen pane (`<StreamMeter>`). **Not a bare `↓`**: that arrow means a download is still RUNNING (`<DownloadMark>`).
+
+Pinned by `npm run e2e:playsource` (57 checks, against a production build): network while streaming; still network after DOWNLOAD finishes mid-stream; a held slot, not the last item's answer, while the local read is delayed 1.5 s; local once it lands, with the bar's height and the title's position unchanged; no mark on a live item; network on the video rendition of a downloaded episode; local on a cold load; no overflow at 390×844 and 320×568 under CDP device emulation. The audio is a 60-second WAV that CDP `Fetch` serves for three rewritten Homegrown Hits items — no real episode is downloaded. **Not tested:** a real phone (iOS Safari, the Android TWA), and the Buddy brand build (the mark has no brand strings and uses only palette tokens).
+
 ### An element that lost its buffer is put back
 
 *"This should be saving to playback position anyways."* — and it should. The two
