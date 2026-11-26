@@ -219,12 +219,17 @@ the relays. `INDEX_LIVE_PRUNE=off` stops it.
   5.1-5.6 kB of WAL per version, up to 4 MB per 500-row batch, so each batch
   first reads `pg_control_checkpoint()` and waits while more than 64 MB was
   written since the last checkpoint. That bounds the loop. It does not bound the
-  **autovacuum that follows**: it starts at 20% dead rows (about 204,000
-  `events` rows, 733,000 `event_tags` rows on production) and writes about
-  2.6 kB per dead version for `events` and 3.8 kB for `event_tags`, so
-  **0.5-0.7 GB of WAL in under a minute, per table, about every two weeks**.
-  `max_wal_size` is 1 GB. Keep well over 1.5 GB free on the volume, or that
-  vacuum can fill it, and a Postgres that cannot write WAL stops.
+  **autovacuum that follows**, which the guard cannot pause. Measured on
+  production on 2026-11-26, in the first pass of the backlog: `event_tags` was
+  vacuumed at about 700,000 dead rows and wrote 0.71 GB of WAL, and `events` at
+  about 180,000 dead rows and wrote 0.70-0.77 GB. That is about 4.3 kB and
+  3.7-4.1 kB per deleted version (the quarter-scale copy predicted 3.8 and 2.6).
+  **Each pass took one to two minutes and forced a WAL checkpoint**
+  (`max_wal_size` is 1 GB). `pg_wal` grew from 128 MB to 752 MB, and Postgres
+  kept those segments for reuse. It repeats each time 20% of a table is dead:
+  during the backlog, and after it about every two weeks. The volume was grown
+  from 5 GB to 10 GB for this. Keep well over 1.5 GB free on it, or that vacuum
+  can fill it, and a Postgres that cannot write WAL stops.
 - **Deleting does not lower the volume meter.** The space goes back to Postgres
   for new rows and the files keep their size, so Railway's usage stays where it
   was and stops growing. `VACUUM FULL` would shrink the files, but it locks the
