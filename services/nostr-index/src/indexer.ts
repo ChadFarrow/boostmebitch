@@ -14,6 +14,7 @@ import type { Config } from './config.ts';
 import { emptyStats, indexedThrough, ingestEvent, recentNoteIds, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByGuid, piConfigured } from './pi.ts';
 import { LIVE_STREAM_KIND, LIVE_WINDOW_SECS } from './ingest.ts';
+import { pruneLiveVersions } from './retention.ts';
 
 /** The two filters that define this index's universe. Both mirror queries the
  *  app already makes of relays — `fetchAllPodcastNotes` and the tag half of
@@ -119,6 +120,11 @@ export function replyReqs(ids: string[]): Filter[][] {
 const LIVE_RESUBSCRIBE_MS = 3_600_000;
 const LIVE_SEED_LIMIT = 500;
 
+// How often old kind:30311 versions are deleted (src/retention.ts), and how
+// long after start the first run waits.
+const LIVE_PRUNE_MS = 3_600_000;
+const LIVE_PRUNE_FIRST_MS = 300_000;
+
 // How often the tracked-pubkey subscriptions are RECONSIDERED. Resubscribing
 // per new pubkey would thrash every relay, and the set grows constantly — but
 // the rebuild only actually happens when the set changed, so checking often is
@@ -200,6 +206,7 @@ export class Indexer {
   private timers: NodeJS.Timeout[] = [];
   private stats: IngestStats = emptyStats();
   private stopped = false;
+  private pruning = false;
   // A fingerprint of the tracked set, NOT its size. Comparing counts misses the
   // case where one pubkey is added while another falls out of the
   // MAX_TRACKED_IN_FILTERS window in the same interval: the count is unchanged,
@@ -260,7 +267,37 @@ export class Indexer {
       () => void this.checkConnectivity().catch(logErr('connectivity')),
       this.cfg.connectivityCheckMs ?? CONNECTIVITY_CHECK_MS,
     ));
+    // `!== false`, so a config that does not name it (an older literal in a
+    // check) prunes, like an unset variable does.
+    if (this.cfg.livePrune !== false) {
+      const every = this.cfg.livePruneMs ?? LIVE_PRUNE_MS;
+      // The first run waits a few minutes, so a deploy's subscriptions and the
+      // live re-seed settle before it starts; then once an interval.
+      this.timers.push(setTimeout(() => void this.pruneLive().catch(logErr('live prune')), Math.min(every, LIVE_PRUNE_FIRST_MS)));
+      this.timers.push(setInterval(() => void this.pruneLive().catch(logErr('live prune')), every));
+    } else {
+      console.log('[indexer] INDEX_LIVE_PRUNE=off — kind:30311 versions are kept');
+    }
     for (const t of this.timers) t.unref();
+  }
+
+  /**
+   * One retention run (src/retention.ts), never two at once: a backlog run can
+   * outlast the interval, and the next tick then finds it still going.
+   */
+  private async pruneLive(): Promise<void> {
+    if (this.pruning || this.stopped) return;
+    this.pruning = true;
+    try {
+      const run = await pruneLiveVersions(this.db, { shouldStop: () => this.stopped });
+      console.log(
+        `[retention] kind:30311 older than ${new Date(run.cutoff * 1000).toISOString()}: ` +
+        `deleted ${run.deleted} in ${run.batches} batches, ${run.walWaits} WAL waits, ` +
+        `${Math.round(run.ms / 1000)}s, ended ${run.end}`,
+      );
+    } finally {
+      this.pruning = false;
+    }
   }
 
   stop(): void {
