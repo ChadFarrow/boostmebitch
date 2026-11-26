@@ -65,9 +65,12 @@ export const WAL_SINCE_REDO_CEILING = 64 * 1024 * 1024;
 /** How long to wait before the WAL is measured again. */
 export const WAL_WAIT_MS = 30_000;
 
-/** How many waits in a row end a run. The next run starts on the next tick, so
- *  a run never sits for hours on a database that is busy for another reason. */
-export const MAX_WAL_WAITS = 20;
+/** How many waits in a row end a run: 20 minutes. `redo_lsn` moves only when a
+ *  checkpoint COMPLETES, to where that checkpoint began, so after the ceiling is
+ *  reached the reading can stay above it for almost two 5-minute cycles (about
+ *  9.5 minutes). Twice that is a database busy for another reason, and the next
+ *  run starts on the next tick rather than sitting on it for hours. */
+export const MAX_WAL_WAITS = 40;
 
 /** The advisory lock a batch takes. Two processes overlap during a deploy, and
  *  only one of them should prune at a time. Any constant works, as long as
@@ -192,6 +195,8 @@ export interface PruneOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Replaces `sampleWal`; verify/check-retention.mjs drives the pacing with it. */
   sampleWal?: (db: Db) => Promise<WalSample | null>;
+  /** Called after each batch, so a backlog run that lasts hours can be watched. */
+  onBatch?: (run: PruneRun, cursor: number) => void;
 }
 
 /**
@@ -233,8 +238,9 @@ export async function pruneLiveVersions(db: Db, opts: PruneOptions = {}): Promis
     if (locked) { run.end = 'locked'; break; }
     run.batches++;
     run.deleted += createdAt.length;
+    if (createdAt.length) cursor = Math.max(cursor, ...createdAt);
+    opts.onBatch?.(run, cursor);
     if (createdAt.length < batch) break;
-    cursor = Math.max(cursor, ...createdAt);
     await nap(pauseMs);
   }
   run.ms = Date.now() - started;

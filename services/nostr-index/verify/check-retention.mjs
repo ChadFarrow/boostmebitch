@@ -234,15 +234,20 @@ await ingest(finalizeEvent({ kind: 5, created_at: NOW, content: '', tags: [['e',
 
   let calls = 0;
   const naps = [];
+  const progress = [];
   const paced = await pruneLiveVersions(db, {
     nowSecs: NOW, batch: 10, pauseMs: 7, walWaitMs: 11,
+    onBatch: (r, cursor) => progress.push([r.batches, r.deleted, cursor]),
     sleep: async (ms) => { naps.push(ms); },
     sampleWal: async () => (++calls <= 2 ? { sinceRedo: WAL_SINCE_REDO_CEILING + 1 } : { sinceRedo: 0 }),
   });
   eq(paced.walWaits, 2, 'two busy readings are two waits');
+  eq(paced.batches, 3, 'thirty rows at ten a batch is three batches');
   eq(paced.deleted, start, 'then the run goes on and deletes everything prunable');
   eq(naps.slice(0, 2), [11, 11], 'a wait sleeps the WAL wait');
   ok(naps.slice(2).every((ms) => ms === 7), 'between batches it sleeps the pause');
+  eq(progress.map(([b, d]) => [b, d]), [[1, 10], [2, 20], [3, start]], 'onBatch reports each batch with the running total');
+  ok(progress.every(([, , c], i) => i === 0 || c >= progress[i - 1][2]), 'the cursor it reports never moves back');
 
   for (let i = 0; i < 5; i++) await ingest(live(F, NOW - 39 * DAY + i, tagsOf('f')));
   const holder = await db.connect();

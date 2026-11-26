@@ -289,7 +289,15 @@ export class Indexer {
     if (this.pruning || this.stopped) return;
     this.pruning = true;
     try {
-      const run = await pruneLiveVersions(this.db, { shouldStop: () => this.stopped });
+      const run = await pruneLiveVersions(this.db, {
+        shouldStop: () => this.stopped,
+        // A backlog run lasts hours; one line per 20 batches (10,000 rows).
+        onBatch: (r, cursor) => {
+          if (r.batches % 20 === 0) {
+            console.log(`[retention] ${r.deleted} deleted so far, ${r.walWaits} WAL waits, up to ${new Date(cursor * 1000).toISOString()}`);
+          }
+        },
+      });
       console.log(
         `[retention] kind:30311 older than ${new Date(run.cutoff * 1000).toISOString()}: ` +
         `deleted ${run.deleted} in ${run.batches} batches, ${run.walWaits} WAL waits, ` +
