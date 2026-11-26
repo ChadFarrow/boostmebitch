@@ -104,6 +104,7 @@
     "e2e:yield": "node scripts/e2e-yield.mjs",
     "e2e:launcher": "node scripts/e2e-launcher.mjs",
     "e2e:downloads": "node scripts/e2e-downloads.mjs",
+    "e2e:playsource": "node scripts/e2e-play-source.mjs",
     "e2e:audioproxy": "node scripts/e2e-audio-proxy.mjs",
     "e2e:queue": "node scripts/e2e-queue.mjs",
     "e2e:deadtrack": "node scripts/e2e-dead-track.mjs",

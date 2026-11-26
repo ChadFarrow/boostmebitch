@@ -53,6 +53,7 @@ import { TransportControls } from './transport-controls';
 import { SpeedButton } from './player/speed-button';
 import { VideoToggle } from './video-toggle';
 import { LiveEdge } from './player/live-edge';
+import { PlaySource, type PlaySourceKind } from './player/play-source';
 import { liveLag, behindToShow, type LiveAnchor } from '@/lib/live-lag';
 
 /** How long the now-playing art must hold still before the OS is told about it.
@@ -178,6 +179,9 @@ function pauseIfStillCurrent(el: HTMLMediaElement, key: string | null): (e: unkn
 const RESTORE_JUMP_SEC = 120;
 /** See `lastGoodPos`: three attempts, then stand down rather than fight. */
 const RESTORE_MAX_TRIES = 3;
+
+/** The item a `<PlaySource>` answer belongs to — the source effect's own deps. */
+const playSourceKey = (ep: Pick<Episode, 'id' | 'enclosureUrl'>) => `${ep.id}\n${ep.enclosureUrl}`;
 
 export function Player() {
   // Per-field selectors, not a bare `useApp()`. In zustand v5 a selector-less
@@ -546,6 +550,25 @@ export function Player() {
   useEffect(() => revokeLocalSrc, [revokeLocalSrc]);
 
   /**
+   * Where the attached source came from, for `<PlaySource>` (#669): the file
+   * downloaded to this device, or the network.
+   *
+   * IT IS READ OFF WHAT THE SOURCE EFFECT ATTACHED, NEVER OFF THE DOWNLOAD
+   * RECORD. `downloadManager` only says a file exists, and that is a different
+   * question in three ordinary cases: a download that FINISHES while the item
+   * streams (nothing re-sources it, so it keeps streaming), a record whose
+   * bytes were evicted (`attach` falls back to the enclosure), and the video
+   * rendition, which is never downloaded.
+   *
+   * State, unlike the blob URL above, and safe as state for one reason: it is
+   * NOT a dependency of the source effect and must never become one — that
+   * effect writes it, so a dep would re-source the element in a loop. `key`
+   * ties the answer to the item it was given for, so the last item's answer is
+   * never shown under the next one while its local read is in flight.
+   */
+  const [playSource, setPlaySource] = useState<{ key: string; kind: PlaySourceKind } | null>(null);
+
+  /**
    * Read the download library into memory now, not on the first tap.
    *
    * `downloadManager.localKeyFor` can only answer synchronously once this has
@@ -607,6 +630,9 @@ export function Player() {
       const url = videoUrl;
       if (!el || !url) return;
       logPlayback('src', { el: 'v', kind: isHlsUrl(url) ? 'hls' : 'stream', item: current ? playbackItemId(current.episode) : undefined });
+      // The <video> never plays a download: an alternate rendition or a live
+      // stream, both from the network.
+      if (current) setPlaySource({ key: playSourceKey(current.episode), kind: 'network' });
 
       // Start position: preserved when toggling audio→video mid-play (positionSec
       // holds the live position), and set by play(ep, pod, startSec). Applied on
@@ -863,6 +889,9 @@ export function Player() {
       revokeLocalSrc();
       if (src.startsWith('blob:')) localSrcRef.current = src;
       logPlayback('src', { el: 'a', kind: src.startsWith('blob:') ? 'local' : isHlsUrl(src) ? 'hls' : 'stream', item: playbackItemId(episode) });
+      // The same `blob:` test as the log line above: a blob URL here is only
+      // ever a download's bytes (`localSrcRef`).
+      setPlaySource({ key: playSourceKey(episode), kind: src.startsWith('blob:') ? 'local' : 'network' });
       el.src = src;
       doneSeeking = armStartSeek(el, startAt, 'a');
       if (isPlayingRef.current) {
@@ -900,6 +929,8 @@ export function Player() {
       attach(episode.enclosureUrl);
     } else {
       pendingLocalSrc.current = true;
+      // Undecided until the read lands: the record may have lost its bytes.
+      setPlaySource(null);
       logPlayback('src.wait', { el: 'a', why: localKey === undefined ? 'hydrating' : 'local', item: playbackItemId(episode) });
       void (localKey === undefined
         ? downloadManager.resolveSource(episode)
@@ -1392,6 +1423,10 @@ export function Player() {
   const boost = boostGate(episode, podcast);
   const hasValue = boost.hasValue;
   const isLive = episode.liveStatus === 'live';
+  // No mark on a live item: ● LIVE already says it comes over the network, and
+  // it can never be a download (`isDownloadable` refuses every liveItem).
+  const playSourceKind = isLive ? undefined
+    : playSource && playSource.key === playSourceKey(episode) ? playSource.kind : null;
 
   // BOOST, from the mini-bar and from <FullscreenPlayer>. The position is the
   // press's: it is the `ts` a held copy's boostagram names, a second of the
@@ -1973,6 +2008,10 @@ export function Player() {
                 earlier; nothing else moves. <StreamPulse> subscribes to the
                 engine itself, so this stays off <Player>'s render path. */}
             <div className="flex items-center gap-2 text-[11px] min-w-0">
+              {/* Where the bytes come from (#669) LEADS the line, so it sits in
+                  one place whatever the title's length, and the slot is held
+                  while the answer is pending. */}
+              {playSourceKind !== undefined && <PlaySource kind={playSourceKind} variant="mini" />}
               <span className={`truncate sm:hidden ${miniChapter ? 'text-bolt/90' : 'text-muted'}`}>
                 {miniSecondary}
               </span>
@@ -2093,6 +2132,7 @@ export function Player() {
         videoRef={video}
         isVideo={isVideo}
         audioErr={audioErr}
+        playSource={playSourceKind ?? null}
         liveBehindSec={isPlaying ? liveBehindSec : 0}
         onGoLive={goLive}
         artOk={artUsable}
