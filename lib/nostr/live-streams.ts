@@ -34,6 +34,27 @@ export function streamHostPubkey(stream: NostrLiveStream): string {
   return host?.pubkey ?? stream.pubkey;
 }
 
+/**
+ * The SHARE link for a Nostr broadcast: the PERMANENT per-host `/live/<npub>`,
+ * never the per-broadcast `/stream/<naddr>`, so one URL stays valid across
+ * broadcasts (each gets a fresh dTag). `hostPubkey` must be the HOST's
+ * (`streamHostPubkey`, `Episode.liveHostPubkey`), never the event author: a
+ * platform-published stream is authored by the PLATFORM's key, and
+ * `/live/<platform npub>` resolves to whatever that platform streams next.
+ *
+ * One builder for the fullscreen player's chat pane and the `/live` card, so
+ * the two cannot hand out different links for one show. `null` on the server
+ * and for a key that does not encode — `<CopyLinkButton>` renders nothing then.
+ */
+export function liveHostShareUrl(hostPubkey: string | undefined): string | null {
+  if (!hostPubkey || typeof window === 'undefined') return null;
+  try {
+    return `${window.location.origin}/live/${nip19.npubEncode(hostPubkey)}`;
+  } catch {
+    return null;
+  }
+}
+
 export interface NostrLiveStream {
   /** NIP-33 replaceable address: `${pubkey}:${dTag}` */
   id: string;
