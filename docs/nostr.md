@@ -2320,6 +2320,20 @@ writes the reference as a `nostr:nevent1…` URI in the note **body**. Dedupe on
 the receipt's own id only: a receipt whose `targetEventId` names a note in the
 list is someone zapping that boost note, which is a second real payment.
 
+**The zaps panel UNIONS its two answers by receipt id; it never sets one over the
+other** (full-code review 2026-11-19). It paints the read index's receipts first,
+and the relay pass landed with `setZaps(z)`. `fetchZapsReceivedBy` answers `[]`
+for a read that failed or that no relay answered — it catches its own errors — so
+the index's receipts were replaced by "no zaps to this npub surfaced…" (measured
+on main by `npm run e2e:explorerzaps`: two receipts painted, then zero). An empty
+answer from one source is not an absence in the other, which is the same union
+`useNostrFeed` does for the boost panels. **And the panel waits for the received
+boosts only while they can still arrive:** `quotedEventIds` needs them, but a
+received read that FAILED with nothing on screen leaves `received.notes` null with
+`err` set, and gating on null alone held the panel at "searching nostr relays…" for
+the life of the page. That second half has no e2e: `fetchBoostsReceivedBy` catches
+its own reads, so no input reaches the state.
+
 **The zaps section may print a sats total and the received-boosts one still may
 not** — see the review-pass note below for why the boosts sum was removed. The
 difference is what the number measures. A boost note's `amount` is

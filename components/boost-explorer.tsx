@@ -121,22 +121,27 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
   const refreshZaps = useCallback(() => {
     const myGen = ++zapGen.current;
     setZaps(null);
+    // Each answer is UNIONED into what is on screen, by receipt id — never set
+    // over it (full-code review 2026-11-19). The relay pass used to land with
+    // `setZaps(z)`, and `fetchZapsReceivedBy` answers `[]` for a read that
+    // failed or that no relay answered (it catches its own errors), so an index
+    // hit painted the panel and the relay pass then emptied it to "no zaps…".
+    // An empty answer from one source is not an absence in the other: relays
+    // hold receipts the index may never have been running to see, and the index
+    // holds receipts a relay may have dropped. This is the union `useNostrFeed`
+    // does for the two boost panels.
+    const land = (incoming: ReceivedZap[]) => {
+      if (myGen === zapGen.current) setZaps((prev) => unionZaps(prev, incoming));
+    };
     // The index pass runs ALONGSIDE the relay pass, never in front of it: an
     // index that is merely slow must not delay the query that is authoritative.
-    // It only paints if it wins and actually has something, and the relay
-    // result still lands over it, because relays hold receipts this index may
-    // never have been running to see.
     indexedZapsReceivedBy(pubkey)
-      .then((z) => { if (z?.length && myGen === zapGen.current) setZaps(z); })
+      .then((z) => { if (z?.length) land(z); })
       .catch(() => { /* the index is never a reason to fail this panel */ });
     fetchZapsReceivedBy(pubkey)
-      .then((z) => { if (myGen === zapGen.current) setZaps(z); })
-      // Only claim "none" if nothing is on screen. An index hit followed by a
-      // relay failure is a working panel; blanking it would report an absence
-      // we did not observe.
-      .catch(() => {
-        if (myGen === zapGen.current) setZaps((prev) => (prev?.length ? prev : []));
-      });
+      .then(land)
+      // A failure adds nothing, and ends the wait.
+      .catch(() => land([]));
   }, [pubkey]);
   useEffect(() => {
     refreshZaps();
@@ -188,11 +193,18 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
   // Dedupe on the receipt's own id ONLY. A receipt whose `targetEventId` names a
   // note in the list is someone zapping that boost note — a second real payment,
   // not the same one twice.
+  //
+  // Wait for the received boosts only while they can still arrive. A read that
+  // FAILED with nothing on screen leaves `received.notes` null for good (its
+  // `err` says so), and gating on null alone held this panel at "loading" for
+  // the life of the page (full-code review 2026-11-19). With no boost notes on
+  // screen there is nothing to dedupe against, so every receipt is listed.
   const zapsVisible = useMemo<ReceivedZap[] | null>(() => {
-    if (zaps === null || received.notes === null) return null;
-    const quoted = quotedEventIds(received.notes);
+    if (zaps === null) return null;
+    if (received.notes === null && received.err === null) return null;
+    const quoted = quotedEventIds(received.notes ?? []);
     return zaps.filter((z) => !quoted.has(z.id) && !mutedPubkeys.has(z.zapper));
-  }, [zaps, received.notes, mutedPubkeys]);
+  }, [zaps, received.notes, received.err, mutedPubkeys]);
 
   // Which of these the VIEWER has already reposted. Not decoration: without it
   // `alreadyReposted` is false on every card, the button reads "🔁 repost"
@@ -389,4 +401,20 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
       />
     </div>
   );
+}
+
+/**
+ * `incoming` merged into `prev` by receipt id, newest first. A copy that names
+ * no zapper profile keeps the one already on screen: the index and the relay
+ * pass each resolve profiles their own way, and a later copy without one must
+ * not blank an avatar the earlier one carried.
+ */
+function unionZaps(prev: ReceivedZap[] | null, incoming: ReceivedZap[]): ReceivedZap[] {
+  const byId = new Map<string, ReceivedZap>();
+  for (const z of prev ?? []) byId.set(z.id, z);
+  for (const z of incoming) {
+    const old = byId.get(z.id);
+    byId.set(z.id, old && !z.zapperProfile && old.zapperProfile ? { ...z, zapperProfile: old.zapperProfile } : z);
+  }
+  return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
