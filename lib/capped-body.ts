@@ -39,6 +39,22 @@ export const MAX_BODY_BYTES = 8 * 1024 * 1024;
 type CappableBody = Pick<Response, 'headers' | 'body' | 'arrayBuffer'>;
 
 /**
+ * Refuse a response WITHOUT reading it, and let the socket go.
+ *
+ * Every refusal that happens before the read loop — a declared length over the
+ * cap, a needle the scanner cannot take — used to throw with the body untouched.
+ * An unread body is not a finished one: undici keeps the connection half-open
+ * and the bytes arriving until something consumes or cancels the stream, so a
+ * burst of oversized answers under load held one socket each (full-code review
+ * 2026-11-19, `check:cappedbody`). `cancel()` rejects on a locked stream, which
+ * is nothing to act on here.
+ */
+async function refuse(res: CappableBody, message: string): Promise<never> {
+  await res.body?.cancel().catch(() => {});
+  throw new Error(message);
+}
+
+/**
  * Read a response body as text, refusing anything past `maxBytes`.
  *
  * `AbortSignal.timeout(...)` — which every caller here passes — caps how LONG a
@@ -133,7 +149,7 @@ export async function readCappedBytes(
 ): Promise<Uint8Array> {
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
-    throw new Error(`response too large (${declared} bytes, max ${maxBytes})`);
+    return refuse(res, `response too large (${declared} bytes, max ${maxBytes})`);
   }
   if (!res.body) {
     // No stream to meter, so the whole body is already buffered by the time
@@ -209,11 +225,16 @@ export async function readPrefixThenScan(
   maxBytes: number,
   needle: string,
 ): Promise<{ bytes: Uint8Array; truncated: boolean; needleAfterKept: boolean }> {
-  const pat = asciiLowerBytes(needle);
-  if (!pat.length) throw new Error('readPrefixThenScan: empty needle');
+  let pat: Uint8Array;
+  try {
+    pat = asciiLowerBytes(needle);
+  } catch (e) {
+    return refuse(res, e instanceof Error ? e.message : String(e));
+  }
+  if (!pat.length) return refuse(res, 'readPrefixThenScan: empty needle');
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
-    throw new Error(`response too large (${declared} bytes, max ${maxBytes})`);
+    return refuse(res, `response too large (${declared} bytes, max ${maxBytes})`);
   }
 
   const kept: Uint8Array[] = [];

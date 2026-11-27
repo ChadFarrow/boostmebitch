@@ -8,6 +8,7 @@
 // second definition of what a Podcast is.
 
 import crypto from 'node:crypto';
+import { indexUserAgent } from './user-agent.ts';
 
 // Reads its own three variables rather than importing ./config.ts. That module
 // throws when DATABASE_URL or INDEX_API_KEY is missing, which is right for the
@@ -46,7 +47,7 @@ function authHeaders(): Record<string, string> {
     'X-Auth-Key': key,
     'X-Auth-Date': ts,
     Authorization: hash,
-    'User-Agent': process.env.APP_NAME?.trim() || 'boostmebitch-index/0.1',
+    'User-Agent': indexUserAgent(),
   };
 }
 

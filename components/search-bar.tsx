@@ -28,6 +28,15 @@ import { Chip } from './chip';
 export interface SearchInfo {
   type: SearchType;
   total: number;
+  /**
+   * Set when the search got NO ANSWER, so an empty list is not a result:
+   * `'busy'` for a 429 (our per-IP limit, or Podcast Index's, passed through),
+   * `'error'` for any other non-2xx or a fetch that threw. Full-code review
+   * 2026-11-19: both used to come back as `[]`, and the panel printed "no
+   * results yet — try another phrase" over a query that was never answered —
+   * sending the user to rephrase a search that had nothing wrong with it.
+   */
+  failed?: 'busy' | 'error';
 }
 
 interface Props {
@@ -63,6 +72,11 @@ interface Props {
    * dependency, so it doesn't have to be referentially stable.
    */
   onQueryChange?: (q: string) => void;
+  /**
+   * Bump to ask the same query again — the "Try again" under a search that got
+   * no answer. An effect dependency, so it runs the search once per change.
+   */
+  retryKey?: number;
 }
 
 /**
@@ -85,7 +99,7 @@ function SearchTypeMenu({ type, onChange }: { type: SearchType; onChange: (t: Se
   );
 }
 
-export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeChange }: Props) {
+export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeChange, retryKey = 0 }: Props) {
   const [q, setQ] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
@@ -248,6 +262,13 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
       onLoading(true);
       try {
         const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&type=${type}`);
+        // A non-2xx is NOT an empty result. The route answers `{ error }` with
+        // its status, and reading that body as results — no `feeds`, so `[]` —
+        // is what printed "no results" over a rate limit.
+        if (!r.ok) {
+          if (gen === genRef.current) onResults([], q, { type, total: 0, failed: r.status === 429 ? 'busy' : 'error' });
+          return;
+        }
         const data = await r.json();
         if (gen !== genRef.current) return;
         const feeds = Array.isArray(data?.feeds) ? data.feeds : [];
@@ -262,20 +283,20 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
         });
       } catch {
         // try/finally with no catch made a dropped connection or a non-JSON
-        // body an unhandled rejection. An empty result set is the honest answer
-        // here — the surrounding UI already renders "no results" — and the next
-        // keystroke retries anyway.
+        // body an unhandled rejection. It is reported as `failed`, never as an
+        // empty result: we learned nothing about the query.
         //
         // `total: 0` on purpose: we learned nothing about how many results the
         // unfiltered query has, and a narrowed empty state offering to "search
         // all types" over a number we invented would be a worse claim than none.
-        if (gen === genRef.current) onResults([], q, { type, total: 0 });
+        if (gen === genRef.current) onResults([], q, { type, total: 0, failed: 'error' });
       } finally {
         if (gen === genRef.current) onLoading(false);
       }
     }, byPress ? 0 : 280);
     return () => clearTimeout(t);
-  }, [q, type, secretHit, onResults, onLoading]);
+    // `retryKey` is read by nothing in the body: a change is the request.
+  }, [q, type, secretHit, onResults, onLoading, retryKey]);
 
   // Navigation hangs off the suggestion (click or Enter), never off the npub
   // merely PARSING. Someone pasting an npub mid-edit, or pasting one they then

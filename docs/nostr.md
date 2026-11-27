@@ -29,6 +29,7 @@ NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` a
 - **`fetchLatestEventDetailed`** returns `{ event, trustworthy }`; `fetchLatestEvent` is a thin wrapper, so callers that don't cache misses are unaffected.
 - `trustworthy` is a **signal, not a guarantee** — a relay that never connects doesn't hold nostr-tools' aggregate `oneose` open, so EOSE means "every *reachable* relay confirmed none." Same caveat as the kind:3 `ok` flag.
 - An event that arrives but won't parse **is** a cacheable miss — we heard back.
+- **A relay that CONNECTS and then says nothing stays in the denominator — and our own close at the deadline must not take it out.** Three outcomes per relay, three different counts (`perRelayRead`): never connected leaves `reached` (a dead default must not degrade every read); connected and refused with `CLOSED` before EOSE leaves it too (we learned nothing); connected, took the REQ and stayed silent stays `reached` and unanswered, which degrades the read. Until 2026-11-26 the third case read as the first: `finish()` closed every sub before resolving, and nostr-tools' `sub.close()` runs the sub's `onclose` synchronously — the "closed on us" branch — so every relay still silent at the deadline was dropped by our own hand, and an absence beside it read as trustworthy. That is the read `backupOverwriteVerdict` trusts before a derived Spark seed may replace the backup coordinate. The counts are now taken before the closes and `terminal` ignores anything after `settled`. Pinned by `npm run e2e:readtrust` (scripted relays that answer, hang, refuse and are absent), which `check:readtrust` cannot do under plain Node.
 - Same discipline as `fetchFollowList`'s `ok` and `resolveProfilesForNotes`' `firstHealthy`. **Apply it to any new negative cache.**
 
 **`resolvePublishRelays(identity)`** (`lib/nostr/relays.ts`) is the single source of truth for publish targets: `bmb:relays` override, else NIP-65 write relays **unioned with `DEFAULT_RELAYS`**, capped at 20. The union (not write-relays-*instead-of*) is deliberate — a user whose write relays are all dead/AUTH-gated was getting "published to 0/N relays" on a boost that paid. A manual override is used as-is.
@@ -1086,6 +1087,31 @@ Any new caller that writes durable state on the strength of a cycle inherits
 this — it is `assertPublished`'s rule one layer up, and the same reason that one
 exists.
 
+**And a `null` is ALSO "nothing to say" — so a caller that reports the result
+reads `syncFavoritesNowDetailed`, never the bare `null`.** When the relay already
+holds exactly these bytes, `syncFavorites` records the baseline through
+`onSynced` and returns `null` too. `syncFavoritesNowDetailed` and
+`withdrawThisDevice` answer a `FavoritesCycleOutcome` — `published`,
+`unchanged` or `refused` (with the reason) — told apart by which callback the
+cycle called: every return path calls exactly one, or neither when it refuses
+before reading, and "unchanged" is a claim only `onSynced` may make. The switch
+half of the privacy dialog discarded the answer (full-code review 2026-11-19,
+finding 14): a refused move closed the dialog while the entries stayed where
+they were — for a switch to Private, in plaintext, under a control reading
+Private. A refused move now keeps the dialog open with the reason; the mode
+stays recorded (reverting it would publish the next heart under the mode the
+person left) and every later cycle retries the move.
+
+**The dialog's "hold" is reported SYNCHRONOUSLY, before the mode is written.**
+`<FavoritesPrivacyPrompt>` closes itself once a mode exists, unless the dialog
+holds it. The hold used to be reported from an effect, which runs in the same
+commit as the mode write — and a parent's effect reads the state of its own
+render, so the prompt unmounted at the instant of Save, before the publish had
+answered. `apply` now calls `onBusyChange(true)` before `recordFavoritesPrivacy`,
+and the effect keeps the hold while an error is on screen.
+`npm run e2e:favrefusal` drives both (a fixture relay that answers REQs and
+refuses EVENTs); against the code before the fix, both scenarios fail.
+
 ### Module split
 
 `lib/nostr/favorites-list.ts` is the wire format, the merge, **and the private
@@ -1362,6 +1388,7 @@ A **"Live on Nostr"** horizontal card row renders above the global feed on the b
 - **`fetchLatestStreamByPubkey` runs TWO queries — `authors: [pubkey]` AND `#p: [pubkey]`.** Platform-published streams (Shosho, zap.stream) are authored by the **platform's** key with the host in a `p` tag, so an authors-only query finds nothing for exactly the hosts most likely to hand out a share link. Host-role is checked client-side; no `#d` filter, same reasoning as `fetchLiveStreamByAddr`.
 - **`episode.liveHostPubkey` is what the share link is built from, never the stream id's author half** (`streamHostPubkey` — the NIP-53 `p` tag with role `host`, falling back to the event author). Building it from the address's pubkey points a platform-published stream's permanent link at the *platform*, so it would resolve to whatever that platform is streaming next.
 - **Offline is a first-class state, not a 404** — name, avatar, and a "Next: <title> — starts <time>" line when the latest event is `planned`. A bio link that 404s between broadcasts reads as broken.
+- **"Offline" is a CLAIM, so it needs a read that can be believed** (full-code review 2026-11-19). The two queries were `pool.querySync`, which resolves at the library's aggregate EOSE — and a failed connection fires that too, in milliseconds — so an offline phone or a relay outage read as an empty answer, and the page said the host *"isn't live right now"* while they were on air. They are `collectEventsDetailed` now, and `fetchLatestStreamByPubkey` returns `{ stream, trustworthy }`: a live stream in hand is its own proof; otherwise the absence holds only when BOTH reads are `complete`. With no believable read in three tries the page renders a third state, *"Couldn't reach the Nostr relays, so we can't tell whether they're live"*, with **↻ Try again**. A planned stream from an untrusted read still feeds the "Next:" line. Pinned by `npm run e2e:livepage` (on the old read, 5 of its checks fail).
 
 Retries up to 3× at 800 ms, breaking early on `live`, for the cold-relay timeout `/stream` hits too. V4V enrichment lands as a second `play()` with the **same `episode.id`**, so the hls attachment isn't torn down.
 
@@ -1788,7 +1815,7 @@ own. No count on list rows (one `#i` per row), and no list of who liked.
   - **No extra `k` tag.** `k` names the identifier's KIND, and both kinds are already declared by the show/episode pairs.
   - **A guid the note already tags is not repeated** — a `musicL` playlist row already IS the track. **An over-long guid is dropped, never truncated**: a truncated guid names a different item.
   - **Title and artist are feed text: flattened to one line and capped at 120 characters each.** A newline in a title would otherwise forge a second line of a note the SITE may sign.
-  - **A real note always fits the site-sign route, and past every real maximum the body gives way part by part — never the note.** `/api/nostr/site-sign` refuses the whole template past 4800 characters of body or 4096 of tag text. 4800 sits just above the largest REAL note, about 4,025 characters with every part at its maximum, and BOOST ALL's at about 4,280 (`e2e:mentions` measures both and fails if the limit drifts 1,000 above the first): the modal's 250-character message with four typed mentions inline, 120 characters a name, a song inside an episode, eight mentions, the site's host as the one link, banner titles within 120 (the banner draws 47), and the summary receipt with three long relay hints. It was 5500 until 2026-11-22, while the body still printed two links of up to 512 characters each and the largest note measured about 5,030. The hints are relays the user writes to, so they have no maximum; three like `wss://filter.nostr.wine/<npub>?broadcast=true` add ~390. `noteLink` leaves a link over 512 out of the `r` tag and this site's show and item `i` hints — never cut, simply left out (the own-feed and track hints are not length-checked). BOOST ALL lists at most `BOOST_ALL_LISTED_MAX` (20) tracks by name, then `• and K more`; its sentence keeps the full count. It was 2000 until 2026-11-17, and a real note measured 2032 there — refused, RETRY NOTE with it. The limit still bounds the free text a stranger can have the site sign (`docs/security.md`), so it is not raised further. Past every real maximum the body gives way in `SHEDS` order: the Heard-on lines, the banner line (its `imeta` goes with it), then the song, then the "by <artist>", then the receipt's `nostr:nevent` line — its `q` tag stays. One body still has no maximum: a message that repeats one @mention dozens of times, since each becomes a 69-character `nostr:npub`; the route refuses that one. The track's hints, then its tags, give way when the tags would pass 4096 (`SITE_SIGN_*` in `boost-notes.ts`, kept beside the route's numbers).
+  - **A real note always fits the site-sign route, and past every real maximum the body gives way part by part — never the note.** `/api/nostr/site-sign` refuses the whole template past 4800 characters of body or 4096 of tag text. 4800 sits just above the largest REAL note, about 4,025 characters with every part at its maximum, and BOOST ALL's at about 4,280 (`e2e:mentions` measures both and fails if the limit drifts 1,000 above the first): the modal's 250-character message with four typed mentions inline, 120 characters a name, a song inside an episode, eight mentions, the site's host as the one link, banner titles within 120 (the banner draws 47), and the summary receipt with three long relay hints. It was 5500 until 2026-11-22, while the body still printed two links of up to 512 characters each and the largest note measured about 5,030. The hints are relays the user writes to, so they have no maximum; three like `wss://filter.nostr.wine/<npub>?broadcast=true` add ~390. `noteLink` leaves a link over 512 out of the `r` tag and every `i` hint — never cut, simply left out. **An `i` tag whose IDENTIFIER is over 512 is left out whole, with its `k`** (`noteITag`): an item guid is feed-chosen, often a URL, and has no maximum, and until 2026-11-26 one past 512 made the route refuse the whole note, on both paths. `e2e:mentions` runs every template it builds through the route's own `validateBoostTemplate`, not a copy of its numbers. BOOST ALL lists at most `BOOST_ALL_LISTED_MAX` (20) tracks by name, then `• and K more`; its sentence keeps the full count. It was 2000 until 2026-11-17, and a real note measured 2032 there — refused, RETRY NOTE with it. The limit still bounds the free text a stranger can have the site sign (`docs/security.md`), so it is not raised further. Past every real maximum the body gives way in `SHEDS` order: the Heard-on lines, the banner line (its `imeta` goes with it), then the song, then the "by <artist>", then the receipt's `nostr:nevent` line — its `q` tag stays. One body still has no maximum: a message that repeats one @mention dozens of times, since each becomes a 69-character `nostr:npub`; the route refuses that one. The track's hints, then its tags, give way when the tags would pass 4096 (`SITE_SIGN_*` in `boost-notes.ts`, kept beside the route's numbers).
   - **The live source is the SAME snapshot the boostagram's `remote_*` came from** (`liveTargetSnapshot()`, read once in `go()`), so the note and the boostagram name one song. A block the played-tracks list would not keep — the show's own default block, a host segment with no item — is not named (`isNotPlayed`, `lib/live-played.ts`).
   - **The artist is display text**, from `/api/remote-item` (`fetchRemoteItemParent`, shared with the played list) or the played list's own row. It is asked for while the wallet pays and waited for at most 2 s (`NOTE_ARTIST_WAIT_MS`); a miss drops only the "by <artist>" words. A playlist row's artist is looked up the same way (`PublishArgs.itemArtist`).
   - `contentOverride` (Boost-all) never gets the song — its summary names every track itself.
@@ -2293,6 +2320,20 @@ must go through `parseQuoteRefs` and not an `e`/`q` tag scan, because Fountain
 writes the reference as a `nostr:nevent1…` URI in the note **body**. Dedupe on
 the receipt's own id only: a receipt whose `targetEventId` names a note in the
 list is someone zapping that boost note, which is a second real payment.
+
+**The zaps panel UNIONS its two answers by receipt id; it never sets one over the
+other** (full-code review 2026-11-19). It paints the read index's receipts first,
+and the relay pass landed with `setZaps(z)`. `fetchZapsReceivedBy` answers `[]`
+for a read that failed or that no relay answered — it catches its own errors — so
+the index's receipts were replaced by "no zaps to this npub surfaced…" (measured
+on main by `npm run e2e:explorerzaps`: two receipts painted, then zero). An empty
+answer from one source is not an absence in the other, which is the same union
+`useNostrFeed` does for the boost panels. **And the panel waits for the received
+boosts only while they can still arrive:** `quotedEventIds` needs them, but a
+received read that FAILED with nothing on screen leaves `received.notes` null with
+`err` set, and gating on null alone held the panel at "searching nostr relays…" for
+the life of the page. That second half has no e2e: `fetchBoostsReceivedBy` catches
+its own reads, so no input reaches the state.
 
 **The zaps section may print a sats total and the received-boosts one still may
 not** — see the review-pass note below for why the boosts sum was removed. The

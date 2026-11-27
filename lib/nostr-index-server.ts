@@ -19,6 +19,7 @@
 // cheapest possible one.
 
 import { readCappedJson } from './capped-body';
+import { BRAND } from './brand';
 
 const TIMEOUT_MS = 6_000;
 
@@ -101,6 +102,7 @@ export async function askIndex<T>(
       method: init?.method ?? 'GET',
       headers: {
         'x-index-key': (process.env.NOSTR_INDEX_KEY ?? '').trim(),
+        'User-Agent': BRAND.userAgent,
         ...(init?.body ? { 'content-type': 'application/json' } : {}),
       },
       body: init?.body ? JSON.stringify(init.body) : undefined,

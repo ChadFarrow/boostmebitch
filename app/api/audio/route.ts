@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
+import { BRAND } from '@/lib/brand';
 import { getErrorMessage, httpUrl } from '@/lib/util';
 import { MAX_DOWNLOAD_BYTES, audioProxyHeaders } from '@/lib/downloads/download-rules';
 
@@ -88,8 +89,11 @@ export async function GET(req: Request) {
     const timer = setTimeout(() => headersDeadline.abort(), 30_000);
     const upstream = await safeFetch(url, {
       // Never forward credentials or the caller's headers: this request is ours,
-      // not theirs, and an enclosure needs neither.
-      headers: { Accept: '*/*' },
+      // not theirs, and an enclosure needs neither. The User-Agent is OURS:
+      // Buzzsprout's audio host answers 403 to Node's default `node`
+      // (measured 2026-11-27), so this route passed on a 403 for every
+      // Buzzsprout enclosure until this was set.
+      headers: { Accept: '*/*', 'User-Agent': BRAND.userAgent },
       signal: headersDeadline.signal,
     }).finally(() => clearTimeout(timer));
 

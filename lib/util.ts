@@ -571,6 +571,24 @@ export function listKey(p: Pick<Podcast, 'id' | 'podcastGuid' | 'url'>): string 
 }
 
 /**
+ * Are `a` and `b` the same LIST — the show `episodeQueue` was written for, and
+ * the show the playing item plays under? `listKey`, plus a shared positive
+ * Podcast Index id for two records of one feed that spell the rest differently.
+ *
+ * "The playing track is a row of the queue" is not this question. One song is a
+ * row of its album AND of every playlist naming it, under the same id, so the
+ * fullscreen player's Album panel listed whichever of the two was opened last
+ * (full-code review 2026-11-19, `e2e:albumpanel`).
+ */
+export function sameList(
+  a: Pick<Podcast, 'id' | 'podcastGuid' | 'url'> | null | undefined,
+  b: Pick<Podcast, 'id' | 'podcastGuid' | 'url'> | null | undefined,
+): boolean {
+  if (!a || !b) return false;
+  return listKey(a) === listKey(b) || (a.id > 0 && a.id === b.id);
+}
+
+/**
  * Where a FORWARD step lands with REPEAT on: `nextPlayableIndexBy`, and past the
  * last playable row, the first playable one. Nothing else changes: a back step,
  * repeat off, and a `from` outside the list answer exactly what
@@ -2544,6 +2562,28 @@ export function feedUrlKey(url: string | undefined): string {
 }
 
 /**
+ * Whether Podcast Index stored a feed's URL with whitespace pasted into it.
+ *
+ * PI keeps a URL exactly as it was submitted, and its add form keeps pasted
+ * whitespace: on 2026-11-27 feed 8132371 went in as
+ * `…/chadf-musicl-playlists   /refs/heads/main/…`, a URL that a chat had broken
+ * across lines. GitHub still serves that address (the crawler sends the spaces
+ * as `%20`), so PI reads the feed, but `/podcasts/byfeedurl` with the real URL
+ * misses, and every page stamped the playlist NOT IN PI.
+ *
+ * True only when the two differ by whitespace alone — literal, or as `%20`,
+ * `%09`, `%0A`, `%0D` — plus what `feedUrlKey` already folds. Two blanks are NOT
+ * a match. It decides nothing by itself: `getPodcastByDeclaredGuid` asks it only
+ * about the record PI returns for the guid the feed declares, so a feed that
+ * claims another feed's guid never takes that feed's record.
+ */
+export function feedUrlsMatchBarWhitespace(stored: string | undefined, requested: string | undefined): boolean {
+  const squash = (u: string | undefined) => feedUrlKey(u?.replace(/\s+|%(?:20|09|0a|0d)/gi, ''));
+  const a = squash(stored);
+  return a !== '' && a === squash(requested);
+}
+
+/**
  * The curated-collection playlists a search may add: the ones no Podcast Index
  * lane already returned.
  *
@@ -3288,6 +3328,46 @@ export function legLogFields(r: BoostResult | undefined): { res: 'none' | 'ok' |
   if (r.stopped) return { res: 'stop', why: 'cancelled' };
   if (r.indeterminate) return { res: 'unk', why: 'unanswered' };
   return { res: 'fail', why: explainPaymentError(r.error).code };
+}
+
+/**
+ * Why a Spark SDK call failed, as a FIXED word (#304).
+ *
+ * The bug report's log carries this word, never the error's own text, for the
+ * reason `legLogFields` gives: the log is filed into a public issue. The text
+ * stays on the device (the console, and the wallet window).
+ *
+ * `network` is the one that matters. A browser that refuses a response under
+ * CORS hides the reason from the page on purpose, so a CORS block and a dead
+ * connection throw the same `TypeError` — Chromium "Failed to fetch", Firefox
+ * "NetworkError when attempting to fetch resource.", WebKit "Load failed".
+ * Firefox refuses flashnet's operator (`Access-Control-Allow-Headers: *` does not
+ * cover `Authorization`), and that surfaced as a wallet that silently did not
+ * open, or a balance of "—" with no cause anywhere.
+ */
+export type SparkErrorCode = 'network' | 'timeout' | 'auth' | 'other';
+
+export function sparkErrorCode(message: string): SparkErrorCode {
+  if (/failed to fetch|networkerror|load failed|network request failed|fetch failed|network error/i.test(message)) return 'network';
+  if (/timed? ?out|deadline/i.test(message)) return 'timeout';
+  if (/unauthenticated|authenticat|unauthori[sz]ed|permission denied/i.test(message)) return 'auth';
+  return 'other';
+}
+
+/** What to tell the person about a Spark failure: the cause first, then what to do. */
+export function sparkFailureCause(code: SparkErrorCode, isFirefox: boolean): string {
+  switch (code) {
+    case 'network':
+      return isFirefox
+        ? 'Spark could not reach one of its servers. Firefox blocks one of them, because of a setting on Spark\'s side (issue #304). Use another browser for this wallet, or connect a wallet with NWC.'
+        : 'Spark could not reach one of its servers. Check your network and try again.';
+    case 'timeout':
+      return 'Spark did not answer in time. Check your network and try again.';
+    case 'auth':
+      return 'A Spark server refused the sign-in. Try again later.';
+    default:
+      return 'Spark reported an error. Try again later.';
+  }
 }
 
 /** The error text on a leg CANCEL kept from starting. Display only — the
@@ -5560,18 +5640,29 @@ export function withoutSiteDomainLine(body: string, domains: readonly string[]):
 
 // Strip HTML tags and entity-decode. Used by server components (lib/format.tsx
 // is 'use client' so can't be imported on the server side). Pure string regex,
-// no DOM required — isomorphic.
+// no DOM required — isomorphic. The OUTPUT is plain text, never HTML.
+//
+// Numeric references are decoded (through `fromCodePoint`: an emoji is above
+// U+FFFF) and `&amp;` goes LAST, so `&amp;lt;` stays the text `&lt;`. Without
+// the numeric pass a description holding HTML — the feed's `<description>`
+// after its XML decode, and PI's description as served — showed `&#160;` as
+// those six characters, once `extractText` stopped decoding a second time
+// (full-code review 2026-11-19; pinned by `check:feedxml`).
 export function stripHtml(s: string): string {
+  const cp = (n: number, whole: string) =>
+    Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole;
   return s
     .replace(/<\s*br\s*\/?\s*>/gi, '\n')
     .replace(/<\/(p|div|li)\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (whole, h) => cp(parseInt(h, 16), whole))
+    .replace(/&#(\d+);/g, (whole, d) => cp(Number(d), whole))
+    .replace(/&amp;/gi, '&')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

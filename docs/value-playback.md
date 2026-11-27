@@ -84,6 +84,34 @@ Three rules ride on that, and **not one of them can fail on a single device**:
   predicate with `eventInHand: false` forced, reducing it to "did every relay I
   reached actually answer". Reuse the function, decline the shortcut.
 
+**The receipt walk proves it reached the END of every relay's history, or the
+summary is not published** (`walkReceiptHistory`, `value-playback-summary.ts`,
+pinned by `check:vpsummary` against the walk it replaced). Two rules, each a way
+the published total stayed low — and stayed there, because the address is
+monotonic (full-code review, 2026-11-19, finding 17):
+
+- **A cursor per relay, never one for the union.** The old walk asked every
+  relay for a page and took ONE `until` from the oldest event of any of them.
+  A relay that missed the recent receipts answers a page reaching further back,
+  so the next page started below every receipt the denser relay held between
+  the two. `e2e:vpsummary` rebuilds it: 250 receipts on one relay, the oldest
+  80 on another, both capping a REQ at 100 — the old walk published 180.
+- **A short page is not the end.** A relay caps a REQ at a number of its own
+  choosing and says nothing, so 100 events against a `limit` of 500 is either
+  the whole history or a cap of 100. The end is a page that adds nothing new:
+  `until` is inclusive, so the walk re-asks the boundary second and stops when
+  that answer holds only receipts already seen. One extra page per relay.
+
+It fails closed on: a page ceiling (`MAX_RECEIPT_PAGES`, now PER RELAY at that
+relay's cap — 20 × 100 receipts on a relay capping at 100, past which the summary
+stops updating and logs why); a relay that ignores `until`; a relay that connects
+and stops answering (which `perRelayRead` counts correctly only since #687); a
+relay lost after its first page; and a page lying wholly in the cursor's second
+that is as large as any page the relay has returned, since NIP-01 has no cursor
+finer than a second. The one shape it cannot see is named in the function's
+comment. This is scan mechanics: the wire format, the three rules above and the
+publish predicate are unchanged.
+
 The stored summary is read too, and a degraded read of *that* also refuses:
 without it there is nothing to enforce monotonicity against, so publishing would
 be a blind write over a number that may be larger.

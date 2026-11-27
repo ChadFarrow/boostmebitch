@@ -45,6 +45,8 @@ import {
   deriveSummary,
   parseStoredSummary,
   summaryPublishDecision,
+  walkReceiptHistory,
+  createAddressGate,
   VALUE_PLAYBACK_SUMMARY_KIND,
 } from '../lib/nostr/value-playback-summary.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
@@ -370,6 +372,167 @@ console.log('\nevery decision vector fails against the obvious wrong implementat
   // `{ alsoNaive: true }` vector used to have its `differs` result discarded, so
   // the exemption hid exactly what it was granted to protect.
   replayVectors({ vectors, invoke: call, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nwalkReceiptHistory — every relay walked to the end of ITS history');
+// ---------------------------------------------------------------------------
+// The scan behind the sum (lib/nostr/value-playback.ts, scanReceipts). A walk
+// that stops early publishes a total below the truth, and the monotonic rule
+// keeps it there. Relays are simulated from a SPEC so a vector is data: each
+// answers its newest events at or before `until`, up to `min(limit, cap)`.
+// naive() is the walk before 2026-11-26, verbatim in shape: ONE cursor for the
+// relay union (the oldest event of any relay) and "a page shorter than the
+// limit is the end".
+{
+  const LIMIT = 500;
+  const T0 = 1_790_000_000;
+  const run = (n, from = 1, at = (i) => T0 + i) =>
+    Array.from({ length: n }, (_, k) => ({ id: `r${from + k}`, created_at: at(from + k) }));
+  const relayOf = (spec) => {
+    let asked = 0;
+    return async (until) => {
+    asked++;
+    if (spec.unreachable || (spec.goneAfter && asked > spec.goneAfter)) return { reached: false, answered: false, events: [] };
+    if (spec.silent) return { reached: true, answered: false, events: [] };
+    const hits = spec.events
+      .filter((e) => spec.ignoresUntil || until === undefined || e.created_at <= until)
+      .sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? -1 : 1));
+    return { reached: true, answered: true, events: hits.slice(0, Math.min(LIMIT, spec.cap ?? Infinity)) };
+    };
+  };
+  async function naiveWalk(fetchers, maxPages) {
+    const byId = new Map();
+    let until;
+    let pages = 0;
+    while (pages < maxPages) {
+      const answers = await Promise.all(fetchers.map((f) => f(until)));
+      pages++;
+      const reached = answers.filter((a) => a.reached).length;
+      const answered = answers.filter((a) => a.reached && a.answered).length;
+      if (!(reached > 0 && answered >= reached)) return { complete: false, events: [] };
+      const union = new Map();
+      for (const a of answers) for (const e of a.events) if (!union.has(e.id)) union.set(e.id, e);
+      let added = 0;
+      let oldest = Infinity;
+      for (const e of union.values()) {
+        if (e.created_at < oldest) oldest = e.created_at;
+        if (byId.has(e.id)) continue;
+        byId.set(e.id, e);
+        added++;
+      }
+      if (union.size < LIMIT || added === 0) return { complete: true, events: [...byId.values()] };
+      until = oldest;
+    }
+    return { complete: false, events: [] };
+  }
+  // An incomplete walk publishes nothing, so its count is not part of the answer.
+  const verdict = (w) => (w.complete ? { complete: true, count: w.events.length } : { complete: false });
+  // Oldest 30 of 130 share ONE second: the page edge falls inside that run.
+  const sameSecond = [...run(100, 31), ...run(30, 1, () => T0)];
+  // ...and 150 in ONE second against a cap of 120: the second cannot be paged past.
+  const denseSecond = [...run(100, 151), ...run(150, 1, () => T0)];
+  const WALKS = [
+    { label: 'a relay with a LONGER history does not move the cursor past a denser relay', relays: [{ events: run(300), cap: 120 }, { events: run(100), cap: 120 }], max: 20, want: { complete: true, count: 300 } },
+    { label: 'a relay that caps BELOW the page size is walked past its first page', relays: [{ events: run(300), cap: 100 }], max: 20, want: { complete: true, count: 300 } },
+    { label: 'a page edge inside a run of one second re-asks that second', relays: [{ events: sameSecond, cap: 120 }], max: 20, want: { complete: true, count: 130 } },
+    { label: 'two relays that each need 15 pages are each walked to the end', relays: [{ events: run(140), cap: 10 }, { events: run(140, 1001), cap: 10 }], max: 20, want: { complete: true, count: 280 } },
+    { label: 'a relay that IGNORES `until` proves no end: incomplete', relays: [{ events: run(300), cap: 120, ignoresUntil: true }], max: 20, want: { complete: false } },
+    { label: 'a relay that hits the page ceiling: incomplete, never a low total', relays: [{ events: run(300), cap: 10 }], max: 20, want: { complete: false } },
+    { label: 'a relay that answers page 1 and is gone on page 2: incomplete, not "left out"', relays: [{ events: run(300), cap: 100, goneAfter: 1 }], max: 20, want: { complete: false } },
+    { label: 'a run in one second at or above the relay cap: incomplete, never the end', relays: [{ events: denseSecond, cap: 120 }], max: 20, want: { complete: false } },
+    // Must still work: what the old walk got right.
+    { label: 'one relay, a short history', relays: [{ events: run(50) }], max: 20, want: { complete: true, count: 50 }, alsoNaive: true },
+    { label: 'one receipt: complete, one', relays: [{ events: run(1) }], max: 20, want: { complete: true, count: 1 }, alsoNaive: true },
+    { label: 'two receipts in ONE second: complete, two (a short run is not a cap)', relays: [{ events: run(2, 1, () => T0) }], max: 20, want: { complete: true, count: 2 }, alsoNaive: true },
+    { label: 'a relay that never connects is left out', relays: [{ unreachable: true }, { events: run(50) }], max: 20, want: { complete: true, count: 50 }, alsoNaive: true },
+    { label: 'a relay that connects and never answers: incomplete', relays: [{ silent: true }, { events: run(50) }], max: 20, want: { complete: false }, alsoNaive: true },
+    { label: 'no relay reachable: incomplete, never "zero"', relays: [{ unreachable: true }, { unreachable: true }], max: 20, want: { complete: false }, alsoNaive: true },
+    { label: 'no receipts anywhere: complete, zero', relays: [{ events: [] }], max: 20, want: { complete: true, count: 0 }, alsoNaive: true },
+    { label: 'two relays holding disjoint halves are unioned', relays: [{ events: run(60) }, { events: run(40, 501) }], max: 20, want: { complete: true, count: 100 }, alsoNaive: true },
+  ];
+  const results = new Map();
+  for (const v of WALKS) {
+    const real = verdict(await walkReceiptHistory(v.relays.map(relayOf), v.max));
+    const naive = verdict(await naiveWalk(v.relays.map(relayOf), v.max));
+    results.set(v.label, { real, naive });
+    eq(v.label, real, v.want);
+  }
+  replayVectors({
+    vectors: WALKS.map((v) => ({ label: v.label, kind: 'walk', args: [], alsoNaive: v.alsoNaive })),
+    invoke: (which, v) => JSON.stringify(results.get(v.label)[which]),
+    fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); },
+  });
+  // An aborted cycle asks for no further page.
+  let asked = 0;
+  const counting = async () => { asked++; return { reached: true, answered: true, events: run(10, asked * 100) }; };
+  let stop = false;
+  const walk = walkReceiptHistory([async (u) => { const p = await counting(u); stop = true; return p; }], 20, () => stop);
+  eq('a stopped walk asks for no page after the stop, and is incomplete', [verdict(await walk), asked], [{ complete: false }, 1]);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\ncreateAddressGate — one cycle per address, until it SETTLES');
+// ---------------------------------------------------------------------------
+// The flush gives up WAITING after a timeout. naive() is the flush before
+// 2026-11-26: nothing held the address, so the next flush started a second
+// cycle beside the abandoned one — two reads of one stored summary, two
+// 'publish' decisions, two events at one address.
+{
+  const naiveGate = () => ({ start: (_id, cycle) => ({ started: true, done: cycle() }) });
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const never = () => new Promise(() => {});
+  const SCENARIOS = {
+    // The first cycle never settles (a hung signer); the flush timed out on it.
+    'a cycle past its timeout still holds its address': async (g) => {
+      const a = g.start('a', never).started; await tick();
+      return [a, g.start('a', async () => {}).started];
+    },
+    'a settled cycle frees its address': async (g) => {
+      const first = g.start('a', async () => {}); await first.done; await tick();
+      return [first.started, g.start('a', async () => {}).started];
+    },
+    'a cycle that throws frees its address': async (g) => {
+      const first = g.start('a', async () => { throw new Error('relay'); });
+      await (first.done ?? Promise.resolve()).catch(() => {}); await tick();
+      return [first.started, g.start('a', async () => {}).started];
+    },
+    'another address is never held by a hung one': async (g) => {
+      const a = g.start('a', never).started; await tick();
+      return [a, g.start('b', async () => {}).started];
+    },
+  };
+  const want = {
+    'a cycle past its timeout still holds its address': [true, false],
+    'a settled cycle frees its address': [true, true],
+    'a cycle that throws frees its address': [true, true],
+    'another address is never held by a hung one': [true, true],
+  };
+  const results = new Map();
+  for (const [label, scenario] of Object.entries(SCENARIOS)) {
+    const real = await scenario(createAddressGate());
+    const naive = await scenario(naiveGate());
+    results.set(label, { real, naive });
+    eq(label, real, want[label]);
+  }
+  // The busy answer carries the running cycle, so the caller re-queues when IT ends.
+  {
+    const g = createAddressGate();
+    let release;
+    g.start('a', () => new Promise((r) => { release = r; }));
+    const second = g.start('a', async () => {});
+    let reQueued = false;
+    second.busy?.then(() => { reQueued = true; });
+    await tick();
+    const before = reQueued;
+    release(); await tick(); await tick();
+    eq('busy hands back the running cycle; it resolves when that cycle ends', [second.started, before, reQueued, g.held('a')], [false, false, true, false]);
+  }
+  replayVectors({
+    vectors: Object.keys(SCENARIOS).map((label) => ({ label, kind: 'gate', args: [], alsoNaive: label !== 'a cycle past its timeout still holds its address' })),
+    invoke: (which, v) => JSON.stringify(results.get(v.label)[which]),
+    fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); },
+  });
 }
 
 // ---------------------------------------------------------------------------

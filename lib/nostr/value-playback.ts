@@ -35,6 +35,8 @@ import {
   receiptFacts,
   receiptMatchesId,
   summaryPublishDecision,
+  walkReceiptHistory,
+  createAddressGate,
   type ReceiptFacts,
 } from './value-playback-summary';
 
@@ -226,10 +228,13 @@ const SUMMARY_RECEIPT_SCAN_MS = 8_000;
  * total plateaus, `summaryPublishDecision` answers 'unchanged' forever, and the
  * monotonic rule pins the public number below the truth permanently.
  *
- * So the scan asks for an explicit page and walks backwards with `until` until a
- * page comes back short. `MAX_RECEIPT_PAGES` bounds the work for an account with
- * a very long history; hitting it is the one case where the view really is
- * partial, and the scan reports that rather than publishing a low total.
+ * So the scan asks for an explicit page and walks each relay backwards with its
+ * own `until` until a page adds nothing new — never until a page comes back
+ * short, because a relay whose own cap is below this one answers every page
+ * short (`walkReceiptHistory`). `MAX_RECEIPT_PAGES` bounds the work per relay
+ * for an account with a very long history; hitting it is one of the cases where
+ * the view really is partial, and the scan reports that rather than publishing
+ * a low total.
  */
 const RECEIPT_PAGE_LIMIT = 500;
 const MAX_RECEIPT_PAGES = 20;
@@ -321,74 +326,57 @@ export function buildValuePlaybackSummary(
  * subsets and the monotonic rule silences whichever one has the narrower view.
  */
 /**
- * Every receipt this pubkey published for one identifier, walked page by page.
+ * Every receipt this pubkey published for one identifier, walked page by page
+ * and RELAY BY RELAY (`walkReceiptHistory`, pinned by check:vpsummary).
  *
  * `complete` here is stricter than `DetailedCollect.complete`: it also requires
- * that the walk reached the end of the history rather than the page ceiling. A
- * sum is only as good as its narrowest input, and publishing a truncated one is
- * permanent — see RECEIPT_PAGE_LIMIT.
+ * that every relay that connected was walked to the end of its own history,
+ * rather than to a page ceiling, a cap of its own, or the cursor of a relay
+ * with a longer history. A sum is only as good as its narrowest input, and
+ * publishing a truncated one is permanent — see RECEIPT_PAGE_LIMIT.
  */
 async function scanReceipts(
   relays: string[],
   pubkey: string,
   id: string,
-): Promise<{ events: NostrEvent[]; complete: boolean; reached: number; answered: number; pages: number }> {
-  const byId = new Map<string, NostrEvent>();
-  let until: number | undefined;
-  let reached = 0;
-  let answered = 0;
-  let pages = 0;
-  let walkedToEnd = false;
-
-  while (pages < MAX_RECEIPT_PAGES) {
-    const page = await collectEventsDetailed(
-      relays,
-      {
-        kinds: [VALUE_PLAYBACK_RECEIPT_KIND],
-        authors: [pubkey],
-        '#i': [id],
-        limit: RECEIPT_PAGE_LIMIT,
-        ...(until === undefined ? {} : { until }),
-      },
-      SUMMARY_RECEIPT_SCAN_MS,
-      { pubkey, kinds: [VALUE_PLAYBACK_RECEIPT_KIND] },
-    );
-    pages++;
-    reached = page.reached;
-    answered = page.answered;
-    if (!page.complete) return { events: [...byId.values()], complete: false, reached, answered, pages };
-
-    let added = 0;
-    let oldest = Infinity;
-    for (const ev of page.events) {
-      if (ev.created_at < oldest) oldest = ev.created_at;
-      if (byId.has(ev.id)) continue;
-      byId.set(ev.id, ev);
-      added++;
-    }
-    // A short page is the end of the history. `added === 0` catches the other
-    // terminator: a page whose events we have all seen, which is what a run of
-    // receipts sharing one `created_at` produces once `until` stops advancing.
-    if (page.events.length < RECEIPT_PAGE_LIMIT || added === 0) {
-      walkedToEnd = true;
-      break;
-    }
-    // `until` is inclusive, so the boundary second is re-fetched and deduped by
-    // id rather than skipped — dropping it would silently lose every receipt
-    // that shares that second with the page edge.
-    until = oldest;
-  }
-
-  return { events: [...byId.values()], complete: walkedToEnd, reached, answered, pages };
+  signal?: AbortSignal,
+): Promise<{ events: NostrEvent[]; complete: boolean; reached: number; pages: number }> {
+  return walkReceiptHistory<NostrEvent>(
+    relays.map((relay) => async (until) => {
+      const page = await collectEventsDetailed(
+        [relay],
+        {
+          kinds: [VALUE_PLAYBACK_RECEIPT_KIND],
+          authors: [pubkey],
+          '#i': [id],
+          limit: RECEIPT_PAGE_LIMIT,
+          ...(until === undefined ? {} : { until }),
+        },
+        SUMMARY_RECEIPT_SCAN_MS,
+        { pubkey, kinds: [VALUE_PLAYBACK_RECEIPT_KIND] },
+      );
+      return { reached: page.reached > 0, answered: page.complete, events: page.events };
+    }),
+    MAX_RECEIPT_PAGES,
+    () => !!signal?.aborted,
+  );
 }
 
-export async function updateValuePlaybackSummary(args: SummaryUpdateArgs): Promise<void> {
+/**
+ * `signal` is the flush's: once it aborts (the cycle's timeout, or a sign-out
+ * through `cancelQueuedSummaries`) this cycle stops before its next read and
+ * never signs. Until 2026-11-26 the timeout only stopped the WAITING, so an
+ * abandoned cycle could still sign minutes later — beside a second cycle for
+ * the same address, or after the account it was derived for had signed out.
+ */
+export async function updateValuePlaybackSummary(args: SummaryUpdateArgs, signal?: AbortSignal): Promise<void> {
   const relays = args.relays.length ? args.relays : DEFAULT_RELAYS;
   try {
-    const scan = await scanReceipts(relays, args.pubkey, args.id);
+    const scan = await scanReceipts(relays, args.pubkey, args.id, signal);
+    if (signal?.aborted) return;
     if (!scan.complete) {
       console.warn(
-        `[33369] receipt scan incomplete (${scan.answered}/${scan.reached} relays, ${scan.pages} pages) — not publishing`,
+        `[33369] receipt scan incomplete (${scan.reached}/${relays.length} relays reached, ${scan.pages} pages) — not publishing`,
         { id: args.id },
       );
       return;
@@ -407,6 +395,7 @@ export async function updateValuePlaybackSummary(args: SummaryUpdateArgs): Promi
       undefined,
       { pubkey: args.pubkey, kinds: [VALUE_PLAYBACK_SUMMARY_KIND], dTag: args.id },
     );
+    if (signal?.aborted) return;
     if (!current.trustworthy) {
       console.warn('[33369] could not read the stored summary — not publishing', { id: args.id });
       return;
@@ -418,7 +407,9 @@ export async function updateValuePlaybackSummary(args: SummaryUpdateArgs): Promi
       console.log(`[33369] no publish (${decision.reason})`, { id: args.id, derived, stored });
       return;
     }
-    const note = await signAndPublish(buildValuePlaybackSummary(args, derived), relays);
+    if (signal?.aborted) return;
+    // `signal` also drops a signature that arrives after the abort, unpublished.
+    const note = await signAndPublish(buildValuePlaybackSummary(args, derived), relays, { signal });
     console.log(
       `[33369] summary published to ${note.acceptedRelays.length}/${relays.length} relays`,
       { id: args.id, amount: derived.amount, count: derived.count },
@@ -442,6 +433,12 @@ interface PendingSummaries {
 
 let pending: PendingSummaries | null = null;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+/** One cycle per address, held until the cycle SETTLES (`createAddressGate`). */
+const addressGate = createAddressGate();
+/** The running cycles' abort handles, so a sign-out can stop every one. */
+const cycleAborts = new Set<AbortController>();
+/** Bumped by `cancelQueuedSummaries`: a re-queue from before a sign-out is dropped. */
+let queueGeneration = 0;
 /** True while `flushSummaries` is awaiting publishes. See its re-entrancy note. */
 let flushing = false;
 
@@ -531,16 +528,36 @@ async function flushSummaries() {
   flushing = true;
   try {
     for (const [id, meta] of batch.ids) {
-      await withTimeout(
-        updateValuePlaybackSummary({
-          id,
-          idKind: meta.idKind,
-          label: meta.label,
-          pubkey: batch.pubkey,
-          relays: batch.relays,
-        }),
-        SUMMARY_PUBLISH_TIMEOUT_MS,
-      );
+      const abort = new AbortController();
+      const gate = addressGate.start(id, async () => {
+        cycleAborts.add(abort);
+        try {
+          await updateValuePlaybackSummary({
+            id,
+            idKind: meta.idKind,
+            label: meta.label,
+            pubkey: batch.pubkey,
+            relays: batch.relays,
+          }, abort.signal);
+        } finally {
+          cycleAborts.delete(abort);
+        }
+      });
+      if (!gate.started) {
+        // A cycle for this address is still running — one a timeout gave up
+        // WAITING for, which aborting stops only at its next step. Starting a
+        // second one beside it is the double write `createAddressGate`
+        // exists for, so the id waits for that cycle to end and is queued
+        // again then, unless the user signed out or switched account since.
+        const generation = queueGeneration;
+        void gate.busy.then(() => {
+          if (generation !== queueGeneration) return;
+          if (pending && pending.pubkey !== batch.pubkey) return;
+          queueSummaryUpdate({ ids: [{ id, ...meta }], pubkey: batch.pubkey, relays: batch.relays });
+        });
+        continue;
+      }
+      await withTimeout(gate.done, SUMMARY_PUBLISH_TIMEOUT_MS, abort);
     }
   } finally {
     flushing = false;
@@ -557,21 +574,24 @@ async function flushSummaries() {
  * `withDecryptTimeout` exists — and here that would strand every id queued
  * behind it, silently.
  */
-async function withTimeout(p: Promise<void>, ms: number): Promise<void> {
+async function withTimeout(p: Promise<void>, ms: number, abort: AbortController): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       p,
-      new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); }),
+      // Stop the cycle, not only the waiting: aborted, it never signs.
+      new Promise<void>((resolve) => { timer = setTimeout(() => { abort.abort(); resolve(); }, ms); }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
 }
 
-/** Drop anything queued without flushing it. For sign-out. */
+/** Drop anything queued without flushing it, and stop every running cycle. For sign-out. */
 export function cancelQueuedSummaries() {
   if (flushTimer) clearTimeout(flushTimer);
   flushTimer = null;
   pending = null;
+  queueGeneration++;
+  for (const abort of cycleAborts) abort.abort();
 }

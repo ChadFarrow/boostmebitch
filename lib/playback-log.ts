@@ -33,6 +33,11 @@ import type { Episode } from './types';
 // ms and a fixed reason word (`legLogFields`); never an amount, a recipient, a
 // payment hash or an error's own text.
 //
+// SPARK LINES too (#304): `spark.connect` and `spark.balance`, written by
+// `lib/v4v/spark.ts` when the SDK failed, with a fixed reason word
+// (`sparkErrorCode`: network, timeout, auth, other) — never the error's text.
+// A repeat of the same failure is not written again.
+//
 // Browser-only. Every write goes to disk at once, because the case this is for
 // is a page the OS froze or discarded with the screen off, and the lines
 // before that are the point.

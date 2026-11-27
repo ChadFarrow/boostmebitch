@@ -38,6 +38,7 @@
 // exists for the server paths where it doesn't.
 
 import { parseLiveBlock } from '../lib/v4v/live-block.ts';
+import { BRAND } from '../lib/brand.ts';
 
 const args = process.argv.slice(2);
 const feedUrl = args.find((a) => !a.startsWith('--'));
@@ -157,7 +158,7 @@ async function poll() {
   let xml;
   try {
     const res = await fetch(feedUrl, {
-      headers: { 'User-Agent': 'boostmebitch-probe/0.1' },
+      headers: { 'User-Agent': BRAND.userAgent },
       signal: AbortSignal.timeout(15_000),
       cache: 'no-store',
     });

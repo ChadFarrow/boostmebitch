@@ -56,6 +56,7 @@ export async function GET(req: Request) {
       params.set('lang', 'en');
     }
     const res = await fetch(`${GIPHY_API}/${q ? 'search' : 'trending'}?${params}`, {
+      headers: { 'User-Agent': BRAND.userAgent },
       signal: AbortSignal.timeout(8000),
       cache: 'no-store',
     });

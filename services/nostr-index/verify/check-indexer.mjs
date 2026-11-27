@@ -415,6 +415,48 @@ await relay.close();
   await capped.close();
 }
 
+// --- a write that FAILS is tried again, never lost ------------------------
+//
+// Finding 16 (full-code review 2026-11-19). `take` marked the id seen BEFORE
+// the write, so a write that failed left it marked and every later copy was
+// skipped as a duplicate: the event was gone for the life of the process.
+// Here the first two connections the indexer asks for fail, as a Postgres
+// restart does, and the note has to land anyway — from the retry, since the
+// one relay sends it once. Against the code before the fix the row never comes.
+{
+  let failConnects = 2;
+  const flaky = new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'connect') {
+        return async (...args) => {
+          if (failConnects > 0) { failConnects--; throw new Error('e2e: the connection was refused'); }
+          return target.connect(...args);
+        };
+      }
+      const v = Reflect.get(target, prop, target);
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+  const note = sign({
+    kind: 1, created_at: NOW + 200, content: 'a boost written while Postgres was away',
+    tags: [['k', 'podcast:guid'], ['i', `podcast:guid:${FEED}`]],
+  });
+  const lone = await startMockRelay([]);
+  const retrying = new Indexer(flaky, { ...cfg, relays: [lone.url()], ingestRetryMs: 200 });
+  await retrying.start();
+  // Wait until the indexer's backfill reads have used up the failures — they
+  // go through `query`, not `connect`, so only the note's write can fail.
+  lone.push(note);
+  await waitFor(async () => failConnects === 0, 'the note\'s first write failed (twice)', 10_000);
+  await waitFor(
+    async () => (await count('select count(*)::int as n from events where id = $1', [note.id])) === 1,
+    'the note landed on a RETRY, though the relay sent it once',
+    10_000,
+  );
+  retrying.stop();
+  await lone.close();
+}
+
 await closePool();
 
 // ---------------------------------------------------------------------------

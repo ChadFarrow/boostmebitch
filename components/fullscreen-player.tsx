@@ -85,6 +85,7 @@ import {
   shuffleIndexOf,
   isPlayingRow,
   playingRowIndex,
+  sameList,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -664,6 +665,7 @@ export function FullscreenPlayer({
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
   const episodeQueue = useApp((s) => s.episodeQueue);
+  const episodeQueueOwner = useApp((s) => s.episodeQueueOwner);
   const shuffle = useApp((s) => s.shuffle);
   const play = useApp((s) => s.play);
   const playFromShuffle = useApp((s) => s.playFromShuffle);
@@ -923,8 +925,12 @@ export function FullscreenPlayer({
   // `playsAsTracks`, not `isMusicMedium`: a `musicL` playlist's rows are tracks
   // too, and the panel is how a listener sees what plays next (Chad, 2026-11-15,
   // on a community playlist: the now-playing screen listed nothing).
+  // `sameList`: the queue is the list OPENED LAST, and the playing song is a row
+  // of its album and of every playlist naming it, so a row match alone listed
+  // the other one (full-code review 2026-11-19, `e2e:albumpanel`).
   const followAlbumIdx =
     current && followShuffleIdx < 0 && playsAsTracks(current.podcast) && episodeQueue.length > 1
+      && sameList(episodeQueueOwner, current.podcast)
       ? playingRowIndex(episodeQueue, current)
       : -1;
   const listsMounted = open && everOpened;
