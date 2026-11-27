@@ -235,6 +235,8 @@ GET /api/playlist?url=<feedUrl>&offset=0&limit=100
 
 The absent case drives the cache header: `couldNotAsk > 0` answers `Cache-Control: no-store`. Without that a PI outage during one page is frozen into the CDN for five minutes and the retry re-serves the same empty page. `notFound` rows *are* cacheable — PI answered.
 
+**The HEADER has the same third state, and it drives the header on its own** (`piRecordFor`'s `asked`). A swallowed throw from `getPodcastByFeedUrl` builds the header from the RSS alone: synthetic id, no guid, "NOT IN PI · PREVIEW", no favorite heart. Keeping that out of the CDN used to rest on `couldNotAsk`, i.e. on the same outage also failing a ROW — but a page past the end asks PI about no row, and neither does a page the playlist database answers whole. Both went out `s-maxage=300`, so one PI blip served the thin header to everyone for five minutes (full-code review 2026-11-19). Now `asked: false` makes the page `no-store` whatever the rows say. Pinned by `npm run e2e:playlistpicache`, which starts its own two `next start` servers, one with the PI key set empty.
+
 A placeholder has an empty `enclosureUrl`, so the client **suppresses** the play control rather than disabling it. The heart stays, on `<FavTrackHeart>`'s precedent: the identifiers come off the wire and are the whole record, and withholding the control until PI has crawled the album would hide it on exactly the independent releases this app exists to pay.
 
 ### The playlist track accelerator (`lib/playlist-db.ts`)
