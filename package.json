@@ -90,6 +90,7 @@
     "e2e:streamdialog": "node scripts/e2e-stream-dialog.mjs",
     "e2e:seekhover": "node scripts/e2e-seekhover.mjs",
     "e2e:chapterlink": "node scripts/e2e-chapter-link.mjs",
+    "e2e:lyrics": "node scripts/e2e-lyrics.mjs",
     "e2e:stickyhover": "node scripts/e2e-sticky-hover.mjs",
     "e2e:gifgrid": "node --experimental-strip-types scripts/e2e-gif-grid.mjs",
     "e2e:resume": "node scripts/e2e-resume.mjs",

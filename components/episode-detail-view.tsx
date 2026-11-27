@@ -7,7 +7,7 @@ import { useApp } from '@/lib/store';
 import { backOr } from '@/lib/view-history';
 import { fmt, fmtDate, fmtDuration } from '@/lib/format';
 import { useSavedPosition } from '@/lib/resume-position';
-import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml, targetWord } from '@/lib/util';
+import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml, targetWord, transcriptWord } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
 import { useItemValue } from '@/lib/use-item-value';
 import { useChapters } from '@/lib/chapters';
@@ -228,9 +228,11 @@ export function EpisodeDetailView() {
     : chaptersPending ? 'contents'
     : transcriptPending ? 'transcript'
     : 'notes';
+  // "Lyrics" on a song, "Transcript" on an episode — the player's word too.
+  const transcriptLabel = transcriptWord(podcast);
   const infoLabel = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
-    : t === 'transcript' ? 'Transcript'
+    : t === 'transcript' ? transcriptLabel
     // One word, not "Boosts & comments": that label is 171px of a 324px strip
     // at 390px and cut the tab off on a three-tab episode. A show with no
     // value block takes no boosts, so its notes are comments; the panel's
@@ -626,6 +628,7 @@ export function EpisodeDetailView() {
                 activeIdx={transcriptActiveIdx}
                 onSeek={seekEpisodeTo}
                 loading={transcriptLoading}
+                noun={transcriptLabel === 'Lyrics' ? 'lyrics' : 'transcript'}
               />
             )}
 

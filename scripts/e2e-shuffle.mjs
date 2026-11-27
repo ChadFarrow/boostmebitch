@@ -332,10 +332,12 @@ async function panel() {
   await wait(300);
   const r = JSON.parse(await js(`JSON.stringify((() => {
     const p = document.querySelector('[data-shuffle-panel]');
-    if (!p) return { present: false, album: !!document.body.textContent.match(/Album · \\d+ tracks/) };
+    // The list is the TRACKS tab of the info panel's strip (docs/ui.md): the
+    // heading is that tab's label, and an album's list carries data-track-panel.
+    if (!p) return { present: false, album: !!document.querySelector('[data-track-panel]') };
     return {
       present: true,
-      heading: p.querySelector('p')?.textContent.trim().toLowerCase(),
+      heading: p.querySelector('[role=tab]')?.textContent.trim().toLowerCase(),
       keys: [...p.querySelectorAll('li')].map((li) => li.dataset.key),
       active: p.querySelector('li[aria-current="true"]')?.dataset.key ?? null,
     };
@@ -371,7 +373,7 @@ t.equal('no episode request: every record was cached', { get: seen.get, batch: s
 await until(`!(document.querySelector('audio')?.paused ?? true)`, 5000);
 t.equal('it plays', await paused(), false);
 let p = await panel();
-t.ok('the now-playing screen lists the shuffle, not an album', p.present && /^shuffle · 8 tracks$/.test(p.heading ?? ''), JSON.stringify(p));
+t.ok('the now-playing screen lists the shuffle, not an album', p.present && /^shuffle \(8\)$/.test(p.heading ?? ''), JSON.stringify(p));
 const order = p.keys ?? [];
 t.equal('the shuffle is every single, once', order.slice().sort(), SINGLES.map((s) => s.itemGuid).sort());
 t.equal('the first row is what plays', nOf(order[0]), await srcN());
@@ -615,7 +617,7 @@ console.log('\n9. ⏮/⏭ walk past a track whose file is dead');
 console.log('\n10. The track list follows the playing row');
 {
   const SHUFFLE_UL = `document.querySelector('[data-shuffle-panel] ul')`;
-  const ALBUM_UL = `[...document.querySelectorAll('p')].find((p) => /^Album · ${LONG} tracks$/.test(p.textContent.trim()))?.parentElement.querySelector('ul')`;
+  const ALBUM_UL = `(() => { const p = document.querySelector('[data-track-panel="album"]'); return p && /^Tracks \\(${LONG}\\)$/.test(p.querySelector('[role=tab]')?.textContent.trim() ?? '') ? p.querySelector('[role=tabpanel] > ul') : null; })()`;
   // Where the playing row sits in its list's box, and whether anything ABOVE
   // the box scrolled: the sheet's own scroll row on a phone, or the page. Every
   // ancestor up to the fixed sheet opened at 0 and nobody touched it here, so a
@@ -693,6 +695,19 @@ console.log('\n10. The track list follows the playing row');
     // The listener scrolls back to the top to read. The track keeps playing,
     // so the sheet re-renders on every `timeupdate` — none of which may pull
     // the list back. Only the next track does.
+    //
+    // FIRST LET THE LAST ⏭'s SMOOTH SCROLL FINISH. `centred` passes once the
+    // row is within 20px of the middle, while the animation still has frames
+    // to run, and its last frame landed AFTER the instant scroll to the top:
+    // the list read 2, not 0, for the whole wait — on the panel before the
+    // TRACKS tab too (1 run in 6, measured 2026-11-26), so a race in this test,
+    // not a pull by the hook.
+    for (let prev = null, n = 0; n < 20; n++) {
+      const top = await js(`${SHUFFLE_UL}?.scrollTop ?? null`);
+      if (top === prev) break;
+      prev = top;
+      await wait(150);
+    }
     await js(`(() => { const ul = ${SHUFFLE_UL}; ul.scrollTo({ top: 0, behavior: 'instant' }); return true; })()`);
     await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.3; })()`, 8000);
     const before = await js(`document.querySelector('audio').currentTime`);
@@ -863,7 +878,7 @@ t.equal('B: ⏭ is the shuffle\'s', await miniNext(), { label: 'Next in shuffle'
 t.equal('B: the playing track\'s row is lit', await shufLit(), [`Shuf track ${firstK}`]);
 t.equal('B: the cover offers the album in order, not a pause', await cover(), ALBUM_START);
 const bPanel = await panel();
-t.equal('B: the now-playing screen lists the shuffle', bPanel.heading, 'shuffle · 5 tracks');
+t.equal('B: the now-playing screen lists the shuffle', bPanel.heading, 'shuffle (5)');
 t.equal('B: …every playable track once, and not the row with no file',
   [...(bPanel.keys ?? [])].sort(), PLAYABLE.map((e) => e.guid).sort());
 t.equal('B: …with the playing track marked', bPanel.active, guidOfK(firstK));
@@ -895,7 +910,7 @@ for (let round = 1; round <= 4; round += 1) {
   const p = await panel();
   t.ok(`C${round}: the press changes the song (was ${was}, now ${playingK})`, moved && playingK !== was, await src());
   t.equal(`C${round}: the song that was playing is the shuffle's last track`, p.keys?.at(-1), guidOfK(was));
-  t.equal(`C${round}: a new press is a whole new shuffle`, p.heading, 'shuffle · 5 tracks');
+  t.equal(`C${round}: a new press is a whole new shuffle`, p.heading, 'shuffle (5)');
 }
 
 // D: the cover still plays the album in order, and that ends the shuffle.

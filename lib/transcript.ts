@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { readsEpisodeDocs } from './util';
+import { readsTranscript } from './util';
 import { transcriptRequestUrl } from './downloads/download-rules';
 import { fetchDoc } from './downloads/downloads-cache';
 import type { Episode, Podcast } from './types';
@@ -120,10 +120,22 @@ export function parseTranscript(text: string, type: string | undefined): Transcr
   if (cues.length) return cues;
   // Untimed fallback (html/plain, or an unparseable timed file): one readable
   // cue with markup stripped. No meaningful sync, but the text is visible.
+  //
+  // LINE BREAKS ARE KEPT, and a `<br>` or a closing block tag becomes one. Song
+  // lyrics are written a line at a time with a blank line between verses (the
+  // music feeds that publish `text/html` or `text/plain` lyrics write .txt
+  // files), and collapsing every newline to a space printed a whole song as one
+  // run-on paragraph. Only runs of spaces and tabs collapse. The panel renders
+  // this block `whitespace-pre-wrap`.
   const plain = text
+    .replace(/\r\n?/g, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])\s*>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
   return plain ? [{ startTime: 0, text: plain }] : [];
 }
@@ -161,16 +173,50 @@ export function useTranscript(url: string, type?: string): { cues: TranscriptCue
 }
 
 /** The transcript source for a now-playing item, or an empty url to skip.
- *  Transcripts are a podcast feature: gated off for live streams and for
- *  anything that plays as tracks, through the same gate as `chapterUrlFor`
- *  (`readsEpisodeDocs`). */
+ *  Gated off for live streams only (`readsTranscript`): a TRACK reads its own
+ *  transcript too, because that is its lyrics. This is NOT the chapters gate
+ *  (`readsEpisodeDocs`) — see `readsTranscript` for why the two split. */
 export function transcriptSourceFor(
   current: { episode: Episode; podcast: Podcast } | null,
 ): { url: string; type?: string } {
-  if (!current || !readsEpisodeDocs(current)) {
+  if (!current || !readsTranscript(current)) {
     return { url: '' };
   }
   return { url: current.episode.transcriptUrl ?? '', type: current.episode.transcriptType };
+}
+
+/**
+ * The lyrics of the song a `<podcast:valueTimeSplit>` window plays, moved onto
+ * the SHOW's clock: `split.startTime + cue.startTime - remoteStartTime`. A cue
+ * the window does not reach (before `remoteStartTime`, or past the window's
+ * end) is dropped, so every row seeks to a moment inside the song. Pure.
+ *
+ * The cue times in the track's own file count from the start of the TRACK, and
+ * the show plays it from `remoteStartTime` at `startTime` — so without the move
+ * the highlight would follow the show's clock through the song's lyrics and
+ * land on the wrong line for every song not at 0:00.
+ */
+export function cuesOnShowClock(
+  cues: TranscriptCue[] | null,
+  split: { startTime: number; duration: number; remoteStartTime?: number } | null,
+): TranscriptCue[] | null {
+  if (!cues || !split) return null;
+  // An untimed file (html/plain) parses to ONE cue at 0 and renders as a plain
+  // block: it has no clock to move, and a moved start would read as one timed row.
+  if (cues.length === 1 && cues[0].startTime === 0 && cues[0].endTime == null) return cues;
+  const offset = split.remoteStartTime && Number.isFinite(split.remoteStartTime) ? split.remoteStartTime : 0;
+  const end = split.startTime + split.duration;
+  const out: TranscriptCue[] = [];
+  for (const c of cues) {
+    const start = split.startTime + c.startTime - offset;
+    if (start < split.startTime || start >= end) continue;
+    out.push({
+      ...c,
+      startTime: start,
+      endTime: c.endTime != null ? split.startTime + c.endTime - offset : undefined,
+    });
+  }
+  return out;
 }
 
 /** Index of the cue currently playing — the one with the greatest startTime not

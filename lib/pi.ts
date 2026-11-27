@@ -2634,6 +2634,9 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
     ...split,
     ...(ep ? { title: ep.title, image: ep.image, feedId: ep.feedId, feedTitle: ep.feedTitle, episodeGuid: ep.guid } : {}),
     ...(piLength ? { trackDuration: piLength } : {}),
+    // The song's lyrics, out of the same record (`ValueTimeSplit.transcriptUrl`).
+    // No extra read: PI's episode record carries its transcript already.
+    ...(ep?.transcriptUrl ? { transcriptUrl: ep.transcriptUrl, transcriptType: ep.transcriptType } : {}),
   };
   // The RSS chain covers two more cases on top of the ordinary one:
   //   1. PI knows the feed but hasn't crawled the specific item
