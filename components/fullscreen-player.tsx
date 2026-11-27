@@ -1637,7 +1637,22 @@ export function FullscreenPlayer({
       body: (
         <div className="my-auto flex flex-col gap-4 px-4 py-3">
           <div className="flex flex-col items-center gap-4">{mediaBody}</div>
-          <div className="flex flex-col gap-3.5">{titleBlock(false)}{!isLive && seekBlock}{valueBlock}</div>
+          <div className="flex flex-col gap-3.5">
+            {titleBlock(false)}
+            {/* SHARE IN SIGHT ON A LIVE ITEM, as in the tree below (#681): the
+                pinned bar has no room for it, so it sits under the title on
+                PLAYER (code review, 2026-11-27: the pager had none). The SHOW
+                link, never the live item's guid. */}
+            {isLive && (
+              <CopyLinkButton
+                url={showShareUrl(podcast)}
+                title={`Copy link to this ${targetWord('feed', podcast).toLowerCase()}`}
+                className="btn-mini min-h-6 py-0 self-start"
+              />
+            )}
+            {!isLive && seekBlock}
+            {valueBlock}
+          </div>
         </div>
       ),
     },

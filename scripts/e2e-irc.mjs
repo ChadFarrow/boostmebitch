@@ -884,6 +884,15 @@ async function browserHalf(APP) {
     const artMmo = await artFirst();
     c.ok('…the cover at least 300px wide, whole, above the pinned bar', artOk(artMmo), JSON.stringify(artMmo));
     c.ok('…with ▶/❚❚ and BOOST under it', await js(`!!document.querySelector('[data-live-bar] [aria-label="Pause"],[data-live-bar] [aria-label="Play"]') && /BOOST/.test(document.querySelector('[data-live-bar]')?.textContent ?? '')`));
+    // #681 put SHARE in sight on a live item at every width; the pager had
+    // none (code review, 2026-11-27).
+    const share393 = await js(`JSON.stringify((() => {
+      const b = [...document.querySelectorAll('[data-live-page="player"] button')].find((x) => x.textContent.trim() === 'SHARE');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return [Math.round(r.width), Math.round(r.height), r.left >= 0 && r.right <= innerWidth];
+    })())`).then(JSON.parse);
+    c.ok('…and SHARE on PLAYER, at least 24 x 24, on screen', !!share393 && share393[0] >= 24 && share393[1] >= 24 && share393[2], JSON.stringify(share393));
     await shot('0-open');
     c.ok('a tap on CHAT shows the chat', await pagerTo('chat'));
     const mmoQuits0 = fake.received.filter((l) => l === 'QUIT :bye').length;
