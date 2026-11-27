@@ -156,10 +156,18 @@ async function perRelayRead(
         settled = true;
         clearTimeout(hardTimer);
         if (graceTimer) clearTimeout(graceTimer);
+        // THE COUNTS ARE TAKEN BEFORE THE CLOSES, and `terminal` ignores
+        // everything after `settled`. nostr-tools' `sub.close()` calls the
+        // sub's own `onclose` synchronously, and that branch drops a relay
+        // from `reached` — so closing first dropped every relay still silent
+        // at the deadline, by our own hand: a relay that took the socket and
+        // the REQ and never answered read as one that was never there, and
+        // the read beside it as trustworthy (e2e:readtrust, 2026-11-26).
+        const counts = { reached, answered };
         for (const sub of subs) {
           try { sub.close(); } catch { /* already closed / never opened */ }
         }
-        resolve({ reached, answered });
+        resolve(counts);
       };
 
       const hardTimer = setTimeout(finish, maxWait);
@@ -174,7 +182,8 @@ async function perRelayRead(
         // have to be idempotent per relay.
         let done = false;
         const terminal = (fn: () => void) => {
-          if (done) return;
+          // After `settled`, a close is OURS (finish() above), not the relay's.
+          if (done || settled) return;
           done = true;
           fn();
           outstanding -= 1;
