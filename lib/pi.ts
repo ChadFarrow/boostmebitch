@@ -32,7 +32,7 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, readPrefixThenScan, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, listedTrackGuids, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue, FEED_FANOUT } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, listedTrackGuids, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue, FEED_FANOUT, feedUrlsMatchBarWhitespace } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
@@ -892,6 +892,29 @@ export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
     if (isPiMiss(e)) return null;
     throw e;
   }
+}
+
+/**
+ * Podcast Index's record for a feed whose URL lookup missed only because PI
+ * stored the URL with whitespace in it (`feedUrlsMatchBarWhitespace`).
+ *
+ * Found by the `<podcast:guid>` the feed itself declares, and KEPT only when
+ * PI's URL for that guid is this URL bar whitespace. The guid alone is not
+ * enough: a feed can claim any guid (see `previewPodcastFromChannel`), and the
+ * record it took would put another feed's id and favorite heart on this one.
+ *
+ * For a caller that has just read the feed: the document comes from
+ * `fetchFeedXml`'s cache, so the cost is one PI call. Null when the feed
+ * declares no guid, PI holds nothing for it, or PI's record is another URL.
+ * Throws where `getPodcastByGuid` throws (an outage, not a miss).
+ */
+export async function getPodcastByDeclaredGuid(feedUrl: string): Promise<Podcast | null> {
+  const xml = await fetchFeedXml(feedUrl);
+  if (xml == null) return null;
+  const guid = extractText(channelSlice(xml), 'podcast:guid')?.trim();
+  if (!guid) return null;
+  const pi = await getPodcastByGuid(guid);
+  return pi && feedUrlsMatchBarWhitespace(pi.url, feedUrl) ? pi : null;
 }
 
 // Normalise a raw URI field from <podcast:socialInteract> to a `nostr:` URI.

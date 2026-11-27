@@ -2531,6 +2531,28 @@ export function feedUrlKey(url: string | undefined): string {
 }
 
 /**
+ * Whether Podcast Index stored a feed's URL with whitespace pasted into it.
+ *
+ * PI keeps a URL exactly as it was submitted, and its add form keeps pasted
+ * whitespace: on 2026-11-27 feed 8132371 went in as
+ * `…/chadf-musicl-playlists   /refs/heads/main/…`, a URL that a chat had broken
+ * across lines. GitHub still serves that address (the crawler sends the spaces
+ * as `%20`), so PI reads the feed, but `/podcasts/byfeedurl` with the real URL
+ * misses, and every page stamped the playlist NOT IN PI.
+ *
+ * True only when the two differ by whitespace alone — literal, or as `%20`,
+ * `%09`, `%0A`, `%0D` — plus what `feedUrlKey` already folds. Two blanks are NOT
+ * a match. It decides nothing by itself: `getPodcastByDeclaredGuid` asks it only
+ * about the record PI returns for the guid the feed declares, so a feed that
+ * claims another feed's guid never takes that feed's record.
+ */
+export function feedUrlsMatchBarWhitespace(stored: string | undefined, requested: string | undefined): boolean {
+  const squash = (u: string | undefined) => feedUrlKey(u?.replace(/\s+|%(?:20|09|0a|0d)/gi, ''));
+  const a = squash(stored);
+  return a !== '' && a === squash(requested);
+}
+
+/**
  * The curated-collection playlists a search may add: the ones no Podcast Index
  * lane already returned.
  *

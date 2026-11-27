@@ -1,6 +1,6 @@
-import { getFeedFromRss, getPodcastByFeedUrl } from '@/lib/pi';
+import { getFeedFromRss, getPodcastByDeclaredGuid, getPodcastByFeedUrl } from '@/lib/pi';
 import { piCouldNotAskStatus } from '@/lib/pi-error';
-import { mergeRssOverPi, piRecordIsBlank, mapLimit, PI_FANOUT, FEED_FANOUT } from '@/lib/util';
+import { mergeRssOverPi, piRecordIsBlank, mapLimit, probeThenBatch, PI_FANOUT, FEED_FANOUT } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
 /**
@@ -110,10 +110,24 @@ export async function resolveFeedUrls(urls: readonly string[]): Promise<Resolved
     parsed.forEach((p, i) => { if (p) rescued.set(needsRss[i], p); });
   }
 
+  // A child PI missed by URL can still be one PI holds, under the URL with
+  // whitespace pasted into it (`getPodcastByDeclaredGuid`). Asked only about a
+  // child whose RSS was just read, so the document is a cache hit and the cost
+  // is one PI call each. `probeThenBatch`, because a child above may be `null`
+  // from a swallowed throw: a PI that failed the probe gets no second burst. A
+  // child not answered keeps its RSS record, as before.
+  const heldElsewhere: Record<string, Podcast | null> = {};
+  if (!couldNotAskPi) {
+    const missed = [...new Set(urls.filter((u, i) => fromPi[i] === null && rescued.has(u)))];
+    await probeThenBatch(missed, getPodcastByDeclaredGuid, (url) => url, heldElsewhere);
+  }
+
   const feeds = fromPi.map((f, i) => {
     const rss = rescued.get(urls[i]);
     if (f && !piRecordIsBlank(f)) return f;
     if (f && rss) return mergeRssOverPi(f, rss);
+    const held = heldElsewhere[urls[i]];
+    if (held && rss) return mergeRssOverPi(held, rss);
     return f ?? rss ?? null;
   });
   return { feeds, couldNotAskPi };

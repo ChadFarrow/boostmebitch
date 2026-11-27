@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
+import { getFeedTitle, getPlaylistChannel, getPodcastByDeclaredGuid, getPodcastByFeedUrl } from '@/lib/pi';
 import { resolvePlaylistTracks } from '@/lib/playlist-db';
 import { batchEpisodes, episodeKey, MAX_BATCH } from '@/lib/pi-batch';
 import { fnvHash, mergeRssOverPi, playsAsTracks, communityPlaylistToPodcast } from '@/lib/util';
@@ -155,6 +155,17 @@ export async function GET(req: Request) {
       piRecordAsked = pi.asked;
     }
     if (!channel) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    // PI can hold this playlist under its URL with whitespace pasted into it —
+    // see `getPodcastByDeclaredGuid`. The document is already in the cache.
+    // Asked only after PI ANSWERED the URL lookup, and a throw here is a header
+    // PI could not be asked about, so it is `no-store` as well (`piRecordFor`).
+    if (!piRecord && piRecordAsked && !communityId) {
+      try {
+        piRecord = await getPodcastByDeclaredGuid(url);
+      } catch {
+        piRecordAsked = false;
+      }
+    }
 
     // The feed's own title, medium, art and value block win — the document was
     // read moments ago and cannot be stale — while PI keeps the numeric id and
