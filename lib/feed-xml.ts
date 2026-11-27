@@ -444,6 +444,42 @@ export function findBlocks(source: string, name: string, opts?: { max?: number }
   return out;
 }
 
+/** The tag a live read is about. `readPrefixThenScan` searches the rest of a
+ *  large feed for it, so it is the needle there and the block name here. */
+export const LIVE_ITEM_TAG = 'podcast:liveItem';
+
+/**
+ * What a live read may parse, from a body `readPrefixThenScan` (lib/capped-body.ts)
+ * read with `LIVE_ITEM_TAG` as its needle — or `null` when nothing can be proved.
+ *
+ * - **The whole body** (`truncated: false`): the document itself, `whole: true`,
+ *   exactly what a capped read returned before.
+ * - **A body past the cut whose rest never names a live item**: the live item
+ *   blocks of the kept prefix, as their own small document, `whole: false`. That
+ *   is EVERY live item the feed has, so a read built on it may still say "these
+ *   are all of them" — which is what lets `mergeLiveOverPi` drop a Podcast Index
+ *   row the feed no longer lists. Only the blocks are kept: the prefix is not a
+ *   feed, and a document a reader could mistake for one must not exist.
+ * - **A rest that names one** (`needleAfterKept: true`): `null`. A live item past
+ *   the cut, or one cut in half, would be missed, and an `ok` read that misses
+ *   one takes a running broadcast off the page. So the read reports unreadable,
+ *   as every feed past the cap did before.
+ *
+ * A live item is a `<channel>` child (Podcasting 2.0), and feeds write it before
+ * their `<item>`s, so a large feed keeps it in the prefix: measured 2026-11-25 on
+ * Global Voice Radio Network's 11.9 MB Podhome feed, all three live items sat in
+ * the first 12 KB. Pinned by `check:livescan`.
+ */
+export function liveReadDocument(
+  xml: string,
+  read: { truncated: boolean; needleAfterKept: boolean },
+): { xml: string; whole: boolean } | null {
+  if (!read.truncated) return { xml, whole: true };
+  if (read.needleAfterKept) return null;
+  const blocks = findBlocks(xml, LIVE_ITEM_TAG);
+  return { xml: blocks.map((b) => xml.slice(b.start, b.end)).join('\n'), whole: false };
+}
+
 export function firstBlock(xml: string, name: string): BlockHit | undefined {
   return findBlocks(xml, name, { max: 1 })[0];
 }

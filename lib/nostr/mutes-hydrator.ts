@@ -13,7 +13,6 @@ import {
   fetchMutedPubkeys,
   privateHalfAlreadyOpened,
   schedulePublishMuteList,
-  unionMutedPubkeys,
   type MuteListState,
 } from './mutes';
 import { resolvePublishRelays } from './relays';
@@ -39,7 +38,7 @@ export async function hydrateMutes(
   identity: NostrIdentity,
   purpose: DecryptPurpose = 'unattended',
 ): Promise<void> {
-  const { setMutedPubkeys, setMutesSync } = useApp.getState();
+  const { setMutes, setMutesSync } = useApp.getState();
   // NOT ON A USER-INITIATED RETRY. `<MutesSyncNotice>` renders on
   // `mutesSync === 'degraded'`, so clearing it here unmounted the notice the
   // instant its button was pressed: `loading…` never appeared, and a retry that
@@ -117,7 +116,7 @@ export async function hydrateMutes(
       cached.privatePubkeys.length > 0 ||
       !!cached.unreadablePrivateContent;
     if (hasLocal) {
-      setMutedPubkeys(unionMutedPubkeys(cached));
+      setMutes(cached);
       schedulePublishMuteList(
         identity.pubkey,
         () => storage.muted.get(identity.npub),
@@ -126,7 +125,7 @@ export async function hydrateMutes(
       );
     } else {
       // Make sure the store reflects an empty state for this identity.
-      setMutedPubkeys(new Set());
+      setMutes(emptyMuteState());
     }
     // No event on the relays means no private half to withhold. Not a failure.
     setMutesSync('ok');
@@ -176,7 +175,7 @@ export async function hydrateMutes(
         }
       : muteEvent;
     storage.muted.set(identity.npub, adopted);
-    setMutedPubkeys(unionMutedPubkeys(adopted));
+    setMutes(adopted);
     // REPORT ON THE RESOLVED STATE, not on the raw read. `adopted` is what the
     // app is actually working from, and it is the only one of the two that knows
     // the blob was reopened.
@@ -208,7 +207,7 @@ export async function hydrateMutes(
       updatedAt: cached.updatedAt,
     };
     storage.muted.set(identity.npub, merged);
-    setMutedPubkeys(unionMutedPubkeys(merged));
+    setMutes(merged);
     reportPrivateHalf(merged, decryptPrivate);
     schedulePublishMuteList(
       identity.pubkey,

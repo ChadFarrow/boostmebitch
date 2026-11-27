@@ -368,52 +368,78 @@ if (naiveOracle([['p', STRANGER], ['P', STRANGER], ['amount', '999999999999']]).
 }
 
 // ── The `lnurl` of a kind:9734: LUD-01 bech32 with NO length limit ──────────
-// `sendZap` writes the recipient's LNURL-pay URL as bech32 into the request's
-// `lnurl` tag and the callback's `lnurl` parameter. `bech32.encodeFromBytes`
-// keeps BIP-173's 90-character cap, which a URL past 47 bytes overruns, so EVERY
-// zap to these two real addresses threw "Length 100 exceeds limit 90" on beta
-// (Chad, 2026-11-25) before it asked for an invoice. The URLs are what
-// `lnAddressToUrl` builds for `sirtjthewrathful@getalby.com` (a playlist maker,
-// the beta report) and `fancyturtle3@primal.net` (another); the LUD-01 vector is
-// the spec's own example LNURL.
+// `sendZap` writes the recipient's LNURL-pay URL in bech32 into the request's
+// `lnurl` tag and the callback's `lnurl` parameter, and decodes a `lud06` to
+// find that URL. `bech32.encodeFromBytes` keeps BIP-173's 90-character cap, which
+// admits a URL of 48 bytes at most, so every note-card zap to a longer address
+// threw "Length 100 exceeds limit 90" before it asked for an invoice (seen on
+// beta 2026-11-25 for `sirtjthewrathful@getalby.com`).
+//
+// FIXTURE PROVENANCE. `sirtjthewrathful@getalby.com` is the real address of that
+// report. The Wallet of Satoshi and npub.cash rows use each provider's real URL
+// shape with a made-up name, sized to the lengths a read-only provider survey
+// measured the same day (107 and 172). The lud06 is LUD-01's own example, copied
+// from github.com/lnurl/luds 01.md: a wire fixture, not a round trip of this
+// code's output.
 console.log('\nencodeLnurl / decodeLnurl — the lnurl of a zap request');
-const naiveLnurl = (url) => bech32.encodeFromBytes('lnurl', new TextEncoder().encode(url));
-const LONG_URLS = [
+const naiveEncode = (url) => bech32.encodeFromBytes('lnurl', new TextEncoder().encode(url));
+const naiveDecode = (s) => new TextDecoder().decode(bech32.fromWords(bech32.decode(s.toLowerCase()).words));
+const throws = (fn) => { try { fn(); return false; } catch { return true; } };
+const npubOf = (byte) => bech32.encode('npub', bech32.toWords(new Uint8Array(32).fill(byte)));
+const LONG = [
   ['getalby.com, the beta report', 'https://getalby.com/.well-known/lnurlp/sirtjthewrathful', 100],
-  ['primal.net', 'https://primal.net/.well-known/lnurlp/fancyturtle3', 92],
+  ['Wallet of Satoshi shape', 'https://walletofsatoshi.com/.well-known/lnurlp/wittyotter71', 107],
+  ['npub.cash shape (an npub as the name)', `https://npub.cash/.well-known/lnurlp/${npubOf(7)}`, 172],
+  ['49 bytes, one past the cap', `https://a.example/${'x'.repeat(31)}`, 91],
 ];
-for (const [name, url, len] of LONG_URLS) {
+for (const [name, url, len] of LONG) {
   let enc = '';
   try { enc = encodeLnurl(url); } catch (e) { fail(`${name}: encodeLnurl threw: ${e.message}`); continue; }
   if (enc.length !== len) fail(`${name}: ${enc.length} characters, expected ${len}`);
-  else if (!enc.startsWith('lnurl1') || enc !== enc.toLowerCase()) fail(`${name}: not a lowercase lnurl1…: ${enc}`);
+  else if (!enc.startsWith('lnurl1') || enc !== enc.toLowerCase()) fail(`${name}: not a lower-case lnurl1…: ${enc}`);
   else if (decodeLnurl(enc) !== url || decodeLnurl(enc.toUpperCase()) !== url) fail(`${name}: does not decode back to ${url}`);
-  else ok(`${name}: ${len} characters, round-trips in both cases`);
+  else ok(`${name}: ${len} characters, decodes back in both cases`);
   // The vector must FAIL the old encoder, or it guards nothing.
-  let naiveThrew = false;
-  try { naiveLnurl(url); } catch { naiveThrew = true; }
-  if (!naiveThrew) fail(`${name}: the 90-character encoder no longer throws, so this vector catches nothing`);
-  else ok(`${name}: the 90-character encoder throws on it (the beta bug)`);
+  if (!throws(() => naiveEncode(url))) fail(`${name}: the 90-character encoder does not throw, so this vector catches nothing`);
+  else ok(`${name}: the 90-character encoder throws on it (the bug)`);
 }
-// Must still work: a short URL encodes exactly as it always did.
-const SHORT = 'https://zap-stub.test/.well-known/lnurlp/maker';
-if (encodeLnurl(SHORT) !== naiveLnurl(SHORT)) fail('a short URL no longer encodes as before');
-else ok('a short URL (86 characters) encodes exactly as before');
+// Must still work: a URL at or under 48 bytes encodes exactly as it always did.
+for (const [name, url, len] of [
+  ['48 bytes, the most the cap admits', `https://a.example/${'x'.repeat(30)}`, 89],
+  ['a short stub address', 'https://zap-stub.test/.well-known/lnurlp/maker', 86],
+]) {
+  const enc = encodeLnurl(url);
+  if (enc.length !== len || enc !== naiveEncode(url)) fail(`${name}: ${enc.length} characters, or not what the old encoder wrote`);
+  else ok(`${name}: ${len} characters, the same as before`);
+}
+// The lud06 direction. Upper case, as LUD-01 writes it for a QR code.
 const LUD01 = 'LNURL1DP68GURN8GHJ7UM9WFMXJCM99E3K7MF0V9CXJ0M385EKVCENXC6R2C35XVUKXEFCV5MKVV34X5EKZD3EV56NYD3HXQURZEPEXEJXXEPNXSCRVWFNV9NXZCN9XQ6XYEFHVGCXXCMYXYMNSERXFQ5FNS';
 const LUD01_URL = 'https://service.com/api?q=3fc3645b439ce8e7f2553a69e5267081d96dcd340693afabe04be7b0ccd178df';
 let lud01 = '';
 try { lud01 = decodeLnurl(LUD01); } catch (e) { fail(`LUD-01 example: decodeLnurl threw: ${e.message}`); }
-if (lud01 && lud01 !== LUD01_URL) fail(`LUD-01 example decodes to ${lud01}`);
-else if (lud01) ok('the LUD-01 example (156 characters, upper case) decodes to its URL');
+if (lud01) {
+  if (lud01 !== LUD01_URL) fail(`LUD-01 example decodes to ${lud01}`);
+  else ok(`the LUD-01 example (${LUD01.length} characters, upper case) decodes to its URL`);
+}
+if (decodeLnurl(LUD01.toLowerCase()) !== LUD01_URL) fail('the LUD-01 example in lower case does not decode');
+else ok('...and in lower case');
 if (encodeLnurl(LUD01_URL) !== LUD01.toLowerCase()) fail('the LUD-01 URL does not encode to the LUD-01 example');
 else ok('the LUD-01 URL encodes to the LUD-01 example');
-// A bech32 string that is not an LNURL is refused, never fetched as a URL.
-// A VALID bech32 npub (checksum correct), so the prefix test is what refuses it.
-const NPUB = bech32.encode('npub', bech32.toWords(new Uint8Array(32)));
-let npubWhy = '';
-try { decodeLnurl(NPUB); } catch (e) { npubWhy = e.message; }
-if (!npubWhy.includes('prefix "npub"')) fail(`decodeLnurl did not refuse an npub by its prefix (${npubWhy || 'accepted'})`);
-else ok('decodeLnurl refuses a valid npub by its prefix');
+// The decode needs its explicit `false` too: bech32's default decode limit is 90.
+if (!throws(() => naiveDecode(LUD01))) fail('a default-limit decode accepts the 156-character example, so this vector catches nothing');
+else ok('a decode with the default limit throws on the LUD-01 example');
+// A valid bech32 string that is not an LNURL is refused by its prefix, never
+// fetched as a URL. The npub's checksum is correct, so only the prefix test can
+// refuse it.
+for (const [name, s, why] of [
+  ['an npub', npubOf(1), 'prefix is "npub"'],
+  ['no separator', 'lnurlqqqq', 'no bech32 separator'],
+]) {
+  let msg = '';
+  try { decodeLnurl(s); } catch (e) { msg = e.message; }
+  if (!msg.includes(why)) fail(`decodeLnurl did not refuse ${name} (${msg || 'accepted'})`);
+  else ok(`decodeLnurl refuses ${name}`);
+}
 {
   const leaf = 'lib/v4v/lnurl-bech32.ts';
   const problems = importFreeProblems(leaf, { allowBare: true });
@@ -445,6 +471,15 @@ if (!/zapRequestTags\(/.test(zapSrc)) {
   fail('lib/v4v/zap.ts calls clientTag — the recipient’s LNURL server reads the 9734 before any relay.');
 } else {
   ok('lib/v4v/zap.ts signs the pinned tag list');
+}
+// 1a. Its `lnurl` goes through the pinned leaf in both directions. A bare
+//     `bech32` call there brings the 90-character default back unseen.
+if (!/encodeLnurl\(/.test(zapSrc) || !/decodeLnurl\(/.test(zapSrc)) {
+  fail('lib/v4v/zap.ts no longer encodes and decodes the lnurl through lib/v4v/lnurl-bech32.ts.');
+} else if (/@scure\/base|bech32\./.test(zapSrc)) {
+  fail('lib/v4v/zap.ts calls bech32 directly — its encode and decode default to 90 characters.');
+} else {
+  ok('lib/v4v/zap.ts encodes and decodes the lnurl through the pinned leaf');
 }
 // 1b. The summary receipt is the one 9734 that names a show and item, so it
 //     must build its tags through the same builder WITH the caller's refs —

@@ -58,6 +58,8 @@ const cfg = {
   // waited that out would be a check nobody runs.
   resubscribeIntervalMs: 300,
   connectivityCheckMs: 300,
+  // The retention run has its own check (check-retention.mjs).
+  livePrune: false,
 };
 
 const indexer = new Indexer(db, cfg);

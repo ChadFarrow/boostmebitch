@@ -17,8 +17,9 @@
 --
 -- No foreign key to `events`, on purpose: adding one takes a SHARE ROW
 -- EXCLUSIVE lock on `events`, which blocks every insert for the rest of this
--- transaction, backfill included. Rows in `events` are never hard-deleted, and
--- the route joins `events` and re-checks `deleted_at` anyway.
+-- transaction, backfill included. The only hard delete is src/retention.ts,
+-- which never deletes a version this table names, and the route joins `events`
+-- and re-checks `deleted_at` anyway.
 --
 -- A small new table, so its indexes are built here, not by hand: nothing else
 -- can be writing to a table this file creates.

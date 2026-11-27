@@ -37,6 +37,17 @@ function role(): 'all' | 'api' | 'indexer' {
   throw new Error(`INDEX_ROLE must be one of all, api, indexer — got ${JSON.stringify(raw)}`);
 }
 
+/**
+ * A switch that is ON when unset. Validated for the reason `role()` is: a value
+ * that is neither `on` nor `off` refuses to start rather than becoming a guess.
+ */
+function onUnlessOff(name: string): boolean {
+  const raw = process.env[name]?.trim();
+  if (!raw || raw === 'on') return true;
+  if (raw === 'off') return false;
+  throw new Error(`${name} must be on or off — got ${JSON.stringify(raw)}`);
+}
+
 function list(name: string, fallback: string[]): string[] {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -119,6 +130,13 @@ export const config = {
   // How often the kind:30311 subscription is re-issued so its `since` window
   // does not go stale. Hourly; a filter is evaluated once, at REQ time.
   liveResubscribeMs: num('INDEX_LIVE_RESUBSCRIBE_MS', 3_600_000),
+
+  // The hourly delete of kind:30311 versions older than the live window plus a
+  // day (src/retention.ts). On unless `INDEX_LIVE_PRUNE=off`: it is what keeps
+  // the volume from filling, so the default is to run it, and `off` stops it
+  // without a code change.
+  livePrune: onUnlessOff('INDEX_LIVE_PRUNE'),
+  livePruneMs: num('INDEX_LIVE_PRUNE_MS', 3_600_000),
 };
 
 export type Config = typeof config;

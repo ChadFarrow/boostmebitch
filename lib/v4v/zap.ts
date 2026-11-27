@@ -61,6 +61,8 @@ interface PreparedZap {
   rail: Rail;
 }
 
+// Both directions have NO length limit: see `encodeLnurl` (a Lightning address
+// on getalby.com or Wallet of Satoshi encodes past bech32's 90-character default).
 function lud06ToUrl(lud06: string): string {
   return decodeLnurl(lud06);
 }
@@ -87,7 +89,6 @@ async function fetchPayMetadata(url: string): Promise<LnurlPayMetadata> {
   return data;
 }
 
-// No 90-character limit: `encodeLnurl` says why (every real address is longer).
 function lnurlBech32(rawUrl: string): string {
   return encodeLnurl(rawUrl);
 }

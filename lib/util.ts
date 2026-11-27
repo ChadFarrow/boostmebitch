@@ -1561,6 +1561,8 @@ export function liveShowToEpisode(s: LiveShow): Episode {
     value: s.value ?? null,
     // The watcher opens the Split Kit socket from this field alone.
     liveValue: s.liveValue,
+    // <VideoToggle> offers 📺 Video from this field alone.
+    alternateEnclosures: s.alternateEnclosures,
   };
 }
 
@@ -2739,6 +2741,26 @@ export function valueNotRead(
  * `payableValue` reads `episode.value` first, so it would outrank the feed. The
  * copy reads as not read, and play and BOOST ask the feed.
  */
+/**
+ * The episode with the `<podcast:alternateEnclosure>` renditions an item read
+ * found (`ItemPayment.alternateEnclosures`), for an episode that carries NONE:
+ * one Podcast Index built never read its feed, and PI does not index the tag.
+ * An episode that has the field keeps it — a feed-built one holds the feed's own
+ * answer, and a copy from disk holds the one it was enqueued with. Returns the
+ * SAME object when nothing changes, so a store update can test identity.
+ *
+ * One rule for every site that turns a read into an episode: `<Player>`'s
+ * `current`, the episode page (`useItemValue`) and a list row's BOOST read,
+ * which replaces the row a later tap plays.
+ */
+export function withAlternatesIfAbsent<E extends Pick<Episode, 'alternateEnclosures'>>(
+  episode: E,
+  alternates: AlternateEnclosure[] | undefined,
+): E {
+  if (episode.alternateEnclosures !== undefined || !alternates?.length) return episode;
+  return { ...episode, alternateEnclosures: alternates };
+}
+
 export function withoutStoredValue<T extends { episode: Episode; podcast: Podcast }>(item: T): T {
   const podcast = { ...item.podcast };
   delete podcast.value;

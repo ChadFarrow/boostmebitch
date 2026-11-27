@@ -5,9 +5,12 @@ import { useConfirm } from './confirm-dialog';
 import {
   isPodcastComment,
   LocalNoteSink,
+  mutedWordHit,
   noteFromEvent,
   resolvePublishRelays,
   shortNpub,
+  SpamReplies,
+  spamReplyIdsIn,
   type DiscoveredNote,
 } from '@/lib/nostr';
 import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/interactions';
@@ -108,7 +111,14 @@ function NoteCardImpl({
   //
   // `<FavHeart>` is the reference for this: it selects booleans at all five
   // variants for the same reason.
-  const isMuted = useApp((s) => s.mutedPubkeys.has(note.pubkey));
+  const authorMuted = useApp((s) => s.mutedPubkeys.has(note.pubkey));
+  // The viewer's NIP-51 `word` mutes. The ARRAY is selected, not a per-note
+  // answer: `setMutes` keeps its reference until the words change, so this is
+  // one re-render per real change, and the text scan runs in the memo below
+  // rather than on every store update.
+  const mutedWords = useApp((s) => s.mutedWords);
+  const wordMuted = useMemo(() => mutedWordHit(note.content, mutedWords), [note.content, mutedWords]);
+  const isMuted = authorMuted || wordMuted;
   // The replies need per-reply answers, so this narrows to a stable STRING —
   // which of this note's replies are muted — rather than to the whole Set. A
   // mute of somebody who is not in this thread leaves it byte-identical, so
@@ -120,6 +130,16 @@ function NoteCardImpl({
       .sort()
       .join(','),
   );
+  // The feed's spam fold set (`SpamReplies`, docs/nostr.md "Spam replies").
+  // Outside a feed that provides one, a TOP-LEVEL card counts over its own
+  // thread and hands the answer down to its replies through the same context.
+  const feedSpam = useContext(SpamReplies);
+  const ownSpam = useMemo(
+    () => (feedSpam || depth > 0 ? null : spamReplyIdsIn([note])),
+    [feedSpam, depth, note],
+  );
+  const spamIds = feedSpam ?? ownSpam;
+  const [showSpam, setShowSpam] = useState(false);
   const mutePubkey = useApp((s) => s.mutePubkey);
   const selectPodcast = useApp((s) => s.selectPodcast);
   const openEpisode = useApp((s) => s.openEpisode);
@@ -130,11 +150,19 @@ function NoteCardImpl({
     shortNpub(note.npub);
   // Memoised: this card is `memo`'d, but `mutedPubkeys` changes identity on
   // every hydrate and there is one of these per note in a feed.
-  const visibleReplies = useMemo(() => {
-    if (!mutedReplyKey) return note.replies ?? [];
-    const muted = new Set(mutedReplyKey.split(','));
-    return (note.replies ?? []).filter((r) => !muted.has(r.pubkey));
-  }, [note.replies, mutedReplyKey]);
+  // A muted author or a muted word takes a reply out altogether, as before; a
+  // reply the spam rule marks is FOLDED, never dropped (`spamReplies`), so a
+  // false hit costs a tap on SHOW and nothing more.
+  const { visibleReplies, spamReplies } = useMemo(() => {
+    const muted = mutedReplyKey ? new Set(mutedReplyKey.split(',')) : null;
+    const kept = (note.replies ?? []).filter((r) =>
+      !(muted?.has(r.pubkey)) && !mutedWordHit(r.content, mutedWords));
+    if (!spamIds?.size) return { visibleReplies: kept, spamReplies: [] as DiscoveredNote[] };
+    return {
+      visibleReplies: kept.filter((r) => !spamIds.has(r.id)),
+      spamReplies: kept.filter((r) => spamIds.has(r.id)),
+    };
+  }, [note.replies, mutedReplyKey, mutedWords, spamIds]);
   const sats =
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
@@ -422,7 +450,7 @@ function NoteCardImpl({
   return (
     <div>
     {confirmEl}
-    <article className="card p-3 flex gap-3">
+    <article data-note-id={note.id} className="card p-3 flex gap-3">
       <Avatar
         pubkey={note.pubkey}
         picture={note.author?.picture}
@@ -735,12 +763,31 @@ function NoteCardImpl({
         )}
       </div>
     </article>
-    {visibleReplies.length > 0 && (
+    {(visibleReplies.length > 0 || spamReplies.length > 0) && (
+      <SpamReplies.Provider value={spamIds}>
       <div className={`mt-3 border-l-2 border-nostr/30 space-y-3 ${depth < 2 ? 'ml-4 pl-2 sm:ml-6 sm:pl-3' : 'ml-2 pl-2'}`}>
         {visibleReplies.map((r) => (
           <NoteCard key={r.id} note={r} repostedIds={repostedIds} depth={depth + 1} />
         ))}
+        {spamReplies.length > 0 && (
+          <div data-spam-fold={spamReplies.length} className="space-y-3">
+            <button
+              type="button"
+              onClick={() => setShowSpam((v) => !v)}
+              aria-expanded={showSpam}
+              className="btn-mini min-h-6 hover:text-bone hover:border-bone/60"
+            >
+              {spamReplies.length} {spamReplies.length === 1 ? 'reply' : 'replies'} hidden as likely spam · {showSpam ? 'hide' : 'show'}
+            </button>
+            {showSpam && spamReplies.map((r) => (
+              <div key={r.id} data-spam-reply className="opacity-60">
+                <NoteCard note={r} repostedIds={repostedIds} depth={depth + 1} />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
+      </SpamReplies.Provider>
     )}
     </div>
   );

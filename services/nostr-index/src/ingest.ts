@@ -27,7 +27,8 @@ export const STORABLE_KINDS = new Set([0, 1, 6, 9735, 30311]);
 
 /** NIP-53 live activities. Addressable (30000-39999), so the newest event per
  *  `(pubkey, d)` is the current one and older versions are history. Every
- *  version is still stored; the newest SERVABLE one per address is tracked at
+ *  version is stored, and src/retention.ts deletes those older than
+ *  `LIVE_RETENTION_SECS` that nothing names; the newest SERVABLE one per address is tracked at
  *  ingest in `live_heads` (see `liveHeadAddress`), by `created_at` and never
  *  by arrival order, because a relay serves versions out of order and the
  *  newest may arrive first.

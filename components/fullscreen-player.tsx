@@ -3,7 +3,7 @@ import dynamic from 'next/dynamic';
 import { CopyLinkButton } from './copy-link-button';
 import { createPortal } from 'react-dom';
 import { useAnchoredMenu } from './use-anchored-menu';
-import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { cloneElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { isMusicItem, useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
@@ -61,8 +61,7 @@ const LivePlayedTracks = dynamic(
   { ssr: false },
 );
 import type { Episode, Podcast, ValueTimeSplit } from '@/lib/types';
-import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
-import { nip19 } from 'nostr-tools';
+import { parseStreamId, isLiveStreamId, liveHostShareUrl } from '@/lib/nostr';
 import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
 import {
   episodeContentsLabel,
@@ -204,10 +203,11 @@ import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
+import { PlaySource, type PlaySourceKind } from './player/play-source';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
 import { SpeedButton, FastSpeedButton, SpeedSlider } from './player/speed-button';
-import { VideoToggle } from './video-toggle';
+import { VideoToggle, videoToggleShows } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
 import { WalletBalanceBox } from './wallet-balance';
@@ -403,14 +403,9 @@ function LiveShareButton({
   liveStreamId: string;
   liveHostPubkey?: string;
 }) {
-  function buildUrl(): string | null {
-    if (typeof window === 'undefined') return null;
-    const parsed = parseStreamId(liveStreamId);
-    if (!parsed) return null;
-    return `${window.location.origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
-  }
-
-  return <CopyLinkButton url={buildUrl()} title="Copy link to this stream" />;
+  const parsed = parseStreamId(liveStreamId);
+  const url = parsed ? liveHostShareUrl(liveHostPubkey ?? parsed.pubkey) : null;
+  return <CopyLinkButton url={url} title="Copy link to this stream" />;
 }
 
 /**
@@ -463,6 +458,7 @@ export function FullscreenPlayer({
   videoRef,
   isVideo,
   audioErr,
+  playSource,
   liveBehindSec,
   onGoLive,
   artOk,
@@ -498,6 +494,10 @@ export function FullscreenPlayer({
       or a failing live stream reads as a silent black box (the mini-bar's tiny
       error line is hidden behind this overlay). */
   audioErr: string | null;
+  /** Where the playing bytes come from (#669), as <Player> attached them;
+   *  `null` while a download's local read is in flight. A live item has no
+   *  seek row, and so no mark. */
+  playSource: PlaySourceKind | null;
   /** Whole seconds a playing live item is behind a fresh connect, 0 when on
    *  time or paused — <Player>'s measure, so both rows show one number. */
   liveBehindSec: number;
@@ -707,7 +707,8 @@ export function FullscreenPlayer({
   //
   // From sm: up it clears the inline value and the class takes over, because
   // there the panes sit side by side and the cover competes with nothing.
-  useEffect(() => {
+  const switchShown = videoToggleShows(current?.episode);
+  useLayoutEffect(() => {
     const box = coverBoxRef.current;
     const controls = controlsRef.current;
     const row = scrollRowRef.current;
@@ -726,7 +727,24 @@ export function FullscreenPlayer({
       // four-line title left BOOST 11px under the edge at 176, and BOOST is
       // the one control on this screen that may not need a scroll. A 144px
       // cover is small; a boost button below the fold is worse.
-      const next = Math.max(144, Math.min(448, box.offsetWidth + slack));
+      let next = Math.max(144, Math.min(448, box.offsetWidth + slack));
+      // THE SWITCH TAKES ITS ROOM FROM THE COVER, never from what is below it.
+      // An episode Podcast Index built gets its <VideoToggle> 1-2 s into
+      // playback, when its feed is read (docs/ui.md), and the row it adds
+      // under the art pushed play/pause 50px down at 390x844, measured. So
+      // with the switch on screen the cover is the width it would be without
+      // it, less the switch's slot (its height plus the pane's gap): the
+      // controls end where they ended. Every video episode gets the same
+      // smaller cover, so the two states are one layout. Chad, 2026-11-26:
+      // "layout: b".
+      const pane = box.parentElement;
+      const toggle = pane?.querySelector<HTMLElement>(':scope > [data-video-toggle]');
+      if (pane && toggle) {
+        const cs = getComputedStyle(pane);
+        const inner = pane.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        const slot = toggle.offsetHeight + (parseFloat(cs.rowGap) || 0);
+        next = Math.max(144, Math.min(next, inner - slot));
+      }
       box.style.maxWidth = `${Math.round(next)}px`;
     };
     apply();
@@ -751,7 +769,12 @@ export function FullscreenPlayer({
     // the cover's inline cap stayed on it as the video's width — reported
     // from an iPhone as a video at ~57% of the screen. The keys stop the
     // node being shared; this dep re-measures the cover on the way back.
-  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo]);
+    //
+    // `switchShown` because the switch can ARRIVE with the episode already on
+    // screen, and nothing the observer watches changes size when it does. A
+    // LAYOUT effect, so the cover gives up the room in the same frame the
+    // switch takes it: a passive effect let play/pause paint 50px low first.
+  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo, switchShown]);
 
   // ABOVE the early return: a hook may not be called conditionally, and
   // `useSavedPosition` takes null precisely so a surface can call it over its
@@ -1363,7 +1386,26 @@ export function FullscreenPlayer({
             </div>
 
             {isLive ? (
-              <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
+              /* SHARE IN SIGHT ON A LIVE ITEM, at every width (Chad,
+                 2026-11-26, on Homegrown Hits 160 at desktop width: "no share
+                 here"). The ⋯ menu holds the two SHAREs, and a live item has
+                 nothing else under BOOST, so the screen offered no way to hand
+                 the broadcast on while it is on air. The SHOW link, never the
+                 live item's guid: the item is gone when the show ends, and the
+                 show page lists the broadcast at the top while it runs.
+                 It shares the LIVE row and must not make it taller: on a
+                 short phone every pixel here comes off the cover (a plain
+                 `.btn-mini` is 27px against the 21px stamp, and took 5px
+                 at 390x664). So it is the mini GO LIVE's shape — a 24px
+                 target, `-my-0.5` so the line box stays the stamp's. */
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
+                <CopyLinkButton
+                  url={showShareUrl(podcast)}
+                  title={`Copy link to this ${targetWord('feed', podcast).toLowerCase()}`}
+                  className="btn-mini min-h-6 py-0 -my-0.5"
+                />
+              </div>
             ) : (
               <div className="flex flex-col gap-1.5">
                 <div className="relative flex items-center">
@@ -1380,9 +1422,15 @@ export function FullscreenPlayer({
                     aria-valuetext={fmt(positionSec)}
                   />
                 </div>
-                <div className="flex justify-between text-[11px] text-muted tabular-nums">
+                {/* `1fr auto 1fr`, not `justify-between`: the clocks stay on
+                    the row's edges and the source mark (#669) stays centred
+                    while either clock changes width. On this row, not a line
+                    of its own — every pixel below the cover is the cover's
+                    size on a phone (see "The cover is capped…" in docs/ui.md). */}
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-[11px] text-muted tabular-nums">
                   <span>{fmt(positionSec)}</span>
-                  <span>{fmt(duration)}</span>
+                  <PlaySource kind={playSource} variant="full" />
+                  <span className="text-right">{fmt(duration)}</span>
                 </div>
                 <ChapterLabel chapter={activeChapter} end={activeChapterEnd} className="text-xs" />
               </div>

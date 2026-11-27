@@ -7,6 +7,8 @@ import {
   useViewerReposts,
   type DiscoveredNote,
   LocalNoteSink,
+  SpamReplies,
+  useSpamReplyIds,
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { FeedSection } from './feed-section';
@@ -37,11 +39,14 @@ export function PodcastNostrFeed({
   });
   const identity = useApp((s) => s.identity);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const mutedWords = useApp((s) => s.mutedWords);
   const repostedIds = useViewerReposts(notes, identity);
-  const visibleNotes = useVisibleNotes(notes, mutedPubkeys);
+  const visibleNotes = useVisibleNotes(notes, mutedPubkeys, mutedWords);
+  const spamIds = useSpamReplyIds(visibleNotes);
 
   return (
     <LocalNoteSink.Provider value={addLocal}>
+      <SpamReplies.Provider value={spamIds}>
       <FeedSection
         className="mt-8"
         heading={
@@ -59,6 +64,7 @@ export function PodcastNostrFeed({
           <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
         )}
       />
+      </SpamReplies.Provider>
     </LocalNoteSink.Provider>
   );
 }
