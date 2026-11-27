@@ -61,7 +61,7 @@ npm run dev / build / start / lint
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
 | `check:spark` | `sparkMnemonicFromKey`, `deriveBackupKey`, `sparkAccountNumber` through the INSTALLED Spark SDK | every derived wallet moves; every backup unreadable; an SDK bump opens an empty wallet for every seed |
-| `check:sanitizer` | `safeUrlAttr` — the show-notes URL allowlist | a feed runs JS in the wallet-bearing origin |
+| `check:sanitizer` | `safeUrlAttr` — the show-notes URL allowlist | a feed runs JS beside the wallet |
 | `check:ssrf` | `assertSafeFetchUrl` | feed data aims the server at cloud metadata |
 | `check:liveblock` | `parseLiveBlock` — Split Kit live-value → value block | a live show pays the wrong node, or drops an artist |
 | `check:keysend` | `keysend-lookup.ts` — the rail each lnaddress leg leaves on | boostagram lost while sats land, or a lookalike domain diverts the payee |
@@ -74,7 +74,7 @@ npm run dev / build / start / lint
 | `check:nwcerror` | `nwc-errors.ts` — what a NIP-47 failure proves, whether a leg may be retried | an unanswered wallet shown as ✗ makes **every leg pay again** |
 | `check:feedxml` | `readAttr` — the attribute reader EVERY feed parser uses | a decoy attribute steers the payee |
 | `check:vts` | `splitAtPosition`, `splitTrackAndHost`, `splitSats`, `streamAction` | a boost and a stream credit different artists |
-| `check:readtrust` | `read-trust.ts` — is an EMPTY read "nobody has it" or "nothing answered" | an unverified read doesn't degrade, it DELETES |
+| `check:readtrust` | `read-trust.ts` — is an EMPTY read "nobody has it" or "nothing answered" | an unverified read DELETES |
 | `check:assetlinks` | `assetlinks.ts` — the Digital Asset Links statement | delegates the origin holding the NWC credential |
 | `check:amber` | `amber-callback-url.ts` — the `nostrsigner:` bytes and the returned fragment | Android signing breaks (failed twice) |
 | `check:ambersafe` | `amber-safe-text.ts` — getting an NWC string past Amber | every NWC backup from Android fails, silently |
@@ -89,12 +89,12 @@ npm run dev / build / start / lint
 | `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to | an attacker's link under a real show's artwork |
 | `check:zapreceipt` | `zapRequestTags`, `validateSummaryRequest` — the receipt the site signs | the site attests a stranger's payment |
 | `check:sitestamp` | `site-stamp.ts` — the stamp token, sign gate, 1% price | an unpaid note signed; RETRY NOTE pays twice |
-| `check:cache` | `createBoundedCache` — the age, entry AND byte bounds | an entry cap is not a memory bound |
+| `check:cache` | `createBoundedCache` — the age, entry AND byte bounds | memory grows unbounded |
 | `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load |
 | `check:playlistdb` | `dbRowToEpisode` — another app's DB row as a track we render, with no payee | a mapped column type-checks and pays the wrong payee |
 | `check:community` | `validatePlaylistDraft`, `artVerdict`, `cleanText`, `buildPlaylistFeedXml`, `buildPublisherFeedXml`, `verifyNip98`… | a feed no app parses, or a write by a non-owner |
 | `check:favbackup` | `lib/favorites-export.ts` — what a backup file must prove before we republish it — and `checkRestore`/`restoreTags`, what a restore flags and repairs | a tampered file republishes a list nobody signed |
-| `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening; publishes reach nobody |
+| `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | publishes reach nobody |
 | `check:playlistarchive` | `scripts/playlist-archive.mjs` — the GitHub copy of every community playlist | a copy deleted on a short list, or overwritten by an error page |
 | `check:guestkey` | `community/guest-key.ts` — the browser key a playlist with no Nostr account is signed by | the key in a string, log or request; a read error overwrites it |
 | `check:livemerge`, `check:livescan` | `mergeLiveOverPi`, `readPrefixThenScan` — when a read may DELETE a live row | an unreadable feed ends a live show |
@@ -111,7 +111,8 @@ npm run dev / build / start / lint
 | `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards |
 | `check:deletions` | `deletedNoteIds` — feed NIP-09 | strangers hide boosts |
 | `check:testnotes` | `isTestBoostNote` — leaked test notes | a real boost hidden |
-| `check:newmusic` | `new-music.ts`, `parsePublisherRef` | old albums called new, or new ones missed |
+| `check:replyspam` | `spamReplyIds`, `mutedWordHit` | spam shown, or real replies folded |
+| `check:newmusic` | `new-music.ts`, `parsePublisherRef` | old albums called new, new ones missed |
 | `check:opml` | `parseOpml`, `planOpmlImport` (what leaves the device) | a paid feed's key sent to Podcast Index |
 | `check:moved` | `moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked | a copycat feed collects boosts |
 | `check:demu` | `isDemuFeed` | Wavlake passes as DeMu |

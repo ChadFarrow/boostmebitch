@@ -5,6 +5,8 @@ import { noteHasSubstance, type DiscoveredNote } from './discover';
 import { dropBoostEchoes } from './boost-echo';
 import { withoutDeleted } from './note-deletions';
 import { isTestBoostNote } from './test-boost-notes';
+import { mutedWordHit, spamReplyIds } from './reply-spam';
+import { BRANDS } from '../brand';
 
 /**
  * Stale-while-revalidate hook for any DiscoveredNote[] surface.
@@ -330,23 +332,66 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
  * The test-note pass reads `rawEvent`, the signed wire event, because its marks
  * are tags the parsed note does not keep. Top level only: the leaked notes are
  * boosts, never replies.
+ *
+ * `mutedWords` is the viewer's NIP-51 `word` mutes (`mutedWordHit`). Required,
+ * not defaulted: a surface that forgot it would show the word it was told to
+ * hide, and only `<NoteCard>`'s own early return would catch it.
  */
 export function visibleNotes(
   notes: readonly DiscoveredNote[],
   mutedPubkeys: ReadonlySet<string>,
+  mutedWords: readonly string[],
 ): DiscoveredNote[] {
   return dropBoostEchoes(notes.filter((n) =>
-    !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n) && !isTestBoostNote(n.rawEvent)));
+    !mutedPubkeys.has(n.pubkey) && !mutedWordHit(n.content, mutedWords) &&
+    noteHasSubstance(n) && !isTestBoostNote(n.rawEvent)));
 }
 
-/** `visibleNotes`, memoised on its two inputs: a feed can hold hundreds of
+/** `visibleNotes`, memoised on its inputs: a feed can hold hundreds of
  *  notes and `mutedPubkeys` changes identity on every mute-list hydrate. */
 export function useVisibleNotes(
   notes: DiscoveredNote[] | null,
   mutedPubkeys: ReadonlySet<string>,
+  mutedWords: readonly string[],
 ): DiscoveredNote[] | null {
   return useMemo(
-    () => (notes ? visibleNotes(notes, mutedPubkeys) : notes),
-    [notes, mutedPubkeys],
+    () => (notes ? visibleNotes(notes, mutedPubkeys, mutedWords) : notes),
+    [notes, mutedPubkeys, mutedWords],
   );
 }
+
+/** The deploys' own hosts. A link to this site never marks a reply as spam. */
+const SITE_HOSTS: readonly string[] = Object.values(BRANDS).map((b) => new URL(b.origin).host);
+
+function collectReplies(notes: readonly DiscoveredNote[], out: DiscoveredNote[]): DiscoveredNote[] {
+  for (const n of notes) {
+    if (!n.replies?.length) continue;
+    out.push(...n.replies);
+    collectReplies(n.replies, out);
+  }
+  return out;
+}
+
+/**
+ * The ids of the replies, at any depth under `notes`, that `<NoteCard>` folds
+ * behind "N replies hidden as likely spam · SHOW" (`spamReplyIds`,
+ * docs/nostr.md "Spam replies"). Pass the whole list a surface renders: the
+ * spam spreads one or two replies over many threads, so the count that finds
+ * it is across the feed, not inside one thread.
+ */
+export function spamReplyIdsIn(notes: readonly DiscoveredNote[]): ReadonlySet<string> {
+  return spamReplyIds(collectReplies(notes, []), SITE_HOSTS);
+}
+
+/** `spamReplyIdsIn`, memoised on the list. */
+export function useSpamReplyIds(notes: readonly DiscoveredNote[] | null): ReadonlySet<string> {
+  return useMemo(() => spamReplyIdsIn(notes ?? []), [notes]);
+}
+
+/**
+ * The fold set of the feed a `<NoteCard>` sits in. A surface that renders a
+ * LIST of cards provides it (`useSpamReplyIds`), so the count runs over the
+ * whole list. Null elsewhere, and then each top-level card counts over its
+ * own thread — weaker, never absent.
+ */
+export const SpamReplies = createContext<ReadonlySet<string> | null>(null);
