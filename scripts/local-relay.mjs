@@ -82,8 +82,13 @@ function matches(filter, e) {
  * so a paging walk that cannot fail against an uncapped fixture is untested
  * (e2e:vpsummary). The cap applies to the whole answer, so it models
  * single-filter REQs.
+ *
+ * `refuse(e)` (opt-in, default off): return a string to answer that EVENT
+ * with `OK false` and that message, the way an operator's write policy reads
+ * on the wire, while REQs keep answering. A read that works beside a write
+ * that does not is the shape of a refused publish (e2e:favrefusal).
  */
-export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, log = console.log, verbose = false, capAt = null } = {}) {
+export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, log = console.log, verbose = false, capAt = null, refuse = null } = {}) {
   /** id -> event */
   const events = new Map();
   const say = log ?? (() => {});
@@ -104,6 +109,11 @@ export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, l
       if (verb === 'EVENT') {
         const e = msg[1];
         if (!e?.id || !e?.pubkey) return;
+        const refusal = refuse?.(e);
+        if (typeof refusal === 'string') {
+          ws.send(JSON.stringify(['OK', e.id, false, refusal]));
+          return;
+        }
         // Deliberately NOT verifying the signature. This is a test fixture, not
         // a relay, and a signature check here would only ever fail for a reason
         // that has nothing to do with what is being tested. It cannot become an
