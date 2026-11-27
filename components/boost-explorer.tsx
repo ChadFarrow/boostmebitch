@@ -12,6 +12,8 @@ import {
   indexedBoostsReceivedBy,
   indexedZapsReceivedBy,
   useViewerReposts,
+  useSpamReplyIds,
+  SpamReplies,
   visibleNotes,
   zapSats,
   type DiscoveredNote,
@@ -72,6 +74,7 @@ import { ZapReceiptCard } from './zap-receipt-card';
 export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }) {
   const [profile, setProfile] = useState<ProfileMetadata | null>(null);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const mutedWords = useApp((s) => s.mutedWords);
   const identity = useApp((s) => s.identity);
 
   // Profile is chrome, so it loads on its own and never blocks either feed.
@@ -153,14 +156,22 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
   const subjectMuted = mutedPubkeys.has(pubkey);
 
   const sentVisible = useMemo(
-    () => (sent.notes ? visibleNotes(sent.notes, mutedPubkeys) : null),
-    [sent.notes, mutedPubkeys],
+    () => (sent.notes ? visibleNotes(sent.notes, mutedPubkeys, mutedWords) : null),
+    [sent.notes, mutedPubkeys, mutedWords],
   );
 
   const receivedVisible = useMemo(
-    () => (received.notes ? visibleNotes(received.notes, mutedPubkeys) : null),
-    [received.notes, mutedPubkeys],
+    () => (received.notes ? visibleNotes(received.notes, mutedPubkeys, mutedWords) : null),
+    [received.notes, mutedPubkeys, mutedWords],
   );
+
+  // One fold set over BOTH lists: the spam spreads over many threads, so the
+  // count that finds it runs over everything this page renders.
+  const bothVisible = useMemo(
+    () => [...(sentVisible ?? []), ...(receivedVisible ?? [])],
+    [sentVisible, receivedVisible],
+  );
+  const spamIds = useSpamReplyIds(bothVisible);
 
   // Held at null until BOTH lists are in hand. `quotedEventIds` needs the boost
   // notes to know which receipts are already on screen above, so painting early
@@ -304,7 +315,11 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         onRefresh={sent.refresh}
         itemKey={(n) => n.id}
         collapsibleKey="npub:sent"
-        renderNote={(note) => <NoteCard note={note} repostedIds={repostedIds} {...metaFor(note)} />}
+        renderNote={(note) => (
+          <SpamReplies.Provider value={spamIds}>
+            <NoteCard note={note} repostedIds={repostedIds} {...metaFor(note)} />
+          </SpamReplies.Provider>
+        )}
       />
 
       <FeedSection<DiscoveredNote>
@@ -333,7 +348,11 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         onRefresh={received.refresh}
         itemKey={(n) => n.id}
         collapsibleKey="npub:recv"
-        renderNote={(note) => <NoteCard note={note} repostedIds={repostedIds} {...metaFor(note)} />}
+        renderNote={(note) => (
+          <SpamReplies.Provider value={spamIds}>
+            <NoteCard note={note} repostedIds={repostedIds} {...metaFor(note)} />
+          </SpamReplies.Provider>
+        )}
       />
 
       <FeedSection<ReceivedZap>

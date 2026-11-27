@@ -17,7 +17,7 @@
 
 import type { ReactNode } from 'react';
 import { useConfirm } from '../confirm-dialog';
-import { clearAmberSigner, clearBunkerSigner, clearLocalSigner } from '@/lib/nostr';
+import { clearAmberSigner, clearBunkerSigner, clearLocalSigner, emptyMuteState } from '@/lib/nostr';
 import { sparkDisconnect } from '@/lib/v4v/spark';
 import { clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc-state';
 import { useApp } from '@/lib/store';
@@ -34,7 +34,7 @@ export function useSignOut(): [() => Promise<void>, ReactNode] {
   const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
   const setListenQueue = useApp((s) => s.setListenQueue);
   const resetFavoritesSync = useApp((s) => s.resetFavoritesSync);
-  const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
+  const setMutes = useApp((s) => s.setMutes);
   const setMutesSync = useApp((s) => s.setMutesSync);
   const setWalletRestoring = useApp((s) => s.setWalletRestoring);
 
@@ -93,7 +93,7 @@ export function useSignOut(): [() => Promise<void>, ReactNode] {
     setFavorites({});
     setFavoriteEpisodes({});
     resetFavoritesSync();
-    setMutedPubkeys(new Set());
+    setMutes(emptyMuteState());
     setMutesSync('idle');
     // EMPTY, not the `:guest` bucket. Reading that back would resurrect a
     // queue from some earlier signed-out session on this device, which is

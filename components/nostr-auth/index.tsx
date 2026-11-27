@@ -24,7 +24,7 @@ import {
   hydrateFavorites,
   startFavoritesReadRetry,
   hydrateMutes,
-  unionMutedPubkeys,
+  emptyMuteState,
   type NostrIdentity,
 } from '@/lib/nostr';
 import { hasSpark, sparkAvailable, sparkDisconnect, sparkInitFromMnemonic, sparkSeedIsActive } from '@/lib/v4v/spark';
@@ -61,7 +61,7 @@ export function NostrAuth() {
   const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
   const setListenQueue = useApp((s) => s.setListenQueue);
   const resetFavoritesSync = useApp((s) => s.resetFavoritesSync);
-  const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
+  const setMutes = useApp((s) => s.setMutes);
   const setMutesSync = useApp((s) => s.setMutesSync);
   // One button opens the sign-in modal, which owns the per-method (extension
   // / remote-signer / Amber) flows and their own busy/error state. Open-state
@@ -497,7 +497,7 @@ export function NostrAuth() {
     if (Object.keys(cachedFavEpisodes).length > 0) setFavoriteEpisodes(cachedFavEpisodes);
     const cachedMutes = storage.muted.get(stored);
     if (cachedMutes.publicPubkeys.length || cachedMutes.privatePubkeys.length) {
-      setMutedPubkeys(unionMutedPubkeys(cachedMutes));
+      setMutes(cachedMutes);
     }
     // REPLACES rather than unions, which is the mutes rule and not the
     // favorites one. Favorites are a set and a union of two sets is still a
@@ -519,7 +519,7 @@ export function NostrAuth() {
     loadProfile(bare);
     // loadProfile is re-created each render; the effect self-guards on
     // `identity` so listing it would only add no-op re-runs.
-  }, [identity, setIdentity, setFavorites, setFavoriteEpisodes, setMutedPubkeys, setListenQueue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [identity, setIdentity, setFavorites, setFavoriteEpisodes, setMutes, setListenQueue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // BRING THE NIP-46 TRANSPORT BACK WITH THE APP. Both mobile OSes suspend the
   // page's WebSocket while the browser is backgrounded, and for a remote signer
@@ -662,7 +662,7 @@ export function NostrAuth() {
     setFavorites({});
     setFavoriteEpisodes({});
     resetFavoritesSync();
-    setMutedPubkeys(new Set());
+    setMutes(emptyMuteState());
     setMutesSync('idle');
     setListenQueue([]);
   }
@@ -714,7 +714,7 @@ export function NostrAuth() {
       // The relay-health flag is per-account too: without this, B inherits A's
       // "couldn't reach the relays" notice over B's own freshly-hydrated list.
       resetFavoritesSync();
-      setMutedPubkeys(new Set());
+      setMutes(emptyMuteState());
       setMutesSync('idle');
       // The follow singleton is module state shared by every FollowButton.
       // ensureFollowsLoaded resets it on an identity change, but only once a
@@ -771,7 +771,7 @@ export function NostrAuth() {
     }
     const cachedMuteState = storage.muted.get(id.npub);
     if (cachedMuteState.publicPubkeys.length || cachedMuteState.privatePubkeys.length) {
-      setMutedPubkeys(unionMutedPubkeys(cachedMuteState));
+      setMutes(cachedMuteState);
     }
     // This account's own queue wins. Otherwise, a queue built while signed
     // OUT is ADOPTED — the same asymmetry favorites have two blocks up, and
