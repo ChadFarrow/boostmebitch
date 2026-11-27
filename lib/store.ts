@@ -37,6 +37,12 @@ interface AppState {
   isPlaying: boolean;
   positionSec: number;
   episodeQueue: Episode[];
+  /**
+   * The show `episodeQueue` is the list OF — the podcast `<EpisodeList>` (or the
+   * album ▶) wrote it for. Not derivable from the rows: a playlist row carries
+   * its album's ids. Compare with `sameList`.
+   */
+  episodeQueueOwner: Pick<Podcast, 'id' | 'podcastGuid' | 'url'> | null;
 
   /** `startSec` omitted = resume where this episode was left (0 if never, or
    *  if it never resumes — see lib/resume-position.ts). An explicit start, 0
@@ -98,7 +104,7 @@ interface AppState {
   /** `complete` is false while the list has rows still to load — a playlist
    *  page with a next page. REPEAT wraps only a complete list: wrapping a
    *  prefix would restart the playlist at track 50 of 300. */
-  setEpisodeQueue: (episodes: Episode[], complete?: boolean) => void;
+  setEpisodeQueue: (episodes: Episode[], owner: Pick<Podcast, 'id' | 'podcastGuid' | 'url'> | null, complete?: boolean) => void;
   /** False while `episodeQueue` is a prefix of its list (see `setEpisodeQueue`). */
   episodeQueueComplete: boolean;
 
@@ -946,6 +952,7 @@ export const useApp = create<AppState>((set, get) => ({
   isPlaying: false,
   positionSec: 0,
   episodeQueue: [],
+  episodeQueueOwner: null,
 
   previewKey: null,
   // `play` and `cue` END a shuffle: they are how the listener picks something
@@ -1019,7 +1026,7 @@ export const useApp = create<AppState>((set, get) => ({
       if (s.current.episode.value !== undefined) return {};
       return { current: { ...s.current, episode: { ...s.current.episode, liveValueState: 'unread' } } };
     }),
-  setEpisodeQueue: (episodes, complete = true) => set({ episodeQueue: episodes, episodeQueueComplete: complete }),
+  setEpisodeQueue: (episodes, owner, complete = true) => set({ episodeQueue: episodes, episodeQueueOwner: owner, episodeQueueComplete: complete }),
   episodeQueueComplete: true,
   repeatList: null,
   setRepeatList: (key) => set({ repeatList: key }),

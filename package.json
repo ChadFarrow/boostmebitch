@@ -137,6 +137,7 @@
     "e2e:walletrail": "node scripts/e2e-wallet-balance-rail.mjs",
     "e2e:explorerzaps": "node scripts/e2e-explorer-zaps.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
+    "e2e:albumpanel": "node scripts/e2e-album-panel-owner.mjs",
     "e2e:history": "node scripts/e2e-history.mjs",
     "e2e:playlistretry": "node scripts/e2e-playlist-page-retry.mjs",
     "e2e:boostdefault": "node scripts/e2e-boost-default.mjs",

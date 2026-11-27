@@ -473,8 +473,8 @@ export function EpisodeList({
   // a prefix (docs/ui.md, "The playlist shuffle and repeat").
   const queueComplete = !playlist || playlist.nextOffset == null;
   useEffect(() => {
-    setEpisodeQueue(orderedEpisodes, queueComplete);
-  }, [orderedEpisodes, queueComplete, setEpisodeQueue]);
+    setEpisodeQueue(orderedEpisodes, data.podcast, queueComplete);
+  }, [orderedEpisodes, data.podcast, queueComplete, setEpisodeQueue]);
 
   /**
    * Fetch the next page of a playlist while the listener is still on this one.
