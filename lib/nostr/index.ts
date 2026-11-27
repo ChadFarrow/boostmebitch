@@ -166,7 +166,9 @@ export {
   requestFavoritesSync,
   serializeFavoritesCycle,
   syncFavoritesNow,
+  syncFavoritesNowDetailed,
   withdrawThisDevice,
+  type FavoritesCycleOutcome,
 } from './favorites-sync';
 
 export {

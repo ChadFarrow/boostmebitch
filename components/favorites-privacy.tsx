@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { storage, subscribeFavPrivacy } from '@/lib/storage';
+import { getErrorMessage } from '@/lib/util';
 import { ModalShell } from './modal-shell';
 import { SelectMenu } from './select-menu';
 import {
@@ -26,8 +27,9 @@ import {
   onFavoritesModeNeeded,
   privateFavoritesEnabled,
   recordFavoritesPrivacy,
-  syncFavoritesNow,
+  syncFavoritesNowDetailed,
   withdrawThisDevice,
+  type FavoritesCycleOutcome,
   type FavoritesPrivacy,
 } from '@/lib/nostr';
 
@@ -77,6 +79,37 @@ function describe(mode: FavoritesPrivacy): string {
 /** The one thing privacy does NOT hide, said out loud. */
 const PRIVATE_CAVEAT =
   'Your pubkey, and roughly how many favorites you keep, stay visible either way.';
+
+/** Why a move was refused, in the person's words. */
+function refusalReason(reason: Extract<FavoritesCycleOutcome, { kind: 'refused' }>['reason']): string {
+  return reason === 'private-unreadable'
+    ? 'your signer could not open or write the encrypted half'
+    : reason === 'private-too-large'
+      ? 'the encrypted half would be too large for your relays'
+      : reason === 'mass-removal'
+        ? 'it would take more than half of the entries off the list, so it waits for your answer '
+          + 'in the notice on the favorites page'
+        : 'your relays did not confirm the list, so the app wrote nothing over it';
+}
+
+/**
+ * What to say when the move was REFUSED (or threw) after the choice was
+ * recorded — and which of two states the dialog leaves behind.
+ *
+ * `putBack` names the mode the press was reverted to. A SWITCH is reverted:
+ * a refused cycle published nothing, and a stored mode the wire does not
+ * follow is the half-applied setting `recordFavoritesPrivacy` calls worse than
+ * a refused one — the control would read Private over a public list, and a
+ * later cycle may not fix it, because a stated `visibility` tag outranks the
+ * stored mode for every cycle but a press (`effectiveListMode`). The FIRST
+ * answer is kept (`putBack` null): there is no earlier choice to restore, and
+ * the person did answer the question.
+ */
+function moveRefused(why: string, button: string, putBack: FavoritesPrivacy | null): string {
+  return putBack
+    ? `Nothing was changed: ${why}. Your setting is still “${LABEL[putBack]}”. Press ${button} to try again.`
+    : `Your choice is saved on this device, but nothing on Nostr has moved yet: ${why}. Press ${button} to try now.`;
+}
 
 const GATE_REASON =
   'Waiting on the other apps that share this list. Turning it on before they update '
@@ -241,6 +274,10 @@ export function FavoritesPrivacyModal({
    * `recordFavoritesPrivacy` wrote — while `apply` was still awaiting. Any error
    * from that publish then landed on an unmounted component and the user saw the
    * dialog simply vanish, having been told nothing.
+   *
+   * It stays TRUE while an error is on screen, too: the publish settling is not
+   * the end of the dialog's job when what it has to say is that the publish was
+   * refused.
    */
   onBusyChange?: (busy: boolean) => void;
 }) {
@@ -248,8 +285,12 @@ export function FavoritesPrivacyModal({
   const [choice, setChoice] = useState<FavoritesPrivacy>(to ?? 'public');
   const [withdraw, setWithdraw] = useState(true);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
   const [error, setError] = useState<string | null>(null);
+  // HELD while an error is up, not only while busy: the first-favorite prompt
+  // closes itself once a mode is recorded, and `apply` records the mode BEFORE
+  // the publish it then reports on. Releasing the hold the moment `busy` fell
+  // closed the dialog over the very error it had just set (finding 14).
+  useEffect(() => { onBusyChange?.(busy || error !== null); }, [busy, error, onBusyChange]);
   const asking = !to;
   const gated = !privateFavoritesEnabled();
 
@@ -282,6 +323,14 @@ export function FavoritesPrivacyModal({
     }
     setBusy(true);
     setError(null);
+    // The hold goes up HERE, synchronously, not from the effect below. The
+    // mode is recorded a few lines on, and that write re-renders the parent in
+    // the same commit as `busy` — where the parent's close-on-mode effect runs
+    // BEFORE it sees a hold an effect reported, because a parent's effect reads
+    // the state of the render it belongs to. Measured: the first-favorite
+    // prompt unmounted at the instant of Save, before the publish had answered,
+    // so a refusal had nowhere to be shown (finding 14).
+    onBusyChange?.(true);
     try {
       // Withdrawing runs BEFORE the mode is recorded. `withdrawThisDevice`
       // still reads the list first and still refuses on an untrustworthy read,
@@ -299,8 +348,14 @@ export function FavoritesPrivacyModal({
         // they are still on the relays — and 'off' then stops both `runHydrate`
         // and `requestFavoritesSync`, so NOTHING EVER RETRIES. Stopping here
         // leaves the mode unrecorded, which is what keeps the retry real.
-        const note = await withdrawThisDevice(identity);
-        if (!note) {
+        //
+        // ONLY 'published' confirms a removal. 'unchanged' is not proof the
+        // entries are gone: the cycle plans from `trustedBaseline`, which is
+        // EMPTY when this device caches no entries while the raw baseline (what
+        // `published` counts) still names them — so it can remove nothing, find
+        // the bytes identical, and call that agreement.
+        const out = await withdrawThisDevice(identity);
+        if (out.kind !== 'published') {
           setError(
             'Could not remove your entries from Nostr just now — your relays did not '
             + 'confirm the change, so nothing was altered and your setting is unchanged. '
@@ -317,6 +372,7 @@ export function FavoritesPrivacyModal({
       // never-chosen path where the mode is inferred from a shared event that
       // may not be able to say. Closing the dialog on that is the app telling
       // the user their privacy choice is recorded when it is not.
+      const previous = storage.favPrivacy.get(identity.npub);
       if (!recordFavoritesPrivacy(identity.npub, choice, identity)) {
         setError(
           'Could not save that choice on this device — storage is full or blocked. '
@@ -340,7 +396,32 @@ export function FavoritesPrivacyModal({
         // may write the list's `visibility` tag or change one already there. A
         // heart toggle and a page load both leave it false. See
         // `effectiveListMode`.
-        await syncFavoritesNow(identity, 'user-initiated', true);
+        //
+        // **A refusal is reported, not closed over** (full-code review
+        // 2026-11-19, finding 14). This line ignored the answer, so a degraded
+        // read or a publish that reached no relay closed the dialog as if the
+        // entries had moved — for a switch to private, while they stayed in
+        // plaintext. `syncFavoritesNowDetailed` tells a refusal from "the relay
+        // already holds this"; only the first keeps the dialog up.
+        const button = asking ? 'Save' : 'Switch';
+        // Put a switch back (see `moveRefused`); keep a first answer.
+        const putBack = () => (
+          !asking && previous && previous !== choice && recordFavoritesPrivacy(identity.npub, previous, identity)
+            ? previous : null
+        );
+        let out: FavoritesCycleOutcome;
+        try {
+          out = await syncFavoritesNowDetailed(identity, 'user-initiated', true);
+        } catch (e) {
+          // A throw (the signer said no, or something unexpected) published
+          // nothing either, so it leaves the same state as a refusal.
+          setError(moveRefused(getErrorMessage(e, 'something went wrong'), button, putBack()));
+          return;
+        }
+        if (out.kind === 'refused') {
+          setError(moveRefused(refusalReason(out.reason), button, putBack()));
+          return;
+        }
         await hydrateFavorites(identity);
       }
       onClose();
@@ -349,7 +430,7 @@ export function FavoritesPrivacyModal({
     } finally {
       setBusy(false);
     }
-  }, [identity, choice, withdraw, published, gated, onClose]);
+  }, [identity, choice, withdraw, published, gated, onClose, asking, onBusyChange]);
 
   const leaving = choice === 'off' && published > 0;
 
@@ -513,8 +594,8 @@ export function FavoritesPrivacyPrompt() {
     return () => onFavoritesModeNeeded(null);
   }, []);
 
-  // Never while the dialog is mid-publish. `apply` writes the mode BEFORE it
-  // awaits `syncFavoritesNow`, so without this guard the mode landing is itself
+  // Never while the dialog is mid-publish, or showing what that publish
+  // answered. `apply` writes the mode BEFORE it awaits the cycle, so without this guard the mode landing is itself
   // what unmounts the dialog that is still working — and the error it would have
   // shown goes nowhere. `apply` closes itself on success; this effect exists for
   // the other case, a mode arriving from somewhere else (another device through

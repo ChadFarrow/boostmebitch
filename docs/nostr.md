@@ -1087,6 +1087,31 @@ Any new caller that writes durable state on the strength of a cycle inherits
 this — it is `assertPublished`'s rule one layer up, and the same reason that one
 exists.
 
+**And a `null` is ALSO "nothing to say" — so a caller that reports the result
+reads `syncFavoritesNowDetailed`, never the bare `null`.** When the relay already
+holds exactly these bytes, `syncFavorites` records the baseline through
+`onSynced` and returns `null` too. `syncFavoritesNowDetailed` and
+`withdrawThisDevice` answer a `FavoritesCycleOutcome` — `published`,
+`unchanged` or `refused` (with the reason) — told apart by which callback the
+cycle called: every return path calls exactly one, or neither when it refuses
+before reading, and "unchanged" is a claim only `onSynced` may make. The switch
+half of the privacy dialog discarded the answer (full-code review 2026-11-19,
+finding 14): a refused move closed the dialog while the entries stayed where
+they were — for a switch to Private, in plaintext, under a control reading
+Private. A refused move now keeps the dialog open with the reason; the mode
+stays recorded (reverting it would publish the next heart under the mode the
+person left) and every later cycle retries the move.
+
+**The dialog's "hold" is reported SYNCHRONOUSLY, before the mode is written.**
+`<FavoritesPrivacyPrompt>` closes itself once a mode exists, unless the dialog
+holds it. The hold used to be reported from an effect, which runs in the same
+commit as the mode write — and a parent's effect reads the state of its own
+render, so the prompt unmounted at the instant of Save, before the publish had
+answered. `apply` now calls `onBusyChange(true)` before `recordFavoritesPrivacy`,
+and the effect keeps the hold while an error is on screen.
+`npm run e2e:favrefusal` drives both (a fixture relay that answers REQs and
+refuses EVENTs); against the code before the fix, both scenarios fail.
+
 ### Module split
 
 `lib/nostr/favorites-list.ts` is the wire format, the merge, **and the private
