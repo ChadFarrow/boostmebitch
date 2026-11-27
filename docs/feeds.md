@@ -533,6 +533,13 @@ Fan-out callers use **probe-first-then-batch**: await one resolve, check `piMayb
 
 Pinned by `check:moved` (the decisions) and `e2e:moved` (the flow, against live PI data).
 
+## Every server request names the app (`serverUserAgent()`)
+
+Every `fetch` and `safeFetch` the server sends carries `User-Agent: BRAND.userAgent`, read through `serverUserAgent()` (`lib/user-agent.ts`): `BoostMeBitch/<version> (+https://www.boostmebitch.com)` on one deploy and `BoostMeBuddy/<version> (+https://www.boostmebuddy.com)` on the other (Chad, 2026-11-27: one form for all his apps, a link and no email). `APP_NAME` overrides it and stays unset (`.env.example`). The GitHub calls and the podping pusher read `BRAND.userAgent` directly, and `lib/community/pi-notify.ts` sends `BRANDS.buddy.userAgent`, the brand of the feed address. Browser fetches cannot set the header and keep the browser's own.
+
+- **Not decoration.** Until 2026-11-27 the art, audio, audio-probe, OG banner, playlist art check, GIPHY, BoostBox, stamp-address, podping viewer and read-index calls set no header, so Node sent its default `node`. Buzzsprout's audio host (`www.buzzsprout.com/…/*.mp3`) answers that with **403** and the app's name with **206**, so `/api/audio-probe` answered 403 for every Buzzsprout enclosure (the player and the playlist song check count only 404 and 410 as gone, so nothing was skipped) and `/api/audio`, the download proxy, passed the 403 on, so a Buzzsprout download that needed the proxy failed. Probed on 2026-11-27 against 107 hosts (21 feeds and each one's enclosure, cover, chapters, transcript and `lnaddress` hosts, plus GIPHY, BoostBox, GitHub, PI's static file, Primal's and nostr.build's Blossom, podtards.com and nine wallet providers' `.well-known/lnurlp`): every other host answered the old and the new name the same, for both brands.
+- **Never a string literal.** `check:brand` fails on any `User-Agent` header in `app/`, `lib/` or `scripts/` whose value is not the shared constant, and pins the form: name = `wireName`, version = `package.json` (`APP_VERSION` restates it because `lib/brand.ts` imports nothing), link = `origin` (the `www` form; the apex redirects). `scripts/playlist-archive.mjs` writes the string out, because its Action checks out `scripts/` only; the check compares it with `BRANDS.bmb.userAgent`. `services/nostr-index` has its own, `BoostMeBitch-Index/<its package.json version> (+https://www.boostmebitch.com)`, pinned by its `verify:ua`.
+
 ## Every PI call carries a deadline (`PI_TIMEOUT_MS`)
 
 `pi()` in `lib/pi.ts` is the one function every Podcast Index call goes through,

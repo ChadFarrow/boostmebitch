@@ -34,7 +34,7 @@ import { readCappedText, readPrefixThenScan, MAX_BODY_BYTES } from './capped-bod
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
 import { fnvHash, httpUrl, compareEpisodeOrder, listedTrackGuids, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue, FEED_FANOUT, feedUrlsMatchBarWhitespace } from './util';
 import { createBoundedCache } from './bounded-cache';
-import { BRAND } from './brand';
+import { serverUserAgent } from './user-agent';
 import { closedService, movedCandidates, pickLiveTwin } from './moved-feeds';
 import { confirmValueMissing, demuCopiesToHide, demuCopyCandidates, demuRosterFromPi, demuValueGaps, hasValueBlock, keepForDemu, mspFeedGuids, withCoverFallback } from './demu';
 import { DEMU_HIDE_AUTHORS, DEMU_HIDE_LIST, HOMEGROWN_HITS_FEED_URL } from './demu-hide-list';
@@ -80,7 +80,7 @@ export function authHeaders() {
     'X-Auth-Key': key,
     'X-Auth-Date': ts,
     'Authorization': hash,
-    'User-Agent': process.env.APP_NAME ?? BRAND.userAgent,
+    'User-Agent': serverUserAgent(),
   };
 }
 
@@ -466,7 +466,7 @@ const DEMU_BATCH_SIZE = 25;
 /** Ids of every feed PI's static file lists with a value block. Throws when the file cannot be read. */
 async function fetchValueFeedIds(): Promise<Set<number>> {
   const res = await fetch(DEMU_VALUE_FILE_URL, {
-    headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+    headers: { 'User-Agent': serverUserAgent() },
     cache: 'no-store',
     signal: AbortSignal.timeout(PI_TIMEOUT_MS * 2),
   });
@@ -576,7 +576,7 @@ async function demuTrackLists(albums: readonly DemuAlbum[]): Promise<Map<number,
 async function fetchHomegrownHitsPlayed(): Promise<Set<string>> {
   try {
     const res = await fetch(HOMEGROWN_HITS_FEED_URL, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+      headers: { 'User-Agent': serverUserAgent() },
       cache: 'no-store',
       signal: AbortSignal.timeout(PI_TIMEOUT_MS),
     });
@@ -1270,7 +1270,7 @@ async function fetchFeedXml(
   let xml: string | null = null;
   try {
     const res = await safeFetch(rssUrl, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+      headers: { 'User-Agent': serverUserAgent() },
       signal: AbortSignal.timeout(8000),
     });
     // Capped: `rssUrl` is feed-supplied and the result is RETAINED below, so an
@@ -1357,7 +1357,7 @@ async function fetchLiveFeedXml(
 
   try {
     const res = await safeFetch(rssUrl, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+      headers: { 'User-Agent': serverUserAgent() },
       signal: AbortSignal.timeout(8000),
     });
     if (res.ok) {
@@ -1467,7 +1467,7 @@ export async function checkLiveFeed(
       items: { status: 'pending' | 'live'; startTime?: number; endTime?: number }[];
     }
 > {
-  const headers: Record<string, string> = { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent };
+  const headers: Record<string, string> = { 'User-Agent': serverUserAgent() };
   const short = (v: string | null | undefined) => (v && v.length <= 256 ? v : undefined);
   const etag = short(validators.etag);
   const lastModified = short(validators.lastModified);

@@ -3,6 +3,7 @@ import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { readCappedJson } from '@/lib/capped-body';
 import { BRAND } from '@/lib/brand';
+import { serverUserAgent } from '@/lib/user-agent';
 import { giphyRating, parseGiphyResults } from '@/lib/giphy';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 
@@ -56,6 +57,7 @@ export async function GET(req: Request) {
       params.set('lang', 'en');
     }
     const res = await fetch(`${GIPHY_API}/${q ? 'search' : 'trending'}?${params}`, {
+      headers: { 'User-Agent': serverUserAgent() },
       signal: AbortSignal.timeout(8000),
       cache: 'no-store',
     });

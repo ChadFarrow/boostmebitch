@@ -36,15 +36,16 @@ current directory, so it cannot be run from a worktree. → [`ops.md`](ops.md)
 the repo's `check:*` scripts; `check-api.mjs`, `check-live-heads.mjs`,
 `check-search.mjs` and `check-indexer.mjs` need a Postgres, and the indexer one
 drives a scripted local relay (`verify/mock-relay.mjs`). `verify:ingest`,
-`verify:yield` and `verify:rejections` run with no database. No Postgres on the
+`verify:yield`, `verify:rejections` and `verify:ua` (the `User-Agent` this service
+sends PI, `src/user-agent.ts`) run with no database. No Postgres on the
 machine and no Docker? `embedded-postgres` from npm, installed in a scratch
 directory, runs a real one without root — the whole suite ran green that way on
 2026-09-19. Homebrew's `postgresql@17` works too; give it `-c
 unix_socket_directories=''` and TCP when the data directory's path is long.
 
 **`check-indexer.mjs` prints `ok` and then does not exit** (seen on `main` at
-9f9959dd, 2026-11-17), so `npm run verify` never reaches `verify:yield` and
-`verify:rejections`. Run those two by name until that is fixed.
+9f9959dd, 2026-11-17), so `npm run verify` never reaches `verify:yield`,
+`verify:rejections` and `verify:ua`. Run those three by name until that is fixed.
 
 ## A `void` on a background loop ends the process
 

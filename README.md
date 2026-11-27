@@ -101,8 +101,8 @@ vercel
 #   PODCAST_INDEX_SECRET
 #   NEXT_PUBLIC_BRAND                 (optional — unset = boostmebitch, 'buddy' = boostmebuddy)
 #   APP_NAME                          (optional — LEAVE UNSET. It overrides the brand table's
-#                                      User-Agent, so setting it makes a buddy deploy introduce
-#                                      itself to Podcast Index as boostmebitch)
+#                                      User-Agent on every server request, so setting it makes a
+#                                      buddy deploy introduce itself to every host as boostmebitch)
 #   BOOSTBOX_URL / BOOSTBOX_API_KEY   (optional — BoostBox LNURL metadata proxy)
 #   SITE_NOSTR_SK                     (optional — server-only nsec/hex, DIFFERENT PER BRAND; lets
 #                                      signed-out boosts post a note from the app's Nostr identity)

@@ -3,7 +3,7 @@ import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE } f
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
 import { readCappedText } from '@/lib/capped-body';
-import { BRAND } from '@/lib/brand';
+import { serverUserAgent } from '@/lib/user-agent';
 
 // An LNURL-pay response is small, but LUD-06 lets the `metadata` string carry a
 // base64 `image/png` identicon, and real providers do. 64 KB (the keysend cap)
@@ -100,7 +100,7 @@ export async function POST(req: Request) {
     const res = await safeFetch(url, {
       headers: {
         Accept: 'application/json',
-        'User-Agent': process.env.APP_NAME ?? BRAND.userAgent,
+        'User-Agent': serverUserAgent(),
       },
       cache: 'no-store',
       // Longer than the keysend probe's 3.5 s: this one is not an optional
