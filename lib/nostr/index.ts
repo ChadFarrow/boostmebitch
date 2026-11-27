@@ -218,6 +218,7 @@ export {
   streamIdOf,
   parseStreamId,
   isLiveStreamId,
+  liveHostShareUrl,
   LIVE_STREAM_RELAYS,
   type NostrLiveStream,
   type StreamV4V,

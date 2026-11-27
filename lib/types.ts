@@ -751,6 +751,16 @@ export interface LiveShow {
    * song — while the same item played from its show page connected.
    */
   liveValue?: { uri: string; protocol: string };
+  /**
+   * The live item's `<podcast:alternateEnclosure>` renditions, as the RSS
+   * parser read them — a video stream beside the audio enclosure (Homegrown
+   * Hits: Owncast HLS beside an Icecast MP3).
+   *
+   * Carried for the reason `liveValue` is: `<VideoToggle>` reads the PLAYING
+   * episode, so a field this row drops is a 📺 Video that PLAY on `/live` never
+   * offers. Absent on a Podcast Index row, which indexes no such tag.
+   */
+  alternateEnclosures?: AlternateEnclosure[];
   feedId: number;
   feedTitle?: string;
   feedImage?: string;

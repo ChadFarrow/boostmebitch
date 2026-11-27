@@ -7,6 +7,8 @@ import {
   resolveStreamV4V,
   shapeLiveStreams,
   streamAddrOf,
+  streamHostPubkey,
+  liveHostShareUrl,
   streamToEpisode,
   streamToPodcast,
   streamNaddr,
@@ -29,6 +31,7 @@ const BoostModal = dynamic(
   { ssr: false },
 );
 import { LiveCard, LIVE_GRID } from './live-card';
+import { CopyLinkButton } from './copy-link-button';
 import { fmtLiveTime } from '@/lib/format';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 
@@ -531,6 +534,16 @@ function StreamCard({
               ⚡
             </button>
           )}
+          {/* SHARE, as the RSS card beside it has (Chad, 2026-11-26: "no share
+              here" on /live). The host's permanent `/live/<npub>`, the link the
+              fullscreen player's chat pane hands out — `liveHostShareUrl`. An
+              upcoming card shares too: the link is the host's, not the
+              broadcast's, so it works once the show starts. */}
+          <CopyLinkButton
+            url={liveHostShareUrl(streamHostPubkey(stream))}
+            title="Copy link to this stream"
+            className="btn-mini"
+          />
         </>
       }
     />

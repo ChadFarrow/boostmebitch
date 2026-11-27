@@ -61,8 +61,7 @@ const LivePlayedTracks = dynamic(
   { ssr: false },
 );
 import type { Episode, Podcast, ValueTimeSplit } from '@/lib/types';
-import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
-import { nip19 } from 'nostr-tools';
+import { parseStreamId, isLiveStreamId, liveHostShareUrl } from '@/lib/nostr';
 import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
 import {
   episodeContentsLabel,
@@ -404,14 +403,9 @@ function LiveShareButton({
   liveStreamId: string;
   liveHostPubkey?: string;
 }) {
-  function buildUrl(): string | null {
-    if (typeof window === 'undefined') return null;
-    const parsed = parseStreamId(liveStreamId);
-    if (!parsed) return null;
-    return `${window.location.origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
-  }
-
-  return <CopyLinkButton url={buildUrl()} title="Copy link to this stream" />;
+  const parsed = parseStreamId(liveStreamId);
+  const url = parsed ? liveHostShareUrl(liveHostPubkey ?? parsed.pubkey) : null;
+  return <CopyLinkButton url={url} title="Copy link to this stream" />;
 }
 
 /**
@@ -1369,7 +1363,22 @@ export function FullscreenPlayer({
             </div>
 
             {isLive ? (
-              <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
+              /* SHARE IN SIGHT ON A LIVE ITEM, at every width (Chad,
+                 2026-11-26, on Homegrown Hits 160 at desktop width: "no share
+                 here"). The ⋯ menu holds the two SHAREs, and a live item has
+                 nothing else under BOOST, so the screen offered no way to hand
+                 the broadcast on while it is on air. The SHOW link, never the
+                 live item's guid: the item is gone when the show ends, and the
+                 show page lists the broadcast at the top while it runs. It
+                 shares the LIVE row, so a phone's cover loses no height. */
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
+                <CopyLinkButton
+                  url={showShareUrl(podcast)}
+                  title={`Copy link to this ${targetWord('feed', podcast).toLowerCase()}`}
+                  className="btn-mini"
+                />
+              </div>
             ) : (
               <div className="flex flex-col gap-1.5">
                 <div className="relative flex items-center">

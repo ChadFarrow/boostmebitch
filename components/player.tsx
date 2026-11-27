@@ -355,9 +355,12 @@ export function Player() {
   const effectiveRate = isLiveMedia || musicItem || musicHold ? 1 : playbackRate;
   // isHlsRef gates the HLS-only foreground-resume nudge; isLiveRef gates the
   // resume-from-pause reconnect; isVideoRef selects the active media element
-  // (video vs audio) in the other effects.
+  // (video vs audio) in the other effects. isHlsRef follows what PLAYS, not the
+  // enclosure: a live item's 📺 Video can be an HLS alternate over an MP3
+  // enclosure (Homegrown Hits), and that stream needs the nudge and the
+  // native-to-hls.js retry in `onMediaError` as much as an HLS enclosure does.
   const isHlsRef = useRef(isHls);
-  isHlsRef.current = isHls;
+  isHlsRef.current = isHls || isHlsUrl(videoUrl);
   const isLiveRef = useRef(isLiveMedia);
   isLiveRef.current = isLiveMedia;
   const isVideoRef = useRef(isVideo);
@@ -1699,8 +1702,9 @@ export function Player() {
     // through hls.js first. `hls.current` is null exactly when the native branch
     // owns the element, and the url guard makes this fire once, so a genuinely
     // dead playlist still reaches the message below on the second pass. See
-    // `nativeHlsFailedUrl`.
-    const url = episode.enclosureUrl;
+    // `nativeHlsFailedUrl`. The url the element was given: the <video>'s when
+    // it plays (an HLS alternate is not the enclosure), else the enclosure.
+    const url = videoUrl ?? episode.enclosureUrl;
     if (isHlsRef.current && !hls.current && url && nativeHlsFailedUrl.current !== url) {
       nativeHlsFailedUrl.current = url;
       setAudioErr(null);

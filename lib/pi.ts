@@ -1392,6 +1392,9 @@ export async function getLiveItemsFromRssDetailed(
     value: r.value,
     socialInteract: r.socialInteract,
     liveValue: r.liveValue,
+    // A video rendition of the broadcast (Owncast HLS beside an Icecast MP3).
+    // Without it <VideoToggle> never offers 📺 Video on a live item.
+    alternateEnclosures: r.alternateEnclosures,
     liveRemoteItem: r.remoteItem,
     liveValueTimeSplits: r.valueTimeSplits?.length ? r.valueTimeSplits : undefined,
   }));
@@ -1490,6 +1493,7 @@ interface RawLiveItem {
   remoteItem?: ValueTimeSplitRemoteItem;
   valueTimeSplits?: ValueTimeSplit[];
   liveValue?: { uri: string; protocol: string };
+  alternateEnclosures?: AlternateEnclosure[];
 }
 
 /**
@@ -1561,6 +1565,9 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
       remoteItem: firstRemoteItem(stripValueTimeSplits(inner)),
       valueTimeSplits: parseValueTimeSplitsFromRss(inner),
       liveValue: parseLiveValue(inner),
+      // Read the same way as an <item>'s: a live item may carry a video
+      // rendition too (Homegrown Hits: an Owncast HLS beside the Icecast MP3).
+      alternateEnclosures: parseAlternateEnclosures(inner),
     });
   }
   return out;

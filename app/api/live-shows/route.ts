@@ -560,6 +560,9 @@ export async function GET(req: Request) {
           // The Split Kit socket. Dropping it here is how PLAY on /live never
           // connected — see `LiveShow.liveValue`.
           liveValue: e.liveValue,
+          // The video rendition, if the item names one — see
+          // `LiveShow.alternateEnclosures`.
+          alternateEnclosures: e.alternateEnclosures,
           feedId: id,
           feedTitle: e.feedTitle ?? feedTitle,
           feedImage: e.feedImage ?? feedImage,

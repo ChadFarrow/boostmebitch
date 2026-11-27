@@ -31,7 +31,7 @@
 // Vectors are recorded as CALLS and the replay walks the list, so a vector
 // cannot be added without also being proved against naive(). A vector both
 // implementations agree on is reported as proving nothing.
-import { feedLiveItems, liveShowToEpisode, mergeLiveOverPi } from '../lib/util.ts';
+import { feedLiveItems, liveShowToEpisode, mergeLiveOverPi, pickVideoAlternate } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -196,6 +196,39 @@ for (const v of VECTORS) {
   }
 }
 
+// THE VIDEO RENDITION MUST SURVIVE THE SAME TRIP. `<VideoToggle>` offers 📺
+// Video from the PLAYING episode's `alternateEnclosures` alone, so a hop that
+// does not name the field is a live show with no video switch. Measured
+// 2026-11-26 on Homegrown Hits 160: the live item carried an Owncast HLS
+// `<podcast:alternateEnclosure>` beside the Icecast MP3, and neither /live nor
+// the show page offered it — the RSS live-item parser never read the tag.
+{
+  // The wire's shape, as `parseAlternateEnclosures` reads the live item's block
+  // `<podcast:alternateEnclosure type="application/x-mpegURL"><podcast:source
+  // uri="https://owncast.bowlafterbowl.com/hls/stream.m3u8" /></…>`.
+  const alts = [{ type: 'application/x-mpegURL', source: 'https://owncast.bowlafterbowl.com/hls/stream.m3u8', default: false }];
+  const ep = liveShowToEpisode({
+    guid: 'homegrownhits-160', title: 'Homegrown Hits Episode 160',
+    enclosureUrl: 'https://stream.bowlafterbowl.com/listen/bowlafterbowl/stream.mp3', enclosureType: 'audio/mpeg',
+    liveStatus: 'live', feedId: 6611624, verified: true, alternateEnclosures: alts,
+  });
+  if (pickVideoAlternate(ep)?.source !== alts[0].source) {
+    fail('liveShowToEpisode drops alternateEnclosures — PLAY on /live offers no 📺 Video.');
+  } else {
+    ok('liveShowToEpisode carries alternateEnclosures, and the HLS one is the video pick');
+  }
+  const piSrc = await (await import('node:fs/promises')).readFile('lib/pi.ts', 'utf8');
+  const parser = piSrc.slice(piSrc.indexOf('function parseRssLiveItems('), piSrc.indexOf('function parseValueBlock('));
+  const toEpisode = piSrc.slice(piSrc.indexOf('export async function getLiveItemsFromRssDetailed('), piSrc.indexOf('export async function getLiveItemsFromRss('));
+  if (!/alternateEnclosures:\s*parseAlternateEnclosures\(inner\)/.test(parser)) {
+    fail('lib/pi.ts parseRssLiveItems no longer reads <podcast:alternateEnclosure> — no live item offers video.');
+  } else if (!/alternateEnclosures:\s*r\.alternateEnclosures/.test(toEpisode)) {
+    fail('lib/pi.ts getLiveItemsFromRssDetailed drops alternateEnclosures from the live Episode.');
+  } else {
+    ok('lib/pi.ts reads a live item\'s alternateEnclosure and keeps it on the Episode');
+  }
+}
+
 // ── `feedLiveItems`: the SHOW PAGE's live list (`/api/feed`) ────────────────
 // The route used to union PI's rows with the RSS rows and let PI win a guid.
 // That was harmless only while the roster was always empty; once it is not, a
@@ -238,6 +271,12 @@ if (!/liveValue:\s*e\.liveValue/.test(src)) {
     + '          PLAY on /live cannot open the Split Kit socket.');
 } else {
   ok('app/api/live-shows/route.ts copies liveValue into each LiveShow');
+}
+if (!/alternateEnclosures:\s*e\.alternateEnclosures/.test(src)) {
+  fail('app/api/live-shows/route.ts no longer copies alternateEnclosures into each LiveShow —\n'
+    + '          PLAY on /live offers no 📺 Video.');
+} else {
+  ok('app/api/live-shows/route.ts copies alternateEnclosures into each LiveShow');
 }
 if (!src.includes('mergeLiveOverPi')) {
   fail('app/api/live-shows/route.ts no longer calls mergeLiveOverPi — an unreadable\n'
