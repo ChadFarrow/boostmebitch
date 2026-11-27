@@ -71,6 +71,16 @@ export interface ValueTimeSplit {
    * `withFeedMediums`. **Nothing may pay by it.**
    */
   feedMedium?: string;
+  /**
+   * The remote item's own `<podcast:transcript>` — the song's lyrics — and its
+   * MIME type, from the same Podcast Index record that named its title (the best
+   * timed one, `pickBestTranscript`). Cue times count from the start of the
+   * TRACK; `cuesOnShowClock` (lib/transcript.ts) moves them onto the show's.
+   * Absent when the record names none, or the lookup missed or was never made.
+   * Display-only.
+   */
+  transcriptUrl?: string;
+  transcriptType?: string;
   episodeGuid?: string;
   /**
    * The feed guid that actually CONTAINS this track, when resolution learned

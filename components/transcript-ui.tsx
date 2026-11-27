@@ -35,6 +35,9 @@ function highlight(text: string, query: string): React.ReactNode {
  * player and the read-only detail view. When `onSeek` is given each line is also
  * tap-to-seek; without it the panel is read-only. Renders a loading skeleton
  * while `loading`, and null when there are no cues.
+ *
+ * `noun` is what the text is called in its own strings — "transcript", or
+ * "lyrics" for a song (`transcriptWord`, lib/util.ts). Only the words change.
  */
 export function TranscriptPanel({
   cues,
@@ -42,12 +45,14 @@ export function TranscriptPanel({
   onSeek,
   loading,
   className = '',
+  noun = 'transcript',
 }: {
   cues: TranscriptCue[] | null;
   activeIdx: number;
   onSeek?: (s: number) => void;
   loading: boolean;
   className?: string;
+  noun?: 'transcript' | 'lyrics';
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLElement>(null);
@@ -96,7 +101,7 @@ export function TranscriptPanel({
   }, [activeIdx, query]);
 
   if (loading && !cues?.length) {
-    return <p className="text-xs text-muted">Loading transcript…</p>;
+    return <p className="text-xs text-muted">Loading {noun}…</p>;
   }
   if (!cues?.length) return null;
 
@@ -119,8 +124,8 @@ export function TranscriptPanel({
         <div className="relative flex-1">
           <input
             className="input w-full text-xs py-1 pr-8"
-            placeholder="Search transcript…"
-            aria-label="Search transcript"
+            placeholder={`Search ${noun}…`}
+            aria-label={`Search ${noun}`}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -131,7 +136,7 @@ export function TranscriptPanel({
             <button
               type="button"
               onClick={() => setQuery('')}
-              aria-label="Clear transcript search"
+              aria-label={`Clear ${noun} search`}
               className="absolute right-1 top-1/2 -translate-y-1/2 flex h-6 w-6 min-h-6 min-w-6 items-center justify-center rounded-full text-muted hover:bg-line hover:text-bone"
             >
               ×
@@ -196,7 +201,11 @@ const TranscriptRows = memo(function TranscriptRows({
           on ? 'bg-bolt/10 text-bolt' : 'text-bone/80'
         }`;
         return (
-          <li key={`${c.startTime}-${i}`} ref={on ? (activeRef as React.RefObject<HTMLLIElement>) : undefined}>
+          <li
+            key={`${c.startTime}-${i}`}
+            ref={on ? (activeRef as React.RefObject<HTMLLIElement>) : undefined}
+            aria-current={on ? 'true' : undefined}
+          >
             {seek ? (
               <button type="button" onClick={() => seek(c.startTime)} className={`${rowCls} hover:bg-bone/5`}>
                 {body}

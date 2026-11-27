@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS, parseItemEnclosure } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, feedEnclosure, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey, piConfirmedMisses, readsEpisodeDocs } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, feedEnclosure, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey, piConfirmedMisses, readsEpisodeDocs, readsTranscript, transcriptWord } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -1742,11 +1742,79 @@ console.log('\nA playlist track reads no chapters, so ⏮/⏭ stay the playlist\
     const m = new RegExp(`export function ${fn}\\b[\\s\\S]*?\\n}\\n`).exec(src);
     return m ? m[0] : null;
   };
-  for (const [rel, fn] of [['lib/chapters.ts', 'chapterUrlFor'], ['lib/transcript.ts', 'transcriptSourceFor']]) {
-    const b = body(rel, fn);
-    if (!b) { fail(`${rel}: \`${fn}\` not found`); continue; }
-    if (/\breadsEpisodeDocs\(/.test(b) && !/\bisMusicMedium\(/.test(b)) ok(`${fn} asks readsEpisodeDocs, and nothing narrower`);
-    else fail(`${rel}: \`${fn}\` must gate on readsEpisodeDocs(current), never isMusicMedium — a playlist track's chapters take ⏭ (#647)`);
+  {
+    const b = body('lib/chapters.ts', 'chapterUrlFor');
+    if (!b) fail('lib/chapters.ts: `chapterUrlFor` not found');
+    else if (/\breadsEpisodeDocs\(/.test(b) && !/\bisMusicMedium\(/.test(b)) ok('chapterUrlFor asks readsEpisodeDocs, and nothing narrower');
+    else fail("lib/chapters.ts: `chapterUrlFor` must gate on readsEpisodeDocs(current), never isMusicMedium — a playlist track's chapters take ⏭ (#647)");
+  }
+  // The transcript LEFT this gate on 2026-11-26 (lyrics): it drives no
+  // transport control, so #647 does not reach it. The next section pins its own.
+  {
+    const b = body('lib/transcript.ts', 'transcriptSourceFor');
+    if (!b) fail('lib/transcript.ts: `transcriptSourceFor` not found');
+    else if (/\breadsTranscript\(/.test(b) && !/\breadsEpisodeDocs\(|\bplaysAsTracks\(|\bisMusicMedium\(/.test(b)) ok('transcriptSourceFor asks readsTranscript, and no track gate');
+    else fail('lib/transcript.ts: `transcriptSourceFor` must gate on readsTranscript(current) alone — a track gate there turns every song\'s lyrics off');
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nA track reads its own transcript: its lyrics (Chad, 2026-11-26)');
+// ---------------------------------------------------------------------------
+{
+  // ASKED 2026-11-26: "can we show lyrics for music tracks on BMB? some tracks
+  // have transcripts like some of Heycitizens stuff for example". The HeyCitizen
+  // album "The Heycitizen Experience" (PI 6650997) writes an application/srt
+  // <podcast:transcript> on 13 of its 19 items, and Podcast Index carries the
+  // url on the episode record, so the album page AND a musicL playlist row both
+  // had it in hand. The player never fetched it: `transcriptSourceFor` asked
+  // `readsEpisodeDocs`, the chapters gate, which says no to every track. The
+  // naive below IS that old gate.
+  const naive = (current) => readsEpisodeDocs(current);
+  const ep = (o = {}) => ({ guid: 'd489101a-4e62-492f-812e-9fe51def9423', transcriptUrl: 'https://feeds.example.invalid/MoeFactz.srt', ...o });
+  const vectors = [];
+  const vec = (label, args, expect, opts = {}) => vectors.push({ label, args, expect, ...opts });
+
+  // ── The request ─────────────────────────────────────────────────────────
+  vec('a music album track reads its transcript', [{ episode: ep(), podcast: { medium: 'music' } }], true);
+  vec('a musicL playlist track reads its transcript', [{ episode: ep(), podcast: { medium: 'musicL' } }], true);
+  vec('…whatever the case of the medium', [{ episode: ep(), podcast: { medium: 'MUSIC' } }], true);
+
+  // ── What must keep working ──────────────────────────────────────────────
+  vec('a podcast episode still reads its transcript', [{ episode: ep(), podcast: { medium: 'podcast' } }], true, { alsoNaive: true });
+  vec('a feed with no medium is a podcast', [{ episode: ep(), podcast: {} }], true, { alsoNaive: true });
+  vec('a podcastL playlist episode still reads its transcript', [{ episode: ep(), podcast: { medium: 'podcastL' } }], true, { alsoNaive: true });
+  vec('a live item reads none', [{ episode: ep({ liveStatus: 'live' }), podcast: { medium: 'podcast' } }], false, { alsoNaive: true });
+  vec('a live music item reads none', [{ episode: ep({ liveStatus: 'live' }), podcast: { medium: 'music' } }], false, { alsoNaive: true });
+  vec('nothing playing reads none', [null], false, { alsoNaive: true });
+
+  const ser = (v) => JSON.stringify(v);
+  const invoke = (impl, v) => {
+    try {
+      return ser((impl === 'real' ? readsTranscript : naive)(...v.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  for (const v of vectors) {
+    const got = invoke('real', v);
+    if (got === ser(v.expect)) ok(v.label);
+    else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+  }
+  replayVectors({ vectors, invoke, fail });
+
+  // THE WORD. "Lyrics" on rows that are songs; a podcastL row is an episode.
+  for (const [podcast, want] of [
+    [{ medium: 'music' }, 'Lyrics'],
+    [{ medium: 'musicL' }, 'Lyrics'],
+    [{ medium: 'podcastL' }, 'Transcript'],
+    [{ medium: 'podcast' }, 'Transcript'],
+    [{}, 'Transcript'],
+    [null, 'Transcript'],
+  ]) {
+    const got = transcriptWord(podcast);
+    if (got === want) ok(`transcriptWord(${JSON.stringify(podcast)}) is ${want}`);
+    else fail(`transcriptWord(${JSON.stringify(podcast)}) is ${got}, want ${want}`);
   }
 }
 

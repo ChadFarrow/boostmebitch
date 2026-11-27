@@ -70,6 +70,7 @@ import {
   boostGate,
   boostButtonTitle,
   playsAsTracks,
+  transcriptWord,
   showShareUrl,
   targetWord,
   authorLine,
@@ -236,7 +237,16 @@ const BAR_CHIP_LG = 'lg:h-[38px] lg:px-3';
 // `contents` is ONE tab holding the tracks and the chapters interleaved — see
 // <EpisodeContents>. They were two tabs of near-identical rows that largely
 // named the same songs.
-type InfoTab = 'about' | 'contents' | 'transcript';
+type InfoTab = 'about' | 'contents' | 'transcript' | 'lyrics';
+
+/** See `songLyrics` on <FullscreenPlayer>. `title` is the song's, for the tab. */
+export interface SongLyrics {
+  cues: TranscriptCue[] | null;
+  loading: boolean;
+  activeIdx: number;
+  title?: string;
+}
+
 function EpisodeInfoPanel({
   description,
   splits,
@@ -247,6 +257,8 @@ function EpisodeInfoPanel({
   transcriptLoading,
   transcriptActiveIdx,
   hasTranscriptUrl,
+  transcriptLabel,
+  songLyrics,
   onSeek,
   currentSec,
   shareUrlFor,
@@ -264,6 +276,11 @@ function EpisodeInfoPanel({
   transcriptLoading: boolean;
   transcriptActiveIdx: number;
   hasTranscriptUrl: boolean;
+  /** The item's own transcript is "Lyrics" on a song and "Transcript" on an
+   *  episode (`transcriptWord`). */
+  transcriptLabel: 'Lyrics' | 'Transcript';
+  /** A song inside a show: its own tab, beside the show's transcript. */
+  songLyrics: SongLyrics | null;
   onSeek: (s: number) => void;
   currentSec: number;
   /** Builds a link to one moment of this episode, for the rows of
@@ -290,10 +307,13 @@ function EpisodeInfoPanel({
   // `episodeContentsLabel`; the episode page's tab strip shares it.
   const contentsLabel = episodeContentsLabel(splits, chapters);
   const hasTranscript = !!transcriptCues?.length;
+  // Only once it has lines: a window whose file is still loading, failed or
+  // parsed to nothing shows no tab, so there is never an empty LYRICS.
+  const hasSongLyrics = !!songLyrics?.cues?.length;
   const chaptersPending = hasChaptersUrl && chaptersLoading;
   const transcriptPending = hasTranscriptUrl && transcriptLoading;
   if (
-    !hasDescription && !hasContents && !hasTranscript
+    !hasDescription && !hasContents && !hasTranscript && !hasSongLyrics
     && !chaptersPending && !transcriptPending
   ) {
     return null;
@@ -305,17 +325,23 @@ function EpisodeInfoPanel({
   if (hasDescription) tabs.push('about');
   if (hasContents) tabs.push('contents');
   if (hasTranscript) tabs.push('transcript');
+  if (hasSongLyrics) tabs.push('lyrics');
 
   const showTabs = tabs.length >= 2;
+  // A song's LYRICS tab goes when its window ends. Somebody reading along lands
+  // on the show's track list then — the timeline the next song is on — rather
+  // than on the About text at the top.
   const active: InfoTab =
     showTabs && tabs.includes(tab) ? tab
+    : showTabs && tab === 'lyrics' && tabs.includes('contents') ? 'contents'
     : tabs.length ? tabs[0]
     : chaptersPending ? 'contents'
     : 'transcript';
 
   const label = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
-    : t === 'transcript' ? 'Transcript'
+    : t === 'transcript' ? transcriptLabel
+    : t === 'lyrics' ? 'Lyrics'
     : 'About this episode';
 
   return (
@@ -377,6 +403,22 @@ function EpisodeInfoPanel({
             activeIdx={transcriptActiveIdx}
             onSeek={onSeek}
             loading={transcriptLoading}
+            noun={transcriptLabel === 'Lyrics' ? 'lyrics' : 'transcript'}
+          />
+        </Pane>
+      )}
+
+      {active === 'lyrics' && songLyrics && (
+        <Pane label="TranscriptPanel">
+          {songLyrics.title ? (
+            <p className="text-xs text-muted mb-2 truncate">{songLyrics.title}</p>
+          ) : null}
+          <TranscriptPanel
+            cues={songLyrics.cues}
+            activeIdx={songLyrics.activeIdx}
+            onSeek={onSeek}
+            loading={songLyrics.loading}
+            noun="lyrics"
           />
         </Pane>
       )}
@@ -472,6 +514,7 @@ export function FullscreenPlayer({
   transcriptLoading,
   transcriptActiveIdx,
   hasTranscriptUrl,
+  songLyrics,
   onClose,
   onBoost,
 }: {
@@ -526,6 +569,10 @@ export function FullscreenPlayer({
   transcriptLoading: boolean;
   transcriptActiveIdx: number;
   hasTranscriptUrl: boolean;
+  /** The lyrics of the song a `<podcast:valueTimeSplit>` window is playing,
+   *  already on the show's clock, or null outside a window whose track names a
+   *  transcript. Fetched once by <Player>, like the rest. */
+  songLyrics: SongLyrics | null;
   onClose: () => void;
   onBoost: () => void;
 }) {
@@ -1690,6 +1737,8 @@ export function FullscreenPlayer({
               transcriptLoading={transcriptLoading}
               transcriptActiveIdx={transcriptActiveIdx}
               hasTranscriptUrl={hasTranscriptUrl}
+              transcriptLabel={transcriptWord(podcast)}
+              songLyrics={songLyrics}
               onSeek={seekTo}
               currentSec={positionSec}
               // `undefined`, not a builder returning null, when the episode has

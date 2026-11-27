@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { readsEpisodeDocs } from './util';
+import { readsTranscript } from './util';
 import { transcriptRequestUrl } from './downloads/download-rules';
 import { fetchDoc } from './downloads/downloads-cache';
 import type { Episode, Podcast } from './types';
@@ -161,16 +161,50 @@ export function useTranscript(url: string, type?: string): { cues: TranscriptCue
 }
 
 /** The transcript source for a now-playing item, or an empty url to skip.
- *  Transcripts are a podcast feature: gated off for live streams and for
- *  anything that plays as tracks, through the same gate as `chapterUrlFor`
- *  (`readsEpisodeDocs`). */
+ *  Gated off for live streams only (`readsTranscript`): a TRACK reads its own
+ *  transcript too, because that is its lyrics. This is NOT the chapters gate
+ *  (`readsEpisodeDocs`) — see `readsTranscript` for why the two split. */
 export function transcriptSourceFor(
   current: { episode: Episode; podcast: Podcast } | null,
 ): { url: string; type?: string } {
-  if (!current || !readsEpisodeDocs(current)) {
+  if (!current || !readsTranscript(current)) {
     return { url: '' };
   }
   return { url: current.episode.transcriptUrl ?? '', type: current.episode.transcriptType };
+}
+
+/**
+ * The lyrics of the song a `<podcast:valueTimeSplit>` window plays, moved onto
+ * the SHOW's clock: `split.startTime + cue.startTime - remoteStartTime`. A cue
+ * the window does not reach (before `remoteStartTime`, or past the window's
+ * end) is dropped, so every row seeks to a moment inside the song. Pure.
+ *
+ * The cue times in the track's own file count from the start of the TRACK, and
+ * the show plays it from `remoteStartTime` at `startTime` — so without the move
+ * the highlight would follow the show's clock through the song's lyrics and
+ * land on the wrong line for every song not at 0:00.
+ */
+export function cuesOnShowClock(
+  cues: TranscriptCue[] | null,
+  split: { startTime: number; duration: number; remoteStartTime?: number } | null,
+): TranscriptCue[] | null {
+  if (!cues || !split) return null;
+  // An untimed file (html/plain) parses to ONE cue at 0 and renders as a plain
+  // block: it has no clock to move, and a moved start would read as one timed row.
+  if (cues.length === 1 && cues[0].startTime === 0 && cues[0].endTime == null) return cues;
+  const offset = split.remoteStartTime && Number.isFinite(split.remoteStartTime) ? split.remoteStartTime : 0;
+  const end = split.startTime + split.duration;
+  const out: TranscriptCue[] = [];
+  for (const c of cues) {
+    const start = split.startTime + c.startTime - offset;
+    if (start < split.startTime || start >= end) continue;
+    out.push({
+      ...c,
+      startTime: start,
+      endTime: c.endTime != null ? split.startTime + c.endTime - offset : undefined,
+    });
+  }
+  return out;
 }
 
 /** Index of the cue currently playing — the one with the greatest startTime not

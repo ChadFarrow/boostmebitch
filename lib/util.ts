@@ -40,8 +40,8 @@ const LIST_MEDIUMS = new Set([
  * entries pointing at items in other people's feeds.
  *
  * **Deliberately NOT folded into `isMusicMedium`.** A playlist wants most of
- * what that gate turns on — row-tap-to-play, auto-advance, no chapters or
- * transcripts, TRACK vocabulary — but must not get its other two, and both
+ * what that gate turns on — row-tap-to-play, auto-advance, no chapters, its
+ * transcript called "Lyrics", TRACK vocabulary — but must not get its other two, and both
  * would fail silently:
  *
  *   - `isMusicMedium` renders the WHOLE list with no pagination, because an
@@ -193,6 +193,37 @@ export function readsEpisodeDocs(
   current: { episode: Pick<Episode, 'liveStatus'>; podcast: Pick<Podcast, 'medium'> } | null,
 ): boolean {
   return !!current && current.episode.liveStatus !== 'live' && !playsAsTracks(current.podcast);
+}
+
+/**
+ * Does the now-playing item read its OWN `<podcast:transcript>`? The gate
+ * `transcriptSourceFor` asks, pinned by `check:musicl`. No for nothing playing
+ * and a live item; yes for everything else, a track included.
+ *
+ * **Deliberately NOT `readsEpisodeDocs`.** The two shared one gate until
+ * 2026-11-26, when Chad asked for lyrics ("some tracks have transcripts like
+ * some of Heycitizens stuff"): a track's transcript IS its lyrics, and the
+ * HeyCitizen album writes an SRT on 13 of its 19 items. What keeps chapters off
+ * a track is #647 — a chapter list takes ⏮/⏭ over through `buildChapterNav`,
+ * and a one-chapter album item greyed ⏭ out over a whole playlist. A transcript
+ * drives no transport control, so that reason does not reach it, and folding
+ * the two back together would turn the lyrics off again with nothing on screen
+ * to say why. The label is `transcriptWord`'s.
+ */
+export function readsTranscript(
+  current: { episode: Pick<Episode, 'liveStatus'> } | null,
+): boolean {
+  return !!current && current.episode.liveStatus !== 'live';
+}
+
+/**
+ * What the item's transcript is called on screen: "Lyrics" when the rows are
+ * songs (`playsAsTracks` — a `music` album and a `musicL` playlist), and
+ * "Transcript" for everything else, a `podcastL` row included (its rows are
+ * podcast episodes, so its transcript is a transcript).
+ */
+export function transcriptWord(podcast: Pick<Podcast, 'medium'> | null | undefined): 'Lyrics' | 'Transcript' {
+  return podcast && playsAsTracks(podcast) ? 'Lyrics' : 'Transcript';
 }
 
 /** How long before the end (wall-clock seconds) `advanceBeforeEnd` moves on. */
