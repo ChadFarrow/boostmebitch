@@ -2494,6 +2494,9 @@ export async function getItemPaymentFromRss(rssUrl: string, itemGuid: string): P
       read: true,
       value: parseValueBlock(item.inner) ?? channel,
       valueTimeSplits: itemValueTimeSplits(item.inner),
+      // A video rendition, for an episode Podcast Index built: this read is the
+      // only one it gets, at play time. See `ItemPayment.alternateEnclosures`.
+      alternateEnclosures: parseAlternateEnclosures(item.inner),
     };
   }
   return { read: true, value: channel, valueTimeSplits: [] };
