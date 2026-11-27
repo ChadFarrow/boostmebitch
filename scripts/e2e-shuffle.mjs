@@ -695,6 +695,19 @@ console.log('\n10. The track list follows the playing row');
     // The listener scrolls back to the top to read. The track keeps playing,
     // so the sheet re-renders on every `timeupdate` — none of which may pull
     // the list back. Only the next track does.
+    //
+    // FIRST LET THE LAST ⏭'s SMOOTH SCROLL FINISH. `centred` passes once the
+    // row is within 20px of the middle, while the animation still has frames
+    // to run, and its last frame landed AFTER the instant scroll to the top:
+    // the list read 2, not 0, for the whole wait — on the panel before the
+    // TRACKS tab too (1 run in 6, measured 2026-11-26), so a race in this test,
+    // not a pull by the hook.
+    for (let prev = null, n = 0; n < 20; n++) {
+      const top = await js(`${SHUFFLE_UL}?.scrollTop ?? null`);
+      if (top === prev) break;
+      prev = top;
+      await wait(150);
+    }
     await js(`(() => { const ul = ${SHUFFLE_UL}; ul.scrollTo({ top: 0, behavior: 'instant' }); return true; })()`);
     await until(`(() => { const a = document.querySelector('audio'); return !!a && !a.paused && a.currentTime > 0.3; })()`, 8000);
     const before = await js(`document.querySelector('audio').currentTime`);

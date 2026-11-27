@@ -299,10 +299,23 @@ await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'MoeFactz on a phone', 'MoeFactz
   // cover-fit effect, docs/ui.md); the tabs take none of it. 350px at 390×844
   // before and after.
   t.ok('the cover keeps its size (350px)', p.cover != null && p.cover >= 345, String(p.cover));
+  // THE TAP ON LYRICS MUST NOT THROW THE SHEET BACK TO THE TOP. The strip sits
+  // low, the sheet is scrolled as far as it goes, and the first LYRICS of a page
+  // renders nothing for a frame (a `dynamic()` chunk): the list left, the sheet
+  // got shorter than its offset, and the browser clamped it to 0 — the cover,
+  // with the lyrics under the fold. The panel keeps the list's height (`listPx`).
+  const stripTop = () => js(`(() => { const tl = document.querySelector(${JSON.stringify(FS_SELECTOR)})?.querySelector('[data-track-panel] [role=tablist]'); return tl ? Math.round(tl.getBoundingClientRect().top) : null; })()`);
+  await js(`[...document.querySelector(${JSON.stringify(FS_SELECTOR)}).querySelectorAll('[role=tab]')].find((b) => b.textContent.trim() === 'Lyrics')?.scrollIntoView({ block: 'center', behavior: 'instant' })`);
+  await wait(400);
+  const stripBefore = await stripTop();
   await press(`${FS_SELECTOR} [role=tab]`, /^Lyrics$/);
   await wait(800);
   const a = await panel();
   t.ok('lines render and one is highlighted', a.rows > 5 && !!a.active, JSON.stringify(a));
+  const stripAfter = await stripTop();
+  t.ok('the strip stays where it was on the screen', stripBefore != null && stripAfter != null && Math.abs(stripAfter - stripBefore) <= 2, JSON.stringify({ stripBefore, stripAfter }));
+  const firstLine = await js(`(() => { const li = document.querySelector(${JSON.stringify(FS_SELECTOR)})?.querySelector('[role=tabpanel] li'); return li ? Math.round(li.getBoundingClientRect().top) : null; })()`);
+  t.ok('…and the first lyric line is on the screen', firstLine != null && firstLine < 844, String(firstLine));
   t.ok('the phone page does not scroll sideways', (a.overflow ?? 1) <= 0, String(a.overflow));
 }
 await desktop();

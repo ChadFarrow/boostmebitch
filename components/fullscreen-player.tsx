@@ -352,12 +352,6 @@ function EpisodeInfoPanel({
   const hasSongLyrics = !!songLyrics?.cues?.length;
   const chaptersPending = hasChaptersUrl && chaptersLoading;
   const transcriptPending = hasTranscriptUrl && transcriptLoading;
-  if (
-    !trackList && !hasDescription && !hasContents && !hasTranscript && !hasSongLyrics
-    && !chaptersPending && !transcriptPending
-  ) {
-    return null;
-  }
 
   // Only sections with loaded content get a tab; a pending section joins once
   // it resolves. TRACKS first, then ABOUT, then LYRICS — Chad's order.
@@ -383,6 +377,36 @@ function EpisodeInfoPanel({
     : tabs.length ? tabs[0]
     : chaptersPending ? 'contents'
     : 'transcript';
+
+  // THE PANEL KEEPS THE LIST'S HEIGHT while ABOUT or LYRICS shows. On a phone
+  // the strip sits low on the sheet, the sheet is scrolled as far as it goes,
+  // and the first LYRICS of a page renders nothing for a frame (TranscriptPanel
+  // is a `dynamic()` chunk). The 320px list left, the sheet got shorter than its
+  // scroll offset, the browser clamped it to 0, and the tap on LYRICS showed
+  // the cover with the lyrics under the fold — measured at 390x844. A short
+  // ABOUT did the same. So the panel's floor is the list's own height, read off
+  // the list while it shows: a three-track album keeps a three-row floor.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [listPx, setListPx] = useState(0);
+  const listShown = active === 'tracks' && !!trackList;
+  const listKey = trackList?.label;
+  useLayoutEffect(() => {
+    if (!listShown) return;
+    const ul = panelRef.current?.querySelector<HTMLElement>(':scope > ul');
+    if (!ul) return;
+    const read = () => setListPx(ul.offsetHeight);
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(ul);
+    return () => ro.disconnect();
+  }, [listShown, listKey]);
+
+  if (
+    !trackList && !hasDescription && !hasContents && !hasTranscript && !hasSongLyrics
+    && !chaptersPending && !transcriptPending
+  ) {
+    return null;
+  }
 
   const label = (t: InfoTab) =>
     t === 'tracks' ? trackList?.label ?? 'Tracks'
@@ -413,7 +437,11 @@ function EpisodeInfoPanel({
           contents swap, and `tabPanelProps`' `aria-labelledby` names which tab is
           showing. Without this the `role="tablist"` was a promise the markup
           broke — see `tabPanelProps`. */}
-      <div {...tabPanelProps(tabsId, active)}>
+      <div
+        {...tabPanelProps(tabsId, active)}
+        ref={panelRef}
+        style={trackList && listPx ? { minHeight: listPx } : undefined}
+      >
       {/* The list mounts with its tab — see <FollowList>. */}
       {active === 'tracks' && trackList && trackList.body}
 
