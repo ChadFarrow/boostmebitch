@@ -8,9 +8,10 @@ import { RowThumb } from '@/components/chapter-ui';
 import { looksLikeSecretKey } from '@/lib/nostr/npub-input';
 import { loadFeed } from '@/lib/podcast-meta';
 import { artCandidates, isMusicMedium } from '@/lib/util';
+import { displayImage, displayMedium, lacksMediumOrImage, useParentFeeds } from '@/lib/use-parent-media';
 import { whyNotPlayable, type SongKnown } from './song-check';
 import { SongPreviewButton } from '@/components/community/song-preview-button';
-import type { Episode, Podcast } from '@/lib/types';
+import type { Episode, FavoriteEpisode, Podcast } from '@/lib/types';
 import type { PlaylistSong } from '@/lib/community/rules';
 
 /** What the maker keeps for a song so its row has words and a picture. */
@@ -23,6 +24,7 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 const ROW_BTN = 'btn-mini min-w-[5.5rem] shrink-0';
+const NO_ROWS: FavoriteEpisode[] = [];
 const same = (a: PlaylistSong, feedGuid: string, itemGuid: string) => a.feedGuid === feedGuid && a.itemGuid === itemGuid;
 
 function Thumb({ image, fallback }: { image?: string; fallback?: string }) {
@@ -151,13 +153,21 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
 
   // ---- FAVORITES ------------------------------------------------------------
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
+  const favRows = useMemo(() => Object.values(favoriteEpisodes).filter((f) => f.itemGuid && f.feedGuid), [favoriteEpisodes]);
+  // A saved song with no medium or no art of its own takes its ALBUM'S, as Podcast Index
+  // reports it — display only, the rows stay the store's (`useParentFeeds` says why). Asked
+  // only while this tab is open: SEARCH never reads it.
+  const parents = useParentFeeds(tab === 'favorites' ? favRows : NO_ROWS, lacksMediumOrImage);
   const favSongs = useMemo(
-    () => Object.values(favoriteEpisodes)
+    () => favRows
       // A favorite of unknown medium is a track only in the shape <FavTrackHeart> writes: it sets no
       // enclosureUrl, where <FavEpisodeHeart> always does.
-      .filter((f) => f.itemGuid && f.feedGuid && (f.medium === undefined ? !f.enclosureUrl : f.medium.toLowerCase() === 'music'))
+      .filter((f) => {
+        const medium = displayMedium(f, parents);
+        return medium === undefined ? !f.enclosureUrl : medium.toLowerCase() === 'music';
+      })
       .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0)),
-    [favoriteEpisodes],
+    [favRows, parents],
   );
 
   // An empty library is a claim: make it only once the read has answered.
@@ -282,22 +292,22 @@ export function AddSongsSheet({ songs, onAdd, onClose, playlistTitle }: {
             )
           ) : (
             <ul className="divide-y divide-bone/15" aria-label="Saved songs">
-              {favSongs.map((f) => (
+              {favSongs.map((f) => { const image = displayImage(f, parents); return (
                 <SongRow
                   key={f.itemGuid}
                   title={f.title ?? 'Song'}
                   artist={f.podcastTitle}
-                  image={f.image}
+                  image={image}
                   preview={{ feedGuid: f.feedGuid!, itemGuid: f.itemGuid }}
                   added={has(f.feedGuid!, f.itemGuid)}
                   check={checks[f.itemGuid]}
                   onAdd={() => checkThenAdd(
                     { feedGuid: f.feedGuid!, itemGuid: f.itemGuid, ...(f.feedUrl ? { feedUrl: f.feedUrl } : {}) },
-                    { title: f.title ?? 'Song', ...(f.podcastTitle ? { artist: f.podcastTitle } : {}), ...(f.image ? { image: f.image } : {}) },
+                    { title: f.title ?? 'Song', ...(f.podcastTitle ? { artist: f.podcastTitle } : {}), ...(image ? { image } : {}) },
                     { enclosureUrl: f.enclosureUrl, feedUrl: f.feedUrl },
                   )}
                 />
-              ))}
+              ); })}
             </ul>
           )
         )}
