@@ -540,6 +540,24 @@ export function listKey(p: Pick<Podcast, 'id' | 'podcastGuid' | 'url'>): string 
 }
 
 /**
+ * Are `a` and `b` the same LIST — the show `episodeQueue` was written for, and
+ * the show the playing item plays under? `listKey`, plus a shared positive
+ * Podcast Index id for two records of one feed that spell the rest differently.
+ *
+ * "The playing track is a row of the queue" is not this question. One song is a
+ * row of its album AND of every playlist naming it, under the same id, so the
+ * fullscreen player's Album panel listed whichever of the two was opened last
+ * (full-code review 2026-11-19, `e2e:albumpanel`).
+ */
+export function sameList(
+  a: Pick<Podcast, 'id' | 'podcastGuid' | 'url'> | null | undefined,
+  b: Pick<Podcast, 'id' | 'podcastGuid' | 'url'> | null | undefined,
+): boolean {
+  if (!a || !b) return false;
+  return listKey(a) === listKey(b) || (a.id > 0 && a.id === b.id);
+}
+
+/**
  * Where a FORWARD step lands with REPEAT on: `nextPlayableIndexBy`, and past the
  * last playable row, the first playable one. Nothing else changes: a back step,
  * repeat off, and a `from` outside the list answer exactly what
