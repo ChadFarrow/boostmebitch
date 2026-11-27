@@ -110,6 +110,7 @@
     "e2e:queue": "node scripts/e2e-queue.mjs",
     "e2e:deadtrack": "node scripts/e2e-dead-track.mjs",
     "e2e:playbacklog": "node scripts/e2e-playback-log.mjs",
+    "e2e:bugreport": "node --experimental-strip-types scripts/e2e-bug-report.mjs",
     "e2e:speed": "node scripts/e2e-speed.mjs",
     "e2e:typeicons": "node scripts/e2e-search-type-icons.mjs",
     "e2e:restorecheck": "node scripts/e2e-restore-check.mjs",
