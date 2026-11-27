@@ -1493,7 +1493,7 @@ Two things about that boundary:
 - **An untimed file keeps its line breaks.** `parseTranscript`'s plain fallback collapsed every newline to a space, which prints a song as one paragraph; it now keeps them, turns `<br>` and a closing block tag into one, and collapses only spaces and tabs. That reaches a podcast's untimed transcript too.
 - `npm run e2e:lyrics` drives all of it: an album track on desktop and at 390×844, a track with none, a playlist row, HGH 154's first song on the show's clock (a tap included), a podcast episode still called "Transcript", and a plain-text file answered by CDP.
 - **Not covered:** the RSS fallback in `resolveOneSplit` (a song PI has not crawled) carries no lyrics, and a playlist row the StableKraft database answers (`lib/playlist-db.ts`) maps no transcript column. The second answered 0 of 100 rows on production on 2026-11-26.
-- **Where it sits on a phone is open.** At 390×844 the Lyrics tab is 1133 px down the player, under the album list; a karaoke view in place of the cover would touch the measured `30rem` cover reserve and waits for Chad.
+- **Where it sits on a phone is a tab, for now.** At 390×844 the Lyrics tab is 1133 px down the player, under the album list. Chad chose (2026-11-26) to keep the tab, try it on beta, then decide; the other option, a LYRICS button that swaps the cover for the lyrics, would touch the measured `30rem` cover reserve.
 
 ## Playback speed (`bmb:playback_rate`)
 
