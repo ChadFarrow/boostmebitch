@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { storage, subscribeFavPrivacy } from '@/lib/storage';
+import { getErrorMessage } from '@/lib/util';
 import { ModalShell } from './modal-shell';
 import { SelectMenu } from './select-menu';
 import {
@@ -79,17 +80,9 @@ function describe(mode: FavoritesPrivacy): string {
 const PRIVATE_CAVEAT =
   'Your pubkey, and roughly how many favorites you keep, stay visible either way.';
 
-/**
- * What to say when the move was REFUSED after the choice was recorded.
- *
- * The choice stays recorded on purpose. Reverting it would leave the NEXT
- * heart publishing under the mode the person just left — into plaintext, for
- * someone who chose private — while keeping it means every later cycle tries
- * the move again. So the sentence says both halves: what is saved, and that
- * nothing on Nostr has moved yet.
- */
-function moveRefused(reason: Extract<FavoritesCycleOutcome, { kind: 'refused' }>['reason'], button: string): string {
-  const why = reason === 'private-unreadable'
+/** Why a move was refused, in the person's words. */
+function refusalReason(reason: Extract<FavoritesCycleOutcome, { kind: 'refused' }>['reason']): string {
+  return reason === 'private-unreadable'
     ? 'your signer could not open or write the encrypted half'
     : reason === 'private-too-large'
       ? 'the encrypted half would be too large for your relays'
@@ -97,8 +90,25 @@ function moveRefused(reason: Extract<FavoritesCycleOutcome, { kind: 'refused' }>
         ? 'it would take more than half of the entries off the list, so it waits for your answer '
           + 'in the notice on the favorites page'
         : 'your relays did not confirm the list, so the app wrote nothing over it';
-  return `Your choice is saved on this device, but nothing on Nostr has moved yet: ${why}. `
-    + `The app tries again the next time it syncs your favorites. Press ${button} to try now.`;
+}
+
+/**
+ * What to say when the move was REFUSED (or threw) after the choice was
+ * recorded — and which of two states the dialog leaves behind.
+ *
+ * `putBack` names the mode the press was reverted to. A SWITCH is reverted:
+ * a refused cycle published nothing, and a stored mode the wire does not
+ * follow is the half-applied setting `recordFavoritesPrivacy` calls worse than
+ * a refused one — the control would read Private over a public list, and a
+ * later cycle may not fix it, because a stated `visibility` tag outranks the
+ * stored mode for every cycle but a press (`effectiveListMode`). The FIRST
+ * answer is kept (`putBack` null): there is no earlier choice to restore, and
+ * the person did answer the question.
+ */
+function moveRefused(why: string, button: string, putBack: FavoritesPrivacy | null): string {
+  return putBack
+    ? `Nothing was changed: ${why}. Your setting is still “${LABEL[putBack]}”. Press ${button} to try again.`
+    : `Your choice is saved on this device, but nothing on Nostr has moved yet: ${why}. Press ${button} to try now.`;
 }
 
 const GATE_REASON =
@@ -338,10 +348,14 @@ export function FavoritesPrivacyModal({
         // they are still on the relays — and 'off' then stops both `runHydrate`
         // and `requestFavoritesSync`, so NOTHING EVER RETRIES. Stopping here
         // leaves the mode unrecorded, which is what keeps the retry real.
+        //
+        // ONLY 'published' confirms a removal. 'unchanged' is not proof the
+        // entries are gone: the cycle plans from `trustedBaseline`, which is
+        // EMPTY when this device caches no entries while the raw baseline (what
+        // `published` counts) still names them — so it can remove nothing, find
+        // the bytes identical, and call that agreement.
         const out = await withdrawThisDevice(identity);
-        // 'unchanged' is a success: the relay already holds none of this
-        // device's entries. Only a refusal leaves them up there.
-        if (out.kind === 'refused') {
+        if (out.kind !== 'published') {
           setError(
             'Could not remove your entries from Nostr just now — your relays did not '
             + 'confirm the change, so nothing was altered and your setting is unchanged. '
@@ -358,6 +372,7 @@ export function FavoritesPrivacyModal({
       // never-chosen path where the mode is inferred from a shared event that
       // may not be able to say. Closing the dialog on that is the app telling
       // the user their privacy choice is recorded when it is not.
+      const previous = storage.favPrivacy.get(identity.npub);
       if (!recordFavoritesPrivacy(identity.npub, choice, identity)) {
         setError(
           'Could not save that choice on this device — storage is full or blocked. '
@@ -388,9 +403,23 @@ export function FavoritesPrivacyModal({
         // entries had moved — for a switch to private, while they stayed in
         // plaintext. `syncFavoritesNowDetailed` tells a refusal from "the relay
         // already holds this"; only the first keeps the dialog up.
-        const out = await syncFavoritesNowDetailed(identity, 'user-initiated', true);
+        const button = asking ? 'Save' : 'Switch';
+        // Put a switch back (see `moveRefused`); keep a first answer.
+        const putBack = () => (
+          !asking && previous && previous !== choice && recordFavoritesPrivacy(identity.npub, previous, identity)
+            ? previous : null
+        );
+        let out: FavoritesCycleOutcome;
+        try {
+          out = await syncFavoritesNowDetailed(identity, 'user-initiated', true);
+        } catch (e) {
+          // A throw (the signer said no, or something unexpected) published
+          // nothing either, so it leaves the same state as a refusal.
+          setError(moveRefused(getErrorMessage(e, 'something went wrong'), button, putBack()));
+          return;
+        }
         if (out.kind === 'refused') {
-          setError(moveRefused(out.reason, asking ? 'Save' : 'Switch'));
+          setError(moveRefused(refusalReason(out.reason), button, putBack()));
           return;
         }
         await hydrateFavorites(identity);

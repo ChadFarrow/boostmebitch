@@ -21,10 +21,13 @@
 //
 // What it pins:
 //   1. A refused switch to Private keeps the dialog open with the reason, the
-//      relay still holds the PUBLIC list, and the choice is saved on the device.
+//      relay still holds the PUBLIC list, and the setting is PUT BACK to Public
+//      (a stored mode the wire does not follow is a half-applied setting).
 //   2. Pressing Switch again once the relay accepts moves the entries and closes.
+//   2b. The reverse, on a list that now STATES its mode: a refused switch to
+//      Public keeps the private list and the Private setting.
 //   3. The first-favorite prompt (mode never chosen) holds its error too: it no
-//      longer closes itself over a refusal.
+//      longer closes itself over a refusal, and the answer is kept.
 // Against main, 1 and 3 fail: the dialog closes (measured, see the PR).
 
 import { createRelay } from './local-relay.mjs';
@@ -98,7 +101,9 @@ page.on(async (m) => {
     else if (fn === 'nip04.decrypt') out = await nip04.decrypt(sk, args[0], args[1]);
     else err = `no such method ${fn}`;
   } catch (e) { err = String(e?.message ?? e); }
-  await js(`window.__bmbResolve(${JSON.stringify(rid)}, ${JSON.stringify({ out, err })})`);
+  // Not awaited into the void: a reply in flight when the browser closes must
+  // not end the run as an unhandled rejection.
+  await js(`window.__bmbResolve(${JSON.stringify(rid)}, ${JSON.stringify({ out, err })})`).catch(() => {});
 });
 await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   (() => {
@@ -126,8 +131,16 @@ const pressInDialog = (label) => js(`(() => { const d = ${DIALOG}; const b = d &
 const modeControlSays = () => js(`(() => { const t = document.querySelector('button[aria-haspopup="menu"][aria-label^="Favorites are"]'); return t ? t.getAttribute('aria-label') : null; })()`);
 const storedMode = () => js(`localStorage.getItem('bmb:fav_privacy:' + ${JSON.stringify(npub)})`);
 const overflow = () => js(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
-// Settles when the dialog is gone OR shows an alert — whichever the app does.
-const settled = () => until(`(() => { const d = ${DIALOG}; return !d || !!d.querySelector('[role="alert"]')?.textContent.trim(); })()`, 45000, 250);
+// Press a dialog button and wait for the app's answer: the dialog gone, or an
+// alert up with the button no longer "working…". It first waits for the press
+// to TAKE (busy, or gone), or an alert left by the last press settles it at once.
+const WORKING = `[...(${DIALOG}?.querySelectorAll('button') ?? [])].some((b) => b.textContent.trim() === 'working…')`;
+const pressAndSettle = async (label) => {
+  const pressed = await pressInDialog(label);
+  await until(`!${DIALOG} || ${WORKING}`, 5000, 50);
+  await until(`(() => { const d = ${DIALOG}; return !d || (!${WORKING} && !!d.querySelector('[role="alert"]')?.textContent.trim()); })()`, 45000, 250);
+  return pressed;
+};
 
 const seedDevice = () => js(`(() => { localStorage.clear();
   localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
@@ -163,21 +176,20 @@ await until(`!![...document.querySelectorAll('[role="menuitemradio"]')].find((x)
 await js(`(() => { const b = [...document.querySelectorAll('[role="menuitemradio"]')].find((x) => x.textContent.trim() === 'Private'); if (b && !b.disabled) b.click(); return 1; })()`);
 await until(`!!${DIALOG}`, 5000);
 t.equal('the switch dialog is up', (await dialogState())?.heading, 'Switch to Private?');
-t.ok('Switch is pressed', await pressInDialog('Switch'));
-await settled();
+t.ok('Switch is pressed', await pressAndSettle('Switch'));
 const refused = await dialogState();
 t.ok('the dialog is STILL OPEN after the refusal', refused !== null, 'it closed as if the move were done');
-t.ok('...naming what happened', /nothing on Nostr has moved yet/.test(refused?.alert ?? ''), refused?.alert);
-t.ok('...and how to retry', /Press Switch to try now/.test(refused?.alert ?? ''), refused?.alert);
+t.ok('...naming what happened', /^Nothing was changed: your relays did not confirm/.test(refused?.alert ?? ''), refused?.alert);
+t.ok('...the setting it left in place, and how to retry', /still “Public”\. Press Switch to try again/.test(refused?.alert ?? ''), refused?.alert);
 t.equal('the relay still holds the PUBLIC list, untouched', latest()?.id, beforeRefused?.id);
-t.equal('the choice is saved on this device', await storedMode(), 'private');
+t.equal('the setting is put back to Public', await storedMode(), 'public');
+t.equal('...and the control says so', await modeControlSays(), 'Favorites are: Public');
 if (MOBILE) t.equal('no sideways overflow with the error up', await overflow(), 0);
 
 // ---------------------------------------------------------------------------
 console.log('\n--- 2. Switch again once the relay accepts: the entries move, the dialog closes ---');
 refusing = false;
-t.ok('Switch is pressed again', await pressInDialog('Switch'));
-await settled();
+t.ok('Switch is pressed again', await pressAndSettle('Switch'));
 t.equal('the dialog closed', await dialogState(), null);
 const moved = latest();
 t.ok('a new list reached the relay', moved && moved.id !== beforeRefused?.id);
@@ -186,6 +198,24 @@ let priv = [];
 try { priv = JSON.parse(nip44.v2.decrypt(moved?.content ?? '', convo)); } catch { /* asserted below */ }
 t.ok('the album is in the encrypted half', priv.some((x) => x[0] === 'i' && x[1] === `podcast:guid:${ALBUM}`), JSON.stringify(priv));
 t.equal('the control shows Private', await modeControlSays(), 'Favorites are: Private');
+t.equal('the list now STATES its mode', moved?.tags.find((x) => x[0] === 'visibility')?.[1], 'private');
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 2b. the reverse, refused: a switch to Public keeps the private list and the setting ---');
+refusing = true;
+await js(`(() => { const t = document.querySelector('button[aria-haspopup="menu"][aria-label^="Favorites are"]'); if (t) t.click(); return 1; })()`);
+await until(`!![...document.querySelectorAll('[role="menuitemradio"]')].find((x) => x.textContent.trim() === 'Public')`, 5000);
+await js(`(() => { const b = [...document.querySelectorAll('[role="menuitemradio"]')].find((x) => x.textContent.trim() === 'Public'); if (b && !b.disabled) b.click(); return 1; })()`);
+await until(`!!${DIALOG}`, 5000);
+t.equal('the switch dialog is up', (await dialogState())?.heading, 'Switch to Public?');
+t.ok('Switch is pressed', await pressAndSettle('Switch'));
+const back = await dialogState();
+t.ok('the dialog is still open', back !== null);
+t.ok('...saying the setting is still Private', /^Nothing was changed: .*still “Private”\./.test(back?.alert ?? ''), back?.alert);
+t.equal('the relay still holds the private list', latest()?.id, moved?.id);
+t.equal('the setting is still Private', await storedMode(), 'private');
+t.ok('Cancel closes it', await pressInDialog('Cancel') && await until(`!${DIALOG}`, 5000));
+refusing = false;
 
 // ---------------------------------------------------------------------------
 console.log('\n--- 3. the first-favorite prompt holds its error too ---');
@@ -222,13 +252,13 @@ refusing = true;
 console.log(`     heart: ${await js(`(${HEART}).getAttribute('aria-label') + ' pressed=' + (${HEART}).getAttribute('aria-pressed')`)}`);
 await js(`(${HEART}).click()`);
 t.ok('the first-favorite question opens', await until(`/Where should your favorites live/.test(${DIALOG}?.textContent ?? '')`, 20000), JSON.stringify(await dialogState()));
-t.ok('Save is pressed (Public is the default choice)', await pressInDialog('Save'));
-for (let i = 0; i < 40; i++) { const d = await dialogState(); if (process.env.DEBUG) console.log(`     [dialog ${i}] ${JSON.stringify(d)}`); if (!d || d.alert) break; await wait(500); }
+t.ok('Save is pressed (Public is the default choice)', await pressAndSettle('Save'));
 await wait(1500); // the prompt's close-on-mode effect runs after the hold falls
 const held = await dialogState();
 t.ok('the prompt is STILL OPEN after the refusal', held !== null, 'it closed itself over the error');
 t.ok('...naming what happened', /nothing on Nostr has moved yet/.test(held?.alert ?? ''), held?.alert);
 t.ok('...and how to retry', /Press Save to try now/.test(held?.alert ?? ''), held?.alert);
+t.equal('...and the answer is kept (there is no earlier choice to restore)', await storedMode(), 'public');
 t.equal('the relay still holds the two-half list', latest()?.id, both.id);
 t.ok('Cancel closes it', await pressInDialog('Cancel') && await until(`!${DIALOG}`, 5000));
 refusing = false;
