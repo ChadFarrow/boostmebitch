@@ -122,6 +122,7 @@
     "e2e:opml": "node scripts/e2e-opml.mjs",
     "e2e:favbuttons": "node scripts/e2e-fav-buttons.mjs",
     "e2e:favparentmedium": "node scripts/e2e-fav-parent-medium.mjs",
+    "e2e:addsongsart": "node scripts/e2e-add-songs-art.mjs",
     "e2e:shuffle": "node scripts/e2e-shuffle.mjs",
     "e2e:demuplay": "node scripts/e2e-demu-play.mjs",
     "e2e:demuholiday": "node scripts/e2e-demu-holiday.mjs",
