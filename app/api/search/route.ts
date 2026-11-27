@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { searchPodcasts, searchMusicPodcasts, searchPlaylistFeeds, getPodcast, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
+import { searchPodcasts, searchMusicPodcasts, searchPlaylistFeeds, getPodcast, getPodcastByDeclaredGuid, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
 import { searchCuratedPlaylists } from '@/lib/curated-roster';
 import type { CuratedHits } from '@/lib/curated-roster';
 import {
@@ -211,6 +211,12 @@ export async function GET(req: Request) {
         return answer([piHit], 1, 'all');
       }
       const parsed = await getFeedFromRss(query).catch(() => null);
+      // PI answered "no such URL", but it can hold the feed under the URL with
+      // whitespace pasted into it — see `getPodcastByDeclaredGuid`.
+      if (!piHit && !piError && parsed) {
+        const held = await getPodcastByDeclaredGuid(query).catch(() => null);
+        if (held) return answer([mergeRssOverPi(held, parsed.podcast)], 1, 'all');
+      }
       if (piHit && parsed) {
         return answer([mergeRssOverPi(piHit, parsed.podcast)], 1, 'all');
       }
