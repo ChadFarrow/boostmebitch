@@ -331,6 +331,22 @@ trigger is chosen to keep it cheap and to keep it away from the dev loop:
 - **The switches are re-read at flush time, not captured at queue time.** A
   listener who turns either one off mid-listen means "stop", not "finish what
   was queued".
+- **A timeout stops the CYCLE, not only the waiting — and the address stays held
+  until the cycle settles.** The flush caps each cycle at
+  `SUMMARY_PUBLISH_TIMEOUT_MS` so one hung relay or signer cannot stall the batch.
+  Until 2026-11-26 that cap only stopped the flush waiting: the abandoned
+  `updateValuePlaybackSummary` could still sign when its signer came back —
+  beside a second cycle for the same address that the next flush had started,
+  or after a sign-out (full-code review, 2026-11-19, finding 17). Now the
+  timeout aborts the cycle's `AbortSignal`, which the cycle checks before each
+  read and passes to `signAndPublish`, so a signature that arrives after it is
+  dropped unpublished. `createAddressGate` (`value-playback-summary.ts`,
+  `check:vpsummary`) holds the address from the cycle's start until it
+  SETTLES; a flush that finds it held queues the id again for when that cycle
+  ends, unless the user signed out or switched account since.
+  `cancelQueuedSummaries` (sign-out) aborts every running cycle too.
+  `npm run e2e:vpsummary` drives the shipping cycle against local relays,
+  including an abort that lands while the signer is still deciding.
 
 `maybeQueueSummaries` is total by construction for a harder reason than
 `maybePublishReceipt` is: it is reached from `releaseContext`, which runs inside

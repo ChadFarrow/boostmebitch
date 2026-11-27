@@ -74,7 +74,16 @@ function matches(filter, e) {
  * `log` defaults to `console.log` for the CLI and is passed `null` by the e2e,
  * whose own output is the report.
  */
-export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, log = console.log, verbose = false } = {}) {
+/**
+ * `capAt` (opt-in, default off): answer a REQ like a real relay does — at most
+ * `min(filter.limit, capAt)` events, newest first. Off, `limit` is ignored and
+ * every match comes back, which the existing e2e runs were written against.
+ * A real relay caps a REQ at a number of its own choosing and says nothing,
+ * so a paging walk that cannot fail against an uncapped fixture is untested
+ * (e2e:vpsummary). The cap applies to the whole answer, so it models
+ * single-filter REQs.
+ */
+export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, log = console.log, verbose = false, capAt = null } = {}) {
   /** id -> event */
   const events = new Map();
   const say = log ?? (() => {});
@@ -141,9 +150,11 @@ export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, l
       if (verb === 'REQ') {
         const sub = msg[1];
         const filters = msg.slice(2);
-        const hits = [...events.values()]
+        const all = [...events.values()]
           .filter((e) => filters.some((f) => matches(f, e)))
           .sort((a, b) => b.created_at - a.created_at);
+        const limits = filters.map((f) => (Number.isInteger(f.limit) ? f.limit : Infinity));
+        const hits = capAt == null ? all : all.slice(0, Math.min(capAt, Math.max(...limits)));
         for (const e of hits) ws.send(JSON.stringify(['EVENT', sub, e]));
         ws.send(JSON.stringify(['EOSE', sub]));
         // Registered AFTER the stored hits and the EOSE, so the subscription

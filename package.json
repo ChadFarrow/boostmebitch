@@ -102,6 +102,7 @@
     "e2e:twosigners": "node scripts/e2e-two-signers.mjs",
     "e2e:mentions": "node --experimental-strip-types scripts/e2e-mentions.mjs",
     "e2e:readtrust": "node --experimental-strip-types scripts/e2e-read-trust.mjs",
+    "e2e:vpsummary": "node --experimental-strip-types scripts/e2e-vp-summary.mjs",
     "e2e:playlist": "node scripts/e2e-playlist.mjs",
     "e2e:yield": "node scripts/e2e-yield.mjs",
     "e2e:launcher": "node scripts/e2e-launcher.mjs",
