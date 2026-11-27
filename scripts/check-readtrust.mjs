@@ -37,7 +37,10 @@
 // a socket opens. That needs a scripted local relay that hangs, refuses, and
 // serves someone else's event; a correct relay will not do any of those on
 // request, so it can't be reproduced against the real network. This covers the
-// arithmetic and the predicate, which is the half that is pure.
+// arithmetic and the predicate, which is the half that is pure. The wiring is
+// `npm run e2e:readtrust` (scripts/e2e-read-trust.mjs), written 2026-11-26 when
+// it turned out to be wrong: a relay that connected and stayed silent was
+// dropped from `reached` by our own close at the deadline.
 //
 // `--experimental-strip-types` lets this .mjs import the real .ts module. That
 // is the whole point: a reimplemented copy stays green while the shipping rule
