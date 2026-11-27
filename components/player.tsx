@@ -1259,8 +1259,15 @@ export function Player() {
     ).then((r) => {
       if (cancelled) return;
       const app = useApp.getState();
-      if (r.read) app.refreshCurrentValue(valueGuid, r.value, r.valueTimeSplits);
-      else app.markCurrentValueUnread(valueGuid);
+      if (r.read) {
+        app.refreshCurrentValue(valueGuid, r.value, r.valueTimeSplits);
+        // The same read names a video rendition, if the item has one: an
+        // episode Podcast Index built (a note, a favorite, NEW EPISODES, a
+        // playlist track) never read its feed, so this is where 📺 Video
+        // comes from. The audio did not wait for it, and its landing does not
+        // re-source the element (the source effect keys on primitives).
+        app.refreshCurrentAlternates(valueGuid, r.alternateEnclosures);
+      } else app.markCurrentValueUnread(valueGuid);
     });
     return () => { cancelled = true; };
   }, [valueUnread, valueGuid, valueFeedGuid, valueFeedId, valueMedium]);

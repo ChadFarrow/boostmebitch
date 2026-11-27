@@ -1,6 +1,6 @@
 'use client';
 import { create } from 'zustand';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, HistoryItem, QueueItem, ValueBlock, ValueTimeSplit } from './types';
+import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, HistoryItem, QueueItem, ValueBlock, ValueTimeSplit, AlternateEnclosure } from './types';
 import type { NostrIdentity, PublishReason } from './nostr';
 
 /** Why `favoritesSync` is 'degraded' — see the field for the extra value. */
@@ -87,6 +87,12 @@ interface AppState {
   // dropped; `payableValue` reads `episode.value` first, so the stale copy
   // outranks the feed's own.
   markCurrentValueUnread: (guid: string) => void;
+  /**
+   * The playing item's `<podcast:alternateEnclosure>` renditions, read from its
+   * feed at play time (`/api/item-value`). Only fills a field that is ABSENT:
+   * an episode built from the feed already carries the feed's own answer.
+   */
+  refreshCurrentAlternates: (guid: string, alts: AlternateEnclosure[] | undefined) => void;
   refreshCurrentValue: (guid: string, value: ValueBlock | null | undefined, vts: ValueTimeSplit[] | undefined) => void;
   /** `complete` is false while the list has rows still to load — a playlist
    *  page with a next page. REPEAT wraps only a complete list: wrapping a
@@ -998,6 +1004,12 @@ export const useApp = create<AppState>((set, get) => ({
       if (value !== undefined && ep.value !== value) { ep.value = value; changed = true; }
       if (vts !== undefined && ep.valueTimeSplits !== vts) { ep.valueTimeSplits = vts; changed = true; }
       return changed ? { current: { ...s.current, episode: ep } } : {};
+    }),
+  refreshCurrentAlternates: (guid, alts) =>
+    set((s) => {
+      if (!s.current || !guid || s.current.episode.guid !== guid) return {};
+      if (!alts?.length || s.current.episode.alternateEnclosures !== undefined) return {};
+      return { current: { ...s.current, episode: { ...s.current.episode, alternateEnclosures: alts } } };
     }),
   // The feed did not answer, so BOOST says that rather than "no value block".
   markCurrentValueUnread: (guid) =>

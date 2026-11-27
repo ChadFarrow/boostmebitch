@@ -227,6 +227,24 @@ for (const v of VECTORS) {
   } else {
     ok('lib/pi.ts reads a live item\'s alternateEnclosure and keeps it on the Episode');
   }
+
+  // The same tag for an episode Podcast Index BUILT (a note, a favorite, NEW
+  // EPISODES, a playlist track): PI does not index it, so the play-time
+  // `/api/item-value` read is the only one that episode gets (docs/feeds.md).
+  // Three hops, each one a way for 📺 Video to never appear.
+  const payment = piSrc.slice(piSrc.indexOf('export async function getItemPaymentFromRss('), piSrc.indexOf('export interface PlaylistChannel'));
+  const playerSrc = await (await import('node:fs/promises')).readFile('components/player.tsx', 'utf8');
+  const itemValueSrc = await (await import('node:fs/promises')).readFile('lib/use-item-value.ts', 'utf8');
+  if (!/alternateEnclosures:\s*parseAlternateEnclosures\(item\.inner\)/.test(payment)) {
+    fail('lib/pi.ts getItemPaymentFromRss no longer returns the item\'s alternateEnclosure —\n'
+      + '          an episode Podcast Index built never offers 📺 Video.');
+  } else if (!/refreshCurrentAlternates\(valueGuid,\s*r\.alternateEnclosures\)/.test(playerSrc)) {
+    fail('components/player.tsx no longer writes the play-time read\'s alternates to `current`.');
+  } else if (!/alternateEnclosures\s*\}\s*=\s*answer\.payment/.test(itemValueSrc)) {
+    fail('lib/use-item-value.ts drops the alternates — PLAY on the episode page offers no 📺 Video.');
+  } else {
+    ok('the play-time item read carries alternateEnclosure to the player and the episode page');
+  }
 }
 
 // ── `feedLiveItems`: the SHOW PAGE's live list (`/api/feed`) ────────────────

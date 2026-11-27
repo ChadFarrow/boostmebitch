@@ -792,4 +792,18 @@ export interface LiveShow {
  */
 export type ItemPayment =
   | { read: false }
-  | { read: true; value: ValueBlock | null; valueTimeSplits: ValueTimeSplit[] };
+  | {
+      read: true;
+      value: ValueBlock | null;
+      valueTimeSplits: ValueTimeSplit[];
+      /**
+       * The item's `<podcast:alternateEnclosure>` renditions, from the same
+       * read. Not a payment fact: it rides along because an episode Podcast
+       * Index built never read its feed, and this is the one read such an
+       * episode gets when it PLAYS (Chad, 2026-11-26: "play-time with audio
+       * loading first"). `<Player>` writes it to `current`, and
+       * `<VideoToggle>` offers 📺 Video once it lands. Absent when the item
+       * names none or is not in the feed.
+       */
+      alternateEnclosures?: AlternateEnclosure[];
+    };

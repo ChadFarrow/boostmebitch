@@ -35,6 +35,16 @@ export function useItemValue(
 
   return useMemo(() => {
     if (!episode || !unread || answer?.key !== key || !answer?.payment.read) return episode;
-    return { ...episode, value: answer.payment.value, valueTimeSplits: answer.payment.valueTimeSplits };
+    const { value, valueTimeSplits, alternateEnclosures } = answer.payment;
+    // PLAY on this page hands `<Player>` THIS episode, whose value is now read,
+    // so `<Player>` asks no feed and this read is the item's only one. It keeps
+    // the video rendition too, or 📺 Video never appears for a played episode
+    // that Podcast Index built (`ItemPayment.alternateEnclosures`).
+    return {
+      ...episode,
+      value,
+      valueTimeSplits,
+      ...(episode.alternateEnclosures === undefined && alternateEnclosures?.length ? { alternateEnclosures } : {}),
+    };
   }, [episode, unread, key, answer]);
 }
