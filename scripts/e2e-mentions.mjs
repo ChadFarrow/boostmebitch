@@ -539,6 +539,51 @@ console.log('\n--- 5b. A boost that paid a TRACK names it, in the body and the t
   check('worst case: body within the limit', worst.content.length <= LIMIT, true);
   check('...while the track tags still ride', worst.tags.filter((t) => t[0] === 'i').length, 4);
 
+  // The route's OWN rules, not a mirror of them: every template the builder
+  // makes must pass validateBoostTemplate (lib/site-sign-template.ts), which
+  // both site-key routes call. A mirror is how a long `i` tag item reached the
+  // route: the item guid is feed-chosen, has no maximum, and one item past
+  // MAX_TAG_ITEM_LEN refused the WHOLE note.
+  const { validateBoostTemplate } = await import('../lib/site-sign-template.ts');
+  const SITE_HEX = nip19.decode(BRAND.siteNpub).data;
+  const routeTakes = (t) => {
+    try { validateBoostTemplate(t, SITE_HEX, { checkCreatedAt: false }); return true; } catch (e) { return e.message; }
+  };
+  check('the route takes the plain note', routeTakes(plain), true);
+  check('the route takes the worst case', routeTakes(worst), true);
+  const hugeGuid = `https://example.com/${'h'.repeat(700)}`;
+  const longItem = await capture({
+    ...base, episode: { ...episode, guid: hugeGuid },
+    track: { split: { title: 'Song', artist: 'Artist',
+      remoteItem: { feedGuid: 'f'.repeat(600), itemGuid: 'g'.repeat(600) } }, results: [{ ok: true, sats: 1 }] },
+  });
+  check('an item guid past 512: the route still takes the note', routeTakes(longItem), true);
+  check('...every tag item is within 512', longItem.tags.every((t) => t.every((x) => x.length <= 512)), true);
+  check('...the long item\'s own `i` tag is left out, not cut',
+    longItem.tags.some((t) => t[0] === 'i' && t[1].includes('hhhh')), false);
+  check('...and so is its `k`', longItem.tags.some((t) => t[0] === 'k' && t[1] === 'podcast:item:guid'), false);
+  check('...while the show\'s `i` tag stays',
+    longItem.tags.some((t) => t[0] === 'i' && t[1] === `podcast:guid:${podcast.podcastGuid}`), true);
+  check('...and the body still names the song', longItem.content.includes('Song'), true);
+
+  // The `imeta` is the WHOLE tag, not its first entry. NIP-92 makes each
+  // element a `<key> <value>` pair a client reads, so the banner first and a
+  // stranger's host after it is a signed instruction, under the site's name,
+  // to load that host from every reader's device.
+  const bannerTag = plain.tags.find((t) => t[0] === 'imeta');
+  check('the plain note carries the banner `imeta`', bannerTag?.length, 4);
+  const EVIL = 'https://evil.example/x.png';
+  for (const [label, bad] of [
+    ['a fallback after the banner', [...bannerTag, `fallback ${EVIL}`]],
+    ['a second url in place of dim', ['imeta', bannerTag[1], 'm image/png', `url ${EVIL}`]],
+    ['a thumb in place of m', ['imeta', bannerTag[1], `thumb ${EVIL}`, 'dim 1200x300']],
+    ['a key hidden after a space in the banner url', ['imeta', `${bannerTag[1]} fallback ${EVIL}`, 'm image/png', 'dim 1200x300']],
+    ['another host as the url', ['imeta', `url ${EVIL}`, 'm image/png', 'dim 1200x300']],
+  ]) {
+    const t = { ...plain, tags: plain.tags.map((x) => (x[0] === 'imeta' ? bad : x)) };
+    check(`the route refuses an imeta with ${label}`, routeTakes(t), 'invalid imeta tag');
+  }
+
   const fill = (n, tag) => { const h = `https://example.com/${tag}/`; return h + 'x'.repeat(n - h.length); };
   // The receipt's hints are relays the user writes to, and a real one can be
   // long: filter.nostr.wine puts the npub and a query in the URL. Three of

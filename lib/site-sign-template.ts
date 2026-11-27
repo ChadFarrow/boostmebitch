@@ -108,6 +108,27 @@ const MAX_P_TAGS = 8;
 const MAX_R_TAGS = 2;
 const BANNER_PREFIX = `url ${BRAND.origin}/api/og/boost.png?`;
 
+// The WHOLE `imeta` tag, not just its first entry. NIP-92 makes every element
+// a `<key> <value>` pair, and a client reads them all: an `imeta` whose first
+// entry was this site's banner could still carry `fallback https://evil/…`, a
+// second `url`, or a `thumb`/`image` pointing anywhere, as elements 2 to 7 —
+// a signed instruction, under the site's NIP-05-verified name, to load an
+// attacker-chosen host from every reader's device, which is the one thing the
+// `url` rule exists to refuse. `buildBoostNoteTemplate` writes exactly one
+// shape (`['imeta', 'url <banner>', 'm image/png', 'dim 1200x300']`, since the
+// banner replaced the cover art), so the rule is that shape and nothing else.
+// The URL may hold no whitespace: a client splitting an entry on its spaces
+// would read a second key out of it. `URLSearchParams` encodes a space as `+`,
+// so a real banner never has one.
+const BANNER_IMETA_REST = ['m image/png', 'dim 1200x300'];
+function bannerImetaOk(imeta: string[]): boolean {
+  const url = imeta[1] ?? '';
+  return imeta.length === 2 + BANNER_IMETA_REST.length
+    && url.startsWith(BANNER_PREFIX)
+    && !/\s/.test(url.slice('url '.length))
+    && BANNER_IMETA_REST.every((entry, i) => imeta[i + 2] === entry);
+}
+
 // Bound the signing oracle: this endpoint must only ever sign boost-shaped
 // kind:1 notes as the site, never arbitrary events (DMs, kind:0 hijack, etc.).
 export function validateBoostTemplate(
@@ -154,9 +175,7 @@ export function validateBoostTemplate(
     throw new Error('invalid r tag');
   }
   const imeta = strTags.find((tag) => tag[0] === 'imeta');
-  if (imeta && !(imeta[1] ?? '').startsWith(BANNER_PREFIX)) {
-    throw new Error('invalid imeta tag');
-  }
+  if (imeta && !bannerImetaOk(imeta)) throw new Error('invalid imeta tag');
   const qTags = strTags.filter((tag) => tag[0] === 'q');
   if (qTags.length > MAX_Q_TAGS) throw new Error('too many q tags');
   for (const q of qTags) {
