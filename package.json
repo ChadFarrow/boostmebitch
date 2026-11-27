@@ -133,6 +133,7 @@
     "e2e:androidkeeper": "node scripts/e2e-android-keeper.mjs",
     "e2e:nwcrelay": "node scripts/e2e-nwc-relay.mjs",
     "e2e:walletrail": "node scripts/e2e-wallet-balance-rail.mjs",
+    "e2e:explorerzaps": "node scripts/e2e-explorer-zaps.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:history": "node scripts/e2e-history.mjs",
     "e2e:boostdefault": "node scripts/e2e-boost-default.mjs",
