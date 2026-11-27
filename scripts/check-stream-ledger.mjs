@@ -1224,6 +1224,24 @@ console.log('\n  naive replay (each vector must fail against the obvious version
   console.log(`        ${proved} vector(s) proved, ${exempt} exempted as must-still-work`);
 }
 
+// The other half of the verdict is what FEEDS it. `/api/live-value` answered a
+// feed it could not read with `liveStatus: 'ended'` (its items came back []),
+// so two polls during a host's outage ended a broadcast that was still on air.
+// The route cannot load here (next/server), so this reads its source: the
+// detailed read, and a non-200 answer on `!ok` BEFORE the `'ended'` answer.
+{
+  const { readFileSync } = await import('node:fs');
+  const route = readFileSync(new URL('../app/api/live-value/route.ts', import.meta.url), 'utf8');
+  const unread = route.search(/if \(!ok\)\s*\{\s*return NextResponse\.json\([^;]*status: 5\d\d/);
+  const ended = route.search(/NextResponse\.json\(\{[^}]*liveStatus: 'ended'/);
+  if (!/getLiveItemsFromRssDetailed\(/.test(route) || unread < 0 || ended < 0 || unread > ended) {
+    console.error("  FAIL app/api/live-value/route.ts must answer an UNREADABLE feed with a 5xx, never liveStatus 'ended'");
+    failures++;
+  } else {
+    console.log("  ok    /api/live-value answers an unreadable feed with a 5xx, not 'ended'");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // failedRunIsRefundable — may a settle that paid nobody put its sats back?
 // A wallet that never ANSWERED may have paid; refunding it pays the same
