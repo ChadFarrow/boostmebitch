@@ -46,6 +46,7 @@
     "e2e:notezap": "node scripts/e2e-note-zap.mjs",
     "e2e:iosapp": "node scripts/e2e-ios-app.mjs",
     "e2e:spark": "node scripts/e2e-spark-wallet.mjs",
+    "e2e:sparkfailure": "node scripts/e2e-spark-failure.mjs",
     "e2e:pairing": "node scripts/e2e-pairing-relays.mjs",
     "e2e:playlistpings": "node scripts/e2e-playlist-pings.mjs",
     "e2e:playlistarchive": "node scripts/e2e-playlist-archive.mjs",

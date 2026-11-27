@@ -2,10 +2,10 @@
 
 import { useWalletChange } from '@/lib/use-wallet-change';
 import dynamic from 'next/dynamic';
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { ModalShell } from './modal-shell';
 import { hasNwc } from '@/lib/v4v/nwc-state';
-import { hasSpark, sparkAvailable } from '@/lib/v4v/spark';
+import { hasSpark, sparkAvailable, sparkLastFailure, subscribeSparkFailure } from '@/lib/v4v/spark';
 import { hasWebln, isWeblnEnabled, weblnEnable } from '@/lib/v4v/webln';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
@@ -89,6 +89,9 @@ interface Props {
 
 export function WalletModal({ onClose }: Props) {
   const identity = useApp((s) => s.identity);
+  // A Spark wallet the page-load restore could not open: the picker is the
+  // first thing the person sees, so its row says so and the form says why (#304).
+  const sparkDidNotOpen = useSyncExternalStore(subscribeSparkFailure, sparkLastFailure, () => null)?.op === 'connect';
   const backupWithheld = useApp((s) => s.walletBackupWithheld);
   const [view, setView] = useState<WalletView>(firstView);
   // Sync view when wallet state changes externally (e.g. auto-restore completes
@@ -325,6 +328,9 @@ export function WalletModal({ onClose }: Props) {
                   {icon} {title}
                   {needsNostr && (
                     <span className="ml-2 text-[11px] text-nostr">◆ Sign in with Nostr</span>
+                  )}
+                  {rail === 'spark' && !needsNostr && !connected && sparkDidNotOpen && (
+                    <span className="ml-2 text-[11px] text-nostr" data-spark-did-not-open>did not open · tap for why</span>
                   )}
                   {switching && activeRail === rail && (
                     <span className="ml-2 text-[11px] text-bolt">(active)</span>
