@@ -575,6 +575,7 @@ The Preview environment already holds the rest.
 | `NOSTR_INDEX_URL`, `NOSTR_INDEX_KEY` | beta reads like production; the app sends no write to the index |
 | `PLAYLIST_DB_URL`, `PLAYLIST_DB_CA` | same; `lib/playlist-db.ts` is read-only |
 | `COMMUNITY_DB_URL`, `NEXT_PUBLIC_COMMUNITY_PLAYLISTS`, `ADMIN_NPUBS` (and `COMMUNITY_DB_CA`) | community playlists on the REAL store, the one production reads; see "Community playlists database" below |
+| `NEXT_PUBLIC_IRC_GATEWAY_URL` | the IRC chat beside an opted-in live show (`docs/irc.md`), set on beta since 2026-11-21 and on Production of both projects since 2026-11-26; the chat leaves beta with #646 (Chad, 2026-11-27). The gateway's `wss://` address on Chad's box (thelounge-candr). Unset or not `wss://`: no chat anywhere. `NEXT_PUBLIC_`, so a change needs a rebuild, and each origin that serves it (both brands' sites and beta) must be in the gateway's `[allowed_origins]` |
 
 The `boostmebuddy` project also builds `beta` as an ordinary preview, as it does
 every branch. That preview has no domain, and it is harmless.

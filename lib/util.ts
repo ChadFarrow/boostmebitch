@@ -438,6 +438,48 @@ export function ownShowOf(episode: Episode, podcast: Podcast): Podcast {
   };
 }
 
+/**
+ * How long after the page hid a refresh may bring back the LIVE item that was
+ * in the player: the IRC chat's hold (300 s), so the stream and the chat come
+ * back together, and a tab left for longer opens as a fresh load does.
+ */
+export const LIVE_REFRESH_WINDOW_MS = 300_000;
+
+/**
+ * What a tab keeps of its live item across a refresh (`bmb:live_refresh`,
+ * sessionStorage; docs/ui.md "A refresh picks a live stream back up"). The
+ * feed id and the item guid ONLY: the reload reads the item from its feed
+ * again, because a copy from disk names no payee and its live status is old.
+ */
+export interface LiveRefresh {
+  feedId: number;
+  guid: string;
+  /** It was playing when the page hid, so it starts again by itself. */
+  playing: boolean;
+  /** The full-screen player was open. */
+  expanded: boolean;
+  /** When the page hid (ms). */
+  at: number;
+}
+
+/**
+ * A saved live record read back, or null. Storage is input: a field of the
+ * wrong shape refuses it, `playing`/`expanded` are true only when they are
+ * `true`, and a record older than {@link LIVE_REFRESH_WINDOW_MS} (or from the
+ * future) is nothing, so a tab refreshed a day later does not reopen a
+ * broadcast long over. Pinned by `check:queue`.
+ */
+export function readLiveRefresh(raw: unknown, now: number): LiveRefresh | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const v = raw as Record<string, unknown>;
+  if (typeof v.feedId !== 'number' || !Number.isInteger(v.feedId) || v.feedId <= 0) return null;
+  if (typeof v.guid !== 'string' || !v.guid || v.guid.length > 2048) return null;
+  if (typeof v.at !== 'number' || !Number.isFinite(v.at)) return null;
+  const age = now - v.at;
+  if (age < 0 || age > LIVE_REFRESH_WINDOW_MS) return null;
+  return { feedId: v.feedId, guid: v.guid, playing: v.playing === true, expanded: v.expanded === true, at: v.at };
+}
+
 export function trimForQueue(e: Episode): Episode {
   // `description` and `contentEncoded` are the two large fields and the two
   // the queue LIST never renders. Everything else — enclosure, art, duration,

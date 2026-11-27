@@ -61,6 +61,21 @@ interface AppState {
    *  saved place. For a surface that opens the now-playing screen on an item
    *  (a HISTORY row) without making the press an autoplay. */
   cue: (episode: Episode, podcast: Podcast) => void;
+  /**
+   * A refresh picks a LIVE item back up (docs/ui.md): the item as its feed
+   * reads it now, at the live edge, playing if it played before the refresh,
+   * with the full-screen player as it was. `autoResumeKey` marks the start as
+   * the page's own, so a browser's refusal shows "tap to resume".
+   */
+  restoreLive: (episode: Episode, podcast: Podcast, o: { playing: boolean; expanded: boolean }) => void;
+  /** The item whose start after a refresh was the page's own, until it plays or is refused. */
+  autoResumeKey: string | null;
+  /** The item whose start after a refresh the browser refused: `<LiveEdge>` offers TAP TO RESUME. */
+  liveResumeBlocked: string | null;
+  /** `play()` was refused (`NotAllowedError`) for `key`. Marks it blocked only when that start was the page's own. */
+  noteAutoplayRefused: (key: string) => void;
+  /** The element plays: the page's own start is over, refused or not. */
+  clearAutoResume: () => void;
   togglePlay: () => void;
   setPlaying: (b: boolean) => void;
   setPosition: (s: number) => void;
@@ -986,6 +1001,25 @@ export const useApp = create<AppState>((set, get) => ({
       videoMode: false,
       shuffle: null,
     }),
+  restoreLive: (episode, podcast, o) =>
+    set({
+      current: { episode, podcast },
+      isPlaying: o.playing,
+      // A live item has no place to come back to: it starts at the live edge.
+      positionSec: 0,
+      videoMode: false,
+      shuffle: null,
+      previewKey: null,
+      playerExpanded: o.expanded,
+      autoResumeKey: o.playing ? epKey(episode) : null,
+      liveResumeBlocked: null,
+    }),
+  autoResumeKey: null,
+  liveResumeBlocked: null,
+  noteAutoplayRefused: (key) =>
+    set((s) => (s.autoResumeKey === key ? { autoResumeKey: null, liveResumeBlocked: key } : {})),
+  clearAutoResume: () =>
+    set((s) => (s.autoResumeKey || s.liveResumeBlocked ? { autoResumeKey: null, liveResumeBlocked: null } : {})),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
   setPlaying: (b) => set({ isPlaying: b }),
   setPosition: (s) => set({ positionSec: s }),

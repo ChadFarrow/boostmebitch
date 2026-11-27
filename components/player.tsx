@@ -32,7 +32,7 @@ import { downloadManager } from '@/lib/downloads/download-manager';
 import { isLikelyIOS } from '@/lib/nostr';
 import type { Episode, Podcast } from '@/lib/types';
 import { logPlayback, playbackItemId, startPlaybackLog, watchMediaElement } from '@/lib/playback-log';
-import { loadItemValue } from '@/lib/podcast-meta';
+import { loadEpisodeFromFeed, loadItemValue } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt, cuesOnShowClock } from '@/lib/transcript';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
@@ -125,7 +125,11 @@ const HAVE_FUTURE_DATA = 3;
 function playOrPark(el: HTMLMediaElement, park: () => void): void {
   primePlaybackAudioSession();
   el.play().catch((e: unknown) => {
-    if (e instanceof DOMException && e.name === 'NotAllowedError') park();
+    if (e instanceof DOMException && e.name === 'NotAllowedError') {
+      const now = useApp.getState().current;
+      if (now) useApp.getState().noteAutoplayRefused(epKey(now.episode));
+      park();
+    }
   });
 }
 
@@ -164,6 +168,9 @@ function pauseIfStillCurrent(el: HTMLMediaElement, key: string | null): (e: unkn
     if (el.src !== src) return;
     const now = useApp.getState().current;
     if (key && now && epKey(now.episode) !== key) return;
+    // A refused start the page made by itself (a refresh picking a live item
+    // back up) says TAP TO RESUME, not only ▶ (docs/ui.md).
+    if (key && e instanceof DOMException && e.name === 'NotAllowedError') useApp.getState().noteAutoplayRefused(key);
     useApp.getState().setPlaying(false);
   };
 }
@@ -198,6 +205,7 @@ export function Player() {
   const videoMode = useApp((s) => s.videoMode);
   const seekReq = useApp((s) => s.seekReq);
   const setPlaying = useApp((s) => s.setPlaying);
+  const liveResumeBlocked = useApp((s) => s.liveResumeBlocked);
   const setPosition = useApp((s) => s.setPosition);
   // NOT `playNext`: that is the listener's ⏭, which walks past a dead file.
   // A list moving on by itself lands on it, so `advanceOnItsOwn` can log it.
@@ -1442,10 +1450,35 @@ export function Player() {
   // The episode that was in the player comes FIRST: the queue's head is only
   // the fallback, because it is not what somebody was listening to when they
   // played a feed row or a later queue row. Each no-ops once `current` is set.
+  //
+  // A REFRESH OF A LIVE ITEM comes before both (docs/ui.md, "A refresh picks a
+  // live stream back up"): this tab saved the item's feed id and guid when the
+  // page hid, and the item is read from its feed again — a copy from disk names
+  // no payee, and only the feed says whether it is still live. Still live, it
+  // comes back at the live edge, playing if it played, with the full-screen
+  // player as it was. Ended, unreadable, or the listener already started
+  // something: the ordinary reveal. Nothing is revealed while the feed is
+  // asked, so no other item flashes in the mini-bar and only one stream plays.
   useNowPlaying();
   useEffect(() => {
-    useApp.getState().revealNowPlaying();
-    useApp.getState().revealQueue();
+    const reveal = () => {
+      useApp.getState().revealNowPlaying();
+      useApp.getState().revealQueue();
+    };
+    const live = storage.liveRefresh.get();
+    if (!live) { reveal(); return; }
+    let cancelled = false;
+    void loadEpisodeFromFeed(live.feedId, live.guid).then((r) => {
+      if (cancelled) return;
+      const app = useApp.getState();
+      if (app.current) return;
+      if (r?.episode && r.episode.liveStatus === 'live' && r.episode.enclosureUrl) {
+        app.restoreLive(r.episode, r.podcast, { playing: live.playing, expanded: live.expanded });
+      } else {
+        reveal();
+      }
+    });
+    return () => { cancelled = true; };
   }, []);
 
   if (!current) return null;
@@ -1544,6 +1577,8 @@ export function Player() {
   // the buffering line does: at 390 px the row held `● LIVE 7 s behind
   // ⏭ GO LIVE` and the play/pause button covered the end of GO LIVE.
   const miniBehind = isLive && isPlaying ? liveBehindSec : 0;
+  // The browser refused the start a refresh made by itself: say TAP TO RESUME.
+  const resumeBlocked = isLive && !isPlaying && liveResumeBlocked === epKey(episode);
   const miniSecondary = miniStalled
     ? stallLine
     : miniBehind > 0
@@ -1837,7 +1872,7 @@ export function Player() {
             onWaiting={(e) => { if (noteStarvation(e.currentTarget)) noteLiveGap(); }}
             onStalled={(e) => { if (noteStarvation(e.currentTarget)) noteLiveGap(); }}
             onProgress={(e) => sampleHeadroom(e.currentTarget)}
-            onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); }}
+            onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); useApp.getState().clearAutoResume(); }}
             onError={(e) => onMediaError(e.currentTarget.error?.code)}
           />
         </InPortal>
@@ -1977,7 +2012,7 @@ export function Player() {
           // means resuming with a warm buffer restores the art in the same tick
           // rather than blanking it for another 20 s of `timeupdate`s.
           onProgress={(e) => { if (!isVideoRef.current) sampleHeadroom(e.currentTarget); }}
-          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); } }}
+          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); anchorLiveClock(e.currentTarget); useApp.getState().clearAutoResume(); } }}
           onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         {/* Tighter padding and gap below sm:. At 390px the row has 358px to
@@ -2078,7 +2113,7 @@ export function Player() {
                 width (`stallLine`): a line of its own here moved the whole bar
                 on every track change. */}
             {isLive ? (
-              <LiveEdge variant="mini" className="mt-1" behindSec={miniBehind} onGoLive={goLive} />
+              <LiveEdge variant="mini" className="mt-1" behindSec={miniBehind} onGoLive={goLive} onResume={resumeBlocked ? () => setPlaying(true) : undefined} />
             ) : (
               <>
                 <div className="flex items-center gap-2 mt-1" onClick={(e) => e.stopPropagation()}>

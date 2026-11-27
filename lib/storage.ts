@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, trimForQueue, withoutStoredValue, episodeWithoutValue } from './util';
+import { capDismissed, FAV_NEW_CAP, httpUrl, LISTEN_QUEUE_CAP, PLAY_HISTORY_CAP, PLAYBACK_RATES, readLiveRefresh, trimForQueue, withoutStoredValue, episodeWithoutValue, type LiveRefresh } from './util';
 import type { PlaylistDraft, PlaylistSong } from './community/rules';
 import type { StreamLedger } from './v4v/stream-ledger';
 // An import-free leaf (`check:newmusic` scans it), so a value import here
@@ -33,6 +33,7 @@ import {
 import { coerceProfileMetadata } from './nostr/profile-metadata';
 import { isPlaybackLogLine, PLAYBACK_LOG_CAP } from './playback-log-line';
 import { createObservable } from './pubsub';
+import { readHoldSnapshot, holdSnapshotFresh, MAX_SAVED_ROWS, type IrcHoldSnapshot } from './irc/protocol';
 
 // Rail-pref changes need to reach live UI (account-menu summary, balance
 // chip, open wallet modal) no matter who wrote them — recordLastRail after
@@ -85,6 +86,8 @@ const KEYS = {
   nwcMethods: 'bmb:nwc_methods',      // { uri, methods } — NIP-47 capability list for the CURRENT connection; uri-keyed so a switched wallet invalidates it
   relays: 'bmb:relays',
   senderNamePrefix: 'bmb:sender_name', // + ':<npub>' — the boost modal's "From". Per-npub because it's an identity-linked display name, not a device setting.
+  ircNickPrefix: 'bmb:irc_nick', // + ':<npub>' — the IRC chat's nick (docs/irc.md). Per-npub for the same reason as sender_name.
+  ircHoldPrefix: 'bmb:irc_hold', // + ':<channel, lower case>' — the IRC chat's held session on this device: the hold token, the last line number, the nick and the last 200 rows, so a refresh, a lock or a reopened app resumes it with the same nick (docs/irc.md "A refresh is a drop"). localStorage since 2026-11-24 (Chad reopened the app and met his own nick as "taken"). Cleared on HOLD GONE, QUIT and a leave; stale after 6 h. NOT evictable: dropping it brings back exactly that "taken" nick, so it displaces caches like a setting.
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   streamReceipts: 'bmb:stream_receipts', // '1' when the listener opted into publishing kind:3369 value-playback receipts for streaming settles. Absent = OFF, unlike shareNostr — see the accessor.
@@ -144,6 +147,7 @@ const KEYS = {
   piDead: 'bmb:pi:dead',              // '1' while the Podcast Index breaker is tripped. Survives a reload (an outage doesn't end because someone refreshed), not the tab.
   launcher: 'bmb:launcher',           // the `android-app://<package>/` package that opened this tab at `/`, per lib/launcher.ts. A package NAME and nothing else; tab-scoped because the referrer belongs to the first document.
   launcherDismissed: 'bmb:launcher_dismissed', // '1' once the unofficial-app notice was dismissed in this tab.
+  liveRefresh: 'bmb:live_refresh',    // the LIVE item in this tab's player when the page hid: feed id, item guid, playing, full screen open, time. A refresh within 5 min reads the item from its feed again and picks it back up (docs/ui.md). Ids only, never the episode. Tab-scoped: a new tab is a fresh load.
   // Streaming rate and streaming on/off are SEPARATE keys, at both scopes, so
   // switching streaming off doesn't destroy the number the user typed. Also the
   // prefixes for the per-show overrides `…:<podcastGuid|feedId>`.
@@ -533,6 +537,11 @@ function draftKey(npub: string | null, editId?: string) {
 
 function identityKey(prefix: string, npub: string | null | undefined) {
   return `${prefix}:${npub ?? 'guest'}`;
+}
+
+/** One saved IRC hold per channel; IRC channel names compare without case. */
+function ircHoldKey(channel: string) {
+  return `${KEYS.ircHoldPrefix}:${channel.toLowerCase()}`;
 }
 
 /**
@@ -1377,6 +1386,19 @@ export const storage = {
     get: (npub: string | null | undefined) => safeGet(identityKey(KEYS.senderNamePrefix, npub)),
     set: (npub: string | null | undefined, v: string) =>
       safeSet(identityKey(KEYS.senderNamePrefix, npub), v),
+  },
+
+  /**
+   * The nick last used in the IRC chat beside a live stream (docs/irc.md),
+   * per-npub (`:guest` signed out) for the `senderName` reason above: a nick
+   * typed under one identity must not pre-fill the box under another, where it
+   * would tie the two together in a public channel. Only the nick: the chat
+   * lines are kept only while the hold service holds the session, in `ircHold`.
+   */
+  ircNick: {
+    get: (npub: string | null | undefined) => safeGet(identityKey(KEYS.ircNickPrefix, npub)),
+    set: (npub: string | null | undefined, v: string) =>
+      safeSet(identityKey(KEYS.ircNickPrefix, npub), v),
   },
 
   /**
@@ -2559,6 +2581,97 @@ export const storage = {
       if (on) safeSet(KEYS.favPrivateOptIn, '1');
       else safeRemove(KEYS.favPrivateOptIn);
       favPrivacyObservable.notify();
+    },
+  },
+
+  /**
+   * The LIVE item in this tab's player when the page hid (docs/ui.md, "A
+   * refresh picks a live stream back up"; Chad, 2026-11-22: "if you're
+   * listening to a live stream and you hit refresh ... you want it to pick
+   * back up"). `bmb:now_playing` never holds a live item, so without this a
+   * refresh reopened whatever was in the player before the show. Ids only: the
+   * reload reads the item from its feed again (`loadEpisodeFromFeed`), because
+   * a copy from disk names no payee. sessionStorage, so a new tab or a tab
+   * refreshed after 5 minutes (`LIVE_REFRESH_WINDOW_MS`) opens as a fresh load does.
+   */
+  liveRefresh: {
+    get: (): LiveRefresh | null => {
+      if (!isBrowser()) return null;
+      try {
+        const raw = sessionStorage.getItem(KEYS.liveRefresh);
+        return raw ? readLiveRefresh(JSON.parse(raw), Date.now()) : null;
+      } catch { return null; }
+    },
+    set: (v: LiveRefresh) => {
+      if (!isBrowser()) return;
+      try { sessionStorage.setItem(KEYS.liveRefresh, JSON.stringify(v)); } catch { /* blocked or full: a refresh then opens as a fresh load */ }
+    },
+    clear: () => {
+      if (!isBrowser()) return;
+      try { sessionStorage.removeItem(KEYS.liveRefresh); } catch { /* blocked */ }
+    },
+  },
+
+  /**
+   * The IRC chat's held session ON THIS DEVICE, one per channel (docs/irc.md,
+   * "A refresh is a drop"): the panel saves it when the chat is joined and
+   * when the page hides, and the next page on that show resumes it with
+   * `HOLD RESUME` instead of registering again (Chad, 2026-11-22: "if you
+   * refresh the page, you should come back with your nick and chat").
+   *
+   * localStorage, not sessionStorage (it was until 2026-11-24): Chad joined
+   * #MMO as BMB, closed the app, opened it again, typed BMB, and got "That
+   * nick is taken" — his own held chat had it, and the tab-scoped copy that
+   * could resume it died with the app. The cost, accepted in the hold plan:
+   * the next person to open that show's chat in the same browser, while the
+   * hold lasts, goes into this chat. A second window that resumes takes the
+   * session over (close 4001), as before, and the window that lost it never
+   * clears it (`clear` matches the token).
+   *
+   * It holds the hold token, which resumes the listener's IRC session: never
+   * put it in a URL (the gateway logs URLs). Read back through
+   * `readHoldSnapshot`, field by field, because the token goes to the gateway
+   * and the rows to the screen. Through `safeSet`, and NOT evictable: a dropped
+   * copy is exactly the "taken" nick it exists to prevent.
+   */
+  ircHold: {
+    get: (channel: string): IrcHoldSnapshot | null => {
+      const raw = safeGet(ircHoldKey(channel));
+      if (!raw) return null;
+      try {
+        const v = readHoldSnapshot(JSON.parse(raw));
+        return v && v.channel.toLowerCase() === channel.toLowerCase() ? v : null;
+      } catch { return null; }
+    },
+    /** Whether it reached disk. With no room for the rows it keeps the token alone: the nick still comes back, and the resume replays what the service kept. */
+    set: (v: IrcHoldSnapshot): boolean => {
+      const key = ircHoldKey(v.channel);
+      if (safeSet(key, JSON.stringify({ ...v, rows: v.rows.slice(-MAX_SAVED_ROWS) }))) return true;
+      return safeSet(key, JSON.stringify({ ...v, rows: [] }));
+    },
+    /**
+     * Forget the channel's saved hold. With `token`, only when it is that
+     * session's: another window that resumed the session (or started one of
+     * its own) saves under the same key, and must keep it.
+     */
+    clear: (channel: string, token?: string) => {
+      const key = ircHoldKey(channel);
+      if (token !== undefined) {
+        const raw = safeGet(key);
+        let saved: unknown = null;
+        try { saved = raw ? JSON.parse(raw) : null; } catch { /* unreadable: ours to drop */ }
+        if (saved && typeof saved === 'object' && (saved as { token?: unknown }).token !== token) return;
+      }
+      safeRemove(key);
+    },
+    /** Drop every channel's saved hold that is past `holdSnapshotFresh` (6 h) or unreadable. */
+    prune: (nowMs: number) => {
+      for (const key of safeKeys()) {
+        if (!key.startsWith(`${KEYS.ircHoldPrefix}:`)) continue;
+        let v: IrcHoldSnapshot | null = null;
+        try { v = readHoldSnapshot(JSON.parse(safeGet(key) ?? 'null')); } catch { /* unreadable */ }
+        if (!v || !holdSnapshotFresh(v, nowMs)) safeRemove(key);
+      }
     },
   },
 

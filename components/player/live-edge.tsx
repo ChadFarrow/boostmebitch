@@ -28,23 +28,52 @@ import { LiveBadge } from '../live-badge';
  * the end of GO LIVE. Below `sm:` `<Player>` says the number on the line above
  * instead (`miniSecondary`), the way it folds the buffering line — hidden
  * here, never dropped.
+ *
+ * **`onResume` replaces both with `▶ TAP TO RESUME`.** `<Player>` passes it only
+ * when a refresh picked a live item back up and the browser refused the sound
+ * that started with no click (docs/ui.md, "A refresh picks a live stream back
+ * up"). A bare ▶ over a paused live row reads as "the stream stopped"; this
+ * says what one press does. Same sizes as GO LIVE, so the bar does not move.
+ *
+ * **`wrapResume` lets that label break onto two lines**, for the phone pager's
+ * bar only: ▶ sits in its middle, so the LIVE group has ~108px at 320px and the
+ * label is 129px on one line. Everywhere else it stays one line.
  */
 export function LiveEdge({
   behindSec,
   onGoLive,
   variant,
   className = '',
+  onResume,
+  wrapResume = false,
 }: {
   behindSec: number;
   onGoLive: () => void;
   variant: 'mini' | 'full';
   className?: string;
+  onResume?: () => void;
+  /** TAP TO RESUME may take two lines when its row is narrow. */
+  wrapResume?: boolean;
 }) {
   const text = variant === 'mini' ? 'text-[10px]' : 'text-xs';
   return (
     <div data-live-edge={variant} className={`flex items-center gap-2 ${className}`}>
       <LiveBadge status="live" />
-      {behindSec > 0 ? (
+      {onResume ? (
+        <button
+          type="button"
+          data-live-resume
+          className={`btn-mini ${wrapResume ? 'min-w-0 whitespace-normal text-left' : 'shrink-0 whitespace-nowrap'} text-bolt border-bolt/60 ${variant === 'mini' ? 'min-h-6 py-0 -my-0.5' : ''}`}
+          title="Your browser stopped the sound after the refresh"
+          aria-label="Tap to resume the live stream"
+          onClick={(e) => {
+            e.stopPropagation();
+            onResume();
+          }}
+        >
+          ▶ TAP TO RESUME
+        </button>
+      ) : behindSec > 0 ? (
         <>
           <span className={`${text} text-muted tabular-nums whitespace-nowrap ${variant === 'mini' ? 'hidden sm:inline' : ''}`}>
             {behindSec} s behind
