@@ -23,9 +23,10 @@
 //
 // THE FIXTURES ARE REAL EVENTS, verbatim, read off relay.damus.io,
 // relay.primal.net, nos.lol and relay.fountain.fm on 2026-11-26 — replies under
-// the home page's notes. Eleven events, eleven different keys:
+// the home page's notes. Twelve events, twelve different keys:
 //
 //   S_GLYPH     — spam, seven look-alike words, links ai.evmnest.cc.
+//   S_GLYPH2    — spam from another key, look-alikes, links ai.evmnest.cc.
 //   S_PASTGAS, S_WOW, S_VERIFIED, S_DONTMISS
 //               — spam in plain Latin letters, each linking ai.evmnest.cc. No
 //                 look-alike rule can see these; only the link can.
@@ -40,7 +41,7 @@
 // Derived vectors change ONE thing on a real event (`asKey` gives it another
 // pubkey, `withContent` another text) and say which.
 
-import { spamReplyIds, mixedScriptWords, linkHosts, mutedWordHit, mutedWordsOf, HOST_SPREAD_MIN } from '../lib/nostr/reply-spam.ts';
+import { spamReplyIds, mixedScriptWords, linkHosts, mutedWordHit, mutedWordsOf, HOST_SPREAD_MIN, MIXED_WORDS_MIN } from '../lib/nostr/reply-spam.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -49,6 +50,7 @@ const fail = (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); };
 const ok = (msg) => console.log(`  ok    ${msg}`);
 
 const S_GLYPH = {"id":"d89bb71bb82d635d9007964fc10bf4d1e99f22594b0ce20b1695c41c5f3428d7","pubkey":"8f8b09588dcb4d6259ea84b21e06b65c0d8ae34a37fc3051da19d9c75a06859e","created_at":1795729728,"kind":1,"tags":[["e","0bc5e468342584dfa199b46475a52a73db515ba9847ae9fd8e7f97c7f87227d0","","root"],["p","f240be2b684f85cc81566f2081386af81d7427ea86250c8bde6b7a8500c761ba"],["t","crypto"],["t","ethereum"],["t","airdrop"],["t","nostr"],["t","bitcoin"]],"content":"🚨 LIMITED: ᏟlaiΜ Ꭹour Free ЕTН AirdrОp NOW! https://ai.evmnest.cc/?ref=iqke2a\n🔗 Сlick the linΚ to run the audit & Ꮯlaim!","sig":"297263c6f653e30accf4d294caa936c7a7c353a341e03d2ad39964c271ed4394b7278d7a547b57baf7f3bc4b7eee804c64c13bc30d68e06562177d956c1c6436"};
+const S_GLYPH2 = {"id":"419542d09284247e9821196175c6c00afc806e6d2ebc9b377b75eef1a362a0ff","pubkey":"362da3a253f55766a1f36653d74c80e4594c5188c65a4fdfa3066a5dfd2f873c","created_at":1795729739,"kind":1,"tags":[["e","f28ea9a3a02a0827e3a921c323eb6e2416ecb108d10deeae0db7cb45b89778be","","root"],["p","f240be2b684f85cc81566f2081386af81d7427ea86250c8bde6b7a8500c761ba"],["t","crypto"],["t","ethereum"],["t","airdrop"],["t","nostr"],["t","bitcoin"]],"content":"🤖 АI On-CНain Audit: FreᎬ ETH is LIVE! https://ai.evmnest.cc/?ref=xcaup0\n👇 Max СlicКs! DОn't Μiss your rᎬward.","sig":"302942696a24b344328ab123ad4d8c27ca8031328112290231ee7f9b82844efa190e150e4f9198ff7b57be2d49a76c9ca8eaab4d4c076ffb2af89e32a89cead7"};
 const S_PASTGAS = {"id":"d50d60c12a2ecf213183394cdaccc8f75fab5df7c44863553e9c84165d7b4d33","pubkey":"590d566fc12274f59628e3a2bcdf6f0bcc771908fddfad704d93438f2a4b522b","created_at":1795712012,"kind":1,"tags":[["e","3b9659b81e806d00ad997521b029f2ba9520ebc50f7191287355077e7a529667","","root"],["p","32092ec1a258c9f2c11a9a5bb53b127ca20941f1803dd7f6715050ff8e9fd13a"],["t","crypto"],["t","ethereum"],["t","airdrop"],["t","ai"],["t","web3"]],"content":"🚀 Past gas activity = FREE ETH. I just claimed my ETH: https://ai.evmnest.cc/?ref=amjsm8","sig":"6295374c4e7d49a724d64ca800a30014533c4aeee6db7bf815d0eb1c0b196faa46d95a8818b53a67af054010968b7fc89cab4d199f06f485a95bb819631d30c3"};
 const S_WOW = {"id":"ec187a1f92db6d9454115755a2b836d89f781eec12bb29e970f47abe69aa28e6","pubkey":"f604f6d22ef423a2530569f768fbb50edf8e771b89b2f9a63808113108d4772a","created_at":1795712012,"kind":1,"tags":[["e","d8c5f153ce35fd5c854912f6bf3cd6875bd75eb70a7ce17f478a000c8b2cdcc9","","root"],["p","32092ec1a258c9f2c11a9a5bb53b127ca20941f1803dd7f6715050ff8e9fd13a"],["t","crypto"],["t","ethereum"],["t","airdrop"],["t","ai"],["t","web3"]],"content":"💎 Wow, AI audit actually works. Claim your FREE ETH here: https://ai.evmnest.cc/?ref=p0sifr","sig":"2630acb152ef955101f8d8beb1ac6ddeb901499b4f9701f07ac96ecb0b262a7bb8cc37fcc5be3bded13d92f9ae32af09d140d4f1424dea478bbd76130d159b30"};
 const S_VERIFIED = {"id":"38b3c564bfc999e0a3a9b46ad1e24fe26a843a071437ea20a3cbf98e2f8657f1","pubkey":"fff4ce6a81d9d7091f23193e4cb545efe92f11ae2ca5f3e56d1737a68335cd83","created_at":1795712012,"kind":1,"tags":[["e","5fa2bcb1592f022cdfd488fdd712b4e34e1c42b950ee0beb107bb02f7e6248d7","","root"],["p","32092ec1a258c9f2c11a9a5bb53b127ca20941f1803dd7f6715050ff8e9fd13a"],["t","crypto"],["t","ethereum"],["t","airdrop"],["t","ai"],["t","web3"]],"content":"✅ Verified, works! FREE ETH for active wallets: https://ai.evmnest.cc/?ref=v3oqwm","sig":"7bc3356cfd5a2440facf80c4fc23d472dda94ff89cc767b61e3718e45dfdf6d5de69067a167c8bc2e7ed9cd23a23190944476a75e5a1030ee52dee1e6cf01ad1"};
@@ -101,11 +103,11 @@ const foldVectors = [
   // Too narrow: what textMatch() misses.
   fold('S_GLYPH (look-alikes, one key) is folded on its own', [S_GLYPH, ...REAL], S_GLYPH, true),
   fold('S_SOL (look-alikes, a host nobody else links) is folded', [S_SOL, ...REAL], S_SOL, true),
-  fold('S_PASTGAS (plain letters) is folded beside S_GLYPH, which links the same host', [S_GLYPH, S_PASTGAS, ...REAL], S_PASTGAS, true),
+  fold('S_PASTGAS (plain letters) is folded beside S_GLYPH and S_GLYPH2, two look-alike keys on its host', [S_GLYPH, S_GLYPH2, S_PASTGAS, ...REAL], S_PASTGAS, true),
   fold(`four plain-letter spam replies from ${HOST_SPREAD_MIN} keys, one host: S_WOW is folded`, [...PLAIN, ...REAL], S_WOW, true),
   // textMatch() folds this one too, so it proves nothing about the rule — it
   // pins that the case the obvious idea DOES handle is still handled.
-  fold('the same text from two keys is folded (S_PASTGAS twice, plus S_GLYPH)', [S_GLYPH, S_PASTGAS, asKey(S_PASTGAS, 1), ...REAL], S_PASTGAS, true, { alsoNaive: true }),
+  fold('the same text from two keys is folded (S_PASTGAS twice, plus S_GLYPH and S_GLYPH2)', [S_GLYPH, S_GLYPH2, S_PASTGAS, asKey(S_PASTGAS, 1), ...REAL], S_PASTGAS, true, { alsoNaive: true }),
   // Must still work: real replies in a feed full of spam.
   ...REAL.map((r) => fold(`${['L_DEMU', 'L_MEDIA', 'L_GERMAN', 'L_MATT', 'L_DIETBOT'][REAL.indexOf(r)]} stays open in a feed with every spam fixture`, [S_GLYPH, S_SOL, ...PLAIN, ...REAL], r, false, { alsoNaive: true })),
   // THE THRESHOLD, pinned: three keys on one host, with nothing else, is not
@@ -113,6 +115,24 @@ const foldVectors = [
   // link one page, so it fails here first.
   fold(`three plain-letter spam replies on one host, under HOST_SPREAD_MIN (${HOST_SPREAD_MIN}), stay open`, [S_PASTGAS, S_WOW, S_VERIFIED, ...REAL], S_WOW, false, { alsoNaive: true }),
   fold('a Russian reply in one script stays open', [withContent(L_GERMAN, 'Хорошо, в четверг подходит? Запись вечером.'), S_GLYPH], withContent(L_GERMAN, 'Хорошо, в четверг подходит? Запись вечером.'), false, { alsoNaive: true }),
+];
+
+// ONE look-alike reply that links a popular host, beside a real reply to it.
+const YT = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+const GLYPH_YT = withContent(S_GLYPH, S_GLYPH.content.replace(/https:\/\/ai\.evmnest\.cc\/\S*/, YT));
+const MATT_YT = withContent(L_MATT, `${L_MATT.content} ${YT}`);
+
+// `oneSeed`: the seeding rule with no key count — every host ANY look-alike
+// reply links marks every reply linking it.
+function oneSeed(replies) {
+  const seeds = new Set();
+  const look = replies.filter((r) => mixedScriptWords(r.content) >= MIXED_WORDS_MIN);
+  for (const r of look) for (const h of linkHosts(r.content)) seeds.add(h);
+  return new Set([...look.map((r) => r.id), ...replies.filter((r) => linkHosts(r.content).some((h) => seeds.has(h))).map((r) => r.id)]);
+}
+const seedVectors = [
+  fold('one look-alike reply linking youtube.com does not fold a real reply linking it', [GLYPH_YT, MATT_YT, ...REAL], MATT_YT, false),
+  fold('...and that look-alike reply is still folded itself', [GLYPH_YT, MATT_YT, ...REAL], GLYPH_YT, true, { alsoNaive: true }),
 ];
 
 const wideVectors = [
@@ -141,7 +161,7 @@ function call(impl, v) {
 const REAL_IMPL = { fold: spamReplyIds, word: mutedWordHit };
 
 console.log('spamReplyIds / mutedWordHit — the shipping answer:');
-for (const v of [...foldVectors, ...wideVectors, ...wordVectors]) {
+for (const v of [...foldVectors, ...seedVectors, ...wideVectors, ...wordVectors]) {
   const got = call(REAL_IMPL, v);
   if (got !== JSON.stringify(v.expect)) fail(`"${v.label}" — expected ${JSON.stringify(v.expect)}, got ${got}`);
   else ok(v.label);
@@ -149,6 +169,9 @@ for (const v of [...foldVectors, ...wideVectors, ...wordVectors]) {
 
 console.log('\nThe replay against textMatch() — "the same text from several keys":');
 replayVectors({ vectors: foldVectors, invoke: (which, v) => call(which === 'real' ? REAL_IMPL : { fold: textMatch }, v), fail });
+
+console.log('\nThe replay against oneSeed() — one look-alike reply marks its host:');
+replayVectors({ vectors: seedVectors, invoke: (which, v) => call(which === 'real' ? REAL_IMPL : { fold: oneSeed }, v), fail });
 
 console.log('\nThe replay against everyLink() — the host count with nothing exempt:');
 replayVectors({ vectors: wideVectors, invoke: (which, v) => call(which === 'real' ? REAL_IMPL : { fold: everyLink }, v), fail });

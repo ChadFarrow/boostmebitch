@@ -21,8 +21,8 @@
 //
 //   - THE LINK. Every one links to the same few hosts (`ai.evmnest.cc` on most).
 //     A host that `HOST_SPREAD_MIN` different keys link in one feed's replies,
-//     or that any look-alike reply links, marks every reply linking it.
-//     Measured alone: 66 of 67.
+//     or that look-alike replies from `SEED_KEYS_MIN` different keys link,
+//     marks every reply linking it. Measured alone: 66 of 67.
 //   - THE LOOK-ALIKES. `MIXED_WORDS_MIN` words that mix Latin letters with
 //     letters from those scripts. A real writer of Russian or Greek writes a
 //     word in one script. Measured alone: 47 of 67.
@@ -32,9 +32,11 @@
 // A FALSE HIT COSTS ONE TAP, NOT A REPLY. The caller FOLDS what this returns
 // behind "N replies hidden as likely spam · SHOW" (`<NoteCard>`); it never
 // drops it. The known ways to fold a real reply, all untested on real data
-// because none occurred in it: three or more people linking one page host in
-// one feed's replies (media files are not counted, and the site's own hosts are
-// exempt), and a writer who mixes scripts inside two words.
+// because none occurred in it: `HOST_SPREAD_MIN` or more people linking one
+// page host in one feed's replies (media files are not counted, and the site's
+// own hosts are exempt); look-alike spam from `SEED_KEYS_MIN` keys that links a
+// popular host, which then folds every reply to that host; and a writer who
+// mixes scripts inside two words.
 //
 // WHAT IT DOES NOT CATCH. AI "reply guy" bots on old keys that post no link
 // (the diet and stoic accounts seen the same day) — a key mute still hides those.
@@ -51,6 +53,13 @@ export const HOST_SPREAD_MIN = 4;
 
 /** Mixed-script words a reply needs to count as look-alike spam on its own. */
 export const MIXED_WORDS_MIN = 2;
+
+/**
+ * Different keys whose LOOK-ALIKE replies must link a host before every reply
+ * linking it is marked. Two, not one: a single look-alike reply that links a
+ * popular host (a video site) would otherwise fold every real reply to it.
+ */
+export const SEED_KEYS_MIN = 2;
 
 /**
  * Letters outside Latin that pass for Latin ones: Greek, Cyrillic, Armenian,
@@ -125,6 +134,7 @@ export function spamReplyIds(
 ): Set<string> {
   const exempt = new Set(exemptHosts.map(bareHost));
   const keysByHost = new Map<string, Set<string>>();
+  const lookalikeKeysByHost = new Map<string, Set<string>>();
   const spamHosts = new Set<string>();
   const lookalike = new Set<string>();
   const hostsOf = new Map<string, string[]>();
@@ -140,11 +150,18 @@ export function spamReplyIds(
     }
     if (mixedScriptWords(r.content) >= MIXED_WORDS_MIN) {
       lookalike.add(r.id);
-      for (const h of hosts) spamHosts.add(h);
+      for (const h of hosts) {
+        const keys = lookalikeKeysByHost.get(h) ?? new Set<string>();
+        keys.add(r.pubkey);
+        lookalikeKeysByHost.set(h, keys);
+      }
     }
   }
   for (const [h, keys] of keysByHost) {
     if (keys.size >= HOST_SPREAD_MIN) spamHosts.add(h);
+  }
+  for (const [h, keys] of lookalikeKeysByHost) {
+    if (keys.size >= SEED_KEYS_MIN) spamHosts.add(h);
   }
 
   const out = new Set<string>(lookalike);

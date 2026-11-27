@@ -383,9 +383,22 @@ export function spamReplyIdsIn(notes: readonly DiscoveredNote[]): ReadonlySet<st
   return spamReplyIds(collectReplies(notes, []), SITE_HOSTS);
 }
 
-/** `spamReplyIdsIn`, memoised on the list. */
+/**
+ * `spamReplyIdsIn`, memoised on the list — and the SAME Set returned while its
+ * members do not change. The answer is a context value, and a new context
+ * value re-renders every memoized `<NoteCard>` under it; the list itself is
+ * rebuilt on every mute press and every mute hydrate, which rarely changes
+ * what is spam.
+ */
 export function useSpamReplyIds(notes: readonly DiscoveredNote[] | null): ReadonlySet<string> {
-  return useMemo(() => spamReplyIdsIn(notes ?? []), [notes]);
+  const last = useRef<ReadonlySet<string>>(new Set());
+  return useMemo(() => {
+    const next = spamReplyIdsIn(notes ?? []);
+    const prev = last.current;
+    if (next.size === prev.size && [...next].every((id) => prev.has(id))) return prev;
+    last.current = next;
+    return next;
+  }, [notes]);
 }
 
 /**
