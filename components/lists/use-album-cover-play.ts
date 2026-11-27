@@ -79,7 +79,7 @@ export function useAlbumCoverPlay(): (p: Podcast) => CoverPlay | null {
       setPress(null);
       const now = useApp.getState();
       if (!sameCurrentTrack(before, now.current)) return;
-      now.setEpisodeQueue(episodes);
+      now.setEpisodeQueue(episodes, d.podcast);
       // The feed's own podcast record, never the list row: only an RSS document
       // names a payee, and this is the record the album page plays with.
       now.play(first, d.podcast);

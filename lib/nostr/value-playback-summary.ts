@@ -196,3 +196,170 @@ export function summaryPublishDecision(
   }
   return { publish: true, reason: 'publish' };
 }
+
+// ── The receipt walk ────────────────────────────────────────────────────────
+
+/**
+ * One page of ONE relay's answer, as the walk needs it. `reached: false` is a
+ * relay that never connected: it is left out of the verdict, as every
+ * per-relay read here leaves it out (`readIsTrustworthy`). `answered: false` is
+ * a relay that connected and did not finish answering — that one makes the
+ * whole walk incomplete.
+ */
+export interface ReceiptPage<E extends { id: string; created_at: number }> {
+  reached: boolean;
+  answered: boolean;
+  events: E[];
+}
+
+/** Ask one relay for the page at or before `until` (undefined: the newest). */
+export type ReceiptPageFetch<E extends { id: string; created_at: number }> =
+  (until: number | undefined) => Promise<ReceiptPage<E>>;
+
+export interface ReceiptWalk<E> {
+  events: E[];
+  /** Every relay that connected walked to the END of its history. */
+  complete: boolean;
+  reached: number;
+  /** Pages asked for, across every relay. */
+  pages: number;
+}
+
+/**
+ * Every receipt the relays hold, walked backwards PAGE BY PAGE AND RELAY BY
+ * RELAY, and whether the walk can prove it saw the whole history.
+ *
+ * Two rules, and each was a way the summary stayed low (full-code review,
+ * 2026-11-19, finding 17):
+ *
+ * - **A cursor per relay, never one for the union.** One `until` taken from the
+ *   oldest event of ANY relay jumps past what a denser relay still holds: relay
+ *   A answers its newest 500, relay B (which missed the recent ones) answers
+ *   500 reaching months further back, and the next page starts below every
+ *   receipt A holds between the two — never asked for, never counted.
+ * - **A short page is not the end.** A relay caps a REQ at a number of its own
+ *   choosing and says nothing, so 200 events against a `limit` of 500 is either
+ *   the whole history or a relay whose cap is 200. The end is a page that adds
+ *   NOTHING new: `until` is inclusive, so the walk re-asks for the boundary
+ *   second and stops when that answer holds only receipts it has already seen.
+ *   That costs one extra page per relay, which is the price of not guessing.
+ *
+ * And it FAILS CLOSED, because a sum over a partial set published once pins the
+ * monotonic address below the truth. Each of these makes the walk incomplete:
+ *
+ * - a relay that hits `maxPages`;
+ * - a relay that answers events NEWER than the `until` it was given (it ignores
+ *   the cursor, so its "end" proves nothing);
+ * - a relay that connects and stops answering;
+ * - a relay that answered a page and is gone on a later one — only a relay that
+ *   was never reached at all is left out, since what it holds was never part
+ *   of this walk, while a relay lost mid-walk leaves its history half read;
+ * - a page that adds receipts but cannot move the cursor, because every event
+ *   on it sits in the cursor's second, and that is at least as large as any
+ *   page this relay has returned. NIP-01 has no cursor finer than a second, so
+ *   a relay whose cap is at or below the receipts it holds in one second
+ *   cannot be paged past that second, and the next page would repeat this one
+ *   and read as the end.
+ *
+ * One shape it cannot see: a relay whose FIRST page already lies wholly in one
+ * second and is exactly its cap. That page and a relay holding exactly that
+ * many receipts in that second are the same bytes, and refusing the second
+ * would refuse every one-receipt history. A receipt is one settle of one
+ * device, so a cap's worth of them in one second is not a history this app
+ * writes.
+ *
+ * Not publishing is the safe side. `maxPages` is PER RELAY at that relay's own
+ * cap, so a relay capping at 100 is walked for 100 × `maxPages` receipts.
+ *
+ * Relays are walked in parallel; each relay's pages are serial.
+ */
+export async function walkReceiptHistory<E extends { id: string; created_at: number }>(
+  relays: ReceiptPageFetch<E>[],
+  maxPages: number,
+  stopped: () => boolean = () => false,
+): Promise<ReceiptWalk<E>> {
+  const walks = await Promise.all(relays.map(async (fetchPage) => {
+    const seen = new Map<string, E>();
+    let until: number | undefined;
+    let pages = 0;
+    let biggest = 0;
+    while (pages < maxPages) {
+      if (stopped()) return { reached: true, complete: false, seen, pages };
+      const page = await fetchPage(until);
+      pages++;
+      if (!page.reached) {
+        // Never reached: left out. Reached once and lost: half read.
+        return pages === 1
+          ? { reached: false, complete: true, seen, pages }
+          : { reached: true, complete: false, seen, pages };
+      }
+      if (!page.answered) return { reached: true, complete: false, seen, pages };
+      const cursor = until;
+      if (cursor !== undefined && page.events.some((e) => e.created_at > cursor)) {
+        return { reached: true, complete: false, seen, pages };
+      }
+      let added = 0;
+      let oldest = Infinity;
+      for (const e of page.events) {
+        if (e.created_at < oldest) oldest = e.created_at;
+        if (seen.has(e.id)) continue;
+        seen.set(e.id, e);
+        added++;
+      }
+      if (added === 0) return { reached: true, complete: true, seen, pages };
+      const full = page.events.length >= biggest;
+      biggest = Math.max(biggest, page.events.length);
+      if (cursor !== undefined && oldest === cursor && full) {
+        return { reached: true, complete: false, seen, pages };
+      }
+      until = oldest;
+    }
+    return { reached: true, complete: false, seen, pages };
+  }));
+  const byId = new Map<string, E>();
+  for (const w of walks) for (const [id, e] of w.seen) if (!byId.has(id)) byId.set(id, e);
+  const reached = walks.filter((w) => w.reached).length;
+  return {
+    events: [...byId.values()],
+    complete: reached > 0 && walks.every((w) => !w.reached || w.complete),
+    reached,
+    pages: walks.reduce((n, w) => n + w.pages, 0),
+  };
+}
+
+// ── One cycle per address ───────────────────────────────────────────────────
+
+/**
+ * Holds an address (one NIP-73 id) from the moment its read-decide-publish
+ * cycle STARTS until that cycle SETTLES — not until the caller stops waiting.
+ *
+ * The flush caps each cycle with a timeout so one hung relay or signer cannot
+ * stall the batch. Before 2026-11-26 the timeout released the address too, so
+ * the next flush started a second cycle for it while the first was still
+ * running: two cycles reading the same stored summary, both deciding
+ * 'publish', two signatures and two events at one address — the churn the
+ * CHANGED-BY-VALUE rule exists to prevent (full-code review, 2026-11-19).
+ *
+ * `start` returns `busy` with the running cycle's promise when the address is
+ * held, so the caller can queue the id again once THAT cycle ends.
+ */
+export function createAddressGate() {
+  const running = new Map<string, Promise<void>>();
+  return {
+    start(id: string, cycle: () => Promise<void>):
+      { started: true; done: Promise<void> } | { started: false; busy: Promise<void> } {
+      const busy = running.get(id);
+      if (busy) return { started: false, busy };
+      // Async-wrapped so a cycle that throws before its first await is held
+      // and released like any other.
+      const done = (async () => cycle())().catch(() => {}).finally(() => {
+        if (running.get(id) === done) running.delete(id);
+      });
+      running.set(id, done);
+      return { started: true, done };
+    },
+    held(id: string): boolean {
+      return running.has(id);
+    },
+  };
+}

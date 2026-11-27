@@ -29,6 +29,7 @@
 
 import { createRequire } from 'node:module';
 import { checker, exit, requireApp } from './cdp.mjs';
+import { BRAND } from '../lib/brand.ts';
 
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 await requireApp(APP, 'Start the app first: npm run dev');
@@ -55,7 +56,7 @@ async function art(url, w) {
 // Is the fixture still what the header says it is?
 async function head(url) {
   try {
-    const r = await fetch(url, { method: 'HEAD' });
+    const r = await fetch(url, { method: 'HEAD', headers: { 'User-Agent': BRAND.userAgent } });
     return { status: r.status, type: r.headers.get('content-type'), length: Number(r.headers.get('content-length')) };
   } catch (e) { return { status: 0, error: String(e) }; }
 }

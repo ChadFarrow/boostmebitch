@@ -116,7 +116,22 @@ export interface Brand {
    * screen, a store listing); nothing in the app should name them any more.
    */
   iconDir: string;
-  /** `User-Agent` fallback for the server-side Podcast Index calls. */
+  /**
+   * The `User-Agent` of every request the SERVER sends: Podcast Index, feed,
+   * chapter, transcript, art and audio hosts, LNURL and keysend lookups, GIPHY,
+   * BoostBox, GitHub, the podping pusher, the read index. One form for all of
+   * Chad's apps: `<wireName>/<APP_VERSION> (+<origin>)`, a link that answers 200
+   * and no email. `check:brand` pins the form, the version against
+   * `package.json` and the link against `origin`.
+   *
+   * The routes that read `APP_NAME` before take it through `serverUserAgent()`
+   * (`lib/user-agent.ts`), which keeps that override; every other server
+   * request reads this field directly. Browser fetches cannot set this header.
+   *
+   * The PRODUCT NAME is not decoration: Buzzsprout's audio host answers 403 to
+   * Node's default `node` and 206 to this string (measured 2026-11-27: 107
+   * targets on 68 hosts, see docs/feeds.md).
+   */
   userAgent: string;
   /** `<meta name="description">`, the OG description, and the manifest's. */
   description: string;
@@ -139,6 +154,14 @@ export interface Brand {
   gifSource: 'nostrbuild' | 'giphy';
 }
 
+/**
+ * The app's version, as every `User-Agent` names it. It MUST equal `version` in
+ * `package.json`: this module may not import that file (it is an import-free
+ * leaf, see the top), so `check:brand` asserts the two agree and a bump that
+ * edits one of them fails the check.
+ */
+export const APP_VERSION = '0.1.0';
+
 const BMB: Brand = {
   id: 'bmb',
   displayName: 'Boost Me Bitch',
@@ -151,7 +174,7 @@ const BMB: Brand = {
   boostSound: '/boost.mp3',
   manifest: '/manifest.json',
   iconDir: '/icons/bmb',
-  userAgent: 'boostmebitch/0.1',
+  userAgent: `BoostMeBitch/${APP_VERSION} (+https://www.boostmebitch.com)`,
   description:
     'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
   androidPackageId: 'com.boostmebitch',
@@ -178,7 +201,7 @@ const BUDDY: Brand = {
   boostSound: '/boost-buddy.mp3',
   manifest: '/manifest-buddy.json',
   iconDir: '/icons/buddy',
-  userAgent: 'boostmebuddy/0.1',
+  userAgent: `BoostMeBuddy/${APP_VERSION} (+https://www.boostmebuddy.com)`,
   description:
     'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
   androidPackageId: 'com.boostmebuddy',

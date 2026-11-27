@@ -63,6 +63,14 @@
 //      still says the typed 100000 — a refused leg changes no other leg — and
 //      the modal names the two refused payees, says nothing was sent to them,
 //      and names the wallet that refused.
+//   8. A STREAMING split load that FAILS is asked again (full-code review
+//      2026-11-19, finding 8; Chad's option A): `/api/value-splits` answers 503
+//      when the context opens in the song window, so the ledger accrues to the
+//      show. 30 s later the retry is answered, and from then on the SONG's
+//      bucket accrues. No song leg is paid before its settle edge, and the
+//      pause pays the song's two nodes. The show's sats from before the retry
+//      stay the show's: the retry landing is a track boundary, so it settles
+//      them then, as entering a window always has. ~1 min of silent play.
 //
 // APP_URL may also be a deployed site (a Vercel deployment URL, or production):
 // its host is the one Chrome may resolve then, and every rule above still holds.
@@ -139,6 +147,9 @@ let lnurlPays = false;
 const invoicesAsked = [];
 let addLnaddrToShow = false;
 const feedRewrites = [];
+// Section 8: every /api/value-splits request before this time is answered 503.
+let splitsFailUntil = 0;
+const splitsAsked = [];
 const json = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 const PATTERNS = [
   { resourceType: 'Media', requestStage: 'Request' },
@@ -147,6 +158,7 @@ const PATTERNS = [
   { urlPattern: '*/api/lnurl*', requestStage: 'Request' },
   { urlPattern: '*/api/lightning/boostbox*', requestStage: 'Request' },
   { urlPattern: '*/api/feed*', requestStage: 'Response' },
+  { urlPattern: '*/api/value-splits*', requestStage: 'Request' },
 ];
 await send('Fetch.enable', { patterns: PATTERNS });
 page.on(async (m) => {
@@ -194,6 +206,13 @@ page.on(async (m) => {
         ],
         body: part.toString('base64'),
       }).catch(() => {});
+      return;
+    }
+    if (u.pathname === '/api/value-splits') {
+      const failed = Date.now() < splitsFailUntil;
+      splitsAsked.push({ at: Date.now(), failed });
+      if (failed) { await fulfill(503, json({ error: 'e2e: value-splits down' })); return; }
+      await send('Fetch.continueRequest', { requestId }).catch(() => {});
       return;
     }
     if (u.pathname.startsWith('/api/nostr/')) {
@@ -250,10 +269,13 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   // Section 7 sets 'e2e:no_keysend' before it loads the episode: a wallet with
   // no keysend at all, which pays invoices (and records them) instead.
   const noKeysend = (() => { try { return localStorage.getItem('e2e:no_keysend') === '1'; } catch { return false; } })();
+  // Section 8 sets 'e2e:pays_invoices': a wallet that keysends AND pays
+  // invoices, so the show's Lightning-address legs settle too.
+  const paysInvoices = (() => { try { return localStorage.getItem('e2e:pays_invoices') === '1'; } catch { return false; } })();
   window.webln = {
     enable: async () => {},
     isEnabled: async () => true,
-    getInfo: async () => ({ node: { alias: 'e2e' }, methods: ['getInfo', 'getBalance', 'keysend'] }),
+    getInfo: async () => ({ node: { alias: 'e2e' }, methods: paysInvoices ? ['getInfo', 'getBalance', 'keysend', 'sendPayment'] : ['getInfo', 'getBalance', 'keysend'] }),
     getBalance: async () => ({ balance: 1000000 }),
     keysend: async (a) => {
       window.__legs.push({ destination: a.destination, amount: Number(a.amount), tlv: (a.customRecords || {})['7629169'] ?? null });
@@ -261,7 +283,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       return { preimage: '00'.repeat(32) };
     },
     sendPayment: async (pr) => {
-      if (!noKeysend) throw new Error('e2e: keysend only');
+      if (!noKeysend && !paysInvoices) throw new Error('e2e: keysend only');
       window.__paid.push(pr);
       await new Promise((r) => setTimeout(r, 40));
       return { preimage: '00'.repeat(32) };
@@ -690,6 +712,68 @@ if (section(7, 'The same boost from a wallet that cannot keysend (the 2026-11-17
   t.ok('...says nothing was sent to those two', /Nothing was sent to these recipients/.test(nodeCause), nodeCause);
   t.equal('...and names exactly the song\'s two nodes',
     (nodeCause.trim().split('\n').pop() ?? '').split(' · ').map((x) => x.trim()).sort(), Object.keys(SONG_NODES).sort());
+  lnurlPays = false;
+}
+
+// ---------------------------------------------------------------------------
+if (section(8, 'A failed split load is asked again: the song\'s bucket takes over, and nothing pays it early')) {
+  lnurlPays = true; // the show's Lightning-address legs settle against minted invoices
+  splitsFailUntil = Date.now() + 10 * 60_000;
+  const songBucket = `t:${SONG_FEED}:${SONG_ITEM}`;
+  const pending = async () => JSON.parse(await js(`localStorage.getItem('bmb:stream_pending') || 'null'`) ?? 'null');
+  const bucketsNow = async () => Object.fromEntries(Object.entries((await pending())?.buckets ?? {}).filter(([, v]) => v > 0));
+  t.ok('the episode page opens with streaming on at 60 sats a minute',
+    await open(`${APP}/?podcast=${CANDR}&episode=${encodeURIComponent(CANDR_014)}`, { 'bmb:stream_on': '1', 'bmb:stream_rate': '60', 'e2e:pays_invoices': '1' }));
+  const SIGN_IN = `[...document.querySelectorAll('button')].find((b) => /^sign in/i.test(b.textContent.trim()))`;
+  const CONNECT = `[...document.querySelectorAll('[role="menuitem"]')].find((b) => /connect wallet/i.test(b.textContent))`;
+  const WEBLN_ROW = `[...document.querySelectorAll('[role="dialog"] button')].find((b) => /WebLN/.test(b.textContent) && /tap to enable/i.test(b.textContent))`;
+  await until(`!!(${SIGN_IN})`, 20000);
+  await js(`(${SIGN_IN}).click()`);
+  await until(`!!(${CONNECT})`, 10000);
+  await js(`(${CONNECT}).click()`);
+  await until(`!!(${WEBLN_ROW})`, 20000);
+  await js(`(${WEBLN_ROW}).click()`);
+  t.ok('WebLN connects', await until(`!document.querySelector('[role="dialog"]')`, 20000));
+  const askedMark = splitsAsked.length;
+  const parked = await parkInFirstWindow(IN_SONG);
+  t.ok('the player sits inside the song window', parked.at >= 7520 && parked.at < 7733, `at ${parked.at} s`);
+  const firstFail = splitsAsked.slice(askedMark).find((a) => a.failed);
+  t.ok('the context\'s split load was answered 503', !!firstFail, JSON.stringify(splitsAsked.slice(askedMark)));
+  const legMark = await js('window.__legs.length');
+  const paidMark = await js('window.__paid.length');
+  await js(`document.querySelector('audio').play().then(() => 1)`);
+  // 12 s of play (the ledger persists every 10 s): all of it is the show's.
+  await wait(12000);
+  const early = await bucketsNow();
+  t.equal('while the splits cannot load, only the show\'s bucket accrues', Object.keys(early), ['']);
+  // The route comes back. The first retry is 30 s after the failed load.
+  splitsFailUntil = 0;
+  const backAt = Date.now();
+  const landed = await until(`(() => { const p = JSON.parse(localStorage.getItem('bmb:stream_pending') || 'null'); return !!p && (p.buckets[${JSON.stringify(songBucket)}] ?? 0) > 0; })()`, 50000, 500);
+  const retried = splitsAsked.filter((a) => a.at >= backAt && !a.failed).length;
+  t.ok('the split load is asked again, and answered', retried > 0, JSON.stringify(splitsAsked.slice(askedMark).map((a) => [Math.round((a.at - firstFail.at) / 1000), a.failed])));
+  t.ok('...the song\'s bucket accrues from then on', !!landed, JSON.stringify(await bucketsNow()));
+  const retryAt = splitsAsked.find((a) => a.at >= backAt && !a.failed)?.at ?? 0;
+  t.ok('...about 30 s after the failed load, not before', retryAt - firstFail.at >= 29000 && retryAt - firstFail.at < 45000,
+    `${Math.round((retryAt - firstFail.at) / 1000)} s`);
+  // Past the song bucket's 10-sat floor, or the pause carries it unpaid.
+  const funded = await until(`(() => { const p = JSON.parse(localStorage.getItem('bmb:stream_pending') || 'null'); return (p?.buckets[${JSON.stringify(songBucket)}] ?? 0) >= 15000; })()`, 45000, 500);
+  t.ok('...and passes its 10-sat floor', !!funded, JSON.stringify(await bucketsNow()));
+  const before = await legsAfter(legMark, 1500);
+  t.equal('no song leg was paid before its settle edge', before.filter((l) => SONG_NODES[l.b?.name] !== undefined).length, 0);
+  // The retry landing moves the allocation from the show to the song, which is
+  // a track boundary like entering a window: the show's bucket settles then,
+  // to the show, for the sats it earned while the splits could not load.
+  const showPaidAtRetry = (await js('window.__paid.length')) - paidMark;
+  t.ok('...the show\'s bucket settled at that boundary, to the show\'s Lightning addresses', showPaidAtRetry >= 1,
+    `${showPaidAtRetry} invoices paid, ${before.length} keysend legs; buckets ${JSON.stringify(await bucketsNow())}`);
+  t.equal('...and nothing of the show\'s is left owed', Math.floor(((await bucketsNow())[''] ?? 0) / 1000) < 10, true);
+  const PAUSE = `[...document.querySelectorAll('button[aria-label="Pause"]')].find((b) => b.offsetParent !== null)`;
+  t.ok('the player\'s Pause control is there', await until(`!!(${PAUSE})`, 10000));
+  await js(`(${PAUSE}).click()`);
+  const keysent = await legsAfter(legMark, 30000);
+  t.equal('the pause pays the song\'s two nodes, by keysend', keysent.map((l) => l.b?.name).sort(), Object.keys(SONG_NODES).sort());
+  t.equal('...naming the song in remote_*', one(keysent.map((l) => l.b?.remote_item_guid)), [SONG_ITEM]);
   lnurlPays = false;
 }
 

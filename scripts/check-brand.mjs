@@ -41,7 +41,7 @@ if (problems.length) {
   process.exit(1);
 }
 
-const { BRANDS, BRAND, brandIdFrom, siteTitle, DEFAULT_SENDER_NAME, resolveSenderName, clientTag, noteBrandFor } =
+const { BRANDS, BRAND, APP_VERSION, brandIdFrom, siteTitle, DEFAULT_SENDER_NAME, resolveSenderName, clientTag, noteBrandFor } =
   await import('../lib/brand.ts');
 
 let failures = 0;
@@ -146,7 +146,7 @@ const LITERALS = {
     boostSound: '/boost.mp3',
     manifest: '/manifest.json',
     iconDir: '/icons/bmb',
-    userAgent: 'boostmebitch/0.1',
+    userAgent: 'BoostMeBitch/0.1.0 (+https://www.boostmebitch.com)',
     description:
       'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
     androidPackageId: 'com.boostmebitch',
@@ -165,7 +165,7 @@ const LITERALS = {
     boostSound: '/boost-buddy.mp3',
     manifest: '/manifest-buddy.json',
     iconDir: '/icons/buddy',
-    userAgent: 'boostmebuddy/0.1',
+    userAgent: 'BoostMeBuddy/0.1.0 (+https://www.boostmebuddy.com)',
     description:
       'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
     androidPackageId: 'com.boostmebuddy',
@@ -569,6 +569,87 @@ console.log('\n  cross-brand CORS');
     ok(`${name}: OPTIONS answers corsPreflight(req)`, /export\s+function\s+OPTIONS\s*\(\s*req[^)]*\)\s*\{\s*return\s+corsPreflight\(req\)/.test(src));
     ok(`${name}: POST wraps its answer in withCors(`, /export\s+async\s+function\s+POST[\s\S]*?withCors\(/.test(src));
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// The User-Agent every server request sends (Chad, 2026-11-27: "I wanna make
+// sure all of my apps are sending proper user agents", the form with a link and
+// no email).
+//
+// One form across his apps: `<AppName>/<version> (+<link>)`. The name is the
+// brand's `wireName`, the version is `package.json`'s (`APP_VERSION` restates it,
+// because `lib/brand.ts` may import nothing), and the link is the brand's own
+// `origin`, which answers 200 (the apex redirects). No email, no browser name.
+//
+// It is not cosmetic: Buzzsprout's audio host answers 403 to Node's default
+// `node` and 206 to this string (measured 2026-11-27), so `/api/audio` and
+// `/api/audio-probe` got a 403 for every Buzzsprout enclosure until they sent it.
+// ---------------------------------------------------------------------------
+
+console.log('\n  the User-Agent');
+const PKG_VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
+eq('APP_VERSION is package.json\'s version', APP_VERSION, PKG_VERSION);
+
+/** The form, as a verdict: null when it is right, else what is wrong. */
+function userAgentProblem(ua, brand, version) {
+  const m = /^([A-Za-z][A-Za-z0-9-]*)\/(\d+\.\d+\.\d+) \(\+(https:\/\/[^\s)]+)\)$/.exec(ua);
+  if (!m) return 'not <AppName>/<version> (+<link>)';
+  if (m[1] !== brand.wireName) return `name ${m[1]} is not the brand's wireName ${brand.wireName}`;
+  if (m[2] !== version) return `version ${m[2]} is not package.json's ${version}`;
+  if (m[3] !== brand.origin) return `link ${m[3]} is not the brand's origin ${brand.origin}`;
+  if (/@|mozilla|applewebkit|chrome\/|safari\//i.test(ua)) return 'carries an email or a browser name';
+  return null;
+}
+for (const id of Object.keys(BRANDS)) {
+  const b = BRANDS[id];
+  eq(`${id}.userAgent has the form`, userAgentProblem(b.userAgent, b, PKG_VERSION), null);
+}
+// Must-fail half: the strings this replaced, and the obvious wrong ones, are refused.
+for (const [label, ua, brand] of [
+  ['the old bare name', 'boostmebitch/0.1', BRANDS.bmb],
+  ['the old buddy name', 'boostmebuddy/0.1', BRANDS.buddy],
+  ['the other brand\'s name', BRANDS.bmb.userAgent, BRANDS.buddy],
+  ['the apex link (it redirects)', `BoostMeBitch/${PKG_VERSION} (+https://boostmebitch.com)`, BRANDS.bmb],
+  ['a stale version', 'BoostMeBitch/0.0.9 (+https://www.boostmebitch.com)', BRANDS.bmb],
+  ['an email', `BoostMeBitch/${PKG_VERSION} (+https://www.boostmebitch.com; a@b.c)`, BRANDS.bmb],
+  ['a browser imitation', 'Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/131.0 Safari/537.36', BRANDS.bmb],
+  ['Node\'s default', 'node', BRANDS.bmb],
+]) {
+  ok(`the form refuses ${label}`, userAgentProblem(ua, brand, PKG_VERSION) !== null, ua);
+}
+
+// The Action that runs scripts/playlist-archive.mjs checks out `scripts/` only,
+// so the script writes the string out. It must be the bmb brand's.
+{
+  const src = readFileSync(join(REPO, 'scripts/playlist-archive.mjs'), 'utf8');
+  const m = /export const USER_AGENT = '([^']+)';/.exec(src);
+  eq('scripts/playlist-archive.mjs USER_AGENT is BRANDS.bmb.userAgent', m?.[1], BRANDS.bmb.userAgent);
+}
+
+// No hard-coded User-Agent in server code: the value of every User-Agent
+// header in app/, lib/ and scripts/ reads the shared constant. A string literal there is a
+// second name that drifts (this repo had six before 2026-11-27).
+{
+  const ALLOWED = /^(serverUserAgent\(\)|BRAND\.userAgent|BRANDS\.(bmb|buddy)\.userAgent|userAgent\(\)|USER_AGENT)$/;
+  const roots = ['app', 'lib', 'scripts'];
+  const { readdirSync, statSync } = await import('node:fs');
+  const walk = (dir, out) => {
+    for (const name of readdirSync(join(REPO, dir))) {
+      const rel = `${dir}/${name}`;
+      if (statSync(join(REPO, rel)).isDirectory()) walk(rel, out);
+      else if (/\.(ts|tsx|mjs|js)$/.test(name)) out.push(rel);
+    }
+    return out;
+  };
+  const bad = [];
+  for (const rel of roots.flatMap((r) => walk(r, []))) {
+    const src = readFileSync(join(REPO, rel), 'utf8');
+    for (const m of src.matchAll(/['"]User-Agent['"]\s*:\s*([^,}\n]+)/gi)) {
+      if (!ALLOWED.test(m[1].trim())) bad.push(`${rel}: ${m[0].trim()}`);
+    }
+  }
+  ok('every User-Agent header in app/, lib/ and scripts/ reads the shared constant', bad.length === 0, bad.join('\n          '));
 }
 
 

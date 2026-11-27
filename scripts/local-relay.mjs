@@ -74,7 +74,21 @@ function matches(filter, e) {
  * `log` defaults to `console.log` for the CLI and is passed `null` by the e2e,
  * whose own output is the report.
  */
-export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, log = console.log, verbose = false } = {}) {
+/**
+ * `capAt` (opt-in, default off): answer a REQ like a real relay does — at most
+ * `min(filter.limit, capAt)` events, newest first. Off, `limit` is ignored and
+ * every match comes back, which the existing e2e runs were written against.
+ * A real relay caps a REQ at a number of its own choosing and says nothing,
+ * so a paging walk that cannot fail against an uncapped fixture is untested
+ * (e2e:vpsummary). The cap applies to the whole answer, so it models
+ * single-filter REQs.
+ *
+ * `refuse(e)` (opt-in, default off): return a string to answer that EVENT
+ * with `OK false` and that message, the way an operator's write policy reads
+ * on the wire, while REQs keep answering. A read that works beside a write
+ * that does not is the shape of a refused publish (e2e:favrefusal).
+ */
+export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, log = console.log, verbose = false, capAt = null, refuse = null } = {}) {
   /** id -> event */
   const events = new Map();
   const say = log ?? (() => {});
@@ -95,6 +109,11 @@ export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, l
       if (verb === 'EVENT') {
         const e = msg[1];
         if (!e?.id || !e?.pubkey) return;
+        const refusal = refuse?.(e);
+        if (typeof refusal === 'string') {
+          ws.send(JSON.stringify(['OK', e.id, false, refusal]));
+          return;
+        }
         // Deliberately NOT verifying the signature. This is a test fixture, not
         // a relay, and a signature check here would only ever fail for a reason
         // that has nothing to do with what is being tested. It cannot become an
@@ -141,9 +160,11 @@ export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, l
       if (verb === 'REQ') {
         const sub = msg[1];
         const filters = msg.slice(2);
-        const hits = [...events.values()]
+        const all = [...events.values()]
           .filter((e) => filters.some((f) => matches(f, e)))
           .sort((a, b) => b.created_at - a.created_at);
+        const limits = filters.map((f) => (Number.isInteger(f.limit) ? f.limit : Infinity));
+        const hits = capAt == null ? all : all.slice(0, Math.min(capAt, Math.max(...limits)));
         for (const e of hits) ws.send(JSON.stringify(['EVENT', sub, e]));
         ws.send(JSON.stringify(['EOSE', sub]));
         // Registered AFTER the stored hits and the EOSE, so the subscription

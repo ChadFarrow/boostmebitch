@@ -32,6 +32,11 @@ import { centerInScrollBox, scrollBehavior } from '@/lib/format';
  * - **Only the box scrolls** (`centerInScrollBox`). `scrollIntoView` would also
  *   scroll the sheet on a phone, where this list is one part of a page the
  *   listener scrolls themselves.
+ * - **Call it from the component that owns the box** (`<FollowList>` in
+ *   fullscreen-player.tsx). The lists are the TRACKS tab of a strip, so they
+ *   unmount behind LYRICS and ABOUT. Keyed on `[open, activeIndex]` from above,
+ *   the hook never scrolled the box that came back, and the list reopened at
+ *   row 1. From the box's own component, each mount is a first run.
  */
 export function useFollowActiveRow<T extends HTMLElement>(open: boolean, activeIndex: number) {
   const boxRef = useRef<T | null>(null);

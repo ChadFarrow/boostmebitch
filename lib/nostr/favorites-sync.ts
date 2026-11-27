@@ -33,7 +33,9 @@ import {
   PRIVATE_FAVORITES_ENABLED,
   type FavoritesBaseline,
   type FavoritesPrivacy,
+  type PublishReason,
 } from './favorites-list';
+import type { PublishedNote } from './publish';
 import type { DecryptPurpose } from './signer';
 import type { NostrIdentity } from './auth';
 
@@ -427,15 +429,71 @@ export function syncFavoritesNow(
 }
 
 /**
+ * What one cycle a person pressed a button for actually did.
+ *
+ * `syncFavorites` answers `null` for TWO different things: a REFUSAL (a
+ * degraded read, 'mass-removal', 'private-unreadable', a publish that reached
+ * no relay …) and "nothing to say", where the relay already holds these exact
+ * bytes and the baseline is recorded. A caller that tells a person what
+ * happened cannot read one null as both. The privacy dialog read it as neither
+ * and closed as though the move were done while the entries sat where they
+ * were (full-code review 2026-11-19, finding 14); reading every null as a
+ * refusal instead reports a failure for a list that needed no publish.
+ *
+ * The two callbacks tell them apart: every return path of `syncFavorites`
+ * calls exactly one of them, or neither when it refuses before reading (the
+ * 'off' guard). "Unchanged" is a CLAIM, so only `onSynced` may make it; a null
+ * nothing explains is a refusal with no reason.
+ */
+export type FavoritesCycleOutcome =
+  | { kind: 'published'; note: PublishedNote }
+  | { kind: 'unchanged' }
+  | { kind: 'refused'; reason: PublishReason | null };
+
+async function observeCycle(
+  opts: SyncOptions,
+  run: (o: SyncOptions) => Promise<PublishedNote | null>,
+): Promise<FavoritesCycleOutcome> {
+  let synced = false;
+  let refused: PublishReason | null | undefined;
+  const note = await run({
+    ...opts,
+    onSynced: (baseline) => { synced = true; opts.onSynced(baseline); },
+    onDegraded: (reason, removal) => { refused = reason; opts.onDegraded?.(reason, removal); },
+  });
+  if (note) return { kind: 'published', note };
+  if (synced && refused === undefined) return { kind: 'unchanged' };
+  return { kind: 'refused', reason: refused ?? null };
+}
+
+/**
+ * `syncFavoritesNow`, answering what the cycle DID rather than a bare
+ * `PublishedNote | null` — for a surface that tells the person the result.
+ */
+export function syncFavoritesNowDetailed(
+  identity: NostrIdentity,
+  purpose?: DecryptPurpose,
+  userChose = false,
+  confirmRemoval?: number,
+): Promise<FavoritesCycleOutcome> {
+  return serializeFavoritesCycle(() =>
+    observeCycle(cycleOptionsFor(identity, purpose, userChose, confirmRemoval), syncFavorites),
+  );
+}
+
+/**
  * Take this device's entries off the relays, then stop syncing.
  *
  * Always user-initiated — it is reached from a confirmation the user read — so
  * it decrypts the private half and can therefore remove entries from both. It
  * refuses on an untrustworthy read like every other cycle: "remove my entries"
  * is not a licence to publish over a list we could not see.
+ *
+ * Answers a `FavoritesCycleOutcome`: 'unchanged' means the relay already holds
+ * none of this device's entries, which is a success for the person asking.
  */
-export function withdrawThisDevice(identity: NostrIdentity) {
+export function withdrawThisDevice(identity: NostrIdentity): Promise<FavoritesCycleOutcome> {
   return serializeFavoritesCycle(() =>
-    withdrawFavorites(cycleOptionsFor(identity, 'user-initiated')),
+    observeCycle(cycleOptionsFor(identity, 'user-initiated'), withdrawFavorites),
   );
 }

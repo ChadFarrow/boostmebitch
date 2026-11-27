@@ -4,6 +4,8 @@
 // shape the main app uses for SITE_NOSTR_SK and ANDROID_CERT_SHA256. An unset
 // value must never become a guess.
 
+import { indexUserAgent } from './user-agent.ts';
+
 function req(name: string): string {
   const v = process.env[name]?.trim();
   if (!v) throw new Error(`${name} is required`);
@@ -106,7 +108,7 @@ export const config = {
   // client requests, never proactively — the service still works.
   piKey: process.env.PODCAST_INDEX_KEY?.trim() || '',
   piSecret: process.env.PODCAST_INDEX_SECRET?.trim() || '',
-  appName: process.env.APP_NAME?.trim() || 'boostmebitch-index/0.1',
+  appName: indexUserAgent(),
 
   // How stale a pi_* row may be before the warm-fill refreshes it.
   piTtlHours: num('INDEX_PI_TTL_HOURS', 24 * 7),
@@ -126,6 +128,10 @@ export const config = {
   // row rebuild every subscription. Same reason as above: the reconnect test
   // in verify/check-indexer.mjs cannot wait two minutes per assertion.
   connectivityCheckMs: num('INDEX_CONNECTIVITY_MS', 60_000),
+
+  // The first wait before a failed event write is tried again (then 4x, 20x;
+  // `ingestRetryDelay`). Exposed for verify/check-indexer.mjs, as above.
+  ingestRetryMs: num('INDEX_INGEST_RETRY_MS', 30_000),
 
   // How often the kind:30311 subscription is re-issued so its `since` window
   // does not go stale. Hourly; a filter is evaluated once, at REQ time.

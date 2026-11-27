@@ -42,6 +42,7 @@ import {
   liveRosterFeedOrder,
   liveStampSecs,
 } from '../lib/util.ts';
+import { BRAND } from '../lib/brand.ts';
 
 /** Kept in step with `MAX_LIVE_FEEDS` and `MAX_ALWAYS_ON_FEEDS` in
  *  app/api/live-shows/route.ts. An instance that remembers no station gives the
@@ -78,7 +79,7 @@ function authHeaders() {
     'X-Auth-Key': key,
     'X-Auth-Date': ts,
     Authorization: crypto.createHash('sha1').update(key + secret + ts).digest('hex'),
-    'User-Agent': 'probe-live-roster',
+    'User-Agent': BRAND.userAgent,
   };
 }
 
@@ -246,7 +247,7 @@ if (!kept.length) {
 console.log(`\n── ${feed.url} ──`);
 let xml = '';
 try {
-  const res = await fetch(feed.url, { headers: { 'User-Agent': 'probe-live-roster' } });
+  const res = await fetch(feed.url, { headers: { 'User-Agent': BRAND.userAgent } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   xml = await res.text();
   console.log(`  read ${xml.length} bytes`);

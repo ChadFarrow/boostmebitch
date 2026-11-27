@@ -27,6 +27,7 @@ import {
   readCappedText,
   readCappedJson,
   readBytesUpTo,
+  readPrefixThenScan,
   MAX_BODY_BYTES,
 } from '../lib/capped-body.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
@@ -190,6 +191,70 @@ for (const v of VECTORS) {
 }
 if (naiveDiffers < 1) fail('the pre-fix null-body branch passes every vector it is run on — the fix is unpinned');
 else console.log(`  (the pre-fix branch fails ${naiveDiffers} of ${naiveVectors} vectors it is replayed on — vectors bite)`);
+
+// --- An EARLY refusal lets the socket go ---------------------------------------
+//
+// Full-code review 2026-11-19 (lib/capped-body.ts:129): every refusal BEFORE the
+// read loop — a declared length over the cap, a needle the scanner cannot take —
+// threw with the body untouched, and undici keeps an unread body's connection
+// half-open while the bytes keep arriving. The fixture is an ENDLESS stream that
+// records whether its source was cancelled, which is the only way the caller's
+// socket is ever released. Recorded as CALLS and replayed by one loop; `naive`
+// is the pre-fix shape of all six — throw, and touch nothing.
+function endless(headers = {}) {
+  const seen = { cancelled: false };
+  const res = {
+    headers: new Headers(headers),
+    body: new ReadableStream({
+      pull(c) { c.enqueue(bytes(1024)); },
+      cancel() { seen.cancelled = true; },
+    }),
+    arrayBuffer: async () => new ArrayBuffer(0),
+  };
+  return { res, seen };
+}
+const OVER = { 'content-length': '999' };
+const EARLY = [
+  { name: 'readCappedBytes: a declared length over the cap', headers: OVER, call: (r) => readCappedBytes(r, 50) },
+  { name: 'readCappedText: a declared length over the cap', headers: OVER, call: (r) => readCappedText(r, 50) },
+  { name: 'readCappedJson: a declared length over the cap', headers: OVER, call: (r) => readCappedJson(r, 50) },
+  { name: 'readPrefixThenScan: a declared length over the cap', headers: OVER, call: (r) => readPrefixThenScan(r, 10, 50, 'x') },
+  { name: 'readPrefixThenScan: an empty needle', headers: {}, call: (r) => readPrefixThenScan(r, 10, 50, '') },
+  { name: 'readPrefixThenScan: a non-ASCII needle', headers: {}, call: (r) => readPrefixThenScan(r, 10, 50, 'é') },
+];
+const naiveEarly = async () => { throw new Error('refused'); };
+async function earlyOutcome(call, headers) {
+  const { res, seen } = endless(headers);
+  let threw = false;
+  try { await call(res); } catch { threw = true; }
+  return { threw, cancelled: seen.cancelled };
+}
+console.log('\nearly refusals cancel the body:');
+let earlyNaiveDiffers = 0;
+for (const v of EARLY) {
+  const got = await earlyOutcome(v.call, v.headers);
+  if (!same(got, { threw: true, cancelled: true })) {
+    fail(`${v.name}: got ${JSON.stringify(got)}, want it to throw AND cancel the body`);
+    continue;
+  }
+  const n = await earlyOutcome(naiveEarly, v.headers);
+  if (!same(n, got)) earlyNaiveDiffers++;
+  ok(v.name);
+}
+if (earlyNaiveDiffers !== EARLY.length) fail(`the pre-fix early throw passes ${EARLY.length - earlyNaiveDiffers} of ${EARLY.length} — those vectors are unpinned`);
+else console.log(`  (the pre-fix early throw fails all ${EARLY.length} — vectors bite)`);
+{
+  // What must still work: a body read to its end, and one refused at the byte
+  // count, are untouched by this — the count path already cancelled in `finally`.
+  const { res, seen } = endless();
+  let threw = false;
+  try { await readCappedBytes(res, 3000); } catch { threw = true; }
+  if (threw && seen.cancelled) ok('a stream refused at the byte count is still cancelled');
+  else fail(`a stream refused at the byte count: threw ${threw}, cancelled ${seen.cancelled}`);
+  const short = await outcome(readCappedBytes(body([bytes(5)], { 'content-length': '5' }), 50));
+  if (short === 5) ok('a declared length within the cap still reads the body');
+  else fail(`a declared length within the cap: got ${JSON.stringify(short)}`);
+}
 
 if (failed) {
   console.error(`\ncheck:cappedbody FAILED (${failed})`);

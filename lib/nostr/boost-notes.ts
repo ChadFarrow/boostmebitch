@@ -176,6 +176,20 @@ const SITE_SIGN_MAX_CONTENT = 4800;
 const NOTE_LINK_MAX = 512;
 const noteLink = (url: string | null | undefined): string | null =>
   url && url.length <= NOTE_LINK_MAX ? url : null;
+/**
+ * A NIP-73 `i` tag the site-sign route will take: the identifier and its hint
+ * each within the route's MAX_TAG_ITEM_LEN, which refuses the WHOLE template
+ * for one long item. A hint past it is left off (it is optional). An
+ * identifier past it — a feed-chosen item guid, which is often a URL and has no
+ * maximum — drops the tag: a note missing one identifier still goes out, and a
+ * refused one does not, on either path, since the self-signed note is built by
+ * the same function. `null` means "no tag".
+ */
+const noteITag = (id: string, hint?: string | null): string[] | null => {
+  if (id.length > NOTE_LINK_MAX) return null;
+  const h = noteLink(hint);
+  return h ? ['i', id, h] : ['i', id];
+};
 const tagsLen = (tags: string[][]) =>
   tags.reduce((n, t) => n + t.reduce((m, x) => m + x.length, 0), 0);
 
@@ -617,19 +631,18 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // playlist's page still lists the note. The boostagram's `remote_feed_guid`
   // and the summary receipt already name the row's own feed.
   const ownFeed = itemFeedGuid(podcast, episode);
-  if (ownFeed) {
-    tags.push(['i', `podcast:guid:${ownFeed}`, siteLandingUrl(ownFeed, undefined, brand.origin)]);
-    tags.push(['k', 'podcast:guid']);
-  } else if (podcast.podcastGuid) {
-    tags.push(showHint
-      ? ['i', `podcast:guid:${podcast.podcastGuid}`, showHint]
-      : ['i', `podcast:guid:${podcast.podcastGuid}`]);
+  const feedTag = ownFeed
+    ? noteITag(`podcast:guid:${ownFeed}`, siteLandingUrl(ownFeed, undefined, brand.origin))
+    : podcast.podcastGuid
+      ? noteITag(`podcast:guid:${podcast.podcastGuid}`, showHint)
+      : null;
+  if (feedTag) {
+    tags.push(feedTag);
     tags.push(['k', 'podcast:guid']);
   }
-  if (episode?.guid) {
-    tags.push(itemHint
-      ? ['i', `podcast:item:guid:${episode.guid}`, itemHint]
-      : ['i', `podcast:item:guid:${episode.guid}`]);
+  const itemTag = episode?.guid ? noteITag(`podcast:item:guid:${episode.guid}`, itemHint) : null;
+  if (itemTag) {
+    tags.push(itemTag);
     tags.push(['k', 'podcast:item:guid']);
   }
   // The TRACK the boost paid, as NIP-73 identifiers after the show's and the
@@ -646,10 +659,11 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
   // the community feed origin for a playlist BMB hosts. The body no longer
   // prints that link (`heardOnLines`), so this tag is where it is kept.
   if (ownFeed && podcast.podcastGuid) {
-    const playlistHint = noteLink(siteLandingUrl(podcast.podcastGuid, undefined, nc.heardOrigin));
-    tags.push(playlistHint
-      ? ['i', `podcast:guid:${podcast.podcastGuid}`, playlistHint]
-      : ['i', `podcast:guid:${podcast.podcastGuid}`]);
+    const playlistTag = noteITag(
+      `podcast:guid:${podcast.podcastGuid}`,
+      siteLandingUrl(podcast.podcastGuid, undefined, nc.heardOrigin),
+    );
+    if (playlistTag) tags.push(playlistTag);
   }
   const trackTags = (withHints: boolean): string[][] => {
     if (!track) return [];
@@ -657,13 +671,13 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     const feed = track.feedGuid ?? ownFeed ?? podcast.podcastGuid;
     if (track.feedGuid) {
       const hint = withHints ? siteLandingUrl(track.feedGuid, undefined, brand.origin) : null;
-      out.push(hint ? ['i', `podcast:guid:${track.feedGuid}`, hint] : ['i', `podcast:guid:${track.feedGuid}`]);
+      const t = noteITag(`podcast:guid:${track.feedGuid}`, hint);
+      if (t) out.push(t);
     }
     if (track.itemGuid) {
       const hint = withHints && feed ? siteLandingUrl(feed, track.itemGuid, brand.origin) : null;
-      out.push(hint && hint.length <= 512
-        ? ['i', `podcast:item:guid:${track.itemGuid}`, hint]
-        : ['i', `podcast:item:guid:${track.itemGuid}`]);
+      const t = noteITag(`podcast:item:guid:${track.itemGuid}`, hint);
+      if (t) out.push(t);
     }
     return out;
   };

@@ -1,6 +1,6 @@
 'use client';
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createHtmlPortalNode,
   InPortal,
@@ -23,7 +23,7 @@ import { serverAnswers, useNextProbe } from './player/use-next-probe';
 import { useAndroidSessionKeeper } from './player/use-android-session-keeper';
 import { closePlayer, usePlayerHistory } from './player/use-player-history';
 import { fmt } from '@/lib/format';
-import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip, advanceBeforeEnd } from '@/lib/util';
+import { valueNotRead, artGateOpen, boostButtonTitle, boostGate, canPlayNativeHlsAudio, epKey, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip, advanceBeforeEnd, splitAtPosition } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
@@ -34,7 +34,7 @@ import type { Episode, Podcast } from '@/lib/types';
 import { logPlayback, playbackItemId, startPlaybackLog, watchMediaElement } from '@/lib/playback-log';
 import { loadEpisodeFromFeed, loadItemValue } from '@/lib/podcast-meta';
 import { useLiveBlockImage } from './live-now-playing';
-import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
+import { useTranscript, transcriptSourceFor, transcriptIndexAt, cuesOnShowClock } from '@/lib/transcript';
 import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
@@ -1293,6 +1293,30 @@ export function Player() {
   const splits = useResolvedSplits(current?.episode);
   const splitArt = splitArtAt(splits, positionSec);
 
+  // THE SONG'S LYRICS, inside a show. The window playing this second (the same
+  // `splitAtPosition` rule as the art above and the boost) names its track's own
+  // transcript, out of the record `/api/value-splits` already read. One fetch per
+  // song, when its window starts — not when the episode loads — and nothing for
+  // a window whose track names none. `cuesOnShowClock` moves the cue times from
+  // the track's clock onto the show's, so the highlight and a tap both use the
+  // one position the rest of the player does.
+  const lyricSplit = splitAtPosition(splits, positionSec);
+  const lyricUrl = lyricSplit?.transcriptUrl ?? '';
+  const { cues: lyricTrackCues, loading: lyricLoading } = useTranscript(
+    lyricUrl,
+    lyricSplit?.transcriptType,
+  );
+  const lyricStart = lyricSplit?.startTime;
+  const lyricDuration = lyricSplit?.duration;
+  const lyricOffset = lyricSplit?.remoteStartTime;
+  const lyricCues = useMemo(
+    () =>
+      lyricStart == null || lyricDuration == null
+        ? null
+        : cuesOnShowClock(lyricTrackCues, { startTime: lyricStart, duration: lyricDuration, remoteStartTime: lyricOffset }),
+    [lyricTrackCues, lyricStart, lyricDuration, lyricOffset],
+  );
+
   // Both above the early return: the lock-screen effect below reads `nowArt`,
   // and `chapterState` is pure — with no chapters it answers `{-1, null, 0}`,
   // which is what it would have answered after the return anyway.
@@ -1516,6 +1540,7 @@ export function Player() {
   }
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekMedia);
   const transcriptActiveIdx = transcriptIndexAt(transcriptCues, positionSec);
+  const lyricActiveIdx = transcriptIndexAt(lyricCues, positionSec);
 
   // Below `sm:` the text column carries ONE secondary line instead of three.
   // The mini-bar stacks the show title, a buffering readout and the chapter
@@ -2199,6 +2224,11 @@ export function Player() {
         transcriptLoading={transcriptLoading}
         transcriptActiveIdx={transcriptActiveIdx}
         hasTranscriptUrl={!!transcriptSrc.url}
+        songLyrics={
+          lyricUrl
+            ? { cues: lyricCues, loading: lyricLoading, activeIdx: lyricActiveIdx, title: lyricSplit?.title }
+            : null
+        }
         onClose={closePlayer}
         onBoost={openBoost}
       />

@@ -70,6 +70,7 @@ import {
   boostGate,
   boostButtonTitle,
   playsAsTracks,
+  transcriptWord,
   showShareUrl,
   targetWord,
   authorLine,
@@ -84,6 +85,7 @@ import {
   shuffleIndexOf,
   isPlayingRow,
   playingRowIndex,
+  sameList,
 } from '@/lib/util';
 // The two heaviest panes, and the ones the mount-gate comment below singles out:
 // `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
@@ -234,15 +236,28 @@ import { livePlayedSnapshot, subscribeLivePlayed } from '@/lib/live-played';
 const BAR_CHIP_LG = 'lg:h-[38px] lg:px-3';
 
 // About-this-episode text + the episode's tracks + Podcasting 2.0 chapters +
-// transcript, toggled by a tab strip. Tabs show only for sections with real
-// content (2+); a lone section renders under a plain label. A still-loading
+// transcript, toggled by a tab strip — and, on a track, the list it plays in.
+// Tabs show only for sections with real content (2+); a lone section renders
+// under a plain label, except a track list, whose strip shows alone. A still-loading
 // section renders its own loading state. Returns null when there's nothing to
 // show and nothing loading.
 //
 // `contents` is ONE tab holding the tracks and the chapters interleaved — see
 // <EpisodeContents>. They were two tabs of near-identical rows that largely
 // named the same songs.
-type InfoTab = 'about' | 'contents' | 'transcript';
+//
+// `tracks` is the list of the album, playlist or shuffle this TRACK plays in,
+// first in the strip when there is one (`trackList` in <FullscreenPlayer>).
+type InfoTab = 'tracks' | 'about' | 'contents' | 'transcript' | 'lyrics';
+
+/** See `songLyrics` on <FullscreenPlayer>. `title` is the song's, for the tab. */
+export interface SongLyrics {
+  cues: TranscriptCue[] | null;
+  loading: boolean;
+  activeIdx: number;
+  title?: string;
+}
+
 /** The tabs over the RSS pane's body while the IRC chat shows (docs/irc.md). */
 type LiveTab = 'chat' | 'played' | 'about';
 
@@ -265,6 +280,34 @@ function ircChannelOf(episode: Episode, podcast: Podcast): string | null {
   if (isHlsUrl(episode.enclosureUrl) && isLiveStreamId(episode.guid)) return null;
   return ircChannelFor(podcast.podcastGuid);
 }
+
+/** The TRACKS tab, built by <FullscreenPlayer>, which owns the rows' presses.
+ *  `attrs` go on the panel: `data-shuffle-panel` or `data-track-panel`, which
+ *  `e2e:shuffle` and `e2e:lyrics` find the list by. */
+interface TrackListTab {
+  label: string;
+  attrs: Record<`data-${string}`, string>;
+  body: ReactNode;
+}
+
+/**
+ * A now-playing track list's scroll box, kept on the playing row
+ * (`useFollowActiveRow`). The hook lives here, not in <FullscreenPlayer>,
+ * because the list now MOUNTS WITH THE TRACKS TAB: a look at LYRICS unmounts
+ * it, and the box that comes back is a new one. Keyed on `[open, index]` from
+ * the sheet, the hook never scrolled that box, so the list came back at row 1
+ * with the playing row out of sight — Chad's report of 2026-11-14 again. Here
+ * every mount is the hook's first run on its box: the instant first scroll.
+ */
+function FollowList({ open, activeIndex, children }: { open: boolean; activeIndex: number; children: ReactNode }) {
+  const ref = useFollowActiveRow<HTMLUListElement>(open, activeIndex);
+  return (
+    <ul ref={ref} className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+      {children}
+    </ul>
+  );
+}
+
 function EpisodeInfoPanel({
   description,
   splits,
@@ -275,6 +318,9 @@ function EpisodeInfoPanel({
   transcriptLoading,
   transcriptActiveIdx,
   hasTranscriptUrl,
+  transcriptLabel,
+  songLyrics,
+  trackList,
   onSeek,
   currentSec,
   shareUrlFor,
@@ -292,6 +338,14 @@ function EpisodeInfoPanel({
   transcriptLoading: boolean;
   transcriptActiveIdx: number;
   hasTranscriptUrl: boolean;
+  /** The item's own transcript is "Lyrics" on a song and "Transcript" on an
+   *  episode (`transcriptWord`). */
+  transcriptLabel: 'Lyrics' | 'Transcript';
+  /** A song inside a show: its own tab, beside the show's transcript. */
+  songLyrics: SongLyrics | null;
+  /** The TRACKS tab, or null for an item no list belongs to (an episode, a
+   *  track opened on its own). */
+  trackList: TrackListTab | null;
   onSeek: (s: number) => void;
   currentSec: number;
   /** Builds a link to one moment of this episode, for the rows of
@@ -303,7 +357,12 @@ function EpisodeInfoPanel({
   // The episode's own art, for chapters that ship no `img` of their own.
   chapterFallbackImg?: string;
 }) {
-  const [tab, setTab] = useState<InfoTab>('about');
+  // NULL UNTIL THE LISTENER PICKS ONE, and then `tabs[0]` shows: TRACKS on a
+  // track with a list, ABOUT on an episode with notes. It was `'about'`, which
+  // was `tabs[0]` until TRACKS went in front of it. A pick is kept across the
+  // tracks of an album: a listener reading LYRICS stays on LYRICS, and a song
+  // with none shows TRACKS until the next one that has some.
+  const [tab, setTab] = useState<InfoTab | null>(null);
   // `useId()`, per `<CollapsibleHeading>`'s stated contract for the same kind of
   // wiring: the id must be unique per instance, and this component and
   // `<EpisodeDetailView>` can both be mounted at once.
@@ -318,36 +377,76 @@ function EpisodeInfoPanel({
   // `episodeContentsLabel`; the episode page's tab strip shares it.
   const contentsLabel = episodeContentsLabel(splits, chapters);
   const hasTranscript = !!transcriptCues?.length;
+  // Only once it has lines: a window whose file is still loading, failed or
+  // parsed to nothing shows no tab, so there is never an empty LYRICS.
+  const hasSongLyrics = !!songLyrics?.cues?.length;
   const chaptersPending = hasChaptersUrl && chaptersLoading;
   const transcriptPending = hasTranscriptUrl && transcriptLoading;
+
+  // Only sections with loaded content get a tab; a pending section joins once
+  // it resolves. TRACKS first, then ABOUT, then LYRICS — Chad's order.
+  const tabs: InfoTab[] = [];
+  if (trackList) tabs.push('tracks');
+  if (hasDescription) tabs.push('about');
+  if (hasContents) tabs.push('contents');
+  if (hasTranscript) tabs.push('transcript');
+  if (hasSongLyrics) tabs.push('lyrics');
+
+  // WITH A TRACK LIST THE STRIP SHOWS EVEN ALONE. Lyrics join after their fetch
+  // and a song may have no notes, so a strip that came and went with the
+  // second tab swapped a 25px label for a 61px strip and moved the list 36px
+  // under the listener, on every track that differed — the jump Chad reported
+  // on 2026-11-13 for the splits row. One tab, one height, every track.
+  const showTabs = tabs.length >= 2 || !!trackList;
+  // A song's LYRICS tab goes when its window ends. Somebody reading along lands
+  // on the show's track list then — the timeline the next song is on — rather
+  // than on the About text at the top.
+  const active: InfoTab =
+    showTabs && tab && tabs.includes(tab) ? tab
+    : showTabs && tab === 'lyrics' && tabs.includes('contents') ? 'contents'
+    : tabs.length ? tabs[0]
+    : chaptersPending ? 'contents'
+    : 'transcript';
+
+  // THE PANEL KEEPS THE LIST'S HEIGHT while ABOUT or LYRICS shows. On a phone
+  // the strip sits low on the sheet, the sheet is scrolled as far as it goes,
+  // and the first LYRICS of a page renders nothing for a frame (TranscriptPanel
+  // is a `dynamic()` chunk). The 320px list left, the sheet got shorter than its
+  // scroll offset, the browser clamped it to 0, and the tap on LYRICS showed
+  // the cover with the lyrics under the fold — measured at 390x844. A short
+  // ABOUT did the same. So the panel's floor is the list's own height, read off
+  // the list while it shows: a three-track album keeps a three-row floor.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [listPx, setListPx] = useState(0);
+  const listShown = active === 'tracks' && !!trackList;
+  const listKey = trackList?.label;
+  useLayoutEffect(() => {
+    if (!listShown) return;
+    const ul = panelRef.current?.querySelector<HTMLElement>(':scope > ul');
+    if (!ul) return;
+    const read = () => setListPx(ul.offsetHeight);
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(ul);
+    return () => ro.disconnect();
+  }, [listShown, listKey]);
+
   if (
-    !hasDescription && !hasContents && !hasTranscript
+    !trackList && !hasDescription && !hasContents && !hasTranscript && !hasSongLyrics
     && !chaptersPending && !transcriptPending
   ) {
     return null;
   }
 
-  // Only sections with loaded content get a tab; a pending section joins once
-  // it resolves.
-  const tabs: InfoTab[] = [];
-  if (hasDescription) tabs.push('about');
-  if (hasContents) tabs.push('contents');
-  if (hasTranscript) tabs.push('transcript');
-
-  const showTabs = tabs.length >= 2;
-  const active: InfoTab =
-    showTabs && tabs.includes(tab) ? tab
-    : tabs.length ? tabs[0]
-    : chaptersPending ? 'contents'
-    : 'transcript';
-
   const label = (t: InfoTab) =>
-    t === 'contents' ? contentsLabel
-    : t === 'transcript' ? 'Transcript'
+    t === 'tracks' ? trackList?.label ?? 'Tracks'
+    : t === 'contents' ? contentsLabel
+    : t === 'transcript' ? transcriptLabel
+    : t === 'lyrics' ? 'Lyrics'
     : 'About this episode';
 
   return (
-    <div className="border-t border-bone/10 pt-5">
+    <div className="border-t border-bone/10 pt-5" {...trackList?.attrs}>
       {showTabs ? (
         // One strip shared with the episode page — see <UnderlineTabs>. The
         // tab says "About" where the lone-section label below says "About this
@@ -368,7 +467,14 @@ function EpisodeInfoPanel({
           contents swap, and `tabPanelProps`' `aria-labelledby` names which tab is
           showing. Without this the `role="tablist"` was a promise the markup
           broke — see `tabPanelProps`. */}
-      <div {...tabPanelProps(tabsId, active)}>
+      <div
+        {...tabPanelProps(tabsId, active)}
+        ref={panelRef}
+        style={trackList && listPx ? { minHeight: listPx } : undefined}
+      >
+      {/* The list mounts with its tab — see <FollowList>. */}
+      {active === 'tracks' && trackList && trackList.body}
+
       {active === 'about' && hasDescription && (
         <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words">
           {/* Bare URLs a feed wrote as plain text become real links — this pane
@@ -405,6 +511,22 @@ function EpisodeInfoPanel({
             activeIdx={transcriptActiveIdx}
             onSeek={onSeek}
             loading={transcriptLoading}
+            noun={transcriptLabel === 'Lyrics' ? 'lyrics' : 'transcript'}
+          />
+        </Pane>
+      )}
+
+      {active === 'lyrics' && songLyrics && (
+        <Pane label="TranscriptPanel">
+          {songLyrics.title ? (
+            <p className="text-xs text-muted mb-2 truncate">{songLyrics.title}</p>
+          ) : null}
+          <TranscriptPanel
+            cues={songLyrics.cues}
+            activeIdx={songLyrics.activeIdx}
+            onSeek={onSeek}
+            loading={songLyrics.loading}
+            noun="lyrics"
           />
         </Pane>
       )}
@@ -500,6 +622,7 @@ export function FullscreenPlayer({
   transcriptLoading,
   transcriptActiveIdx,
   hasTranscriptUrl,
+  songLyrics,
   onClose,
   onBoost,
 }: {
@@ -554,6 +677,10 @@ export function FullscreenPlayer({
   transcriptLoading: boolean;
   transcriptActiveIdx: number;
   hasTranscriptUrl: boolean;
+  /** The lyrics of the song a `<podcast:valueTimeSplit>` window is playing,
+   *  already on the show's clock, or null outside a window whose track names a
+   *  transcript. Fetched once by <Player>, like the rest. */
+  songLyrics: SongLyrics | null;
   onClose: () => void;
   onBoost: () => void;
 }) {
@@ -567,6 +694,7 @@ export function FullscreenPlayer({
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
   const episodeQueue = useApp((s) => s.episodeQueue);
+  const episodeQueueOwner = useApp((s) => s.episodeQueueOwner);
   const shuffle = useApp((s) => s.shuffle);
   const play = useApp((s) => s.play);
   const playFromShuffle = useApp((s) => s.playFromShuffle);
@@ -864,8 +992,8 @@ export function FullscreenPlayer({
   // THE TRACK LISTS FOLLOW THE PLAYING ROW. Each list below is a `max-h-80`
   // box of its own, and a 230-track shuffle opened at row 1 with the playing
   // row out of sight (Chad, 2026-11-14). The playing row's index in the list
-  // the sheet shows, or -1 — the same tests the two panels render on, here
-  // above the early return because the hooks may not sit after it.
+  // the sheet shows, or -1 — the same tests the two lists render on. The hook
+  // itself is in <FollowList>, which mounts with the TRACKS tab.
   //
   // `open && everOpened`, NOT `open`: on the FIRST open of a page the lists do
   // not exist yet — the subtree mounts a commit later, when the latch's effect
@@ -876,13 +1004,15 @@ export function FullscreenPlayer({
   // `playsAsTracks`, not `isMusicMedium`: a `musicL` playlist's rows are tracks
   // too, and the panel is how a listener sees what plays next (Chad, 2026-11-15,
   // on a community playlist: the now-playing screen listed nothing).
+  // `sameList`: the queue is the list OPENED LAST, and the playing song is a row
+  // of its album and of every playlist naming it, so a row match alone listed
+  // the other one (full-code review 2026-11-19, `e2e:albumpanel`).
   const followAlbumIdx =
     current && followShuffleIdx < 0 && playsAsTracks(current.podcast) && episodeQueue.length > 1
+      && sameList(episodeQueueOwner, current.podcast)
       ? playingRowIndex(episodeQueue, current)
       : -1;
   const listsMounted = open && everOpened;
-  const shuffleListRef = useFollowActiveRow<HTMLUListElement>(listsMounted, followShuffleIdx);
-  const albumListRef = useFollowActiveRow<HTMLUListElement>(listsMounted, followAlbumIdx);
 
   if (!current) return null;
 
@@ -983,6 +1113,115 @@ export function FullscreenPlayer({
     </>
   );
 
+  // THE TRACKS TAB: the list of what plays before and after this track, the
+  // first tab of <EpisodeInfoPanel> beside its ABOUT and LYRICS. It was a panel
+  // of its own above that strip until 2026-11-26, which put a song's lyrics
+  // under a 320px list, 1133px down the sheet on a phone (Chad, beta: "I think
+  // about and lyrics need to be tabs in the tracks area"). Null when no list
+  // belongs to this track, and the panel is then what it is for an episode.
+  //
+  // THE SHUFFLE replaces the album list while it owns the track.
+  // `episodeQueue` is the list of whatever show was opened last, which during a
+  // shuffle is an album the listener browsed past — and a tap there would
+  // `play` it under THIS track's show. Each row here carries its own show, so a
+  // tap is `playFromShuffle`.
+  //
+  // THE ALBUM LIST only while the playing track IS a row of `episodeQueue`.
+  // `episodeQueue` is the show opened last, so after browsing to another album
+  // it lists THAT album under this track, and a tap there played its song under
+  // this track's show. Widening the panel to playlists widened that too, so the
+  // panel now asks.
+  const trackList: TrackListTab | null = shuffleIdx >= 0 && shuffle ? {
+    label: `Shuffle (${shuffle.items.length})`,
+    attrs: { 'data-shuffle-panel': '' },
+    body: (
+      <FollowList open={listsMounted} activeIndex={followShuffleIdx}>
+        {shuffle.items.map((t, i) => {
+          const active = i === shuffleIdx;
+          const key = epKey(t.episode);
+          return (
+            <li key={key} data-key={key} aria-current={active ? 'true' : undefined}>
+              {/* The active row draws ❚❚, so it pauses — the album
+                  list's rule below. */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (active) togglePlay();
+                  else playFromShuffle(i);
+                }}
+                className={`w-full flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
+                  active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                }`}
+              >
+                <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
+                  {active && isPlaying ? '❚❚' : i + 1}
+                </span>
+                <span className="truncate flex-1 min-w-0">
+                  {t.episode.title}
+                  {t.podcast.title ? <span className="text-muted"> · {t.podcast.title}</span> : null}
+                </span>
+                {t.episode.duration ? (
+                  <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.episode.duration)}</span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
+      </FollowList>
+    ),
+  } : followAlbumIdx >= 0 ? {
+    label: `Tracks (${episodeQueue.length})`,
+    attrs: { 'data-track-panel': isPlaylist ? 'playlist' : 'album' },
+    body: (
+      <FollowList open={listsMounted} activeIndex={followAlbumIdx}>
+        {episodeQueue.map((t, i) => {
+          const active = isPlayingRow(t, current);
+          return (
+            <li key={t.id} aria-current={active ? 'true' : undefined}>
+              {/* The active row draws ❚❚, so it has to pause.
+                  `play()` on the current track writes
+                  `isPlaying: true` over `true` and re-runs neither of
+                  the player's two effects, so the press was a silent
+                  no-op. */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (active) togglePlay();
+                  else play(t, podcast);
+                }}
+                className={`w-full flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
+                  active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                }`}
+              >
+                {/* THE FEED'S TRACK NUMBER, not the row's position.
+                    `i + 1` only ever agreed with the track number by
+                    coincidence — the server sorts an album by
+                    `<podcast:episode>` ascending, so position matched
+                    until a track was missing from the feed or the
+                    list was reversed, at which point this panel
+                    confidently labelled track 1 as "12". Position is
+                    the fallback because a feed that numbers nothing
+                    leaves nothing truer to show, and "which row am I
+                    on" is the honest floor. */}
+                <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
+                  {active && isPlaying ? '❚❚' : isPlaylist ? i + 1 : t.episode ?? i + 1}
+                </span>
+                <span className="truncate flex-1">
+                  {t.title}
+                  {/* A playlist mixes artists: name the song's own album, as the shuffle list does. */}
+                  {isPlaylist && t.feedTitle ? <span className="text-muted"> · {t.feedTitle}</span> : null}
+                </span>
+                {t.duration ? (
+                  <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.duration)}</span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
+      </FollowList>
+    ),
+  } : null;
+
   // THE PLAYED AND ABOUT BODIES, built once: the ordinary scroll body stacks
   // them, and with the IRC chat they are two of its tabs (docs/irc.md). One
   // copy, so the two layouts cannot drift apart.
@@ -1013,6 +1252,9 @@ export function FullscreenPlayer({
         transcriptLoading={transcriptLoading}
         transcriptActiveIdx={transcriptActiveIdx}
         hasTranscriptUrl={hasTranscriptUrl}
+        transcriptLabel={transcriptWord(podcast)}
+        songLyrics={songLyrics}
+        trackList={trackList}
         onSeek={seekTo}
         currentSec={positionSec}
         // `undefined`, not a builder returning null, when the episode has
@@ -1037,7 +1279,10 @@ export function FullscreenPlayer({
       ) : null}
     </>
   );
+  // `trackList` too: the TRACKS tab lives inside <EpisodeInfoPanel> now, so a
+  // track list with no notes is still something behind ABOUT.
   const aboutHasContent = !!description || !!splits?.length || !!transcriptCues?.length
+    || !!trackList
     || !!episode.socialInteract?.length || (hasTranscriptUrl && transcriptLoading);
   const liveTabs: { id: LiveTab; label: string }[] = [
     { id: 'chat', label: 'Chat' },
@@ -1821,110 +2066,6 @@ export function FullscreenPlayer({
             </div>
 
             {valueBlock}
-
-
-            {/* THE SHUFFLE replaces the album panel while it owns the track.
-                `episodeQueue` is the list of whatever show was opened last,
-                which during a shuffle is an album the listener browsed past —
-                and a tap there would `play` it under THIS track's show. Each
-                row here carries its own show, so a tap is `playFromShuffle`. */}
-            {shuffleIdx >= 0 && shuffle ? (
-              <div data-shuffle-panel className="border-t border-bone/10 pt-5">
-                <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
-                  Shuffle · {shuffle.items.length} tracks
-                </p>
-                <ul ref={shuffleListRef} className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
-                  {shuffle.items.map((t, i) => {
-                    const active = i === shuffleIdx;
-                    const key = epKey(t.episode);
-                    return (
-                      <li key={key} data-key={key} aria-current={active ? 'true' : undefined}>
-                        {/* The active row draws ❚❚, so it pauses — the album
-                            panel's rule below. */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (active) togglePlay();
-                            else playFromShuffle(i);
-                          }}
-                          className={`w-full flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
-                            active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
-                          }`}
-                        >
-                          <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
-                            {active && isPlaying ? '❚❚' : i + 1}
-                          </span>
-                          <span className="truncate flex-1 min-w-0">
-                            {t.episode.title}
-                            {t.podcast.title ? <span className="text-muted"> · {t.podcast.title}</span> : null}
-                          </span>
-                          {t.episode.duration ? (
-                            <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.episode.duration)}</span>
-                          ) : null}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ) : followAlbumIdx >= 0 && (
-              /* Only while the playing track IS a row of `episodeQueue`.
-                 `episodeQueue` is the show opened last, so after browsing to
-                 another album it lists THAT album under this track, and a tap
-                 there played its song under this track's show. Widening the
-                 panel to playlists widened that too, so the panel now asks. */
-              <div className="border-t border-bone/10 pt-5" data-track-panel={isPlaylist ? 'playlist' : 'album'}>
-                <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
-                  {isPlaylist ? 'Playlist' : 'Album'} · {episodeQueue.length} tracks
-                </p>
-                <ul ref={albumListRef} className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
-                  {episodeQueue.map((t, i) => {
-                    const active = isPlayingRow(t, current);
-                    return (
-                      <li key={t.id} aria-current={active ? 'true' : undefined}>
-                        {/* The active row draws ❚❚, so it has to pause.
-                            `play()` on the current track writes
-                            `isPlaying: true` over `true` and re-runs neither of
-                            the player's two effects, so the press was a silent
-                            no-op. */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (active) togglePlay();
-                            else play(t, podcast);
-                          }}
-                          className={`w-full flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
-                            active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
-                          }`}
-                        >
-                          {/* THE FEED'S TRACK NUMBER, not the row's position.
-                              `i + 1` only ever agreed with the track number by
-                              coincidence — the server sorts an album by
-                              `<podcast:episode>` ascending, so position matched
-                              until a track was missing from the feed or the
-                              list was reversed, at which point this panel
-                              confidently labelled track 1 as "12". Position is
-                              the fallback because a feed that numbers nothing
-                              leaves nothing truer to show, and "which row am I
-                              on" is the honest floor. */}
-                          <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
-                            {active && isPlaying ? '❚❚' : isPlaylist ? i + 1 : t.episode ?? i + 1}
-                          </span>
-                          <span className="truncate flex-1">
-                            {t.title}
-                            {/* A playlist mixes artists: name the song's own album, as the shuffle panel does. */}
-                            {isPlaylist && t.feedTitle ? <span className="text-muted"> · {t.feedTitle}</span> : null}
-                          </span>
-                          {t.duration ? (
-                            <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.duration)}</span>
-                          ) : null}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
           </div>
 
           {/* WITH THE IRC CHAT the body is three tabs — CHAT · PLAYED · ABOUT,
@@ -1952,7 +2093,7 @@ export function FullscreenPlayer({
               </div>
             </div>
           ) : (
-          /* Scrollable body — About / Chapters / Transcript (+ discussion). */
+          /* Scrollable body — Tracks / About / Chapters / Transcript (+ discussion). */
           <div className="flex-1 sm:min-h-0 sm:overflow-y-auto">
             {playedBody}
             {aboutBody}

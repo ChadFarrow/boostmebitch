@@ -4,6 +4,8 @@ import { createObservable } from '../pubsub';
 import { BRAND } from '../brand';
 import { isNativeIos } from '../native/platform';
 import { sparkAccountNumber } from './spark-derive';
+import { logPlayback } from '../playback-log';
+import { getErrorMessage, sparkErrorCode, type SparkErrorCode } from '../util';
 
 // Spark rail — Spark Labs SDK adapter (@buildonspark/spark-sdk). Self-custodial
 // wallet whose mnemonic is bootstrapped from a NIP-44-encrypted backup on Nostr
@@ -63,6 +65,62 @@ const { subscribe: subscribeSpark, notify } = createObservable();
 
 /** Subscribe to wallet state changes. Returns an unsubscribe fn. */
 export { subscribeSpark };
+
+/**
+ * The last Spark failure that nobody was shown, so the wallet window can say it
+ * (#304). Two of them were HIDDEN until 2026-11-27:
+ *
+ * - `connect`: the page-load restore runs `sparkInitFromMnemonic` under a
+ *   `.catch(() => {})`, so a wallet that did not open left no trace. The person
+ *   saw the Spark row of the picker as if they had never had a wallet.
+ * - `balance`: `sparkGetInfo` answers `null` for any failure, and its callers
+ *   read `null` as "no reading yet", so the card showed "—" forever.
+ *
+ * Each failure goes three ways: `console.warn` with the error's own text (it
+ * stays on the device), one line in the bug report's log with a FIXED reason
+ * word (`sparkErrorCode`, never the text: the log is filed into a public
+ * issue), and this record for `<SparkWallet>` to render.
+ *
+ * Its OWN observable, not `notify()`: the wallet listeners re-read the balance
+ * on `subscribeSpark`, so a failed read that notified them would ask again and
+ * fail again. A repeat of the same op and reason word writes no new log line
+ * or warning — the SDK's text differs on every call (it carries per-request
+ * detail), so comparing it wrote one line per retry (measured: six lines for
+ * two refreshes); the card still shows the newest text. A success clears it;
+ * so does `sparkDisconnect`, so a signed-out account's failure is not shown to
+ * the next.
+ */
+export type SparkFailure = { op: 'connect' | 'balance'; code: SparkErrorCode; detail: string };
+let lastFailure: SparkFailure | null = null;
+let lastFailureError: unknown = null;
+const failures = createObservable();
+export const subscribeSparkFailure = failures.subscribe;
+export function sparkLastFailure(): SparkFailure | null {
+  return lastFailure;
+}
+/** Was this error already recorded (and so shown by the wallet window)? Lets a form skip saying it twice. */
+export function sparkFailureIs(e: unknown): boolean {
+  return e != null && e === lastFailureError;
+}
+function recordSparkFailure(op: SparkFailure['op'], e: unknown): void {
+  const detail = getErrorMessage(e, 'unknown error').slice(0, 300);
+  const code = sparkErrorCode(detail);
+  lastFailureError = e;
+  const repeat = !!lastFailure && lastFailure.op === op && lastFailure.code === code;
+  if (repeat && lastFailure!.detail === detail) return;
+  lastFailure = { op, code, detail };
+  if (!repeat) {
+    console.warn(`[spark] ${op} failed (${code}):`, detail);
+    logPlayback(`spark.${op}`, { res: 'fail', why: code });
+  }
+  failures.notify();
+}
+function clearSparkFailure(op?: SparkFailure['op']): void {
+  if (!lastFailure || (op && lastFailure.op !== op)) return;
+  lastFailure = null;
+  lastFailureError = null;
+  failures.notify();
+}
 
 /**
  * False inside the iOS app: Spark is a wallet this app HOLDS, and the iOS app
@@ -170,6 +228,11 @@ export async function sparkInitFromMnemonic(args: {
   });
   try {
     await Promise.race([pending, timeout]);
+  } catch (e) {
+    // `doInitFromMnemonic` records its own failure once for every racer; this
+    // records the cap, which only the wrapper sees.
+    if (!sparkFailureIs(e)) recordSparkFailure('connect', e);
+    throw e;
   } finally {
     clearTimeout(timer);
   }
@@ -180,24 +243,33 @@ async function doInitFromMnemonic(args: {
   ownerPubkey: string;
   network?: 'mainnet' | 'regtest';
 }): Promise<void> {
-  // Dynamic import keeps the heavy SDK out of the initial bundle.
-  const { SparkWallet } = await import('@buildonspark/spark-sdk');
+  let wallet: unknown;
+  try {
+    // Dynamic import keeps the heavy SDK out of the initial bundle.
+    const { SparkWallet } = await import('@buildonspark/spark-sdk');
 
-  const network = args.network ?? 'mainnet';
-  const { wallet } = await SparkWallet.initialize({
-    mnemonicOrSeed: args.mnemonic,
-    // Spark's per-network DEFAULT account number is 1 on mainnet, 0 on regtest.
-    // Primal and BlitzWallet both use that default, so we mirror it explicitly
-    // to derive the SAME account (and therefore share the balance) for a given
-    // seed. Hardcoding 0 on mainnet derives a different, empty account.
-    // Pinned with the installed SDK by `npm run check:spark`.
-    accountNumber: sparkAccountNumber(network),
-    options: { network: network === 'regtest' ? 'REGTEST' : 'MAINNET' },
-  });
+    const network = args.network ?? 'mainnet';
+    ({ wallet } = await SparkWallet.initialize({
+      mnemonicOrSeed: args.mnemonic,
+      // Spark's per-network DEFAULT account number is 1 on mainnet, 0 on regtest.
+      // Primal and BlitzWallet both use that default, so we mirror it explicitly
+      // to derive the SAME account (and therefore share the balance) for a given
+      // seed. Hardcoding 0 on mainnet derives a different, empty account.
+      // Pinned with the installed SDK by `npm run check:spark`.
+      accountNumber: sparkAccountNumber(network),
+      options: { network: network === 'regtest' ? 'REGTEST' : 'MAINNET' },
+    }));
+  } catch (e) {
+    // Once per init, whoever is waiting: the racers share this promise.
+    recordSparkFailure('connect', e);
+    throw e;
+  }
 
   sdk = wallet as unknown as SparkSdk;
   activePubkey = args.ownerPubkey;
   activeMnemonic = normalizeSeed(args.mnemonic);
+  // Also after a timeout the wrapper recorded: the init went on and opened.
+  clearSparkFailure();
   notify();
 }
 
@@ -240,6 +312,7 @@ export async function sparkDisconnect(): Promise<void> {
   sdk = null;
   activePubkey = null;
   activeMnemonic = null;
+  clearSparkFailure();
   notify();
 }
 
@@ -251,8 +324,12 @@ export async function sparkGetInfo(): Promise<{ balanceSats: number; identityPub
     // satsBalance.available is the immediately-spendable balance; `balance` is
     // the deprecated alias for the same number. Both are bigint.
     const sats = b?.satsBalance?.available ?? b?.balance ?? 0n;
+    clearSparkFailure('balance');
     return { balanceSats: Number(sats) };
-  } catch {
+  } catch (e) {
+    // Still `null` to the callers (they read it as "no reading"), but no longer
+    // silent: see `SparkFailure`.
+    recordSparkFailure('balance', e);
     return null;
   }
 }

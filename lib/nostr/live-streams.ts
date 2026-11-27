@@ -1,6 +1,6 @@
 import { nip19, type Event } from 'nostr-tools';
 import { withPool, FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS } from './pool';
-import { collectEventsByAuthors } from './event-queries';
+import { collectEventsByAuthors, collectEventsDetailed } from './event-queries';
 import { DEFAULT_RELAYS, sanitizeRelays } from './relays';
 import { fetchProfileDetailed } from './profile';
 import { storage } from '../storage';
@@ -404,71 +404,73 @@ export async function fetchLiveStreamByAddr(
  * the soonest upcoming `planned` stream (so the page can show a "next up" hint);
  * else null. Ended broadcasts are never returned — we don't auto-open a dead
  * stream behind a permanent link.
+ *
+ * **`trustworthy` says whether "not live" may be believed** (full-code review
+ * 2026-11-19). The two reads were `pool.querySync`, which resolves at the
+ * library's aggregate EOSE — and a failed connection fires that too, in
+ * milliseconds — so an offline phone or a relay outage read as an empty answer,
+ * and `/live/<npub>` told the listener the host "isn't live right now" while
+ * they were on air. Both reads now count relays (`collectEventsDetailed`): a
+ * live stream in hand is its own proof, and otherwise the absence holds only
+ * when BOTH reads are complete — reached at least one relay, and every relay
+ * reached answered.
  */
 export async function fetchLatestStreamByPubkey(
   pubkey: string,
   relayHints: string[] = [],
-): Promise<NostrLiveStream | null> {
+): Promise<{ stream: NostrLiveStream | null; trustworthy: boolean }> {
   const relays = sanitizeRelays([...relayHints, ...LIVE_STREAM_RELAYS]).slice(0, 20);
-  return withPool(relays, async (pool) => {
-    try {
-      // Two queries: streams the pubkey AUTHORED (self-published) and streams
-      // that p-TAG the pubkey (platform-published on their behalf). Neither
-      // uses a `#d` filter — same reasoning as fetchLiveStreamByAddr:
-      // fountain.fm and other host relays don't honor tag filters reliably
-      // in-browser — and the host-role check is applied client-side below.
-      const [authored, tagged] = await Promise.all([
-        pool.querySync(
-          relays,
-          { kinds: [30311], authors: [pubkey], limit: 50 },
-          { maxWait: FEED_QUERY_MAX_WAIT_MS },
-        ),
-        pool.querySync(
-          relays,
-          { kinds: [30311], '#p': [pubkey], limit: 50 },
-          { maxWait: FEED_QUERY_MAX_WAIT_MS },
-        ),
-      ]);
-      const events = [...authored, ...tagged];
+  try {
+    // Two queries: streams the pubkey AUTHORED (self-published) and streams
+    // that p-TAG the pubkey (platform-published on their behalf). Neither
+    // uses a `#d` filter — same reasoning as fetchLiveStreamByAddr:
+    // fountain.fm and other host relays don't honor tag filters reliably
+    // in-browser — and the host-role check is applied client-side below.
+    const [authored, tagged] = await Promise.all([
+      collectEventsDetailed(relays, { kinds: [30311], authors: [pubkey], limit: 50 }, FEED_QUERY_MAX_WAIT_MS),
+      collectEventsDetailed(relays, { kinds: [30311], '#p': [pubkey], limit: 50 }, FEED_QUERY_MAX_WAIT_MS),
+    ]);
+    const events = [...authored.events, ...tagged.events];
+    const complete = authored.complete && tagged.complete;
 
-      // Dedupe replaceable events by NIP-33 address (newest version wins).
-      const byAddr = new Map<string, Event>();
-      for (const e of events) {
-        const dTag = e.tags.find((t) => t[0] === 'd')?.[1] ?? e.id;
-        const addr = `${e.pubkey}:${dTag}`;
-        const existing = byAddr.get(addr);
-        if (!existing || e.created_at > existing.created_at) byAddr.set(addr, e);
-      }
-
-      const liveFreshAfter = Math.floor(Date.now() / 1000) - LIVE_FRESH_SECS;
-      // Keep only streams this pubkey actually HOSTS: authored it, or is a
-      // host-role participant. A mere guest/speaker p-tag doesn't qualify —
-      // /live/<npub> must not hijack to a show they're only tagged in.
-      const streams = Array.from(byAddr.values())
-        .map(parseNostrLiveStream)
-        .filter(
-          (s) =>
-            s.pubkey === pubkey ||
-            s.participants.some((p) => p.pubkey === pubkey && p.role.toLowerCase() === 'host'),
-        );
-
-      // A fresh `live` event = broadcasting right now (clients re-publish it
-      // periodically). Newest first if the host somehow has two.
-      const live = streams
-        .filter((s) => s.status === 'live' && s.rawEvent.created_at >= liveFreshAfter)
-        .sort((a, b) => (b.startsAt ?? 0) - (a.startsAt ?? 0));
-      if (live[0]) return live[0];
-
-      // Otherwise the soonest upcoming planned stream (drives the "next up" hint
-      // on the offline placeholder).
-      const planned = streams
-        .filter((s) => s.status === 'planned')
-        .sort((a, b) => (a.startsAt ?? Infinity) - (b.startsAt ?? Infinity));
-      return planned[0] ?? null;
-    } catch {
-      return null;
+    // Dedupe replaceable events by NIP-33 address (newest version wins).
+    const byAddr = new Map<string, Event>();
+    for (const e of events) {
+      const dTag = e.tags.find((t) => t[0] === 'd')?.[1] ?? e.id;
+      const addr = `${e.pubkey}:${dTag}`;
+      const existing = byAddr.get(addr);
+      if (!existing || e.created_at > existing.created_at) byAddr.set(addr, e);
     }
-  });
+
+    const liveFreshAfter = Math.floor(Date.now() / 1000) - LIVE_FRESH_SECS;
+    // Keep only streams this pubkey actually HOSTS: authored it, or is a
+    // host-role participant. A mere guest/speaker p-tag doesn't qualify —
+    // /live/<npub> must not hijack to a show they're only tagged in.
+    const streams = Array.from(byAddr.values())
+      .map(parseNostrLiveStream)
+      .filter(
+        (s) =>
+          s.pubkey === pubkey ||
+          s.participants.some((p) => p.pubkey === pubkey && p.role.toLowerCase() === 'host'),
+      );
+
+    // A fresh `live` event = broadcasting right now (clients re-publish it
+    // periodically). Newest first if the host somehow has two.
+    const live = streams
+      .filter((s) => s.status === 'live' && s.rawEvent.created_at >= liveFreshAfter)
+      .sort((a, b) => (b.startsAt ?? 0) - (a.startsAt ?? 0));
+    if (live[0]) return { stream: live[0], trustworthy: true };
+
+    // Otherwise the soonest upcoming planned stream (drives the "next up" hint
+    // on the offline placeholder). A planned stream in hand proves nothing
+    // about a live one on a relay that did not answer.
+    const planned = streams
+      .filter((s) => s.status === 'planned')
+      .sort((a, b) => (a.startsAt ?? Infinity) - (b.startsAt ?? Infinity));
+    return { stream: planned[0] ?? null, trustworthy: complete };
+  } catch {
+    return { stream: null, trustworthy: false };
+  }
 }
 
 /**

@@ -27,6 +27,7 @@
 // the server paths where it doesn't.
 
 import { channelSlice, parseFeedNpubs } from '../lib/feed-xml.ts';
+import { BRAND } from '../lib/brand.ts';
 
 const feedUrl = process.argv.slice(2).find((a) => !a.startsWith('--'));
 if (!feedUrl) {
@@ -34,7 +35,7 @@ if (!feedUrl) {
   process.exit(1);
 }
 
-const res = await fetch(feedUrl, { headers: { 'User-Agent': 'BoostMeBitch-probe/1.0' } });
+const res = await fetch(feedUrl, { headers: { 'User-Agent': BRAND.userAgent } });
 if (!res.ok) {
   console.error(`fetch failed: ${res.status} ${res.statusText}`);
   process.exit(1);

@@ -720,6 +720,14 @@ export function clearBunkerSigner({ revoke = false }: { revoke?: boolean } = {})
   if (revoke) revokeBunkerSession();
   else deactivateBunkerSigner();
   storage.bunker.clear();
+  // THE HEALTH FLAG GOES WITH THE SESSION IT DESCRIBES. It is module state, and
+  // `<AccountMenu>` renders "Signer disconnected" (and the signer's quoted
+  // refusal) off it alone, so a flag left up here outlived the sign-out and sat
+  // on the NEXT session — an extension or Google sign-in showing a bunker's
+  // fault, with a RECONNECT that had no pointer left to use (full-code review
+  // 2026-11-19). Safe on the abandon path too: that one signs out, and only a
+  // `no-session` restore reaches it, which never set the flag.
+  clearBunkerStale();
 }
 
 /**

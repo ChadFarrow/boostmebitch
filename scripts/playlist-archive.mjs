@@ -53,6 +53,14 @@ import { pathToFileURL } from 'node:url';
 export const FEED_ORIGIN = 'https://www.boostmebuddy.com';
 
 /**
+ * `BRANDS.bmb.userAgent` (`lib/brand.ts`), written out: the Action that runs this
+ * script checks out `scripts/` only, so it cannot import that module or read
+ * `package.json`. `check:brand` asserts the two are equal, so a version bump or
+ * a change of form fails there rather than drifting here.
+ */
+export const USER_AGENT = 'BoostMeBitch/0.1.0 (+https://www.boostmebitch.com)';
+
+/**
  * Where the list of playlists is read, first answer wins. The list route is on
  * only where `NEXT_PUBLIC_COMMUNITY_PLAYLISTS=on`: today that is beta alone, and
  * www.boostmebuddy.com answers 404 until launch, then answers first.
@@ -307,7 +315,7 @@ async function readCapped(res, cap) {
 async function get(url, cap, redirect) {
   const res = await fetch(url, {
     redirect,
-    headers: { 'User-Agent': 'boostmebitch-playlist-archive' },
+    headers: { 'User-Agent': USER_AGENT },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   const text = await readCapped(res, cap);

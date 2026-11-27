@@ -36,15 +36,16 @@ current directory, so it cannot be run from a worktree. → [`ops.md`](ops.md)
 the repo's `check:*` scripts; `check-api.mjs`, `check-live-heads.mjs`,
 `check-search.mjs` and `check-indexer.mjs` need a Postgres, and the indexer one
 drives a scripted local relay (`verify/mock-relay.mjs`). `verify:ingest`,
-`verify:yield` and `verify:rejections` run with no database. No Postgres on the
+`verify:yield`, `verify:rejections` and `verify:ua` (the `User-Agent` this service
+sends PI, `src/user-agent.ts`) run with no database. No Postgres on the
 machine and no Docker? `embedded-postgres` from npm, installed in a scratch
 directory, runs a real one without root — the whole suite ran green that way on
 2026-09-19. Homebrew's `postgresql@17` works too; give it `-c
 unix_socket_directories=''` and TCP when the data directory's path is long.
 
 **`check-indexer.mjs` prints `ok` and then does not exit** (seen on `main` at
-9f9959dd, 2026-11-17), so `npm run verify` never reaches `verify:yield` and
-`verify:rejections`. Run those two by name until that is fixed.
+9f9959dd, 2026-11-17), so `npm run verify` never reaches `verify:yield`,
+`verify:rejections` and `verify:ua`. Run those three by name until that is fixed.
 
 ## A `void` on a background loop ends the process
 
@@ -308,6 +309,31 @@ SECOND road to the #301 rebuild storm — the first was an order-sensitive
 fingerprint (`fingerprintOf`) — so **anything that changes what enters
 `tracked_pubkeys` is a relay-load decision**: after it ships, count the
 `tracked subscriptions rebuilt` lines in the log.
+
+**One note may add at most `MAX_TRACKED_P_TAGS` (16) p-tags; a note with more
+adds its author only** (full-code review 2026-11-19, finding 16). Every p-tag of
+a corpus note is stamped `seen_at = now()`, so one signed note with 5,000 p-tags
+and a podcast `i` tag — anybody can publish one — took the whole window and
+pushed every real author's profile, zap and deletion subscriptions out. None
+rather than "the first sixteen": the order of the list is the sender's choice.
+Sixteen is twice the eight the site-sign route allows on a note of ours. The
+cap shrinks what enters the table, so it can only make the rebuild rate fall.
+
+## A failed write is retried, never marked seen
+
+`Indexer.take` adds an id to `seen` BEFORE the write, so a duplicate from the
+next relay skips the round trip. Before finding 16 a write that FAILED (a
+Postgres restart, a dropped connection) left the id there: every later copy,
+live or from backfill, was a "duplicate", and the event was lost for the life of
+the process — for good, once backfill had walked past it. Now a failure forgets
+the id and schedules one retry of the event itself (`ingestRetryDelay`: 30 s,
+2 min, 10 min, then it gives up; `INDEX_INGEST_RETRY_MS` sets the base), because
+the other copies usually arrived in the same second and are already gone. At
+most 2,000 events wait at once, so an outage that fails every write cannot hold
+the stream in memory. The write is idempotent, so a copy and a retry that both
+land cost one no-op insert. `check-indexer.mjs` fails the first two connections
+of a write and needs the note to land; against the code before the fix it never
+does.
 
 ## A relay keeps 20 subscriptions live, and a refused one still answers
 

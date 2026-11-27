@@ -69,9 +69,12 @@ import {
   clearCreditedRun,
   creditFixed,
   settleBatch,
+  splitRetryDelayMs,
+  splitRetryDue,
   STREAM_TRACK_CREDIT_DEBOUNCE_MS,
   STREAM_TRACK_MIN_PLAY_MS,
   trackBucket,
+  type SplitLoadState,
   type StreamAllocation,
   type StreamLedger,
 } from './stream-ledger';
@@ -96,6 +99,13 @@ interface StreamContext {
    * whose payment target changes track by track.
    */
   splits: Map<string, ValueTimeSplit>;
+  /**
+   * The next `/api/value-splits` retry for this context, or null/undefined for
+   * none (`splitRetryDelayMs`). `retries` counts the retries already run.
+   */
+  splitRetry?: { retries: number; nextAtMs: number } | null;
+  /** A split load for this context is in flight (`splitRetryDue`). */
+  splitsLoading?: boolean;
   /**
    * Track being credited as of the last tick — `undefined` until the first one,
    * so opening a context can't read as a boundary. `null` means the host.
@@ -229,26 +239,35 @@ function splitCacheKey(episode: Episode): string {
  * spec-correct default: a valueTimeSplit *redirects* part of the show's value
  * for a window, so anything that can't be redirected is still the show's.
  */
-async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>> {
+async function loadSplits(episode: Episode): Promise<{ map: Map<string, ValueTimeSplit>; state: SplitLoadState }> {
   const cacheKey = splitCacheKey(episode);
   // `undefined` (absent or aged out) and a stored `null` ("asked, nothing
   // usable") stay distinguishable — that distinction is what stops a show
   // without splits re-asking on every start, and `BoundedCache.get` preserves it
   // by wrapping the value rather than returning it bare.
   const cached = splitCache.get(cacheKey, Date.now());
-  if (cached !== undefined) return cached.value ?? new Map();
+  if (cached !== undefined) return cached.value ? { map: cached.value, state: 'ok' } : { map: new Map(), state: 'none' };
   if (!episode.valueTimeSplits?.length) {
     splitCache.set(cacheKey, null, Date.now());
-    return new Map();
+    return { map: new Map(), state: 'none' };
   }
   try {
-    const res = await fetch(`/api/value-splits?feedId=${episode.feedId}&episodeId=${episode.id}`);
+    // A DEADLINE, because the context retries only when no load is in flight
+    // (`splitRetryDue`): one fetch that never settles would otherwise end every
+    // retry for the life of the context — finding 8 again, from the other side.
+    const res = await fetch(`/api/value-splits?feedId=${episode.feedId}&episodeId=${episode.id}`, {
+      signal: AbortSignal.timeout(SPLITS_FETCH_TIMEOUT_MS),
+    });
     // A 429 or 500 still carries a JSON `{ error }` body, which parsed to "no
     // splits" and was CACHED as a miss for the hour — every song window in the
     // episode then streamed to the host. A non-2xx is a failure to ask, not an
     // answer, so it goes to the uncached branch below. A 404 ("episode not
     // found") IS an answer and stays a cached miss.
     if (!res.ok && res.status !== 404) throw new Error(`value-splits ${res.status}`);
+    if (res.status === 404) {
+      splitCache.set(cacheKey, null, Date.now());
+      return { map: new Map(), state: 'none' };
+    }
     const data = await res.json();
     const splits = (data.splits as ValueTimeSplit[]) ?? [];
     const map = new Map<string, ValueTimeSplit>();
@@ -259,12 +278,47 @@ async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>
     // that artist's windows stream to the show for the hour after the host is back.
     const complete = splits.every((s) => !s.remoteItem?.itemGuid || hasValueRecipients(s.value));
     if (complete) splitCache.set(cacheKey, map.size ? map : null, Date.now());
-    return map;
+    return { map, state: complete ? 'ok' : 'incomplete' };
   } catch {
     // Not cached as a miss: a network blip must not pin the whole episode to
-    // the host block for the rest of the session.
-    return new Map();
+    // the host block for the rest of the session. The context retries it
+    // (`startSplitLoad`).
+    return { map: new Map(), state: 'failed' };
   }
+}
+
+/** How long one `/api/value-splits` request may take. */
+const SPLITS_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Load this context's splits, and schedule the next try if the answer was not
+ * final (`splitRetryDelayMs`, Chad's option A: 30 s, 1 min, 2 min, then every
+ * 5 min while the item plays — `tick()` runs it).
+ *
+ * MERGES, NEVER REPLACES. `ctx.splits` is append-only for the same reason it
+ * is for live (`adoptLiveTarget`): a bucket carrying under the floor still has
+ * to resolve to its OWN artist when it clears, and an entry already adopted is
+ * never changed under it. A late answer adds only the windows it newly knows.
+ *
+ * Bound to the context OBJECT, not its key: a context reopened for the same
+ * item runs its own load and its own schedule, and an older load landing after
+ * it must not reschedule the new one.
+ */
+function startSplitLoad(c: StreamContext, retriesMade: number) {
+  c.splitsLoading = true;
+  void loadSplits(c.episode).then(({ map, state }) => {
+    c.splitsLoading = false;
+    if (ctx !== c) return;
+    for (const [bucket, split] of map) {
+      if (!c.splits.has(bucket)) c.splits.set(bucket, split);
+    }
+    const delay = splitRetryDelayMs(state, retriesMade);
+    c.splitRetry = delay === null ? null : { retries: retriesMade, nextAtMs: Date.now() + delay };
+    if (delay !== null) {
+      console.warn(`[stream] value splits ${state} — song windows pay the show until they load; asking again in ${Math.round(delay / 1000)} s`);
+    }
+    notifyIfChanged();
+  });
 }
 
 /**
@@ -1372,11 +1426,7 @@ function openContext(c: StreamContext) {
   // which is the right default and costs at most a second or two of a long
   // episode. Guarded on identity so a resolve landing after the user has
   // skipped away can't retarget the item now playing.
-  if (c.episode.valueTimeSplits?.length) {
-    void loadSplits(c.episode).then((map) => {
-      if (ctx?.key === c.key) ctx.splits = map;
-    });
-  }
+  if (c.episode.valueTimeSplits?.length) startSplitLoad(c, 0);
   const pending = storage.streamPending.get();
   if (pending && pending.key === c.key && !isStaleLedger(pending, now)) {
     // Re-stamp the tick clocks: the gap since the tab closed is not listening
@@ -1490,6 +1540,11 @@ function tick() {
   adoptLiveTarget(ctx, liveTarget);
 
   const now = Date.now();
+  // A split load that failed or came back incomplete is asked again while the
+  // item plays (finding 8). Sats accrued before it lands stay with the host.
+  if (ctx.splitRetry && splitRetryDue(ctx.splitRetry.nextAtMs, now, st.isPlaying, !!ctx.splitsLoading)) {
+    startSplitLoad(ctx, ctx.splitRetry.retries + 1);
+  }
   const allocation = allocationAt(ctx, st.positionSec);
   // In per-track mode nothing accrues by time — but `accrue` still runs, with a
   // rate of 0, because it is what stamps `lastTickMs`/`lastPositionSec` and

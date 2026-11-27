@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, parsePublisherMediums, channelSlice, MAX_PLAYLIST_REFS, parseItemEnclosure } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, feedEnclosure, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey, piConfirmedMisses, readsEpisodeDocs } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, playlistCoverFallback, PLAYLIST_COVER_STYLE, filterPlaylistsByQuery, nearPlaylistsByQuery, matchPlaylistsByQuery, editDistanceWithin, rankPlaylistsFirst, rankPublishersFirst, piRecordIsBlank, mergeRssOverPi, payableValue, feedItemValue, feedEnclosure, valueNotRead, boostGate, withoutStoredValue, carriesV4V, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes, curatedNotListed, feedUrlKey, piConfirmedMisses, readsEpisodeDocs, readsTranscript, transcriptWord, feedUrlsMatchBarWhitespace } from '../lib/util.ts';
 import { readFileSync } from 'node:fs';
 import { replayVectors } from './replay-vectors.mjs';
 
@@ -1742,12 +1742,137 @@ console.log('\nA playlist track reads no chapters, so ⏮/⏭ stay the playlist\
     const m = new RegExp(`export function ${fn}\\b[\\s\\S]*?\\n}\\n`).exec(src);
     return m ? m[0] : null;
   };
-  for (const [rel, fn] of [['lib/chapters.ts', 'chapterUrlFor'], ['lib/transcript.ts', 'transcriptSourceFor']]) {
-    const b = body(rel, fn);
-    if (!b) { fail(`${rel}: \`${fn}\` not found`); continue; }
-    if (/\breadsEpisodeDocs\(/.test(b) && !/\bisMusicMedium\(/.test(b)) ok(`${fn} asks readsEpisodeDocs, and nothing narrower`);
-    else fail(`${rel}: \`${fn}\` must gate on readsEpisodeDocs(current), never isMusicMedium — a playlist track's chapters take ⏭ (#647)`);
+  {
+    const b = body('lib/chapters.ts', 'chapterUrlFor');
+    if (!b) fail('lib/chapters.ts: `chapterUrlFor` not found');
+    else if (/\breadsEpisodeDocs\(/.test(b) && !/\bisMusicMedium\(/.test(b)) ok('chapterUrlFor asks readsEpisodeDocs, and nothing narrower');
+    else fail("lib/chapters.ts: `chapterUrlFor` must gate on readsEpisodeDocs(current), never isMusicMedium — a playlist track's chapters take ⏭ (#647)");
   }
+  // The transcript LEFT this gate on 2026-11-26 (lyrics): it drives no
+  // transport control, so #647 does not reach it. The next section pins its own.
+  {
+    const b = body('lib/transcript.ts', 'transcriptSourceFor');
+    if (!b) fail('lib/transcript.ts: `transcriptSourceFor` not found');
+    else if (/\breadsTranscript\(/.test(b) && !/\breadsEpisodeDocs\(|\bplaysAsTracks\(|\bisMusicMedium\(/.test(b)) ok('transcriptSourceFor asks readsTranscript, and no track gate');
+    else fail('lib/transcript.ts: `transcriptSourceFor` must gate on readsTranscript(current) alone — a track gate there turns every song\'s lyrics off');
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nA track reads its own transcript: its lyrics (Chad, 2026-11-26)');
+// ---------------------------------------------------------------------------
+{
+  // ASKED 2026-11-26: "can we show lyrics for music tracks on BMB? some tracks
+  // have transcripts like some of Heycitizens stuff for example". The HeyCitizen
+  // album "The Heycitizen Experience" (PI 6650997) writes an application/srt
+  // <podcast:transcript> on 13 of its 19 items, and Podcast Index carries the
+  // url on the episode record, so the album page AND a musicL playlist row both
+  // had it in hand. The player never fetched it: `transcriptSourceFor` asked
+  // `readsEpisodeDocs`, the chapters gate, which says no to every track. The
+  // naive below IS that old gate.
+  const naive = (current) => readsEpisodeDocs(current);
+  const ep = (o = {}) => ({ guid: 'd489101a-4e62-492f-812e-9fe51def9423', transcriptUrl: 'https://feeds.example.invalid/MoeFactz.srt', ...o });
+  const vectors = [];
+  const vec = (label, args, expect, opts = {}) => vectors.push({ label, args, expect, ...opts });
+
+  // ── The request ─────────────────────────────────────────────────────────
+  vec('a music album track reads its transcript', [{ episode: ep(), podcast: { medium: 'music' } }], true);
+  vec('a musicL playlist track reads its transcript', [{ episode: ep(), podcast: { medium: 'musicL' } }], true);
+  vec('…whatever the case of the medium', [{ episode: ep(), podcast: { medium: 'MUSIC' } }], true);
+
+  // ── What must keep working ──────────────────────────────────────────────
+  vec('a podcast episode still reads its transcript', [{ episode: ep(), podcast: { medium: 'podcast' } }], true, { alsoNaive: true });
+  vec('a feed with no medium is a podcast', [{ episode: ep(), podcast: {} }], true, { alsoNaive: true });
+  vec('a podcastL playlist episode still reads its transcript', [{ episode: ep(), podcast: { medium: 'podcastL' } }], true, { alsoNaive: true });
+  vec('a live item reads none', [{ episode: ep({ liveStatus: 'live' }), podcast: { medium: 'podcast' } }], false, { alsoNaive: true });
+  vec('a live music item reads none', [{ episode: ep({ liveStatus: 'live' }), podcast: { medium: 'music' } }], false, { alsoNaive: true });
+  vec('nothing playing reads none', [null], false, { alsoNaive: true });
+
+  const ser = (v) => JSON.stringify(v);
+  const invoke = (impl, v) => {
+    try {
+      return ser((impl === 'real' ? readsTranscript : naive)(...v.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  for (const v of vectors) {
+    const got = invoke('real', v);
+    if (got === ser(v.expect)) ok(v.label);
+    else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+  }
+  replayVectors({ vectors, invoke, fail });
+
+  // THE WORD. "Lyrics" on rows that are songs; a podcastL row is an episode.
+  for (const [podcast, want] of [
+    [{ medium: 'music' }, 'Lyrics'],
+    [{ medium: 'musicL' }, 'Lyrics'],
+    [{ medium: 'podcastL' }, 'Transcript'],
+    [{ medium: 'podcast' }, 'Transcript'],
+    [{}, 'Transcript'],
+    [null, 'Transcript'],
+  ]) {
+    const got = transcriptWord(podcast);
+    if (got === want) ok(`transcriptWord(${JSON.stringify(podcast)}) is ${want}`);
+    else fail(`transcriptWord(${JSON.stringify(podcast)}) is ${got}, want ${want}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// feedUrlsMatchBarWhitespace — is PI's stored URL this one with whitespace in it?
+//
+// FROM THE WIRE: Podcast Index feed 8132371 (Homegrown Hits - Hitsgiving 2026),
+// added by hand at podcastindex.org/add on 2026-11-27, stores `url` and
+// `originalUrl` with three spaces before `/refs`, as the two strings below. A
+// chat had broken the URL across lines. `/podcasts/byfeedurl` with the real URL
+// answers 400 "Feed url not found.", so /api/publisher and /api/playlist stamped
+// the playlist NOT IN PI while PI read it every crawl. `naive()` is the
+// comparator the app already had, `feedUrlKey(a) === feedUrlKey(b)`: it misses
+// every damaged form, and it calls two blanks one feed.
+{
+  console.log('\nfeedUrlsMatchBarWhitespace — PI\'s URL with pasted whitespace is still this feed');
+  const naive = (a, b) => feedUrlKey(a) === feedUrlKey(b);
+  const REAL = 'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-hitsgiving-2026-playlist.xml';
+  const STORED = 'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists   /refs/heads/main/docs/HGH-hitsgiving-2026-playlist.xml';
+  const OTHER = 'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-hitsgiving-2025-playlist.xml';
+  const vectors = [];
+  const vec = (label, args, expect, opts = {}) => vectors.push({ label, args, expect, ...opts });
+
+  // ── What must keep working ──────────────────────────────────────────────
+  vec('the same URL matches', [REAL, REAL], true, { alsoNaive: true });
+  vec('another playlist does not match', [OTHER, REAL], false, { alsoNaive: true });
+  vec('http against https is one feed, as feedUrlKey says', [REAL.replace('https:', 'http:'), REAL], true, { alsoNaive: true });
+  vec('the path keeps its case', [REAL.replace('HGH-', 'hgh-'), REAL], false, { alsoNaive: true });
+  vec('whitespace does not hide another feed', [OTHER.replace('/refs', '   /refs'), REAL], false, { alsoNaive: true });
+  vec('a blank stored URL is no match', ['', REAL], false, { alsoNaive: true });
+  vec('a missing stored URL is no match', [undefined, REAL], false, { alsoNaive: true });
+  // The URL parser drops a bare tab or line break itself (WHATWG), so feedUrlKey
+  // already folded this one. A space it encodes as %20 and keeps.
+  vec('a bare line break in the URL', [REAL.replace('/docs/', '/docs/\n'), REAL], true, { alsoNaive: true });
+
+  // ── What naive() gets wrong ─────────────────────────────────────────────
+  vec('PI feed 8132371: three spaces before /refs', [STORED, REAL], true);
+  vec('a line break and an indent', [REAL.replace('/refs/', '/refs/\r\n    '), REAL], true);
+  vec('the spaces sent as %20', [STORED.replace(/ /g, '%20'), REAL], true);
+  vec('the line break sent as %0A', [REAL.replace('/docs/', '/docs/%0a'), REAL], true);
+  vec('two blank URLs are not one feed', ['', ''], false);
+  vec('two missing URLs are not one feed', [undefined, undefined], false);
+  vec('whitespace alone is not a URL', ['   ', ' '], false);
+
+  const ser = (v) => JSON.stringify(v);
+  const invoke = (impl, v) => {
+    try {
+      return ser((impl === 'real' ? feedUrlsMatchBarWhitespace : naive)(...v.args));
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+  for (const v of vectors) {
+    const got = invoke('real', v);
+    if (got === ser(v.expect)) ok(v.label);
+    else fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+  }
+  replayVectors({ vectors, invoke, fail });
 }
 
 if (failures) {

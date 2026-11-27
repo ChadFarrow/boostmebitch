@@ -375,6 +375,15 @@ be pinned by a `check:*`:
    `claveSettled` / `amberNcSettled` latch the first success instead, which is
    all `isCurrent()` was buying on that path.
 
+   **The "Scan a QR code" screen carries both rules too (`genAttempt` /
+   `genSettled`), and went without them until the full-code review of
+   2026-11-19.** Its visibility retry re-runs `onGenerate`, `startPairing`
+   abandons the earlier listener, and that listener's `ready` rejects: with no
+   counter, the rejection wrote "Connection dropped — approve in your signer then
+   tap Try again." and a TRY AGAIN button over the live attempt. `npm run
+   e2e:qrretry` drives it offline — a page script routes the two pairing relays'
+   sockets to a local relay — and fails 4 of 13 against the unguarded version.
+
 A retry that finds the pairing replaced also stops rather than starting another
 one silently: it reads `nostrConnectUri()` — which returns the memo **without
 subscribing** — and says "that pairing is no longer live" instead of opening a
@@ -1637,6 +1646,7 @@ One `window.focus` listener in `components/nostr-auth/index.tsx`, active only wh
 
 - **`subscribeAmberStage(fn)`** — `'idle' | 'awaiting' | 'returned'`. `<AmberCompletion>` flips its hint copy in lockstep with `invokeAmber`. While in flight it always shows a "◆ Read clipboard manually" button + paste textarea, because `visibilitychange` is unreliable on standalone-PWA returns.
 - **`subscribeBunkerHealth(fn)`** — boolean (stale or not); adapter calls run through `trackBunkerCall` with a 30 s timeout. `<BunkerHealthBanner>` in `<AccountMenu>` offers "Signer disconnected — Reconnect". Targets the iOS-PWA-suspended-WebSocket case.
+  - **The flag lives exactly as long as the bunker SESSION it describes** (full-code review 2026-11-19). It is module state and `<AccountMenu>` renders off it alone, without asking which signer the session uses, so two things used to leave it up for a session it did not describe: sign-out never cleared it (an extension sign-in after a stale or refused bunker opened onto *"— signer disconnected"*, with a RECONNECT that had no pointer left), and a sign-in's own handshake set it (a pasted `bunker://` that acked and then went quiet marked a session that did not exist yet). Now `clearBunkerSigner` clears it, and the two pre-session handshakes — `connectBunkerFromUri`'s `connect`/`get_public_key` and `startNostrConnect`'s `get_public_key` — pass `handshake: true`, which never SETS it (an answered handshake still clears it, like every answered call). The restore is not a handshake: it is the session's health. Pinned by `npm run e2e:bunkerstale`, which signs in again **in the same document** — a reload resets module state, and the first draft of that test passed against the bug for exactly that reason.
 - **`subscribeBunkerApproval(fn)`** — `{ waiting, label, attempt }`, driven by `withApprovalWait`. A **third** observable rather than a second meaning for the health flag, because the two say opposite things: stale means the transport looks dead, this means it demonstrably is not. `<BunkerApprovalNotice>` renders it, carries **Stop waiting** (`cancelBunkerApprovalWait`), and returns null when idle so a surface can mount it unconditionally.
   - **It names the request** ("Request: signing your favorites list (kind 10333)"), via `approvalRequestText`. The adapter's `signEvent` label is `sign_event kind:<n>` for this, not a bare `sign_event`: reported as *"I have it set to fully approve, so why do I keep seeing this"*, and the notice could not say which of six methods — or which of a dozen publishers — the signer was refusing. Full Trust does not settle it (`no permission` on a Full Trust Clave connection turned out to be ANOTHER app holding the same key — "Two signer apps, one key", above), so the request is the only fact a user or a bug report can act on. The label is display text only; nothing compares it. Pinned by `e2e:mutes` 5h.
   - **The anchored copy under the account button sits in a `bg-ink` wrapper.** The notice tints with `bg-nostr/10`, which is translucent, and floating over the page the search box and the episode title read straight through the sentence. Inside the menu and the boost modal it already sits on an opaque card.

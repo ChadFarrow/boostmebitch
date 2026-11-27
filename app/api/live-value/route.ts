@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getPodcast, getLiveItemsFromRss, resolveLiveSplit, LIVE_XML_MAX_AGE_MS } from '@/lib/pi';
+import { getPodcast, getLiveItemsFromRssDetailed, resolveLiveSplit, LIVE_XML_MAX_AGE_MS } from '@/lib/pi';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -31,12 +31,26 @@ export async function GET(req: Request) {
   return withErrorHandling(async () => {
     const podcast = await getPodcast(feedId);
     if (!podcast?.url) return NextResponse.json({ error: 'feed not found' }, { status: 404 });
-    const items = await getLiveItemsFromRss(podcast.url, feedId, podcast.podcastGuid, {
+    const { ok, items } = await getLiveItemsFromRssDetailed(podcast.url, feedId, podcast.podcastGuid, {
       maxAgeMs: LIVE_XML_MAX_AGE_MS,
     });
+    // A feed we could not READ is not a feed without the item. Answering it
+    // with `liveStatus: 'ended'` (as this route did until 2026-11-26) counted
+    // toward `endedVerdict`, so two polls during a host's outage, a timeout or
+    // a 5xx ended the broadcast for the streaming engine mid-show and settled
+    // it early. A 503 lands in the watcher's `catch`, which keeps paying the
+    // last known target and gives up only after MAX_FAILURES — the branch
+    // built for "we lost the feed". No-store: the next poll must ask again.
+    if (!ok) {
+      return NextResponse.json(
+        { error: 'the feed could not be read' },
+        { status: 503, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
     const item = items.find((e) => e.guid === guid);
-    // The live item disappearing (broadcast ended, feed rewritten) is not an
-    // error — it means there is nothing to redirect to any more.
+    // The live item disappearing from a feed we DID read (broadcast ended, feed
+    // rewritten) is not an error — it means there is nothing to redirect to any
+    // more.
     if (!item) {
       return NextResponse.json({ split: null, signal: 'none', value: null, liveStatus: 'ended' });
     }

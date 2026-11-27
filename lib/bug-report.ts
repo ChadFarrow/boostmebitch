@@ -86,9 +86,13 @@ const HEX_KEY = /^(?:0x)?[0-9a-f]{64}$/i;
 const NUMBERING = /^\d{1,2}[.):]?$/;
 
 // The issue is public, so a pasted key is burnt the moment it is filed. Every
-// whitespace-separated token is tested, because a key pasted into a sentence
-// is as public as one pasted alone. `looksLikeSecretKey` is a prefix test that
-// never decodes; an NWC string is a spending credential.
+// RUN OF LETTERS AND DIGITS is tested, not every whitespace-separated token: a
+// key is one such run, and a key glued to other text — `"nsec":"nsec1…"`,
+// `key=nsec1…`, `sk:<hex>` — is as public as one pasted alone. A whitespace
+// split missed every one of those until 2026-11-26 (full-code review,
+// 2026-11-19); `textHoldsSecret` (lib/nostr/npub-input.ts) already used runs.
+// `looksLikeSecretKey` is a prefix test that never decodes; an NWC string is a
+// spending credential, found ANYWHERE in the text.
 //
 // `typed` adds the two tests that cannot tell a secret from an ordinary value
 // by shape alone, and so run on what the USER TYPED only, never on the
@@ -99,18 +103,23 @@ const NUMBERING = /^\d{1,2}[.):]?$/;
 // seed, which is the whole wallet). English prose does not produce 12 list
 // words in a row: "the", "a", "to", "is" and "it" are not on the list.
 export function secretInReport(text: string, typed = true): ReportSecret | null {
+  if (/nostr\+walletconnect:/i.test(text)) return 'nwc';
+  const runs = text.split(/[^a-z0-9]+/i).filter(Boolean);
+  if (runs.some((r) => looksLikeSecretKey(r))) return 'nsec';
+  if (!typed) return null;
+  // The hex test splits on whitespace and the characters that GLUE a value to
+  // its name (`"`, `'`, `:`, `=`, brackets), but NOT on `/` or `.`: a 64-hex
+  // name inside a URL — a nostr.build image, an event link — is the URL's, and
+  // refusing every report that pastes one would teach people to stop pasting.
+  for (const raw of text.split(/[\s"'`,;:=(){}[\]<>]+/)) {
+    if (HEX_KEY.test(raw.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, ''))) return 'hex';
+  }
+  // The seed words are read off the same runs as the key, so a phrase glued to
+  // its name (`"mnemonic":"word word …"`) counts its first word.
   let run = 0;
-  for (const raw of text.split(/[\s,;]+/)) {
-    // Leading quotes and brackets: `"nsec1…"` and `(nsec1…)` are the same key.
-    const token = raw.replace(/^[^a-z0-9]+/i, '');
-    if (!token) continue;
-    if (looksLikeSecretKey(token)) return 'nsec';
-    if (token.toLowerCase().startsWith('nostr+walletconnect:')) return 'nwc';
-    if (!typed) continue;
-    const bare = token.replace(/[^a-z0-9]+$/i, '');
-    if (HEX_KEY.test(bare)) return 'hex';
-    if (NUMBERING.test(bare)) continue;
-    run = BIP39.has(bare.toLowerCase()) ? run + 1 : 0;
+  for (const r of runs) {
+    if (NUMBERING.test(r)) continue;
+    run = BIP39.has(r.toLowerCase()) ? run + 1 : 0;
     if (run >= MNEMONIC_RUN) return 'mnemonic';
   }
   return null;
@@ -155,14 +164,24 @@ export function coarseBrowser(ua: string): string {
 }
 
 /**
- * The page path with any Nostr identity segment elided: `/npub/<npub>` and
+ * The page path with every NIP-19 segment elided. `/npub/<npub>` and
  * `/live/<npub>` name a person, and on the reporter's own profile that person
- * is the reporter. The route re-runs it, because the POST is unauthenticated.
+ * is the reporter. `/stream/<naddr>` names a live stream AND its host's pubkey,
+ * which says what the reporter was watching — the snapshot carries nothing
+ * about what someone listens to (`APP_INFO_KEYS`), and until 2026-11-26 this
+ * one segment did. `nevent`/`note` name an event the same way, and a secret key
+ * in a path is elided rather than refused. The route re-runs it, because the
+ * POST is unauthenticated.
  */
+const NIP19_SEGMENT = /^(?:nostr:)?(?:npub1|nprofile1|naddr1|nevent1|note1|nsec1|ncryptsec1)/i;
 export function reportPath(pathname: string): string {
   return pathname
     .split('/')
-    .map((seg) => (/^(?:npub1|nprofile1)/i.test(seg) ? '…' : seg))
+    .map((seg) => {
+      let s = seg;
+      try { s = decodeURIComponent(seg); } catch { /* keep the raw segment */ }
+      return NIP19_SEGMENT.test(s) ? '…' : seg;
+    })
     .join('/');
 }
 

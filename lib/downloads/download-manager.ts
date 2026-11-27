@@ -82,6 +82,13 @@ const realBackend: DownloadsBackend = {
   clearAllRecords: db.clearAllRecords,
 };
 
+/**
+ * How long after a FAILED library read the manager reads again, one entry per
+ * retry. After the last, a surface that mounts asks again, and so does
+ * `/downloads`' TRY AGAIN (`readError`).
+ */
+const READ_RETRY_MS = [2_000, 10_000, 30_000] as const;
+
 export class DownloadManager {
   private backend: DownloadsBackend;
   private records = new Map<string, DownloadRecord>();
@@ -97,6 +104,13 @@ export class DownloadManager {
   private version = 0;
   private hydrated = false;
   private hydrating: Promise<void> | null = null;
+  /**
+   * The last IndexedDB read THREW, so the library in memory is not the library
+   * on disk. See `readError`.
+   */
+  private readFailed = false;
+  private readRetries = 0;
+  private readRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private queue: Array<() => void> = [];
   private busy = false;
   private persistenceAsked = false;
@@ -111,8 +125,9 @@ export class DownloadManager {
     this.listeners.add(fn);
     // Hydrating on first subscribe rather than at module load keeps IndexedDB
     // off the critical path of a cold page, and means nothing runs on a server
-    // render.
-    void this.hydrate();
+    // render. After a failed read, a surface mounting later asks again — but
+    // not while a timed retry is already due (`READ_RETRY_MS`).
+    if (!this.hydrated || (this.readFailed && !this.readRetryTimer)) void this.hydrate();
     return () => { this.listeners.delete(fn); };
   };
 
@@ -133,20 +148,51 @@ export class DownloadManager {
    */
   ready = (): boolean => this.hydrated;
 
+  /**
+   * True when the read THREW: `ready()` is true so nothing hangs, but the list
+   * in memory is not the list on disk, so no surface may say "nothing
+   * downloaded" and no control may offer to download what may already be there.
+   *
+   * Full-code review 2026-11-19: a failed read used to be treated as an empty
+   * library, for the life of the tab — every download hidden until a reload,
+   * under "Nothing downloaded yet". It retries now (`READ_RETRY_MS`, then on the
+   * next surface that mounts, and on `/downloads`' TRY AGAIN).
+   */
+  readError = (): boolean => this.readFailed;
+
+  /** `/downloads`' TRY AGAIN: read now, ahead of any timed retry. */
+  retryRead = (): Promise<void> => {
+    if (this.readRetryTimer) { clearTimeout(this.readRetryTimer); this.readRetryTimer = null; }
+    return this.hydrate();
+  };
+
   async hydrate(): Promise<void> {
-    if (this.hydrated) return;
+    if (this.hydrated && !this.readFailed) return;
     if (this.hydrating) return this.hydrating;
     this.hydrating = (async () => {
+      let ok = false;
       try {
+        // MERGED into what is in memory, never replacing it: a download that
+        // finished while the read was failing is real, and is already there.
         for (const r of await this.backend.getAllRecords()) this.remember(r);
+        ok = true;
       } catch {
-        // No IndexedDB, or a blocked upgrade. An empty library is the honest
-        // answer; `ready()` still flips so no surface hangs on "loading".
+        // No IndexedDB, a blocked upgrade, or a transient failure. NOT an empty
+        // library: `readError()` says so, and a retry is scheduled.
+      }
+      this.readFailed = !ok;
+      if (ok) {
+        this.readRetries = 0;
+      } else if (typeof window !== 'undefined' && !this.readRetryTimer && this.readRetries < READ_RETRY_MS.length) {
+        this.readRetryTimer = setTimeout(() => {
+          this.readRetryTimer = null;
+          void this.hydrate();
+        }, READ_RETRY_MS[this.readRetries++]);
       }
       this.hydrated = true;
       this.hydrating = null;
       this.bump();
-      void this.upgradeLegacyIds();
+      if (ok) void this.upgradeLegacyIds();
     })();
     return this.hydrating;
   }
@@ -212,6 +258,9 @@ export class DownloadManager {
 
   canDownload(episode: Episode | null | undefined): boolean {
     if (!episode) return false;
+    // The library could not be read, so this may already be on disk — and a
+    // store that refuses a read is unlikely to take a write (`readError`).
+    if (this.readFailed) return false;
     return isDownloadable(episode.enclosureUrl, episode.liveStatus);
   }
 

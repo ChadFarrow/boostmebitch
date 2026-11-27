@@ -740,6 +740,18 @@ type BunkerCallOpts = {
    * reconnect that rebuilt it, or by a sign-out. See `closeBunkerSigner`.
    */
   superseded?: () => boolean;
+  /**
+   * A SIGN-IN'S OWN HANDSHAKE (`connect`, `get_public_key`), before any session
+   * exists. Its failure says nothing about a session, so it never SETS the
+   * health flag — that flag renders "Signer disconnected" in `<AccountMenu>`,
+   * which does not ask which signer the session uses. A paste or a QR pairing
+   * that timed out raised it while signed out, and the user's next sign-in, by
+   * extension or Google, opened onto a banner about a signer it never used
+   * (full-code review 2026-11-19). A handshake that SUCCEEDS still clears it,
+   * as every answered call does. The restore (`restoreBunkerFromStorage`) is not
+   * a handshake: it IS the session's health, and `runBunkerRestore` sets it.
+   */
+  handshake?: boolean;
 };
 
 /**
@@ -803,7 +815,7 @@ async function trackBunkerCall<T>(
 async function runBunkerCall<T>(
   issue: () => Promise<T>,
   label: string,
-  { probe, deadline, superseded }: BunkerCallOpts = {},
+  { probe, deadline, superseded, handshake }: BunkerCallOpts = {},
 ): Promise<T> {
   // ISSUED ONCE, outside the loop. Awaiting a settled promise again is free and
   // cannot re-send; calling `issue()` again would be the second approval.
@@ -829,6 +841,10 @@ async function runBunkerCall<T>(
       // sat out its bound and then accused the session. Reported as "the red
       // reconnect thing pops up with Clave a lot" (docs/signers.md).
       if (superseded?.()) throw e;
+      // No session yet, so no flag to move — see `BunkerCallOpts.handshake`.
+      // Without a probe every branch below throws anyway; this skips only the
+      // flag, never the error.
+      if (handshake) throw e;
       if (isRemoteSignerError(e)) {
         // The signer answered. An error RESPONSE proves the round trip worked.
         if (bunkerStale) clearBunkerStale();
@@ -1326,8 +1342,8 @@ export async function connectBunkerFromUri(
       // reaches the call the wait protects. `isApprovalPending` fails closed on
       // anything that is not a bare string off the wire, so a timeout or a dead
       // transport still propagates on the first answer.
-      await withApprovalWait(() => withTimeout(s.connect(), timeoutMs, 'connect'), 'connect');
-      const pk = await withApprovalWait(() => s.getPublicKey(), 'get_public_key');
+      await withApprovalWait(() => withTimeout(s.connect(), timeoutMs, 'connect'), 'connect', { handshake: true });
+      const pk = await withApprovalWait(() => s.getPublicKey(), 'get_public_key', { handshake: true });
       return { inner: s, pubkey: pk, pool };
     } catch (e) {
       // Both halves, in that order, and neither may throw over the real error:
@@ -1622,7 +1638,7 @@ export function startNostrConnect(
       // `withApprovalWait` keeps BUNKER_CALL_TIMEOUT_MS per attempt, so the
       // only behaviour added is the re-issue, and only on an approval-pending
       // answer. A terminal refusal still throws on the first response.
-      pubkey = await withApprovalWait(() => signer.getPublicKey(), 'get_public_key');
+      pubkey = await withApprovalWait(() => signer.getPublicKey(), 'get_public_key', { handshake: true });
     } catch (e) {
       try { await signer.close(); } catch { /* ignore */ }
       try { pool.destroy(); } catch { /* ignore */ }

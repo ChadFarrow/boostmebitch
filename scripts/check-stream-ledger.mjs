@@ -62,6 +62,10 @@ import {
   STREAM_ENDED_OBSERVATIONS,
   endedVerdict,
   failedRunIsRefundable,
+  splitRetryDelayMs,
+  splitRetryDue,
+  SPLIT_RETRY_DELAYS_MS,
+  SPLIT_RETRY_STEADY_MS,
   trackBucket,
   createLedger,
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -1224,6 +1228,24 @@ console.log('\n  naive replay (each vector must fail against the obvious version
   console.log(`        ${proved} vector(s) proved, ${exempt} exempted as must-still-work`);
 }
 
+// The other half of the verdict is what FEEDS it. `/api/live-value` answered a
+// feed it could not read with `liveStatus: 'ended'` (its items came back []),
+// so two polls during a host's outage ended a broadcast that was still on air.
+// The route cannot load here (next/server), so this reads its source: the
+// detailed read, and a non-200 answer on `!ok` BEFORE the `'ended'` answer.
+{
+  const { readFileSync } = await import('node:fs');
+  const route = readFileSync(new URL('../app/api/live-value/route.ts', import.meta.url), 'utf8');
+  const unread = route.search(/if \(!ok\)\s*\{\s*return NextResponse\.json\([^;]*status: 5\d\d/);
+  const ended = route.search(/NextResponse\.json\(\{[^}]*liveStatus: 'ended'/);
+  if (!/getLiveItemsFromRssDetailed\(/.test(route) || unread < 0 || ended < 0 || unread > ended) {
+    console.error("  FAIL app/api/live-value/route.ts must answer an UNREADABLE feed with a 5xx, never liveStatus 'ended'");
+    failures++;
+  } else {
+    console.log("  ok    /api/live-value answers an unreadable feed with a 5xx, not 'ended'");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // failedRunIsRefundable — may a settle that paid nobody put its sats back?
 // A wallet that never ANSWERED may have paid; refunding it pays the same
@@ -1247,6 +1269,61 @@ console.log('\nfailedRunIsRefundable — a refund after an unanswered wallet is 
     if (v.alsoNaive) { if (naiveGot !== v.want) { console.error(`  FAIL ${v.why}: marked alsoNaive but naive() disagrees`); failures++; } }
     else if (naiveGot === v.want) { console.error(`  FAIL vector proves nothing — naive agrees: ${v.why}`); failures++; }
   }
+}
+
+// ---------------------------------------------------------------------------
+// splitRetryDelayMs / splitRetryDue — asking for the splits again.
+//
+// Full-code review 2026-11-19, finding 8 (Chad: option A, 2026-11-26). The
+// engine loaded a context's splits ONCE; a failed or incomplete load kept an
+// empty map for the context's whole life, so every song window streamed to the
+// HOST until the listener changed item. naive() is that engine: never again.
+// Recorded as calls so the replay is total.
+// ---------------------------------------------------------------------------
+
+console.log('\nsplitRetryDelayMs / splitRetryDue — a failed split load is asked again while the item plays');
+{
+  check('the schedule is 30 s, 1 min, 2 min', JSON.stringify(SPLIT_RETRY_DELAYS_MS), '[30000,60000,120000]');
+  check('...then every 5 min', SPLIT_RETRY_STEADY_MS, 300_000);
+  const VECTORS = [
+    { why: 'a failed first load asks again in 30 s', call: ['delay', 'failed', 0], want: 30_000 },
+    { why: '...then in 1 min', call: ['delay', 'failed', 1], want: 60_000 },
+    { why: '...then in 2 min', call: ['delay', 'failed', 2], want: 120_000 },
+    { why: '...then every 5 min', call: ['delay', 'failed', 3], want: 300_000 },
+    { why: '...for as long as it plays', call: ['delay', 'failed', 40], want: 300_000 },
+    { why: 'an INCOMPLETE answer (an album feed did not answer) retries on the same schedule', call: ['delay', 'incomplete', 0], want: 30_000 },
+    { why: 'a due retry runs while the item plays', call: ['due', 1_000, 1_000, true, false], want: true },
+    // Must still work: what is not a reason to ask again.
+    { why: 'a complete answer is final', call: ['delay', 'ok', 0], want: null, alsoNaive: true },
+    { why: 'no splits (or a 404) is final', call: ['delay', 'none', 2], want: null, alsoNaive: true },
+    { why: 'never while PAUSED: nothing accrues, so nothing to redirect', call: ['due', 1_000, 5_000, false, false], want: false, alsoNaive: true },
+    { why: 'never while a load is IN FLIGHT', call: ['due', 1_000, 5_000, true, true], want: false, alsoNaive: true },
+    { why: 'never before its time', call: ['due', 9_000, 5_000, true, false], want: false, alsoNaive: true },
+  ];
+  const real = ([kind, ...args]) => (kind === 'delay' ? splitRetryDelayMs(...args) : splitRetryDue(...args));
+  const naive = ([kind]) => (kind === 'delay' ? null : false);
+  for (const v of VECTORS) {
+    const got = real(v.call);
+    if (got !== v.want) {
+      console.error(`  FAIL ${v.why}: got ${got}, want ${v.want}`);
+      failures++;
+    } else console.log(`  ok   ${v.why}`);
+    const naiveGot = naive(v.call);
+    if (v.alsoNaive) { if (naiveGot !== v.want) { console.error(`  FAIL ${v.why}: marked alsoNaive but naive() disagrees`); failures++; } }
+    else if (naiveGot === v.want) { console.error(`  FAIL vector proves nothing — naive agrees: ${v.why}`); failures++; }
+  }
+
+  // The engine's half, by source: the retry merges into `ctx.splits` and never
+  // replaces it (an adopted entry must not change under a bucket still carrying
+  // its dust — the append-only rule `adoptLiveTarget` states), and the fetch has
+  // a deadline (one hung fetch would otherwise block every retry behind the
+  // in-flight guard).
+  const { readFileSync } = await import('node:fs');
+  const engine = readFileSync(new URL('../lib/v4v/streaming.ts', import.meta.url), 'utf8');
+  check('streaming.ts never REPLACES a context\'s splits map', /\b(?:ctx|c)\.splits\s*=[^=]/.test(engine), false);
+  check('the /api/value-splits fetch carries a timeout signal',
+    /fetch\(`\/api\/value-splits[^`]*`,\s*\{\s*signal: AbortSignal\.timeout\(/.test(engine), true);
+  check('tick() runs a due retry', /splitRetryDue\(ctx\.splitRetry\.nextAtMs, now, st\.isPlaying, !!ctx\.splitsLoading\)/.test(engine), true);
 }
 
 if (failures > 0) {

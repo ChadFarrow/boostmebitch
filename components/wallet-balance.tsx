@@ -93,8 +93,19 @@ export function useWalletBalance(
   const [sparkReady, setSparkReady] = useState(hasSpark());
   const [nwcReady, setNwcReady] = useState(hasNwc());
   const [weblnReady, setWeblnReady] = useState(isWeblnEnabled());
-  const [balance, setBalance] = useState<number | null>(null);
-  const [budget, setBudget] = useState<NwcBudget | null>(null);
+  // ONE reading, stamped with the rail that produced it — never a bare number.
+  // Full-code review 2026-11-19: with `balance` as its own state, the render in
+  // which `rail` moves (a switch in the wallet modal, a new wallet disconnecting
+  // the old one) still held the OLD rail's number. The reset below runs in an
+  // effect, after that render, so the chip painted NWC's sats labelled WebLN for
+  // a frame, and the cache effect wrote them to disk UNDER WebLN in the same
+  // commit — after `clearOtherWallets` had cleared that key. Between two rails
+  // that are both connected nothing clears it, so a new rail whose read never
+  // lands (an NWC relay that does not answer) kept the old rail's number on disk
+  // under its own name, and the next load painted it there. `balance` and
+  // `budget` are now derived, and a reading from another rail is no reading.
+  // Pinned by `npm run e2e:walletrail`.
+  const [reading, setReading] = useState<{ rail: Rail; sats: number; budget: NwcBudget | null } | null>(null);
   const [unreachable, setUnreachable] = useState<string | null>(null);
   // Bumped by `recheck`. It re-runs the whole effect, so the read asks the shared
   // client again. A failed dial is recovered inside that read (`withNwcClient`,
@@ -136,11 +147,17 @@ export function useWalletBalance(
     rail = null;
   }
 
+  const live = reading !== null && reading.rail === rail ? reading : null;
+  const balance = live?.sats ?? null;
+  const budget = live?.budget ?? null;
+
   useEffect(() => {
-    setBalance(null);
-    setBudget(null);
+    setReading(null);
     setUnreachable(null);
     if (rail === null) return;
+    // A const for the closures below, so each reading names the rail it came
+    // from even if `rail` has moved on by the time it lands.
+    const from: Rail = rail;
     let cancelled = false;
     const cleanups: Array<() => void> = [];
 
@@ -148,7 +165,7 @@ export function useWalletBalance(
       if (cancelled) return;
       if (rail === 'spark') {
         const info = await sparkGetInfo();
-        if (!cancelled && info) setBalance(info.balanceSats);
+        if (!cancelled && info) setReading({ rail: from, sats: info.balanceSats, budget: null });
       } else if (rail === 'nwc') {
         // The SDK half, loaded on first use: this chip is in the header of
         // every route, and a static import put the NIP-47 client in the first
@@ -161,15 +178,15 @@ export function useWalletBalance(
         if (unreachableRelay !== null) setUnreachable(unreachableRelay);
         if (spendable !== null) {
           setUnreachable(null);
-          setBalance(spendable.sats);
-          // Only when the BUDGET is what caps the number. A connection with a
-          // 100k budget over a 5k wallet is showing 5k for the ordinary
-          // reason, and calling that a budget would explain it wrongly.
-          setBudget(spendable.budgetLimited ? spendable.budget : null);
+          // The budget only when the BUDGET is what caps the number. A
+          // connection with a 100k budget over a 5k wallet is showing 5k for
+          // the ordinary reason, and calling that a budget would explain it
+          // wrongly.
+          setReading({ rail: from, sats: spendable.sats, budget: spendable.budgetLimited ? spendable.budget : null });
         }
       } else {
         const sats = await weblnGetBalance();
-        if (!cancelled && sats !== null) setBalance(sats);
+        if (!cancelled && sats !== null) setReading({ rail: from, sats, budget: null });
       }
     };
 
@@ -261,11 +278,14 @@ export function useWalletBalance(
   // The Breez Spark restore alone (relay query for kind:30078 → NIP-44
   // decrypt → WASM load → SDK connect → initial sync) routinely takes 5-10 s
   // on cold load, which leaves the chip blank for far too long otherwise.
+  //
+  // It writes the rail the READING names, never the current `rail`: in the
+  // commit where the rail moves, the reading is still the old rail's.
   useEffect(() => {
-    if (balance !== null && rail !== null) {
-      storage.walletBalance.set(npub, rail, balance, budget !== null);
+    if (reading !== null) {
+      storage.walletBalance.set(npub, reading.rail, reading.sats, reading.budget !== null);
     }
-  }, [balance, rail, npub, budget]);
+  }, [reading, npub]);
 
   // Fall back to the cached value while the live balance hasn't landed yet.
   // Two cases we honor the cache:

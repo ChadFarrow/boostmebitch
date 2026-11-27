@@ -3,7 +3,7 @@ import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
 import { readCappedJson } from '@/lib/capped-body';
-import { BRAND } from '@/lib/brand';
+import { serverUserAgent } from '@/lib/user-agent';
 
 // A keysend well-known is a handful of fields — a node pubkey, an optional
 // customKey/customValue pair. 64 KB is orders of magnitude of slack, and this
@@ -57,7 +57,7 @@ export async function GET(req: Request) {
     const res = await safeFetch(
       `https://${host}/.well-known/keysend/${encodeURIComponent(name)}`,
       {
-        headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+        headers: { 'User-Agent': serverUserAgent() },
         // Shorter than the client's own budget so the proxy answers before the
         // caller gives up. This runs inside a boost the user is waiting on.
         signal: AbortSignal.timeout(3500),
