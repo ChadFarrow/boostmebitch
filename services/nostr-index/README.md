@@ -62,6 +62,8 @@ DATABASE_URL=postgres://... INDEX_API_KEY=... npm start
 | `PODCAST_INDEX_KEY` / `_SECRET` | no | Absent means the `pi_*` tables are only filled on demand, never warmed ahead. |
 | `INDEX_PI_TTL_HOURS` | no | How stale a `pi_*` row may be. Default 168. |
 | `INDEX_PI_MISS_TTL_HOURS` | no | How stale a `pi_*` row recording PI's "not found" may be. Default 1. |
+| `INDEX_LIVE_PRUNE` | no | `on` (default) or `off`. On deletes kind:30311 versions older than the live window plus a day, once an hour (`src/retention.ts`). Any other value refuses to start. |
+| `INDEX_LIVE_PRUNE_MS` | no | How often that runs. Default 3600000; the first run is 5 minutes after start. |
 
 Migrations run automatically on boot; `npm run migrate` runs them alone.
 

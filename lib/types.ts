@@ -751,6 +751,16 @@ export interface LiveShow {
    * song — while the same item played from its show page connected.
    */
   liveValue?: { uri: string; protocol: string };
+  /**
+   * The live item's `<podcast:alternateEnclosure>` renditions, as the RSS
+   * parser read them — a video stream beside the audio enclosure (Homegrown
+   * Hits: Owncast HLS beside an Icecast MP3).
+   *
+   * Carried for the reason `liveValue` is: `<VideoToggle>` reads the PLAYING
+   * episode, so a field this row drops is a 📺 Video that PLAY on `/live` never
+   * offers. Absent on a Podcast Index row, which indexes no such tag.
+   */
+  alternateEnclosures?: AlternateEnclosure[];
   feedId: number;
   feedTitle?: string;
   feedImage?: string;
@@ -782,4 +792,18 @@ export interface LiveShow {
  */
 export type ItemPayment =
   | { read: false }
-  | { read: true; value: ValueBlock | null; valueTimeSplits: ValueTimeSplit[] };
+  | {
+      read: true;
+      value: ValueBlock | null;
+      valueTimeSplits: ValueTimeSplit[];
+      /**
+       * The item's `<podcast:alternateEnclosure>` renditions, from the same
+       * read. Not a payment fact: it rides along because an episode Podcast
+       * Index built never read its feed, and this is the one read such an
+       * episode gets when it PLAYS (Chad, 2026-11-26: "play-time with audio
+       * loading first"). `<Player>` writes it to `current`, and
+       * `<VideoToggle>` offers 📺 Video once it lands. Absent when the item
+       * names none or is not in the feed.
+       */
+      alternateEnclosures?: AlternateEnclosure[];
+    };

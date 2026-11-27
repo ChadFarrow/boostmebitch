@@ -11,6 +11,8 @@ import {
   resolvePublishRelays,
   type DiscoveredNote,
   LocalNoteSink,
+  SpamReplies,
+  useSpamReplyIds,
 } from '@/lib/nostr';
 import { publishEpisodeComment } from '@/lib/nostr/interactions';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
@@ -61,11 +63,14 @@ export function EpisodeNostrFeed({
   });
   const identity = useApp((s) => s.identity);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const mutedWords = useApp((s) => s.mutedWords);
   const repostedIds = useViewerReposts(notes, identity);
-  const visibleNotes = useVisibleNotes(notes, mutedPubkeys);
+  const visibleNotes = useVisibleNotes(notes, mutedPubkeys, mutedWords);
+  const spamIds = useSpamReplyIds(visibleNotes);
 
   return (
     <LocalNoteSink.Provider value={addLocal}>
+      <SpamReplies.Provider value={spamIds}>
       <FeedSection
         heading={
           <h3 className="font-display text-lg">
@@ -92,6 +97,7 @@ export function EpisodeNostrFeed({
           <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
         )}
       />
+      </SpamReplies.Provider>
     </LocalNoteSink.Provider>
   );
 }

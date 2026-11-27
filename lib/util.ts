@@ -1603,6 +1603,8 @@ export function liveShowToEpisode(s: LiveShow): Episode {
     value: s.value ?? null,
     // The watcher opens the Split Kit socket from this field alone.
     liveValue: s.liveValue,
+    // <VideoToggle> offers 📺 Video from this field alone.
+    alternateEnclosures: s.alternateEnclosures,
   };
 }
 
@@ -1936,6 +1938,18 @@ export function liveItemIsAlwaysOn(
  *    as it does today — the plan never drops a feed.
  *  - `truncated` counts the roster feeds the cap cut, which is what the page's
  *    "more shows than this page checks" line is about.
+ *
+ * **The allowance a plan does not spend on known stations goes to the roster.**
+ * The memory is per server instance, and Vercel runs several, so which instance
+ * answered used to decide what a visitor saw. Measured on production 2026-11-25:
+ * Podcast Index listed 37 feeds, 22 of them stations ranked first; an instance
+ * with no memory read the first 24 — 22 stations and two shows — and answered
+ * two Upcoming rows, while a warm instance read all 37 and answered nine (Chad
+ * and Reeds, index 32, among them). Both read at most `maxRoster + maxAlwaysOn`
+ * feeds, so a cold plan now reads as many as a warm one: the same feeds whenever
+ * the roster fits, and never more than the two allowances together. A warm
+ * instance still reads its stations through their remembered URLs, which skips
+ * the Podcast Index stage — that, not the count, is what the memory saves.
  */
 export function planLiveRosterReads<T extends { id: number }>(
   rosterIds: readonly number[],
@@ -1947,8 +1961,74 @@ export function planLiveRosterReads<T extends { id: number }>(
   const fromAlwaysOn = alwaysOn.filter((f) => listed.has(f.id)).slice(0, maxAlwaysOn);
   const moved = new Set(fromAlwaysOn.map((f) => f.id));
   const regular = rosterIds.filter((id) => !moved.has(id));
-  const fromRoster = regular.slice(0, maxRoster);
+  const fromRoster = regular.slice(0, maxRoster + (maxAlwaysOn - fromAlwaysOn.length));
   return { fromRoster, fromAlwaysOn, truncated: regular.length > fromRoster.length };
+}
+
+/**
+ * How long a feed stays on the known-live list (`live_feeds`, lib/live-feeds.ts)
+ * after the last read that found any `<podcast:liveItem>` in it. A weekly show
+ * that skips a month keeps its place; a feed that dropped live items leaves.
+ */
+export const LIVE_FEED_EXPIRY_MS = 60 * 24 * 60 * 60 * 1000;
+
+/**
+ * What one read of a feed says about its live items — the three flags the
+ * known-live list keeps per feed.
+ *
+ * `items` are `parseRssLiveItems`' answer, so an item that is over
+ * (`liveBroadcastIsOver`) is already gone and `ended` was never there. A feed
+ * whose live item spans a day or more is a station (`liveItemIsAlwaysOn`), the
+ * same test `/api/live-shows` files rows under 📻 24/7 with.
+ */
+export function liveFeedVerdict(
+  items: readonly { status: 'pending' | 'live'; startTime?: number; endTime?: number }[],
+): { hasLive: boolean; hasPending: boolean; alwaysOn: boolean } {
+  return {
+    hasLive: items.some((i) => i.status === 'live'),
+    hasPending: items.some((i) => i.status === 'pending'),
+    alwaysOn: items.some((i) =>
+      liveItemIsAlwaysOn({ liveStatus: i.status, liveStartTime: i.startTime, liveEndTime: i.endTime })),
+  };
+}
+
+/**
+ * Whether a feed leaves the known-live list: no read has found a
+ * `<podcast:liveItem>` of any status in it for `LIVE_FEED_EXPIRY_MS`.
+ *
+ * Measured from the last read that FOUND one, never from the last read: a feed
+ * that could not be read is not a feed without live items, so a dead host
+ * cannot expire a show early. A feed on the hand list never expires, and a row
+ * no read has confirmed yet counts from when it was added.
+ */
+export function liveFeedExpired(
+  row: { hand: boolean; lastItemAt: number | null; firstSeen: number },
+  nowMs: number,
+): boolean {
+  if (row.hand) return false;
+  return nowMs - (row.lastItemAt ?? row.firstSeen) > LIVE_FEED_EXPIRY_MS;
+}
+
+/**
+ * Which known-live feeds `/api/live-shows` reads on top of its other sources.
+ *
+ * The list is what the 15-minute check (lib/live-feeds.ts) found carrying a
+ * live or pending item. It names feeds, never rows: each one is read from its
+ * own RSS like every other source, so a payee and an on-air flag always come
+ * from the publisher's feed of this minute, not a stored copy. Stations are not
+ * read here — they go to `planLiveRosterReads`' allowance, and only while
+ * Podcast Index lists them. A feed another source already reads is skipped.
+ * Feeds on air come first, so a cap drops a schedule before a broadcast.
+ */
+export function planKnownLiveReads<T extends { id: number; alwaysOn: boolean; hasLive: boolean; hasPending: boolean }>(
+  known: readonly T[],
+  alreadyRead: ReadonlySet<number>,
+  max: number,
+): T[] {
+  return known
+    .filter((f) => !f.alwaysOn && (f.hasLive || f.hasPending) && !alreadyRead.has(f.id))
+    .sort((a, b) => Number(b.hasLive) - Number(a.hasLive))
+    .slice(0, Math.max(0, max));
 }
 
 /**
@@ -1984,6 +2064,32 @@ export function mergeUpcomingSeen(
     (next[s.feedId] ??= []).push(s);
   }
   return next;
+}
+
+/**
+ * `/live`'s rows with the visitor's own favorites moved to the top — Chad,
+ * 2026-11-25: "show all current and upcoming lives if we can and show the users
+ * favorites first".
+ *
+ * **It only REORDERS.** Every visitor gets the same rows from the route; a
+ * favorite never hides or adds one. Both halves keep the order they arrived in
+ * (`compareLiveShows`, soonest-first for Upcoming), so a favorite starting next
+ * week still follows a favorite starting tonight.
+ *
+ * A row matches by `podcastGuid` — the key `favorites` is stored under, compared
+ * without case — or by feed id, for a row whose feed carried no guid. A feed id
+ * of 0 is an unresolved favorite, not a feed, so it matches nothing.
+ */
+export function favoritesFirst<T extends { podcastGuid?: string; feedId?: number }>(
+  shows: readonly T[],
+  favGuids: ReadonlySet<string>,
+  favIds: ReadonlySet<number>,
+): T[] {
+  const guids = new Set([...favGuids].map((g) => g.toLowerCase()));
+  const isFav = (s: T) =>
+    (!!s.podcastGuid && guids.has(s.podcastGuid.toLowerCase()))
+    || (typeof s.feedId === 'number' && s.feedId > 0 && favIds.has(s.feedId));
+  return [...shows.filter(isFav), ...shows.filter((s) => !isFav(s))];
 }
 
 export function compareLiveShows(a: LiveShow, b: LiveShow): number {
@@ -2677,6 +2783,26 @@ export function valueNotRead(
  * `payableValue` reads `episode.value` first, so it would outrank the feed. The
  * copy reads as not read, and play and BOOST ask the feed.
  */
+/**
+ * The episode with the `<podcast:alternateEnclosure>` renditions an item read
+ * found (`ItemPayment.alternateEnclosures`), for an episode that carries NONE:
+ * one Podcast Index built never read its feed, and PI does not index the tag.
+ * An episode that has the field keeps it — a feed-built one holds the feed's own
+ * answer, and a copy from disk holds the one it was enqueued with. Returns the
+ * SAME object when nothing changes, so a store update can test identity.
+ *
+ * One rule for every site that turns a read into an episode: `<Player>`'s
+ * `current`, the episode page (`useItemValue`) and a list row's BOOST read,
+ * which replaces the row a later tap plays.
+ */
+export function withAlternatesIfAbsent<E extends Pick<Episode, 'alternateEnclosures'>>(
+  episode: E,
+  alternates: AlternateEnclosure[] | undefined,
+): E {
+  if (episode.alternateEnclosures !== undefined || !alternates?.length) return episode;
+  return { ...episode, alternateEnclosures: alternates };
+}
+
 export function withoutStoredValue<T extends { episode: Episode; podcast: Podcast }>(item: T): T {
   const podcast = { ...item.podcast };
   delete podcast.value;

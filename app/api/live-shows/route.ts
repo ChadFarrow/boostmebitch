@@ -9,10 +9,11 @@ import {
 } from '@/lib/pi';
 import { createBoundedCache } from '@/lib/bounded-cache';
 import { fetchPodpingLiveFeeds, podpingConfigured } from '@/lib/podping-live';
+import { readKnownLiveFeeds } from '@/lib/live-feeds';
 import { piCouldNotAskStatus } from '@/lib/pi-error';
 import {
   compareLiveShows, liveItemIsAlwaysOn, liveRosterFeedOrder, mapLimit, mergeLiveOverPi,
-  planLiveRosterReads, FEED_FANOUT, PI_FANOUT,
+  planKnownLiveReads, planLiveRosterReads, FEED_FANOUT, PI_FANOUT,
 } from '@/lib/util';
 import type { Episode, LiveShow, Podcast } from '@/lib/types';
 
@@ -80,6 +81,10 @@ const PERSONAL_CACHE = { 'Cache-Control': 'private, max-age=30' };
  * return up to 1000 rows, and a capped COUNT is not a capped FAN-OUT, so both
  * bounds are here: this slice, and `mapLimit` on each stage.
  *
+ * It is the roster's OWN share. A plan that knows fewer stations than
+ * `MAX_ALWAYS_ON_FEEDS` gives the rest of that allowance to the roster too (see
+ * there), so a cold instance reads up to 48 roster feeds.
+ *
  * Going over is reported as `truncated` rather than hidden — and WHICH feeds go
  * over is `liveRosterFeedOrder`'s job, not the order PI answered in. A cap over
  * an unranked list is how a show that is genuinely on air gets trimmed in
@@ -102,6 +107,16 @@ const MAX_LIVE_FEEDS = 24;
  * skips the Podcast Index stage and costs one RSS read, bounded by `mapLimit`
  * like every other read. Worst case it adds `ceil(24 / FEED_FANOUT)` = three
  * RSS rounds; a station's feed is small and cached for `LIVE_XML_MAX_AGE_MS`.
+ *
+ * **What this allowance does not spend on remembered stations goes to the
+ * roster** (`planLiveRosterReads`). The memory is per instance and Vercel runs
+ * several, so on 2026-11-25 a cold instance read 22 stations and two shows and
+ * answered two Upcoming rows while a warm one answered nine. A cold plan now
+ * reads up to 48 roster feeds — the same count a warm one reads, but each
+ * through the Podcast Index stage: at worst `ceil(48 / PI_FANOUT)` = eight PI
+ * rounds instead of four. Measured on the PR preview 2026-11-25: 2.8 s for the
+ * first request, 3.1 s with a 20-feed `?feeds=`, no PI 429. The project's
+ * function time limit was not measured.
  */
 const MAX_ALWAYS_ON_FEEDS = 24;
 
@@ -146,6 +161,15 @@ const SEEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** The most feeds the memory below will hold. */
 const SEEN_MAX = 60;
+
+/**
+ * How many feeds the known-live list may add (`lib/live-feeds.ts`, checked
+ * every 15 minutes). Server state like the remembered set, identical for every
+ * caller, so it does not make the answer personal. Its feeds carry a URL, so
+ * they skip the Podcast Index stage like the remembered ones. On 2026-11-25
+ * about 15 show feeds carried a live item and most were on the roster already.
+ */
+const MAX_KNOWN_FEEDS = 24;
 
 interface SeenFeed {
   id: number;
@@ -245,7 +269,13 @@ export async function GET(req: Request) {
         statusRows: rosterStatus,
       },
       podpingLive,
-    ] = await Promise.all([getGlobalLiveItemsDetailed(), fetchPodpingLiveFeeds()]);
+      knownList,
+    ] = await Promise.all([getGlobalLiveItemsDetailed(), fetchPodpingLiveFeeds(), readKnownLiveFeeds()]);
+    // The known-live list never throws either. 'off' is no list on this deploy
+    // (no database, or the table not made yet), 'failed' is a list that did not
+    // answer in 2 s: either way the answer is exactly what it was before the
+    // list existed.
+    const known = knownList.status;
     const podping: 'ok' | 'off' | 'failed' = podpingLive
       ? 'ok'
       : podpingConfigured() ? 'failed' : 'off';
@@ -313,10 +343,21 @@ export async function GET(req: Request) {
     // empty and this is exactly the old slice.
     const now = Date.now();
     const memory = rememberedFeeds(now);
-    const stationMemory = new Set(memory.filter((f) => f.alwaysOn).map((f) => f.id));
+    // The known-live list's stations join this instance's own memory, so a
+    // cold instance plans stations into their allowance exactly as a warm one
+    // does. Still only while Podcast Index lists them (`planLiveRosterReads`).
+    const knownAsSeen: SeenFeed[] = knownList.feeds.map((f) => ({
+      id: f.id, url: f.url, podcastGuid: f.podcastGuid, lastSeen: 0,
+      alwaysOn: f.alwaysOn || undefined, feedTitle: f.title, feedImage: f.image,
+    }));
+    const stationFeeds = [
+      ...memory.filter((f) => f.alwaysOn),
+      ...knownAsSeen.filter((f) => f.alwaysOn && !memory.some((m) => m.id === f.id)),
+    ];
+    const stationMemory = new Set(stationFeeds.map((f) => f.id));
     const { fromRoster, fromAlwaysOn, truncated } = planLiveRosterReads(
       rosterIds,
-      memory.filter((f) => f.alwaysOn),
+      stationFeeds,
       MAX_LIVE_FEEDS,
       MAX_ALWAYS_ON_FEEDS,
     );
@@ -379,11 +420,20 @@ export async function GET(req: Request) {
       .filter((f) => !f.alwaysOn && !seen.has(f.id))
       .slice(0, MAX_REMEMBERED_FEEDS);
     for (const f of remembered) seen.add(f.id);
+    // The known-live list: shows the 15-minute check found carrying a live or
+    // pending item. This is the source that finds a schedule Podcast Index no
+    // longer lists, for every visitor, on every instance. Read last because
+    // every earlier source is fresher about what it names.
+    const fromKnownIds = new Set(
+      planKnownLiveReads(knownList.feeds, seen, MAX_KNOWN_FEEDS).map((f) => f.id),
+    );
+    const fromKnown = knownAsSeen.filter((f) => fromKnownIds.has(f.id));
+    for (const f of fromKnown) seen.add(f.id);
 
-    const knownUrl = new Map([...fromAlwaysOn, ...remembered].map((f) => [f.id, f]));
+    const knownUrl = new Map([...fromAlwaysOn, ...remembered, ...fromKnown].map((f) => [f.id, f]));
     const feedIds = [
       ...fromRoster, ...fromAlwaysOn.map((f) => f.id), ...fromPodping, ...fromFavorites,
-      ...remembered.map((f) => f.id),
+      ...remembered.map((f) => f.id), ...fromKnown.map((f) => f.id),
     ];
     // Personal the moment one favorited feed was read — see PERSONAL_CACHE.
     // The remembered set is server state, identical for every caller, so it
@@ -395,7 +445,7 @@ export async function GET(req: Request) {
       // feeds of their own. That IS an answer, so it is cacheable — unlike
       // every branch where we could not ask.
       return NextResponse.json(
-        { items: [], unverifiedFeeds: 0, truncated: false, rosterRows, rosterStatus, rosterKept: roster.length, rosterFeeds: 0, podping, podpingFeeds: 0 },
+        { items: [], unverifiedFeeds: 0, truncated: false, rosterRows, rosterStatus, rosterKept: roster.length, rosterFeeds: 0, podping, podpingFeeds: 0, known, knownFeeds: 0 },
         { headers: podping === 'failed' ? NO_STORE : LIVE_SHOWS_CACHE },
       );
     }
@@ -487,7 +537,8 @@ export async function GET(req: Request) {
         // person's page, which is an inference about that list however weak.
         // PI's roster is a public answer, so anything derived from it is too.
         // The podping list is public too, so a feed it named may seed the memory.
-        const publicSource = piRows.length > 0 || podpingUrl.has(id);
+        // So is the known-live list: only public sources and a hand list grow it.
+        const publicSource = piRows.length > 0 || podpingUrl.has(id) || fromKnownIds.has(id);
         if (e.liveStatus === 'live' && url && publicSource && !wentLive.some((f) => f.id === id)) {
           wentLive.push({
             id, url, podcastGuid: e.podcastGuid ?? podcast?.podcastGuid, lastSeen: now,
@@ -509,6 +560,9 @@ export async function GET(req: Request) {
           // The Split Kit socket. Dropping it here is how PLAY on /live never
           // connected — see `LiveShow.liveValue`.
           liveValue: e.liveValue,
+          // The video rendition, if the item names one — see
+          // `LiveShow.alternateEnclosures`.
+          alternateEnclosures: e.alternateEnclosures,
           feedId: id,
           feedTitle: e.feedTitle ?? feedTitle,
           feedImage: e.feedImage ?? feedImage,
@@ -529,9 +583,13 @@ export async function GET(req: Request) {
       {
         items, unverifiedFeeds, truncated, rosterRows, rosterStatus, rosterKept: roster.length,
         rosterFeeds: rosterIds.length, podping, podpingFeeds: fromPodping.length,
+        known, knownFeeds: fromKnown.length,
       },
       // A podping list that was configured and did not answer is a thinner
       // answer than the next request may get — never cached, like a PI 429.
+      // A known-live list that did not answer is NOT: it is an accelerator, and
+      // turning the CDN off during a database outage would make every poll pay
+      // the whole fan-out.
       { headers: couldNotAskPi || podping === 'failed' ? NO_STORE : personal ? PERSONAL_CACHE : LIVE_SHOWS_CACHE },
     );
   }, 'live-shows fetch failed');

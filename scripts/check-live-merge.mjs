@@ -31,7 +31,7 @@
 // Vectors are recorded as CALLS and the replay walks the list, so a vector
 // cannot be added without also being proved against naive(). A vector both
 // implementations agree on is reported as proving nothing.
-import { feedLiveItems, liveShowToEpisode, mergeLiveOverPi } from '../lib/util.ts';
+import { feedLiveItems, liveShowToEpisode, mergeLiveOverPi, pickVideoAlternate, withAlternatesIfAbsent } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -196,6 +196,80 @@ for (const v of VECTORS) {
   }
 }
 
+// THE VIDEO RENDITION MUST SURVIVE THE SAME TRIP. `<VideoToggle>` offers 📺
+// Video from the PLAYING episode's `alternateEnclosures` alone, so a hop that
+// does not name the field is a live show with no video switch. Measured
+// 2026-11-26 on Homegrown Hits 160: the live item carried an Owncast HLS
+// `<podcast:alternateEnclosure>` beside the Icecast MP3, and neither /live nor
+// the show page offered it — the RSS live-item parser never read the tag.
+{
+  // The wire's shape, as `parseAlternateEnclosures` reads the live item's block
+  // `<podcast:alternateEnclosure type="application/x-mpegURL"><podcast:source
+  // uri="https://owncast.bowlafterbowl.com/hls/stream.m3u8" /></…>`.
+  const alts = [{ type: 'application/x-mpegURL', source: 'https://owncast.bowlafterbowl.com/hls/stream.m3u8', default: false }];
+  const ep = liveShowToEpisode({
+    guid: 'homegrownhits-160', title: 'Homegrown Hits Episode 160',
+    enclosureUrl: 'https://stream.bowlafterbowl.com/listen/bowlafterbowl/stream.mp3', enclosureType: 'audio/mpeg',
+    liveStatus: 'live', feedId: 6611624, verified: true, alternateEnclosures: alts,
+  });
+  if (pickVideoAlternate(ep)?.source !== alts[0].source) {
+    fail('liveShowToEpisode drops alternateEnclosures — PLAY on /live offers no 📺 Video.');
+  } else {
+    ok('liveShowToEpisode carries alternateEnclosures, and the HLS one is the video pick');
+  }
+  const piSrc = await (await import('node:fs/promises')).readFile('lib/pi.ts', 'utf8');
+  const parser = piSrc.slice(piSrc.indexOf('function parseRssLiveItems('), piSrc.indexOf('function parseValueBlock('));
+  const toEpisode = piSrc.slice(piSrc.indexOf('export async function getLiveItemsFromRssDetailed('), piSrc.indexOf('export async function getLiveItemsFromRss('));
+  if (!/alternateEnclosures:\s*parseAlternateEnclosures\(inner\)/.test(parser)) {
+    fail('lib/pi.ts parseRssLiveItems no longer reads <podcast:alternateEnclosure> — no live item offers video.');
+  } else if (!/alternateEnclosures:\s*r\.alternateEnclosures/.test(toEpisode)) {
+    fail('lib/pi.ts getLiveItemsFromRssDetailed drops alternateEnclosures from the live Episode.');
+  } else {
+    ok('lib/pi.ts reads a live item\'s alternateEnclosure and keeps it on the Episode');
+  }
+
+  // The same tag for an episode Podcast Index BUILT (a note, a favorite, NEW
+  // EPISODES, a playlist track): PI does not index it, so the play-time
+  // `/api/item-value` read is the only one that episode gets (docs/feeds.md).
+  // Three hops, each one a way for 📺 Video to never appear.
+  const payment = piSrc.slice(piSrc.indexOf('export async function getItemPaymentFromRss('), piSrc.indexOf('export interface PlaylistChannel'));
+  const playerSrc = await (await import('node:fs/promises')).readFile('components/player.tsx', 'utf8');
+  const itemValueSrc = await (await import('node:fs/promises')).readFile('lib/use-item-value.ts', 'utf8');
+  const listSrc = await (await import('node:fs/promises')).readFile('components/lists/episode-list.tsx', 'utf8');
+  const storeSrc = await (await import('node:fs/promises')).readFile('lib/store.ts', 'utf8');
+
+  // The rule itself, on real values: fill only an ABSENT field, never an
+  // empty answer, and hand back the SAME object when nothing changes.
+  const pi = { guid: 'https://podnews.net/update/politics-podcast-appearances', enclosureUrl: 'https://op3.dev/e/podnews.net/audio/podnews261019.mp3' };
+  const mp4 = [{ type: 'video/mp4', source: 'https://op3.dev/e/podnews.net/audio/podnews261019.mp4', length: 17473150, default: false }];
+  const filled = withAlternatesIfAbsent(pi, mp4);
+  const feedOwn = { ...pi, alternateEnclosures: [] };
+  if (filled.alternateEnclosures !== mp4 || !pickVideoAlternate(filled)) {
+    fail('withAlternatesIfAbsent does not give a PI-built episode the read\'s video rendition.');
+  } else if (withAlternatesIfAbsent(feedOwn, mp4) !== feedOwn) {
+    fail('withAlternatesIfAbsent overwrote an episode that already carries the field (the feed\'s own answer).');
+  } else if (withAlternatesIfAbsent(pi, []) !== pi || withAlternatesIfAbsent(pi, undefined) !== pi) {
+    fail('withAlternatesIfAbsent changed an episode on an answer with no renditions.');
+  } else {
+    ok('withAlternatesIfAbsent fills only an absent field, and keeps the object otherwise');
+  }
+  if (!/alternateEnclosures:\s*parseAlternateEnclosures\(item\.inner\)/.test(payment)) {
+    fail('lib/pi.ts getItemPaymentFromRss no longer returns the item\'s alternateEnclosure —\n'
+      + '          an episode Podcast Index built never offers 📺 Video.');
+  } else if (!/refreshCurrentAlternates\(valueGuid,\s*r\.alternateEnclosures\)/.test(playerSrc)) {
+    fail('components/player.tsx no longer writes the play-time read\'s alternates to `current`.');
+  } else if (!/withAlternatesIfAbsent\([\s\S]{0,120}alternateEnclosures\)/.test(itemValueSrc)) {
+    fail('lib/use-item-value.ts drops the alternates — PLAY on the episode page offers no 📺 Video.');
+  } else if (!/withAlternatesIfAbsent\([\s\S]{0,160}answer\.alternateEnclosures/.test(listSrc)) {
+    fail('components/lists/episode-list.tsx boostRow drops the alternates — a row tapped after its BOOST\n'
+      + '          offers no 📺 Video.');
+  } else if (!/withAlternatesIfAbsent\(s\.current\.episode,\s*alts\)/.test(storeSrc)) {
+    fail('lib/store.ts refreshCurrentAlternates no longer goes through withAlternatesIfAbsent.');
+  } else {
+    ok('the play-time item read carries alternateEnclosure to the player and the episode page');
+  }
+}
+
 // ── `feedLiveItems`: the SHOW PAGE's live list (`/api/feed`) ────────────────
 // The route used to union PI's rows with the RSS rows and let PI win a guid.
 // That was harmless only while the roster was always empty; once it is not, a
@@ -238,6 +312,12 @@ if (!/liveValue:\s*e\.liveValue/.test(src)) {
     + '          PLAY on /live cannot open the Split Kit socket.');
 } else {
   ok('app/api/live-shows/route.ts copies liveValue into each LiveShow');
+}
+if (!/alternateEnclosures:\s*e\.alternateEnclosures/.test(src)) {
+  fail('app/api/live-shows/route.ts no longer copies alternateEnclosures into each LiveShow —\n'
+    + '          PLAY on /live offers no 📺 Video.');
+} else {
+  ok('app/api/live-shows/route.ts copies alternateEnclosures into each LiveShow');
 }
 if (!src.includes('mergeLiveOverPi')) {
   fail('app/api/live-shows/route.ts no longer calls mergeLiveOverPi — an unreadable\n'

@@ -35,6 +35,16 @@ function getPool(): Pool | null {
   return pool;
 }
 
+/**
+ * The same pool, for the one other table in this database: `live_feeds`, the
+ * known-live list (lib/live-feeds.ts). `null` when the store is not configured.
+ * One pool per instance, because `max: 3` is a budget against the database's
+ * own connection cap, and a second pool would double it.
+ */
+export function communityPool(): Pool | null {
+  return getPool();
+}
+
 function db(): Pool {
   const p = getPool();
   if (!p) throw new Error('community store is not configured');

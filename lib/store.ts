@@ -1,6 +1,6 @@
 'use client';
 import { create } from 'zustand';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, HistoryItem, QueueItem, ValueBlock, ValueTimeSplit } from './types';
+import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, HistoryItem, QueueItem, ValueBlock, ValueTimeSplit, AlternateEnclosure } from './types';
 import type { NostrIdentity, PublishReason } from './nostr';
 
 /** Why `favoritesSync` is 'degraded' — see the field for the extra value. */
@@ -10,10 +10,12 @@ export interface FavoritesSyncCount { removed?: number; total: number }
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
+import { mutedWordsOf } from './nostr/reply-spam';
 import {
   addToHistory, epKey, insertShuffled, isPlayableRow, LISTEN_QUEUE_CAP, listKey, nextPlayableIndexBy,
   nextPlayableIndexRepeating,
   playingRowIndex, playsAsTracks, queueShowFor, shuffleIndexOf, speedShowKey, trimForQueue,
+  withAlternatesIfAbsent,
 } from './util';
 import { savedStartSec } from './resume-position';
 import { downloadManager } from './downloads/download-manager';
@@ -101,6 +103,12 @@ interface AppState {
   // dropped; `payableValue` reads `episode.value` first, so the stale copy
   // outranks the feed's own.
   markCurrentValueUnread: (guid: string) => void;
+  /**
+   * The playing item's `<podcast:alternateEnclosure>` renditions, read from its
+   * feed at play time (`/api/item-value`). Only fills a field that is ABSENT:
+   * an episode built from the feed already carries the feed's own answer.
+   */
+  refreshCurrentAlternates: (guid: string, alts: AlternateEnclosure[] | undefined) => void;
   refreshCurrentValue: (guid: string, value: ValueBlock | null | undefined, vts: ValueTimeSplit[] | undefined) => void;
   /** `complete` is false while the list has rows still to load — a playlist
    *  page with a next page. REPEAT wraps only a complete list: wrapping a
@@ -550,10 +558,16 @@ interface AppState {
   // NIP-51 kind:10000 mute list, hydrated on login from the user's relay
   // event. Filter is applied at render time in NoteCard and feed surfaces.
   mutedPubkeys: Set<string>;
+  /** The `word` tags of the same list, lower case (`mutedWordsOf`). A note or
+   *  reply whose text contains one is hidden like a muted author's
+   *  (`mutedWordHit`). This app writes no word mutes; another client does. */
+  mutedWords: string[];
   isMuted: (pubkey: string | undefined) => boolean;
   mutePubkey: (pubkey: string) => void;
   unmutePubkey: (pubkey: string) => void;
-  setMutedPubkeys: (next: Set<string>) => void;
+  /** The ONE way to put a mute list in the store: authors and words together,
+   *  so no caller can set one and leave the other describing an older list. */
+  setMutes: (state: MuteListState) => void;
   /**
    * Whether the last hydration could open the PRIVATE half of the mute list.
    *
@@ -1026,6 +1040,12 @@ export const useApp = create<AppState>((set, get) => ({
       if (vts !== undefined && ep.valueTimeSplits !== vts) { ep.valueTimeSplits = vts; changed = true; }
       return changed ? { current: { ...s.current, episode: ep } } : {};
     }),
+  refreshCurrentAlternates: (guid, alts) =>
+    set((s) => {
+      if (!s.current || !guid || s.current.episode.guid !== guid) return {};
+      const ep = withAlternatesIfAbsent(s.current.episode, alts);
+      return ep === s.current.episode ? {} : { current: { ...s.current, episode: ep } };
+    }),
   // The feed did not answer, so BOOST says that rather than "no value block".
   markCurrentValueUnread: (guid) =>
     set((s) => {
@@ -1415,6 +1435,7 @@ export const useApp = create<AppState>((set, get) => ({
   // Hydrate from the guest cache; once the user signs in, hydrateMutes
   // replaces this with their NIP-51 set reconciled against the relay event.
   mutedPubkeys: unionMutedPubkeys(storage.muted.get(null)),
+  mutedWords: mutedWordsOf(storage.muted.get(null)),
   isMuted: (pubkey) => !!pubkey && get().mutedPubkeys.has(pubkey),
   mutePubkey: (pubkey) => set((s) => {
     if (!pubkey || s.mutedPubkeys.has(pubkey)) return s;
@@ -1444,7 +1465,13 @@ export const useApp = create<AppState>((set, get) => ({
     persistMuted(s.identity, nextState);
     return { mutedPubkeys: unionMutedPubkeys(nextState) };
   }),
-  setMutedPubkeys: (next) => set({ mutedPubkeys: next }),
+  setMutes: (state) => set((s) => {
+    const words = mutedWordsOf(state);
+    // Keep the old array when the words did not change: `<NoteCard>` selects
+    // it, and a new reference on every hydrate re-renders every card for nothing.
+    const same = words.length === s.mutedWords.length && words.every((w, i) => w === s.mutedWords[i]);
+    return { mutedPubkeys: unionMutedPubkeys(state), mutedWords: same ? s.mutedWords : words };
+  }),
 
   mutesSync: 'idle',
   mutesSyncReason: null,

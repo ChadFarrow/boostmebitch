@@ -12,7 +12,7 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { valueNotRead, authorLine, coverStartSeeks, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { valueNotRead, authorLine, coverStartSeeks, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey, withAlternatesIfAbsent } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { IS_BETA } from '@/lib/beta';
@@ -546,7 +546,13 @@ export function EpisodeList({
       setRowValue((prev) => ({ ...prev, [e.id]: 'unread' }));
       return;
     }
-    const read: Episode = { ...e, value: answer.value, valueTimeSplits: answer.valueTimeSplits };
+    // The read row REPLACES this one, and a later tap plays it with its value
+    // already read, so `<Player>` asks no feed: keep the video rendition the
+    // same read found, or that tap never offers 📺 Video.
+    const read: Episode = withAlternatesIfAbsent(
+      { ...e, value: answer.value, valueTimeSplits: answer.valueTimeSplits },
+      answer.alternateEnclosures,
+    );
     setData((prev) => ({
       ...prev,
       episodes: prev.episodes.map((row) => (row.id === e.id ? read : row)),

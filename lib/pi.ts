@@ -24,10 +24,12 @@ import {
   feedHasValueTag,
   newestItemImage,
   parseItemEnclosure,
+  liveReadDocument,
+  LIVE_ITEM_TAG,
 } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
-import { readCappedText, MAX_BODY_BYTES } from './capped-body';
+import { readCappedText, readPrefixThenScan, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
 import { fnvHash, httpUrl, compareEpisodeOrder, listedTrackGuids, splitOnBareUrls, isPlaylistMedium, matchPlaylistsByQuery, liveBroadcastIsOver, liveStampSecs, piLiveStatus, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX, episodeWithoutValue, FEED_FANOUT } from './util';
 import { createBoundedCache } from './bounded-cache';
@@ -1266,6 +1268,90 @@ async function fetchFeedXml(
   return null;
 }
 
+/**
+ * How much of a feed a LIVE read will download, in all, to prove it carries no
+ * live item past the 8 MB it keeps. Nothing past `MAX_BODY_BYTES` is kept, so
+ * this bounds bytes on the wire and time, never the heap.
+ *
+ * Measured 2026-11-25: Global Voice Radio Network's Podhome feed was 11.9 MB
+ * with 2,400 episodes, and it grows with every episode. Past this ceiling the
+ * read is unreadable again, as every feed over 8 MB was before.
+ */
+const LIVE_SCAN_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * The live-item-only documents of feeds too large to keep whole — see
+ * `liveReadDocument`. A SEPARATE cache from `rssXmlCache` on purpose: that one
+ * is read by `/api/feed` and every other parser as the whole feed, and a
+ * document of live items alone would read there as a feed with no episodes.
+ * Same windows as that cache: fresh per caller, servable for 10 minutes when
+ * the publisher is down. Each entry is a few kilobytes of live items.
+ */
+const liveXmlCache = createBoundedCache<string>({
+  maxAgeMs: RSS_STALE_MS,
+  maxEntries: RSS_CACHE_MAX,
+  maxBytes: 8 * 1024 * 1024,
+  sizeOf: (xml) => xml.length,
+});
+
+/**
+ * Read a feed for its live items: the whole body when it fits in
+ * `MAX_BODY_BYTES` (as every read does), otherwise only its live items, and
+ * only when the rest of the body proves there are no others (`liveReadDocument`).
+ * `null` is "nothing can be proved", never "no live items". Throws like the
+ * capped readers (past `LIVE_SCAN_MAX_BYTES`, or the request's own timeout).
+ *
+ * Fills the matching cache, so the next live read inside the window is a hit.
+ * Shared by the request path (`fetchLiveFeedXml`) and the 15-minute check
+ * (`checkLiveFeed`), so the cron and the three live routes agree on a large feed.
+ */
+async function readLiveFeedBody(res: Response, rssUrl: string, now: number): Promise<string | null> {
+  const read = await readPrefixThenScan(res, MAX_BODY_BYTES, LIVE_SCAN_MAX_BYTES, LIVE_ITEM_TAG);
+  const doc = liveReadDocument(new TextDecoder().decode(read.bytes), read);
+  if (!doc) return null;
+  if (doc.whole) rssXmlCache.set(rssUrl, doc.xml, now);
+  else liveXmlCache.set(rssUrl, doc.xml, now);
+  return doc.xml;
+}
+
+/**
+ * `fetchFeedXml` for a LIVE read: the same windows and the same stale-on-error,
+ * but a feed past `MAX_BODY_BYTES` still answers with its live items
+ * (`readLiveFeedBody`). A whole feed from `rssXmlCache` serves as before, so a
+ * feed `/api/feed` read a moment ago costs nothing here.
+ */
+async function fetchLiveFeedXml(
+  rssUrl: string,
+  opts?: { maxAgeMs?: number },
+): Promise<string | null> {
+  const now = Date.now();
+  const freshMs = opts?.maxAgeMs ?? RSS_FRESH_MS;
+  const whole = rssXmlCache.get(rssUrl, now);
+  if (whole && whole.ageMs < freshMs) return whole.value;
+  const liveOnly = liveXmlCache.get(rssUrl, now);
+  if (liveOnly && liveOnly.ageMs < freshMs) return liveOnly.value;
+
+  try {
+    const res = await safeFetch(rssUrl, {
+      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) {
+      const xml = await readLiveFeedBody(res, rssUrl, now);
+      if (xml != null) return xml;
+    } else {
+      await res.body?.cancel().catch(() => {});
+    }
+  } catch {
+    // fall through to the stale-on-error path
+  }
+  // The newer of the two copies, each already inside its 10-minute horizon.
+  const stale = [whole, liveOnly]
+    .filter((h): h is NonNullable<typeof h> => h != null)
+    .sort((a, b) => a.ageMs - b.ageMs)[0];
+  return stale ? stale.value : null;
+}
+
 // PI's /episodes/live only indexes currently-broadcasting items; pending
 // liveItems live exclusively in the publisher's RSS. Fetch the feed XML
 // and pull <podcast:liveItem status="pending|live"> directly.
@@ -1286,7 +1372,9 @@ export async function getLiveItemsFromRssDetailed(
   podcastGuid?: string,
   opts?: { maxAgeMs?: number },
 ): Promise<{ ok: boolean; items: Episode[] }> {
-  const xml = await fetchFeedXml(rssUrl, opts);
+  // `fetchLiveFeedXml`, not `fetchFeedXml`: a feed past 8 MB is still read for
+  // its live items, so Podcast Index's word is not the only one on `/live`.
+  const xml = await fetchLiveFeedXml(rssUrl, opts);
   if (xml == null) return { ok: false, items: [] };
   const items = parseRssLiveItems(xml).map((r): Episode => ({
     id: -fnvHash(r.guid ?? r.title ?? `${rssUrl}#${r.startTime ?? ''}`),
@@ -1304,6 +1392,9 @@ export async function getLiveItemsFromRssDetailed(
     value: r.value,
     socialInteract: r.socialInteract,
     liveValue: r.liveValue,
+    // A video rendition of the broadcast (Owncast HLS beside an Icecast MP3).
+    // Without it <VideoToggle> never offers 📺 Video on a live item.
+    alternateEnclosures: r.alternateEnclosures,
     liveRemoteItem: r.remoteItem,
     liveValueTimeSplits: r.valueTimeSplits?.length ? r.valueTimeSplits : undefined,
   }));
@@ -1318,6 +1409,71 @@ export async function getLiveItemsFromRss(
 ): Promise<Episode[]> {
   const { items } = await getLiveItemsFromRssDetailed(rssUrl, feedId, podcastGuid, opts);
   return items;
+}
+
+/**
+ * One CONDITIONAL read of a feed for the known-live-feeds check (lib/live-feeds.ts),
+ * which runs every 15 minutes over every feed on the list.
+ *
+ * It sends the validators the last read recorded (`If-None-Match`,
+ * `If-Modified-Since`), so a feed that has not changed answers `304` and costs
+ * no body — `not-modified`, and the caller keeps what it recorded. A `200` is
+ * read like every LIVE read (`readLiveFeedBody`: capped, and a feed past 8 MB
+ * still answers with its live items), and answers which live items the feed
+ * carries now plus whether it carries a `<podcast:liveItem>` of ANY status
+ * (`anyLiveItem`: an `ended` item still makes a show a live show).
+ *
+ * `failed` is every other outcome, and it is not "no live items": the caller
+ * must keep what it had. The validators come from a feed host, so they are
+ * capped in length, and a value `fetch` refuses as a header is a failed read,
+ * never a throw. A successful body also refreshes the shared XML cache, so the
+ * request path that reads the same feed a moment later is a hit.
+ */
+export async function checkLiveFeed(
+  rssUrl: string,
+  validators: { etag?: string | null; lastModified?: string | null },
+): Promise<
+  | { kind: 'not-modified' }
+  | { kind: 'failed' }
+  | {
+      kind: 'read';
+      etag?: string;
+      lastModified?: string;
+      anyLiveItem: boolean;
+      items: { status: 'pending' | 'live'; startTime?: number; endTime?: number }[];
+    }
+> {
+  const headers: Record<string, string> = { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent };
+  const short = (v: string | null | undefined) => (v && v.length <= 256 ? v : undefined);
+  const etag = short(validators.etag);
+  const lastModified = short(validators.lastModified);
+  if (etag) headers['If-None-Match'] = etag;
+  if (lastModified) headers['If-Modified-Since'] = lastModified;
+  try {
+    const res = await safeFetch(rssUrl, { headers, signal: AbortSignal.timeout(8000) });
+    if (res.status === 304) {
+      await res.body?.cancel().catch(() => {});
+      return { kind: 'not-modified' };
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { kind: 'failed' };
+    }
+    // The same read the request path makes, so a feed past 8 MB is not
+    // `failed` here while `/live` can read it (and the other way round).
+    const xml = await readLiveFeedBody(res, rssUrl, Date.now());
+    if (xml == null) return { kind: 'failed' };
+    const anyLiveItem = findBlocks(xml, LIVE_ITEM_TAG, { max: 1 }).length > 0;
+    return {
+      kind: 'read',
+      etag: short(res.headers.get('etag')),
+      lastModified: short(res.headers.get('last-modified')),
+      anyLiveItem,
+      items: parseRssLiveItems(xml).map((r) => ({ status: r.status, startTime: r.startTime, endTime: r.endTime })),
+    };
+  } catch {
+    return { kind: 'failed' };
+  }
 }
 
 interface RawLiveItem {
@@ -1337,6 +1493,7 @@ interface RawLiveItem {
   remoteItem?: ValueTimeSplitRemoteItem;
   valueTimeSplits?: ValueTimeSplit[];
   liveValue?: { uri: string; protocol: string };
+  alternateEnclosures?: AlternateEnclosure[];
 }
 
 /**
@@ -1408,6 +1565,9 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
       remoteItem: firstRemoteItem(stripValueTimeSplits(inner)),
       valueTimeSplits: parseValueTimeSplitsFromRss(inner),
       liveValue: parseLiveValue(inner),
+      // Read the same way as an <item>'s: a live item may carry a video
+      // rendition too (Homegrown Hits: an Owncast HLS beside the Icecast MP3).
+      alternateEnclosures: parseAlternateEnclosures(inner),
     });
   }
   return out;
@@ -2334,6 +2494,9 @@ export async function getItemPaymentFromRss(rssUrl: string, itemGuid: string): P
       read: true,
       value: parseValueBlock(item.inner) ?? channel,
       valueTimeSplits: itemValueTimeSplits(item.inner),
+      // A video rendition, for an episode Podcast Index built: this read is the
+      // only one it gets, at play time. See `ItemPayment.alternateEnclosures`.
+      alternateEnclosures: parseAlternateEnclosures(item.inner),
     };
   }
   return { read: true, value: channel, valueTimeSplits: [] };

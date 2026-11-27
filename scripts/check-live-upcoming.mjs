@@ -1,5 +1,6 @@
 // Pins `mergeUpcomingSeen` (lib/util.ts) — how `/live` carries its Upcoming
-// list from one poll to the next.
+// list from one poll to the next — and `favoritesFirst`, which puts the
+// visitor's own shows at the top of each list.
 //
 // THE FAILURE THIS IS WRITTEN AGAINST. Measured on production 2026-11-14: the
 // Upcoming tab read 3, then 6, then 9 — one more copy of every scheduled show
@@ -130,11 +131,89 @@ for (const v of VECTORS) {
   else ok('the shipped merge changes it in place  (the shipped merge fails it)');
 }
 
+// ── `favoritesFirst`: the visitor's own shows lead each list ───────────────
+//
+// Chad, 2026-11-25: "show all current and upcoming lives if we can and show the
+// users favorites first". Every visitor gets the same rows; a favorite only
+// moves UP. The wrong version is the page before this: the rows in the route's
+// order, favorites wherever they fell — Chad and Reeds was ninth of nine for
+// its own host.
+const { favoritesFirst } = util;
+if (typeof favoritesFirst !== 'function') {
+  fail('lib/util.ts does not export favoritesFirst');
+} else {
+  const naiveFav = (shows) => [...shows];
+  const show = (feedId, podcastGuid, guid) => ({ feedId, podcastGuid, guid: guid ?? `${feedId}-item` });
+  const ids = (list) => list.map((s) => s.guid).join(',');
+  const CR = '0d0fa5e1-1111-4a2b-9c3d-000000000001';
+  const FAV_VECTORS = [
+    {
+      name: 'THE ONE THAT MATTERS: a favorite ninth in time order comes first',
+      args: [[show(1, 'g1'), show(2, 'g2'), show(7968805, CR)], new Set([CR]), new Set()],
+      expect: (r) => ids(r) === '7968805-item,1-item,2-item',
+    },
+    {
+      name: 'a favorite matches by feed id when its guid is not on the row',
+      args: [[show(1, 'g1'), show(5, undefined)], new Set(), new Set([5])],
+      expect: (r) => ids(r) === '5-item,1-item',
+    },
+    {
+      name: 'a favorite\'s guid matches whatever its case',
+      args: [[show(1, 'g1'), show(2, CR.toUpperCase())], new Set([CR]), new Set()],
+      expect: (r) => ids(r) === '2-item,1-item',
+    },
+    {
+      name: 'favorites keep their own order, and so does everything else',
+      args: [
+        [show(1, 'a'), show(2, 'f1'), show(3, 'b'), show(4, 'f2'), show(5, 'c')],
+        new Set(['f1', 'f2']), new Set(),
+      ],
+      expect: (r) => ids(r) === '2-item,4-item,1-item,3-item,5-item',
+    },
+    {
+      name: 'every row is kept — a favorite never hides another show',
+      args: [[show(1, 'a'), show(2, 'f'), show(3, 'b')], new Set(['f']), new Set()],
+      expect: (r) => r.length === 3,
+      alsoNaive: true,
+    },
+    {
+      name: 'no favorites: the order is unchanged',
+      args: [[show(3, 'c'), show(1, 'a'), show(2, 'b')], new Set(), new Set()],
+      expect: (r) => ids(r) === '3-item,1-item,2-item',
+      alsoNaive: true,
+    },
+    {
+      name: 'a feed id of 0 (an unresolved favorite) matches nothing',
+      args: [[show(1, 'a'), show(0, undefined)], new Set(), new Set([0])],
+      expect: (r) => ids(r) === '1-item,0-item',
+      alsoNaive: true,
+    },
+  ];
+  for (const v of FAV_VECTORS) {
+    let real;
+    try { real = favoritesFirst(...structuredClone(v.args)); }
+    catch (e) { fail(`favoritesFirst: ${v.name} — threw: ${e.message}`); continue; }
+    if (!v.expect(real)) { fail(`favoritesFirst: ${v.name} — wrong answer: [${ids(real)}]`); continue; }
+    const naiveAgrees = v.expect(naiveFav(...structuredClone(v.args)));
+    if (naiveAgrees && !v.alsoNaive) fail(`favoritesFirst: ${v.name} — today's order passes it too, so it proves nothing`);
+    else if (!naiveAgrees && v.alsoNaive) fail(`favoritesFirst: ${v.name} — marked alsoNaive but today's order FAILS it`);
+    else ok(`favoritesFirst: ${v.name}` + (v.alsoNaive ? '  (must-still-work)' : '  (today\'s order fails it)'));
+  }
+  const input = [show(1, 'a'), show(2, 'f')];
+  const before = JSON.stringify(input);
+  favoritesFirst(input, new Set(['f']), new Set());
+  if (JSON.stringify(input) !== before) fail('favoritesFirst reordered its input in place');
+  else ok('favoritesFirst leaves its input as it was');
+}
+
 const read = (await import('node:fs/promises')).readFile;
 {
   const page = await read('components/live-page.tsx', 'utf8');
   if (!/mergeUpcomingSeen\(/.test(page)) fail('components/live-page.tsx does not merge Upcoming through mergeUpcomingSeen');
   else ok('components/live-page.tsx merges Upcoming through mergeUpcomingSeen');
+  const leads = (page.match(/favoritesFirst\(/g) ?? []).length;
+  if (leads < 3) fail(`components/live-page.tsx puts favorites first in ${leads} of its 3 lists (Live, 24/7, Upcoming)`);
+  else ok('components/live-page.tsx puts favorites first in Live, 24/7 and Upcoming');
 }
 
 console.log(failures

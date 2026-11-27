@@ -81,7 +81,11 @@ export { parseZapReceipt, zapSats, type ZapReceipt } from './zap-receipt';
 export type { Nip73Refs } from './zap-request';
 export { mintSummaryReceipt, type QuotedZapReceipt } from './zap-summary-receipt';
 
-export { useNostrFeed, useVisibleNotes, visibleNotes, LocalNoteSink, type AddLocalNote } from './use-feed';
+export {
+  useNostrFeed, useVisibleNotes, visibleNotes, LocalNoteSink, type AddLocalNote,
+  SpamReplies, useSpamReplyIds, spamReplyIdsIn,
+} from './use-feed';
+export { mutedWordHit } from './reply-spam';
 
 // The read index (services/nostr-index). Every one of these returns null when
 // there is no index, it is unreachable, or it holds nothing — never an empty
@@ -214,6 +218,7 @@ export {
   streamIdOf,
   parseStreamId,
   isLiveStreamId,
+  liveHostShareUrl,
   LIVE_STREAM_RELAYS,
   type NostrLiveStream,
   type StreamV4V,

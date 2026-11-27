@@ -162,6 +162,19 @@ const STATIONS = range(8_000_000, 20);
 const SHOWS = range(5_000_000, 20);
 const MEASURED = [...STATIONS, ...SHOWS];
 
+// The roster production ranked on 2026-11-25 (`/episodes/live`, 40 rows, 37
+// feeds), in `liveRosterFeedOrder` order, and the nine feeds whose own RSS
+// carried a FUTURE `status="pending"` item that morning.
+const MEASURED_2026_11_25 = [
+  8106047, 8109818, 8113770, 8125249, 946122, 8101763, 8110391, 8120226, 8101550, 8107364,
+  8063077, 8063078, 8063079, 8063080, 8063081, 8080084, 8080977, 8113147, 8114925, 8120311,
+  7920227, 5350892, 8109888, 8108020, 8044056, 4831193, 7443578, 7111253, 5461087, 6754125,
+  7156165, 8127839, 7968805, 7963427, 5904093, 7359152, 6611624,
+];
+const PENDING_2026_11_25 = [
+  946122, 5350892, 4831193, 7443578, 5461087, 7968805, 7963427, 5904093, 6611624,
+];
+
 const PLAN_VECTORS = [
   {
     name: 'THE ONE THAT MATTERS: 20 known stations no longer push regular feeds past the 24-feed cap',
@@ -200,16 +213,44 @@ const PLAN_VECTORS = [
     args: [[7, 100, 3, 101, 9], [station(100), station(101)], 24, 24],
     expect: (r) => r.fromRoster.join(',') === '7,3,9',
   },
+  // REPLACED 2026-11-25. Two vectors here pinned the COLD slice — "no
+  // remembered stations: the plan is today's slice, unchanged" (30 feeds, no
+  // memory, read 24, truncated) and "more regular feeds than the cap is still
+  // reported as truncated" (26 + one known station, read 24, truncated). That
+  // slice WAS the bug: Vercel runs several instances, each with its own memory,
+  // so the instance that answered decided what a new visitor saw. Measured on
+  // production that day, a cold instance answered 2 Upcoming rows and a warm
+  // one 9, for the same roster. The intent of the second — truncation is still
+  // reported past the bound — is kept below, against the new bound.
   {
-    name: 'no remembered stations: the plan is today\'s slice, unchanged',
-    args: [range(1, 30), [], 24, 24],
-    expect: (r) => r.fromRoster.join(',') === range(1, 24).join(',') && r.truncated && r.fromAlwaysOn.length === 0,
-    alsoNaive: true,
+    name: 'THE ONE THAT MATTERS NOW: the measured roster of 2026-11-25 with an EMPTY memory reads every feed',
+    // Podcast Index's 37 feeds, in `liveRosterFeedOrder` order exactly as
+    // production ranked them: 22 stations republished that morning sort first.
+    // The cold slice read 24 — Bowl After Bowl, Hyper SpaceOut and 22 stations
+    // — and cut the other 13, among them Chad and Reeds (index 32) and seven
+    // more shows with a pending item.
+    args: [MEASURED_2026_11_25, [], 24, 24],
+    expect: (r) => PENDING_2026_11_25.every((id) => r.fromRoster.includes(id)) && !r.truncated,
   },
   {
-    name: 'more regular feeds than the cap is still reported as truncated',
-    args: [[...range(1, 26), 500], [station(500)], 24, 24],
-    expect: (r) => r.truncated && r.fromRoster.length === 24,
+    name: 'a cold plan reads as many feeds as a warm one — the unspent station allowance goes to the roster',
+    args: [range(1, 30), [], 24, 24],
+    expect: (r) => r.fromRoster.join(',') === range(1, 30).join(',') && !r.truncated && r.fromAlwaysOn.length === 0,
+  },
+  {
+    name: 'more regular feeds than BOTH allowances is still reported as truncated',
+    args: [range(1, 60), [], 24, 24],
+    expect: (r) => r.truncated && r.fromRoster.join(',') === range(1, 48).join(','),
+  },
+  {
+    name: 'a full station allowance leaves the roster its own cap, and truncation past it is reported',
+    args: [[...range(1, 26), ...range(500, 24)], range(500, 24).map(station), 24, 24],
+    expect: (r) => r.truncated && r.fromRoster.length === 24 && r.fromAlwaysOn.length === 24,
+  },
+  {
+    name: 'one plan never reads more than the two allowances together',
+    args: [range(1, 100), range(3, 5).map(station), 24, 24],
+    expect: (r) => r.fromRoster.length + r.fromAlwaysOn.length <= 48,
     alsoNaive: true,
   },
   {
@@ -238,6 +279,123 @@ for (const v of PLAN_VECTORS) {
   } else {
     ok(`planLiveRosterReads: ${v.name}` + (v.alsoNaive ? '  (must-still-work)' : '  (today\'s slice fails it)'));
   }
+}
+
+// ── The known-live list (lib/live-feeds.ts): what the 15-minute check keeps ──
+//
+// Chad, 2026-11-25: "can we check for known rss live shows on a schedule?" — so
+// a show Podcast Index stops listing still reaches every visitor's Upcoming.
+// The list names FEEDS; the route still reads each one from its own RSS.
+{
+  const { liveFeedVerdict, liveFeedExpired, planKnownLiveReads, LIVE_FEED_EXPIRY_MS } = util;
+  for (const [name, fn] of [['liveFeedVerdict', liveFeedVerdict], ['liveFeedExpired', liveFeedExpired], ['planKnownLiveReads', planKnownLiveReads]]) {
+    if (typeof fn !== 'function') fail(`lib/util.ts does not export ${name}`);
+  }
+  const DAYMS = DAY * 1000;
+  const NOWMS = MIDNIGHT * 1000;
+  const known = (id, o = {}) => ({ id, url: `https://ex.test/${id}.xml`, alwaysOn: false, hasLive: false, hasPending: false, ...o });
+  // Wrong versions: the obvious one-liners each would be.
+  const naive = {
+    liveFeedVerdict: (items) => ({ hasLive: items.length > 0, hasPending: false, alwaysOn: false }),
+    liveFeedExpired: (row, now) => now - (row.lastItemAt ?? row.firstSeen) > LIVE_FEED_EXPIRY_MS,
+    planKnownLiveReads: (list, _seen, max) => list.slice(0, max),
+  };
+  const KNOWN_VECTORS = [
+    {
+      fn: 'liveFeedVerdict',
+      name: 'Chad and Reeds on 2026-11-25: one pending item, nothing on air, not a station',
+      args: [[{ status: 'pending', startTime: 1_796_261_400, endTime: 1_796_268_600 }]],
+      expect: (r) => r.hasPending && !r.hasLive && !r.alwaysOn,
+    },
+    {
+      fn: 'liveFeedVerdict',
+      name: 'a Stupid Potato channel is a station, so the route plans it into the 24/7 allowance',
+      args: [[{ status: 'live', startTime: MIDNIGHT, endTime: MIDNIGHT + DAY }]],
+      expect: (r) => r.alwaysOn && r.hasLive,
+    },
+    {
+      fn: 'liveFeedVerdict',
+      name: 'RevDoc\'s Revival on 2026-11-25: on air AND a pending date — both flags',
+      args: [[{ status: 'live', startTime: MIDNIGHT, endTime: MIDNIGHT + 3600 }, { status: 'pending', startTime: MIDNIGHT + 5 * DAY }]],
+      expect: (r) => r.hasLive && r.hasPending && !r.alwaysOn,
+    },
+    {
+      fn: 'liveFeedVerdict',
+      name: 'no live items: no flags',
+      args: [[]],
+      expect: (r) => !r.hasLive && !r.hasPending && !r.alwaysOn,
+      alsoNaive: true,
+    },
+    {
+      fn: 'liveFeedExpired',
+      name: 'a hand-listed show never expires, however long it is quiet',
+      args: [{ hand: true, lastItemAt: NOWMS - 400 * DAYMS, firstSeen: NOWMS - 500 * DAYMS }, NOWMS],
+      expect: (r) => r === false,
+    },
+    {
+      fn: 'liveFeedExpired',
+      name: 'a weekly show that skipped a month keeps its place',
+      args: [{ hand: false, lastItemAt: NOWMS - 30 * DAYMS, firstSeen: NOWMS - 300 * DAYMS }, NOWMS],
+      expect: (r) => r === false,
+      alsoNaive: true,
+    },
+    {
+      fn: 'liveFeedExpired',
+      name: 'a feed with no live item for 61 days leaves',
+      args: [{ hand: false, lastItemAt: NOWMS - 61 * DAYMS, firstSeen: NOWMS - 300 * DAYMS }, NOWMS],
+      expect: (r) => r === true,
+      alsoNaive: true,
+    },
+    {
+      fn: 'planKnownLiveReads',
+      name: 'THE ONE THAT MATTERS: a known show Podcast Index does not list is read for its pending item',
+      args: [[known(8, { alwaysOn: true, hasLive: true }), known(7968805, { hasPending: true })], new Set([946122]), 24],
+      expect: (r) => r.map((f) => f.id).join(',') === '7968805',
+    },
+    {
+      fn: 'planKnownLiveReads',
+      name: 'a feed another source already reads is not read twice',
+      args: [[known(946122, { hasPending: true }), known(7968805, { hasPending: true })], new Set([946122]), 24],
+      expect: (r) => r.map((f) => f.id).join(',') === '7968805',
+    },
+    {
+      fn: 'planKnownLiveReads',
+      name: 'a known feed with nothing live or pending costs no read',
+      args: [[known(1), known(2, { hasPending: true })], new Set(), 24],
+      expect: (r) => r.map((f) => f.id).join(',') === '2',
+    },
+    {
+      fn: 'planKnownLiveReads',
+      name: 'past the cap, a schedule is dropped before a broadcast',
+      args: [[known(1, { hasPending: true }), known(2, { hasPending: true }), known(3, { hasLive: true })], new Set(), 2],
+      expect: (r) => r.map((f) => f.id).join(',') === '3,1',
+    },
+  ];
+  for (const v of KNOWN_VECTORS) {
+    let real;
+    try { real = util[v.fn](...v.args.map(clone)); }
+    catch (e) { fail(`${v.fn}: ${v.name} — threw: ${e.message}`); continue; }
+    if (!v.expect(real)) { fail(`${v.fn}: ${v.name} — wrong answer: ${JSON.stringify(real)}`); continue; }
+    let naiveAgrees;
+    try { naiveAgrees = v.expect(naive[v.fn](...v.args.map(clone))); } catch { naiveAgrees = false; }
+    if (naiveAgrees && !v.alsoNaive) fail(`${v.fn}: ${v.name} — the naive version passes it too, so it proves nothing`);
+    else if (!naiveAgrees && v.alsoNaive) fail(`${v.fn}: ${v.name} — marked alsoNaive but the naive version FAILS it`);
+    else ok(`${v.fn}: ${v.name}` + (v.alsoNaive ? '  (must-still-work)' : '  (the naive version fails it)'));
+  }
+}
+
+// The first cron run makes the tables from LIVE_FEEDS_SCHEMA (lib/live-feeds.ts);
+// scripts/community-schema.sql carries the same text for a manual run. Two
+// copies of a schema drift, so they must be equal.
+{
+  const { readFileSync } = await import('node:fs');
+  const norm = (t) => t.replace(/\s+/g, ' ').trim();
+  const src = readFileSync(new URL('../lib/live-feeds.ts', import.meta.url), 'utf8');
+  const m = src.match(/export const LIVE_FEEDS_SCHEMA = `([\s\S]*?)`;/);
+  const sql = readFileSync(new URL('./community-schema.sql', import.meta.url), 'utf8');
+  if (!m) fail('lib/live-feeds.ts has no LIVE_FEEDS_SCHEMA literal');
+  else if (!norm(sql).includes(norm(m[1]))) fail('scripts/community-schema.sql does not carry LIVE_FEEDS_SCHEMA word for word');
+  else ok('LIVE_FEEDS_SCHEMA and scripts/community-schema.sql are the same text');
 }
 
 // Nothing may be mutated: the route reads the remembered list again.
@@ -283,6 +441,7 @@ const read = (await import('node:fs/promises')).readFile;
 
 function clone(v) {
   // JSON drops `undefined` and turns Infinity into null; keep both, they are vectors.
+  if (v instanceof Set) return new Set([...v].map(clone));
   if (Array.isArray(v)) return v.map(clone);
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clone(x)]));
   return v;

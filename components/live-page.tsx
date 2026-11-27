@@ -7,7 +7,7 @@ import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import {
   hasValueRecipients, isMusicMedium, isPlaylistMedium, liveShowToEpisode,
-  liveShowToPodcast, mergeUpcomingSeen, payableValue, showShareUrl,
+  favoritesFirst, liveShowToPodcast, mergeUpcomingSeen, payableValue, showShareUrl,
 } from '@/lib/util';
 import type { LiveShow } from '@/lib/types';
 import { AppHeader } from '@/components/app-header';
@@ -190,6 +190,14 @@ export function LivePage() {
     [favorites],
   );
 
+  /** Every favorite, for `favoritesFirst` — guids and resolved feed ids, any
+   *  medium (sorting costs nothing, unlike the reads `favIdList` sends). */
+  const favGuids = useMemo(() => new Set(Object.keys(favorites)), [favorites]);
+  const favIds = useMemo(
+    () => new Set(Object.values(favorites).map((f) => f.id).filter((id) => id > 0)),
+    [favorites],
+  );
+
   const identity = useApp((s) => s.identity);
   const boostsTick = useApp((s) => s.boostsTick);
 
@@ -362,11 +370,21 @@ export function LivePage() {
   // A 24/7 station is live too, but it is not a show on air. Measured
   // 2026-11-14: nineteen stations and no broadcast, and the Live tab said 19.
   // They get their own tab so `● LIVE` keeps meaning "somebody started a show".
-  const onAir = items.filter((s) => s.liveStatus === 'live' && !s.alwaysOn);
-  const stations = items.filter((s) => s.liveStatus === 'live' && s.alwaysOn);
-  const upcoming = Object.values(upcomingSeen)
-    .flat()
-    .sort((a, b) => (a.liveStartTime ?? 0) - (b.liveStartTime ?? 0));
+  //
+  // The visitor's own favorites lead each list (`favoritesFirst`). They only
+  // move up: every visitor gets the same rows.
+  const onAir = favoritesFirst(
+    items.filter((s) => s.liveStatus === 'live' && !s.alwaysOn), favGuids, favIds,
+  );
+  const stations = favoritesFirst(
+    items.filter((s) => s.liveStatus === 'live' && s.alwaysOn), favGuids, favIds,
+  );
+  const upcoming = favoritesFirst(
+    Object.values(upcomingSeen)
+      .flat()
+      .sort((a, b) => (a.liveStartTime ?? 0) - (b.liveStartTime ?? 0)),
+    favGuids, favIds,
+  );
   const unverified = data?.unverifiedFeeds ?? 0;
 
   /**
@@ -530,18 +548,17 @@ export function LivePage() {
               shows={upcoming}
               state={state}
               hasData={!!data}
-              // "That we can see", never "nothing is scheduled". Podcast Index
-              // publishes no global schedule, so this list is the shows you
-              // have favorited or boosted plus whatever is on air — and an
-              // empty one is a statement about our reach, not about the world.
+              // "That we can see", never "nothing is scheduled". This list is
+              // what Podcast Index's live list and the shows you have
+              // favorited or boosted carry — an empty one is a statement about
+              // our reach, not about the world.
               emptyLine="Nothing scheduled that we can see."
               caption={
                 favPool
-                  ? 'Scheduled broadcasts from the shows you have favorited or boosted, plus ' +
-                    'from any show on air right now. Podcast Index publishes no global schedule, ' +
-                    'so a show you have done neither with may not be here.'
-                  : 'The next broadcast from shows that are on air right now. Podcast Index ' +
-                    'publishes no global schedule — favorite a show and its schedule shows up here.'
+                  ? 'Scheduled broadcasts we can find: shows on Podcast Index\'s live list, plus ' +
+                    'the shows you have favorited or boosted. Your favorites come first.'
+                  : 'Scheduled broadcasts we can find on Podcast Index\'s live list. Favorite a ' +
+                    'show and its schedule shows up here too, at the top.'
               }
             />
           )}

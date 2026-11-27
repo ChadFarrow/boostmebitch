@@ -3,7 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchSocialInteractThread,
   noteFromEvent,
+  mutedWordHit,
   resolvePublishRelays,
+  SpamReplies,
+  useSpamReplyIds,
   useViewerReposts,
   type DiscoveredNote,
 } from '@/lib/nostr';
@@ -45,6 +48,7 @@ export function EpisodeSocialThread({
 
   const identity = useApp((s) => s.identity);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const mutedWords = useApp((s) => s.mutedWords);
 
   const primary = entries[0];
   const njumpUrl = primary.uri.startsWith('nostr:')
@@ -129,9 +133,12 @@ export function EpisodeSocialThread({
   }, [primary.uri, reloadTick, applyPending]);
 
   const visibleNotes = useMemo(
-    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey)) : notes),
-    [notes, mutedPubkeys],
+    () => (notes
+      ? notes.filter((n) => !mutedPubkeys.has(n.pubkey) && !mutedWordHit(n.content, mutedWords))
+      : notes),
+    [notes, mutedPubkeys, mutedWords],
   );
+  const spamIds = useSpamReplyIds(visibleNotes);
 
   // WITHOUT THIS THE VIEWER CAN PUBLISH A SECOND kind:6, and kind:6 is not
   // deletable in practice. `repostedIds` is an OPTIONAL prop on `<NoteCard>`, so
@@ -235,11 +242,13 @@ export function EpisodeSocialThread({
       {status === 'ready' && (
         <>
           {visibleNotes && visibleNotes.length > 0 && (
-            <div className="space-y-3">
-              {visibleNotes.map((n) => (
-                <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
-              ))}
-            </div>
+            <SpamReplies.Provider value={spamIds}>
+              <div className="space-y-3">
+                {visibleNotes.map((n) => (
+                  <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
+                ))}
+              </div>
+            </SpamReplies.Provider>
           )}
           {loadingReplies && (
             <p className="text-xs text-muted mt-2">loading replies…</p>

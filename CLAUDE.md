@@ -20,7 +20,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/signers.md`](docs/signers.md) | `lib/nostr/signer.ts`, `amber.ts`, **`amber-callback-url.ts`**, **`amber-safe-text.ts`**, **`app/amber-callback/`**, `bunker.ts`, `local-signer.ts`, `google-auth.ts`, `drive-backup.ts`, `backup-crypto.ts`, `components/nostr-auth/` |
 | [`docs/nostr.md`](docs/nostr.md) | `lib/nostr/*` (non-signer), `components/*note*`, `components/*feed*`, `*like*`, `live-chat.tsx`, `message-input.tsx`, `components/profile-editor.tsx`, `components/favorites-sync-notice.tsx` and **`components/favorites-privacy.tsx`** (both listed explicitly — `*note*` does **not** match "notice", and nothing here matches "privacy" at all), and the boost explorer: `app/npub/[npub]/`, `components/boost-explorer.tsx`, `components/npub-playlists.tsx`, **`components/zap-receipt-card.tsx`**, `lib/use-note-meta.ts`, plus the npub branch of `components/search-bar.tsx` (none of them match a glob above), and the boost note's picture: **`app/api/og/boost.png/`** and **`lib/gif-first-frame.ts`** — a route whose URL every published note carries forever, so what it may not change is not derivable from reading it |
 | [`docs/wallets.md`](docs/wallets.md) | `components/wallet-modal.tsx`, `*-wallet.tsx`, `wallet-balance.tsx`, `lib/v4v/nwc.ts`, `nwc-state.ts`, `spark.ts`, `webln.ts`, `lib/use-wallet-change.ts`, `lib/native/platform.ts` |
-| [`docs/feeds.md`](docs/feeds.md) | `app/api/*`, `lib/pi.ts`, `lib/feed-xml.ts`, `lib/podcast-meta.ts`, `lib/moved-feeds.ts`, `lib/demu.ts`, `lib/live-status.ts`, `lib/musicl-resolver.ts`, **`lib/playlist-collection.ts`**, **`lib/curated-*.ts`**, `lib/feed-resolve.ts`, **`lib/playlist-db*.ts`**, **`lib/community/`**, **`app/feeds/`**, `lib/bounded-cache.ts`, `components/podroll.tsx` |
+| [`docs/feeds.md`](docs/feeds.md) | `app/api/*`, `lib/pi.ts`, `lib/feed-xml.ts`, `lib/podcast-meta.ts`, `lib/moved-feeds.ts`, `lib/demu.ts`, `lib/live-{status,feeds}.ts`, `lib/musicl-resolver.ts`, **`lib/playlist-collection.ts`**, **`lib/curated-*.ts`**, `lib/feed-resolve.ts`, **`lib/playlist-db*.ts`**, **`lib/community/`**, **`app/feeds/`**, `lib/bounded-cache.ts`, `components/podroll.tsx` |
 | [`docs/ui.md`](docs/ui.md) | `components/player.tsx` **and `components/player/`**, `fullscreen-player.tsx`, `transport-controls.tsx`, `lib/track-art.ts`, **`lib/resume-position.ts`**, **`components/lists/`**, `chapter*`, `transcript*`, `home-page.tsx`, `episode-detail-view.tsx`, **`favorites-page.tsx` + `favorites-new-*.tsx` + `lib/{new-music,use-artist-follows}.ts` + `favorites-opml.tsx`/`favorites-shuffle*`/`album-shuffle-button.tsx`/`playlist-shuffle-button.tsx` + `app/favorites/`**, **`queue-button.tsx` + `listen-page.tsx` + `app/listen/`**, **`app/playlists/`**, **`app/admin/`**, **`app/demu/` + `demu-page.tsx` + `demu-costumes.tsx`**, **`live-page.tsx` + `app/live/`**, **`app-header.tsx`** **plus the dock — `tab-bar.tsx`, `underline-tabs.tsx`, `.tile`**, **the bug report: `bug-report-modal.tsx`, `lib/bug-report.ts`, `lib/playback-log*.ts`, `app/api/bug-report/`, `user-report-notify.yml`**, `theme-toggle.tsx`, **`podcast-cover.tsx` + `app/api/art/`**, **`search-bar.tsx` + `chip.tsx` + `select-menu.tsx`** (the content-type selector, shared with the favorites filter; its *lanes* are in feeds.md and its `nsec` refusal in security.md) — **and the theme control's two menu hosts, `auth-control.tsx` and `nostr-auth/account-menu.tsx` (ui.md, not signers.md)** — PWA/fonts |
 | [`docs/storage.md`](docs/storage.md) | Adding or changing any `bmb:*` key |
 | [`docs/nostr-index.md`](docs/nostr-index.md) + [`docs/nostr.md`](docs/nostr.md) (read index section) + [`docs/feeds.md`](docs/feeds.md) (batch section) | `services/nostr-index/`, `lib/nostr/index-client.ts`, `lib/nostr-index-server.ts`, `lib/pi-batch.ts`, `app/api/nostr/index/`, the two `batch/` routes, and the `warm*Cache` half of `lib/podcast-meta.ts` |
@@ -62,7 +62,7 @@ npm run dev / build / start / lint
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
 | `check:spark` | `sparkMnemonicFromKey`, `deriveBackupKey`, `sparkAccountNumber` through the INSTALLED Spark SDK | every derived wallet moves; every backup unreadable; an SDK bump opens an empty wallet for every seed |
-| `check:sanitizer` | `safeUrlAttr` — the show-notes URL allowlist | a feed runs JS in the wallet-bearing origin |
+| `check:sanitizer` | `safeUrlAttr` — the show-notes URL allowlist | a feed runs JS beside the wallet |
 | `check:ssrf` | `assertSafeFetchUrl` | feed data aims the server at cloud metadata |
 | `check:liveblock` | `parseLiveBlock` — Split Kit live-value → value block | a live show pays the wrong node, or drops an artist |
 | `check:keysend` | `keysend-lookup.ts` — the rail each lnaddress leg leaves on | boostagram lost while sats land, or a lookalike domain diverts the payee |
@@ -75,7 +75,7 @@ npm run dev / build / start / lint
 | `check:nwcerror` | `nwc-errors.ts` — what a NIP-47 failure proves, whether a leg may be retried | an unanswered wallet shown as ✗ makes **every leg pay again** |
 | `check:feedxml` | `readAttr` — the attribute reader EVERY feed parser uses | a decoy attribute steers the payee |
 | `check:vts` | `splitAtPosition`, `splitTrackAndHost`, `splitSats`, `streamAction` | a boost and a stream credit different artists |
-| `check:readtrust` | `read-trust.ts` — is an EMPTY read "nobody has it" or "nothing answered" | an unverified read doesn't degrade, it DELETES |
+| `check:readtrust` | `read-trust.ts` — is an EMPTY read "nobody has it" or "nothing answered" | an unverified read DELETES |
 | `check:assetlinks` | `assetlinks.ts` — the Digital Asset Links statement | delegates the origin holding the NWC credential |
 | `check:amber` | `amber-callback-url.ts` — the `nostrsigner:` bytes and the returned fragment | Android signing breaks (failed twice) |
 | `check:ambersafe` | `amber-safe-text.ts` — getting an NWC string past Amber | every NWC backup from Android fails, silently |
@@ -90,17 +90,17 @@ npm run dev / build / start / lint
 | `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to | an attacker's link under a real show's artwork |
 | `check:zapreceipt` | `zapRequestTags`, `validateSummaryRequest` — the receipt the site signs | the site attests a stranger's payment |
 | `check:sitestamp` | `site-stamp.ts` — the stamp token, sign gate, 1% price | an unpaid note signed; RETRY NOTE pays twice |
-| `check:cache` | `createBoundedCache` — the age, entry AND byte bounds | an entry cap is not a memory bound |
+| `check:cache` | `createBoundedCache` — the age, entry AND byte bounds | memory grows unbounded |
 | `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load |
 | `check:playlistdb` | `dbRowToEpisode` — another app's DB row as a track we render, with no payee | a mapped column type-checks and pays the wrong payee |
 | `check:community` | `validatePlaylistDraft`, `artVerdict`, `cleanText`, `buildPlaylistFeedXml`, `buildPublisherFeedXml`, `verifyNip98`… | a feed no app parses, or a write by a non-owner |
 | `check:favbackup` | `lib/favorites-export.ts` — what a backup file must prove before we republish it — and `checkRestore`/`restoreTags`, what a restore flags and repairs | a tampered file republishes a list nobody signed |
-| `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening; publishes reach nobody |
+| `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | publishes reach nobody |
 | `check:playlistarchive` | `scripts/playlist-archive.mjs` — the GitHub copy of every community playlist | a copy deleted on a short list, or overwritten by an error page |
 | `check:guestkey` | `community/guest-key.ts` — the browser key a playlist with no Nostr account is signed by | the key in a string, log or request; a read error overwrites it |
-| `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show |
+| `check:livemerge`, `check:livescan` | `mergeLiveOverPi`, `readPrefixThenScan` — when a read may DELETE a live row | an unreadable feed ends a live show |
 | `check:liveover` | `liveBroadcastIsOver` — stale `live` flags | a badge over silence, or none |
-| `check:liveroster`, `check:livealwayson`, `check:liveupcoming` | `liveRosterFeedOrder`, `mergeUpcomingSeen` — which feeds the live cap keeps | a show on air trimmed |
+| `check:liveroster`, `check:livealwayson`, `check:liveupcoming` | `liveRosterFeedOrder`, `mergeUpcomingSeen`, `favoritesFirst` — which feeds the live cap keeps | a show on air trimmed |
 | `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser uses | 1 MB of `<!--` pins a lambda for a minute |
 | `check:cappedbody` | `capped-body.ts` — the capped readers, server AND browser | one feed fills the heap |
 | `check:brand` | `BRANDS`, `clientTag` — **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy |
@@ -112,7 +112,8 @@ npm run dev / build / start / lint
 | `check:echo` | `boostEchoIds` — which bot announcement repeats a boost note the sender signed | one boost on two cards |
 | `check:deletions` | `deletedNoteIds` — feed NIP-09 | strangers hide boosts |
 | `check:testnotes` | `isTestBoostNote` — leaked test notes | a real boost hidden |
-| `check:newmusic` | `new-music.ts`, `parsePublisherRef` | old albums called new, or new ones missed |
+| `check:replyspam` | `spamReplyIds`, `mutedWordHit` | spam shown, or real replies folded |
+| `check:newmusic` | `new-music.ts`, `parsePublisherRef` | old albums called new, new ones missed |
 | `check:opml` | `parseOpml`, `planOpmlImport` (what leaves the device) | a paid feed's key sent to Podcast Index |
 | `check:moved` | `moved-feeds.ts` — which hosts are closed, the copy a dead feed follows unasked | a copycat feed collects boosts |
 | `check:demu` | `isDemuFeed` | Wavlake passes as DeMu |
@@ -123,7 +124,7 @@ npm run dev / build / start / lint
 
 **`services/nostr-index` has its own checks and this repo's `check:*` do not run them** — `cd services/nostr-index && npm run typecheck && DATABASE_URL=... npm run verify`. → [`docs/nostr-index.md`](docs/nostr-index.md)
 
-**The import-free arrangement is enforced, not just documented.** Each module a check loads under plain Node (`favorites-list.ts`, `read-trust.ts`, `lease.ts`, `brand.ts`, `site-stamp.ts`, `community/rules.ts` and the other leaves) must have no imports; `nwc-errors.ts`, `favorites-export.ts`, `relay-socket.ts`, `boost-echo.ts`, `community/clean-text.ts` and `community/guest-key.ts` may import bare npm packages only. `scripts/import-free.mjs` scans for it, every check pinning one calls it, and **it rejects type-only relative imports too** (type-stripping erases them, so only the scan sees a module one `type` deletion from breaking). **`mute-state.ts` shows the rule shapes the code**: `MuteCipher` and `classifyMuteContent` live beside `MuteListState`, because a second leaf would need an `import type`.
+**The import-free arrangement is enforced, not just documented.** Each module a check loads under plain Node (`favorites-list.ts`, `read-trust.ts`, `lease.ts`, `brand.ts`, `site-stamp.ts`, `community/rules.ts` and the other leaves) must have no imports; `nwc-errors.ts`, `favorites-export.ts`, `relay-socket.ts`, `boost-echo.ts`, `community/{clean-text,guest-key}.ts` and `v4v/lnurl-bech32.ts` may import bare npm packages only. `scripts/import-free.mjs` scans for it, every check pinning one calls it, and **it rejects type-only relative imports too** (type-stripping erases them, so only the scan sees a module one `type` deletion from breaking). **`mute-state.ts` shows the rule shapes the code**: `MuteCipher` and `classifyMuteContent` live beside `MuteListState`, because a second leaf would need an `import type`.
 
 Each check **imports the real module** via `node --experimental-strip-types`: a copy passes green while shipping code drifts. Each carries a *must-still-work* half: over-blocking is a regression too. **Vectors were generated by the shipping code; if one fails, fix the code — never edit the vector to match.**
 
@@ -378,7 +379,7 @@ Reusable element classes — `.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.btn-m
 - **A per-track control binds to a `<podcast:valueTimeSplit>` window, never to a chapter** — the two render in ONE list, but `mergeEpisodeContents` (`lib/util.ts`) never maps a chapter to a window (they can OVERLAP: on Homegrown Hits 146 the covering window names the wrong track). `check:vts` pins that **only a chapter may be dropped** and that dedupe is **on a tolerance, not equality** (PI returns integer `startTime`s). **"This episode isn't playing" is `currentSec={undefined}`, never `0`** (the interval is half-open). → [`docs/ui.md`](docs/ui.md)
 - **A LIVE show's track hearts come from the played log, and the log is guid-scoped** (`lib/live-played.ts`, `<LivePlayedTracks>`): every row carries a working heart, so `livePlayedSnapshot(guid)` makes the caller name the item. A `null` target means the watcher detached, not that the songs never happened; `recordLivePlay` sits in `setTarget`, the one funnel; **blocks are judged on their IDENTIFIERS, never `blockType` alone** (`isNotPlayed`). → [`docs/streaming.md`](docs/streaming.md)
 - **A control must LOOK like one before it is touched: a bordered chip (`.btn-mini` and up) standing alone, `.btn-inline`'s permanent underline inside a sentence — never bare `text-muted` that signals only on `hover:`.** A phone has no hover, so that is no affordance at all; 25 controls had drifted into three spellings. → [`docs/ui.md`](docs/ui.md)
-- **A control is at least 24×24 CSS pixels, and a heading that folds something IS a control** (WCAG 2.5.8; a link inside a sentence is exempt). The violation is invisible in review — the element looks right, it just has no vertical padding: `<CollapsibleHeading>` shipped at **16.5px**. Measure under CDP device emulation, never `--window-size`; `<FavHeart>`'s `'sm'` chip is the reference (its own `min-h`/`min-w` make the mobile glyph 44×44).
+- **A control is at least 24×24 CSS pixels, and a heading that folds something IS a control** (WCAG 2.5.8; a link inside a sentence is exempt). The violation is invisible in review — the element looks right but has no vertical padding: `<CollapsibleHeading>` shipped at **16.5px**. Measure under CDP device emulation, never `--window-size`; `<FavHeart>`'s `'sm'` chip is the reference (its own `min-h`/`min-w` make the mobile glyph 44×44).
 - **Browse-mode layout is single-column** in `app/page.tsx`; `selectedPodcast` and `discussionEpisode` are state-driven swaps, not routes. Don't reintroduce a right-pane "select a podcast on the left" empty state.
 - Native HTML5 `<audio>` plays the enclosure URL directly — no proxy, no transcoding. The one exception is HLS live streams.
 - **Inline SVG `BoltIcon`** (`components/icons.tsx`) on yellow buttons — the `⚡` emoji is invisible on `bg-bolt`. Yellow-text-on-dark and V4V stamps keep the emoji. `ShareIcon` and `Sun`/`MoonIcon` inherit `currentColor`.

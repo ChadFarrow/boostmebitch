@@ -8,6 +8,8 @@ import {
   useViewerReposts,
   type DiscoveredNote,
   LocalNoteSink,
+  SpamReplies,
+  useSpamReplyIds,
 } from '@/lib/nostr';
 import { episodeRefOf, useNoteMeta } from '@/lib/use-note-meta';
 import { storage } from '@/lib/storage';
@@ -45,7 +47,15 @@ export function GlobalNostrFeed() {
   const identity = useApp((s) => s.identity);
   const boostsTick = useApp((s) => s.boostsTick);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const mutedWords = useApp((s) => s.mutedWords);
   const repostedIds = useViewerReposts(notes, identity);
+  const visible = useMemo(
+    () => (notes ? visibleNotes(notes, mutedPubkeys, mutedWords) : null),
+    [notes, mutedPubkeys, mutedWords],
+  );
+  // Across the whole feed, not per thread: the spam spreads a reply or two over
+  // many threads (docs/nostr.md "Spam replies").
+  const spamIds = useSpamReplyIds(visible);
 
   // Re-read the localStorage log whenever a boost is sent or the active
   // identity changes. Per-npub key isolation is handled by storage.boosts.
@@ -56,7 +66,7 @@ export function GlobalNostrFeed() {
   );
 
   const merged = useMemo<FeedItem[] | null>(() => {
-    if (notes === null) {
+    if (visible === null) {
       // Still surface the user's own log while the relay query is in flight.
       if (storedBoosts.length === 0) return null;
       return storedBoosts.map((b) => ({
@@ -66,7 +76,7 @@ export function GlobalNostrFeed() {
         boost: b,
       }));
     }
-    const items: FeedItem[] = visibleNotes(notes, mutedPubkeys)
+    const items: FeedItem[] = visible
       .map((note) => ({
         kind: 'note' as const,
         ts: note.createdAt * 1000,
@@ -90,10 +100,11 @@ export function GlobalNostrFeed() {
     }
     items.sort((a, b) => b.ts - a.ts);
     return items;
-  }, [notes, storedBoosts, mutedPubkeys]);
+  }, [visible, storedBoosts]);
 
   return (
     <LocalNoteSink.Provider value={addLocal}>
+      <SpamReplies.Provider value={spamIds}>
       <FeedSection<FeedItem>
         heading={
           <h2 className="font-display text-2xl">
@@ -119,6 +130,7 @@ export function GlobalNostrFeed() {
           );
         }}
       />
+      </SpamReplies.Provider>
     </LocalNoteSink.Provider>
   );
 }
