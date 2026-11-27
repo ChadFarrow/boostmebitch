@@ -114,7 +114,7 @@ function isAttrSpace(ch: string): boolean {
 }
 
 // Decode the handful of XML entities that show up in short text nodes
-// (funding labels). Mirrors the entity pass inside extractText.
+// (funding labels, and every element `extractText` reads).
 export function decodeXmlText(raw: string): string {
   return decodeXmlEntities(
     raw.replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1').trim(),
@@ -482,6 +482,26 @@ export function liveReadDocument(
 
 export function firstBlock(xml: string, name: string): BlockHit | undefined {
   return findBlocks(xml, name, { max: 1 })[0];
+}
+
+/**
+ * The text of the first `<tag>…</tag>` in `xml`, CDATA unwrapped and entities
+ * decoded — every title, guid, description and link `lib/pi.ts` reads off a
+ * feed. A self-closing `<tag/>` has no text node: absent, not `''`.
+ *
+ * It lived in `lib/pi.ts` with its own entity pass, which decoded `&amp;`
+ * FIRST — so the literal text `&amp;lt;` became `<`, a double decode — and
+ * read numeric references with `fromCharCode`, which truncates anything above
+ * U+FFFF: `&#x1F3B5;` came out as the private-use U+F3B5, not 🎵. Both reached
+ * titles AND guids, and a guid is a lookup key another app compares against
+ * its own parse (full-code review 2026-11-19). It now goes through
+ * `decodeXmlText`, the one decoder, and moved here so `check:feedxml` can load
+ * it (`lib/pi.ts` cannot load under type-stripping).
+ */
+export function extractText(xml: string, tag: string): string | undefined {
+  const hit = firstBlock(xml, tag);
+  if (!hit || hit.selfClosing) return undefined;
+  return decodeXmlText(hit.inner);
 }
 
 /**

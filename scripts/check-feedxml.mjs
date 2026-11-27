@@ -37,7 +37,8 @@
 // load. It breaks it LOUDLY, in both this script and `check:npub`, with an
 // ERR_MODULE_NOT_FOUND naming the specifier — survivable. If you hit that, move
 // the type; do not reimplement `readAttr` in here.
-import { readAttr, decodeXmlEntities } from '../lib/feed-xml.ts';
+import { readAttr, decodeXmlEntities, extractText, firstBlock } from '../lib/feed-xml.ts';
+import { stripHtml } from '../lib/util.ts';
 
 let failed = 0;
 
@@ -202,6 +203,93 @@ for (const [input, want, opts] of DECODE) {
   } else decodeBites++;
 }
 console.log(`  (naive entity decode fails ${decodeBites} of ${DECODE.length} decode vectors)`);
+
+// ── extractText: a feed's TEXT nodes — titles, guids, descriptions ──────────
+// Full-code review 2026-11-19 (lib/pi.ts). Its own entity pass decoded `&amp;`
+// first (the literal `&amp;lt;` became `<`) and read numeric references with
+// `fromCharCode` (`&#x1F3B5;` became U+F3B5). A guid is a lookup key other apps
+// compare against their own parse, so the double decode is a different ITEM,
+// not a cosmetic slip. Vectors are wire snippets, recorded as calls and replayed
+// against `naiveText`, the pre-fix function verbatim (on the real `firstBlock`).
+function naiveText(xml, tag) {
+  const hit = firstBlock(xml, tag);
+  if (!hit || hit.selfClosing) return undefined;
+  const stripped = hit.inner.replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1').trim();
+  return stripped
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
+}
+const TEXT = [
+  { args: ['<item><title>Tom &amp; Jerry</title></item>', 'title'], want: 'Tom & Jerry', alsoNaive: true },
+  { args: ['<item><title>Why &amp;lt;b&amp;gt; is a tag</title></item>', 'title'], want: 'Why &lt;b&gt; is a tag' },
+  { args: ['<item><guid>ep-&amp;#39;42</guid></item>', 'guid'], want: 'ep-&#39;42' },
+  { args: ['<item><title>&#x1F3B5; Song</title></item>', 'title'], want: '\u{1F3B5} Song' },
+  { args: ['<item><title>&#127925; Song</title></item>', 'title'], want: '\u{1F3B5} Song' },
+  { args: ['<item><title>&#x110000;</title></item>', 'title'], want: '&#x110000;' },
+  { args: ['<item><title> <![CDATA[ Plain & simple ]]> </title></item>', 'title'], want: 'Plain & simple', alsoNaive: true },
+  { args: ['<item><title>&#233;t&#xE9; &quot;live&quot;</title></item>', 'title'], want: 'été "live"', alsoNaive: true },
+  { args: ['<item><title/></item>', 'title'], want: undefined, alsoNaive: true },
+  { args: ['<item><link>x</link></item>', 'title'], want: undefined, alsoNaive: true },
+];
+let textBites = 0;
+for (const v of TEXT) {
+  const label = `extractText(${JSON.stringify(v.args[0])}, '${v.args[1]}')`;
+  const got = extractText(...v.args);
+  if (got !== v.want) { fail(`${label} → ${JSON.stringify(got)}, want ${JSON.stringify(v.want)}`); continue; }
+  const n = naiveText(...v.args);
+  if (n === v.want) {
+    if (!v.alsoNaive) fail(`${label} passes against naiveText() too — it proves nothing`);
+  } else if (v.alsoNaive) {
+    fail(`${label} is marked alsoNaive but naiveText() answers ${JSON.stringify(n)}`);
+  } else textBites++;
+}
+console.log(`  (the pre-fix extractText fails ${textBites} of ${TEXT.length} text vectors)`);
+
+// ── stripHtml: a DESCRIPTION (HTML) to the text a reader sees ──────────────
+// The second half of the same fix. A `<description>` that carries HTML holds
+// `&#160;` after its XML decode; the old `extractText` decoded it a second time,
+// so `stripHtml` never had to. Now `stripHtml` decodes numeric references (and
+// `&amp;` last), or mmo.show's 209 episodes show "&#160;" between paragraphs.
+// `naiveStrip` is the pre-fix function verbatim.
+const naiveStrip = (s) => s
+  .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+  .replace(/<\/(p|div|li)\s*>/gi, '\n')
+  .replace(/<[^>]+>/g, '')
+  .replace(/&nbsp;/gi, ' ')
+  .replace(/&amp;/gi, '&')
+  .replace(/&lt;/gi, '<')
+  .replace(/&gt;/gi, '>')
+  .replace(/&quot;/gi, '"')
+  .replace(/&#39;/gi, "'")
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+const STRIP = [
+  { args: ['<p>One&#160;two</p>'], want: 'One\u00A0two' },
+  { args: ['A &amp;lt;b&amp;gt; tag'], want: 'A &lt;b&gt; tag' },
+  { args: ['&#x1F3B5; Song &#127925;'], want: '\u{1F3B5} Song \u{1F3B5}' },
+  { args: ['Tom &amp; Jerry<br>next'], want: 'Tom & Jerry\nnext', alsoNaive: true },
+  { args: ['It&#39;s &quot;live&quot;'], want: 'It\'s "live"', alsoNaive: true },
+  { args: ['<p>a</p><p>b</p>'], want: 'a\nb', alsoNaive: true },
+  { args: ['&#x110000; stays'], want: '&#x110000; stays', alsoNaive: true },
+];
+let stripBites = 0;
+for (const v of STRIP) {
+  const label = `stripHtml(${JSON.stringify(v.args[0])})`;
+  const got = stripHtml(...v.args);
+  if (got !== v.want) { fail(`${label} → ${JSON.stringify(got)}, want ${JSON.stringify(v.want)}`); continue; }
+  const n = naiveStrip(...v.args);
+  if (n === v.want) {
+    if (!v.alsoNaive) fail(`${label} passes against naiveStrip() too — it proves nothing`);
+  } else if (v.alsoNaive) {
+    fail(`${label} is marked alsoNaive but naiveStrip() answers ${JSON.stringify(n)}`);
+  } else stripBites++;
+}
+console.log(`  (the pre-fix stripHtml fails ${stripBites} of ${STRIP.length} description vectors)`);
 
 if (failed) {
   console.error(`\ncheck:feedxml FAILED (${failed})`);
