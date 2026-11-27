@@ -5547,18 +5547,29 @@ export function withoutSiteDomainLine(body: string, domains: readonly string[]):
 
 // Strip HTML tags and entity-decode. Used by server components (lib/format.tsx
 // is 'use client' so can't be imported on the server side). Pure string regex,
-// no DOM required — isomorphic.
+// no DOM required — isomorphic. The OUTPUT is plain text, never HTML.
+//
+// Numeric references are decoded (through `fromCodePoint`: an emoji is above
+// U+FFFF) and `&amp;` goes LAST, so `&amp;lt;` stays the text `&lt;`. Without
+// the numeric pass a description holding HTML — the feed's `<description>`
+// after its XML decode, and PI's description as served — showed `&#160;` as
+// those six characters, once `extractText` stopped decoding a second time
+// (full-code review 2026-11-19; pinned by `check:feedxml`).
 export function stripHtml(s: string): string {
+  const cp = (n: number, whole: string) =>
+    Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole;
   return s
     .replace(/<\s*br\s*\/?\s*>/gi, '\n')
     .replace(/<\/(p|div|li)\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (whole, h) => cp(parseInt(h, 16), whole))
+    .replace(/&#(\d+);/g, (whole, d) => cp(Number(d), whole))
+    .replace(/&amp;/gi, '&')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

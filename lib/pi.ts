@@ -15,6 +15,7 @@ import {
   firstTag,
   findBlocks,
   firstBlock,
+  extractText,
   stripBlocks,
   stripComments,
   splitAnchors,
@@ -1671,20 +1672,7 @@ function parseValueTimeSplitsFromRss(xml: string): ValueTimeSplit[] {
   return out;
 }
 
-function extractText(xml: string, tag: string): string | undefined {
-  const hit = firstBlock(xml, tag);
-  // A self-closing <tag/> has no text node: absent, not ''.
-  if (!hit || hit.selfClosing) return undefined;
-  const stripped = hit.inner.replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1').trim();
-  return stripped
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
-}
+// `extractText` lives in lib/feed-xml.ts, so `check:feedxml` can pin it.
 
 // Extract the raw HTML content of a namespaced RSS tag like content:encoded,
 // without entity-decoding or tag-stripping. Handles CDATA wrapping.
