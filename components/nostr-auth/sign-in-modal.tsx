@@ -532,6 +532,16 @@ export function SignInModal({
   const [genBusy, setGenBusy] = useState(false);
   const [genErr, setGenErr] = useState<string | null>(null);
   const [genAuthUrl, setGenAuthUrl] = useState<string | null>(null);
+  // THE QR SCREEN'S HALF OF THE SAME TWO RULES the Clave, Amber and Primal refs
+  // above carry: only the newest attempt may report an error or clear the busy
+  // state (`genAttempt`), and a success from ANY attempt signs in exactly once
+  // (`genSettled`). Returning to the tab re-runs `onGenerate`, `startPairing`
+  // abandons the earlier listener, and its `ready` rejects — without the
+  // counter that rejection wrote "Connection dropped — approve in your signer
+  // then tap Try again." and a TRY AGAIN button over the live attempt, under a
+  // user coming back from approving (full-code review 2026-11-19).
+  const genAttempt = useRef(0);
+  const genSettled = useRef(false);
   const [copied, flashCopied, clearCopied] = useFlash<true>(1500);
   // THE RAW URI IS COLLAPSED, NOT DELETED, and the difference is a real
   // fallback. `copyGenUri` swallows a failed clipboard write — no permission,
@@ -880,6 +890,8 @@ export function SignInModal({
   }
 
   async function onGenerate() {
+    const attempt = ++genAttempt.current;
+    const isCurrent = () => genAttempt.current === attempt;
     setGenBusy(true);
     setGenErr(null);
     setGenAuthUrl(null);
@@ -890,12 +902,20 @@ export function SignInModal({
       const { uri, ready } = startPairing((url) => setGenAuthUrl(url));
       setGenUri(uri);
       const id = await ready;
+      // ANY attempt's success counts, as in onClaveConnect: the return to the
+      // tab that starts a new attempt is exactly when the old one can resolve
+      // with the approval. The latch keeps two from signing in twice.
+      if (genSettled.current) return;
+      genSettled.current = true;
       onSuccess(id, 'bunker');
       onClose();
     } catch (e) {
+      // An attempt that was replaced (or left by `goto`) says nothing about
+      // the live one, so only the newest may report.
+      if (!isCurrent() || genSettled.current) return;
       setGenErr(getErrorMessage(e, 'nostrconnect failed'));
     } finally {
-      setGenBusy(false);
+      if (isCurrent()) setGenBusy(false);
     }
   }
 
@@ -1170,6 +1190,7 @@ export function SignInModal({
     claveAttempt.current += 1;
     amberNcAttempt.current += 1;
     primalAttempt.current += 1;
+    genAttempt.current += 1;
     liveAttempt.current?.abandon();
     liveAttempt.current = null;
     if (next === 'menu') clavePrepared.current = false;

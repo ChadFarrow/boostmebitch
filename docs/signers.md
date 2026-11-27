@@ -375,6 +375,15 @@ be pinned by a `check:*`:
    `claveSettled` / `amberNcSettled` latch the first success instead, which is
    all `isCurrent()` was buying on that path.
 
+   **The "Scan a QR code" screen carries both rules too (`genAttempt` /
+   `genSettled`), and went without them until the full-code review of
+   2026-11-19.** Its visibility retry re-runs `onGenerate`, `startPairing`
+   abandons the earlier listener, and that listener's `ready` rejects: with no
+   counter, the rejection wrote "Connection dropped — approve in your signer then
+   tap Try again." and a TRY AGAIN button over the live attempt. `npm run
+   e2e:qrretry` drives it offline — a page script routes the two pairing relays'
+   sockets to a local relay — and fails 4 of 13 against the unguarded version.
+
 A retry that finds the pairing replaced also stops rather than starting another
 one silently: it reads `nostrConnectUri()` — which returns the memo **without
 subscribing** — and says "that pairing is no longer live" instead of opening a
