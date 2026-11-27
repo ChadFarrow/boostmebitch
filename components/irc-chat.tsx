@@ -452,7 +452,9 @@ export function IrcChat({ channel, onJoined }: { channel: string; onJoined?: () 
           <button
             type="button"
             data-irc-rejoin
-            onClick={() => { setErr(null); setPhase('connecting'); sessionRef.current?.rejoin(); }}
+            // `nickTaken` too: one left from a taken `/nick` would show the
+            // nick box with TRY instead of "Joining…" (code review, 2026-11-27).
+            onClick={() => { setErr(null); setNickTaken(false); setPhase('connecting'); sessionRef.current?.rejoin(); }}
             className="btn-mini self-start"
           >
             JOIN {channel} AGAIN
