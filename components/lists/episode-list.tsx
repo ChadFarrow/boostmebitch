@@ -81,12 +81,16 @@ const PAGE_SIZE = 50;
 const PLAYLIST_PREFETCH_RUNUP = 3;
 /**
  * How long the run-up prefetch waits before it asks again for a page that
- * FAILED, one entry per automatic retry; after the last, only ↻ RETRY asks.
- * Full-code review 2026-11-19: the effect bailed only on `loadingMore`, so a
- * failure (which clears it) re-armed the effect at once, and one bad page
- * became a request per render, against our Podcast Index quota.
+ * FAILED, one entry per automatic retry; past the end, the LAST entry repeats
+ * for as long as the playing row stays in the run-up. Full-code review
+ * 2026-11-19: the effect bailed only on `loadingMore`, so a failure (which
+ * clears it) re-armed the effect at once, and one bad page became a request per
+ * render, against our Podcast Index quota. It never STOPS, though: a listener
+ * with the phone down would end at the last loaded row, which is the silence
+ * this prefetch exists to prevent (the same answer as the streaming split
+ * retry: slow down, never give up).
  */
-const PLAYLIST_PREFETCH_RETRY_MS = [5_000, 20_000, 60_000] as const;
+const PLAYLIST_PREFETCH_RETRY_MS = [5_000, 20_000, 60_000, 300_000] as const;
 
 /**
  * What this component tracks about a `musicL` playlist between pages.
@@ -498,7 +502,8 @@ export function EpisodeList({
    * too, so with that gate alone the effect re-armed on the same render and
    * asked again, and again — a tight loop against a route that was already
    * failing. `pageError` waits instead, `PLAYLIST_PREFETCH_RETRY_MS` apart,
-   * then stops and leaves ↻ RETRY as the only way to ask.
+   * and then every 5 minutes while the playing row is in the run-up. ↻ RETRY
+   * still asks at once.
    */
   useEffect(() => {
     if (!playlist || playlist.nextOffset == null || loadingMore) return;
@@ -506,8 +511,7 @@ export function EpisodeList({
     const idx = playingRowIndex(orderedEpisodes, current);
     if (idx < 0 || orderedEpisodes.length - idx > PLAYLIST_PREFETCH_RUNUP) return;
     if (!pageError) { loadNextPage(); return; }
-    const delay = PLAYLIST_PREFETCH_RETRY_MS[prefetchRetriesRef.current];
-    if (delay === undefined) return;
+    const delay = PLAYLIST_PREFETCH_RETRY_MS[Math.min(prefetchRetriesRef.current, PLAYLIST_PREFETCH_RETRY_MS.length - 1)];
     const timer = setTimeout(() => {
       prefetchRetriesRef.current += 1;
       loadNextPage();

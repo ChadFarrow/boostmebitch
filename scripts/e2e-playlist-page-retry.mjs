@@ -16,6 +16,10 @@
 //      goes (what must still work).
 //   3. Phone emulation (390×844), a failing page again: no sideways overflow,
 //      and ↻ RETRY at least 24×24.
+//   4. It never GIVES UP: past the last listed wait it asks every 5 minutes,
+//      and a page that recovers lands with no press. The app's retry waits
+//      (5 s, 20 s, 60 s, 5 min) are scaled down 50× in this section only, by a
+//      `setTimeout` wrapper that touches those four exact delays.
 //
 // Every `/api/*` request is answered from a canned body, so this needs no Podcast
 // Index key and no network. The tab is muted.
@@ -147,6 +151,26 @@ const m = await js(`(() => {
 t.ok('the page does not overflow sideways', m.overflow <= 0, JSON.stringify(m));
 t.ok('↻ RETRY is at least 24×24', m.retry && m.retry[0] >= 24 && m.retry[1] >= 24, JSON.stringify(m));
 await send('Emulation.clearDeviceMetricsOverride');
+
+// ------------------------------------------------------------------------------------
+section('4. It keeps asking (waits scaled 50×), and a recovered page lands unpressed');
+const SCALE = 50;
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+  (() => {
+    const real = window.setTimeout.bind(window);
+    const scaled = new Set([5000, 20000, 60000, 300000]);
+    window.setTimeout = (fn, ms, ...rest) => real(fn, scaled.has(ms) ? ms / ${SCALE} : ms, ...rest);
+  })();
+` });
+mode = 'fail';
+t.ok('the playlist opened and Track 2 was pressed', await openAndPlayLast());
+for (let i = 0; i < 300 && page2Asks.length < 6; i += 1) await wait(100);
+const g = page2Asks.slice(1).map((x, i) => x - page2Asks[i]);
+t.ok('page 2 was asked 6 times: past the last listed wait it did not stop', page2Asks.length >= 6, `asks ${page2Asks.length}, gaps ${JSON.stringify(g)}`);
+t.ok('...and the waits grew, then held at the longest (5 min / 50)', g.length >= 5 && g[0] < g[1] && g[1] < g[2] && g[2] < g[3] && g[4] >= 300_000 / SCALE * 0.8, JSON.stringify(g));
+mode = 'ok';
+t.ok('the recovered page lands with no press', await until(`['Track 3','Track 4','Track 5'].every((s) => document.body.innerText.includes(s))`, 15000), (await text()).slice(-400));
+t.ok('...and the error line is gone', !(await text()).includes(ERROR_LINE));
 
 console.log(`\n${t.count} checks, ${t.fails} failed`);
 if (t.fails === 0) console.log('all end-to-end checks passed — nothing left this machine');
