@@ -21,7 +21,7 @@
 // `console.warn` line naming what was wrong; nothing the address sent is echoed
 // to a caller, and every throw is the same fixed text.
 import { readCappedJson } from '@/lib/capped-body';
-import { serverUserAgent } from '@/lib/user-agent';
+import { BRAND } from '@/lib/brand';
 import { bolt11AmountMsat } from '@/lib/v4v/bolt11';
 import {
   stampAddress, readPayRequest, stampCallbackUrl, readCallbackAnswer, readVerifyAnswer,
@@ -53,7 +53,7 @@ function refuse(why: string): never {
 async function getJson(url: string, signal: AbortSignal): Promise<{ status: number; json: unknown }> {
   try {
     const res = await fetch(url, {
-      headers: { accept: 'application/json', 'User-Agent': serverUserAgent() },
+      headers: { accept: 'application/json', 'User-Agent': BRAND.userAgent },
       redirect: 'error',
       signal,
       cache: 'no-store',

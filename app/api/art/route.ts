@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
-import { serverUserAgent } from '@/lib/user-agent';
+import { BRAND } from '@/lib/brand';
 import { readCappedBytes } from '@/lib/capped-body';
 import { firstFrameEnd, firstGifFrame } from '@/lib/gif-first-frame';
 import { artTypeVerdict, artWidth } from '@/lib/util';
@@ -147,7 +147,7 @@ export async function GET(req: Request) {
   let upstream: Response;
   try {
     upstream = await safeFetch(url, {
-      headers: { accept: 'image/*', 'User-Agent': serverUserAgent() },
+      headers: { accept: 'image/*', 'User-Agent': BRAND.userAgent },
       signal: AbortSignal.timeout(10_000),
     });
   } catch {

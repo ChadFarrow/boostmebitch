@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { safeFetch } from '../safe-fetch';
-import { serverUserAgent } from '../user-agent';
+import { BRAND } from '../brand';
 import { readCappedBytes } from '../capped-body';
 import { batchEpisodes, batchPodcasts, episodeKey, MAX_BATCH } from '../pi-batch';
 import { closedService } from '../moved-feeds';
@@ -16,7 +16,7 @@ import { artVerdict, type ArtRefusal, type PlaylistSong } from './rules';
  */
 export async function fetchImageBytes(url: string): Promise<Buffer> {
   const res = await safeFetch(url, {
-    headers: { accept: 'image/*', 'User-Agent': serverUserAgent() },
+    headers: { accept: 'image/*', 'User-Agent': BRAND.userAgent },
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {

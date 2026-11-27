@@ -18,7 +18,7 @@
 // forged podping costs one feed read, never a wrong row.
 
 import { readCappedJson } from './capped-body';
-import { serverUserAgent } from './user-agent';
+import { BRAND } from './brand';
 
 const TIMEOUT_MS = 4_000;
 
@@ -64,7 +64,7 @@ export async function fetchPodpingLiveFeeds(): Promise<PodpingLiveFeed[] | null>
   try {
     const res = await fetch(`${base}/api/live`, {
       signal: AbortSignal.timeout(TIMEOUT_MS),
-      headers: { Accept: 'application/json', 'User-Agent': serverUserAgent() },
+      headers: { Accept: 'application/json', 'User-Agent': BRAND.userAgent },
       cache: 'no-store',
     });
     if (!res.ok) {

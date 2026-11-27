@@ -19,6 +19,7 @@
 // Read-only. It queries relays and prints. It writes nothing and pays nothing.
 
 import { SimplePool, nip19 } from 'nostr-tools';
+import { BRAND } from '../lib/brand.ts';
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -155,7 +156,7 @@ if (indexUrl && indexKey) {
   console.log('\n=== INDEX PATH ===');
   const t = performance.now();
   const res = await fetch(`${indexUrl.replace(/\/$/, '')}/feed/global?limit=${LIMIT}`, {
-    headers: { 'x-index-key': indexKey },
+    headers: { 'x-index-key': indexKey, 'User-Agent': BRAND.userAgent },
   }).catch((e) => ({ ok: false, statusText: e.message }));
   if (!res.ok) {
     console.log(`  request failed: ${res.status ?? ''} ${res.statusText ?? ''}`);

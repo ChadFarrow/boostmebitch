@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
-import { serverUserAgent } from '@/lib/user-agent';
+import { BRAND } from '@/lib/brand';
 import { getErrorMessage, httpUrl } from '@/lib/util';
 import { MAX_DOWNLOAD_BYTES, audioProxyHeaders } from '@/lib/downloads/download-rules';
 
@@ -93,7 +93,7 @@ export async function GET(req: Request) {
       // Buzzsprout's audio host answers 403 to Node's default `node`
       // (measured 2026-11-27), so this route passed on a 403 for every
       // Buzzsprout enclosure until this was set.
-      headers: { Accept: '*/*', 'User-Agent': serverUserAgent() },
+      headers: { Accept: '*/*', 'User-Agent': BRAND.userAgent },
       signal: headersDeadline.signal,
     }).finally(() => clearTimeout(timer));
 

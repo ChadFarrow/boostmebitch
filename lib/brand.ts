@@ -124,12 +124,13 @@ export interface Brand {
    * and no email. `check:brand` pins the form, the version against
    * `package.json` and the link against `origin`.
    *
-   * Server code reads it through `serverUserAgent()` (`lib/user-agent.ts`),
-   * which lets `APP_NAME` override it. Browser fetches cannot set this header.
+   * The routes that read `APP_NAME` before take it through `serverUserAgent()`
+   * (`lib/user-agent.ts`), which keeps that override; every other server
+   * request reads this field directly. Browser fetches cannot set this header.
    *
    * The PRODUCT NAME is not decoration: Buzzsprout's audio host answers 403 to
-   * Node's default `node` and 206 to this string (measured 2026-11-27, 107
-   * hosts, the PR that set this form).
+   * Node's default `node` and 206 to this string (measured 2026-11-27: 107
+   * targets on 68 hosts, see docs/feeds.md).
    */
   userAgent: string;
   /** `<meta name="description">`, the OG description, and the manifest's. */

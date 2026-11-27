@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling, readCappedRequestJson, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { serverUserAgent } from '@/lib/user-agent';
+import { BRAND } from '@/lib/brand';
 import { readCappedText, readCappedJson } from '@/lib/capped-body';
 
 // Server-side proxy for the BoostBox metadata service.
@@ -86,7 +86,7 @@ export async function POST(req: Request) {
       headers: {
         'Content-Type': 'application/json',
         'X-Api-Key': BOOSTBOX_API_KEY,
-        'User-Agent': serverUserAgent(),
+        'User-Agent': BRAND.userAgent,
       },
       body: JSON.stringify(payload),
       // Shorter than the client's own budget (lib/v4v/boostbox.ts) so this

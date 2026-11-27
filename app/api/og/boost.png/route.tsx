@@ -2,7 +2,6 @@ import { ImageResponse } from 'next/og';
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
-import { serverUserAgent } from '@/lib/user-agent';
 import { readCappedBytes, readBytesUpTo } from '@/lib/capped-body';
 import { firstGifFrame } from '@/lib/gif-first-frame';
 import { BRAND } from '@/lib/brand';
@@ -100,7 +99,7 @@ function line(raw: string | null, max: number): string {
  */
 async function coverDataUri(url: string): Promise<string | null> {
   try {
-    const res = await safeFetch(url, { headers: { 'User-Agent': serverUserAgent() }, signal: AbortSignal.timeout(4000) });
+    const res = await safeFetch(url, { headers: { 'User-Agent': BRAND.userAgent }, signal: AbortSignal.timeout(4000) });
     if (!res.ok) return null;
     const type = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
     if (!RASTERIZABLE.has(type)) return null;

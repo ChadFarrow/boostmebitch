@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
-import { serverUserAgent } from '@/lib/user-agent';
+import { BRAND } from '@/lib/brand';
 
 /**
  * GET /api/audio-probe?url=<enclosure> → `{ status }`, the HTTP status the
@@ -45,7 +45,7 @@ export async function GET(req: Request) {
   let upstream: Response;
   try {
     upstream = await safeFetch(url, {
-      headers: { range: 'bytes=0-0', accept: 'audio/*,video/*;q=0.9,*/*;q=0.5', 'User-Agent': serverUserAgent() },
+      headers: { range: 'bytes=0-0', accept: 'audio/*,video/*;q=0.9,*/*;q=0.5', 'User-Agent': BRAND.userAgent },
       signal: AbortSignal.timeout(8_000),
     });
   } catch {
