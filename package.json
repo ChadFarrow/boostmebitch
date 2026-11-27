@@ -138,6 +138,7 @@
     "e2e:explorerzaps": "node scripts/e2e-explorer-zaps.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:history": "node scripts/e2e-history.mjs",
+    "e2e:playlistretry": "node scripts/e2e-playlist-page-retry.mjs",
     "e2e:boostdefault": "node scripts/e2e-boost-default.mjs",
     "e2e:boosttrack": "node scripts/e2e-boost-track-change.mjs",
     "e2e:npmenu": "node scripts/e2e-nowplaying-menu.mjs",

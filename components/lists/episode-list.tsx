@@ -79,6 +79,14 @@ const PAGE_SIZE = 50;
  * the next page is fetched for it. See the effect that reads it.
  */
 const PLAYLIST_PREFETCH_RUNUP = 3;
+/**
+ * How long the run-up prefetch waits before it asks again for a page that
+ * FAILED, one entry per automatic retry; after the last, only ↻ RETRY asks.
+ * Full-code review 2026-11-19: the effect bailed only on `loadingMore`, so a
+ * failure (which clears it) re-armed the effect at once, and one bad page
+ * became a request per render, against our Podcast Index quota.
+ */
+const PLAYLIST_PREFETCH_RETRY_MS = [5_000, 20_000, 60_000] as const;
 
 /**
  * What this component tracks about a `musicL` playlist between pages.
@@ -244,6 +252,9 @@ export function EpisodeList({
   const [playlist, setPlaylist] = useState<PlaylistMeta | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [pageError, setPageError] = useState(false);
+  // Automatic retries the run-up prefetch has spent on the current failure
+  // (`PLAYLIST_PREFETCH_RETRY_MS`). Reset by a page that lands and by a new show.
+  const prefetchRetriesRef = useRef(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Consecutive-miss counters for the two-misses-before-ended rule in
   // applyLiveStatuses — keyed per feedId so a stale count from the previous
@@ -267,6 +278,7 @@ export function EpisodeList({
     setPlaylist(null);
     setLoadingMore(false);
     setPageError(false);
+    prefetchRetriesRef.current = 0;
     liveMissesRef.current = {};
     // setLoading(false) matters on this branch: it returns before the fetch
     // below, so a `loading` left true by a PREVIOUS run was never cleared and
@@ -481,18 +493,31 @@ export function EpisodeList({
    * `loadingMore` is what stops it repeating: it is set synchronously by
    * `loadNextPage`, so the re-renders between the press and the response bail
    * here, and once the page lands the run-up is 50 rows again.
+   *
+   * **A FAILED page is not retried at once.** A failure clears `loadingMore`
+   * too, so with that gate alone the effect re-armed on the same render and
+   * asked again, and again — a tight loop against a route that was already
+   * failing. `pageError` waits instead, `PLAYLIST_PREFETCH_RETRY_MS` apart,
+   * then stops and leaves ↻ RETRY as the only way to ask.
    */
   useEffect(() => {
     if (!playlist || playlist.nextOffset == null || loadingMore) return;
     if (!current) return;
     const idx = playingRowIndex(orderedEpisodes, current);
     if (idx < 0 || orderedEpisodes.length - idx > PLAYLIST_PREFETCH_RUNUP) return;
-    loadNextPage();
+    if (!pageError) { loadNextPage(); return; }
+    const delay = PLAYLIST_PREFETCH_RETRY_MS[prefetchRetriesRef.current];
+    if (delay === undefined) return;
+    const timer = setTimeout(() => {
+      prefetchRetriesRef.current += 1;
+      loadNextPage();
+    }, delay);
+    return () => clearTimeout(timer);
     // `loadNextPage` is a function declaration and so is new on every render;
     // listing it would run this effect every render for no gain. Everything it
     // reads is in the list below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playlist, loadingMore, current, orderedEpisodes]);
+  }, [playlist, loadingMore, current, orderedEpisodes, pageError]);
 
   function toggleOrder() {
     const next = !oldestFirst;
@@ -594,6 +619,7 @@ export function EpisodeList({
         if (gen !== feedGenRef.current) return;
         const page = Array.isArray(p?.episodes) ? p.episodes : [];
         if (!p?.podcast) { setPageError(true); return; }
+        prefetchRetriesRef.current = 0;
         // An updater so `merged` is computed off the freshest `prev` rather
         // than off a closure captured at click time. It no longer writes the
         // queue from in here — that is derived from `data` — which also removes
