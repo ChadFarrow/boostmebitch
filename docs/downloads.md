@@ -430,6 +430,19 @@ any more — so a row's DELETE is the only way those bytes ever come back.
 yet." over a full library because it had no in-flight state, and it self-corrected
 a moment later, which is what made it worse.
 
+**A read that FAILED is not an empty library — `downloadManager.readError()`** (full-code
+review 2026-11-19). `hydrate()` used to catch a failed IndexedDB read and call the
+library hydrated and empty for the life of the tab: "Nothing downloaded yet" over
+downloads on the device, the player streaming what it had stored, and no second read
+until a reload. Now `ready()` still flips (nothing hangs; `localKeyFor` answers `null`,
+so the player streams), but `readError()` is true: `/downloads` says *"Couldn't read
+your downloads"* with **↻ TRY AGAIN** (`retryRead`) and hides DELETE ALL (it would
+include downloads nobody can see), and `canDownload` answers false, because the file may
+already be on disk and a store that refuses a read is unlikely to take a write. The
+manager reads again 2 s, 10 s and 30 s after the failure (`READ_RETRY_MS`), then when the
+next surface subscribes; a read MERGES into memory, so a download finished meanwhile
+stays. Pinned by `npm run e2e:downloadsread` (8 of 15 fail on the old manager).
+
 **DELETE ALL is a two-press confirm, not `window.confirm`.** In the installed PWA a
 native dialog is a system sheet over the app.
 
