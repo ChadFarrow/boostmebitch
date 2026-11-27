@@ -67,12 +67,27 @@ const { send, js, jsOrThrow, on } = page;
 
 const exceptions = [];
 const enclosures = [];
+/** When set, `/api/transcript` answers with this text instead of the file —
+ *  section 7's untimed lyrics. */
+let transcriptBody = null;
+/** Four lines and a verse break, as a .txt lyrics file is written. */
+const PLAIN_LYRICS = 'First line of the song\nSecond line of the song\n\nThe second verse starts here\nAnd ends here\n';
 on((m) => {
   if (m.method === 'Runtime.exceptionThrown') {
     exceptions.push(m.params.exceptionDetails?.exception?.description ?? 'exception');
   }
   if (m.method !== 'Fetch.requestPaused') return;
   const { requestId, request } = m.params;
+  if (/\/api\/transcript\?/.test(request.url)) {
+    if (transcriptBody == null) { void send('Fetch.continueRequest', { requestId }).catch(() => {}); return; }
+    void send('Fetch.fulfillRequest', {
+      requestId,
+      responseCode: 200,
+      responseHeaders: [{ name: 'Content-Type', value: 'text/plain; charset=utf-8' }],
+      body: Buffer.from(transcriptBody).toString('base64'),
+    }).catch(() => {});
+    return;
+  }
   enclosures.push(request.url);
   // Ranges are answered as a real host answers them, or the element cannot seek
   // and a `t=` link or a tapped line has nowhere to go.
@@ -100,6 +115,8 @@ await send('Runtime.enable');
 await send('Fetch.enable', { patterns: [
   { urlPattern: '*.mp3*', requestStage: 'Request' },
   { urlPattern: '*op3.dev/*', requestStage: 'Request' },
+  // Passed through untouched, except in section 7.
+  { urlPattern: '*/api/transcript?*', requestStage: 'Request' },
 ] });
 
 const desktop = () => send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -253,7 +270,7 @@ await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'MoeFactz on a phone', 'MoeFactz
 await desktop();
 
 // ---------------------------------------------------------------------------
-section('4. A musicL playlist row reads its own lyrics, and ⏭ stays the playlist\'s');
+section('4. A musicL playlist row reads its own lyrics');
 // ---------------------------------------------------------------------------
 await playAndExpand(`${APP}/?playlist=${PLAYLIST}`, 'The Wait Is Over from the playlist', 'The Wait Is Over');
 {
@@ -266,7 +283,10 @@ await playAndExpand(`${APP}/?playlist=${PLAYLIST}`, 'The Wait Is Over from the p
     const b = [...root.querySelectorAll('button')].find((x) => /next/i.test(x.getAttribute('aria-label') || x.title || ''));
     return b ? { label: b.getAttribute('aria-label') || b.title, disabled: b.disabled } : null;
   })()`);
-  t.ok('⏭ is enabled on a playlist row (no chapters took it over, #647)', !!next && !next.disabled, JSON.stringify(next));
+  // A sanity check only: this row writes no <podcast:chapters>, so it cannot
+  // show #647 coming back. The pin for that is check:musicl's wiring scan,
+  // which asserts chapters still ask `readsEpisodeDocs`.
+  t.ok('⏭ is enabled on a playlist row', !!next && !next.disabled, JSON.stringify(next));
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +326,24 @@ await playAndExpand(`${APP}/?podcast=${PC20}&episode=${PC20_278}&t=60`, 'Podcast
   await wait(800);
   t.equal('its search box says transcript', (await panel()).search, 'Search transcript');
 }
+
+// ---------------------------------------------------------------------------
+section('7. An untimed lyrics file is plain text that keeps its line breaks');
+// ---------------------------------------------------------------------------
+// No live fixture: the seven text/html lyrics files the playlists name (RSS
+// Blue .txt files) all answer 410 Gone on 2026-11-26. So MoeFactz's transcript
+// is answered with a .txt-shaped body, which the SRT parser does not take.
+transcriptBody = PLAIN_LYRICS;
+await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'MoeFactz with a plain-text file', 'MoeFactz');
+{
+  const shown = await until(async () => { const p = await panel(); return p.tabs?.includes('Lyrics') || p.labels?.includes('Lyrics'); }, 20000);
+  t.ok('the Lyrics tab is there', !!shown, JSON.stringify(await panel()));
+  await press(`${FS_SELECTOR} [role=tab]`, /^Lyrics$/);
+  await wait(800);
+  const text = await js(`document.querySelector(${JSON.stringify(FS_SELECTOR)})?.querySelector('[role=tabpanel] div.whitespace-pre-wrap')?.innerText ?? null`);
+  t.equal('the lines and the verse break are as the file wrote them', text, PLAIN_LYRICS.trim());
+}
+transcriptBody = null;
 
 if (exceptions.length) t.fail('no uncaught exceptions in the page', exceptions.slice(0, 3).join(' | '));
 else t.pass('no uncaught exceptions in the page');

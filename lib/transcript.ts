@@ -120,10 +120,22 @@ export function parseTranscript(text: string, type: string | undefined): Transcr
   if (cues.length) return cues;
   // Untimed fallback (html/plain, or an unparseable timed file): one readable
   // cue with markup stripped. No meaningful sync, but the text is visible.
+  //
+  // LINE BREAKS ARE KEPT, and a `<br>` or a closing block tag becomes one. Song
+  // lyrics are written a line at a time with a blank line between verses (the
+  // music feeds that publish `text/html` or `text/plain` lyrics write .txt
+  // files), and collapsing every newline to a space printed a whole song as one
+  // run-on paragraph. Only runs of spaces and tabs collapse. The panel renders
+  // this block `whitespace-pre-wrap`.
   const plain = text
+    .replace(/\r\n?/g, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])\s*>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
   return plain ? [{ startTime: 0, text: plain }] : [];
 }
