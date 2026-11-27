@@ -11,7 +11,7 @@
     "start": "node --experimental-strip-types src/index.ts",
     "migrate": "node --experimental-strip-types src/migrate.ts",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run verify:ingest && npm run verify:api && npm run verify:live-heads && npm run verify:retention && npm run verify:search && npm run verify:indexer && npm run verify:yield && npm run verify:rejections",
+    "verify": "npm run verify:ingest && npm run verify:api && npm run verify:live-heads && npm run verify:retention && npm run verify:search && npm run verify:indexer && npm run verify:yield && npm run verify:rejections && npm run verify:ua",
     "verify:ingest": "node --experimental-strip-types verify/check-ingest.mjs",
     "verify:api": "node --experimental-strip-types verify/check-api.mjs",
     "verify:live-heads": "node --experimental-strip-types verify/check-live-heads.mjs",
@@ -20,7 +20,8 @@
     "verify:indexer": "node --experimental-strip-types verify/check-indexer.mjs",
     "measure:size": "node --experimental-strip-types verify/measure-size.mjs",
     "verify:yield": "node --experimental-strip-types verify/check-yield.mjs",
-    "verify:rejections": "node --experimental-strip-types verify/check-rejections.mjs"
+    "verify:rejections": "node --experimental-strip-types verify/check-rejections.mjs",
+    "verify:ua": "node --experimental-strip-types verify/check-user-agent.mjs"
   },
   "dependencies": {
     "fastify": "^5.2.0",

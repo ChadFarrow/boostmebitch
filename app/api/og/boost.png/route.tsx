@@ -99,7 +99,7 @@ function line(raw: string | null, max: number): string {
  */
 async function coverDataUri(url: string): Promise<string | null> {
   try {
-    const res = await safeFetch(url, { signal: AbortSignal.timeout(4000) });
+    const res = await safeFetch(url, { headers: { 'User-Agent': BRAND.userAgent }, signal: AbortSignal.timeout(4000) });
     if (!res.ok) return null;
     const type = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
     if (!RASTERIZABLE.has(type)) return null;

@@ -3,7 +3,7 @@ import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
 import { readCappedText } from '@/lib/capped-body';
-import { BRAND } from '@/lib/brand';
+import { serverUserAgent } from '@/lib/user-agent';
 
 /**
  * The fetch half of `/api/chapters` and `/api/transcript`, which were one
@@ -35,7 +35,7 @@ export async function proxyFeedDocument(
   if (url.length > 2000) return NextResponse.json({ error: 'invalid url' }, { status: 400 });
   return withErrorHandling(async () => {
     const res = await safeFetch(url, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+      headers: { 'User-Agent': serverUserAgent() },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) {

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { NO_STORE, readCappedRequestJson, requireJsonBody, withErrorHandling } from '@/lib/api-handler';
-import { BRAND } from '@/lib/brand';
+import { serverUserAgent } from '@/lib/user-agent';
 import { readCappedText } from '@/lib/capped-body';
 import { parseOpml } from '@/lib/feed-xml';
 import { OPML_MAX_BYTES, opmlLinkVerdict } from '@/lib/opml';
@@ -47,7 +47,7 @@ export async function POST(req: Request) {
 
   return withErrorHandling(async () => {
     const res = await safeFetch(verdict.url, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
+      headers: { 'User-Agent': serverUserAgent() },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) {
