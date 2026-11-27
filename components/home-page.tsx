@@ -91,6 +91,8 @@ export function HomePage() {
    * ends up naming a lane that is no longer running.
    */
   const [searchType, setSearchType] = useState<SearchType>('all');
+  // Bumped by "Try again" under a search that got no answer (`searchInfo.failed`).
+  const [searchRetry, setSearchRetry] = useState(0);
   const [searchKey, setSearchKey] = useState(0);
   const [publisherSource, setPublisherSource] = useState<Podcast | null>(null);
   const [publisherAlbums, setPublisherAlbums] = useState<Podcast[] | null>(null);
@@ -632,7 +634,21 @@ export function HomePage() {
    * reports 0, and an invented number here would be the same kind of confident
    * wrong answer.
    */
-  const emptyState = searchInfo.type === 'all' ? undefined : (
+  //
+  // A search that got NO ANSWER outranks both: it is not a result, so neither
+  // sentence about an empty result may print (full-code review 2026-11-19).
+  const emptyState = searchInfo.failed ? (
+    <div className="flex flex-col items-start gap-2" role="status">
+      <p className="text-muted text-sm">
+        {searchInfo.failed === 'busy'
+          ? 'Search is busy right now, so “' + query + '” was not looked up. Wait a moment, then try again.'
+          : 'Search didn’t answer, so “' + query + '” was not looked up.'}
+      </p>
+      <Chip active={false} onClick={() => setSearchRetry((n) => n + 1)}>
+        ↻ try again
+      </Chip>
+    </div>
+  ) : searchInfo.type === 'all' ? undefined : (
     <div className="flex flex-col items-start gap-2">
       <p className="text-muted text-sm">
         No {applied.noun} match “{query}”.
@@ -725,6 +741,7 @@ export function HomePage() {
             onResults={handleResults}
             onLoading={setLoading}
             onQueryChange={handleQueryChange}
+            retryKey={searchRetry}
           />
           {/* Still here after the favorites panel moved to /favorites, and it
               has to be: hearts render all over this page — search results, the
@@ -931,7 +948,7 @@ export function HomePage() {
               // the menu names — "12 albums" has to be true of the twelve rows
               // under it, and during a round trip those two disagree.
               <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <span>{loading ? 'searching…' : query ? `${feeds.length} ${resultNoun}` : 'feeds'}</span>
+                <span>{loading ? 'searching…' : searchInfo.failed ? 'no answer' : query ? `${feeds.length} ${resultNoun}` : 'feeds'}</span>
                 {/* The DEMU type is a filter over Podcast Index's ranked rows,
                     so a broad word comes back short (`bitcoin`: 0 under DEMU,
                     11 on /demu). This hands the same words to /demu, whose list
