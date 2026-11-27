@@ -263,6 +263,42 @@ async function holdHalf() {
     fresh.s.quit();
     await until(() => fresh.closes.length === 1);
 
+    // Kicked while away (code review, 2026-11-27: "the panel stays on joined").
+    // The KICK is a line the service keeps and replays, so the page hears it on
+    // the way back, after a drop and after a refresh; RESUMED names `*` then.
+    // `blackhole` first, so the KICK reaches only the ring, never the page.
+    const kdLinks = [];
+    const kd = session(fake, 'kickdrop', { ...QUICK, onLink: (l) => kdLinks.push(l) });
+    await until(() => kd.joins() === 1);
+    fake.blackhole('kickdrop');
+    fake.kick('kickdrop', 'away kick');
+    await wait(100);
+    c.ok('kicked while away: the KICK has not arrived yet', !kd.events.some((e) => e.type === 'kicked'));
+    fake.drop('kickdrop');
+    c.ok('…the resume replays it, so the page is told it was kicked', await until(() => kd.events.some((e) => e.type === 'kicked' && e.reason === 'away kick'), 3000),
+      JSON.stringify(kd.events.map((e) => e.type)));
+    c.ok('…after it came back', kdLinks.some((l) => l.kind === 'back'), JSON.stringify(kdLinks));
+    kd.s.send('typed after the kick');
+    await wait(200);
+    c.ok('…and nothing typed after it reaches the channel', !fake.received.includes('PRIVMSG #candr :typed after the kick'));
+    kd.s.quit();
+    await until(() => kd.closes.length === 1);
+
+    const kr = session(fake, 'kickfresh', QUICK);
+    await until(() => kr.joins() === 1);
+    const krSnap = kr.s.hold();
+    fake.blackhole('kickfresh');
+    fake.kick('kickfresh', 'kick during the refresh');
+    await wait(100);
+    const krNew = session(fake, 'kickfresh', { ...QUICK, resume: krSnap });
+    c.ok('kicked during a refresh: the new page is told it was kicked', await until(() => krNew.events.some((e) => e.type === 'kicked' && e.reason === 'kick during the refresh'), 3000),
+      JSON.stringify(krNew.events.map((e) => e.type)));
+    krNew.s.send('typed after the refresh kick');
+    await wait(200);
+    c.ok('…and nothing typed after it reaches the channel', !fake.received.includes('PRIVMSG #candr :typed after the refresh kick'));
+    krNew.s.quit();
+    await until(() => krNew.closes.length === 1);
+
     const createdGhost = fake.sessionsCreated;
     const regsGhost = fake.received.filter((l) => /^(NICK|USER) /.test(l)).length;
     const ghost = session(fake, 'ghost', { ...QUICK, resume: { token: 'A'.repeat(22), seq: 5, holdS: 2 } });
