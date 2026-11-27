@@ -2089,6 +2089,26 @@ export function Player() {
             )}
           </div>
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            {/* Compact enough for the mini-bar on desktop; hidden on the cramped
+                mobile mini-bar (the fullscreen player carries the toggle there).
+                BOTH LEFT OF THE TRANSPORT, so neither can move play/pause. This
+                cluster is anchored to the bar's right edge, so a control that
+                appears to the RIGHT of ⏮ ▶ ⏭ slides them left: the switch
+                arrives 1-2 s into playback for an episode Podcast Index built
+                (its feed is read then), and it slid play/pause 197px left at
+                1440, measured. PiP appears on 📺 Video the same way. Chad,
+                2026-11-26: "layout: b" — play/pause stays in a fixed place. */}
+            <VideoToggle className="hidden sm:inline-flex" />
+            {pipOk && (
+              <button
+                onClick={requestPip}
+                className="btn-ghost px-2"
+                title="Picture-in-Picture"
+                aria-label="Picture-in-Picture"
+              >
+                <PipIcon />
+              </button>
+            )}
             <TransportControls
               playOnly={isLive}
               prev={chapterNav?.prev}
@@ -2102,19 +2122,6 @@ export function Player() {
                 "Playback speed"). A live item and a music item are always 1×, so
                 no control. */}
             {!isLive && !musicItem && <SpeedButton variant="chip" className="hidden lg:inline-flex" />}
-            {/* Compact enough for the mini-bar on desktop; hidden on the cramped
-                mobile mini-bar (the fullscreen player carries the toggle there). */}
-            <VideoToggle className="hidden sm:inline-flex" />
-            {pipOk && (
-              <button
-                onClick={requestPip}
-                className="btn-ghost px-2"
-                title="Picture-in-Picture"
-                aria-label="Picture-in-Picture"
-              >
-                <PipIcon />
-              </button>
-            )}
             {/* Collapses to a 44px icon square below sm:, the same trade the
                 track rows make — the word cost 104px of a 358px row and the
                 bolt already says "boost" everywhere else in this app. The

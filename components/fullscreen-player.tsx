@@ -3,7 +3,7 @@ import dynamic from 'next/dynamic';
 import { CopyLinkButton } from './copy-link-button';
 import { createPortal } from 'react-dom';
 import { useAnchoredMenu } from './use-anchored-menu';
-import { cloneElement, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { cloneElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { isMusicItem, useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
@@ -207,7 +207,7 @@ import { PlaySource, type PlaySourceKind } from './player/play-source';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
 import { SpeedButton, FastSpeedButton, SpeedSlider } from './player/speed-button';
-import { VideoToggle } from './video-toggle';
+import { VideoToggle, videoToggleShows } from './video-toggle';
 const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { AuthControl } from './auth-control';
 import { WalletBalanceBox } from './wallet-balance';
@@ -707,7 +707,8 @@ export function FullscreenPlayer({
   //
   // From sm: up it clears the inline value and the class takes over, because
   // there the panes sit side by side and the cover competes with nothing.
-  useEffect(() => {
+  const switchShown = videoToggleShows(current?.episode);
+  useLayoutEffect(() => {
     const box = coverBoxRef.current;
     const controls = controlsRef.current;
     const row = scrollRowRef.current;
@@ -726,7 +727,24 @@ export function FullscreenPlayer({
       // four-line title left BOOST 11px under the edge at 176, and BOOST is
       // the one control on this screen that may not need a scroll. A 144px
       // cover is small; a boost button below the fold is worse.
-      const next = Math.max(144, Math.min(448, box.offsetWidth + slack));
+      let next = Math.max(144, Math.min(448, box.offsetWidth + slack));
+      // THE SWITCH TAKES ITS ROOM FROM THE COVER, never from what is below it.
+      // An episode Podcast Index built gets its <VideoToggle> 1-2 s into
+      // playback, when its feed is read (docs/ui.md), and the row it adds
+      // under the art pushed play/pause 50px down at 390x844, measured. So
+      // with the switch on screen the cover is the width it would be without
+      // it, less the switch's slot (its height plus the pane's gap): the
+      // controls end where they ended. Every video episode gets the same
+      // smaller cover, so the two states are one layout. Chad, 2026-11-26:
+      // "layout: b".
+      const pane = box.parentElement;
+      const toggle = pane?.querySelector<HTMLElement>(':scope > [data-video-toggle]');
+      if (pane && toggle) {
+        const cs = getComputedStyle(pane);
+        const inner = pane.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        const slot = toggle.offsetHeight + (parseFloat(cs.rowGap) || 0);
+        next = Math.max(144, Math.min(next, inner - slot));
+      }
       box.style.maxWidth = `${Math.round(next)}px`;
     };
     apply();
@@ -751,7 +769,12 @@ export function FullscreenPlayer({
     // the cover's inline cap stayed on it as the video's width — reported
     // from an iPhone as a video at ~57% of the screen. The keys stop the
     // node being shared; this dep re-measures the cover on the way back.
-  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo]);
+    //
+    // `switchShown` because the switch can ARRIVE with the episode already on
+    // screen, and nothing the observer watches changes size when it does. A
+    // LAYOUT effect, so the cover gives up the room in the same frame the
+    // switch takes it: a passive effect let play/pause paint 50px low first.
+  }, [everOpened, open, current?.episode?.id, current?.episode?.guid, isVideo, switchShown]);
 
   // ABOVE the early return: a hook may not be called conditionally, and
   // `useSavedPosition` takes null precisely so a surface can call it over its
