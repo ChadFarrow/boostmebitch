@@ -2585,23 +2585,6 @@ export const storage = {
   },
 
   /**
-   * The NWC URI parked across a same-account sign-out → sign-in inside one tab.
-   *
-   * sessionStorage, not localStorage, and deliberately so: it dies with the tab,
-   * which is the whole reason it's an acceptable place to hold a **spending
-   * credential** at all. That's why it doesn't go through safeGet/safeSet —
-   * those read and write localStorage, and the memory mirror would outlive the
-   * window this value is allowed to exist in.
-   *
-   * It IS here rather than inline, because the key was hand-written as a
-   * template literal in four places across two files. CLAUDE.md's rule — every
-   * `bmb:*` access through a typed helper — was written for localStorage and
-   * this slipped through the gap. The stakes are the reason it matters: the
-   * remove in the disconnect path is what stops a wallet the user disconnected
-   * coming back on the next sign-in, and it was one character away from no
-   * longer matching the writer, with nothing to catch the mismatch.
-   */
-  /**
    * The LIVE item in this tab's player when the page hid (docs/ui.md, "A
    * refresh picks a live stream back up"; Chad, 2026-11-22: "if you're
    * listening to a live stream and you hit refresh ... you want it to pick
@@ -2692,6 +2675,23 @@ export const storage = {
     },
   },
 
+  /**
+   * The NWC URI parked across a same-account sign-out → sign-in inside one tab.
+   *
+   * sessionStorage, not localStorage, and deliberately so: it dies with the tab,
+   * which is the whole reason it's an acceptable place to hold a **spending
+   * credential** at all. That's why it doesn't go through safeGet/safeSet —
+   * those read and write localStorage, and the memory mirror would outlive the
+   * window this value is allowed to exist in.
+   *
+   * It IS here rather than inline, because the key was hand-written as a
+   * template literal in four places across two files. CLAUDE.md's rule — every
+   * `bmb:*` access through a typed helper — was written for localStorage and
+   * this slipped through the gap. The stakes are the reason it matters: the
+   * remove in the disconnect path is what stops a wallet the user disconnected
+   * coming back on the next sign-in, and it was one character away from no
+   * longer matching the writer, with nothing to catch the mismatch.
+   */
   nwcSessionUri: {
     get: (npub: string | null | undefined): string | null => {
       if (!isBrowser()) return null;
