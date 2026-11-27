@@ -139,6 +139,7 @@
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:albumpanel": "node scripts/e2e-album-panel-owner.mjs",
     "e2e:downloadsread": "node scripts/e2e-downloads-read-error.mjs",
+    "e2e:playlistpicache": "node scripts/e2e-playlist-pi-cache.mjs",
     "e2e:history": "node scripts/e2e-history.mjs",
     "e2e:playlistretry": "node scripts/e2e-playlist-page-retry.mjs",
     "e2e:boostdefault": "node scripts/e2e-boost-default.mjs",

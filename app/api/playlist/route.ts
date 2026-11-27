@@ -92,15 +92,22 @@ function digits(raw: string | null, fallback: number): number | null {
  * breaker and disable metadata resolution for the whole tab. The record we fall
  * back to is genuinely preview-shaped then — synthetic id, no guid, not
  * restorable from a URL — which is what the flag gates; only the stamp's wording
- * over-claims, for one page, which `batchEpisodes` fails in the same breath so
- * every row already says PI could not be asked, and which is answered
- * `no-store` and therefore never cached.
+ * over-claims, for one page.
+ *
+ * **`asked: false` makes the answer `no-store`, on its own.** This used to rest
+ * on `batchEpisodes` failing in the same breath, so that `couldNotAsk > 0` kept
+ * the page out of the CDN — but two answers ask PI about NO row: a page past the
+ * end, and a page the playlist database answers whole (`resolvePlaylistTracks`,
+ * which on a music playlist is most pages). Both went out with `PLAYLIST_CACHE`,
+ * so one PI blip put the guid-less, preview-stamped header in the CDN for five
+ * minutes, and the heart stayed hidden for everyone who opened it (full-code
+ * review 2026-11-19).
  */
-async function piRecordFor(feedUrl: string): Promise<Podcast | null> {
+async function piRecordFor(feedUrl: string): Promise<{ record: Podcast | null; asked: boolean }> {
   try {
-    return await getPodcastByFeedUrl(feedUrl);
+    return { record: await getPodcastByFeedUrl(feedUrl), asked: true };
   } catch {
-    return null;
+    return { record: null, asked: false };
   }
 }
 
@@ -130,6 +137,9 @@ export async function GET(req: Request) {
     const communityId = communityIdFromFeedUrl(url);
     let channel: Awaited<ReturnType<typeof getPlaylistChannel>>;
     let piRecord: Podcast | null = null;
+    // A community playlist never asks PI for its record, so it has nothing to
+    // have failed at.
+    let piRecordAsked = true;
     if (communityId) {
       const own = COMMUNITY_FEEDS_ON && communityStoreConfigured() ? await getPlaylist(communityId) : null;
       if (!own || own === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 });
@@ -139,7 +149,10 @@ export async function GET(req: Request) {
         sourceFeedUrl: undefined,
       };
     } else {
-      [channel, piRecord] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
+      let pi: Awaited<ReturnType<typeof piRecordFor>>;
+      [channel, pi] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
+      piRecord = pi.record;
+      piRecordAsked = pi.asked;
     }
     if (!channel) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
@@ -155,7 +168,9 @@ export async function GET(req: Request) {
     // exactly the feed whose favorite heart would otherwise stay hidden.
     const podcast = piRecord ? mergeRssOverPi(piRecord, channel.podcast) : channel.podcast;
     const { refs } = channel;
-    const pageCache = communityId ? COMMUNITY_PLAYLIST_CACHE : PLAYLIST_CACHE;
+    // A header built while PI could not be asked is not an answer either — see
+    // `piRecordFor`. The row-level twin is `couldNotAsk` below.
+    const pageCache = !piRecordAsked ? NO_STORE : communityId ? COMMUNITY_PLAYLIST_CACHE : PLAYLIST_CACHE;
     // The show the playlist was built from. Its episode markers are bare titles
     // — "Saddle Up" — so without this the heading above a run of tracks is a
     // word with no stated relationship to anything. Resolved AFTER the channel,
