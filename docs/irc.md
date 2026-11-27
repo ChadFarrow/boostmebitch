@@ -197,7 +197,7 @@ so the panel would offer a chat with nobody to talk to, all day, every day.
 Chad, 2026-11-25: "thats a 24/7 replay stream so dont show a chat there".
 Lightning Thrashes (`#SirLibre`) left the list that day; it has 11 shows. The
 gateway's own lists (thelounge-candr) drop a channel only AFTER the page change
-is on beta: a gateway that goes first leaves a beta page offering a chat that
+is deployed: a gateway that goes first leaves a page offering a chat that
 its lock refuses (477). A hold a device saved for the channel is never read,
 because only a mounted panel reads `bmb:irc_hold:<channel>`, and `prune` drops
 it after 6 h (`e2e:irc` seeds one and checks that no socket opens).
