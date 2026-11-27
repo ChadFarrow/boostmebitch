@@ -23,7 +23,7 @@
 
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools';
 import {
-  classify, deletionTargets, indexableTags, podcastRefs, trackedFrom,
+  classify, deletionTargets, indexableTags, ingestRetryDelay, MAX_TRACKED_P_TAGS, podcastRefs, trackedFrom,
 } from '../src/ingest.ts';
 
 let failures = 0;
@@ -69,6 +69,19 @@ const boost = sign({
     ['e', ''],
   ],
 });
+
+// Finding 16: a corpus note p-tagging N pubkeys. At the cap every one joins the
+// tracked set; one over and none do — the 5,000-tag note pushed every real
+// author out of the 5,000-row window the subscriptions are built from.
+const pk = (i) => i.toString(16).padStart(64, '0');
+const noteTagging = (n) => sign({
+  kind: 1,
+  content: 'boost',
+  tags: [['k', 'podcast:guid'], ['i', `podcast:guid:${FEED}`], ...Array.from({ length: n }, (_, i) => ['p', pk(i + 1)])],
+});
+const atCap = noteTagging(MAX_TRACKED_P_TAGS);
+const overCap = noteTagging(MAX_TRACKED_P_TAGS + 1);
+const flood = noteTagging(5_000);
 
 // Tampered content, original signature. Built by SPREAD on purpose.
 const forgedBySpread = { ...boost, content: 'Boosted 100000 sats' };
@@ -221,7 +234,43 @@ const VECTORS = [
     why: 'a repost p-tags whoever wrote the reposted note - anybody on the network' },
   { fn: 'trackedFrom', args: [zapReceipt], expect: [],
     why: 'a zap receipt adds nothing: its p was matched BY the tracked filter, its author is an LNURL server' },
+
+  // trackedFrom - the p-tag cap (finding 16). The two over-cap vectors agree
+  // with naive(), which tracks the author only, so they are exempted here and
+  // replayed instead against BEFORE (the shipping code before the cap), which
+  // tracked every p-tag.
+  { fn: 'trackedFrom', args: [atCap],
+    expect: [{ pubkey: PK, reason: 'author' }, ...Array.from({ length: MAX_TRACKED_P_TAGS }, (_, i) => ({ pubkey: pk(i + 1), reason: 'p-tagged' }))],
+    why: `a note at the cap (${MAX_TRACKED_P_TAGS} p-tags) still tracks every one of them` },
+  { fn: 'trackedFrom', args: [overCap], expect: [{ pubkey: PK, reason: 'author' }], alsoNaive: true, before: true,
+    why: 'one p-tag over the cap tracks the author only - never "the first N", the order is the sender\'s' },
+  { fn: 'trackedFrom', args: [flood], expect: [{ pubkey: PK, reason: 'author' }], alsoNaive: true, before: true,
+    why: 'a 5,000-p-tag note cannot fill the tracked window' },
+
+  // ingestRetryDelay - a failed first write is tried again (finding 16)
+  { fn: 'ingestRetryDelay', args: [1, 30_000], expect: 30_000, why: 'the first retry waits the base delay' },
+  { fn: 'ingestRetryDelay', args: [2, 30_000], expect: 120_000, why: 'the second waits four times it' },
+  { fn: 'ingestRetryDelay', args: [3, 30_000], expect: 600_000, why: 'the third waits twenty times it' },
+  { fn: 'ingestRetryDelay', args: [4, 30_000], expect: null, alsoNaive: true,
+    why: 'then it gives up: a write Postgres refuses every time must not retry forever' },
 ];
+
+// The shipping code before finding 16, for the vectors marked `before: true`:
+// each must DIFFER from it, or it proves nothing about the fix.
+const BEFORE = {
+  trackedFrom(event) {
+    const out = [];
+    const seen = new Set();
+    const add = (p, reason) => {
+      if (typeof p !== 'string' || p.length !== 64 || seen.has(p)) return;
+      seen.add(p);
+      out.push({ pubkey: p, reason });
+    };
+    add(event.pubkey, 'author');
+    for (const t of event.tags) if (t[0] === 'p') add(t[1], 'p-tagged');
+    return out;
+  },
+};
 
 // --- the obvious wrong implementation --------------------------------------
 //
@@ -265,12 +314,16 @@ function naive() {
     trackedFrom(event) {
       return [{ pubkey: event.pubkey, reason: 'author' }];
     },
+    // Never retry: the indexer before finding 16.
+    ingestRetryDelay() {
+      return null;
+    },
   };
 }
 
 // --- total replay -----------------------------------------------------------
 
-const REAL = { classify, deletionTargets, indexableTags, podcastRefs, trackedFrom };
+const REAL = { classify, deletionTargets, indexableTags, ingestRetryDelay, podcastRefs, trackedFrom };
 const NAIVE = naive();
 
 console.log(`replaying ${VECTORS.length} vectors against the shipping module`);
@@ -294,6 +347,15 @@ for (const v of VECTORS) {
     console.error(`FAIL naive() agrees with vector "${v.fn}: ${v.why}" - it discriminates nothing.`);
     console.error('  Either the vector is not testing what it claims, or naive() is not the tempting wrong version.');
     console.error("  Do NOT silence this with alsoNaive unless the input genuinely cannot discriminate.");
+  }
+}
+
+console.log('replaying the before: true vectors against the code before the p-tag cap - each must differ');
+for (const v of VECTORS.filter((x) => x.before)) {
+  checks++;
+  if (JSON.stringify(BEFORE[v.fn](...v.args)) === JSON.stringify(v.expect)) {
+    failures++;
+    console.error(`FAIL the pre-cap code agrees with "${v.fn}: ${v.why}" - it proves nothing about the fix.`);
   }
 }
 

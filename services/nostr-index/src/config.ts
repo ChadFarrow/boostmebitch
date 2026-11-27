@@ -127,6 +127,10 @@ export const config = {
   // in verify/check-indexer.mjs cannot wait two minutes per assertion.
   connectivityCheckMs: num('INDEX_CONNECTIVITY_MS', 60_000),
 
+  // The first wait before a failed event write is tried again (then 4x, 20x;
+  // `ingestRetryDelay`). Exposed for verify/check-indexer.mjs, as above.
+  ingestRetryMs: num('INDEX_INGEST_RETRY_MS', 30_000),
+
   // How often the kind:30311 subscription is re-issued so its `since` window
   // does not go stale. Hourly; a filter is evaluated once, at REQ time.
   liveResubscribeMs: num('INDEX_LIVE_RESUBSCRIBE_MS', 3_600_000),

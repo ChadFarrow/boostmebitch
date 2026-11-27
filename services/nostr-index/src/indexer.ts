@@ -13,7 +13,7 @@ import type { Db } from './db.ts';
 import type { Config } from './config.ts';
 import { emptyStats, indexedThrough, ingestEvent, recentNoteIds, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByGuid, piConfigured } from './pi.ts';
-import { LIVE_STREAM_KIND, LIVE_WINDOW_SECS } from './ingest.ts';
+import { ingestRetryDelay, LIVE_STREAM_KIND, LIVE_WINDOW_SECS } from './ingest.ts';
 import { pruneLiveVersions } from './retention.ts';
 
 /** The two filters that define this index's universe. Both mirror queries the
@@ -139,6 +139,12 @@ const BACKFILL_PAUSE_MS = 750;
 // a long-lived process cannot grow it without limit.
 const SEEN_CAP = 100_000;
 
+// A failed first write is tried again (`ingestRetryDelay`): 30 s, 2 min, 10 min.
+// At most this many events wait for a retry at once, so an outage that fails
+// every write cannot hold the whole stream in memory.
+const INGEST_RETRY_MS = 30_000;
+const MAX_PENDING_RETRIES = 2_000;
+
 // How often relay connectivity is checked, and how many consecutive all-dead
 // checks are tolerated before the subscriptions are rebuilt from scratch.
 // Two, not one, because a single check can land inside nostr-tools' own
@@ -198,6 +204,8 @@ export class Indexer {
   private pool = new IndexPool({ enableReconnect: true, enablePing: true });
   private deadChecks = 0;
   private seen = new Set<string>();
+  // Events whose write failed, by id, each with its one pending retry timer.
+  private retrying = new Map<string, NodeJS.Timeout>();
   // Subscriptions by GROUP, not one flat list. The flat list was replaced
   // per-generation with `closers.splice(CORE_FILTERS.length)` — arithmetic that
   // silently means the wrong thing the moment a third group exists, which is
@@ -312,6 +320,8 @@ export class Indexer {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
+    for (const t of this.retrying.values()) clearTimeout(t);
+    this.retrying.clear();
     void this.closeAllSubs();
     try { this.pool.close(this.relays); } catch { /* already gone */ }
   }
@@ -565,7 +575,7 @@ export class Indexer {
     };
   }
 
-  private async take(event: Event, source: string): Promise<void> {
+  private async take(event: Event, source: string, attempt = 0): Promise<void> {
     if (this.stopped) return;
     // kind:0 and kind:5 are replaceable / repeatable, so they must reach the
     // store even when the id was seen: a profile update carries a new id, but a
@@ -576,8 +586,36 @@ export class Indexer {
     try {
       await ingestEvent(this.db, event, this.stats);
     } catch (e) {
-      console.error(`[indexer] ingest failed (${source}):`, e instanceof Error ? e.message : e);
+      // **A FAILED WRITE IS NOT A SEEN EVENT** (finding 16). Left in `seen`, the
+      // id made every later copy — from the other relays, from backfill — a
+      // "duplicate", and the event was lost for the life of the process. So the
+      // id is forgotten, which lets the next copy in, and the event is tried
+      // again on its own, because the copies usually arrived together and are
+      // already gone. The write is idempotent (`on conflict`), so a copy and a
+      // retry both landing costs one no-op insert.
+      this.seen.delete(event.id);
+      const delay = ingestRetryDelay(attempt + 1, this.cfg.ingestRetryMs ?? INGEST_RETRY_MS);
+      console.error(
+        `[indexer] ingest failed (${source}), ${delay === null ? 'giving up on it' : `retrying in ${delay < 1_000 ? `${delay} ms` : `${Math.round(delay / 1000)} s`}`}:`,
+        e instanceof Error ? e.message : e,
+      );
+      if (delay !== null) this.retryLater(event, source, attempt + 1, delay);
     }
+  }
+
+  private retryLater(event: Event, source: string, attempt: number, delay: number): void {
+    if (this.stopped || this.retrying.has(event.id)) return;
+    if (this.retrying.size >= MAX_PENDING_RETRIES) {
+      console.error(`[indexer] ${MAX_PENDING_RETRIES} writes already waiting to retry — dropping ${event.id}`);
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.retrying.delete(event.id);
+      // `take` catches its own failures; the `catch` is for anything it does not.
+      this.take(event, `${source}, retry ${attempt}`, attempt).catch(logErr('ingest retry'));
+    }, delay);
+    timer.unref?.();
+    this.retrying.set(event.id, timer);
   }
 
   /**
