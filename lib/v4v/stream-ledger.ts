@@ -839,3 +839,57 @@ export function endedVerdict(
 export function failedRunIsRefundable(indeterminate: boolean): boolean {
   return !indeterminate;
 }
+
+// ── Retrying a failed split load ────────────────────────────────────────────
+
+/**
+ * What one `/api/value-splits` load for the playing item proved.
+ *
+ * - `ok`: a complete answer — every window that names a track resolved to a
+ *   payee, or the episode has none. Nothing to ask again.
+ * - `none`: the episode has no `<podcast:valueTimeSplit>`, or the route said
+ *   404 ("episode not found"), which is an answer.
+ * - `failed`: we could not ask — a network error, a timeout, a 5xx or 429.
+ * - `incomplete`: an answer in which some window names a track whose album
+ *   feed did not answer, so that window has no payee YET.
+ */
+export type SplitLoadState = 'ok' | 'none' | 'failed' | 'incomplete';
+
+/**
+ * The wait before each retry (Chad's choice, option A, 2026-11-26): 30 s, then
+ * 1 min, then 2 min, then every 5 min for as long as the item plays.
+ */
+export const SPLIT_RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
+export const SPLIT_RETRY_STEADY_MS = 300_000;
+
+/**
+ * When to ask for the splits again after a load answered `state`, or null for
+ * never. `retriesMade` counts the retries already run (0 after the first load).
+ *
+ * WHY THIS EXISTS (full-code review, 2026-11-19, finding 8). The engine loaded
+ * the splits ONCE per context. A failed or incomplete load was rightly not
+ * cached, so a later context asked again — but the context that took the
+ * failure kept an empty map for its whole life, so every song window of a
+ * music show streamed to the HOST until the listener changed item. The sats
+ * accrued before a retry lands still go to the host: they were accrued while
+ * the show's own block was the only payee we knew, and moving them would mean
+ * editing the ledger, which a retry has no business doing.
+ *
+ * `incomplete` retries on the same schedule as `failed`: the windows that did
+ * resolve are adopted at once, and the rest arrive when their album feed
+ * answers.
+ */
+export function splitRetryDelayMs(state: SplitLoadState, retriesMade: number): number | null {
+  if (state === 'ok' || state === 'none') return null;
+  return SPLIT_RETRY_DELAYS_MS[retriesMade] ?? SPLIT_RETRY_STEADY_MS;
+}
+
+/**
+ * Is a scheduled retry due on this tick? Only while the item PLAYS — a paused
+ * listener accrues nothing, so there is nothing for a retry to redirect — and
+ * never while a load is still in flight, or a slow answer and its retry race to
+ * write the same map.
+ */
+export function splitRetryDue(nextAtMs: number, nowMs: number, playing: boolean, inFlight: boolean): boolean {
+  return playing && !inFlight && nowMs >= nextAtMs;
+}
