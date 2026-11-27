@@ -100,6 +100,7 @@
     "e2e:unconfirmed": "node scripts/e2e-unconfirmed-leg.mjs",
     "e2e:notewording": "node scripts/e2e-boost-note-wording.mjs",
     "e2e:bunkerrevive": "node scripts/e2e-bunker-revive.mjs",
+    "e2e:bunkerstale": "node scripts/e2e-bunker-stale-signout.mjs",
     "e2e:twosigners": "node scripts/e2e-two-signers.mjs",
     "e2e:mentions": "node --experimental-strip-types scripts/e2e-mentions.mjs",
     "e2e:readtrust": "node --experimental-strip-types scripts/e2e-read-trust.mjs",
