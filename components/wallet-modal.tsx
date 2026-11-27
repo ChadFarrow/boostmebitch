@@ -106,8 +106,12 @@ export function WalletModal({ onClose }: Props) {
   });
 
 
-  async function handleConnected(rail: Rail) {
+  async function handleConnected(rail: Rail, opts?: { keepOpen?: boolean }) {
     await clearOtherWallets(rail, identity?.npub);
+    // A connect that worked but left the card something to say — Spark's pasted
+    // seed whose backup reached no relay — stays open on that card. The other
+    // rails are cleared either way: this IS the new wallet.
+    if (opts?.keepOpen) { setView({ kind: 'connected' }); return; }
     onClose();
   }
 
@@ -244,7 +248,7 @@ export function WalletModal({ onClose }: Props) {
             />
           )}
           {rail === 'spark' && (
-            <SparkWallet mode="form" onConnected={() => handleConnected('spark')} />
+            <SparkWallet mode="form" onConnected={(o) => handleConnected('spark', o)} />
           )}
           {rail === 'webln' && (
             <WeblnWallet mode="form" onConnected={() => handleConnected('webln')} />

@@ -28,6 +28,14 @@
 //   3. A pasted seed (the BIP-39 test vector) opens the wallet whose identity key
 //      `check:spark` pins: the page sends that key to the operators. The new
 //      wallet of step 1 sent a different one, so the match is not an accident.
+//   4. A pasted seed whose backup reaches NO relay (the local relay refuses the
+//      kind:30078 only). The wallet connects, but nothing persists it: after a
+//      reload the app opens what the backup holds, not this wallet. So the
+//      window stays open on the card, which says so, with no seed words in it;
+//      the other rail is still cleared; the notice survives a close and reopen
+//      and fits a phone; and "Back up again", with the relay accepting, saves
+//      this seed and takes the notice away. Until the full-code review of
+//      2026-11-19 the failure was a console warning and the window closed.
 //
 // Needs the app running (`npm run dev`, or `npm run build && npm start`) and
 // network access to Spark's operators.
@@ -35,6 +43,8 @@
 import { createRelay } from './local-relay.mjs';
 import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04 } from 'nostr-tools';
+import { generateMnemonic } from '@scure/bip39';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
 
 const APP = process.env.BMB_APP ?? 'http://localhost:3000';
 // The seed backups go to a ws:// relay on this machine, and an https page may
@@ -64,7 +74,16 @@ const pk = getPublicKey(sk);
 const npub = nip19.npubEncode(pk);
 const convo = nip44.v2.utils.getConversationKey(sk, pk);
 
-const relay = createRelay({ port: 0, log: null });
+// Step 4 turns this on: the local relay then answers the Spark backup's EVENT
+// with `OK false`, so the publish reaches no relay. Nothing else is refused.
+let refuseBackup = false;
+const relay = createRelay({
+  port: 0,
+  log: null,
+  refuse: (e) => (refuseBackup && e.kind === 30078 && e.tags.some((tg) => tg[0] === 'd' && tg[1] === BACKUP_D)
+    ? 'blocked: e2e refuses the wallet backup'
+    : null),
+});
 const PORT = await relay.ready;
 
 await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable');
@@ -342,6 +361,69 @@ t.ok(`the page sent the pinned identity key ${PASTED_IDENTITY.slice(0, 16)}… t
 t.ok('the step-1 wallet did NOT send that key (the match is not an accident)', created.length > 0 && !created.some((b) => b.includes(PASTED_IDENTITY)), `${created.length} body(ies) from step 1`);
 const latest = backupOnRelay();
 t.ok('the backup now holds the pasted seed', !!latest && nip44.v2.decrypt(latest.content, convo) === PASTED_SEED);
+await closeWallet();
+
+// --- 4 ------------------------------------------------------------------------
+console.log('\n4. A pasted seed whose backup reaches no relay: the card says so, and Back up again saves it');
+const FRESH_SEED = generateMnemonic(wordlist);
+const hex = (b) => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+// Another rail first, so the run sees that connecting Spark still clears it. A
+// throwaway NWC connection on the local relay: nothing ever answers it.
+const FAKE_NWC = `nostr+walletconnect://${getPublicKey(generateSecretKey())}?relay=${encodeURIComponent(`ws://127.0.0.1:${PORT}`)}&secret=${hex(generateSecretKey())}`;
+await openWallet();
+t.ok('Disconnect is pressed (the step-3 wallet)', await click('Disconnect'));
+await closeWallet();
+await js(`(() => { localStorage.setItem('bmb:nwc_uri', ${JSON.stringify(FAKE_NWC)}); return 1; })()`);
+await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+await load();
+await openWallet();
+t.ok('the window opens on the NWC card, with Switch wallet', await click('Switch wallet →'));
+await page.until(`[...document.querySelectorAll('[role="dialog"] button.card')].some((b) => /Spark/.test(b.textContent))`, 5000);
+await js(`(() => { [...document.querySelectorAll('[role="dialog"] button.card')].find((b) => /Spark/.test(b.textContent)).click(); return 1; })()`);
+t.ok('the Spark form opens', await page.until(`!!document.querySelector('[role="dialog"] textarea[aria-label="Seed phrase"]')`, 5000));
+await js(`(() => {
+  const a = document.querySelector('[role="dialog"] textarea[aria-label="Seed phrase"]');
+  const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+  set.call(a, ${JSON.stringify(FRESH_SEED)});
+  a.dispatchEvent(new Event('input', { bubbles: true }));
+  return 1;
+})()`);
+refuseBackup = true;
+t.ok('Connect is pressed', await click('Connect'));
+t.ok('the overwrite of the step-3 backup is confirmed first', await overwriteIfAsked());
+const NOTICE = /no backup on Nostr/i;
+const noticeShown = () => js(`${NOTICE}.test(document.querySelector('[role="dialog"]')?.innerText ?? '')`);
+const shownAt = await page.until(`${NOTICE}.test(document.querySelector('[role="dialog"]')?.innerText ?? '')`, CONNECT_MS);
+t.ok('the window stays open, and the card says the wallet has no backup', shownAt, `dialog open: ${await js(`!!document.querySelector('[role="dialog"]')`)}, error ${await dialogError()}`);
+t.ok('...on the connected card (a balance is shown beside it)', (await settledBalance()) != null);
+const held = backupOnRelay();
+t.ok('the relay still holds the step-3 seed, not this one', !!held && nip44.v2.decrypt(held.content, convo) === PASTED_SEED);
+t.ok('the NWC connection was still cleared', (await js(`localStorage.getItem('bmb:nwc_uri')`)) === null);
+const seedWords = FRESH_SEED.split(' ');
+// Three words in a row is a seed fragment, not a sentence; `innerText` does
+// not include a field's value, so the fields are read too.
+const SEED_HEAD = seedWords.slice(0, 3).join(' ');
+t.ok('no seed words are on the page', !(await js(`document.body.innerText.includes(${JSON.stringify(SEED_HEAD)}) || [...document.querySelectorAll('textarea, input')].some((f) => f.value.includes(${JSON.stringify(SEED_HEAD)}))`)));
+await closeWallet();
+await openWallet();
+t.ok('the notice is still there after a close and reopen', await noticeShown());
+await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+await wait(500);
+t.ok('phone: the card with the notice does not scroll sideways', (await overflowPx()) <= 0, `overflow ${await overflowPx()}px`);
+small = await smallTargets();
+t.ok('phone: every control with the notice is 24 x 24 px or more', small.length === 0, JSON.stringify(small));
+if (process.env.E2E_SHOT) {
+  // `E2E_SHOT=<file.png>` saves the phone card with the notice, to look at.
+  const { writeFile } = await import('node:fs/promises');
+  const shot = await send('Page.captureScreenshot', { format: 'png' });
+  await writeFile(process.env.E2E_SHOT, Buffer.from(shot.result?.data ?? shot.data, 'base64'));
+}
+refuseBackup = false;
+t.ok('Back up again is pressed', await click('Back up again'));
+t.ok('the card says the backup is saved', await page.until(`/Backed up to Nostr/.test(document.querySelector('[role="dialog"]')?.innerText ?? '')`, 20000));
+t.ok('...and the notice is gone', !(await noticeShown()));
+const saved = backupOnRelay();
+t.ok('the backup now holds this seed', !!saved && nip44.v2.decrypt(saved.content, convo) === FRESH_SEED);
 await closeWallet();
 
 // --- The guards -----------------------------------------------------------------

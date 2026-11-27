@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { useFlash } from '@/lib/use-flash';
 import { useConfirm } from './confirm-dialog';
 import dynamic from 'next/dynamic';
@@ -17,6 +17,8 @@ import {
   sparkDisconnect,
   sparkGetInfo,
   sparkReceiveInvoice,
+  sparkSeedIsActive,
+  subscribeSpark,
   subscribeSparkEvents,
 } from '@/lib/v4v/spark';
 import {
@@ -28,9 +30,51 @@ import { getErrorMessage } from '@/lib/util';
 
 type InternalMode = 'idle' | 'creating' | 'restoring' | 'busy';
 
+/**
+ * A PASTED SEED WHOSE BACKUP REACHED NO RELAY — the one wallet this app cannot
+ * open again. Nothing else persists the seed (`lib/v4v/spark.ts` holds it in
+ * memory only), so after a reload the page-load restore opens whatever the
+ * kind:30078 backup holds, or nothing: the user's other wallet, a wallet derived
+ * from their key, or no wallet at all, and never this one. Until the full-code
+ * review of 2026-11-19 that failure was a `console.warn`: the connect form is
+ * gone by then (the modal flips to the card the moment Spark connects) and the
+ * window closed itself, so nothing on screen ever said it.
+ *
+ * MODULE STATE, because the form that sees the failure and the card that must
+ * say it are two `<SparkWallet>` instances, and the first has unmounted. It
+ * holds a retry CLOSURE, never the seed: there is no accessor that returns the
+ * words, only one that publishes them to the account that pasted them, and
+ * only while that seed is still the running wallet (`isActive`). It is dropped
+ * on a successful retry, on Disconnect, and on any Spark change that stops that
+ * seed running — sign-out runs `sparkDisconnect()`, so that is covered too. No
+ * `bmb:*` key: a seed with no backup does not outlive the tab anyway.
+ */
+type UnbackedWallet = { npub: string; isActive: () => boolean; backUp: () => Promise<unknown> };
+let unbacked: UnbackedWallet | null = null;
+const unbackedListeners = new Set<() => void>();
+function setUnbacked(next: UnbackedWallet | null) {
+  if (next === unbacked) return;
+  unbacked = next;
+  for (const fn of unbackedListeners) fn();
+}
+function subscribeUnbacked(fn: () => void) {
+  unbackedListeners.add(fn);
+  return () => { unbackedListeners.delete(fn); };
+}
+subscribeSpark(() => {
+  if (unbacked && !unbacked.isActive()) setUnbacked(null);
+});
+/** The notice for THIS account's running wallet, or null. */
+function useUnbackedWallet(npub: string | undefined): UnbackedWallet | null {
+  const u = useSyncExternalStore(subscribeUnbacked, () => unbacked, () => null);
+  return u && npub && u.npub === npub && u.isActive() ? u : null;
+}
+
 interface Props {
   mode: 'form' | 'card';
-  onConnected?: () => void;
+  /** `keepOpen`: the wallet connected, but the card has something to say
+   *  before the window closes (a pasted seed whose backup reached no relay). */
+  onConnected?: (opts?: { keepOpen?: boolean }) => void;
   onDisconnected?: () => void;
 }
 
@@ -176,22 +220,33 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
         if (!ok) { setInternalMode('idle'); return; }
       }
       storage.sparkOptOut.clear(identity?.npub);
+      setUnbacked(null);
       await sparkInitFromMnemonic({ mnemonic: trimmed, ownerPubkey: identity.pubkey });
       // Back up so silent auto-restore works on the next load. Non-fatal: the
       // wallet is already up and the user holds the seed they just pasted, so
       // failing the connect over the backup would be the worse trade.
       //
-      // But say so rather than swallowing it. `publishEncryptedMnemonic` now
+      // But say so ON SCREEN, not only in the console. `publishEncryptedMnemonic`
       // throws when the event reached no relay, and that case is exactly "the
       // seed you just connected has no backup" — the login backfill won't cover
-      // it either, since that path only ever republishes a seed WE derived.
-      // Message only, never the seed.
-      await publishEncryptedMnemonic(identity, trimmed).catch((e) => {
+      // it either, since that path only ever republishes a seed WE derived. The
+      // card says it and offers the retry (`UnbackedWallet`), and the window
+      // stays open on it. Message only, never the seed.
+      const owner = identity;
+      const backUp = () => publishEncryptedMnemonic(owner, trimmed);
+      let backedUp = true;
+      await backUp().catch((e) => {
+        backedUp = false;
         console.warn('[spark] wallet backup failed:', getErrorMessage(e, 'unknown'));
       });
       setPasteSeed('');
       setInternalMode('idle');
-      onConnected?.();
+      if (backedUp) {
+        onConnected?.();
+      } else {
+        setUnbacked({ npub: owner.npub, isActive: () => sparkSeedIsActive(trimmed), backUp });
+        onConnected?.({ keepOpen: true });
+      }
     } catch (e) {
       setErr(getErrorMessage(e, 'failed to connect wallet'));
       setInternalMode('idle');
@@ -199,6 +254,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
   }
 
   async function disconnect() {
+    setUnbacked(null);
     await sparkDisconnect();
     storage.sparkOptOut.set(identity?.npub);
     storage.walletBalance.clear(identity?.npub);
@@ -298,6 +354,11 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
 }
 
 function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnect: () => void }) {
+  const identity = useApp((s) => s.identity);
+  const unbackedWallet = useUnbackedWallet(identity?.npub);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupErr, setBackupErr] = useState<string | null>(null);
+  const [backupSaved, setBackupSaved] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -371,6 +432,21 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
     catch { /* ignore */ }
   }
 
+  async function backUpAgain() {
+    if (!unbackedWallet) return;
+    setBackupBusy(true);
+    setBackupErr(null);
+    try {
+      await unbackedWallet.backUp();
+      setUnbacked(null);
+      setBackupSaved(true);
+    } catch (e) {
+      setBackupErr(getErrorMessage(e, 'the backup failed'));
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
   function clearInvoice() {
     setInvoice(null);
     setFeeSats(null);
@@ -400,6 +476,27 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
           {refreshing ? '…' : '↻'}
         </button>
       </div>
+
+      {/* See `UnbackedWallet`. It states the COST (this wallet is gone after
+          a reload) rather than the mechanism, and never shows the seed. */}
+      {unbackedWallet && (
+        <div role="status" className="card border-bolt/40 p-3 space-y-2 break-words">
+          <p className="text-bolt">
+            This wallet has no backup on Nostr: the backup reached none of your relays.
+          </p>
+          <p className="text-muted">
+            After a reload, this app opens the wallet in your Nostr backup, or none, and not
+            this one. Keep the seed phrase you pasted.
+          </p>
+          <button onClick={backUpAgain} disabled={backupBusy} className="btn-bolt disabled:opacity-40">
+            {backupBusy ? 'Backing up…' : 'Back up again'}
+          </button>
+          {backupErr && <div className="text-nostr/80">The backup failed again: {backupErr}</div>}
+        </div>
+      )}
+      {backupSaved && !unbackedWallet && (
+        <div className="text-muted">✓ Backed up to Nostr.</div>
+      )}
 
       {!showReceive && !invoice && (
         <div className="flex flex-wrap items-center gap-2">
