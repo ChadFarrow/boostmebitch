@@ -428,6 +428,24 @@ const sessionVectors = [
     expect: { out: ['JOIN #candr'], events: [{ type: 'error', text: 'Cannot join channel (+b)' }], phase: 'registering' },
   },
   {
+    // Code review, 2026-11-27: a channel with a rejoin delay (UnrealIRCd +J)
+    // answers JOIN AGAIN with 495. Dropped, it left "Joining #chan…" on the
+    // screen for good, because the register timer ended at the first join.
+    label: 'JOIN AGAIN refused by a rejoin delay (495) shows the reason, not "Joining…" forever',
+    args: [[WELCOME, JOINED, { line: ':op!u@h KICK #candr bmbfan :spam' }, { rejoin: true },
+      { line: ':sparrow.zeronode.net 495 bmbfan #candr :You must wait 5 seconds after being kicked to rejoin (+J)' }]],
+    expect: {
+      out: ['JOIN #candr', 'JOIN #candr'],
+      events: [joinedEvent, { type: 'kicked', by: 'op', reason: 'spam' }, { type: 'error', text: 'You must wait 5 seconds after being kicked to rejoin (+J)' }],
+      phase: 'parted',
+    },
+  },
+  {
+    label: 'a JOIN refused as temporarily unavailable (437) shows the reason',
+    args: [[WELCOME, { line: ':sparrow.zeronode.net 437 bmbfan #candr :Nick/channel is temporarily unavailable' }]],
+    expect: { out: ['JOIN #candr'], events: [{ type: 'error', text: 'Nick/channel is temporarily unavailable' }], phase: 'registering' },
+  },
+  {
     // A quiet, a ban with no kick, or +m: the server refuses the line and the
     // listener's own row is the only copy. They must be told.
     label: 'a refused channel message (404) is shown, not dropped',

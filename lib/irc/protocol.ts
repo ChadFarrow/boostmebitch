@@ -371,9 +371,13 @@ const NICK_REFUSED = 'That nick is not allowed.';
 
 /**
  * Numerics that refuse a JOIN (banned, full, invite only, key, registered
- * nicks only, TLS only). The panel shows the server's own text for each.
+ * nicks only, TLS only; no such channel, too many channels, temporarily
+ * unavailable, a bad channel name, a rejoin delay after a kick (UnrealIRCd
+ * +J), opers only). The panel shows the server's own text for each. A refusal
+ * missing here leaves "Joining…" on the screen for good after JOIN AGAIN: the
+ * register timer ended at the first join (code review, 2026-11-27).
  */
-const JOIN_REFUSALS = new Set(['471', '473', '474', '475', '477', '489']);
+const JOIN_REFUSALS = new Set(['403', '405', '437', '471', '473', '474', '475', '477', '479', '489', '495', '520']);
 
 /**
  * Numerics that refuse a CHANNEL MESSAGE: 404 (quieted, banned without a kick,
