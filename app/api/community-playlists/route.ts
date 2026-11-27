@@ -3,7 +3,7 @@ import { withErrorHandling, requireJsonBody, readCappedRequestJson, NO_STORE } f
 import { rateLimit } from '@/lib/rate-limit';
 import { COMMUNITY_PLAYLISTS_ON, communityFeedUrl } from '@/lib/curated-playlists';
 import {
-  validatePlaylistDraft, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, type DraftProblem, type ArtRefusal,
+  cleanMakerLn, validatePlaylistDraft, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, type DraftProblem, type ArtRefusal,
 } from '@/lib/community/rules';
 import { textHoldsSecret } from '@/lib/nostr/npub-input';
 import { cleanText } from '@/lib/community/clean-text';
@@ -11,7 +11,7 @@ import { checkArt, verifySongs } from '@/lib/community/checks';
 import { authenticate, summaryOf, NOT_FOUND, NOT_CONFIGURED, BANNED } from '@/lib/community/http';
 import { notifyPodcastIndexAfter } from '@/lib/community/pi-notify';
 import { requestPlaylistArchiveAfter } from '@/lib/community/archive-notify';
-import { communityStoreConfigured, createPlaylist, isBanned, listPlaylists } from '@/lib/community/store';
+import { communityStoreConfigured, createPlaylist, isBanned, listPlaylists, setMakerLn } from '@/lib/community/store';
 
 export const runtime = 'nodejs';
 // The Podcast Index notice runs in `after()` and waits for its second pubnotify
@@ -66,7 +66,7 @@ export async function POST(req: Request) {
     if (await isBanned(auth.pubkey)) {
       return BANNED();
     }
-    const raw = (parsed.body && typeof parsed.body === 'object' ? parsed.body : {}) as { draft?: unknown };
+    const raw = (parsed.body && typeof parsed.body === 'object' ? parsed.body : {}) as { draft?: unknown; makerLn?: unknown };
     // A secret key in the title or description is refused here (`{ kind: 'secret' }`,
     // the text never echoed) before anything is stored or sent to Podcast Index.
     const v = validatePlaylistDraft(raw.draft, textHoldsSecret);
@@ -93,6 +93,10 @@ export async function POST(req: Request) {
     });
     // A ban that landed after the isBanned read above is caught inside the INSERT.
     if (row === 'banned') return BANNED();
+    // The ZAP tile's hint (rules.ts, `cleanMakerLn`). Stored after the row, and a
+    // database without the column only loses the hint (store.ts, `setMakerLn`).
+    const makerLn = cleanMakerLn(raw.makerLn, textHoldsSecret);
+    if (makerLn !== undefined) await setMakerLn(row.id, makerLn);
     notifyPodcastIndexAfter(row.id, 'publish');
     requestPlaylistArchiveAfter();
     return NextResponse.json({ id: row.id, feedUrl: communityFeedUrl(row.id) }, { status: 201, headers: NO_STORE });

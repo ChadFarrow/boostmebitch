@@ -11,7 +11,7 @@ import {
   validatePlaylistDraft, artVerdict, withIndexFeedUrls, MAX_PLAYLIST_BODY_BYTES, MAX_SONGS, MAX_URL_LEN,
   artUploadSize, uploadedArtUrl, ART_UPLOAD_SERVER,
   blossomServersFromTags, artUploadServers, MAX_USER_BLOSSOM_SERVERS, coverStyleFor,
-  foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
+  foldName, MAX_OWNER_NAME_LEN, cleanMakerLn, makerLnOf, MAX_MAKER_LN_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
   podpingEndpoint, podpingRequestUrl, PODPING_MEDIUM, PODPING_REASON,
   piNoticeAllowed, piSecondNotifyMs, piFeedIdFrom, PI_NOTICE_THROTTLE_MS, PI_NOTICE_OWNER_DAILY,
   PI_NOTICE_GLOBAL_DAILY, PI_SECOND_NOTIFY_MS, PI_ADD_FORM, MIN_SONGS,
@@ -455,6 +455,38 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
   const r = V(draft({ ownerName: nsec }));
   check('name box: the secret refusal names the field "name"', !r.ok && r.problems.some((p) => p.kind === 'secret' && p.field === 'name'));
   check('foldName of a non-string is empty', foldName(null) === '' && foldName({}) === '');
+}
+
+// ---- the maker's Lightning address, the ZAP tile's stored HINT (cleanMakerLn) ----
+// Three answers: undefined LEAVES the stored value, null CLEARS it, a string stores
+// it. The naive version (`typeof raw === 'string' ? raw : null`) stores whatever a
+// client sends, a secret key included, and turns "said nothing" into a clear.
+{
+  const nsec = nsecEncode(generateSecretKey());
+  const naive = (raw) => (typeof raw === 'string' ? raw : null);
+  const clean = (raw) => cleanMakerLn(raw, textHoldsSecret);
+  const V = [
+    { kind: 'a lud16 is kept, lower-cased', args: ['  SirTJ@GetAlby.com '], want: 'sirtj@getalby.com' },
+    { kind: 'a long real lud16 is kept', args: ['a-playlist-maker-with-a-long-lightning-name@example.com'], want: 'a-playlist-maker-with-a-long-lightning-name@example.com', alsoNaive: true },
+    { kind: 'a lud06 is kept', args: ['LNURL1DP68GURN8GHJ7UM9WFMXJCM99E3K7MF0V9CXJ0M385EKVCENXC6R2C35XVUKXEFCV5MKVV34X5EKZD3EV56NYD3HXQURZEPEXEJXXEPNXSCRVWFNV9NXZCN9XQ6XYEFHVGCXXCMYXYMNSERXFQ5FNS'], want: 'lnurl1dp68gurn8ghj7um9wfmxjcm99e3k7mf0v9cxj0m385ekvcenxc6r2c35xvukxefcv5mkvv34x5ekzd3ev56nyd3hxqurzepexejxxepnxscrvwfnv9nxzcn9xq6xyefhvgcxxcmyxymnserxfq5fns' },
+    { kind: 'absent says nothing (leave it)', args: [undefined], want: undefined },
+    { kind: 'null clears', args: [null], want: null, alsoNaive: true },
+    { kind: 'empty clears', args: ['   '], want: null },
+    { kind: 'a secret key is never stored', args: [nsec], want: null },
+    { kind: 'not an address is dropped', args: ['https://example.com/pay'], want: null },
+    { kind: 'a number is dropped', args: [42], want: null, alsoNaive: true },
+    { kind: 'too long is dropped', args: ['a'.repeat(MAX_MAKER_LN_LEN) + '@example.com'], want: null },
+  ];
+  for (const v of V) {
+    check('maker ln: ' + v.kind, clean(...v.args) === v.want);
+    const n = naive(...v.args);
+    if (v.alsoNaive) check('maker ln: ' + v.kind + ' (naive agrees)', n === v.want);
+    else check('maker ln: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+  check('makerLnOf: lud16 first', makerLnOf({ lud16: 'a@b.co', lud06: 'lnurl1x' }) === 'a@b.co');
+  check('makerLnOf: lud06 when no lud16', makerLnOf({ lud06: 'lnurl1x' }) === 'lnurl1x');
+  check('makerLnOf: a profile with no address clears', makerLnOf({ name: 'x' }) === null);
+  check('makerLnOf: no profile says nothing', makerLnOf(undefined) === undefined && makerLnOf(null) === undefined);
 }
 
 // ---- the maker's publisher feed (buildPublisherFeedXml) ----

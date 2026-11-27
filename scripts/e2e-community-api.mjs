@@ -287,6 +287,7 @@ check('POST 12 songs and a good cover -> 201 { id, feedUrl }',
   post.status === 201 && typeof id === 'string' && post.body?.feedUrl === `${APP}/feeds/playlists/${id}.xml`, show(post));
 if (!id) { console.log('cannot go on without a playlist'); process.exit(1); }
 
+
 const got = await call('GET', `${PLAYLISTS}/${id}`);
 check('GET playlist -> title is masked', got.status === 200 && got.body?.playlist?.title === '**** yeah', show(got));
 check('GET playlist -> 12 songs, art kept, owner set',
@@ -600,6 +601,48 @@ const listAfter = await call('GET', `${PLAYLISTS}?owner=${ownerPub}`);
 check('list no longer has it', !listAfter.body?.playlists?.some((p) => p.id === id), show(listAfter));
 const putGone = await call('PUT', `${PLAYLISTS}/${id}`, { sk: owner, body: { draft: draft(), expectedUpdatedAt: v1 } });
 check('PUT on a deleted playlist -> 410', putGone.status === 410, show(putGone));
+
+// ---- the ZAP tile's stored hint (maker_ln) ---------------------------------------
+// `makerLn` rides beside the draft; the hint route answers { owner, zappable }, never
+// the address. MAKER_LN_COLUMN=absent runs against a database WITHOUT the column (the
+// schema before it): every write must still succeed, and the hint says null (unknown).
+// Its own playlists, made and deleted here, so the checks above see none of them.
+{
+  const NO_COLUMN = process.env.MAKER_LN_COLUMN === 'absent';
+  const want = (v) => (NO_COLUMN ? null : v);
+  const p2 = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ title: 'e2e zap hint' }) } });
+  const id2 = p2.body?.id;
+  if (id2) created.push(id2);
+  check('POST with no makerLn -> 201', p2.status === 201, show(p2));
+  const read = async () => (await call('GET', `${PLAYLISTS}/${id2}`)).body?.playlist;
+  const g = (await read())?.podcastGuid;
+  const hint = () => call('GET', `${PLAYLISTS}/maker-hint?guid=${g}`);
+  let h = await hint();
+  check(`...maker-hint -> owner, zappable ${want(false)}`,
+    h.status === 200 && h.body?.owner === ownerPub && h.body?.zappable === want(false), show(h));
+  const put = async (extra) => call('PUT', `${PLAYLISTS}/${id2}`, { sk: owner, body: { draft: draft({ title: 'e2e zap hint' }), expectedUpdatedAt: (await read())?.updatedAt, ...extra } });
+  let r = await put({ makerLn: '  E2E-Maker@Example.com ' });
+  check('PUT with a makerLn -> 200', r.status === 200, show(r));
+  h = await hint();
+  check(`...maker-hint zappable ${want(true)}, and no address in the answer`, h.body?.zappable === want(true) && !JSON.stringify(h.body).includes('example.com'), show(h));
+  r = await put({});
+  check('PUT with no makerLn -> 200, and the hint is left as it was', r.status === 200 && (await hint()).body?.zappable === want(true), show(r));
+  r = await put({ makerLn: nsecEncode(randomBytes(32)) });
+  check('PUT with a secret key as makerLn -> 200, nothing stored', r.status === 200 && (await hint()).body?.zappable === want(false), show(r));
+  await put({ makerLn: 'again@example.com' });
+  r = await put({ makerLn: null });
+  check('PUT with makerLn null -> 200, the hint is cleared', r.status === 200 && (await hint()).body?.zappable === want(false), show(r));
+  const p3 = await call('POST', PLAYLISTS, { sk: owner, body: { draft: draft({ title: 'e2e zap hint 2' }), makerLn: 'maker@example.com' } });
+  if (p3.body?.id) created.push(p3.body.id);
+  check('POST with a makerLn -> 201', p3.status === 201, show(p3));
+  const g3 = (await call('GET', `${PLAYLISTS}/${p3.body?.id}`)).body?.playlist?.podcastGuid;
+  const h3 = await call('GET', `${PLAYLISTS}/maker-hint?guid=${g3}`);
+  check(`...its maker-hint zappable ${want(true)}`, h3.status === 200 && h3.body?.zappable === want(true), show(h3));
+  const bad = await call('GET', `${PLAYLISTS}/maker-hint?guid=not-a-guid`);
+  check('maker-hint with a bad guid -> 400', bad.status === 400, show(bad));
+  const none = await call('GET', `${PLAYLISTS}/maker-hint?guid=${crypto.randomUUID()}`);
+  check('maker-hint for no playlist -> 404', none.status === 404, show(none));
+}
 
 // Anything still live (after a failed run) is removed with its owner's key.
 for (const pid of created) {
