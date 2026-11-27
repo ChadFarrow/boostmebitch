@@ -309,6 +309,31 @@ fingerprint (`fingerprintOf`) — so **anything that changes what enters
 `tracked_pubkeys` is a relay-load decision**: after it ships, count the
 `tracked subscriptions rebuilt` lines in the log.
 
+**One note may add at most `MAX_TRACKED_P_TAGS` (16) p-tags; a note with more
+adds its author only** (full-code review 2026-11-19, finding 16). Every p-tag of
+a corpus note is stamped `seen_at = now()`, so one signed note with 5,000 p-tags
+and a podcast `i` tag — anybody can publish one — took the whole window and
+pushed every real author's profile, zap and deletion subscriptions out. None
+rather than "the first sixteen": the order of the list is the sender's choice.
+Sixteen is twice the eight the site-sign route allows on a note of ours. The
+cap shrinks what enters the table, so it can only make the rebuild rate fall.
+
+## A failed write is retried, never marked seen
+
+`Indexer.take` adds an id to `seen` BEFORE the write, so a duplicate from the
+next relay skips the round trip. Before finding 16 a write that FAILED (a
+Postgres restart, a dropped connection) left the id there: every later copy,
+live or from backfill, was a "duplicate", and the event was lost for the life of
+the process — for good, once backfill had walked past it. Now a failure forgets
+the id and schedules one retry of the event itself (`ingestRetryDelay`: 30 s,
+2 min, 10 min, then it gives up; `INDEX_INGEST_RETRY_MS` sets the base), because
+the other copies usually arrived in the same second and are already gone. At
+most 2,000 events wait at once, so an outage that fails every write cannot hold
+the stream in memory. The write is idempotent, so a copy and a retry that both
+land cost one no-op insert. `check-indexer.mjs` fails the first two connections
+of a write and needs the note to land; against the code before the fix it never
+does.
+
 ## A relay keeps 20 subscriptions live, and a refused one still answers
 
 nos.lol and relay.primal.net keep **20** subscriptions live per connection

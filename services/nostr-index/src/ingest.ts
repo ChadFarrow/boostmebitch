@@ -246,8 +246,29 @@ export function podcastRefs(event: Event): PodcastRefs {
 export const TRACKED_SOURCE_KINDS: ReadonlySet<number> = new Set([1, LIVE_STREAM_KIND]);
 
 /**
+ * The most p-tags one event may add to the tracked set. An event carrying MORE
+ * adds its author and none of them.
+ *
+ * Full-code review 2026-11-19, finding 16. Every p-tag of a corpus note joined
+ * `tracked_pubkeys` stamped `seen_at = now()`, and the indexer subscribes to the
+ * 5,000 most recent rows by that column (`MAX_TRACKED_IN_FILTERS`). So ONE
+ * signed note with 5,000 p-tags — anybody can publish one with a podcast `i`
+ * tag — pushed every real author out of the window, and their profiles, zaps
+ * and deletions stopped being subscribed.
+ *
+ * None, not the first sixteen: the order of an attacker's list is the
+ * attacker's choice, so "the first N" is still the attacker choosing who joins.
+ * And sixteen is twice what any note of ours carries — the site-sign route
+ * refuses more than eight (`MAX_P_TAGS` in lib/site-sign-template.ts) — with
+ * room for another app's reply that p-tags a whole thread, whose participants
+ * are corpus authors and tracked on their own notes.
+ */
+export const MAX_TRACKED_P_TAGS = 16;
+
+/**
  * Pubkeys worth subscribing to after seeing this event: its author, and
- * anyone it p-tags — for a corpus event only (`TRACKED_SOURCE_KINDS`).
+ * anyone it p-tags — for a corpus event only (`TRACKED_SOURCE_KINDS`), and the
+ * p-tags only up to `MAX_TRACKED_P_TAGS`.
  *
  * This is what scopes the kind:9735 subscription. Zap receipts are only ever
  * needed for a pubkey some surface is already showing, so growing the set from
@@ -264,6 +285,24 @@ export function trackedFrom(event: Event): { pubkey: string; reason: string }[] 
     out.push({ pubkey: pk, reason });
   };
   add(event.pubkey, 'author');
-  for (const t of event.tags) if (t[0] === 'p') add(t[1], 'p-tagged');
+  const pTags = event.tags.filter((t) => t[0] === 'p');
+  if (pTags.length > MAX_TRACKED_P_TAGS) return out;
+  for (const t of pTags) add(t[1], 'p-tagged');
   return out;
+}
+
+/**
+ * When to try a failed first write again: after `baseMs`, 4x, then 20x it
+ * (30 s, 2 min, 10 min in production), or null — give up — after three.
+ *
+ * Full-code review 2026-11-19, finding 16. `Indexer.take` marks an id seen
+ * BEFORE the write, so a write that failed (Postgres restarting, a dropped
+ * connection) left the id marked, every later copy from every other relay was
+ * skipped as a duplicate, and the event was lost for the life of the process —
+ * and for good once backfill had walked past it. Three tries, because an event
+ * that fails every time (a value Postgres refuses) must not retry forever.
+ */
+export function ingestRetryDelay(attempt: number, baseMs: number): number | null {
+  const factor = [1, 4, 20][attempt - 1];
+  return factor === undefined ? null : factor * baseMs;
 }
