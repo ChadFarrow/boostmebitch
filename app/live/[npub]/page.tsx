@@ -34,7 +34,11 @@ export default function LivePage() {
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const playerExpanded = useApp((s) => s.playerExpanded);
 
-  const [status, setStatus] = useState<'loading' | 'open' | 'offline' | 'notfound'>('loading');
+  // `unreachable`: no read could be believed, so the page cannot say whether the
+  // host is live — never `offline`, which is a claim (see below).
+  const [status, setStatus] = useState<'loading' | 'open' | 'offline' | 'unreachable' | 'notfound'>('loading');
+  // Bumped by "Try again" to run the lookup once more.
+  const [attempt, setAttempt] = useState(0);
   // The host's stream (when planned, drives the "next up" hint) + profile for
   // the offline placeholder.
   const [host, setHost] = useState<{ profile: ProfileMetadata | null; stream: NostrLiveStream | null }>({
@@ -56,6 +60,7 @@ export default function LivePage() {
     } catch { /* malformed */ }
     if (!pubkey) { setStatus('notfound'); return; }
 
+    setStatus('loading');
     let cancelled = false;
     (async () => {
       // Host profile and stream in parallel; the profile is needed whether or
@@ -65,10 +70,20 @@ export default function LivePage() {
       // Retry before giving up: a cold load (no warm WS to the host relay like
       // fountain.fm) can time out on the first query — a second/third attempt
       // reuses the now-warm connection. Same pattern as the /stream route.
+      //
+      // "Not live" needs ONE read that can be believed (full-code review
+      // 2026-11-19). `fetchLatestStreamByPubkey` used to answer null for a read
+      // that reached no relay as well as for an empty one, and three of those
+      // put "isn't live right now" over a host who was on air.
       let stream: NostrLiveStream | null = null;
-      for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 800));
-        stream = await fetchLatestStreamByPubkey(pubkey);
+      let believed = false;
+      for (let i = 0; i < 3 && !cancelled; i++) {
+        if (i > 0) await new Promise((r) => setTimeout(r, 800));
+        const read = await fetchLatestStreamByPubkey(pubkey);
+        // Keep what a read found, even an untrusted one: a planned stream in
+        // hand is still the "next up" hint.
+        if (read.stream) stream = read.stream;
+        believed ||= read.trustworthy;
         if (stream?.status === 'live') break; // live now — stop early
       }
       if (cancelled) return;
@@ -94,11 +109,11 @@ export default function LivePage() {
           play(streamToEpisode(stream, v4v), streamToPodcast(stream, profile));
         }
       } else {
-        setStatus('offline');
+        setStatus(believed ? 'offline' : 'unreachable');
       }
     })();
     return () => { cancelled = true; };
-  }, [npub, play, setPlayerExpanded]);
+  }, [npub, play, setPlayerExpanded, attempt]);
 
   // When the user collapses the fullscreen player, leave this page and go home —
   // the stream keeps playing in the mini-bar (the Player lives in the layout).
@@ -130,6 +145,23 @@ export default function LivePage() {
           <>
             <span className="text-sm">That host link isn&apos;t valid.</span>
             <button onClick={() => router.push('/')} className="btn-ghost">← Go home</button>
+          </>
+        ) : status === 'unreachable' ? (
+          <>
+            <Avatar
+              pubkey={host.stream?.pubkey ?? ''}
+              picture={host.profile?.picture}
+              name={displayName}
+              className="w-16 h-16 rounded-full"
+            />
+            <div className="flex flex-col gap-1" role="status">
+              <span className="font-display text-lg text-bone">{displayName}</span>
+              <span className="text-sm">
+                Couldn&apos;t reach the Nostr relays, so we can&apos;t tell whether they&apos;re live.
+              </span>
+            </div>
+            <button onClick={() => setAttempt((n) => n + 1)} className="btn-ghost mt-1">↻ Try again</button>
+            <button onClick={() => router.push('/')} className="btn-ghost">← Browse shows</button>
           </>
         ) : status === 'offline' ? (
           <>
