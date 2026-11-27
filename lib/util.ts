@@ -3299,6 +3299,46 @@ export function legLogFields(r: BoostResult | undefined): { res: 'none' | 'ok' |
   return { res: 'fail', why: explainPaymentError(r.error).code };
 }
 
+/**
+ * Why a Spark SDK call failed, as a FIXED word (#304).
+ *
+ * The bug report's log carries this word, never the error's own text, for the
+ * reason `legLogFields` gives: the log is filed into a public issue. The text
+ * stays on the device (the console, and the wallet window).
+ *
+ * `network` is the one that matters. A browser that refuses a response under
+ * CORS hides the reason from the page on purpose, so a CORS block and a dead
+ * connection throw the same `TypeError` — Chromium "Failed to fetch", Firefox
+ * "NetworkError when attempting to fetch resource.", WebKit "Load failed".
+ * Firefox refuses flashnet's operator (`Access-Control-Allow-Headers: *` does not
+ * cover `Authorization`), and that surfaced as a wallet that silently did not
+ * open, or a balance of "—" with no cause anywhere.
+ */
+export type SparkErrorCode = 'network' | 'timeout' | 'auth' | 'other';
+
+export function sparkErrorCode(message: string): SparkErrorCode {
+  if (/failed to fetch|networkerror|load failed|network request failed|fetch failed|network error/i.test(message)) return 'network';
+  if (/timed? ?out|deadline/i.test(message)) return 'timeout';
+  if (/unauthenticated|authenticat|unauthori[sz]ed|permission denied/i.test(message)) return 'auth';
+  return 'other';
+}
+
+/** What to tell the person about a Spark failure: the cause first, then what to do. */
+export function sparkFailureCause(code: SparkErrorCode, isFirefox: boolean): string {
+  switch (code) {
+    case 'network':
+      return isFirefox
+        ? 'Spark could not reach one of its servers. Firefox blocks one of them, because of a setting on Spark\'s side (issue #304). Use another browser for this wallet, or connect a wallet with NWC.'
+        : 'Spark could not reach one of its servers. Check your network and try again.';
+    case 'timeout':
+      return 'Spark did not answer in time. Check your network and try again.';
+    case 'auth':
+      return 'A Spark server refused the sign-in. Try again later.';
+    default:
+      return 'Spark reported an error. Try again later.';
+  }
+}
+
 /** The error text on a leg CANCEL kept from starting. Display only — the
  *  `stopped` flag, not this text, is what `retryableLegs` reads. */
 export const LEG_STOPPED_MSG = 'Cancelled before it was sent — nothing was sent.';

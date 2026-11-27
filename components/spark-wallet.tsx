@@ -20,13 +20,17 @@ import {
   sparkSeedIsActive,
   subscribeSpark,
   subscribeSparkEvents,
+  sparkFailureIs,
+  sparkLastFailure,
+  subscribeSparkFailure,
+  type SparkFailure,
 } from '@/lib/v4v/spark';
 import {
   fetchEncryptedMnemonicDetailed,
   publishEncryptedMnemonic,
 } from '@/lib/nostr';
 import { backupOverwriteVerdict, type BackupOverwrite } from '@/lib/nostr/read-trust';
-import { getErrorMessage } from '@/lib/util';
+import { getErrorMessage, sparkFailureCause } from '@/lib/util';
 
 type InternalMode = 'idle' | 'creating' | 'restoring' | 'busy';
 
@@ -161,7 +165,8 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
       setInternalMode('idle');
       onConnected?.();
     } catch (e) {
-      setErr(getErrorMessage(e, 'failed to back up mnemonic'));
+      // A failed init is already on screen as <SparkFailureNotice>; say it once.
+      setErr(sparkFailureIs(e) ? null : getErrorMessage(e, 'failed to back up mnemonic'));
       setInternalMode('creating');
     }
   }
@@ -194,7 +199,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
       setInternalMode('idle');
       onConnected?.();
     } catch (e) {
-      setErr(getErrorMessage(e, 'failed to restore wallet'));
+      setErr(sparkFailureIs(e) ? null : getErrorMessage(e, 'failed to restore wallet'));
       setInternalMode('idle');
     }
   }
@@ -248,7 +253,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
         onConnected?.({ keepOpen: true });
       }
     } catch (e) {
-      setErr(getErrorMessage(e, 'failed to connect wallet'));
+      setErr(sparkFailureIs(e) ? null : getErrorMessage(e, 'failed to connect wallet'));
       setInternalMode('idle');
     }
   }
@@ -296,6 +301,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
           </button>
           <button onClick={cancelCreate} className="btn-ghost">Cancel</button>
         </div>
+        <SparkFailureNotice op="connect" />
         {err && <div className="text-[11px] text-nostr/80">{err}</div>}
       </div>
     );
@@ -348,6 +354,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
       {!identity && (
         <div className="text-[11px] text-muted">Sign in with Nostr to connect, create, or restore.</div>
       )}
+      <SparkFailureNotice op="connect" />
       {err && <div className="text-[11px] text-nostr/80">{err}</div>}
     </div>
   );
@@ -560,7 +567,32 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
         </div>
       )}
 
+      <SparkFailureNotice op="balance" />
       {err && <div className="text-nostr/80">{err}</div>}
+    </div>
+  );
+}
+
+/**
+ * The last Spark failure, said where the person is looking (#304).
+ *
+ * `connect` sits on the form: a wallet the page-load restore could not open
+ * used to leave the picker looking as if there had never been one. `balance`
+ * sits on the card, where a failed read used to leave "—" with no cause. The
+ * cause comes first, in words (`sparkFailureCause`), then the error's own text
+ * — it stays on this device; the bug report's log gets a fixed word only.
+ */
+function SparkFailureNotice({ op }: { op: SparkFailure['op'] }) {
+  const failure = useSyncExternalStore(subscribeSparkFailure, sparkLastFailure, () => null);
+  if (!failure || failure.op !== op) return null;
+  const isFirefox = typeof navigator !== 'undefined' && /Firefox\//.test(navigator.userAgent);
+  return (
+    <div role="status" className="card border-nostr/40 p-3 space-y-1 text-xs leading-relaxed" data-spark-failure={op}>
+      <p className="text-bone">
+        {op === 'connect' ? 'Your Spark wallet did not open.' : 'Spark could not read the balance.'}
+      </p>
+      <p className="text-bone/80">{sparkFailureCause(failure.code, isFirefox)}</p>
+      <p className="font-mono text-[11px] text-muted break-words" data-spark-failure-detail>{failure.detail}</p>
     </div>
   );
 }
