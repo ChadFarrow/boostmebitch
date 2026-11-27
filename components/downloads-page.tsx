@@ -45,6 +45,8 @@ export function DownloadsPage() {
   const currentEpisode = useApp((s) => s.current?.episode);
 
   const ready = downloadManager.ready();
+  // The read THREW: `rows` is what is in memory, not what is on disk.
+  const readError = ready && downloadManager.readError();
   const rows = downloadManager.listDownloads();
   const total = downloadManager.totalBytes();
   const currentKey = downloadManager.storedKeyFor(currentEpisode);
@@ -123,6 +125,8 @@ export function DownloadsPage() {
                 self-corrected a moment later — which is what made it worse. */}
             {!ready
               ? 'Reading your downloads…'
+              : readError && rows.length === 0
+                ? 'Couldn’t read your downloads'
               : rows.length === 0
                 ? 'Nothing downloaded yet'
                 // "downloads", not "episodes": an album's are tracks.
@@ -135,7 +139,8 @@ export function DownloadsPage() {
           <Link href="/" onClick={clearShowSelection} className="btn-ghost text-xs">
             ← HOME
           </Link>
-          {ready && rows.length > 0 && (
+          {/* Not while the read failed: ALL would include downloads nobody can see. */}
+          {ready && !readError && rows.length > 0 && (
             <button
               type="button"
               className="btn-ghost text-xs"
@@ -179,7 +184,19 @@ export function DownloadsPage() {
         </div>
       )}
 
-      {ready && rows.length === 0 && (
+      {readError && (
+        <p role="status" className="max-w-prose text-sm text-muted flex flex-wrap items-center gap-x-3 gap-y-2">
+          <span>
+            This device&apos;s download storage did not answer, so downloads you have may be
+            missing from this list. They are not deleted.
+          </span>
+          <button type="button" className="btn-ghost btn-compact" onClick={() => void downloadManager.retryRead()}>
+            ↻ TRY AGAIN
+          </button>
+        </p>
+      )}
+
+      {ready && !readError && rows.length === 0 && (
         <p className="max-w-prose text-sm text-muted">
           Press <span className="font-mono">DOWNLOAD</span> on any episode to keep it here. A
           downloaded episode plays without using data, which is what this is for on a slow or
