@@ -31,7 +31,7 @@
 // Vectors are recorded as CALLS and the replay walks the list, so a vector
 // cannot be added without also being proved against naive(). A vector both
 // implementations agree on is reported as proving nothing.
-import { feedLiveItems, liveShowToEpisode, mergeLiveOverPi, pickVideoAlternate } from '../lib/util.ts';
+import { feedLiveItems, liveShowToEpisode, mergeLiveOverPi, pickVideoAlternate, withAlternatesIfAbsent } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -235,13 +235,36 @@ for (const v of VECTORS) {
   const payment = piSrc.slice(piSrc.indexOf('export async function getItemPaymentFromRss('), piSrc.indexOf('export interface PlaylistChannel'));
   const playerSrc = await (await import('node:fs/promises')).readFile('components/player.tsx', 'utf8');
   const itemValueSrc = await (await import('node:fs/promises')).readFile('lib/use-item-value.ts', 'utf8');
+  const listSrc = await (await import('node:fs/promises')).readFile('components/lists/episode-list.tsx', 'utf8');
+  const storeSrc = await (await import('node:fs/promises')).readFile('lib/store.ts', 'utf8');
+
+  // The rule itself, on real values: fill only an ABSENT field, never an
+  // empty answer, and hand back the SAME object when nothing changes.
+  const pi = { guid: 'https://podnews.net/update/politics-podcast-appearances', enclosureUrl: 'https://op3.dev/e/podnews.net/audio/podnews261019.mp3' };
+  const mp4 = [{ type: 'video/mp4', source: 'https://op3.dev/e/podnews.net/audio/podnews261019.mp4', length: 17473150, default: false }];
+  const filled = withAlternatesIfAbsent(pi, mp4);
+  const feedOwn = { ...pi, alternateEnclosures: [] };
+  if (filled.alternateEnclosures !== mp4 || !pickVideoAlternate(filled)) {
+    fail('withAlternatesIfAbsent does not give a PI-built episode the read\'s video rendition.');
+  } else if (withAlternatesIfAbsent(feedOwn, mp4) !== feedOwn) {
+    fail('withAlternatesIfAbsent overwrote an episode that already carries the field (the feed\'s own answer).');
+  } else if (withAlternatesIfAbsent(pi, []) !== pi || withAlternatesIfAbsent(pi, undefined) !== pi) {
+    fail('withAlternatesIfAbsent changed an episode on an answer with no renditions.');
+  } else {
+    ok('withAlternatesIfAbsent fills only an absent field, and keeps the object otherwise');
+  }
   if (!/alternateEnclosures:\s*parseAlternateEnclosures\(item\.inner\)/.test(payment)) {
     fail('lib/pi.ts getItemPaymentFromRss no longer returns the item\'s alternateEnclosure —\n'
       + '          an episode Podcast Index built never offers 📺 Video.');
   } else if (!/refreshCurrentAlternates\(valueGuid,\s*r\.alternateEnclosures\)/.test(playerSrc)) {
     fail('components/player.tsx no longer writes the play-time read\'s alternates to `current`.');
-  } else if (!/alternateEnclosures\s*\}\s*=\s*answer\.payment/.test(itemValueSrc)) {
+  } else if (!/withAlternatesIfAbsent\([\s\S]{0,120}alternateEnclosures\)/.test(itemValueSrc)) {
     fail('lib/use-item-value.ts drops the alternates — PLAY on the episode page offers no 📺 Video.');
+  } else if (!/withAlternatesIfAbsent\([\s\S]{0,160}answer\.alternateEnclosures/.test(listSrc)) {
+    fail('components/lists/episode-list.tsx boostRow drops the alternates — a row tapped after its BOOST\n'
+      + '          offers no 📺 Video.');
+  } else if (!/withAlternatesIfAbsent\(s\.current\.episode,\s*alts\)/.test(storeSrc)) {
+    fail('lib/store.ts refreshCurrentAlternates no longer goes through withAlternatesIfAbsent.');
   } else {
     ok('the play-time item read carries alternateEnclosure to the player and the episode page');
   }

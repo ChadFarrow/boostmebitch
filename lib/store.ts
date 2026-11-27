@@ -15,6 +15,7 @@ import {
   addToHistory, epKey, insertShuffled, isPlayableRow, LISTEN_QUEUE_CAP, listKey, nextPlayableIndexBy,
   nextPlayableIndexRepeating,
   playingRowIndex, playsAsTracks, queueShowFor, shuffleIndexOf, speedShowKey, trimForQueue,
+  withAlternatesIfAbsent,
 } from './util';
 import { savedStartSec } from './resume-position';
 import { downloadManager } from './downloads/download-manager';
@@ -1008,8 +1009,8 @@ export const useApp = create<AppState>((set, get) => ({
   refreshCurrentAlternates: (guid, alts) =>
     set((s) => {
       if (!s.current || !guid || s.current.episode.guid !== guid) return {};
-      if (!alts?.length || s.current.episode.alternateEnclosures !== undefined) return {};
-      return { current: { ...s.current, episode: { ...s.current.episode, alternateEnclosures: alts } } };
+      const ep = withAlternatesIfAbsent(s.current.episode, alts);
+      return ep === s.current.episode ? {} : { current: { ...s.current, episode: ep } };
     }),
   // The feed did not answer, so BOOST says that rather than "no value block".
   markCurrentValueUnread: (guid) =>

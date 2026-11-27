@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { loadItemValue } from './podcast-meta';
 import type { Episode, ItemPayment, Podcast } from './types';
-import { valueNotRead } from './util';
+import { valueNotRead, withAlternatesIfAbsent } from './util';
 
 /**
  * `episode`, with its payee filled in from its own feed when nothing has read one
@@ -40,11 +40,6 @@ export function useItemValue(
     // so `<Player>` asks no feed and this read is the item's only one. It keeps
     // the video rendition too, or 📺 Video never appears for a played episode
     // that Podcast Index built (`ItemPayment.alternateEnclosures`).
-    return {
-      ...episode,
-      value,
-      valueTimeSplits,
-      ...(episode.alternateEnclosures === undefined && alternateEnclosures?.length ? { alternateEnclosures } : {}),
-    };
+    return withAlternatesIfAbsent({ ...episode, value, valueTimeSplits }, alternateEnclosures);
   }, [episode, unread, key, answer]);
 }
