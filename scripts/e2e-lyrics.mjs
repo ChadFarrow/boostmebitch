@@ -14,6 +14,13 @@
 // play head (and, inside a show, follows it on the SHOW's clock), and that a
 // track with no transcript shows no Lyrics tab at all.
 //
+// WHERE THE TAB IS. Chad, beta, 2026-11-26: "I think about and lyrics need to
+// be tabs in the tracks area". An album track's list is the first tab of the
+// one strip — TRACKS (19) · ABOUT · LYRICS — so section 1 asserts that one
+// strip, section 3 where it sits on a phone (it was 1133px down at 390×844),
+// and section 8 the two things a list that mounts with its tab can break: the
+// playing row in view after LYRICS and back, and a LYRICS pick kept across ⏭.
+//
 // THE AUDIO IS ANSWERED BY CDP, NOT BY THE HOSTS. `Fetch.enable` pauses every
 // enclosure request and fulfils it with two minutes of 8 kHz silence (960 KB),
 // so the clock moves without downloading an 8 MB song or a 265 MB episode. The
@@ -23,7 +30,10 @@
 //
 // THE FIXTURES.
 //   - The Heycitizen Experience, podcast:guid a2d2e313-9cbd-5169-b89c-ab07b33ecc33:
-//     "MoeFactz" (SRT, first cue at 0:00) and "Incogneetus" (no transcript).
+//     "MoeFactz" (SRT, first cue at 0:00) and "Incogneetus" (no transcript),
+//     both with notes; "Check Your Pockets" (row 16, SRT, notes); "Boostagrams"
+//     (9, SRT, no notes), "How Bout You?" (10, nothing) and "To be in
+//     Nashville" (11, SRT, no notes) for the kept pick.
 //   - The Homegrown Hits musicL playlist, podcast:guid 8aad8bd9-…, whose 11th
 //     row is "The Wait Is Over" by Bowl After Bowl's DeMu (SRT). The playlist
 //     page lists the first rows only, so the fixture is one near the top.
@@ -185,8 +195,19 @@ const panel = () => jsOrThrow(`(() => {
   const active = tabpanel?.querySelector('li[aria-current=true]');
   const search = root.querySelector('input[aria-label^="Search "]');
   const audio = document.querySelector('audio');
+  // The album or playlist list and the strip it is the first tab of.
+  const trackPanel = root.querySelector('[data-track-panel]');
+  const ul = trackPanel?.querySelector('[role=tabpanel] > ul');
+  const playing = ul?.querySelector('li[aria-current=true]');
+  const u = ul?.getBoundingClientRect(), r = playing?.getBoundingClientRect();
   return {
     tabs,
+    tablists: root.querySelectorAll('[role=tablist]').length,
+    trackTabs: trackPanel ? [...trackPanel.querySelectorAll('[role=tab]')].map((b) => b.textContent.trim()) : null,
+    selected: root.querySelector('[role=tab][aria-selected=true]')?.textContent.trim() ?? null,
+    listTop: u ? Math.round(u.top + window.scrollY) : null,
+    playingRow: r ? { index: [...ul.children].indexOf(playing), scrollTop: Math.round(ul.scrollTop), inView: r.top >= u.top - 1 && r.bottom <= u.bottom + 1 } : null,
+    cover: (() => { const c = root.querySelector('[class*="aspect-square"]'); return c ? Math.round(c.getBoundingClientRect().width) : null; })(),
     labels,
     lyricsBox: box ? { w: Math.round(box.width), h: Math.round(box.height), top: Math.round(box.top + window.scrollY) } : null,
     rows: tabpanel ? tabpanel.querySelectorAll('li').length : 0,
@@ -218,6 +239,9 @@ const playAndExpand = async (url, label, row = null) => {
   return !!playing;
 };
 
+/** Section 1's list top, for section 2: a track with no lyrics must not move it. */
+let listTopWithLyrics = null;
+
 // ---------------------------------------------------------------------------
 section('1. An album track with an SRT shows LYRICS, and the line follows the play head (desktop)');
 // ---------------------------------------------------------------------------
@@ -227,6 +251,10 @@ await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'MoeFactz', 'MoeFactz');
   const shown = await until(async () => (await panel()).tabs?.includes('Lyrics'), 20000);
   const p = await panel();
   t.ok('a tab named "Lyrics" (not "Transcript")', !!shown && !p.tabs.includes('Transcript'), JSON.stringify(p.tabs));
+  t.equal('ONE strip in the tracks area: TRACKS (19) · ABOUT · LYRICS', JSON.stringify({ n: p.tablists, tabs: p.trackTabs }), JSON.stringify({ n: 1, tabs: ['Tracks (19)', 'About', 'Lyrics'] }));
+  t.equal('it opens on the track list', p.selected, 'Tracks (19)');
+  t.ok('the list shows, on the playing row', !!p.playingRow?.inView && p.playingRow.index === 0, JSON.stringify(p.playingRow));
+  listTopWithLyrics = p.listTop;
   await press(`${FS_SELECTOR} [role=tab]`, /^Lyrics$/);
   await wait(800);
   const a = await panel();
@@ -248,6 +276,10 @@ await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'Incogneetus', 'Incogneetus');
   await wait(4000);
   const p = await panel();
   t.ok('no "Lyrics" tab, label or loading line anywhere in the player', !p.anyLyricsWord && !p.tabs.includes('Lyrics') && !p.labels.length, JSON.stringify(p));
+  t.equal('the strip is TRACKS (19) · ABOUT', JSON.stringify(p.trackTabs), JSON.stringify(['Tracks (19)', 'About']));
+  // The strip shows even with one tab, so a song with lyrics and one without
+  // put the list at the same height (`showTabs` in <EpisodeInfoPanel>).
+  t.ok('the list sits where it sat for a track with lyrics', p.listTop != null && p.listTop === listTopWithLyrics, JSON.stringify({ now: p.listTop, withLyrics: listTopWithLyrics }));
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +293,12 @@ await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'MoeFactz on a phone', 'MoeFactz
   t.ok('the Lyrics tab is there on a phone', !!shown, JSON.stringify(p.tabs));
   t.ok('the Lyrics tab is at least 24×24', !!p.lyricsBox && p.lyricsBox.w >= 24 && p.lyricsBox.h >= 24, JSON.stringify(p.lyricsBox));
   console.log(`  info  the Lyrics tab sits ${p.lyricsBox?.top ?? '?'}px down the player at 390×844`);
+  // 1133px before the tabs moved into the tracks area; 754 after, measured.
+  t.ok('…at the top of the tracks area, not under the list (it was 1133px)', !!p.lyricsBox && p.lyricsBox.top < 820, JSON.stringify(p.lyricsBox));
+  // The cover's room below sm: is measured (the `30rem` reserve and the
+  // cover-fit effect, docs/ui.md); the tabs take none of it. 350px at 390×844
+  // before and after.
+  t.ok('the cover keeps its size (350px)', p.cover != null && p.cover >= 345, String(p.cover));
   await press(`${FS_SELECTOR} [role=tab]`, /^Lyrics$/);
   await wait(800);
   const a = await panel();
@@ -344,6 +382,47 @@ await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'MoeFactz with a plain-text file
   t.equal('the lines and the verse break are as the file wrote them', text, PLAIN_LYRICS.trim());
 }
 transcriptBody = null;
+
+// ---------------------------------------------------------------------------
+section('8. The list keeps the playing row in view after LYRICS, and a LYRICS pick is kept across ⏭ (desktop)');
+// ---------------------------------------------------------------------------
+// The list mounts with its tab (<FollowList>), so the box that comes back after
+// LYRICS is a new one. A hook keyed on the sheet alone never scrolled it, and
+// row 16 came back out of sight at row 1.
+await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'Check Your Pockets', 'Check Your Pockets');
+{
+  const listed = await until(async () => { const p = await panel(); return p.playingRow?.inView ? p : null; }, 15000);
+  t.ok('row 16 is in view in the list', !!listed && listed.playingRow.index === 15 && listed.playingRow.scrollTop > 0, JSON.stringify(listed?.playingRow ?? (await panel()).playingRow));
+  await until(async () => (await panel()).tabs?.includes('Lyrics'), 20000);
+  await press(`${FS_SELECTOR} [role=tab]`, /^Lyrics$/);
+  await wait(600);
+  t.equal('LYRICS shows', (await panel()).selected, 'Lyrics');
+  await press(`${FS_SELECTOR} [role=tab]`, /^Tracks \(19\)$/);
+  await wait(600);
+  const back = await panel();
+  t.ok('back on TRACKS, row 16 is in view again', !!back.playingRow?.inView && back.playingRow.index === 15 && back.playingRow.scrollTop > 0, JSON.stringify(back.playingRow));
+}
+await playAndExpand(`${APP}/?podcast=${ALBUM}`, 'Boostagrams', 'Boostagrams');
+{
+  const next = async () => press(`${FS_SELECTOR} button[aria-label^="Next"]`);
+  const onTitle = (title) => until(() => js(`document.querySelector(${JSON.stringify(FS_SELECTOR)})?.querySelector('h1')?.textContent.trim() === ${JSON.stringify(title)}`), 20000);
+  await until(async () => (await panel()).tabs?.includes('Lyrics'), 20000);
+  const withLyrics = await panel();
+  t.equal('Boostagrams (no notes): the strip is TRACKS (19) · LYRICS', JSON.stringify(withLyrics.trackTabs), JSON.stringify(['Tracks (19)', 'Lyrics']));
+  await press(`${FS_SELECTOR} [role=tab]`, /^Lyrics$/);
+  await wait(600);
+  t.equal('Boostagrams: LYRICS picked', (await panel()).selected, 'Lyrics');
+  t.ok('⏭ to "How Bout You?"', await next() && !!(await onTitle('How Bout You?')), '');
+  await wait(3000);
+  const none = await panel();
+  t.ok('a song with no lyrics shows TRACKS, and no Lyrics tab', none.selected === 'Tracks (19)' && !none.tabs.includes('Lyrics'), JSON.stringify(none));
+  // No notes and no lyrics: TRACKS is the only tab, and its strip still shows,
+  // so the list does not move up 36px under the listener on this song.
+  t.ok('…with TRACKS alone the strip stays and the list does not move', JSON.stringify(none.trackTabs) === JSON.stringify(['Tracks (19)']) && none.listTop != null && none.listTop === withLyrics.listTop, JSON.stringify({ tabs: none.trackTabs, now: none.listTop, before: withLyrics.listTop }));
+  t.ok('⏭ to "To be in Nashville"', await next() && !!(await onTitle('To be in Nashville')), '');
+  const kept = await until(async () => { const p = await panel(); return p.selected === 'Lyrics' ? p : null; }, 20000);
+  t.ok('the next song with lyrics opens on LYRICS again: the pick is kept', !!kept && kept.rows > 5, JSON.stringify(kept ?? await panel()));
+}
 
 if (exceptions.length) t.fail('no uncaught exceptions in the page', exceptions.slice(0, 3).join(' | '));
 else t.pass('no uncaught exceptions in the page');
