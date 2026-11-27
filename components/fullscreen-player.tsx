@@ -1369,14 +1369,18 @@ export function FullscreenPlayer({
                  nothing else under BOOST, so the screen offered no way to hand
                  the broadcast on while it is on air. The SHOW link, never the
                  live item's guid: the item is gone when the show ends, and the
-                 show page lists the broadcast at the top while it runs. It
-                 shares the LIVE row, so a phone's cover loses no height. */
+                 show page lists the broadcast at the top while it runs.
+                 It shares the LIVE row and must not make it taller: on a
+                 short phone every pixel here comes off the cover (a plain
+                 `.btn-mini` is 27px against the 21px stamp, and took 5px
+                 at 390x664). So it is the mini GO LIVE's shape — a 24px
+                 target, `-my-0.5` so the line box stays the stamp's. */
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <LiveEdge variant="full" behindSec={liveBehindSec} onGoLive={onGoLive} />
                 <CopyLinkButton
                   url={showShareUrl(podcast)}
                   title={`Copy link to this ${targetWord('feed', podcast).toLowerCase()}`}
-                  className="btn-mini"
+                  className="btn-mini min-h-6 py-0 -my-0.5"
                 />
               </div>
             ) : (
