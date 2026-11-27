@@ -40,6 +40,7 @@ import { saveFile } from '@/lib/save-file';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import { FavoritesShuffleButton } from '@/components/favorites-shuffle-button';
+import { displayMedium, useParentMedia } from '@/lib/use-parent-media';
 import {
   groupByMedium, feedNoun, itemNoun, splitLabels, crossSplitLabel,
   useCollapsedGroups, CollapsibleHeading,
@@ -134,6 +135,13 @@ export function FavoritesPage() {
   const feedRows = useMemo(() => Object.values(favorites), [favorites]);
   const itemRows = useMemo(() => Object.values(favoriteEpisodes), [favoriteEpisodes]);
   const total = feedRows.length + itemRows.length;
+  // An item with no medium of its own is GROUPED by its parent feed's, as
+  // Podcast Index reports it — display only, the rows stay the store's
+  // objects (`useParentMedia` says why). Every place below that buckets an
+  // item asks `itemMedium`, never `row.medium`, so the tab counts, the
+  // sections and the SHUFFLE under music cannot disagree.
+  const parentMedia = useParentMedia(itemRows);
+  const itemMedium = (r: FavoriteEpisode) => displayMedium(r, parentMedia);
 
   // The tab strip is `groupByMedium`'s own output, deliberately, rather than a
   // hand-written list of media. That keeps three properties this page would
@@ -145,7 +153,7 @@ export function FavoritesPage() {
   const tabs = useMemo(() => {
     const merged = [
       ...feedRows.map((r) => ({ medium: r.medium, kind: 'feeds' as const })),
-      ...itemRows.map((r) => ({ medium: r.medium, kind: 'items' as const })),
+      ...itemRows.map((r) => ({ medium: displayMedium(r, parentMedia), kind: 'items' as const })),
     ];
     // Counted per HALF as well as per medium, because the mixed tab offers one
     // chip per (medium, half) pair and a chip that filters to nothing is worse
@@ -157,7 +165,7 @@ export function FavoritesPage() {
       feedCount: g.rows.filter((r) => r.kind === 'feeds').length,
       itemCount: g.rows.filter((r) => r.kind === 'items').length,
     }));
-  }, [feedRows, itemRows]);
+  }, [feedRows, itemRows, parentMedia]);
 
   // A medium can disappear under the user (the last album of it unfavorited),
   // and a tab that no longer exists would filter everything away with no way
@@ -193,8 +201,8 @@ export function FavoritesPage() {
     [feedRows, tab, query, view.sort],
   );
   const items = useMemo(
-    () => sortFavorites(itemRows.filter((r) => inTab(r, tab) && matches(itemHay(r), query)), view.sort),
-    [itemRows, tab, query, view.sort],
+    () => sortFavorites(itemRows.filter((r) => inTab({ medium: displayMedium(r, parentMedia) }, tab) && matches(itemHay(r), query)), view.sort),
+    [itemRows, tab, query, view.sort, parentMedia],
   );
 
   // ONE hook for the whole page — see the note on useCollapsedGroups. A medium
@@ -496,11 +504,14 @@ export function FavoritesPage() {
       for (const g of groupByMedium(rows, (r) => r.medium)) out.set(g.key, (out.get(g.key) ?? 0) - g.rows.length);
       return out;
     };
-    return { feeds: less(halfTotals.feeds, allClosedFeeds), items: less(halfTotals.items, allClosedItems) };
-  }, [halfTotals, allClosedFeeds, allClosedItems]);
+    return {
+      feeds: less(halfTotals.feeds, allClosedFeeds),
+      items: less(halfTotals.items, allClosedItems.map((r) => ({ medium: displayMedium(r, parentMedia) }))),
+    };
+  }, [halfTotals, allClosedFeeds, allClosedItems, parentMedia]);
   const closedShown = (showFeeds ? closedFeeds.length : 0) + (showItems ? closedItems.length : 0);
   const closedTotal = (showFeeds ? allClosedFeeds.filter((r) => inTab(r, tab)).length : 0)
-    + (showItems ? allClosedItems.filter((r) => inTab(r, tab)).length : 0);
+    + (showItems ? allClosedItems.filter((r) => inTab({ medium: itemMedium(r) }, tab)).length : 0);
   const closedHeading = `${[...new Set([
     ...closedFeeds.map((r) => closedService(r.url)),
     ...closedItems.map((r) => closedService(r.enclosureUrl) ?? closedService(r.image)),
@@ -513,7 +524,7 @@ export function FavoritesPage() {
     : [];
   const itemSections = showItems
     ? tab === 'all'
-      ? mediumSections(openItems, 'items', openTotals.items, !!query)
+      ? mediumSections(openItems, 'items', openTotals.items, !!query, itemMedium)
       : [{ fold: 'favpage:items', mediumKey: tab, heading: headingFor('items'), rows: openItems, ofTotal: openTotals.items.get(tab) ?? 0 }]
     : [];
 
@@ -1826,8 +1837,9 @@ function mediumSections<T extends { medium?: string }>(
   kind: 'feeds' | 'items',
   totals: Map<string, number>,
   narrowed: boolean,
+  mediumOf: (row: T) => string | undefined = (r) => r.medium,
 ) {
-  return groupByMedium(rows, (r) => r.medium).map((g) => ({
+  return groupByMedium(rows, mediumOf).map((g) => ({
     // Its OWN namespace, not the `show:<medium>` / `ep:<medium>` keys an older
     // build of this page wrote. Those said "this medium's group is folded" about
     // a group that no longer exists, and a fold under `all` is a different
