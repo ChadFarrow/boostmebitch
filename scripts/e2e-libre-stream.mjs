@@ -26,6 +26,9 @@
 //      harness settles at all, and the guard does not over-block).
 //   3. Libre mounted but NOT running (need-secret), an extension holds
 //      window.webln: the settle pays the extension (identity, not "mounted").
+//   4. A boost Libre pays (its provider answers here) emits a WebLN
+//      notification while Libre still holds window.webln: the refused item
+//      stays stopped, so no second refusal is logged for it.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { MINI_BAR, checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
@@ -94,18 +97,22 @@ const LIBRE_MSG = 'the Libre wallet can stop a payment';
  * it counts and never settles (the unanswered sheet). `ext` is an extension
  * that pays at once.
  */
-const stubs = ({ ext, libre, view }) => `(() => {
+const stubs = ({ ext, libre, view, librePays }) => `(() => {
   try {
+    // Signed out, so no note — and none from the site key either.
+    localStorage.setItem('bmb:share_nostr', '0');
     localStorage.setItem('bmb:stream_on', '1');
     localStorage.setItem('bmb:stream_rate', '${RATE}');
     ${libre ? "localStorage.setItem('bmb:libre_active', '1');" : ''}
   } catch {}
   const calls = window.__calls = { libre: { enable: 0, keysend: 0, sendPayment: 0, other: 0 }, ext: { enable: 0, keysend: 0, sats: 0, dest: [] } };
   const never = () => new Promise(() => {});
+  // librePays: a person answered the sheet, so a BOOST settles (section 4).
+  const answer = ${librePays ? 'true' : 'false'};
   window.__libreProvider = {
     get isEnabled() { return false; },
-    enable() { calls.libre.enable++; return never(); },
-    keysend() { calls.libre.keysend++; return never(); },
+    enable() { calls.libre.enable++; return answer ? Promise.resolve() : never(); },
+    keysend() { calls.libre.keysend++; return answer ? Promise.resolve({ preimage: '00'.repeat(32) }) : never(); },
     sendPayment() { calls.libre.sendPayment++; return never(); },
     getInfo() { calls.libre.other++; return never(); },
     makeInvoice() { calls.libre.other++; return never(); },
@@ -286,6 +293,43 @@ section('3. Libre mounted but not running: the extension keeps window.webln and 
   t.ok('episode 1 plays (settles episode 0)', !!(await c.play(1)));
   t.ok('the extension was paid', !!(await c.page.until(`window.__calls.ext.keysend > 0`, 10000)));
   t.equal('Libre\'s provider never called', (await c.calls()).libre, { enable: 0, keysend: 0, sendPayment: 0, other: 0 });
+  t.equal('no page exception', c.errors, []);
+  await c.b.close();
+}
+
+// ---------------------------------------------------------------------------
+section('4. A boost Libre pays does not re-arm the refused item');
+{
+  const c = await open('boost', { ext: false, libre: true, view: 'running', librePays: true });
+  await c.page.until(`window.webln === window.__libreProvider`, 10000);
+  t.equal('Libre holds window.webln', await c.webln(), 'libre');
+  t.ok('episode 0 plays for 10 s', !!(await c.play(0)) && !!(await c.listen(10)));
+  t.ok('episode 1 plays (settles episode 0)', !!(await c.play(1)));
+  const refusedOnce = `Object.keys(localStorage).some((k) => k.startsWith('bmb:streamed:') && (localStorage.getItem(k) || '').includes(${JSON.stringify(LIBRE_MSG)}))`;
+  t.ok('the settle was refused', !!(await c.page.until(refusedOnce, 10000)));
+  t.ok('episode 0 plays again (stopped: the refusal)', !!(await c.play(0)));
+  // A person boosts from the player and answers Libre's sheet (the stub pays):
+  // the payment's first enable() makes webln.ts notify its subscribers.
+  const BOOST = `document.querySelector('${MINI_BAR} button.btn-bolt')`;
+  const FIELD = `document.querySelector('[role="dialog"] input[inputmode="numeric"], [role="dialog"] input[type="number"]')`;
+  const SEND = `[...document.querySelectorAll('[role="dialog"] button')].find((b) => /^send \\d+ sats?$/i.test(b.textContent.trim()))`;
+  t.ok('the player\'s BOOST opens the boost modal', !!(await c.page.until(`!!${BOOST} && !${BOOST}.disabled`, 10000)) && (await c.page.js(`${BOOST}.click(), 1`)) && !!(await c.page.until(`!!(${FIELD})`, 10000)));
+  await c.page.js(`(() => { const f = ${FIELD}; f.focus(); f.select(); return 1; })()`);
+  await c.page.send('Input.insertText', { text: '100' });
+  t.ok('...SEND is ready', !!(await c.page.until(`!!(${SEND}) && !(${SEND}).disabled`, 20000)),
+    String(await c.page.js(`(document.querySelector('[role="dialog"]')?.innerText ?? 'closed') + ' | field=' + (${FIELD})?.value`)).replace(/\s+/g, ' ').slice(0, 600));
+  await c.page.js(`(${SEND}).click(); 1`);
+  t.ok('...the boost pays Libre (a person was there)', !!(await c.page.until(`window.__calls.libre.keysend > 0`, 20000)));
+  await c.page.until(`document.querySelectorAll('[role="dialog"]').length === 0`, 20000);
+  // Ten more seconds on the refused item, then an item change: re-armed, this
+  // would settle it again and log a second refusal.
+  t.ok('episode 0 keeps playing for 10 s', !!(await c.listen(10)));
+  t.ok('episode 1 plays (an item change)', !!(await c.play(1)));
+  await wait(3000);
+  const entries = (await c.log()).filter((e) => (e.error || '').includes(LIBRE_MSG));
+  t.equal('still ONE refusal for episode 0', entries.map((e) => e.episodeTitle), ['Stream episode 0']);
+  const k = await c.calls();
+  t.equal('Libre paid the boost only (streaming never called keysend)', k.libre.keysend, 1);
   t.equal('no page exception', c.errors, []);
   await c.b.close();
 }
