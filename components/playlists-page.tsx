@@ -14,6 +14,7 @@ import {
 } from '@/lib/playlist-collection';
 import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
 import { useGuestKey } from '@/lib/community/use-guest-key';
+import { YourPlaylists } from '@/components/community/your-playlists';
 import { isPlaylistMedium } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -321,6 +322,10 @@ export function PlaylistsPage() {
         Curated Podcasting 2.0 playlists. Every track lives in its own artist&apos;s feed, so a
         boost pays the artist, not the list.
       </p>
+
+      {/* The visitor's own playlists FIRST, then Community, then ChadF's (Chad,
+          2026-11-25). Nothing while the maker is off: nobody can have made one. */}
+      {COMMUNITY_PLAYLISTS_ON && <YourPlaylists onOpen={openPlaylist} />}
 
       {SECTIONS.map((section, i) => {
         const state = sections[i];

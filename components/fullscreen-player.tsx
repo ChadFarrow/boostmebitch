@@ -203,6 +203,7 @@ import { LinkedText } from './linked-text';
 import { UnderlineTabs, tabPanelProps } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
+import { SaveToPlaylistButton, SaveToPlaylistSheet, targetFromEpisode, type SaveTarget } from './community/save-to-playlist';
 import { EpisodeLikeButton } from './episode-like-button';
 import { DownloadButton } from './download-button';
 import { PlaySource, type PlaySourceKind } from './player/play-source';
@@ -798,6 +799,8 @@ export function FullscreenPlayer({
   // and STREAM — in a menu, so the screen keeps what the listener came for.
   // See the block that renders it for why they left the screen.
   const tiles = useAnchoredMenu({ roomBelow: 200, menuWidth: 224 });
+  // The song "+ PLAYLIST" was pressed for; its sheet renders outside the ⋯ menu.
+  const [saveTarget, setSaveTarget] = useState<SaveTarget | null>(null);
 
   // The boxes the cover's size is measured against, plus the cover itself.
   // See the effect below the `everOpened` latch.
@@ -1087,6 +1090,10 @@ export function FullscreenPlayer({
           shares one store with the episode page's tile, so a like pressed in
           either shows in both. */}
       <EpisodeLikeButton episode={episode} podcast={podcast} />
+      {/* "+ PLAYLIST": save the song to a playlist instead of to favorites.
+          Music only, and only while the playlist maker is on; it renders
+          nothing otherwise, so a podcast's tiles are unchanged. */}
+      <SaveToPlaylistButton target={targetFromEpisode(episode, podcast)} size="tile" onOpen={setSaveTarget} />
       {/* DOWNLOAD IS HERE TOO, and it is the one whose STATE the screen no
           longer shows: ↓, a progress fill, ✓ when the episode is on the
           device. It was a chip in the bar for one afternoon, and the bar
@@ -1865,6 +1872,9 @@ export function FullscreenPlayer({
         </div>,
         document.body,
       )}
+      {/* "+ PLAYLIST"'s sheet lives OUT here, as STREAM's dialog does: the ⋯
+          menu closes on an outside click, and the sheet is outside it. */}
+      {saveTarget && <SaveToPlaylistSheet target={saveTarget} onClose={() => setSaveTarget(null)} />}
 
       {/* BELOW sm:, A LIVE SHOW WITH THE IRC CHAT IS PAGES YOU FLICK — PLAYER ·
           CHAT · PLAYED · ABOUT — with ▶/❚❚, the LIVE state and BOOST pinned
