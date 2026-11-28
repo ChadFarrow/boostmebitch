@@ -13,6 +13,8 @@ import {
   libreDisconnect,
   libreDisplacedWebln,
   libreHoldsWebln,
+  isLibreRunning,
+  removeLibreFromDevice,
   libreSheetOpen,
   isLibreMounted,
   isLibreWanted,
@@ -34,6 +36,7 @@ import { WeblnWallet } from './webln-wallet';
 import { StreamRate, StreamedLog } from './streaming-settings';
 import { DefaultAmounts } from './boost-modal/default-amounts';
 import { LibreMountStatus } from './libre/libre-mount';
+import { useConfirm } from './confirm-dialog';
 
 type Rail = 'nwc' | 'spark' | 'webln';
 
@@ -177,6 +180,42 @@ export function WalletModal({ onClose }: Props) {
   const sparkDidNotOpen = useSyncExternalStore(subscribeSparkFailure, sparkLastFailure, () => null)?.op === 'connect';
   const backupWithheld = useApp((s) => s.walletBackupWithheld);
   const [view, setView] = useState<WalletView>(firstView);
+  const [confirm, confirmElement] = useConfirm();
+  const [removing, setRemoving] = useState(false);
+
+  // DESTRUCTIVE, so confirmed in-app (never `window.confirm`: confirm-dialog.tsx
+  // says why). `removeLibreFromDevice` refuses unless the node runs, and on
+  // success reloads the page, so `removing` only ever resets on a refusal.
+  async function confirmLibreRemove() {
+    if (!isLibreRunning()) return;
+    const ok = await confirm({
+      title: 'Remove this wallet from this device?',
+      body: (
+        <>
+          <p>
+            This signs out, saves the wallet&rsquo;s last state to your Google Drive, and
+            deletes the wallet from this browser: its seed, its channel state, its Google
+            login and this site&rsquo;s spending permission.
+          </p>
+          <p>
+            To load it again, here or on another device, you need its <strong>recovery
+            phrase</strong>. Make sure you saved it.
+          </p>
+          <p>
+            Use this on a shared computer, or to connect a different Google account or
+            wallet. To stop using Libre here and keep the wallet, use &ldquo;Sign out (keep
+            wallet here)&rdquo;.
+          </p>
+        </>
+      ),
+      confirmLabel: 'Remove from this device',
+      danger: true,
+    });
+    if (!ok) return;
+    setRemoving(true);
+    if (!(await removeLibreFromDevice())) setRemoving(false);
+  }
+
   // A Libre change can move what renders without moving `view` — Libre taking
   // window.webln hides the WebLN row and renames the active card — and a
   // `setView` that returns the same view renders nothing.
@@ -291,6 +330,7 @@ export function WalletModal({ onClose }: Props) {
             </button>
           )}
           <LibreRailSlot key="libre-slot" />
+          {confirmElement}
           {view.kind === 'connected' && (
             <>
               <div className="border-t border-bone/15 pt-4">
@@ -321,6 +361,23 @@ export function WalletModal({ onClose }: Props) {
                 >
                   Sign out (keep wallet here)
                 </button>
+              </div>
+              {/* Only while the node runs: `dispose()` saves the last state and
+                  releases the Drive lease cleanly only then, and a wipe from any
+                  other state leaves this account unable to start again
+                  (`removeLibreFromDevice`). */}
+              <div>
+                <button
+                  onClick={() => { void confirmLibreRemove(); }}
+                  disabled={!isLibreRunning() || removing}
+                  className="btn-mini w-full justify-center border-nostr/50 text-nostr hover:border-nostr disabled:opacity-40 disabled:cursor-not-allowed"
+                  data-libre-remove
+                >
+                  {removing ? 'Removing…' : 'Sign out & remove from this device'}
+                </button>
+                {!isLibreRunning() && !removing && (
+                  <p className="text-[11px] text-muted mt-1">Wait until the wallet is fully connected.</p>
+                )}
               </div>
             </>
           )}

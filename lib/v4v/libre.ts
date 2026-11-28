@@ -368,6 +368,126 @@ export async function libreDisconnect(): Promise<void> {
   }
 }
 
+// ---- "Sign out & remove from this device" -------------------------------------------------------
+//
+// The package's OWN storage at the pin (468ac13b), read from the shipped bundle (`dist/index.mjs`)
+// and its sources. None of it is a bmb:* key, so none of it is in lib/storage.ts. COUPLED TO THE PIN:
+// after a bump, read the bundle's `libre-wallet…` / `libre_…` literals again, and run
+// `npm run e2e:libreremove`, whose last section lists what the real package writes on mount.
+//
+// IndexedDB — the SEED and channel state, per network and per origin (not per Google account), store
+// `settings` (`IndexedDBStorageProvider`): `libre-wallet-<network>` for the four networks the package
+// supports, `libre-wallet-meta` (the active-network pointer) and the legacy `libre-wallet`. The same
+// list as the package's own `resetWallet()`, which clears rather than deletes, because
+// `deleteDatabase` blocks on an open connection.
+const LIBRE_DB_NAMES = [
+  'libre-wallet-mainnet',
+  'libre-wallet-testnet',
+  'libre-wallet-signet',
+  'libre-wallet-regtest',
+  'libre-wallet-meta',
+  'libre-wallet',
+];
+const LIBRE_DB_STORE = 'settings';
+
+// localStorage:
+// - `libre_drive_hint` / `libre_drive_configured`: the Drive login. The hint goes back to Google as
+//   `login_hint`, so the next connect silently reuses this account; `configured` drives the
+//   auto-reconnect on load. Gone, the next connect asks for an account.
+// - `libre_state_version_hwm:<network>`: the rolled-back-storage witness, kept OUTSIDE IndexedDB on
+//   purpose. `resetWallet()` clears it with the DBs: left behind, it outlives the seed it describes,
+//   and the next wallet on this origin starts below its mark. #120's wipe missed it.
+// - `libre_embed:` prefix: the widget's permission store, today `libre_embed:libre_webln_grants` —
+//   each origin's WebLN grant and daily limit. Left behind, the next wallet on this device pays this
+//   site under the old grant without asking. #120's wipe missed it too.
+const LIBRE_LOCAL_KEYS = ['libre_drive_hint', 'libre_drive_configured'];
+const LIBRE_LOCAL_PREFIXES = ['libre_state_version_hwm:', 'libre_embed:'];
+// sessionStorage: an OAuth `state` in flight (`libre_drive_oauth_state`).
+const LIBRE_SESSION_KEYS = ['libre_drive_oauth_state'];
+
+/**
+ * Empty one of the package's IndexedDB stores. Opens WITHOUT a version, so it never triggers an
+ * upgrade or waits on a version change; a database that does not exist opens empty (no `settings`
+ * store) and is skipped. Always resolves: a failed wipe must not strand the reload. (#120.)
+ */
+function clearLibreDb(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    let req: IDBOpenDBRequest;
+    try {
+      req = indexedDB.open(name);
+    } catch {
+      resolve();
+      return;
+    }
+    req.onerror = () => resolve();
+    req.onblocked = () => resolve();
+    req.onsuccess = () => {
+      const db = req.result;
+      const done = () => {
+        db.close();
+        resolve();
+      };
+      try {
+        if (!db.objectStoreNames.contains(LIBRE_DB_STORE)) {
+          done();
+          return;
+        }
+        const tx = db.transaction(LIBRE_DB_STORE, 'readwrite');
+        tx.objectStore(LIBRE_DB_STORE).clear();
+        tx.oncomplete = done;
+        tx.onerror = done;
+        tx.onabort = done;
+      } catch {
+        done();
+      }
+    };
+  });
+}
+
+/** Forget the package's own keys (above). Only those: every bmb:* key and every other key stays. */
+function forgetLibreKeys(): void {
+  try {
+    for (const k of Object.keys(localStorage)) {
+      if (LIBRE_LOCAL_KEYS.includes(k) || LIBRE_LOCAL_PREFIXES.some((p) => k.startsWith(p))) {
+        localStorage.removeItem(k);
+      }
+    }
+  } catch {
+    // Storage unavailable: nothing was written there either.
+  }
+  try {
+    for (const k of LIBRE_SESSION_KEYS) sessionStorage.removeItem(k);
+  } catch {
+    // As above.
+  }
+}
+
+/**
+ * Sign out AND delete the wallet from this browser: the seed, the channel state, the Drive login and
+ * this origin's WebLN grant. For a shared computer, or to connect a different Google account or
+ * wallet — without the seed wipe the package finds a local seed and runs the OLD wallet against the
+ * NEW account, never asking for a recovery phrase. DESTRUCTIVE: the seed comes back only from the
+ * user's saved recovery phrase (and that wallet's Drive backup), so the caller confirms first.
+ *
+ * ONLY WHILE RUNNING (#120): `dispose()` stops the node, flushes the last backup and releases the
+ * Drive lease with its proof only when the session is `running` (`roaming-session.ts`, `wasRunning`).
+ * Wiped from any other state, the lease stays `live` at this origin and the local state that would
+ * prove the hand-off is gone, so the next visit to that account halts on a hand-off it cannot
+ * prove. So it refuses — returns false, touches nothing — unless running; the button is disabled
+ * too. It disposes BEFORE the wipe, which also closes the node's IndexedDB handles.
+ *
+ * Then it reloads: the package keeps the OAuth access token in module scope for the page's life, and
+ * has no API to reset it.
+ */
+export async function removeLibreFromDevice(): Promise<boolean> {
+  if (typeof window === 'undefined' || !isLibreRunning()) return false;
+  await libreDisconnect();
+  await Promise.all(LIBRE_DB_NAMES.map(clearLibreDb));
+  forgetLibreKeys();
+  window.location.reload();
+  return true;
+}
+
 // Move the element into `target` (the wallet modal). The node keeps its session — no remount.
 // notify() only fires on the borrowed:false→true transition, so a caller that re-borrows from a
 // subscribeLibre handler (to catch the element mounting after the modal opened) can't loop.
