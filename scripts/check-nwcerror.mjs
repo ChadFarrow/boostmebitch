@@ -4,7 +4,7 @@
 // Usage:
 //   npm run check:nwcerror
 //
-// Run it after ANY edit to lib/v4v/nwc-errors.ts.
+// Run it after ANY edit to lib/v4v/nwc-errors.ts or lib/v4v/webln-pending.ts.
 //
 // Why this earns a check script: the three answers are not interchangeable, and
 // two of the wrong pairings spend the user's money.
@@ -79,6 +79,7 @@ import {
   shouldDemoteAddress,
 } from '../lib/v4v/nwc-errors.ts';
 import { bolt11PaymentHash } from '../lib/v4v/bolt11.ts';
+import { WEBLN_PENDING_CODES, weblnPaymentPending } from '../lib/v4v/webln-pending.ts';
 import { answerIsForConnectedWallet, railAfterWalletChange, railWhenUnnamed } from '../lib/util.ts';
 import { fakeBolt11 } from './fake-bolt11.mjs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
@@ -768,6 +769,72 @@ console.log('\nrailAfterWalletChange — a wallet event does not undo the user\'
       console.log(`  FAIL naive() ${naiveAgrees ? 'disagrees' : 'agrees'} on "${label}" — ${naiveAgrees ? 'must-still-work is mislabelled' : 'this vector proves nothing'}`);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+section('weblnPaymentPending — a WebLN payment that was sent and has not settled');
+// ---------------------------------------------------------------------------
+{
+  // The WebLN rail's counterpart to the reply timeout above: `webln.ts` turns a
+  // match into `WeblnPendingError`, and `payOne` renders it `?`, never ✗ — no
+  // LNURL retry, no demotion, no streaming refund. WebLN has no error codes, so
+  // this is an allowlist of the two markers Libre writes, and nothing else.
+  //
+  // Built from the WIRE, not from our own struct: every `true` string below is
+  // copied from ChadFarrow/libre-listener-wallet-monorepo at 468ac13b, and the
+  // embed's two were also found verbatim in the published
+  // `libre-wallet-embed-468ac13b….tgz` (`dist/index.mjs`).
+  //   - packages/libre-listener-wallet/src/payment-timeout-error.ts — the embed's
+  //     `sendPayment` after 90 s: `code = "PAYMENT_TIMEOUT"`, the code mirrored in
+  //     the message. In-page, so the object arrives whole.
+  //   - packages/wallet-core/src/webln/settlement-pending.ts — the extension's
+  //     offscreen host; `inpage.ts` rebuilds it as `new Error(data.error)`, so
+  //     only the text survives. Raised on `keysend` too.
+  //   - the `false` strings: the same repo's definitive failures (its own
+  //     comments say each is safe to retry, and the wallet refunds its cap on
+  //     them), and the Alby extension's routing failure.
+  const embedTimeout = () => Object.assign(
+    new Error('[PAYMENT_TIMEOUT] Payment is still in flight — it was sent but has not settled yet. Check the payment history before retrying.'),
+    { name: 'PaymentTimeoutError', code: 'PAYMENT_TIMEOUT', paymentHash: 'ab'.repeat(32) },
+  );
+  const EXT = 'Payment initiated but not yet settled; it may still complete. [SETTLEMENT_PENDING]';
+  check('the two codes are exactly Libre\'s', JSON.stringify(WEBLN_PENDING_CODES), '["PAYMENT_TIMEOUT","SETTLEMENT_PENDING"]');
+  const vectors = [
+    // Pending — what shipped called every one of these a failure (✗, refund).
+    { label: 'the embed\'s PaymentTimeoutError, whole', args: [embedTimeout()], expected: true },
+    { label: '...its code alone, message rewritten by a wrapper', args: [Object.assign(new Error('payment failed'), { code: 'PAYMENT_TIMEOUT' })], expected: true },
+    { label: '...its message alone, the code lost to flattening', args: [new Error(embedTimeout().message)], expected: true },
+    { label: 'the extension\'s SETTLEMENT_PENDING, rebuilt as an Error', args: [new Error(EXT)], expected: true },
+    { label: '...rejected as a bare string', args: [EXT], expected: true },
+    { label: 'a plain object carrying the code (a structured-clone survivor)', args: [{ code: 'SETTLEMENT_PENDING' }], expected: true },
+    // Must still fail — each of these proves nothing left, or says nothing about
+    // pending, and `?` would hide a real failure. All agree with naive() below.
+    { label: 'Alby\'s routing failure stays a failure', args: [new Error('400: FAILURE_REASON_NO_ROUTE')], expected: false, alsoNaive: true },
+    { label: 'the embed\'s keysend that never left the node', args: [new Error('Keysend failed: Payment failed to initiate: RouteNotFound')], expected: false, alsoNaive: true },
+    { label: 'the embed\'s invoice that never left the node', args: [new Error('Payment failed to initiate: route not found')], expected: false, alsoNaive: true },
+    { label: 'the daily-cap refusal', args: [new Error('Payment exceeds the daily spending limit')], expected: false, alsoNaive: true },
+    { label: 'the wallet not running on this site', args: [new Error('The wallet is not active on this site right now.')], expected: false, alsoNaive: true },
+    { label: 'a payment already in progress', args: [new Error('A payment is already in progress.')], expected: false, alsoNaive: true },
+    { label: 'the user rejecting the connection', args: [new Error('User rejected the connection request')], expected: false, alsoNaive: true },
+    { label: 'LND\'s FAILURE_REASON_TIMEOUT is not this marker', args: [new Error('FAILURE_REASON_TIMEOUT')], expected: false, alsoNaive: true },
+    { label: 'a generic timeout is not this marker', args: [new Error('Request timed out')], expected: false, alsoNaive: true },
+    { label: 'the class NAME alone is never read', args: [Object.assign(new Error('renamed'), { name: 'PaymentTimeoutError' })], expected: false, alsoNaive: true },
+    { label: 'a code that is not a string', args: [{ code: 42, message: 7 }], expected: false, alsoNaive: true },
+    { label: 'null', args: [null], expected: false, alsoNaive: true },
+    { label: 'undefined', args: [undefined], expected: false, alsoNaive: true },
+    { label: 'an empty object', args: [{}], expected: false, alsoNaive: true },
+  ];
+  for (const v of vectors) check(`${v.label} → ${v.expected ? 'pending' : 'not pending'}`, weblnPaymentPending(...v.args), v.expected);
+  // naive() is what shipped: no WebLN rejection is ever pending.
+  const naive = () => false;
+  replayVectors({
+    vectors,
+    invoke: (which, v) => (which === 'real' ? weblnPaymentPending(...v.args) : naive(...v.args)),
+    fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); },
+  });
+  const problems = importFreeProblems('lib/v4v/webln-pending.ts');
+  if (problems.length) { explainImportFree('lib/v4v/webln-pending.ts', problems); failures += problems.length; }
+  else console.log('  ok    lib/v4v/webln-pending.ts has no imports at all');
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 // WebLN payments — uses window.webln from Alby/Mutiny browser extensions.
 
 import { createObservable } from '../pubsub';
+import { weblnPaymentPending } from './webln-pending';
 
 type Webln = NonNullable<Window['webln']>;
 
@@ -70,6 +71,34 @@ export class WeblnNotAttemptedError extends Error {
   }
 }
 
+/**
+ * Thrown when the WebLN provider says the payment was SENT and has not settled
+ * yet — the rail's counterpart to NIP-47's `NwcIndeterminateError`, and it must
+ * be read the same way: `payOne` marks the leg `indeterminate` (`?`, never ✗),
+ * never retries it over LNURL, never demotes the address, and streaming never
+ * refunds the bucket it was paid from. The sats may well be gone.
+ *
+ * Raised only on the two markers `weblnPaymentPending` allowlists (Libre's
+ * `PAYMENT_TIMEOUT` and `SETTLEMENT_PENDING`). Every other rejection from
+ * `wl.sendPayment()` / `wl.keysend()` reaches the caller unchanged and is judged
+ * as before — widening this to "any WebLN error" is a separate decision, because
+ * it would turn every real failure into `?`. See docs/money-boosts.md, "A WebLN
+ * payment that is still pending".
+ */
+export class WeblnPendingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WeblnPendingError';
+  }
+}
+
+/** A provider's rejection, typed when it says the payment is still in flight. */
+function pendingOr(e: unknown): unknown {
+  if (!weblnPaymentPending(e)) return e;
+  const text = typeof e === 'string' ? e : String((e as { message?: unknown }).message ?? '');
+  return new WeblnPendingError(text || 'The wallet sent this payment and it has not settled yet.');
+}
+
 /** Public alias for the gated enable so the wallet sub-card can drive state. */
 export async function weblnEnable(): Promise<void> {
   await ensureWebln();
@@ -113,7 +142,14 @@ export async function weblnGetBalance(): Promise<number | null> {
 
 export async function weblnPayInvoice(invoice: string): Promise<string> {
   const wl = await ensureWebln();
-  const r = await wl.sendPayment(invoice);
+  let r: { preimage: string };
+  try {
+    r = await wl.sendPayment(invoice);
+  } catch (e) {
+    // A pending payment may have moved sats: refresh the balance chip too.
+    if (weblnPaymentPending(e)) notify();
+    throw pendingOr(e);
+  }
   // Notify so the balance chip refreshes after the payment without waiting
   // for the next visibility-change.
   notify();
@@ -137,11 +173,17 @@ export async function weblnKeysend(args: {
     throw new WeblnNotAttemptedError(e instanceof Error ? e.message : String(e));
   }
   if (!wl.keysend) throw new WeblnNotAttemptedError('This WebLN wallet does not support keysend');
-  const r = await wl.keysend({
-    destination: args.pubkey,
-    amount: args.amount_sat,
-    customRecords: args.customRecords,
-  });
+  let r: { preimage: string };
+  try {
+    r = await wl.keysend({
+      destination: args.pubkey,
+      amount: args.amount_sat,
+      customRecords: args.customRecords,
+    });
+  } catch (e) {
+    if (weblnPaymentPending(e)) notify();
+    throw pendingOr(e);
+  }
   notify();
   return r.preimage;
 }

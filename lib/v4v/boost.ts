@@ -6,7 +6,7 @@
 
 import type { Boostagram, ValueBlock, ValueRecipient, BoostResult, NwcLegCheck } from '@/lib/types';
 import { hasNwc, nwcGetMethods } from './nwc-state';
-import { hasWebln, isWeblnEnabled, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError } from './webln';
+import { hasWebln, isWeblnEnabled, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError, WeblnPendingError } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
 import {
@@ -438,6 +438,16 @@ async function payOne(
       // and so cannot import a browser-only module. Hence the union here rather
       // than one predicate — and hence the ordering: read the refusal first.
       const { NwcNotAttemptedError, NwcIndeterminateError, routingFailureProvesUnpaid, shouldDemoteAddress } = nwcEngine();
+      // ZEROTH, ahead of both: a WebLN provider that says this keysend is STILL
+      // IN FLIGHT (`WeblnPendingError`) has told us nothing about the recipient
+      // and may have paid. It must not demote the address —
+      // `failureBlamesDestination` defaults to TRUE for anything it does not
+      // know, and `nwc-errors.ts` cannot know this class (it must stay loadable
+      // under plain Node) — and it must never reach the LNURL retry below, which
+      // would pay the leg a second time. The outer catch renders it `?`. The
+      // NIP-47 counterpart needs no line here: both predicates exclude
+      // `NwcIndeterminateError` themselves.
+      if (e instanceof WeblnPendingError) throw e;
       const refused = e instanceof NwcNotAttemptedError || e instanceof WeblnNotAttemptedError;
       // `shouldDemoteAddress` holds the rule — DEMOTE ONLY WHAT COULD NOT BE
       // RESCUED — because the two decisions read the same two facts and had
@@ -518,6 +528,8 @@ async function payOne(
           if (check) unansweredLegs.set(wrapped, check);
           throw wrapped;
         }
+        // The same rule on the WebLN rail: the retry's invoice is in flight.
+        if (retryErr instanceof WeblnPendingError) throw new WeblnPendingError(combined);
         throw new Error(combined);
       }
     }
@@ -531,7 +543,13 @@ async function payOne(
     // and both timeout leaves outright, ahead of reading any message. That
     // exclusion is the load-bearing half of `routingFailureProvesUnpaid` —
     // "the wallet never answered" outranks whatever its text happened to say.
-    const indeterminate = e instanceof nwcEngine().NwcIndeterminateError;
+    //
+    // A WebLN provider that says the payment is still in flight is the same
+    // state on the other rail (`WeblnPendingError`): `?`, no retry, and no
+    // `nwcCheck`, because WebLN has no way to ask about a payment afterwards —
+    // so the panel offers no CHECK and no RETRY for it, only "look in your
+    // wallet before boosting again".
+    const indeterminate = e instanceof nwcEngine().NwcIndeterminateError || e instanceof WeblnPendingError;
     const nwcCheck = indeterminate ? unansweredLegs.get(e) : undefined;
     return { ...base, ok: false, indeterminate, error: e?.message ?? String(e), ...(nwcCheck ? { nwcCheck } : {}) };
   }
