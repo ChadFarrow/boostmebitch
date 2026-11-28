@@ -18,7 +18,7 @@ import { weblnPayInvoice } from './webln';
 import { pickRail, type Rail } from './boost';
 import { bolt11AmountMsat } from './bolt11';
 import { lnurlFetch } from './lnurl-fetch';
-import { zapRequestTags } from '@/lib/nostr/zap-request';
+import { zapRequestTags, type Nip73Refs } from '@/lib/nostr/zap-request';
 import { NwcIndeterminateError } from './nwc-errors';
 // Re-exported so a component can tell "the wallet never answered" from a plain failure
 // without reaching past the v4v surface (docs/money-boosts.md, rule 11).
@@ -101,6 +101,14 @@ export async function sendZap(args: {
   comment?: string;
   /** Optional event id being zapped (omit for pubkey-only "profile zap"). */
   eventId?: string;
+  /**
+   * The show (and item) this zap is FOR, as NIP-73 `k`/`i` pairs. The
+   * recipient's server mirrors them onto the receipt, which is the only place a
+   * receipt says what it paid for. A playlist maker's ZAP names the playlist
+   * (`components/lists/playlist-zap.tsx`); a zap on a note names nothing.
+   * This is not a boost: no boostagram, no value block (boost invariant 12).
+   */
+  refs?: Nip73Refs;
   /** Relays where the zap receipt should be published; the recipient's LN
    *  service publishes the receipt, so include relays the recipient is likely
    *  to read from. */
@@ -207,6 +215,7 @@ async function prepareZap(args: Parameters<typeof sendZap>[0]): Promise<Prepared
     lnurl,
     recipientPubkey: args.recipientPubkey,
     eventId: args.eventId,
+    refs: args.refs,
   });
 
   // The zap request's content is what Nostr clients RENDER as the zap message,

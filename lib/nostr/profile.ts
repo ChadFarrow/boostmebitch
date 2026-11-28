@@ -34,14 +34,23 @@ export interface ProfileRead {
 export async function fetchProfileDetailed(
   pubkey: string,
   relays?: string[],
+  /**
+   * Each parsable kind:0 as it arrives, before the read settles — a HINT only
+   * (see `fetchLatestEventDetailed`'s `onAccepted`): it may not be the newest.
+   */
+  onProfile?: (profile: ProfileMetadata) => void,
 ): Promise<ProfileRead> {
   const base = relays ?? DEFAULT_RELAYS;
   const useRelays = Array.from(new Set([...base, ...PROFILE_RELAYS]));
-  const { event: newest, trustworthy } = await fetchLatestEventDetailed(useRelays, {
-    kinds: [0],
-    authors: [pubkey],
-    limit: 1,
-  });
+  const { event: newest, trustworthy } = await fetchLatestEventDetailed(
+    useRelays,
+    { kinds: [0], authors: [pubkey], limit: 1 },
+    undefined,
+    undefined,
+    onProfile
+      ? (e) => { const p = parseProfileContent(e.content); if (p) onProfile(p); }
+      : undefined,
+  );
   if (!newest) {
     // Only record a MISS when the absence is believable. An unreachable relay
     // set is not evidence the profile doesn't exist, and caching it as one

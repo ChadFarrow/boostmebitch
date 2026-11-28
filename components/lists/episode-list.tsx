@@ -12,15 +12,13 @@ import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
-import { valueNotRead, authorLine, coverStartSeeks, firstPlayableTrack, hasValueRecipients, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey, withAlternatesIfAbsent } from '@/lib/util';
+import { valueNotRead, authorLine, coverStartSeeks, firstPlayableTrack, hasValueRecipients, httpUrl, isMusicMedium, isPlayingRow, isPlaylistMedium, playingRowIndex, playlistCoverFallback, playsAsTracks, showShareUrl, showStorageKey, withAlternatesIfAbsent } from '@/lib/util';
 import { storage } from '@/lib/storage';
-import { COMMUNITY_PLAYLISTS_ON, communityIdFromFeedUrl } from '@/lib/curated-playlists';
-import { IS_BETA } from '@/lib/beta';
 import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadItemValue, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
-import { FeedAddress } from './feed-address';
+import { PlaylistZapButton } from './playlist-zap';
 // DEFERRED. It is already rendered conditionally at the site below, so its code
 // was in the bundle for a modal most readers never open — `dynamic()` makes the
 // download match that condition. `.then((m) => m.BoostModal)` because it is a
@@ -30,7 +28,7 @@ const BoostModal = dynamic(
   () => import('../boost-modal').then((m) => m.BoostModal),
   { ssr: false },
 );
-import { BoltIcon, CoinIcon } from '../icons';
+import { BoltIcon, CoinIcon, RssIcon } from '../icons';
 import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
@@ -132,20 +130,24 @@ function ShareButton({ podcast }: { podcast: Podcast }) {
   );
 }
 
-// Copies a COMMUNITY playlist's own RSS URL, so the feed can be pasted into
-// another podcast app to see how it handles a musicL playlist. A testing aid,
-// so it is BETA ONLY (`IS_BETA`), and it stays that way when the playlist
-// feature itself launches on the main site — `COMMUNITY_PLAYLISTS_ON` alone
-// would put it there at launch. It renders only for a feed URL that is exactly
-// one of ours — never a third-party feed.
+// Copies a PLAYLIST's own RSS address, as a tile beside SHARE (Chad,
+// 2026-11-18: "i need to show the rss link for the v4vmusic music playlist";
+// 2026-11-25: this tile, in place of the address written out under the title).
+// Every playlist medium, on any host, in Podcast Index or not, on every deploy:
+// a listener takes the address to another app, and a v4vmusic or kolomona
+// playlist has no SHARE link and no heart here, so this tile is the only way to
+// its feed. Through `httpUrl`, because a `?playlist=` link supplies this string.
 function CopyRssButton({ podcast }: { podcast: Podcast }) {
-  if (!IS_BETA || !COMMUNITY_PLAYLISTS_ON || !communityIdFromFeedUrl(podcast.url)) return null;
+  if (!isPlaylistMedium(podcast)) return null;
   return (
     <CopyLinkButton
-      url={podcast.url ?? null}
+      url={httpUrl(podcast.url)}
       title="Copy this playlist's RSS feed URL"
       word="RSS"
       className="tile"
+      // The RSS mark, not the share mark: with the share mark this tile and
+      // SHARE beside it read as two SHARE buttons (Chad, 2026-11-25).
+      icon={<RssIcon className="w-4 h-4" />}
     />
   );
 }
@@ -776,7 +778,6 @@ export function EpisodeList({
               )}
             </div>
           )}
-          {isPlaylist && <FeedAddress podcast={data.podcast} />}
         </div>
         {/* A `basis-full` SIBLING of the text column, not a child of it. DOM
             nesting can't be responsive, and nested under the author line this
@@ -819,6 +820,12 @@ export function EpisodeList({
             <FavHeart podcast={data.podcast} size="tile" />
             <ShareButton podcast={data.podcast} />
             <CopyRssButton podcast={data.podcast} />
+            {/* ⚡ ZAP the maker of a playlist this site hosts; nothing on any
+                other show (`playlistMaker`). Its feed has no value block
+                and no funding (`buildPlaylistFeedXml`), so no BOOST above and
+                no SUPPORT or STREAM here: FAV / SHARE / RSS / ZAP, four
+                tiles on one row, measured at 390px by `npm run e2e:playlistzap`. */}
+            <PlaylistZapButton podcast={data.podcast} />
             <SupportButton podcast={data.podcast} />
             {/* `cloneElement` to restyle rather than a prop on
                 `useStreamPanel`: the hook lives in streaming-settings.tsx, a

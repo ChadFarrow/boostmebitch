@@ -64,6 +64,37 @@ export function foldName(raw: unknown): string {
   return raw.replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/** The longest Lightning address kept as a maker's ZAP hint (a lud06 LNURL runs long). */
+export const MAX_MAKER_LN_LEN = 1024;
+
+/**
+ * The maker's Lightning address from their OWN kind:0, sent beside the draft on
+ * PUBLISH and SAVE, stored as a HINT that lights the playlist's ZAP tile on a first
+ * visit (Chad, 2026-11-25: "saved-address: yes"). It never pays: the payee is the
+ * maker's live kind:0 (docs/money-boosts.md, "A HINT lights the tile").
+ *
+ * Three answers, and the difference is load-bearing: `undefined` = the client said
+ * nothing (an older client, a guest key, a profile not loaded) — LEAVE the stored
+ * value; `null` = clear it (the profile has no address, or the value is not one);
+ * a string = store it. A lud16 (`name@domain`) or a lud06 (`lnurl1…`), at most
+ * MAX_MAKER_LN_LEN; anything holding a secret key is dropped, never stored.
+ */
+export function cleanMakerLn(raw: unknown, holdsSecret: (text: string) => boolean): string | null | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string') return null;
+  const v = raw.trim();
+  if (!v || v.length > MAX_MAKER_LN_LEN || holdsSecret(v)) return null;
+  if (/^[a-z0-9._+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(v)) return v.toLowerCase();
+  if (/^lnurl1[02-9ac-hj-np-z]+$/i.test(v)) return v.toLowerCase();
+  return null;
+}
+
+/** What the client sends as `makerLn`: lud16 first, then lud06; no profile = say nothing. */
+export function makerLnOf(profile: { lud16?: string; lud06?: string } | null | undefined): string | null | undefined {
+  if (!profile) return undefined;
+  return profile.lud16?.trim() || profile.lud06?.trim() || null;
+}
+
 /** `u` as an absolute http(s) link with a host, no longer than MAX_URL_LEN; else null. */
 function linkOf(u: unknown, protocols: readonly string[]): string | null {
   if (typeof u !== 'string' || u.length > MAX_URL_LEN) return null;

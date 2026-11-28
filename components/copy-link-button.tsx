@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { useFlash } from '@/lib/use-flash';
 import { ShareIcon } from './icons';
 
@@ -32,6 +33,7 @@ export function CopyLinkButton({
   title,
   word = 'SHARE',
   className = 'btn-ghost',
+  icon,
 }: {
   /** Finished URL to copy. `null` renders nothing. */
   url: string | null;
@@ -48,6 +50,13 @@ export function CopyLinkButton({
    */
   word?: string;
   className?: string;
+  /**
+   * The mark beside the word. Defaults to the share mark. A button that copies
+   * something other than a share link passes its own, so two of these side by
+   * side do not look like two SHARE buttons (Chad, 2026-11-25, of a playlist's
+   * SHARE and RSS tiles).
+   */
+  icon?: ReactNode;
 }) {
   const [copied, flash] = useFlash<'ok' | 'failed'>(COPIED_FLASH_MS);
 
@@ -68,7 +77,7 @@ export function CopyLinkButton({
 
   return (
     <button onClick={onClick} className={className} title={title} aria-label={title}>
-      <ShareIcon />{' '}
+      {icon ?? <ShareIcon />}{' '}
       {/* `role="status"` so the flash is announced, not only painted. */}
       <span role="status">{copied === 'ok' ? 'COPIED' : copied === 'failed' ? 'COPY FAILED' : word}</span>
     </button>
