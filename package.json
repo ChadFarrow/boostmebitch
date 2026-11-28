@@ -147,6 +147,7 @@
     "e2e:librecore": "node scripts/e2e-libre-core.mjs",
     "e2e:librestream": "node scripts/e2e-libre-stream.mjs",
     "e2e:librewallet": "node scripts/e2e-libre-wallet.mjs",
+    "e2e:libreremove": "node scripts/e2e-libre-remove.mjs",
     "e2e:explorerzaps": "node scripts/e2e-explorer-zaps.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:albumpanel": "node scripts/e2e-album-panel-owner.mjs",
