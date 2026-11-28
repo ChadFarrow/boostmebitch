@@ -154,7 +154,7 @@ Libre is a roaming, in-page LDK Lightning wallet: its encrypted seed and channel
 
 **We own `window.webln`, so we hand it back.** The package's own `installWebln` is polite (it leaves an existing provider alone), so the host passes `installWebln: false` and claims `window.webln` itself on the `running` transition — picking Libre is an explicit choice to pay through it, extension or not. The displaced provider is snapshotted and restored on every exit from `running` (an extension injects once per page load, so one we deleted would be gone until a reload), and the WebLN session flag is turned off, or three surfaces say "WebLN — connected" while `pickRail()` throws. **The flag is turned off on the CLAIM too**: it is a grant to the provider that held `window.webln` when the user enabled it, and left set over Libre it let the header chip's balance read call `enable()` on Libre's provider — Libre's approval sheet on first use, with nobody having pressed anything. `hasAnyWallet()` counts a running Libre, and `useWalletChange` subscribes to `subscribeLibre` for that read.
 
-**One "is the WebLN slot live?" answer: `weblnLive()` = `isWeblnEnabled() || libreHoldsWebln()`.** `pickRail()` passes it as `railWhenUnnamed`'s `weblnEnabled`, `useWalletBalance` uses it for readiness, and the modal's `getActiveRail` for the `webln` arm. `isWeblnEnabled()` alone is per page load and turns true only on the first payment, so after a reload a `webln` preference (what picking Libre records) lost to any other connected rail — a Spark restore at sign-in — in the payer and the chip, while the modal named Libre (#120, 98786072). It is keyed on IDENTITY (`libreHoldsWebln()`: `window.webln === handle.webln`), not `isLibreRunning()`: a running Libre that could not take a non-configurable provider pays nothing.
+**One "is the WebLN slot live?" answer: `weblnLive()` = `isWeblnEnabled() || libreHoldsWebln()`** — so with Libre in the build, CLAUDE.md's boost invariant 2 ("WebLN counts as connected once ENABLED") means `weblnLive()`, not the extension flag alone (the flag is OFF under Libre, see above). `pickRail()` passes it as `railWhenUnnamed`'s `weblnEnabled`, `useWalletBalance` uses it for readiness, and the modal's `getActiveRail` for the `webln` arm. `isWeblnEnabled()` alone is per page load and turns true only on the first payment, so after a reload a `webln` preference (what picking Libre records) lost to any other connected rail — a Spark restore at sign-in — in the payer and the chip, while the modal named Libre (#120, 98786072). It is keyed on IDENTITY (`libreHoldsWebln()`: `window.webln === handle.webln`), not `isLibreRunning()`: a running Libre that could not take a non-configurable provider pays nothing.
 
 **The wallet screens while Libre holds `window.webln`:**
 
@@ -179,6 +179,15 @@ Libre is a roaming, in-page LDK Lightning wallet: its encrypted seed and channel
 - **After a pin bump, check the DEPLOYED widget chunk** (#120, 2026-07-15, on the Next of that day; not re-checked on Next 15.5). A bump touches only `package.json` + `package-lock.json`, and Vercel restores `.next/cache`, so webpack reused its cached compilation of the package and the site ran the old widget — missing a fund-loss fix — on a green deploy. The tell is the chunk's content hash: unchanged after a bump means the bump did not take; redeploy without the build cache.
 - **The package bundles its own dependencies** (its `package.json` declares none), so nothing enters this app's `node_modules` and the `nostr-tools@2.19.4` pin is untouched. What it bundles at the pin, and the age of its LDK, is in the PR that added it; the upstream update is the owner's.
 - **It needs no camera, so `Permissions-Policy: camera=()` stays** (`next.config.mjs`). Read at the pin: the bundle has no `getUserMedia`, `mediaDevices` or `BarcodeDetector`, and its one `camera` is a BIP-39 word. A bump that adds a QR scanner would fail SILENTLY under that header, so search the new bundle again before widening the policy for it.
+
+**CLAUDE.md lines owed when this work lands.** While the Libre work is a held draft that merges `main` every week, it leaves CLAUDE.md exactly as `main` has it, so a merge never conflicts there. Each fact below is already in `docs/`; at release, add the CLAUDE.md line it owes:
+
+1. The `check:nwcerror` row: also pins `webln-pending.ts` (docs/money-boosts.md).
+2. The read-before-you-edit table and the v4v swap-out surface list: `lib/v4v/libre.ts` and `components/libre/` under this file.
+3. "Streaming sats — money invariants": streaming refuses the WebLN rail while Libre's provider holds `window.webln` (docs/streaming.md, "A payer that can ask").
+4. Boost invariant 2: "WebLN counts as connected once `weblnLive()`" in place of "once ENABLED" (above).
+
+CLAUDE.md sits at its word budget (`npm run check:claudemd`), so each line has to displace something.
 
 ## Spark rail (Spark Labs SDK)
 
