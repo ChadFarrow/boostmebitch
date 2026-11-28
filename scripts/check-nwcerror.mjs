@@ -79,7 +79,7 @@ import {
   shouldDemoteAddress,
 } from '../lib/v4v/nwc-errors.ts';
 import { bolt11PaymentHash } from '../lib/v4v/bolt11.ts';
-import { answerIsForConnectedWallet, railAfterWalletChange } from '../lib/util.ts';
+import { answerIsForConnectedWallet, railAfterWalletChange, railWhenUnnamed } from '../lib/util.ts';
 import { fakeBolt11 } from './fake-bolt11.mjs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 import { replayVectors } from './replay-vectors.mjs';
@@ -762,6 +762,60 @@ console.log('\nrailAfterWalletChange — a wallet event does not undo the user\'
   ];
   for (const [label, args, want, naiveAgrees] of V) {
     check(label, railAfterWalletChange(...args), want);
+    const n = naive(...args);
+    if (naiveAgrees ? n !== want : n === want) {
+      failures += 1;
+      console.log(`  FAIL naive() ${naiveAgrees ? 'disagrees' : 'agrees'} on "${label}" — ${naiveAgrees ? 'must-still-work is mislabelled' : 'this vector proves nothing'}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nrailWhenUnnamed — the rail that pays is the rail the chip names');
+// ---------------------------------------------------------------------------
+{
+  // `pickRail()` (lib/v4v/boost.ts) reads the four wallet facts and asks this;
+  // every payment that names no rail goes through it: a boost modal's first
+  // rail, each streaming settle, a note zap. naive() is what shipped until
+  // 2026-11-27: it took a `webln` preference when the extension was merely
+  // PRESENT. The header chip and the wallet modal take it only when it is
+  // ENABLED in this page load (`isWeblnEnabled()`), which a reload resets, so
+  // after a reload the chip said NWC while the extension paid. Measured in a
+  // real browser on 49858393 with a stub NWC wallet and a stub window.webln.
+  const naive = (pref, r) => {
+    if (pref === 'nwc' && r.nwc) return 'nwc';
+    if (pref === 'spark' && r.spark) return 'spark';
+    if (pref === 'webln' && r.weblnPresent) return 'webln';
+    if (r.nwc) return 'nwc';
+    if (r.spark) return 'spark';
+    if (r.weblnPresent) return 'webln';
+    return null;
+  };
+  const w = (o) => ({ nwc: false, spark: false, weblnEnabled: false, weblnPresent: false, ...o });
+  const V = [
+    ['after a reload: NWC connected, pref webln, extension present but not enabled: NWC pays, as the chip says',
+      ['webln', w({ nwc: true, weblnPresent: true })], 'nwc', false],
+    ['after a reload: Spark connected, pref webln, extension present but not enabled: Spark pays',
+      ['webln', w({ spark: true, weblnPresent: true })], 'spark', false],
+    ['after a reload: NWC and Spark, pref webln, extension not enabled: NWC (the priority) pays',
+      ['webln', w({ nwc: true, spark: true, weblnPresent: true })], 'nwc', false],
+    ['only the extension, pref webln, not enabled yet: WebLN still pays (the last fallback)',
+      ['webln', w({ weblnPresent: true })], 'webln', true],
+    ['only the extension, no pref, not enabled yet: WebLN still pays',
+      [null, w({ weblnPresent: true })], 'webln', true],
+    ['NWC connected, WebLN enabled in this page load, pref webln: WebLN pays',
+      ['webln', w({ nwc: true, weblnEnabled: true, weblnPresent: true })], 'webln', true],
+    ['NWC connected, WebLN enabled in this page load, no pref: NWC (the priority) pays',
+      [null, w({ nwc: true, weblnEnabled: true, weblnPresent: true })], 'nwc', true],
+    ['pref spark beside NWC: Spark pays',
+      ['spark', w({ nwc: true, spark: true })], 'spark', true],
+    ['pref nwc, NWC gone, Spark connected: Spark pays',
+      ['nwc', w({ spark: true, weblnPresent: true })], 'spark', true],
+    ['no wallet at all: none',
+      ['webln', w({})], null, true],
+  ];
+  for (const [label, args, want, naiveAgrees] of V) {
+    check(label, railWhenUnnamed(...args), want);
     const n = naive(...args);
     if (naiveAgrees ? n !== want : n === want) {
       failures += 1;

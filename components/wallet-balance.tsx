@@ -7,7 +7,9 @@
 //     funds coloring when balance < amount-being-sent)
 //
 // Priority is NWC > Spark in `useWalletBalance` so the displayed balance
-// reflects whichever rail actually pays per `pickRail()` in lib/v4v/boost.ts.
+// reflects whichever rail actually pays per `pickRail()` in lib/v4v/boost.ts
+// (`railWhenUnnamed`, lib/util.ts, which gates a `webln` pref on
+// `isWeblnEnabled()` exactly as this chip does).
 //
 // Spark: live updates via subscribeSparkEvents (paymentSucceeded /
 // claimedDeposits / newDeposits / synced) plus a 2s/5s/12s retry schedule so
@@ -65,7 +67,9 @@ const PLACEHOLDER_BUDGET: NwcBudget = { usedSats: 0, totalSats: 0, remainingSats
  * When omitted, follows the user's rail pref when that rail is connected,
  * else NWC > Spark > WebLN (WebLN only counted as "ready" once the user has
  * explicitly enabled it via the wallet sub-card, since fetching balance
- * otherwise would prompt them). Mirrors pickRail() in lib/v4v/boost.ts.
+ * otherwise would prompt them). Mirrors pickRail() in lib/v4v/boost.ts, except
+ * its last fallback: an extension that is present but not enabled still pays
+ * when it is the only wallet, and the chip shows nothing for it.
  *
  * `balance` is what the rail can SEND, which on NWC is the smaller of the
  * wallet's balance and the connection's remaining budget. `budget` is non-null

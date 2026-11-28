@@ -6,7 +6,7 @@
 
 import type { Boostagram, ValueBlock, ValueRecipient, BoostResult, NwcLegCheck } from '@/lib/types';
 import { hasNwc, nwcGetMethods } from './nwc-state';
-import { hasWebln, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError } from './webln';
+import { hasWebln, isWeblnEnabled, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
 import {
@@ -17,7 +17,7 @@ import {
 } from './keysend-lookup';
 import { storeBoostMetadata, boostboxIdFromUrl } from './boostbox';
 import { storage } from '@/lib/storage';
-import { payInOrder, recipientOrder, isLnAddressRecipient, splitSats, stoppedLeg, legLogFields } from '@/lib/util';
+import { payInOrder, recipientOrder, isLnAddressRecipient, splitSats, stoppedLeg, legLogFields, railWhenUnnamed } from '@/lib/util';
 import { logPlayback } from '@/lib/playback-log';
 import { bolt11AmountMsat, bolt11PaymentHash } from './bolt11';
 import { STAMP_MAX_FEE_SATS } from '@/lib/site-stamp';
@@ -111,15 +111,11 @@ export async function payStampInvoice(rail: Rail, bolt11: string, sats: number):
   else await weblnPayInvoice(bolt11);
 }
 
+/** The rail that pays when the caller names none — the rule is `railWhenUnnamed`'s. */
 export function pickRail(): Rail | null {
-  const pref = storage.railPref.get();
-  if (pref === 'nwc' && hasNwc()) return 'nwc';
-  if (pref === 'spark' && hasSpark()) return 'spark';
-  if (pref === 'webln' && hasWebln()) return 'webln';
-  if (hasNwc()) return 'nwc';
-  if (hasSpark()) return 'spark';
-  if (hasWebln()) return 'webln';
-  return null;
+  return railWhenUnnamed(storage.railPref.get(), {
+    nwc: hasNwc(), spark: hasSpark(), weblnEnabled: isWeblnEnabled(), weblnPresent: hasWebln(),
+  });
 }
 
 // splitSats now lives in lib/util.ts (with recipientOrder, for the same
