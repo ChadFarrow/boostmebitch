@@ -193,9 +193,12 @@ export function WalletModal({ onClose }: Props) {
       body: (
         <>
           <p>
-            This signs out, saves the wallet&rsquo;s last state to your Google Drive, and
-            deletes the wallet from this browser: its seed, its channel state, its Google
-            login and this site&rsquo;s spending permission.
+            This signs out and deletes the wallet from this browser: its seed, its channel
+            state, its Google login and this site&rsquo;s spending permission.
+          </p>
+          <p>
+            Libre first tries to save the wallet&rsquo;s last state to your Google Drive.
+            This app cannot see whether that save worked, so do this while you are online.
           </p>
           <p>
             To load it again, here or on another device, you need its <strong>recovery

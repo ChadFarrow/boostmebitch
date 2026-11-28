@@ -20,9 +20,10 @@
 // Sections:
 //   1. Cancel in the confirm: nothing is disposed, nothing is deleted.
 //   2. Confirm: the node is disposed BEFORE the wipe, the page reloads, every
-//      store and key of the package is gone, and every other store and key
-//      (bmb:*, another app's database, an unrelated libre_ key) stays. The
-//      adoption is gone, so the reload loads no wallet chunk.
+//      store and key of the package is emptied or gone, the stores it never
+//      had are NOT created, and every other store and key (bmb:*, another
+//      app's database, an unrelated libre_ key) stays. The adoption is gone, so
+//      the reload loads no wallet chunk.
 //   3. The button and the confirm at phone size.
 //   4. The REAL package on mount: every database and key it writes is one the
 //      wipe covers.
@@ -60,6 +61,10 @@ const coveredLocal = (k) => ['libre_drive_hint', 'libre_drive_configured'].inclu
 // What must stay: this app's keys, another app's database, an unrelated libre_ key.
 const KEPT_LOCAL = { 'bmb:share_nostr': '0', 'bmb:rail_pref': 'webln', libre_ui_network: 'mainnet' };
 const OTHER_DB = 'e2e-other-app';
+// A real wallet has run on one network: seed three of the six stores, so the
+// wipe meets databases that do not exist (it must not create them).
+const SEEDED_DBS = ['libre-wallet-mainnet', 'libre-wallet-meta', 'libre-wallet'];
+const seededCount = (n) => LIBRE_DBS.map((d) => (SEEDED_DBS.includes(d) ? n : null));
 
 const SHOW_GUID = 'b0a50000-0000-4000-8000-000000000003';
 const SHOW = { id: 900995, podcastGuid: SHOW_GUID, title: 'E2E Libre Remove Show', author: 'e2e', medium: 'podcast', url: 'https://feeds.example.invalid/libre-remove.xml' };
@@ -87,11 +92,12 @@ const stubs = ({ seed }) => `(() => {
     r.onsuccess = () => { const tx = r.result.transaction(store, 'readwrite'); tx.objectStore(store).put(value, key); tx.oncomplete = () => { r.result.close(); resolve(); }; };
     r.onerror = () => resolve();
   });
-  window.__count = (db, store) => new Promise((resolve) => {
+  // null for a database that does not exist: counting must not create one.
+  window.__count = async (db, store) => (await indexedDB.databases()).some((x) => x.name === db) ? new Promise((resolve) => {
     const r = indexedDB.open(db);
     r.onsuccess = () => { const d = r.result; if (!d.objectStoreNames.contains(store)) { d.close(); resolve(-1); return; } const q = d.transaction(store).objectStore(store).count(); q.onsuccess = () => { d.close(); resolve(q.result); }; q.onerror = () => { d.close(); resolve(-2); }; };
     r.onerror = () => resolve(-3);
-  });
+  }) : null;
   if (${seed ? 'true' : 'false'} && !sessionStorage.getItem('__e2e_seeded')) {
     sessionStorage.setItem('__e2e_seeded', '1');
     localStorage.clear();
@@ -100,7 +106,7 @@ const stubs = ({ seed }) => `(() => {
     for (const k of ${JSON.stringify(GONE_LOCAL)}) localStorage.setItem(k, 'e2e');
     for (const k of ${JSON.stringify(GONE_SESSION)}) sessionStorage.setItem(k, 'e2e');
     window.__seeded = Promise.all([
-      ...${JSON.stringify(LIBRE_DBS)}.map((db) => put(db, 'settings', 'e2e-seed', 'made-up bytes')),
+      ...${JSON.stringify(SEEDED_DBS)}.map((db) => put(db, 'settings', 'e2e-seed', 'made-up bytes')),
       put(${JSON.stringify(OTHER_DB)}, 'settings', 'keep', 'another app'),
     ]);
   }
@@ -203,13 +209,15 @@ section('1. Cancel in the confirm: nothing disposed, nothing deleted');
   await c.page.js(`${REMOVE}.click(); 1`);
   t.ok('a press opens an in-app confirm over the wallet modal', !!(await c.page.until(`document.querySelectorAll('[role="dialog"]').length === 2 && !!(${confirmButton('Remove from this device')})`, 5000)));
   t.ok('...that names the recovery phrase', /recovery\s+phrase/i.test(await c.page.js(`${LAST}.innerText`)));
+  // dispose() swallows a failed Drive save at the pin, so the copy says so.
+  t.ok('...and does not promise the Drive save', /cannot see whether that save worked/i.test(await c.page.js(`${LAST}.innerText`)));
   t.equal('...and focuses Cancel, not the erase', await c.page.js(`document.activeElement?.textContent?.trim()`), 'Cancel');
   await c.page.js(`(${confirmButton('Cancel')}).click(); 1`);
   await c.page.until(`document.querySelectorAll('[role="dialog"]').length === 1`, 5000);
   await wait(800);
   t.equal('Cancel: no dispose', await c.page.js(`sessionStorage.getItem('__e2e_dispose')`), null);
   t.equal('...no reload', await c.page.js('window.__loadNo'), 1);
-  t.equal('...every store still holds its record', await counts(c.page), [1, 1, 1, 1, 1, 1, 1]);
+  t.equal('...every seeded store still holds its record', await counts(c.page), [...seededCount(1), 1]);
   t.equal('...the adoption stays', await c.page.js(`localStorage.getItem('bmb:libre_active')`), '1');
   t.ok('...and the wallet modal is still on the Libre card', !!(await c.page.js(`!!${REMOVE}`)));
   t.equal('no page exception', c.errors, []);
@@ -231,7 +239,9 @@ section('2. Confirm: dispose, then the wipe, then a reload');
   const d = JSON.parse((await c.page.js(`sessionStorage.getItem('__e2e_dispose')`)) ?? 'null');
   t.equal('the node was disposed once, BEFORE the wipe (its store still held the record)', d, { n: 1, recordsAtDispose: 1 });
   const k = await counts(c.page);
-  t.equal('every one of the package\'s six stores is empty', k.slice(0, 6), [0, 0, 0, 0, 0, 0]);
+  t.equal('every seeded store of the package is empty, and the three it never had were not created', k.slice(0, 6), seededCount(0));
+  const names = await c.page.js(`indexedDB.databases().then((a) => JSON.stringify(a.map((x) => x.name).sort()))`).then(JSON.parse);
+  t.equal('...indexedDB.databases() lists no shell', names.filter((n) => n.startsWith('libre') && !SEEDED_DBS.includes(n)), []);
   t.equal('another app\'s database is untouched', k[6], 1);
   t.equal('the package\'s localStorage keys are gone', await c.page.js(`JSON.stringify(${JSON.stringify(GONE_LOCAL)}.filter((x) => localStorage.getItem(x) !== null))`).then(JSON.parse), []);
   t.equal('...and its sessionStorage key', await c.page.js(`JSON.stringify(${JSON.stringify(GONE_SESSION)}.filter((x) => sessionStorage.getItem(x) !== null))`).then(JSON.parse), []);

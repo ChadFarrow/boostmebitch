@@ -406,9 +406,14 @@ const LIBRE_LOCAL_PREFIXES = ['libre_state_version_hwm:', 'libre_embed:'];
 const LIBRE_SESSION_KEYS = ['libre_drive_oauth_state'];
 
 /**
- * Empty one of the package's IndexedDB stores. Opens WITHOUT a version, so it never triggers an
- * upgrade or waits on a version change; a database that does not exist opens empty (no `settings`
- * store) and is skipped. Always resolves: a failed wipe must not strand the reload. (#120.)
+ * Empty one of the package's IndexedDB stores. Opens WITHOUT a version, so an existing database
+ * never upgrades. Always resolves: a failed wipe must not strand the reload. (#120.)
+ *
+ * A database that does NOT exist must stay absent. `open(name)` with no version CREATES it, empty, at
+ * version 1 — and the package opens at version 1 and makes its `settings` store only in an upgrade,
+ * which then never fires: a shell left here is a database the package can never use again. #120's
+ * copy made one for every network the wallet never ran on. So the upgrade a missing database
+ * triggers is aborted, which makes the open fail and creates nothing.
  */
 function clearLibreDb(name: string): Promise<void> {
   return new Promise((resolve) => {
@@ -419,6 +424,9 @@ function clearLibreDb(name: string): Promise<void> {
       resolve();
       return;
     }
+    req.onupgradeneeded = (e) => {
+      if (e.oldVersion === 0) req.transaction?.abort();
+    };
     req.onerror = () => resolve();
     req.onblocked = () => resolve();
     req.onsuccess = () => {
@@ -471,6 +479,10 @@ function forgetLibreKeys(): void {
  *
  * ONLY WHILE RUNNING (#120): `dispose()` stops the node, flushes the last backup and releases the
  * Drive lease with its proof only when the session is `running` (`roaming-session.ts`, `wasRunning`).
+ * It does NOT report the result: at the pin one `catch` swallows a failed flush (offline, an expired
+ * token) and skips the release with it, and `libreDisconnect` swallows again. So the wipe still runs
+ * after a failed save, and the confirm must not promise one; the fix is an upstream `dispose` that
+ * says whether the flush and the release worked.
  * Wiped from any other state, the lease stays `live` at this origin and the local state that would
  * prove the hand-off is gone, so the next visit to that account halts on a hand-off it cannot
  * prove. So it refuses — returns false, touches nothing — unless running; the button is disabled
