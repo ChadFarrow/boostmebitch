@@ -3622,6 +3622,37 @@ export function railAfterWalletChange<R extends string>(
 }
 
 /**
+ * Which rail pays when the caller names none: `pickRail()` (lib/v4v/boost.ts)
+ * reads the four wallet facts and asks this. That is every streaming settle and
+ * note zap, and the rail each boost modal opens on.
+ *
+ * The stored preference wins while its rail is CONNECTED, then NWC > Spark >
+ * WebLN. For WebLN "connected" is `weblnEnabled` (`isWeblnEnabled()`: enabled
+ * in THIS page load), never the extension's mere presence, because that is what
+ * the header chip and the wallet modal show. Until 2026-11-27 this took the
+ * `webln` preference on `weblnPresent`; a reload resets the enabled flag, so
+ * after one the chip said NWC while the extension paid, with the boost modal
+ * opening on WebLN under it. The cost, on purpose: beside NWC or Spark a WebLN
+ * choice lasts until the next reload, and then the rail the chip shows pays.
+ *
+ * The last line still takes the extension on presence alone, so a person with
+ * ONLY the extension can pay after a reload (the payment enables it). Pinned by
+ * `npm run check:nwcerror`; the wiring by `npm run e2e:weblnrail`.
+ */
+export function railWhenUnnamed(
+  pref: 'nwc' | 'spark' | 'webln' | null,
+  ready: { nwc: boolean; spark: boolean; weblnEnabled: boolean; weblnPresent: boolean },
+): 'nwc' | 'spark' | 'webln' | null {
+  if (pref === 'nwc' && ready.nwc) return 'nwc';
+  if (pref === 'spark' && ready.spark) return 'spark';
+  if (pref === 'webln' && ready.weblnEnabled) return 'webln';
+  if (ready.nwc) return 'nwc';
+  if (ready.spark) return 'spark';
+  if (ready.weblnPresent) return 'webln';
+  return null;
+}
+
+/**
  * Does a NIP-47 answer belong to the wallet that is connected NOW?
  *
  * A `get_info` is asked on one connection string and answered later. The user
