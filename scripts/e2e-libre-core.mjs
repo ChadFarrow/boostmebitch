@@ -1,5 +1,5 @@
 // e2e: the Libre wallet core is OFF unless its gate is open, and its card sits
-// above the dock (lib/v4v/libre.ts, components/libre/libre-wallet-host.tsx,
+// above the dock and under every dialog (lib/v4v/libre.ts, components/libre/libre-wallet-host.tsx,
 // docs/wallets.md "Libre Wallet").
 //
 // Run against a PRODUCTION build (the service worker only registers there):
@@ -212,6 +212,24 @@ if (ON) {
   const centre = await c.page.js(`(() => { const b = document.querySelector('${HOST}').getBoundingClientRect();
     const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !!e.closest('${HOST}'); })()`);
   t.ok('the card is on top at its own centre', centre === true);
+
+  // Every dialog covers it: <ModalShell> (z-[60], portalled to <body>). The
+  // sign-in modal is one that needs no data.
+  await c.page.js(`(() => { const b = [...document.querySelectorAll('button[aria-haspopup="menu"]')].find((x) => /sign in/i.test(x.textContent)); b && b.click(); return !!b; })()`);
+  await c.page.until(`[...document.querySelectorAll('[role="menuitem"]')].some((x) => /sign in with nostr/i.test(x.textContent))`, 10000);
+  await c.page.js(`(() => { const b = [...document.querySelectorAll('[role="menuitem"]')].find((x) => /sign in with nostr/i.test(x.textContent)); b.click(); return 1; })()`);
+  t.ok('the sign-in modal opens', !!(await c.page.until(`!!document.querySelector('[role="dialog"][aria-modal="true"]')`, 10000)));
+  await wait(500);
+  const underModal = await c.page.js(`(() => { const b = document.querySelector('${HOST}').getBoundingClientRect();
+    const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !e.closest('${HOST}'); })()`);
+  t.ok('a <ModalShell> dialog covers the card', underModal === true);
+  // The probe can fail: with the card lifted over the dialog, the card is what it hits.
+  const lifted = await c.page.js(`(() => { const h = document.querySelector('${HOST}'); h.style.zIndex = '100'; const b = h.getBoundingClientRect();
+    const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); h.style.zIndex = ''; return !!e && !!e.closest('${HOST}'); })()`);
+  t.ok('...and the same probe hits the card once it is lifted over the dialog', lifted === true);
+  for (const type of ['keyDown', 'keyUp']) await c.page.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  t.ok('...and Escape closes it', !!(await c.page.until(`!document.querySelector('[role="dialog"][aria-modal="true"]')`, 10000)));
+  await wait(500);
 
   // The expanded player (z-50) must cover it.
   await c.page.js(`(() => { document.querySelector('${MINI_BAR}').click(); return 1; })()`);
