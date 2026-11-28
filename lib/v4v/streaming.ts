@@ -1655,6 +1655,11 @@ function onRateChange() {
  * pointlessly re-arm an engine that still has nothing to pay with.
  */
 function onWalletChange() {
+  // A 'wallet-asks' stop holds while the rail that would pay is still Libre.
+  // A Libre-paid BOOST emits a WebLN notification (its first payment enables
+  // the rail), and re-arming on that would refuse the item again at its next
+  // settle: one more refusal logged per boost, for a wallet that did not change.
+  if (stoppedReason === 'wallet-asks' && pickRail() === 'webln' && libreHoldsWebln()) return;
   if (pickRail()) clearGiveUp();
 }
 
