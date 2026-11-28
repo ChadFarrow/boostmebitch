@@ -840,6 +840,36 @@ export function failedRunIsRefundable(indeterminate: boolean): boolean {
   return !indeterminate;
 }
 
+/**
+ * Must an unattended settle refuse this rail BEFORE it pays?
+ *
+ * Two answers, both decided before `sendBoost` is called, so a refusal moved
+ * nothing and its sats go back on the ledger (refundable, never indeterminate):
+ *
+ * - `'spark-keysend'`: Spark is BOLT11-only, so a block of nothing but node
+ *   pubkeys can never be paid from it.
+ * - `'asks-first'`: the WebLN provider that would pay can stop and wait for a
+ *   CLICK. The Libre wallet does (docs/streaming.md, "A payer that can ask"):
+ *   its provider opens an approval sheet on first use and whenever a payment
+ *   passes the daily limit, and that promise settles only on a click — no
+ *   reject, no timeout, and no mount option lets the host answer it. A settle
+ *   awaiting it holds the settle `chain`, so every later settle queues behind a
+ *   sheet nobody may be looking at. A host-side timeout would not close the
+ *   sheet: a later click could still pay it.
+ *
+ * `weblnAsksFirst` describes the provider that `window.webln` holds NOW, so it
+ * means nothing on another rail: NWC streams while Libre runs, and an extension
+ * streams while Libre is mounted but not the provider.
+ */
+export function unattendedRailRefusal(
+  rail: 'nwc' | 'spark' | 'webln',
+  facts: { nodeRecipientsOnly: boolean; weblnAsksFirst: boolean },
+): 'spark-keysend' | 'asks-first' | null {
+  if (rail === 'spark' && facts.nodeRecipientsOnly) return 'spark-keysend';
+  if (rail === 'webln' && facts.weblnAsksFirst) return 'asks-first';
+  return null;
+}
+
 // ── Retrying a failed split load ────────────────────────────────────────────
 
 /**

@@ -708,14 +708,20 @@ export function StreamMeter({ className = '' }: { className?: string }) {
               that nothing further will be attempted — and the first half is
               `sentClause`'s job, because a force settle can fail AFTER paying.
               'rail-cannot-pay' is a capability gap, so "change the rate to
-              retry" would loop the user through the identical failure. */}
+              retry" would loop the user through the identical failure.
+              'wallet-asks' is the same, and "a WebLN extension" alone is not
+              the fix: Libre holds window.webln, so an extension streams only
+              once it is the wallet instead. Boosts still pay from Libre — a
+              boost has a person in front of it to answer the sheet. */}
           {off
             ? ` — ${sentClause(status)}. Streaming is off for this show, so nothing further will be tried.`
             : status.stoppedReason === 'failures'
               ? ' — streaming paused for this episode. Change the rate or connect a wallet to retry.'
               : status.stoppedReason === 'rail-cannot-pay'
                 ? ' — connect NWC or a WebLN extension to stream this show.'
-                : null}
+                : status.stoppedReason === 'wallet-asks'
+                  ? ' — boosts still pay from Libre. To stream, switch to NWC or a WebLN extension.'
+                  : null}
         </div>
       )}
     </div>

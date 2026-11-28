@@ -62,6 +62,7 @@ import {
   STREAM_ENDED_OBSERVATIONS,
   endedVerdict,
   failedRunIsRefundable,
+  unattendedRailRefusal,
   splitRetryDelayMs,
   splitRetryDue,
   SPLIT_RETRY_DELAYS_MS,
@@ -1266,6 +1267,41 @@ console.log('\nfailedRunIsRefundable — a refund after an unanswered wallet is 
       failures++;
     } else console.log(`  ok   ${v.why}`);
     const naiveGot = naiveRefund(...v.args);
+    if (v.alsoNaive) { if (naiveGot !== v.want) { console.error(`  FAIL ${v.why}: marked alsoNaive but naive() disagrees`); failures++; } }
+    else if (naiveGot === v.want) { console.error(`  FAIL vector proves nothing — naive agrees: ${v.why}`); failures++; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// unattendedRailRefusal — which rail must an unattended settle refuse before
+// it pays? A Libre wallet's provider opens an approval sheet (first use, and
+// every payment past its daily limit) that settles only on a click, so a settle
+// that waits on it holds the settle chain forever (docs/streaming.md, "A payer
+// that can ask"). naive() is the engine before Libre: Spark's node-only gap was
+// the one refusal.
+// ---------------------------------------------------------------------------
+console.log('\nunattendedRailRefusal — a settle never waits on an approval click');
+{
+  const naiveRefusal = (rail, facts) => (rail === 'spark' && facts.nodeRecipientsOnly ? 'spark-keysend' : null);
+  const f = (nodeRecipientsOnly, weblnAsksFirst) => ({ nodeRecipientsOnly, weblnAsksFirst });
+  const VECTORS = [
+    { why: 'WebLN held by a payer that can ask (Libre): refuse before paying', args: ['webln', f(false, true)], want: 'asks-first' },
+    { why: '...also when every payee is a node (WebLN can keysend, but the sheet still waits)', args: ['webln', f(true, true)], want: 'asks-first' },
+    { why: 'WebLN held by an extension: streams as before', args: ['webln', f(false, false)], want: null, alsoNaive: true },
+    { why: 'an extension and node payees: streams as before', args: ['webln', f(true, false)], want: null, alsoNaive: true },
+    { why: 'NWC pays while Libre holds window.webln: the fact is about WebLN, so NWC streams', args: ['nwc', f(false, true)], want: null, alsoNaive: true },
+    { why: 'Spark pays while Libre holds window.webln: streams', args: ['spark', f(false, true)], want: null, alsoNaive: true },
+    { why: 'Spark and node payees only: BOLT11 cannot reach them', args: ['spark', f(true, false)], want: 'spark-keysend', alsoNaive: true },
+    { why: 'Spark and node payees only, Libre holding window.webln: still the Spark gap', args: ['spark', f(true, true)], want: 'spark-keysend', alsoNaive: true },
+    { why: 'NWC and node payees: NWC keysends', args: ['nwc', f(true, false)], want: null, alsoNaive: true },
+  ];
+  for (const v of VECTORS) {
+    const got = unattendedRailRefusal(...v.args);
+    if (got !== v.want) {
+      console.error(`  FAIL unattendedRailRefusal(${JSON.stringify(v.args)}) = ${got}, want ${v.want} — ${v.why}`);
+      failures++;
+    } else console.log(`  ok   ${v.why}`);
+    const naiveGot = naiveRefusal(...v.args);
     if (v.alsoNaive) { if (naiveGot !== v.want) { console.error(`  FAIL ${v.why}: marked alsoNaive but naive() disagrees`); failures++; } }
     else if (naiveGot === v.want) { console.error(`  FAIL vector proves nothing — naive agrees: ${v.why}`); failures++; }
   }
