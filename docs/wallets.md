@@ -166,6 +166,7 @@ Libre is a roaming, in-page LDK Lightning wallet: its encrypted seed and channel
 
 - **After a pin bump, check the DEPLOYED widget chunk** (#120, 2026-07-15, on the Next of that day; not re-checked on Next 15.5). A bump touches only `package.json` + `package-lock.json`, and Vercel restores `.next/cache`, so webpack reused its cached compilation of the package and the site ran the old widget — missing a fund-loss fix — on a green deploy. The tell is the chunk's content hash: unchanged after a bump means the bump did not take; redeploy without the build cache.
 - **The package bundles its own dependencies** (its `package.json` declares none), so nothing enters this app's `node_modules` and the `nostr-tools@2.19.4` pin is untouched. What it bundles at the pin, and the age of its LDK, is in the PR that added it; the upstream update is the owner's.
+- **It needs no camera, so `Permissions-Policy: camera=()` stays** (`next.config.mjs`). Read at the pin: the bundle has no `getUserMedia`, `mediaDevices` or `BarcodeDetector`, and its one `camera` is a BIP-39 word. A bump that adds a QR scanner would fail SILENTLY under that header, so search the new bundle again before widening the policy for it.
 
 ## Spark rail (Spark Labs SDK)
 
