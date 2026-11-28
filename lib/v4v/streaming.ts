@@ -56,6 +56,7 @@ import { sendBoost, pickRail, paidAny } from './boost';
 import { subscribeNwc } from './nwc-state';
 import { subscribeSpark } from './spark';
 import { subscribeWebln } from './webln';
+import { libreHoldsWebln, subscribeLibre } from './libre';
 import { liveEndedGuid, liveTargetSnapshot, subscribeLiveTarget, type LiveTarget } from './live-value';
 import {
   accrue,
@@ -63,6 +64,7 @@ import {
   allocationTrackBucket,
   createLedger,
   failedRunIsRefundable,
+  unattendedRailRefusal,
   HOST_BUCKET,
   isStaleLedger,
   msUntilSettle,
@@ -543,9 +545,12 @@ let lastErrorIndeterminate = false;
  * `'failures'` is a wallet that couldn't pay right now, so retrying is
  * meaningful. `'rail-cannot-pay'` is a capability gap (Spark can't keysend, and
  * this show pays node pubkeys) — retrying is guaranteed to fail identically, so
- * telling the user to change the rate just loops them.
+ * telling the user to change the rate just loops them. `'wallet-asks'` is the
+ * Libre wallet holding `window.webln`: it can stop a payment for a click, which
+ * an unattended payer must never wait on (`unattendedRailRefusal`). Its way
+ * back is another wallet, and the engine re-arms when Libre lets go.
  */
-export type StreamStoppedReason = 'failures' | 'rail-cannot-pay' | null;
+export type StreamStoppedReason = 'failures' | 'rail-cannot-pay' | 'wallet-asks' | null;
 
 export interface StreamingStatus {
   /** Streaming is on and accruing for whatever is playing right now. */
@@ -1037,10 +1042,13 @@ function noteFailure(
   lastErrorSentSats = batchSentSats;
   lastErrorIndeterminate = indeterminate;
   consecutiveFailures++;
-  // 'rail-cannot-pay' gives up immediately: it's a capability gap, not a bad
-  // moment, so a second attempt is guaranteed to fail identically.
+  // 'rail-cannot-pay' and 'wallet-asks' give up immediately: each is a fact
+  // about the wallet, not a bad moment, so a second attempt is guaranteed to
+  // end identically.
   const giveUp =
-    reason === 'rail-cannot-pay' || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES;
+    reason === 'rail-cannot-pay' ||
+    reason === 'wallet-asks' ||
+    consecutiveFailures >= MAX_CONSECUTIVE_FAILURES;
   if (!giveUp) return;
   disabledKey = c.key;
   stoppedReason = reason;
@@ -1186,15 +1194,36 @@ async function runSettle(
     return;
   }
   const { value, label } = targetFor(c, bucket);
+  // Both refusals are decided before any wallet is asked, so nothing moved and
+  // the sats go back (`unattendedRailRefusal`, check:stream).
+  //
   // Spark is BOLT11-only, so a value block of nothing but node pubkeys can
   // never be paid from it — no amount of retrying changes that, and telling the
   // user to change the rate just loops them through the same failure.
-  if (rail === 'spark' && value.recipients.every((r) => r.type === 'node')) {
+  //
+  // The Libre wallet can stop a payment for a CLICK (its approval sheet, on
+  // first use and past its daily limit), and that wait has no timeout. Awaited
+  // here, it would hold `chain`, and every later settle would queue behind a
+  // sheet nobody may be looking at (docs/streaming.md, "A payer that can ask").
+  const refusal = unattendedRailRefusal(rail, {
+    nodeRecipientsOnly: value.recipients.every((r) => r.type === 'node'),
+    weblnAsksFirst: rail === 'webln' && libreHoldsWebln(),
+  });
+  if (refusal === 'spark-keysend') {
     refund(c, bucket, sats);
     noteFailure(
       c,
       "this show pays Lightning nodes directly, which the Spark wallet can't send",
       'rail-cannot-pay',
+    );
+    return;
+  }
+  if (refusal === 'asks-first') {
+    refund(c, bucket, sats);
+    noteFailure(
+      c,
+      'the Libre wallet can stop a payment to ask you first, so it does not stream',
+      'wallet-asks',
     );
     return;
   }
@@ -1629,6 +1658,17 @@ function onWalletChange() {
   if (pickRail()) clearGiveUp();
 }
 
+/**
+ * A Libre state change re-arms ONLY the stop Libre caused, and only once
+ * Libre no longer holds `window.webln` (it roamed away, paused, or was
+ * disconnected and handed the provider back). Libre notifies on every state
+ * change, so re-arming on each one would flip a refused item back on to be
+ * refused again at its next settle.
+ */
+function onLibreChange() {
+  if (stoppedReason === 'wallet-asks' && !libreHoldsWebln()) onWalletChange();
+}
+
 let unsubRate: (() => void) | null = null;
 let unsubWallets: Array<() => void> = [];
 let unsubLive: (() => void) | null = null;
@@ -1648,6 +1688,7 @@ export function startStreamingEngine() {
     subscribeNwc(onWalletChange),
     subscribeSpark(onWalletChange),
     subscribeWebln(onWalletChange),
+    subscribeLibre(onLibreChange),
   ];
   window.addEventListener('pagehide', onPageHide);
 }

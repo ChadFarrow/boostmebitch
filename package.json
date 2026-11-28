@@ -145,6 +145,7 @@
     "e2e:weblnpending": "node scripts/e2e-webln-pending.mjs",
     "e2e:weblnrail": "node scripts/e2e-webln-rail.mjs",
     "e2e:librecore": "node scripts/e2e-libre-core.mjs",
+    "e2e:librestream": "node scripts/e2e-libre-stream.mjs",
     "e2e:explorerzaps": "node scripts/e2e-explorer-zaps.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:albumpanel": "node scripts/e2e-album-panel-owner.mjs",

@@ -154,6 +154,20 @@ export function isLibreRunning(): boolean {
 }
 
 /**
+ * True while Libre's provider is the object at `window.webln` — so a WebLN leg paid NOW would be
+ * paid by Libre, and could stop on its approval sheet (first use, or past the daily limit) until
+ * somebody clicks. Streaming asks this before every unattended settle (`unattendedRailRefusal`).
+ *
+ * Identity, not `isLibreRunning()` or `bmb:libre_active`: while Libre runs, NWC or Spark may be the
+ * rail that pays, and while Libre is mounted but not running an extension may hold `window.webln`.
+ * Both of those must still stream.
+ */
+export function libreHoldsWebln(): boolean {
+  if (typeof window === 'undefined' || !handle) return false;
+  return (window as { webln?: unknown }).webln === handle.webln;
+}
+
+/**
  * True exactly once per adoption: Libre just reached 'running' on a browser that hadn't adopted it
  * yet. The host uses it to disconnect the other rails — and ONLY then.
  *
