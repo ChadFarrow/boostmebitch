@@ -71,9 +71,11 @@ function railConnected(rail: Rail): boolean {
   return rail === 'nwc' ? hasNwc() : rail === 'spark' ? hasSpark() : isWeblnEnabled();
 }
 
-// Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority)
-// but gates WebLN on isWeblnEnabled — inside the wallet UI "active" means
-// the user explicitly enabled it, not merely that the extension exists.
+// Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority),
+// which gates a `webln` pref on isWeblnEnabled too (`railWhenUnnamed`,
+// lib/util.ts): "active" means enabled in this page load, not merely that the
+// extension exists. The one difference is pickRail()'s last fallback, which
+// pays from a present-but-not-enabled extension when it is the only wallet.
 function getActiveRail(): Rail | null {
   const pref = storage.railPref.get();
   if (pref && railConnected(pref)) return pref;

@@ -901,7 +901,8 @@ export const storage = {
    * User's preferred boost rail. Set when they pick a rail in the boost
    * modal's picker so the next boost defaults to the same wallet. Falls
    * back to `pickRail()` priority (NWC > Spark > WebLN) when unset or
-   * when the preferred rail is no longer available.
+   * when the preferred rail is not connected — for `webln`, not ENABLED in
+   * this page load, which a reload resets (`railWhenUnnamed`, lib/util.ts).
    */
   railPref: {
     get: (): RailPref | null => {

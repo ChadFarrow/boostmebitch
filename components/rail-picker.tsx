@@ -7,10 +7,12 @@ import type { Rail } from '@/lib/v4v/boost';
 // Shared by BoostModal and BoostAllModal. It lived only in BoostAllModal, and
 // that asymmetry was a real bug rather than a cosmetic gap: pickRail() honors
 // storage.railPref (the last rail that successfully paid), so a user who once
-// boosted with a WebLN extension keeps paying from it even after connecting and
+// boosted with a WebLN extension kept paying from it even after connecting and
 // funding Spark — and on a single boost there was nothing on screen naming the
 // rail, let alone changing it. The money moved from a wallet the user wasn't
 // looking at. Same component in both places now, so they can't drift again.
+// (Since 2026-11-27 a `webln` pref counts only while the extension is enabled
+// in this page load: docs/wallets.md.)
 const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
 /** The plain-words sentence behind each acronym, as the button's tooltip. */
 const RAIL_DESCRIPTIONS: Record<Rail, string> = {
