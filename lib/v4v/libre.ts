@@ -34,7 +34,7 @@ import { storage } from '@/lib/storage';
 import { BRAND } from '@/lib/brand';
 import { isNativeIos } from '@/lib/native/platform';
 import { getErrorMessage } from '@/lib/util';
-import { weblnDisable } from './webln';
+import { isWeblnEnabled, weblnDisable } from './webln';
 import type { MountHandle, MountOptions, RoamingViewState } from '@libre/wallet-embed';
 
 export type LibreView = RoamingViewState['view'];
@@ -168,6 +168,25 @@ export function libreHoldsWebln(): boolean {
 }
 
 /**
+ * Is the WebLN slot live? Enabled in this page load, OR held by Libre. The ONE answer the payer
+ * (`pickRail`), the header chip and the wallet modal read, so they name the same wallet.
+ *
+ * `isWeblnEnabled()` alone is per page load and turns true only on the first payment, so after a
+ * reload a running Libre read "not ready": a `webln` preference (what picking Libre records) lost
+ * to any other connected rail in the payer and the chip, while the modal named Libre (#120,
+ * 98786072). Libre's own approval sheet is its permission gate; the app's flag is for extensions.
+ */
+export function weblnLive(): boolean {
+  return isWeblnEnabled() || libreHoldsWebln();
+}
+
+/** True while Libre holds `window.webln` over a provider it displaced (an extension, usually),
+ *  which `libreDisconnect` would hand back. The wallet modal offers that extension by name. */
+export function libreDisplacedWebln(): boolean {
+  return claimed && priorWebln !== undefined && libreHoldsWebln();
+}
+
+/**
  * True exactly once per adoption: Libre just reached 'running' on a browser that hadn't adopted it
  * yet. The host uses it to disconnect the other rails — and ONLY then.
  *
@@ -218,6 +237,11 @@ function claimWebln(): void {
       configurable: true,
     });
     claimed = true;
+    // The WebLN rail's `enabled` flag is a grant to the PROVIDER that held window.webln when the
+    // user enabled it — an extension, not Libre. Left set, the header chip's balance read passes
+    // its gate and calls `enable()` on Libre's provider, which opens Libre's approval sheet on
+    // first use with nobody having pressed anything. Libre's first payment sets it again.
+    weblnDisable();
     window.dispatchEvent(new Event('webln:ready'));
   } catch {
     // A non-configurable existing provider — leave it; nothing else we can safely do.
@@ -281,7 +305,7 @@ export async function ensureLibreMounted(home: HTMLElement): Promise<void> {
   if (!libreAvailable()) return;
   homeSlot = home;
   if (handle) {
-    if (!borrowed && handle.element.parentElement !== home) home.appendChild(handle.element);
+    if (!borrowed && handle.element.parentElement !== home) moveElement(handle.element, home);
     return;
   }
   if (mounting) return mounting;
@@ -347,9 +371,41 @@ export async function libreDisconnect(): Promise<void> {
 // Move the element into `target` (the wallet modal). The node keeps its session — no remount.
 // notify() only fires on the borrowed:false→true transition, so a caller that re-borrows from a
 // subscribeLibre handler (to catch the element mounting after the modal opened) can't loop.
+/**
+ * The package's approval sheet while one is open. It is the `<dialog>` in the element's OPEN shadow
+ * root (`element.ts` at the pin: `requestApproval` → `showModal()`) — an internal of the package,
+ * pinned by `npm run e2e:librewallet` against the real chunk.
+ */
+function openSheet(): HTMLDialogElement | null {
+  const d = handle?.element.shadowRoot?.querySelector('dialog');
+  return typeof HTMLDialogElement !== 'undefined' && d instanceof HTMLDialogElement && d.open ? d : null;
+}
+
+/** True while Libre's approval sheet is open — a surface holding the element must not act on a key
+ *  the sheet answers (Escape), or it closes itself, moves the element, and strands the sheet. */
+export function libreSheetOpen(): boolean {
+  return openSheet() !== null;
+}
+
+/**
+ * Every move of the element goes through here. Moving a `<dialog>` takes it out of the top layer
+ * and leaves it OPEN and non-modal, inside a host that may be the collapsed 0×0 box: invisible, and
+ * its promise settles only on a click — the payment waiting on it hangs — while the next
+ * `showModal()` throws ("already open as a non-modal dialog"), so every later payment fails too.
+ * Measured on the real package (e2e:librewallet). So a move under an open sheet DENIES it: the
+ * sheet's own denial path (`close`), the payment fails as refused with nothing paid, and the next
+ * request opens a fresh sheet. Re-showing it in place would lean on how a browser treats a removed
+ * `open` attribute.
+ */
+function moveElement(el: HTMLElement, target: HTMLElement): void {
+  const sheet = openSheet();
+  target.appendChild(el);
+  sheet?.close();
+}
+
 export function borrowLibreElement(target: HTMLElement): void {
   if (!handle) return;
-  if (handle.element.parentElement !== target) target.appendChild(handle.element);
+  if (handle.element.parentElement !== target) moveElement(handle.element, target);
   if (!borrowed) {
     borrowed = true;
     notify();
@@ -359,7 +415,7 @@ export function borrowLibreElement(target: HTMLElement): void {
 /** Return the element to its persistent home slot (called when the modal closes / rail switches). */
 export function parkLibreElement(): void {
   if (!handle || !homeSlot) return;
-  if (handle.element.parentElement !== homeSlot) homeSlot.appendChild(handle.element);
+  if (handle.element.parentElement !== homeSlot) moveElement(handle.element, homeSlot);
   if (borrowed) {
     borrowed = false;
     notify();

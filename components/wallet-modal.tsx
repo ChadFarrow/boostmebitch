@@ -2,12 +2,26 @@
 
 import { useWalletChange } from '@/lib/use-wallet-change';
 import dynamic from 'next/dynamic';
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ModalShell } from './modal-shell';
 import { hasNwc } from '@/lib/v4v/nwc-state';
 import { hasSpark, sparkAvailable, sparkLastFailure, subscribeSparkFailure } from '@/lib/v4v/spark';
 import { hasWebln, isWeblnEnabled, weblnEnable } from '@/lib/v4v/webln';
-import { clearOtherWallets } from '@/lib/v4v/wallets';
+import {
+  borrowLibreElement,
+  libreAvailable,
+  libreDisconnect,
+  libreDisplacedWebln,
+  libreHoldsWebln,
+  libreSheetOpen,
+  isLibreMounted,
+  isLibreWanted,
+  parkLibreElement,
+  requestLibreMount,
+  subscribeLibre,
+  weblnLive,
+} from '@/lib/v4v/libre';
+import { clearOtherWallets, type WalletChoice } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -19,25 +33,39 @@ import { SparkWallet } from './spark-wallet';
 import { WeblnWallet } from './webln-wallet';
 import { StreamRate, StreamedLog } from './streaming-settings';
 import { DefaultAmounts } from './boost-modal/default-amounts';
+import { LibreMountStatus } from './libre/libre-mount';
 
 type Rail = 'nwc' | 'spark' | 'webln';
 
 // `picked`: a tap in the picker chose this form. False when the modal opened
 // straight on it because the picker would have had one row — that tap is what
 // consents to the form's backup read, so without it the read waits for one.
+//
+// A view names a WalletChoice, not a Rail: the Libre wallet is a choice that
+// pays over the WebLN rail (lib/v4v/wallets.ts), so 'libre' has a picker row,
+// a view and a title of its own while every payment still goes out as `webln`.
 type WalletView =
   | { kind: 'picker'; switching: boolean }
-  | { kind: 'connecting'; rail: Rail; switching: boolean; picked: boolean }
+  | { kind: 'connecting'; rail: WalletChoice; switching: boolean; picked: boolean }
   | { kind: 'connected' };
 
-type PickerRow = { rail: Rail; icon: string; title: string; desc: string };
+type PickerRow = { rail: WalletChoice; icon: string; title: string; desc: string };
 
 // The rows the picker offers. Read per call, not captured: an extension can
-// inject `window.webln` after the modal mounted.
+// inject `window.webln` after the modal mounted, and Libre can take it.
 function pickerRows(): PickerRow[] {
+  // While Libre holds window.webln, `hasWebln()` is Libre — a WebLN row would be
+  // a second door to the same wallet. The row comes back only for an extension
+  // Libre displaced, which a tap hands window.webln back to.
+  const libreHolds = libreHoldsWebln();
   return [
-    ...(hasWebln()
-      ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Use the Alby browser extension · tap to enable' }]
+    ...(hasWebln() && (!libreHolds || libreDisplacedWebln())
+      ? [{
+          rail: 'webln' as const, icon: '◈', title: 'WebLN',
+          desc: libreHolds
+            ? 'Use the Alby browser extension instead of Libre · tap to switch'
+            : 'Use the Alby browser extension · tap to enable',
+        }]
       : []),
     // Plain words first, the protocol name second: these three rows are the
     // first thing a newcomer reads about paying, and "NWC · Paste a
@@ -47,7 +75,18 @@ function pickerRows(): PickerRow[] {
     ...(sparkAvailable()
       ? [{ rail: 'spark' as const, icon: '✶', title: 'Spark', desc: 'A wallet this app creates and backs up for you — self-custodial' }]
       : []),
+    // Behind the whole gate (`libreAvailable`): a client id, the Boost Me Bitch
+    // brand, and not the iOS app. Last, so the rows a newcomer already knew keep
+    // their places.
+    ...(libreAvailable()
+      ? [{ rail: 'libre' as const, icon: '◆', title: 'Libre Wallet', desc: 'Your roaming Lightning wallet — runs in this app' }]
+      : []),
   ];
+}
+
+/** A heading for a wallet choice. */
+function walletTitle(choice: WalletChoice): string {
+  return choice === 'nwc' ? 'NWC' : choice === 'spark' ? 'Spark' : choice === 'libre' ? 'Libre Wallet' : 'WebLN';
 }
 
 // A picker with one row is not a choice — inside the iOS app it is NWC alone.
@@ -67,22 +106,64 @@ function firstView(): WalletView {
     : { kind: 'picker', switching: false };
 }
 
-function railConnected(rail: Rail): boolean {
-  return rail === 'nwc' ? hasNwc() : rail === 'spark' ? hasSpark() : isWeblnEnabled();
+// Is this picker row's wallet the one that would pay? `webln` means the
+// EXTENSION here — while Libre holds window.webln, the extension pays nothing.
+function railConnected(choice: WalletChoice): boolean {
+  if (choice === 'nwc') return hasNwc();
+  if (choice === 'spark') return hasSpark();
+  if (choice === 'libre') return libreHoldsWebln();
+  return isWeblnEnabled() && !libreHoldsWebln();
 }
 
 // Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority),
-// which gates a `webln` pref on isWeblnEnabled too (`railWhenUnnamed`,
-// lib/util.ts): "active" means enabled in this page load, not merely that the
-// extension exists. The one difference is pickRail()'s last fallback, which
-// pays from a present-but-not-enabled extension when it is the only wallet.
-function getActiveRail(): Rail | null {
+// which gates a `webln` pref on `weblnLive()` too (`railWhenUnnamed`,
+// lib/util.ts): "active" means enabled in this page load or held by Libre, not
+// merely that an extension exists. The one difference is pickRail()'s last
+// fallback, which pays from a present-but-not-enabled extension when it is the
+// only wallet. A `webln` win while Libre holds window.webln IS Libre, so it is
+// shown as the Libre card — whose sign-out stops Libre, which a WebLN card's
+// could not (#120, 98786072).
+function getActiveRail(): WalletChoice | null {
   const pref = storage.railPref.get();
-  if (pref && railConnected(pref)) return pref;
-  if (hasNwc()) return 'nwc';
-  if (hasSpark()) return 'spark';
-  if (isWeblnEnabled()) return 'webln';
-  return null;
+  const live = (r: Rail) => (r === 'nwc' ? hasNwc() : r === 'spark' ? hasSpark() : weblnLive());
+  const rail: Rail | null =
+    pref && live(pref) ? pref
+      : hasNwc() ? 'nwc'
+        : hasSpark() ? 'spark'
+          : weblnLive() ? 'webln'
+            : null;
+  return rail === 'webln' && libreHoldsWebln() ? 'libre' : rail;
+}
+
+/**
+ * The ONE `<libre-wallet>` element, borrowed from its home in the layout
+ * (`<LibreWalletHost>`) for as long as the Libre view shows, and handed back on
+ * unmount. The element has no teardown on detach, so the move keeps the
+ * session, window.webln and the roaming lease. Borrowed again on every Libre
+ * notification, because the modal can open before the package has loaded.
+ */
+function LibreRailSlot() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const attach = () => { if (ref.current) borrowLibreElement(ref.current); };
+    attach();
+    const unsub = subscribeLibre(attach);
+    return () => { unsub(); parkLibreElement(); };
+  }, []);
+  return (
+    // An Escape inside the borrowed element bubbles (composed) to <ModalShell>,
+    // which closes this modal — moving the element under Libre's open approval
+    // sheet. The sheet answers that key itself (as a denial), so it stops here.
+    <div
+      data-libre-slot
+      onKeyDown={(e) => { if (e.key === 'Escape' && libreSheetOpen()) e.stopPropagation(); }}
+    >
+      <div ref={ref} />
+      {/* Nothing to borrow until the package lands, and nothing at all if it
+          failed: both would be an empty card without this. */}
+      <LibreMountStatus slot={ref} />
+    </div>
+  );
 }
 
 interface Props {
@@ -96,11 +177,24 @@ export function WalletModal({ onClose }: Props) {
   const sparkDidNotOpen = useSyncExternalStore(subscribeSparkFailure, sparkLastFailure, () => null)?.op === 'connect';
   const backupWithheld = useApp((s) => s.walletBackupWithheld);
   const [view, setView] = useState<WalletView>(firstView);
+  // A Libre change can move what renders without moving `view` — Libre taking
+  // window.webln hides the WebLN row and renames the active card — and a
+  // `setView` that returns the same view renders nothing.
+  const [, rerender] = useState(0);
   // Sync view when wallet state changes externally (e.g. auto-restore completes
-  // after the modal is already open, or a disconnect fires from outside).
+  // after the modal is already open, a disconnect fires from outside, or the
+  // Libre widget reaches "running" through its own connect button).
   useWalletChange(() => {
+    rerender((n) => n + 1);
     setView((v) => {
       const active = getActiveRail();
+      // Libre roaming away (paused, moved-away, need-secret) stops it holding
+      // window.webln, so nothing is "active" — but the widget is where its
+      // answer is. Keep its slot rather than park it under this modal, where
+      // the host card would show behind the backdrop.
+      if (v.kind === 'connected' && !active && isLibreMounted() && isLibreWanted()) {
+        return { kind: 'connecting', rail: 'libre', switching: false, picked: true };
+      }
       if (v.kind === 'connected' && !active) return firstView();
       if (v.kind === 'picker' && !v.switching && active) return { kind: 'connected' };
       // Auto-restore completing while the form for that rail is showing:
@@ -124,19 +218,30 @@ export function WalletModal({ onClose }: Props) {
   // active payer (rail pref → pickRail / balance chip / menu summary follow)
   // without touching the other connections. Only connecting a NEW wallet
   // disconnects the others (clearOtherWallets in handleConnected).
-  function handlePickerClick(rail: Rail, switching: boolean) {
+  //
+  // Libre pays over the WebLN rail, so tapping it records `webln` — which
+  // `weblnLive()` lets win in pickRail(), the chip and this modal alike.
+  function handlePickerClick(rail: WalletChoice, switching: boolean) {
     if (switching && railConnected(rail)) {
-      recordLastRail(rail, identity);
+      recordLastRail(rail === 'libre' ? 'webln' : rail, identity);
       setView({ kind: 'connected' });
       return;
     }
     if (rail === 'webln') { void handleWeblnPickerClick(switching); return; }
+    // The widget draws its own connect UI in the borrowed slot; this only asks
+    // the host to load and mount it (idempotent, and a no-op behind the gate).
+    if (rail === 'libre') requestLibreMount();
     setView({ kind: 'connecting', rail, switching, picked: true });
   }
 
   async function handleWeblnPickerClick(switching: boolean) {
     // WebLN has only one action — skip the form, enable inline, close on success.
     try {
+      // The row is offered over a running Libre only for the extension it
+      // displaced. Hand window.webln back FIRST: `weblnEnable()` asks whatever
+      // window.webln holds, and that would be Libre's approval sheet, not the
+      // extension the row names.
+      if (libreHoldsWebln()) await libreDisconnect();
       await weblnEnable();
       await clearOtherWallets('webln', identity?.npub);
       onClose();
@@ -156,13 +261,10 @@ export function WalletModal({ onClose }: Props) {
   let headerTitle = 'Connect a wallet';
   let headerSub: string | null = 'Pick one to send Lightning payments.';
   if (view.kind === 'connected') {
-    headerTitle = activeRail === 'nwc' ? 'NWC'
-      : activeRail === 'spark' ? 'Spark'
-      : activeRail === 'webln' ? 'WebLN'
-      : 'Lightning Wallet';
+    headerTitle = activeRail ? walletTitle(activeRail) : 'Lightning Wallet';
     headerSub = null;
   } else if (view.kind === 'connecting') {
-    headerTitle = view.rail === 'nwc' ? 'NWC' : view.rail === 'spark' ? 'Spark' : 'WebLN';
+    headerTitle = walletTitle(view.rail);
     // No picker row explained this rail, so the header does.
     headerSub = view.picked ? null : onlyRow?.desc ?? null;
   } else if (view.kind === 'picker' && view.switching) {
@@ -171,6 +273,61 @@ export function WalletModal({ onClose }: Props) {
   }
 
   function renderBody() {
+    // Libre draws its own connect and running UI inside the borrowed element, so
+    // connecting and connected show the same slot — under one key, so the flip
+    // between them does not remount it (a park and a re-borrow: a flicker).
+    const libreFocused =
+      (view.kind === 'connecting' && view.rail === 'libre') ||
+      (view.kind === 'connected' && activeRail === 'libre');
+    if (libreFocused) {
+      const back: WalletView | null = view.kind !== 'connecting'
+        ? null
+        : view.switching ? { kind: 'connected' } : onlyRow ? null : { kind: 'picker', switching: false };
+      return (
+        <div className="p-5 space-y-4">
+          {back && (
+            <button key="back" onClick={() => setView(back)} className="btn-mini">
+              ← Back
+            </button>
+          )}
+          <LibreRailSlot key="libre-slot" />
+          {view.kind === 'connected' && (
+            <>
+              <div className="border-t border-bone/15 pt-4">
+                <DefaultAmounts />
+              </div>
+              {/* In place of <StreamRate>: streaming refuses this wallet
+                  (`unattendedRailRefusal`, docs/streaming.md "A payer that can
+                  ask"), so a rate control here would only arm a refusal. */}
+              <p className="border-t border-bone/15 pt-4 text-[11px] text-muted" data-libre-no-stream>
+                Streaming sats does not pay from Libre: Libre can stop a payment
+                to ask you first, and streaming pays with nobody watching.
+                Boosts pay from Libre as usual.
+              </p>
+              <div className="border-t border-bone/15 pt-3 flex flex-wrap items-center justify-between gap-3">
+                {!onlyRow && (
+                  <button onClick={() => setView({ kind: 'picker', switching: true })} className="btn-mini">
+                    Switch wallet →
+                  </button>
+                )}
+                {/* Not the widget's own Disconnect, which stops the session and
+                    leaves Libre this browser's wallet: this also forgets the
+                    adoption (bmb:libre_active), so later visits stop loading the
+                    package. It keeps the wallet on this device. */}
+                <button
+                  onClick={() => { void libreDisconnect().then(() => setView(firstView())); }}
+                  className="btn-mini"
+                  title="Signs out and releases the wallet, but keeps it on this device, so you can come back without your recovery phrase."
+                >
+                  Sign out (keep wallet here)
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
     if (view.kind === 'connected') {
       return (
         <div className="p-5 space-y-4">
@@ -258,6 +415,7 @@ export function WalletModal({ onClose }: Props) {
           {rail === 'webln' && (
             <WeblnWallet mode="form" onConnected={() => handleConnected('webln')} />
           )}
+          {/* 'libre' never reaches here: `libreFocused` above renders it. */}
         </div>
       );
     }

@@ -3,8 +3,8 @@
 
 import { clearNwcUri, hasNwc } from './nwc-state';
 import { hasSpark, sparkDisconnect } from './spark';
-import { isWeblnEnabled, weblnDisable } from './webln';
-import { isLibreRunning, libreDisconnect } from './libre';
+import { weblnDisable } from './webln';
+import { isLibreRunning, libreDisconnect, libreHoldsWebln, weblnLive } from './libre';
 import { storage } from '@/lib/storage';
 import type { Rail } from './boost';
 
@@ -18,6 +18,27 @@ import type { Rail } from './boost';
 export type WalletChoice = Rail | 'libre';
 
 /**
+ * What to call a rail on screen. 'webln' is the one that moves: while Libre holds window.webln it
+ * IS the WebLN rail, so the balance chip, the boost modals' "Pay via" picker and the wallet modal
+ * would otherwise call a wallet the user connected as "Libre" by the extension's name. Read during
+ * render; every surface that calls it re-renders through `useWalletChange` (`subscribeLibre`).
+ */
+export function railLabel(rail: Rail): string {
+  if (rail === 'nwc') return 'NWC';
+  if (rail === 'spark') return 'Spark';
+  return libreHoldsWebln() ? 'Libre' : 'WebLN';
+}
+
+/** The plain-words sentence behind each label (the "Pay via" buttons' tooltip). */
+export function railDescription(rail: Rail): string {
+  if (rail === 'nwc') return 'Nostr Wallet Connect — a Lightning wallet you already have, connected by its NWC string';
+  if (rail === 'spark') return 'Spark — the wallet this app created and backs up for you';
+  return libreHoldsWebln()
+    ? 'Libre — the Lightning wallet that runs in this page'
+    : 'WebLN — the Alby browser extension';
+}
+
+/**
  * True when any rail is connected/enabled. WebLN is gated on isWeblnEnabled()
  * (explicit user enable), not mere detection — mirrors getActiveRail() in
  * wallet-modal.tsx. A running Libre counts too: it fronts window.webln but
@@ -27,7 +48,7 @@ export type WalletChoice = Rail | 'libre';
  * wallet control's connected/not state.
  */
 export function hasAnyWallet(): boolean {
-  return hasNwc() || hasSpark() || isWeblnEnabled() || isLibreRunning();
+  return hasNwc() || hasSpark() || weblnLive() || isLibreRunning();
 }
 
 /**

@@ -1,7 +1,10 @@
 'use client';
+import { useSyncExternalStore } from 'react';
 import { hasNwc } from '@/lib/v4v/nwc-state';
+import { libreHoldsWebln, subscribeLibre } from '@/lib/v4v/libre';
 import { hasSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
+import { railDescription, railLabel } from '@/lib/v4v/wallets';
 import type { Rail } from '@/lib/v4v/boost';
 
 // Shared by BoostModal and BoostAllModal. It lived only in BoostAllModal, and
@@ -13,13 +16,11 @@ import type { Rail } from '@/lib/v4v/boost';
 // looking at. Same component in both places now, so they can't drift again.
 // (Since 2026-11-27 a `webln` pref counts only while the extension is enabled
 // in this page load: docs/wallets.md.)
-const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
-/** The plain-words sentence behind each acronym, as the button's tooltip. */
-const RAIL_DESCRIPTIONS: Record<Rail, string> = {
-  nwc: 'Nostr Wallet Connect — a Lightning wallet you already have, connected by its NWC string',
-  spark: 'Spark — the wallet this app created and backs up for you',
-  webln: 'WebLN — the Alby browser extension',
-};
+//
+// The labels and tooltips are `railLabel` / `railDescription` (lib/v4v/wallets.ts),
+// read during render, not module constants: while the Libre wallet holds
+// window.webln the WebLN button IS Libre, and naming it after the extension
+// would hide which wallet pays.
 
 /** Rails with a usable wallet right now, in pickRail()'s own priority order.
  *
@@ -55,6 +56,10 @@ export function RailPicker({
   rail: Rail | null;
   onChange: (r: Rail) => void;
 }) {
+  // Libre taking window.webln renames the WebLN button without moving `rail`,
+  // and a parent whose `setRail` returns the same rail renders nothing — so the
+  // picker subscribes for its own labels.
+  useSyncExternalStore(subscribeLibre, libreHoldsWebln, () => false);
   const rails = availableRails();
   if (rails.length < 2) return null;
   return (
@@ -66,10 +71,10 @@ export function RailPicker({
             key={r}
             onClick={() => onChange(r)}
             aria-pressed={rail === r}
-            title={RAIL_DESCRIPTIONS[r]}
+            title={railDescription(r)}
             className={`btn-ghost !px-3 text-xs ${rail === r ? '!border-bolt text-bolt' : ''}`}
           >
-            {RAIL_LABELS[r]}
+            {railLabel(r)}
           </button>
         ))}
       </div>
