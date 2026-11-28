@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { subscribeNwc } from './v4v/nwc-state';
 import { subscribeSpark } from './v4v/spark';
 import { subscribeWebln } from './v4v/webln';
+import { subscribeLibre } from './v4v/libre';
 import { subscribeRailPref } from './storage';
 
 /**
@@ -58,6 +59,10 @@ export function useWalletChange(
       subscribeNwc(bump),
       subscribeSpark(bump),
       subscribeWebln(bump),
+      // Libre is not a rail (it pays as window.webln), but `hasAnyWallet()` reads
+      // `isLibreRunning()`, and a read with no subscription is the stale-surface
+      // bug this hook exists to end.
+      subscribeLibre(bump),
       ...(withRailPref ? [subscribeRailPref(bump)] : []),
     ];
     return () => { for (const u of unsubs) u(); };

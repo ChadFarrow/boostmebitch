@@ -105,7 +105,7 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
-/** Four things never enter a cache, and each would be a real bug. */
+/** Five things never enter a cache, and each would be a real bug. */
 function cacheable(request, url) {
   // A cached POST is not a thing.
   if (request.method !== 'GET') return false;
@@ -115,6 +115,13 @@ function cacheable(request, url) {
   // A cached /api/feed serves a stale episode list, and /api/live-status would
   // report a finished show as live.
   if (url.pathname.startsWith('/api/')) return false;
+  // The Libre wallet's ~12 MB LDK WASM. It is NOT content-hashed (one fixed
+  // name, copied from the package on every install), so network-first would
+  // keep a 12 MB copy in PAGES, in the same storage quota the downloads use,
+  // that the wallet cannot use offline anyway (it needs the network to run).
+  // Its JS chunk is content-hashed under /_next/static/ and is cached there,
+  // which is right: the hash changes with the package.
+  if (url.pathname === '/liblightningjs.wasm') return false;
   return true;
 }
 

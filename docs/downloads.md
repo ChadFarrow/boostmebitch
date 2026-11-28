@@ -617,11 +617,15 @@ That prefix is narrow **on purpose**: the download buckets are `bmb-downloads-*`
 and are the user's own files. A sweep that took them would delete a library
 somebody saved deliberately, on a deploy they never asked for.
 
-Four things never enter a cache, and each would be a real bug: anything under
+Five things never enter a cache, and each would be a real bug: anything under
 `/api/*` (a cached `/api/feed` serves a stale episode list; `/api/live-status`
 would report a finished show as live), any non-GET, any cross-origin request
-(enclosure audio and relay traffic are not ours to hold), and any response that
-is not `ok` (a cached 404 outlives the outage that produced it).
+(enclosure audio and relay traffic are not ours to hold), any response that
+is not `ok` (a cached 404 outlives the outage that produced it), and the Libre
+wallet's `/liblightningjs.wasm` — ~12 MB under one fixed, un-hashed name, which
+network-first would keep in `PAGES`, in the quota the downloads share, for a
+wallet that cannot run offline anyway (see [`wallets.md`](wallets.md), "Libre
+Wallet").
 
 ### It is served from a route, and `public/sw.js` had to go
 

@@ -135,6 +135,7 @@ const KEYS = {
   // AMBER_PERSISTABLE_TYPES.
   amberPending: 'bmb:amber_pending',  // the NIP-55 request we dispatched and are waiting on: a random request id, the method, a timestamp, and the route to return to. No payload, no key material.
   amberResult: 'bmb:amber_result',    // the result Amber handed back, parked until the caller re-asks. ONLY ever a get_public_key result, i.e. a PUBLIC key — a decrypt result is a plaintext and is refused rather than written here.
+  libreActive: 'bmb:libre_active',    // '1' once Libre is this browser's wallet. Device-wide, not per-npub: the Libre seed lives in the package's own per-ORIGIN IndexedDB. Auto-mounts the widget on later visits AND marks the other rails as already cleared, so a reload cannot re-run that teardown. Cleared by libreDisconnect (which clearOtherWallets calls when another rail wins).
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
   // ── sessionStorage, NOT localStorage ──────────────────────────────────────
   // Both die with the tab, which is exactly why they're allowed to hold what
@@ -990,6 +991,18 @@ export const storage = {
     /** Records an explicit "this account wants Spark" — see the tri-state note. */
     clear: (npub: string | null | undefined) =>
       safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '0'),
+  },
+
+  /** '1' once the user has adopted Libre as this browser's wallet. Two jobs: the host auto-mounts
+   *  the widget on later visits (so a returning user doesn't re-pick it, and the Drive OAuth
+   *  redirect lands somewhere that can complete it), and it records that the other rails were
+   *  already torn down for this adoption — Libre reaching 'running' on a reload must NOT clear
+   *  them a second time, or every reload would silently delete the user's NWC URI. A device
+   *  SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES (docs/storage.md). */
+  libreActive: {
+    get: () => safeGet(KEYS.libreActive) === '1',
+    set: () => safeSet(KEYS.libreActive, '1'),
+    clear: () => safeRemove(KEYS.libreActive),
   },
 
   /** Per-npub opt-in flag: '1' when the user wants their NWC connection

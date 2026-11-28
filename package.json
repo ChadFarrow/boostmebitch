@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postinstall": "node scripts/libre-wasm.mjs",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -143,6 +144,7 @@
     "e2e:walletrail": "node scripts/e2e-wallet-balance-rail.mjs",
     "e2e:weblnpending": "node scripts/e2e-webln-pending.mjs",
     "e2e:weblnrail": "node scripts/e2e-webln-rail.mjs",
+    "e2e:librecore": "node scripts/e2e-libre-core.mjs",
     "e2e:explorerzaps": "node scripts/e2e-explorer-zaps.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:albumpanel": "node scripts/e2e-album-panel-owner.mjs",
@@ -190,6 +192,7 @@
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.16.0",
     "@getalby/sdk": "^5.1.0",
+    "@libre/wallet-embed": "https://github.com/ChadFarrow/libre-listener-wallet-monorepo/releases/download/wallet-embed-latest/libre-wallet-embed-468ac13b468b1898d538fda6b0d97433a6c8a2ce.tgz",
     "@noble/hashes": "^2.0.1",
     "@scure/bip39": "^2.0.1",
     "@types/canvas-confetti": "^1.9.0",
