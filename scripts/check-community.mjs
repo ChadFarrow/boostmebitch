@@ -14,7 +14,7 @@ import {
   foldName, MAX_OWNER_NAME_LEN, archiveDispatchBase, PRODUCTION_FEED_ORIGIN, piNotifyBase, PI_API_BASE,
   podpingEndpoint, podpingRequestUrl, PODPING_MEDIUM, PODPING_REASON,
   piNoticeAllowed, piSecondNotifyMs, piFeedIdFrom, PI_NOTICE_THROTTLE_MS, PI_NOTICE_OWNER_DAILY,
-  PI_NOTICE_GLOBAL_DAILY, PI_SECOND_NOTIFY_MS, PI_ADD_FORM, MIN_SONGS,
+  PI_NOTICE_GLOBAL_DAILY, PI_SECOND_NOTIFY_MS, PI_ADD_FORM, MIN_SONGS, addSong, songsAddedElsewhere,
 } from '../lib/community/rules.ts';
 import { readFileSync } from 'node:fs';
 import { textHoldsSecret, looksLikeSecretKey } from '../lib/nostr/npub-input.ts';
@@ -936,6 +936,75 @@ check('escapeXml', escapeXml(`&<>"'`) === '&amp;&lt;&gt;&quot;&apos;');
     const n = naive(...v.args);
     if (v.alsoNaive) check('local target: ' + v.kind + ' (naive agrees)', n === v.want);
     else check('local target: ' + v.kind + ' fails against naive (can fail)', n !== v.want);
+  }
+}
+
+// addSong: the player's "+ PLAYLIST" collects into a local draft. A duplicate pair or a
+// 501st song would make the maker's next SAVE fail on a problem the user did not cause
+// there, so both are refused here. Replayed against naive(), which appends blindly.
+{
+  console.log('\naddSong');
+  const naive = (list, s) => ({ songs: [...list, s], result: 'added' });
+  const same = (a, b) => a.result === b.result && JSON.stringify(a.songs) === JSON.stringify(b.songs);
+  const s1 = { feedGuid: 'F1', itemGuid: 'I1' };
+  const vectors = [
+    { name: 'adds to the end', args: [[{ feedGuid: 'F0', itemGuid: 'I0' }], s1],
+      want: { result: 'added', songs: [{ feedGuid: 'F0', itemGuid: 'I0' }, s1] }, alsoNaive: true },
+    { name: 'the same pair is not added twice', args: [[s1], { ...s1 }], want: { result: 'already', songs: [s1] } },
+    { name: 'same item guid under ANOTHER feed is a different song', args: [[s1], { feedGuid: 'F2', itemGuid: 'I1' }],
+      want: { result: 'added', songs: [s1, { feedGuid: 'F2', itemGuid: 'I1' }] }, alsoNaive: true },
+    { name: 'no 501st song', args: [songs(MAX_SONGS), s1], want: { result: 'full', songs: songs(MAX_SONGS) } },
+    { name: 'a client feedUrl is not copied', args: [[], { ...s1, feedUrl: 'https://evil.example/feed' }],
+      want: { result: 'added', songs: [s1] } },
+  ];
+  for (const v of vectors) {
+    const input = JSON.parse(JSON.stringify(v.args[0]));
+    const got = addSong(...v.args);
+    check(`addSong: ${v.name}`, same(got, v.want));
+    check(`addSong: ${v.name} — input unchanged`, JSON.stringify(v.args[0]) === JSON.stringify(input));
+    const n = naive(...v.args);
+    const naiveAgrees = same(n, v.want);
+    check(`addSong: ${v.name} — ${v.alsoNaive ? 'naive() still agrees' : 'fails against naive()'}`, naiveAgrees === !!v.alsoNaive);
+  }
+}
+
+// songsAddedElsewhere: what the maker takes in from a draft slot that the player's
+// "+ PLAYLIST" wrote behind it (PR #673's review: the maker's next edit wrote its own
+// older list over the add, and the song was lost behind "✓ ADDED"). Two naive
+// versions, each the shape a fix could take and be wrong:
+// - makerWins(): what shipped. The maker's state is the truth, so nothing is taken in.
+// - noBaseline(): everything on disk the maker does not show. A song the maker
+//   removed while a stale disk still holds it comes back.
+// Each vector names the naive versions it is ALSO right for (the must-still-work half).
+{
+  console.log('\nsongsAddedElsewhere');
+  const makerWins = () => [];
+  const noBaseline = (_seen, disk, cur) => disk.filter((s) => !cur.some((c) => c.feedGuid === s.feedGuid && c.itemGuid === s.itemGuid));
+  const A = { feedGuid: 'FA', itemGuid: 'IA' };
+  const B = { feedGuid: 'FB', itemGuid: 'IB' };
+  const C = { feedGuid: 'FC', itemGuid: 'IC' };
+  const vectors = [
+    { name: 'a song added behind the maker is taken in', args: [[A, B], [A, B, C], [A, B]], want: [C], also: ['noBaseline'] },
+    { name: 'a song removed in the maker, still on a stale disk, does not come back', args: [[A, B], [A, B], [A]], want: [], also: ['makerWins'] },
+    { name: 'removed, written, then added again by the sheet: kept', args: [[A], [A, B], [A]], want: [B], also: ['noBaseline'] },
+    { name: 'a song already on screen is not doubled', args: [[A], [A, B], [A, B]], want: [], also: ['makerWins', 'noBaseline'] },
+    { name: 'a pair twice on disk comes in once', args: [[], [C, C], []], want: [C], also: [] },
+    { name: 'the same item guid under ANOTHER feed is a different song', args: [[A], [A, { feedGuid: 'FX', itemGuid: 'IA' }], [A]],
+      want: [{ feedGuid: 'FX', itemGuid: 'IA' }], also: ['noBaseline'] },
+    { name: 'disk order is kept', args: [[A], [A, C, B], [A]], want: [C, B], also: ['noBaseline'] },
+    { name: 'the maker wrote its own add: nothing new', args: [[A, B], [A, B], [A, B]], want: [], also: ['makerWins', 'noBaseline'] },
+  ];
+  const naives = { makerWins, noBaseline };
+  for (const v of vectors) {
+    const before = JSON.stringify(v.args);
+    const got = songsAddedElsewhere(...v.args);
+    check(`songsAddedElsewhere: ${v.name}`, JSON.stringify(got) === JSON.stringify(v.want));
+    check(`songsAddedElsewhere: ${v.name} — inputs unchanged`, JSON.stringify(v.args) === before);
+    for (const [n, f] of Object.entries(naives)) {
+      const agrees = JSON.stringify(f(...v.args)) === JSON.stringify(v.want);
+      const claimed = v.also.includes(n);
+      check(`songsAddedElsewhere: ${v.name} — ${claimed ? `${n}() still agrees` : `fails against ${n}()`}`, agrees === claimed);
+    }
   }
 }
 

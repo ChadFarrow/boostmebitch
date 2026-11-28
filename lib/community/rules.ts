@@ -139,6 +139,68 @@ export function validatePlaylistDraft(
   return { ok: true, draft: { title, description, ownerName, artUrl, songs } };
 }
 
+/** What `addSong` did. `'full'` is MAX_SONGS reached; `'already'` the same pair is in it. */
+export type AddSongResult = 'added' | 'already' | 'full';
+
+/**
+ * Add one song to the END of a playlist's song list: the "+ PLAYLIST" control
+ * beside the player's hearts, which collects into a draft on this device
+ * (nothing is sent until the maker's PUBLISH or SAVE). A song is the PAIR
+ * `feedGuid` + `itemGuid`, the key `validatePlaylistDraft` refuses a duplicate
+ * on, so a song already in the list is never added twice and a draft never
+ * grows past MAX_SONGS: either would make the next SAVE fail on a problem the
+ * user did not cause in the maker. Returns a new array and never changes the one
+ * passed in. Only the two guids are copied: a stored `feedUrl` is the index's,
+ * never the client's (`withIndexFeedUrls`).
+ */
+export function addSong(
+  songs: readonly PlaylistSong[],
+  song: PlaylistSong,
+): { songs: PlaylistSong[]; result: AddSongResult } {
+  if (songs.some((s) => s.feedGuid === song.feedGuid && s.itemGuid === song.itemGuid)) {
+    return { songs: [...songs], result: 'already' };
+  }
+  if (songs.length >= MAX_SONGS) return { songs: [...songs], result: 'full' };
+  return { songs: [...songs, { feedGuid: song.feedGuid, itemGuid: song.itemGuid }], result: 'added' };
+}
+
+/**
+ * The songs ANOTHER writer added to a draft slot the maker has open: the player's
+ * "+ PLAYLIST" in this tab or in another one (`lib/community/local-drafts.ts`).
+ * The maker holds the draft in React state and writes ALL of it after every
+ * change, so a song added to the slot behind it is lost at its next write unless
+ * it is taken in first (PR #673's review).
+ *
+ * `seen` is the slot's song list as the maker last LOADED or WROTE it, replaced
+ * each time and never accumulated; `onDisk` is the slot now; `current` is what
+ * the maker shows. A song counts only when it is on disk and in NEITHER list:
+ * - not in `seen`, so a song the maker removed that is still on a stale disk
+ *   (another tab, a write that did not land) does not come back;
+ * - not in `current`, so a song is never doubled.
+ * A song removed in the maker, written, and then added again by the sheet IS new:
+ * `seen` was replaced by the write that removed it. Disk order, each pair once,
+ * the two guids and a stored `feedUrl` copied as they are. Removals made
+ * elsewhere are not followed: this only ever ADDS, so nothing on screen goes.
+ */
+export function songsAddedElsewhere(
+  seen: readonly PlaylistSong[],
+  onDisk: readonly PlaylistSong[],
+  current: readonly PlaylistSong[],
+): PlaylistSong[] {
+  const key = (s: PlaylistSong) => `${s.feedGuid}\u0000${s.itemGuid}`;
+  const known = new Set([...seen.map(key), ...current.map(key)]);
+  const out: PlaylistSong[] = [];
+  for (const s of onDisk) {
+    const k = key(s);
+    if (known.has(k)) continue;
+    known.add(k);
+    out.push(typeof s.feedUrl === 'string'
+      ? { feedGuid: s.feedGuid, itemGuid: s.itemGuid, feedUrl: s.feedUrl }
+      : { feedGuid: s.feedGuid, itemGuid: s.itemGuid });
+  }
+  return out;
+}
+
 /**
  * The songs as they are STORED and published. A song's `feedUrl` is the one
  * `urlFor` answers — what Podcast Index holds for its feed (`verifySongs`), or for

@@ -1,9 +1,11 @@
 'use client';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Episode, Podcast } from '@/lib/types';
 import { downloadManager } from '@/lib/downloads/download-manager';
 import { useAnchoredMenu } from '../use-anchored-menu';
 import { FavEpisodeHeart, canFavoriteEpisode, useEpisodeFavorited } from '../fav-heart';
+import { SaveToPlaylistButton, SaveToPlaylistSheet, targetFromEpisode, type SaveTarget } from '../community/save-to-playlist';
 import { DownloadButton, DownloadMark } from '../download-button';
 import { QueueButton, canQueueEpisode, useEpisodeQueued } from '../queue-button';
 import { canResume } from '@/lib/resume-position';
@@ -56,6 +58,8 @@ export function EpisodeRowMenu({
   className?: string;
 }) {
   const { open, setOpen, close, triggerRef, menuRef, at } = useAnchoredMenu();
+  // "+ PLAYLIST"'s sheet outlives the menu, which closes on the press that opens it.
+  const [saveTarget, setSaveTarget] = useState<SaveTarget | null>(null);
   // NO TRIGGER WHEN THE MENU WOULD BE EMPTY — a `⋯` that opens onto nothing is
   // a dead control. Asked through each control's own refusal, never a copy of
   // it: an unresolved playlist row has no enclosure, so QUEUE and DOWNLOAD
@@ -104,11 +108,13 @@ export function EpisodeRowMenu({
           {/* The episode page's order: QUEUE first, beside what plays. */}
           <QueueButton episode={episode} podcast={podcast} size="tile" />
           <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
+          <SaveToPlaylistButton target={targetFromEpisode(episode, podcast)} size="tile" onOpen={setSaveTarget} />
           <DownloadButton episode={episode} podcast={podcast} size="tile" />
           <PlayedButton episode={episode} podcast={podcast} />
         </div>,
         document.body,
       )}
+      {saveTarget && <SaveToPlaylistSheet target={saveTarget} onClose={() => setSaveTarget(null)} />}
     </>
   );
 }
