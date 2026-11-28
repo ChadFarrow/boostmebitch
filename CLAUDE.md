@@ -72,7 +72,7 @@ npm run dev / build / start / lint
 | `check:stream` | `stream-ledger.ts` — accrual, settlement, money constants | streaming drains a wallet, pays nothing, or pays twice |
 | `check:favsync` | `favorites-list.ts` — the kind:10333 wire format, merge and baselines | another app's favorites deleted, no undo |
 | `check:lease` | `createLeasePool` — the refcount sharing ONE NIP-47 socket | the socket closes **under a payment in flight** |
-| `check:nwcerror` | `nwc-errors.ts` — what a NIP-47 failure proves, whether a leg may be retried | an unanswered wallet shown as ✗ makes **every leg pay again** |
+| `check:nwcerror` | `nwc-errors.ts`, `webln-pending.ts` — what a NIP-47 failure proves, whether a leg may be retried | an unanswered wallet shown as ✗ makes **every leg pay again** |
 | `check:feedxml` | `readAttr` — the attribute reader EVERY feed parser uses | a decoy attribute steers the payee |
 | `check:vts` | `splitAtPosition`, `splitTrackAndHost`, `splitSats`, `streamAction` | a boost and a stream credit different artists |
 | `check:readtrust` | `read-trust.ts` — is an EMPTY read "nobody has it" or "nothing answered" | an unverified read DELETES |

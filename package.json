@@ -141,6 +141,7 @@
     "e2e:livepage": "node scripts/e2e-live-page-read.mjs",
     "e2e:searchfailed": "node scripts/e2e-search-failed.mjs",
     "e2e:walletrail": "node scripts/e2e-wallet-balance-rail.mjs",
+    "e2e:weblnpending": "node scripts/e2e-webln-pending.mjs",
     "e2e:explorerzaps": "node scripts/e2e-explorer-zaps.mjs",
     "e2e:feedbuttons": "node scripts/e2e-feed-note-buttons.mjs",
     "e2e:albumpanel": "node scripts/e2e-album-panel-owner.mjs",
