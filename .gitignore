@@ -32,3 +32,7 @@ tsconfig.tsbuildinfo
 /android/*
 !/android/twa-manifest.json
 !/android/twa-manifest-*.json
+
+# Libre wallet-embed LDK WASM — copied from the package into public/ by the
+# postinstall script on every install (Vercel included), so it's never committed.
+public/liblightningjs.wasm

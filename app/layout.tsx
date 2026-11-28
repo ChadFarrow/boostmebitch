@@ -35,6 +35,7 @@ const jetbrainsMono = JetBrains_Mono({
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import { UnofficialAppNotice } from '@/components/unofficial-app-notice';
 import { Player } from '@/components/player';
+import { LibreWalletHost } from '@/components/libre/libre-wallet-host';
 import { TabBar } from '@/components/tab-bar';
 import { WalletModalHost } from '@/components/wallet-modal-host';
 import { FavoritesPrivacyPrompt } from '@/components/favorites-privacy';
@@ -336,6 +337,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Outside the Player boundary on purpose: losing playback should not
             also lose the way to /favorites. */}
         <TabBar />
+        {/* Persistent Libre wallet host — mounted app-wide so the in-page LDK node,
+            window.webln, and the Google-Drive OAuth redirect landing survive the wallet
+            modal opening/closing. Draws its own floating card above the dock; mounts
+            nothing without a client id, on the Buddy deploy, or inside the iOS app
+            (the gate is in lib/v4v/libre.ts). Its own boundary: a Libre failure must
+            not take the page. */}
+        <ErrorBoundary label="Libre">
+          <LibreWalletHost />
+        </ErrorBoundary>
         {/* The beta site only: an installed app has no address bar to say which
             site this is. On the screen edge and not in <AppHeader>, which has a
             38px height limit and no spare width at 390px. `z-[65]` keeps it in
