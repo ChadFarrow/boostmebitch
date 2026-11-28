@@ -9,7 +9,8 @@
 // Priority is NWC > Spark in `useWalletBalance` so the displayed balance
 // reflects whichever rail actually pays per `pickRail()` in lib/v4v/boost.ts
 // (`railWhenUnnamed`, lib/util.ts, which gates a `webln` pref on
-// `isWeblnEnabled()` exactly as this chip does).
+// `weblnLive()` exactly as this chip does: enabled in this page load, or held
+// by the Libre wallet).
 //
 // Spark: live updates via subscribeSparkEvents (paymentSucceeded /
 // claimedDeposits / newDeposits / synced) plus a 2s/5s/12s retry schedule so
@@ -35,10 +36,11 @@ import {
 import { hasNwc } from '@/lib/v4v/nwc-state';
 import type { NwcBudget } from '@/lib/util';
 import {
-  isWeblnEnabled,
   subscribeWebln,
   weblnGetBalance,
 } from '@/lib/v4v/webln';
+import { libreHoldsWebln, weblnLive } from '@/lib/v4v/libre';
+import { railLabel } from '@/lib/v4v/wallets';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { useWalletChange } from '@/lib/use-wallet-change';
@@ -96,7 +98,7 @@ export function useWalletBalance(
   const npub = useApp((s) => s.identity?.npub) ?? null;
   const [sparkReady, setSparkReady] = useState(hasSpark());
   const [nwcReady, setNwcReady] = useState(hasNwc());
-  const [weblnReady, setWeblnReady] = useState(isWeblnEnabled());
+  const [weblnReady, setWeblnReady] = useState(weblnLive());
   // ONE reading, stamped with the rail that produced it — never a bare number.
   // Full-code review 2026-11-19: with `balance` as its own state, the render in
   // which `rail` moves (a switch in the wallet modal, a new wallet disconnecting
@@ -127,7 +129,7 @@ export function useWalletBalance(
   useWalletChange(() => {
     setSparkReady(hasSpark());
     setNwcReady(hasNwc());
-    setWeblnReady(isWeblnEnabled());
+    setWeblnReady(weblnLive());
     setPrefTick((t) => t + 1);
   }, { railPref: true });
 
@@ -151,7 +153,12 @@ export function useWalletBalance(
     rail = null;
   }
 
-  const live = reading !== null && reading.rail === rail ? reading : null;
+  // While the Libre wallet holds window.webln, the `webln` rail is Libre — and a
+  // reading stamped `webln` was taken from the extension it displaced (#692's
+  // class: one rail key, two wallets). Libre shows its own balance in its card;
+  // the chip shows none rather than the extension's under Libre's name.
+  const libreIsWebln = rail === 'webln' && libreHoldsWebln();
+  const live = reading !== null && reading.rail === rail && !libreIsWebln ? reading : null;
   const balance = live?.sats ?? null;
   const budget = live?.budget ?? null;
 
@@ -189,6 +196,11 @@ export function useWalletBalance(
           setReading({ rail: from, sats: spendable.sats, budget: spendable.budgetLimited ? spendable.budget : null });
         }
       } else {
+        // Asked at call time, not at effect time: Libre can take window.webln
+        // while this rail stays `webln`. A read then would call `enable()` on
+        // Libre's provider, which opens its approval sheet on first use, with
+        // nobody having pressed anything.
+        if (libreHoldsWebln()) return;
         const sats = await weblnGetBalance();
         if (!cancelled && sats !== null) setReading({ rail: from, sats, budget: null });
       }
@@ -312,7 +324,7 @@ export function useWalletBalance(
   if (rail !== null) {
     displayRail = rail;
     if (balance !== null) displayBalance = balance;
-    else if (cached && cached.rail === rail) displayBalance = cached.balance;
+    else if (cached && cached.rail === rail && !libreIsWebln) displayBalance = cached.balance;
   } else if (cached) {
     // WebLN session state resets on page reload, so a cached webln balance
     // is only valid if WebLN is currently enabled.
@@ -370,7 +382,7 @@ export function WalletBalanceChip() {
   const { balance, rail, budget } = useWalletBalance();
   if (rail === null || balance === null) return null;
   const formatted = balance.toLocaleString();
-  const railName = rail === 'nwc' ? 'NWC' : rail === 'webln' ? 'WebLN' : 'Spark';
+  const railName = railLabel(rail);
   const title = budget
     ? `${formatted} sats spendable (${railName}) \u2014 ${budgetTitle(budget)}`
     : `${formatted} sats (${railName})`;
@@ -420,7 +432,7 @@ export function WalletBalanceBox({ className = '' }: { className?: string }) {
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   if (rail === null || balance === null) return null;
   const formatted = balance.toLocaleString();
-  const railName = rail === 'nwc' ? 'NWC' : rail === 'webln' ? 'WebLN' : 'Spark';
+  const railName = railLabel(rail);
   return (
     // ← BACK's and ✕'s shape and their `.btn-ghost` hover, so it looks like
     // the control it now is. `text-base leading-none` on the outside is what
@@ -476,7 +488,7 @@ export function BoostModalBalance({
   // connection's budget would refuse is flagged here rather than at the
   // wallet — the point of reading the budget at all.
   const insufficient = amountSats > balance;
-  const railName = rail === 'nwc' ? 'NWC' : rail === 'spark' ? 'Spark' : 'WebLN';
+  const railName = railLabel(rail);
   return (
     <span
       className={`text-[11px] font-mono tabular-nums whitespace-nowrap ${

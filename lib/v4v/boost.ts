@@ -6,7 +6,7 @@
 
 import type { Boostagram, ValueBlock, ValueRecipient, BoostResult, NwcLegCheck } from '@/lib/types';
 import { hasNwc, nwcGetMethods } from './nwc-state';
-import { hasWebln, isWeblnEnabled, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError, WeblnPendingError } from './webln';
+import { hasWebln, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError, WeblnPendingError } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
 import {
@@ -16,6 +16,7 @@ import {
   noteKeysendFailure,
 } from './keysend-lookup';
 import { storeBoostMetadata, boostboxIdFromUrl } from './boostbox';
+import { weblnLive } from './libre';
 import { storage } from '@/lib/storage';
 import { payInOrder, recipientOrder, isLnAddressRecipient, splitSats, stoppedLeg, legLogFields, railWhenUnnamed } from '@/lib/util';
 import { logPlayback } from '@/lib/playback-log';
@@ -111,10 +112,19 @@ export async function payStampInvoice(rail: Rail, bolt11: string, sats: number):
   else await weblnPayInvoice(bolt11);
 }
 
-/** The rail that pays when the caller names none — the rule is `railWhenUnnamed`'s. */
+/**
+ * The rail that pays when the caller names none — the rule is `railWhenUnnamed`'s.
+ *
+ * `weblnEnabled` is `weblnLive()`, not `isWeblnEnabled()`: a Libre wallet holding window.webln
+ * counts as enabled, because picking Libre records a `webln` preference and the per-page-load
+ * flag is false after every reload. With `isWeblnEnabled()` here, a reload left that preference
+ * losing to any other connected rail (a Spark restore at sign-in) while the header chip and the
+ * wallet modal named Libre — money from a wallet the person was not looking at. The chip and the
+ * modal read the same predicate (docs/wallets.md, "Libre Wallet").
+ */
 export function pickRail(): Rail | null {
   return railWhenUnnamed(storage.railPref.get(), {
-    nwc: hasNwc(), spark: hasSpark(), weblnEnabled: isWeblnEnabled(), weblnPresent: hasWebln(),
+    nwc: hasNwc(), spark: hasSpark(), weblnEnabled: weblnLive(), weblnPresent: hasWebln(),
   });
 }
 
